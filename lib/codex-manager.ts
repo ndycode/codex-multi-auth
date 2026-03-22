@@ -1,16 +1,7 @@
-import { createInterface } from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
-import { promises as fs, existsSync } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import { dirname, resolve } from "node:path";
-import {
-	createAuthorizationFlow,
-	exchangeAuthorizationCode,
-	parseAuthorizationInput,
-	REDIRECT_URI,
-} from "./auth/auth.js";
-import { startLocalOAuthServer } from "./auth/server.js";
-import { copyTextToClipboard, isBrowserLaunchSuppressed, openBrowserUrl } from "./auth/browser.js";
-import { promptAddAnotherAccount, promptLoginMode, type ExistingAccountInfo } from "./cli.js";
+import { stdin as input, stdout as output } from "node:process";
+import { createInterface } from "node:readline/promises";
 import {
 	extractAccountEmail,
 	extractAccountId,
@@ -23,68 +14,90 @@ import {
 	selectBestAccountCandidate,
 	shouldUpdateAccountIdFromToken,
 } from "./accounts.js";
-import { ACCOUNT_LIMITS } from "./constants.js";
 import {
-	loadDashboardDisplaySettings,
-	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
-	type DashboardDisplaySettings,
-	type DashboardAccountSortMode,
-} from "./dashboard-settings.js";
+	createAuthorizationFlow,
+	exchangeAuthorizationCode,
+	parseAuthorizationInput,
+	REDIRECT_URI,
+} from "./auth/auth.js";
 import {
-	evaluateForecastAccounts,
-	isHardRefreshFailure,
-	recommendForecastAccount,
-	summarizeForecast,
-	type ForecastAccountResult,
-} from "./forecast.js";
-import { createLogger } from "./logger.js";
-import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
+	copyTextToClipboard,
+	isBrowserLaunchSuppressed,
+	openBrowserUrl,
+} from "./auth/browser.js";
+import { startLocalOAuthServer } from "./auth/server.js";
 import {
-	fetchCodexQuotaSnapshot,
-	formatQuotaSnapshotLine,
-	type CodexQuotaSnapshot,
-} from "./quota-probe.js";
-import { queuedRefresh } from "./refresh-queue.js";
-import {
-	loadQuotaCache,
-	saveQuotaCache,
-	type QuotaCacheData,
-	type QuotaCacheEntry,
-} from "./quota-cache.js";
-import {
-	clearAccounts,
-	findMatchingAccountIndex,
-	formatStorageErrorHint,
-	getNamedBackups,
-	getStoragePath,
-	loadFlaggedAccounts,
-	loadAccounts,
-	StorageError,
-	type NamedBackupSummary,
-	restoreAccountsFromBackup,
-	saveFlaggedAccounts,
-	saveAccounts,
-	setStoragePath,
-	withAccountAndFlaggedStorageTransaction,
-	withAccountStorageTransaction,
-	type AccountMetadataV3,
-	type AccountStorageV3,
-	type FlaggedAccountMetadataV1,
-} from "./storage.js";
-import type { AccountIdSource, TokenFailure, TokenResult } from "./types.js";
+	type ExistingAccountInfo,
+	promptAddAnotherAccount,
+	promptLoginMode,
+} from "./cli.js";
 import {
 	getCodexCliAuthPath,
 	getCodexCliConfigPath,
 	loadCodexCliState,
 } from "./codex-cli/state.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
+import {
+	applyUiThemeFromDashboardSettings,
+	configureUnifiedSettings,
+	resolveMenuLayoutMode,
+} from "./codex-manager/settings-hub.js";
+import { ACCOUNT_LIMITS } from "./constants.js";
+import {
+	type DashboardAccountSortMode,
+	type DashboardDisplaySettings,
+	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+	loadDashboardDisplaySettings,
+} from "./dashboard-settings.js";
+import {
+	buildForecastExplanation,
+	evaluateForecastAccounts,
+	type ForecastAccountResult,
+	isHardRefreshFailure,
+	recommendForecastAccount,
+	summarizeForecast,
+} from "./forecast.js";
+import { createLogger } from "./logger.js";
+import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
+import {
+	loadQuotaCache,
+	type QuotaCacheData,
+	type QuotaCacheEntry,
+	saveQuotaCache,
+} from "./quota-cache.js";
+import {
+	type CodexQuotaSnapshot,
+	fetchCodexQuotaSnapshot,
+	formatQuotaSnapshotLine,
+} from "./quota-probe.js";
+import { queuedRefresh } from "./refresh-queue.js";
+import {
+	type AccountMetadataV3,
+	type AccountStorageV3,
+	clearAccounts,
+	type FlaggedAccountMetadataV1,
+	findMatchingAccountIndex,
+	formatStorageErrorHint,
+	getNamedBackups,
+	getStoragePath,
+	loadAccounts,
+	loadFlaggedAccounts,
+	type NamedBackupSummary,
+	restoreAccountsFromBackup,
+	StorageError,
+	saveAccounts,
+	saveFlaggedAccounts,
+	setStoragePath,
+	withAccountAndFlaggedStorageTransaction,
+	withAccountStorageTransaction,
+} from "./storage.js";
+import type { AccountIdSource, TokenFailure, TokenResult } from "./types.js";
 import { ANSI } from "./ui/ansi.js";
-import { UI_COPY } from "./ui/copy.js";
 import { confirm } from "./ui/confirm.js";
+import { UI_COPY } from "./ui/copy.js";
 import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
 import { getUiRuntimeOptions } from "./ui/runtime.js";
-import { select, type MenuItem } from "./ui/select.js";
-import { applyUiThemeFromDashboardSettings, configureUnifiedSettings, resolveMenuLayoutMode } from "./codex-manager/settings-hub.js";
+import { type MenuItem, select } from "./ui/select.js";
 
 type TokenSuccess = Extract<TokenResult, { type: "success" }>;
 type TokenSuccessWithAccount = TokenSuccess & {
@@ -105,15 +118,16 @@ function stylePromptText(text: string, tone: PromptTone): string {
 		const mapped = tone === "accent" ? "primary" : tone;
 		return paintUiText(ui, text, mapped);
 	}
-	const legacyCode = tone === "accent"
-		? ANSI.green
-		: tone === "success"
+	const legacyCode =
+		tone === "accent"
 			? ANSI.green
-			: tone === "warning"
-				? ANSI.yellow
-				: tone === "danger"
-					? ANSI.red
-					: ANSI.dim;
+			: tone === "success"
+				? ANSI.green
+				: tone === "warning"
+					? ANSI.yellow
+					: tone === "danger"
+						? ANSI.red
+						: ANSI.dim;
 	return `${legacyCode}${text}${ANSI.reset}`;
 }
 
@@ -131,14 +145,17 @@ function extractErrorMessageFromPayload(payload: unknown): string | undefined {
 	if (!payload || typeof payload !== "object") return undefined;
 	const record = payload as Record<string, unknown>;
 
-	const directMessage = typeof record.message === "string"
-		? collapseWhitespace(record.message)
-		: "";
-	const directCode = typeof record.code === "string"
-		? collapseWhitespace(record.code)
-		: "";
+	const directMessage =
+		typeof record.message === "string"
+			? collapseWhitespace(record.message)
+			: "";
+	const directCode =
+		typeof record.code === "string" ? collapseWhitespace(record.code) : "";
 	if (directMessage) {
-		if (directCode && !directMessage.toLowerCase().includes(directCode.toLowerCase())) {
+		if (
+			directCode &&
+			!directMessage.toLowerCase().includes(directCode.toLowerCase())
+		) {
 			return `${directMessage} [${directCode}]`;
 		}
 		return directMessage;
@@ -181,7 +198,8 @@ function normalizeFailureDetail(
 	const raw = message?.trim() || reasonLabel || "refresh failed";
 	const structured = parseStructuredErrorMessage(raw);
 	const normalized = collapseWhitespace(structured ?? raw);
-	const bounded = normalized.length > 260 ? `${normalized.slice(0, 257)}...` : normalized;
+	const bounded =
+		normalized.length > 260 ? `${normalized.slice(0, 257)}...` : normalized;
 	return bounded.length > 0 ? bounded : "refresh failed";
 }
 
@@ -194,14 +212,19 @@ function joinStyledSegments(parts: string[]): string {
 function formatResultSummary(
 	segments: ReadonlyArray<{ text: string; tone: PromptTone }>,
 ): string {
-	const rendered = segments.map((segment) => stylePromptText(segment.text, segment.tone));
+	const rendered = segments.map((segment) =>
+		stylePromptText(segment.text, segment.tone),
+	);
 	return `${stylePromptText("Result:", "accent")} ${joinStyledSegments(rendered)}`;
 }
 
 function styleQuotaSummary(summary: string): string {
 	const normalized = collapseWhitespace(summary);
 	if (!normalized) return stylePromptText(summary, "muted");
-	const segments = normalized.split("|").map((segment) => segment.trim()).filter(Boolean);
+	const segments = normalized
+		.split("|")
+		.map((segment) => segment.trim())
+		.filter(Boolean);
 	if (segments.length === 0) return stylePromptText(normalized, "muted");
 
 	const rendered = segments.map((segment) => {
@@ -224,7 +247,10 @@ function styleQuotaSummary(summary: string): string {
 	return joinStyledSegments(rendered);
 }
 
-function styleAccountDetailText(detail: string, fallbackTone: PromptTone = "muted"): string {
+function styleAccountDetailText(
+	detail: string,
+	fallbackTone: PromptTone = "muted",
+): string {
 	const compact = collapseWhitespace(detail);
 	if (!compact) return stylePromptText("", fallbackTone);
 
@@ -239,11 +265,12 @@ function styleAccountDetailText(detail: string, fallbackTone: PromptTone = "mute
 			: /ok|working|succeeded|valid/i.test(prefix)
 				? "success"
 				: fallbackTone;
-		const suffixTone: PromptTone = /re-login|stale|warning|retry|fallback/i.test(suffix)
-			? "warning"
-			: /failed|error/i.test(suffix)
-				? "danger"
-				: "muted";
+		const suffixTone: PromptTone =
+			/re-login|stale|warning|retry|fallback/i.test(suffix)
+				? "warning"
+				: /failed|error/i.test(suffix)
+					? "danger"
+					: "muted";
 
 		const chunks: string[] = [];
 		if (prefix) chunks.push(stylePromptText(prefix, prefixTone));
@@ -253,13 +280,17 @@ function styleAccountDetailText(detail: string, fallbackTone: PromptTone = "mute
 	}
 
 	if (/rate-limited/i.test(compact)) return stylePromptText(compact, "danger");
-	if (/re-login|stale|warning|fallback/i.test(compact)) return stylePromptText(compact, "warning");
+	if (/re-login|stale|warning|fallback/i.test(compact))
+		return stylePromptText(compact, "warning");
 	if (/failed|error/i.test(compact)) return stylePromptText(compact, "danger");
-	if (/ok|working|succeeded|valid/i.test(compact)) return stylePromptText(compact, "success");
+	if (/ok|working|succeeded|valid/i.test(compact))
+		return stylePromptText(compact, "success");
 	return stylePromptText(compact, fallbackTone);
 }
 
-function riskTone(level: ForecastAccountResult["riskLevel"]): "success" | "warning" | "danger" {
+function riskTone(
+	level: ForecastAccountResult["riskLevel"],
+): "success" | "warning" | "danger" {
 	if (level === "low") return "success";
 	if (level === "medium") return "warning";
 	return "danger";
@@ -414,7 +445,8 @@ function resolveActiveIndex(
 ): number {
 	const total = storage.accounts.length;
 	if (total === 0) return 0;
-	const rawCandidate = storage.activeIndexByFamily?.[family] ?? storage.activeIndex;
+	const rawCandidate =
+		storage.activeIndexByFamily?.[family] ?? storage.activeIndex;
 	const raw = Number.isFinite(rawCandidate) ? rawCandidate : 0;
 	return Math.max(0, Math.min(raw, total - 1));
 }
@@ -545,7 +577,9 @@ function quotaCacheEntryToSnapshot(entry: QuotaCacheEntry): CodexQuotaSnapshot {
 	};
 }
 
-function formatCompactQuotaWindowLabel(windowMinutes: number | undefined): string {
+function formatCompactQuotaWindowLabel(
+	windowMinutes: number | undefined,
+): string {
 	if (!windowMinutes || !Number.isFinite(windowMinutes) || windowMinutes <= 0) {
 		return "quota";
 	}
@@ -554,7 +588,10 @@ function formatCompactQuotaWindowLabel(windowMinutes: number | undefined): strin
 	return `${windowMinutes}m`;
 }
 
-function formatCompactQuotaPart(windowMinutes: number | undefined, usedPercent: number | undefined): string | null {
+function formatCompactQuotaPart(
+	windowMinutes: number | undefined,
+	usedPercent: number | undefined,
+): string | null {
 	const label = formatCompactQuotaWindowLabel(windowMinutes);
 	if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) {
 		return null;
@@ -563,7 +600,9 @@ function formatCompactQuotaPart(windowMinutes: number | undefined, usedPercent: 
 	return `${label} ${left}%`;
 }
 
-function quotaLeftPercentFromUsed(usedPercent: number | undefined): number | undefined {
+function quotaLeftPercentFromUsed(
+	usedPercent: number | undefined,
+): number | undefined {
 	if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) {
 		return undefined;
 	}
@@ -572,9 +611,17 @@ function quotaLeftPercentFromUsed(usedPercent: number | undefined): number | und
 
 function formatCompactQuotaSnapshot(snapshot: CodexQuotaSnapshot): string {
 	const parts = [
-		formatCompactQuotaPart(snapshot.primary.windowMinutes, snapshot.primary.usedPercent),
-		formatCompactQuotaPart(snapshot.secondary.windowMinutes, snapshot.secondary.usedPercent),
-	].filter((value): value is string => typeof value === "string" && value.length > 0);
+		formatCompactQuotaPart(
+			snapshot.primary.windowMinutes,
+			snapshot.primary.usedPercent,
+		),
+		formatCompactQuotaPart(
+			snapshot.secondary.windowMinutes,
+			snapshot.secondary.usedPercent,
+		),
+	].filter(
+		(value): value is string => typeof value === "string" && value.length > 0,
+	);
 	if (snapshot.status === 429) {
 		parts.push("rate-limited");
 	}
@@ -586,9 +633,17 @@ function formatCompactQuotaSnapshot(snapshot: CodexQuotaSnapshot): string {
 
 function formatAccountQuotaSummary(entry: QuotaCacheEntry): string {
 	const parts = [
-		formatCompactQuotaPart(entry.primary.windowMinutes, entry.primary.usedPercent),
-		formatCompactQuotaPart(entry.secondary.windowMinutes, entry.secondary.usedPercent),
-	].filter((value): value is string => typeof value === "string" && value.length > 0);
+		formatCompactQuotaPart(
+			entry.primary.windowMinutes,
+			entry.primary.usedPercent,
+		),
+		formatCompactQuotaPart(
+			entry.secondary.windowMinutes,
+			entry.secondary.usedPercent,
+		),
+	].filter(
+		(value): value is string => typeof value === "string" && value.length > 0,
+	);
 	if (entry.status === 429) {
 		parts.push("rate-limited");
 	}
@@ -865,11 +920,17 @@ function hasUsableAccessToken(
 	now: number,
 ): boolean {
 	if (!account.accessToken) return false;
-	if (typeof account.expiresAt !== "number" || !Number.isFinite(account.expiresAt)) return false;
+	if (
+		typeof account.expiresAt !== "number" ||
+		!Number.isFinite(account.expiresAt)
+	)
+		return false;
 	return account.expiresAt - now > ACCESS_TOKEN_FRESH_WINDOW_MS;
 }
 
-function hasLikelyInvalidRefreshToken(refreshToken: string | undefined): boolean {
+function hasLikelyInvalidRefreshToken(
+	refreshToken: string | undefined,
+): boolean {
 	if (!refreshToken) return true;
 	const trimmed = refreshToken.trim();
 	if (trimmed.length < 20) return true;
@@ -883,7 +944,10 @@ function mapAccountStatus(
 	now: number,
 ): ExistingAccountInfo["status"] {
 	if (account.enabled === false) return "disabled";
-	if (typeof account.coolingDownUntil === "number" && account.coolingDownUntil > now) {
+	if (
+		typeof account.coolingDownUntil === "number" &&
+		account.coolingDownUntil > now
+	) {
 		return "cooldown";
 	}
 	const rateLimit = formatRateLimitEntry(account, now, "codex");
@@ -897,7 +961,9 @@ function parseLeftPercentFromQuotaSummary(
 	windowLabel: "5h" | "7d",
 ): number {
 	if (!summary) return -1;
-	const match = summary.match(new RegExp(`(?:^|\\|)\\s*${windowLabel}\\s+(\\d{1,3})%`, "i"));
+	const match = summary.match(
+		new RegExp(`(?:^|\\|)\\s*${windowLabel}\\s+(\\d{1,3})%`, "i"),
+	);
 	const value = Number.parseInt(match?.[1] ?? "", 10);
 	if (!Number.isFinite(value)) return -1;
 	return Math.max(0, Math.min(100, value));
@@ -907,14 +973,19 @@ function readQuotaLeftPercent(
 	account: ExistingAccountInfo,
 	windowLabel: "5h" | "7d",
 ): number {
-	const direct = windowLabel === "5h" ? account.quota5hLeftPercent : account.quota7dLeftPercent;
+	const direct =
+		windowLabel === "5h"
+			? account.quota5hLeftPercent
+			: account.quota7dLeftPercent;
 	if (typeof direct === "number" && Number.isFinite(direct)) {
 		return Math.max(0, Math.min(100, Math.round(direct)));
 	}
 	return parseLeftPercentFromQuotaSummary(account.quotaSummary, windowLabel);
 }
 
-function accountStatusSortBucket(status: ExistingAccountInfo["status"]): number {
+function accountStatusSortBucket(
+	status: ExistingAccountInfo["status"],
+): number {
 	switch (status) {
 		case "active":
 		case "ok":
@@ -945,7 +1016,9 @@ function compareReadyFirstAccounts(
 	const right7d = readQuotaLeftPercent(right, "7d");
 	if (left7d !== right7d) return right7d - left7d;
 
-	const bucketDelta = accountStatusSortBucket(left.status) - accountStatusSortBucket(right.status);
+	const bucketDelta =
+		accountStatusSortBucket(left.status) -
+		accountStatusSortBucket(right.status);
 	if (bucketDelta !== 0) return bucketDelta;
 
 	const leftLastUsed = left.lastUsed ?? 0;
@@ -962,18 +1035,26 @@ function applyAccountMenuOrdering(
 	displaySettings: DashboardDisplaySettings,
 ): ExistingAccountInfo[] {
 	const sortEnabled =
-		displaySettings.menuSortEnabled ?? (DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortEnabled ?? true);
+		displaySettings.menuSortEnabled ??
+		DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortEnabled ??
+		true;
 	const sortMode: DashboardAccountSortMode =
-		displaySettings.menuSortMode ?? (DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortMode ?? "ready-first");
+		displaySettings.menuSortMode ??
+		DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortMode ??
+		"ready-first";
 	if (!sortEnabled || sortMode !== "ready-first") {
 		return [...accounts];
 	}
 
 	const sorted = [...accounts].sort(compareReadyFirstAccounts);
-	const pinCurrent = displaySettings.menuSortPinCurrent ??
-		(DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortPinCurrent ?? false);
+	const pinCurrent =
+		displaySettings.menuSortPinCurrent ??
+		DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortPinCurrent ??
+		false;
 	if (pinCurrent) {
-		const currentIndex = sorted.findIndex((account) => account.isCurrentAccount);
+		const currentIndex = sorted.findIndex(
+			(account) => account.isCurrentAccount,
+		);
 		if (currentIndex > 0) {
 			const current = sorted.splice(currentIndex, 1)[0];
 			const first = sorted[0];
@@ -1014,12 +1095,15 @@ function toExistingAccountInfo(
 			addedAt: account.addedAt,
 			lastUsed: account.lastUsed,
 			status: mapAccountStatus(account, index, activeIndex, now),
-			quotaSummary: (displaySettings.menuShowQuotaSummary ?? true) && entry
-				? formatAccountQuotaSummary(entry)
-				: undefined,
+			quotaSummary:
+				(displaySettings.menuShowQuotaSummary ?? true) && entry
+					? formatAccountQuotaSummary(entry)
+					: undefined,
 			quota5hLeftPercent: quotaLeftPercentFromUsed(entry?.primary.usedPercent),
 			quota5hResetAtMs: entry?.primary.resetAtMs,
-			quota7dLeftPercent: quotaLeftPercentFromUsed(entry?.secondary.usedPercent),
+			quota7dLeftPercent: quotaLeftPercentFromUsed(
+				entry?.secondary.usedPercent,
+			),
 			quota7dResetAtMs: entry?.secondary.resetAtMs,
 			quotaRateLimited: entry?.status === 429,
 			isCurrentAccount: index === activeIndex,
@@ -1031,11 +1115,19 @@ function toExistingAccountInfo(
 			showHintsForUnselectedRows: layoutMode === "expanded-rows",
 			highlightCurrentRow: displaySettings.menuHighlightCurrentRow ?? true,
 			focusStyle: displaySettings.menuFocusStyle ?? "row-invert",
-			statuslineFields: displaySettings.menuStatuslineFields ?? ["last-used", "limits", "status"],
+			statuslineFields: displaySettings.menuStatuslineFields ?? [
+				"last-used",
+				"limits",
+				"status",
+			],
 		};
 	});
-	const orderedAccounts = applyAccountMenuOrdering(baseAccounts, displaySettings);
-	const quickSwitchUsesVisibleRows = displaySettings.menuSortQuickSwitchVisibleRow ?? true;
+	const orderedAccounts = applyAccountMenuOrdering(
+		baseAccounts,
+		displaySettings,
+	);
+	const quickSwitchUsesVisibleRows =
+		displaySettings.menuSortQuickSwitchVisibleRow ?? true;
 	return orderedAccounts.map((account, displayIndex) => ({
 		...account,
 		index: displayIndex,
@@ -1045,7 +1137,9 @@ function toExistingAccountInfo(
 	}));
 }
 
-function resolveAccountSelection(tokens: TokenSuccess): TokenSuccessWithAccount {
+function resolveAccountSelection(
+	tokens: TokenSuccess,
+): TokenSuccessWithAccount {
 	const override = (process.env.CODEX_AUTH_ACCOUNT_ID ?? "").trim();
 	if (override) {
 		return {
@@ -1108,7 +1202,8 @@ function resolveStoredAccountIdentity(
 
 	return {
 		accountId,
-		accountIdSource: accountId === tokenAccountId ? "token" : storedAccountIdSource,
+		accountIdSource:
+			accountId === tokenAccountId ? "token" : storedAccountIdSource,
 	};
 }
 
@@ -1124,8 +1219,10 @@ function applyTokenAccountIdentity(
 	if (!nextIdentity.accountId) {
 		return false;
 	}
-	if (nextIdentity.accountId === account.accountId
-		&& nextIdentity.accountIdSource === account.accountIdSource) {
+	if (
+		nextIdentity.accountId === account.accountId &&
+		nextIdentity.accountIdSource === account.accountIdSource
+	) {
 		return false;
 	}
 
@@ -1228,7 +1325,10 @@ function isReadlineClosedError(error: unknown): boolean {
 		typeof error === "object" && error !== null && "code" in error
 			? String((error as { code?: unknown }).code)
 			: "";
-	return errorCode === "ERR_USE_AFTER_CLOSE" || /readline was closed/i.test(error.message);
+	return (
+		errorCode === "ERR_USE_AFTER_CLOSE" ||
+		/readline was closed/i.test(error.message)
+	);
 }
 
 type OAuthSignInMode = "browser" | "manual" | "restore-backup" | "cancel";
@@ -1254,24 +1354,32 @@ async function promptOAuthSignInMode(
 
 	const ui = getUiRuntimeOptions();
 	const items: MenuItem<OAuthSignInMode>[] = [
-		{ label: UI_COPY.oauth.signInHeading, value: "cancel" as const, kind: "heading" },
+		{
+			label: UI_COPY.oauth.signInHeading,
+			value: "cancel" as const,
+			kind: "heading",
+		},
 		{ label: UI_COPY.oauth.openBrowser, value: "browser", color: "green" },
 		{ label: UI_COPY.oauth.manualMode, value: "manual", color: "yellow" },
 		...(backupOption
 			? [
-				{ separator: true, label: "", value: "cancel" as const },
-				{ label: UI_COPY.oauth.restoreHeading, value: "cancel" as const, kind: "heading" as const },
-				{
-					label: UI_COPY.oauth.restoreSavedBackup,
-					value: "restore-backup" as const,
-					hint: UI_COPY.oauth.loadLastBackupHint(
-						backupOption.fileName,
-						backupOption.accountCount,
-						formatBackupSavedAt(backupOption.mtimeMs),
-					),
-					color: "cyan" as const,
-				},
-			]
+					{ separator: true, label: "", value: "cancel" as const },
+					{
+						label: UI_COPY.oauth.restoreHeading,
+						value: "cancel" as const,
+						kind: "heading" as const,
+					},
+					{
+						label: UI_COPY.oauth.restoreSavedBackup,
+						value: "restore-backup" as const,
+						hint: UI_COPY.oauth.loadLastBackupHint(
+							backupOption.fileName,
+							backupOption.accountCount,
+							formatBackupSavedAt(backupOption.mtimeMs),
+						),
+						color: "cyan" as const,
+					},
+				]
 			: []),
 		{ separator: true, label: "", value: "cancel" as const },
 		{ label: UI_COPY.oauth.back, value: "cancel", color: "red" },
@@ -1356,15 +1464,17 @@ async function promptManualBackupSelection(
 	}
 
 	const ui = getUiRuntimeOptions();
-	const items: MenuItem<NamedBackupSummary | null>[] = backups.map((backup) => ({
-		label: backup.fileName,
-		value: backup,
-		hint: UI_COPY.oauth.manualBackupHint(
-			backup.accountCount,
-			formatBackupSavedAt(backup.mtimeMs),
-		),
-		color: "cyan",
-	}));
+	const items: MenuItem<NamedBackupSummary | null>[] = backups.map(
+		(backup) => ({
+			label: backup.fileName,
+			value: backup,
+			hint: UI_COPY.oauth.manualBackupHint(
+				backup.accountCount,
+				formatBackupSavedAt(backup.mtimeMs),
+			),
+			color: "cyan",
+		}),
+	);
 	items.push({ label: UI_COPY.oauth.back, value: null, color: "red" });
 
 	const selected = await select<NamedBackupSummary | null>(items, {
@@ -1390,7 +1500,9 @@ interface WaitForReturnOptions {
 	pauseOnAnyKey?: boolean;
 }
 
-async function waitForMenuReturn(options: WaitForReturnOptions = {}): Promise<void> {
+async function waitForMenuReturn(
+	options: WaitForReturnOptions = {},
+): Promise<void> {
 	if (!input.isTTY || !output.isTTY) {
 		return;
 	}
@@ -1429,9 +1541,7 @@ async function waitForMenuReturn(options: WaitForReturnOptions = {}): Promise<vo
 			const remainingSeconds = Math.max(1, Math.ceil(remainingMs / 1000));
 			if (lastShownSeconds === remainingSeconds) return;
 			lastShownSeconds = remainingSeconds;
-			writeInlineStatus(
-				UI_COPY.returnFlow.autoReturn(remainingSeconds),
-			);
+			writeInlineStatus(UI_COPY.returnFlow.autoReturn(remainingSeconds));
 		};
 		renderCountdown();
 		const pinned = await new Promise<boolean>((resolve) => {
@@ -1506,7 +1616,8 @@ async function waitForMenuReturn(options: WaitForReturnOptions = {}): Promise<vo
 
 	const rl = createInterface({ input, output });
 	try {
-		const question = promptText.length > 0 ? `${stylePromptText(promptText, "muted")} ` : "";
+		const question =
+			promptText.length > 0 ? `${stylePromptText(promptText, "muted")} ` : "";
 		output.write(`\r${ANSI.clearLine}`);
 		await rl.question(question);
 	} catch (error) {
@@ -1575,7 +1686,12 @@ async function runActionPanel(
 				? UI_COPY.returnFlow.failed
 				: UI_COPY.returnFlow.done;
 		previousLog(stylePromptText(title, "accent"));
-		previousLog(stylePromptText(stageText, failed ? "danger" : running ? "accent" : "success"));
+		previousLog(
+			stylePromptText(
+				stageText,
+				failed ? "danger" : running ? "accent" : "success",
+			),
+		);
 		previousLog("");
 
 		const lines = captured.slice(-maxVisibleLines);
@@ -1588,7 +1704,8 @@ async function runActionPanel(
 			previousLog("");
 		}
 		previousLog("");
-		if (running) previousLog(stylePromptText(UI_COPY.returnFlow.working, "muted"));
+		if (running)
+			previousLog(stylePromptText(UI_COPY.returnFlow.working, "muted"));
 		frame += 1;
 	};
 
@@ -1637,7 +1754,9 @@ async function runActionPanel(
 			pauseOnAnyKey: settings?.actionPauseOnKey ?? true,
 		});
 	}
-	output.write(ANSI.altScreenOff + ANSI.show + ANSI.clearScreen + ANSI.moveTo(1, 1));
+	output.write(
+		ANSI.altScreenOff + ANSI.show + ANSI.clearScreen + ANSI.moveTo(1, 1),
+	);
 	if (failed) {
 		throw failed;
 	}
@@ -1649,7 +1768,8 @@ async function runOAuthFlow(
 ): Promise<TokenResult> {
 	const { pkce, state, url } = await createAuthorizationFlow({ forceNewLogin });
 	let code: string | null = null;
-	let oauthServer: Awaited<ReturnType<typeof startLocalOAuthServer>> | null = null;
+	let oauthServer: Awaited<ReturnType<typeof startLocalOAuthServer>> | null =
+		null;
 	try {
 		if (signInMode === "browser") {
 			try {
@@ -1659,15 +1779,15 @@ async function runOAuthFlow(
 					"Local OAuth callback server unavailable; falling back to manual callback entry.",
 					serverError instanceof Error
 						? {
-							message: serverError.message,
-							stack: serverError.stack,
-							code:
-								typeof serverError === "object" &&
-								serverError !== null &&
-								"code" in serverError
-									? String(serverError.code)
-									: undefined,
-						}
+								message: serverError.message,
+								stack: serverError.stack,
+								code:
+									typeof serverError === "object" &&
+									serverError !== null &&
+									"code" in serverError
+										? String(serverError.code)
+										: undefined,
+							}
 						: { error: String(serverError) },
 				);
 				oauthServer = null;
@@ -1700,7 +1820,8 @@ async function runOAuthFlow(
 			);
 		}
 
-		const waitingForCallback = signInMode === "browser" && oauthServer?.ready === true;
+		const waitingForCallback =
+			signInMode === "browser" && oauthServer?.ready === true;
 		if (waitingForCallback && oauthServer) {
 			console.log(stylePromptText(UI_COPY.oauth.waitingCallback, "muted"));
 			const callbackResult = await oauthServer.waitForCode(state);
@@ -1718,7 +1839,9 @@ async function runOAuthFlow(
 					"warning",
 				),
 			);
-			code = await promptManualCallback(state, { allowNonTty: signInMode === "manual" });
+			code = await promptManualCallback(state, {
+				allowNonTty: signInMode === "manual",
+			});
 		}
 	} finally {
 		oauthServer?.close();
@@ -1754,19 +1877,24 @@ async function persistAccountPool(
 				tokenAccountId,
 			);
 			const accountIdSource = accountId
-				? (result.accountIdSource ?? (result.accountIdOverride ? "manual" : "token"))
+				? (result.accountIdSource ??
+					(result.accountIdOverride ? "manual" : "token"))
 				: undefined;
 			const accountLabel = result.accountLabel;
 			const accountEmail = sanitizeEmail(
 				extractAccountEmail(result.access, result.idToken),
 			);
-			const existingIndex = findMatchingAccountIndex(accounts, {
-				accountId,
-				email: accountEmail,
-				refreshToken: result.refresh,
-			}, {
-				allowUniqueAccountIdFallbackWithoutEmail: true,
-			});
+			const existingIndex = findMatchingAccountIndex(
+				accounts,
+				{
+					accountId,
+					email: accountEmail,
+					refreshToken: result.refresh,
+				},
+				{
+					allowUniqueAccountIdFallbackWithoutEmail: true,
+				},
+			);
 
 			if (existingIndex === undefined) {
 				const newIndex = accounts.length;
@@ -1810,17 +1938,16 @@ async function persistAccountPool(
 			selectedAccountIndex = existingIndex;
 		}
 
-		const fallbackActiveIndex = accounts.length === 0
-			? 0
-			: Math.max(
-				0,
-				Math.min(stored?.activeIndex ?? 0, accounts.length - 1),
-			);
-		const nextActiveIndex = accounts.length === 0
-			? 0
-			: selectedAccountIndex === null
-				? fallbackActiveIndex
-				: Math.max(0, Math.min(selectedAccountIndex, accounts.length - 1));
+		const fallbackActiveIndex =
+			accounts.length === 0
+				? 0
+				: Math.max(0, Math.min(stored?.activeIndex ?? 0, accounts.length - 1));
+		const nextActiveIndex =
+			accounts.length === 0
+				? 0
+				: selectedAccountIndex === null
+					? fallbackActiveIndex
+					: Math.max(0, Math.min(selectedAccountIndex, accounts.length - 1));
 		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
 		for (const family of MODEL_FAMILIES) {
 			activeIndexByFamily[family] = nextActiveIndex;
@@ -1835,14 +1962,18 @@ async function persistAccountPool(
 	});
 }
 
-async function syncSelectionToCodex(tokens: TokenSuccessWithAccount): Promise<void> {
+async function syncSelectionToCodex(
+	tokens: TokenSuccessWithAccount,
+): Promise<void> {
 	const tokenAccountId = extractAccountId(tokens.access);
 	const accountId = resolveRequestAccountId(
 		tokens.accountIdOverride,
 		tokens.accountIdSource,
 		tokenAccountId,
 	);
-	const email = sanitizeEmail(extractAccountEmail(tokens.access, tokens.idToken));
+	const email = sanitizeEmail(
+		extractAccountEmail(tokens.access, tokens.idToken),
+	);
 	await setCodexCliActiveSelection({
 		accountId,
 		email,
@@ -1880,9 +2011,10 @@ async function showAccountStatus(): Promise<void> {
 		const cooldown = formatCooldown(account, now);
 		if (cooldown) markers.push(`cooldown:${cooldown}`);
 		const markerLabel = markers.length > 0 ? ` [${markers.join(", ")}]` : "";
-		const lastUsed = typeof account.lastUsed === "number" && account.lastUsed > 0
-			? `used ${formatWaitTime(now - account.lastUsed)} ago`
-			: "never used";
+		const lastUsed =
+			typeof account.lastUsed === "number" && account.lastUsed > 0
+				? `used ${formatWaitTime(now - account.lastUsed)} ago`
+				: "never used";
 		console.log(`${i + 1}. ${label}${markerLabel} ${lastUsed}`);
 	}
 }
@@ -1920,12 +2052,14 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 	const activeIndex = resolveActiveIndex(storage, "codex");
 	let activeAccountRefreshed = false;
 	const now = Date.now();
-	console.log(stylePromptText(
-		forceRefresh
-			? `Checking ${storage.accounts.length} account(s) with full refresh test...`
-			: `Checking ${storage.accounts.length} account(s) with quick check${liveProbe ? " + live check" : ""}...`,
-		"accent",
-	));
+	console.log(
+		stylePromptText(
+			forceRefresh
+				? `Checking ${storage.accounts.length} account(s) with full refresh test...`
+				: `Checking ${storage.accounts.length} account(s) with quick check${liveProbe ? " + live check" : ""}...`,
+			"accent",
+		),
+	);
 	for (let i = 0; i < storage.accounts.length; i += 1) {
 		const account = storage.accounts[i];
 		if (!account) continue;
@@ -1948,7 +2082,8 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 					: undefined;
 				if (!probeAccountId || !currentAccessToken) {
 					warnings += 1;
-					healthDetail = "signed in and working (live check skipped: missing account ID)";
+					healthDetail =
+						"signed in and working (live check skipped: missing account ID)";
 				} else {
 					try {
 						const snapshot = await fetchCodexQuotaSnapshot({
@@ -1991,7 +2126,9 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 		const result = await queuedRefresh(account.refreshToken);
 		if (result.type === "success") {
 			const tokenAccountId = extractAccountId(result.access);
-			const nextEmail = sanitizeEmail(extractAccountEmail(result.access, result.idToken));
+			const nextEmail = sanitizeEmail(
+				extractAccountEmail(result.access, result.idToken),
+			);
 			const previousEmail = account.email;
 			let accountIdentityChanged = false;
 			if (account.refreshToken !== result.refresh) {
@@ -2020,7 +2157,9 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 				changed = true;
 			}
 			if (accountIdentityChanged && liveProbe && workingQuotaCache) {
-				quotaEmailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
+				quotaEmailFallbackState = buildQuotaEmailFallbackState(
+					storage.accounts,
+				);
 				quotaCacheChanged =
 					pruneUnsafeQuotaEmailCacheEntry(
 						workingQuotaCache,
@@ -2039,7 +2178,8 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 				const probeAccountId = account.accountId ?? tokenAccountId;
 				if (!probeAccountId) {
 					warnings += 1;
-					healthyMessage = "working now (live check skipped: missing account ID)";
+					healthyMessage =
+						"working now (live check skipped: missing account ID)";
 				} else {
 					try {
 						const snapshot = await fetchCodexQuotaSnapshot({
@@ -2094,7 +2234,12 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 	}
 
 	if (!display.showPerAccountRows) {
-		console.log(stylePromptText("Per-account lines are hidden in dashboard settings.", "muted"));
+		console.log(
+			stylePromptText(
+				"Per-account lines are hidden in dashboard settings.",
+				"muted",
+			),
+		);
 	}
 	if (workingQuotaCache && quotaCacheChanged) {
 		await saveQuotaCache(workingQuotaCache);
@@ -2104,7 +2249,11 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 		await saveAccounts(storage);
 	}
 
-	if (activeAccountRefreshed && activeIndex >= 0 && activeIndex < storage.accounts.length) {
+	if (
+		activeAccountRefreshed &&
+		activeIndex >= 0 &&
+		activeIndex < storage.accounts.length
+	) {
 		const activeAccount = storage.accounts[activeIndex];
 		if (activeAccount) {
 			await setCodexCliActiveSelection({
@@ -2118,16 +2267,25 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 	}
 
 	console.log("");
-	console.log(formatResultSummary([
-		{ text: `${ok} working`, tone: "success" },
-		{ text: `${failed} need re-login`, tone: failed > 0 ? "danger" : "muted" },
-		{ text: `${warnings} warning${warnings === 1 ? "" : "s"}`, tone: warnings > 0 ? "warning" : "muted" },
-	]));
+	console.log(
+		formatResultSummary([
+			{ text: `${ok} working`, tone: "success" },
+			{
+				text: `${failed} need re-login`,
+				tone: failed > 0 ? "danger" : "muted",
+			},
+			{
+				text: `${warnings} warning${warnings === 1 ? "" : "s"}`,
+				tone: warnings > 0 ? "warning" : "muted",
+			},
+		]),
+	);
 }
 
 interface ForecastCliOptions {
 	live: boolean;
 	json: boolean;
+	explain: boolean;
 	model: string;
 }
 
@@ -2158,17 +2316,20 @@ interface VerifyFlaggedCliOptions {
 	restore: boolean;
 }
 
-type ParsedArgsResult<T> = { ok: true; options: T } | { ok: false; message: string };
+type ParsedArgsResult<T> =
+	| { ok: true; options: T }
+	| { ok: false; message: string };
 
 function printForecastUsage(): void {
 	console.log(
 		[
 			"Usage:",
-			"  codex auth forecast [--live] [--json] [--model <model>]",
+			"  codex auth forecast [--live] [--json] [--explain] [--model <model>]",
 			"",
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
+			"  --explain          Include structured recommendation reasoning",
 			"  --model, -m        Probe model for live mode (default: gpt-5-codex)",
 		].join("\n"),
 	);
@@ -2230,10 +2391,13 @@ function printVerifyFlaggedUsage(): void {
 	);
 }
 
-function parseForecastArgs(args: string[]): ParsedArgsResult<ForecastCliOptions> {
+function parseForecastArgs(
+	args: string[],
+): ParsedArgsResult<ForecastCliOptions> {
 	const options: ForecastCliOptions = {
 		live: false,
 		json: false,
+		explain: false,
 		model: "gpt-5-codex",
 	};
 
@@ -2247,6 +2411,10 @@ function parseForecastArgs(args: string[]): ParsedArgsResult<ForecastCliOptions>
 		}
 		if (arg === "--json" || arg === "-j") {
 			options.json = true;
+			continue;
+		}
+		if (arg === "--explain") {
+			options.explain = true;
 			continue;
 		}
 		if (arg === "--model" || arg === "-m") {
@@ -2362,7 +2530,9 @@ function parseFixArgs(args: string[]): ParsedArgsResult<FixCliOptions> {
 	return { ok: true, options };
 }
 
-function parseVerifyFlaggedArgs(args: string[]): ParsedArgsResult<VerifyFlaggedCliOptions> {
+function parseVerifyFlaggedArgs(
+	args: string[],
+): ParsedArgsResult<VerifyFlaggedCliOptions> {
 	const options: VerifyFlaggedCliOptions = {
 		dryRun: false,
 		json: false,
@@ -2511,7 +2681,10 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 
 function serializeForecastResults(
 	results: ForecastAccountResult[],
-	liveQuotaByIndex: Map<number, Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>>,
+	liveQuotaByIndex: Map<
+		number,
+		Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>
+	>,
 	refreshFailures: Map<number, TokenFailure>,
 ): Array<{
 	index: number;
@@ -2544,12 +2717,12 @@ function serializeForecastResults(
 			reasons: result.reasons,
 			liveQuota: liveQuota
 				? {
-					status: liveQuota.status,
-					planType: liveQuota.planType,
-					activeLimit: liveQuota.activeLimit,
-					model: liveQuota.model,
-					summary: formatQuotaSnapshotLine(liveQuota),
-				}
+						status: liveQuota.status,
+						planType: liveQuota.planType,
+						activeLimit: liveQuota.activeLimit,
+						model: liveQuota.model,
+						summary: formatQuotaSnapshotLine(liveQuota),
+					}
 				: undefined,
 			refreshFailure: refreshFailures.get(result.index),
 		};
@@ -2588,7 +2761,10 @@ async function runForecast(args: string[]): Promise<number> {
 	const now = Date.now();
 	const activeIndex = resolveActiveIndex(storage, "codex");
 	const refreshFailures = new Map<number, TokenFailure>();
-	const liveQuotaByIndex = new Map<number, Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>>();
+	const liveQuotaByIndex = new Map<
+		number,
+		Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>
+	>();
 	const probeErrors: string[] = [];
 
 	for (let i = 0; i < storage.accounts.length; i += 1) {
@@ -2597,22 +2773,29 @@ async function runForecast(args: string[]): Promise<number> {
 		if (account.enabled === false) continue;
 
 		let probeAccessToken = account.accessToken;
-		let probeAccountId = account.accountId ?? extractAccountId(account.accessToken);
+		let probeAccountId =
+			account.accountId ?? extractAccountId(account.accessToken);
 		if (!hasUsableAccessToken(account, now)) {
 			const refreshResult = await queuedRefresh(account.refreshToken);
 			if (refreshResult.type !== "success") {
 				refreshFailures.set(i, {
 					...refreshResult,
-					message: normalizeFailureDetail(refreshResult.message, refreshResult.reason),
+					message: normalizeFailureDetail(
+						refreshResult.message,
+						refreshResult.reason,
+					),
 				});
 				continue;
 			}
 			probeAccessToken = refreshResult.access;
-			probeAccountId = account.accountId ?? extractAccountId(refreshResult.access);
+			probeAccountId =
+				account.accountId ?? extractAccountId(refreshResult.access);
 		}
 
 		if (!probeAccessToken || !probeAccountId) {
-			probeErrors.push(`${formatAccountLabel(account, i)}: missing accountId for live probe`);
+			probeErrors.push(
+				`${formatAccountLabel(account, i)}: missing accountId for live probe`,
+			);
 			continue;
 		}
 
@@ -2656,6 +2839,7 @@ async function runForecast(args: string[]): Promise<number> {
 	const forecastResults = evaluateForecastAccounts(forecastInputs);
 	const summary = summarizeForecast(forecastResults);
 	const recommendation = recommendForecastAccount(forecastResults);
+	const explanation = buildForecastExplanation(forecastResults, recommendation);
 
 	if (options.json) {
 		if (workingQuotaCache && quotaCacheChanged) {
@@ -2669,8 +2853,13 @@ async function runForecast(args: string[]): Promise<number> {
 					liveProbe: options.live,
 					summary,
 					recommendation,
+					explanation: options.explain ? explanation : undefined,
 					probeErrors,
-					accounts: serializeForecastResults(forecastResults, liveQuotaByIndex, refreshFailures),
+					accounts: serializeForecastResults(
+						forecastResults,
+						liveQuotaByIndex,
+						refreshFailures,
+					),
 				},
 				null,
 				2,
@@ -2689,8 +2878,14 @@ async function runForecast(args: string[]): Promise<number> {
 		formatResultSummary([
 			{ text: `${summary.ready} ready now`, tone: "success" },
 			{ text: `${summary.delayed} waiting`, tone: "warning" },
-			{ text: `${summary.unavailable} unavailable`, tone: summary.unavailable > 0 ? "danger" : "muted" },
-			{ text: `${summary.highRisk} high risk`, tone: summary.highRisk > 0 ? "danger" : "muted" },
+			{
+				text: `${summary.unavailable} unavailable`,
+				tone: summary.unavailable > 0 ? "danger" : "muted",
+			},
+			{
+				text: `${summary.highRisk} high risk`,
+				tone: summary.highRisk > 0 ? "danger" : "muted",
+			},
 		]),
 	);
 	console.log("");
@@ -2700,25 +2895,48 @@ async function runForecast(args: string[]): Promise<number> {
 			continue;
 		}
 		const currentTag = result.isCurrent ? " [current]" : "";
-		const waitLabel = result.waitMs > 0 ? stylePromptText(`wait ${formatWaitTime(result.waitMs)}`, "muted") : "";
+		const waitLabel =
+			result.waitMs > 0
+				? stylePromptText(`wait ${formatWaitTime(result.waitMs)}`, "muted")
+				: "";
 		const indexLabel = stylePromptText(`${result.index + 1}.`, "accent");
-		const accountLabel = stylePromptText(`${result.label}${currentTag}`, "accent");
-		const riskLabel = stylePromptText(`${result.riskLevel} risk (${result.riskScore})`, riskTone(result.riskLevel));
-		const availabilityLabel = stylePromptText(result.availability, availabilityTone(result.availability));
+		const accountLabel = stylePromptText(
+			`${result.label}${currentTag}`,
+			"accent",
+		);
+		const riskLabel = stylePromptText(
+			`${result.riskLevel} risk (${result.riskScore})`,
+			riskTone(result.riskLevel),
+		);
+		const availabilityLabel = stylePromptText(
+			result.availability,
+			availabilityTone(result.availability),
+		);
 		const rowParts = [availabilityLabel, riskLabel];
 		if (waitLabel) rowParts.push(waitLabel);
-		console.log(`${indexLabel} ${accountLabel} ${stylePromptText("|", "muted")} ${joinStyledSegments(rowParts)}`);
+		console.log(
+			`${indexLabel} ${accountLabel} ${stylePromptText("|", "muted")} ${joinStyledSegments(rowParts)}`,
+		);
 		if (display.showForecastReasons && result.reasons.length > 0) {
-			console.log(`   ${stylePromptText(result.reasons.slice(0, 3).join("; "), "muted")}`);
+			console.log(
+				`   ${stylePromptText(result.reasons.slice(0, 3).join("; "), "muted")}`,
+			);
 		}
 		const liveQuota = liveQuotaByIndex.get(result.index);
 		if (display.showQuotaDetails && liveQuota) {
-			console.log(`   ${stylePromptText("quota:", "accent")} ${styleQuotaSummary(formatCompactQuotaSnapshot(liveQuota))}`);
+			console.log(
+				`   ${stylePromptText("quota:", "accent")} ${styleQuotaSummary(formatCompactQuotaSnapshot(liveQuota))}`,
+			);
 		}
 	}
 
 	if (!display.showPerAccountRows) {
-		console.log(stylePromptText("Per-account lines are hidden in dashboard settings.", "muted"));
+		console.log(
+			stylePromptText(
+				"Per-account lines are hidden in dashboard settings.",
+				"muted",
+			),
+		);
 	}
 
 	if (display.showRecommendations) {
@@ -2730,21 +2948,42 @@ async function runForecast(args: string[]): Promise<number> {
 				console.log(
 					`${stylePromptText("Best next account:", "accent")} ${stylePromptText(`${index + 1} (${account.label})`, "success")}`,
 				);
-				console.log(`${stylePromptText("Why:", "accent")} ${stylePromptText(recommendation.reason, "muted")}`);
+				console.log(
+					`${stylePromptText("Why:", "accent")} ${stylePromptText(recommendation.reason, "muted")}`,
+				);
 				if (index !== activeIndex) {
-					console.log(`${stylePromptText("Switch now with:", "accent")} codex auth switch ${index + 1}`);
+					console.log(
+						`${stylePromptText("Switch now with:", "accent")} codex auth switch ${index + 1}`,
+					);
 				}
 			}
 		} else {
-			console.log(`${stylePromptText("Note:", "accent")} ${stylePromptText(recommendation.reason, "muted")}`);
+			console.log(
+				`${stylePromptText("Note:", "accent")} ${stylePromptText(recommendation.reason, "muted")}`,
+			);
+		}
+		if (options.explain) {
+			console.log("");
+			console.log(stylePromptText("Explain:", "accent"));
+			for (const item of explanation.considered) {
+				const prefix = item.selected ? "*" : "-";
+				const reasons = item.reasons.slice(0, 3).join("; ");
+				console.log(
+					`${stylePromptText(prefix, item.selected ? "success" : "muted")} ${stylePromptText(`${item.index + 1}. ${item.label}`, item.selected ? "success" : "accent")} ${stylePromptText("|", "muted")} ${stylePromptText(`${item.availability}, ${item.riskLevel} risk (${item.riskScore})`, item.selected ? "success" : "muted")}${reasons ? ` ${stylePromptText("|", "muted")} ${stylePromptText(reasons, "muted")}` : ""}`,
+				);
+			}
 		}
 	}
 
 	if (display.showLiveProbeNotes && probeErrors.length > 0) {
 		console.log("");
-		console.log(stylePromptText(`Live check notes (${probeErrors.length}):`, "warning"));
+		console.log(
+			stylePromptText(`Live check notes (${probeErrors.length}):`, "warning"),
+		);
 		for (const error of probeErrors) {
-			console.log(`  ${stylePromptText("-", "warning")} ${stylePromptText(error, "muted")}`);
+			console.log(
+				`  ${stylePromptText("-", "warning")} ${stylePromptText(error, "muted")}`,
+			);
 		}
 	}
 	if (workingQuotaCache && quotaCacheChanged) {
@@ -2775,7 +3014,10 @@ async function runReport(args: string[]): Promise<number> {
 	const accountCount = storage?.accounts.length ?? 0;
 	const activeIndex = storage ? resolveActiveIndex(storage, "codex") : 0;
 	const refreshFailures = new Map<number, TokenFailure>();
-	const liveQuotaByIndex = new Map<number, Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>>();
+	const liveQuotaByIndex = new Map<
+		number,
+		Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>
+	>();
 	const probeErrors: string[] = [];
 
 	if (storage && options.live) {
@@ -2787,14 +3029,20 @@ async function runReport(args: string[]): Promise<number> {
 			if (refreshResult.type !== "success") {
 				refreshFailures.set(i, {
 					...refreshResult,
-					message: normalizeFailureDetail(refreshResult.message, refreshResult.reason),
+					message: normalizeFailureDetail(
+						refreshResult.message,
+						refreshResult.reason,
+					),
 				});
 				continue;
 			}
 
-			const accountId = account.accountId ?? extractAccountId(refreshResult.access);
+			const accountId =
+				account.accountId ?? extractAccountId(refreshResult.access);
 			if (!accountId) {
-				probeErrors.push(`${formatAccountLabel(account, i)}: missing accountId for live probe`);
+				probeErrors.push(
+					`${formatAccountLabel(account, i)}: missing accountId for live probe`,
+				);
 				continue;
 			}
 
@@ -2836,11 +3084,14 @@ async function runReport(args: string[]): Promise<number> {
 	const coolingCount = storage
 		? storage.accounts.filter(
 				(account) =>
-					typeof account.coolingDownUntil === "number" && account.coolingDownUntil > now,
+					typeof account.coolingDownUntil === "number" &&
+					account.coolingDownUntil > now,
 			).length
 		: 0;
 	const rateLimitedCount = storage
-		? storage.accounts.filter((account) => !!formatRateLimitEntry(account, now, "codex")).length
+		? storage.accounts.filter(
+				(account) => !!formatRateLimitEntry(account, now, "codex"),
+			).length
 		: 0;
 
 	const report = {
@@ -2861,14 +3112,22 @@ async function runReport(args: string[]): Promise<number> {
 			summary: forecastSummary,
 			recommendation,
 			probeErrors,
-			accounts: serializeForecastResults(forecastResults, liveQuotaByIndex, refreshFailures),
+			accounts: serializeForecastResults(
+				forecastResults,
+				liveQuotaByIndex,
+				refreshFailures,
+			),
 		},
 	};
 
 	if (options.outPath) {
 		const outputPath = resolve(process.cwd(), options.outPath);
 		await fs.mkdir(dirname(outputPath), { recursive: true });
-		await fs.writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf-8");
+		await fs.writeFile(
+			outputPath,
+			`${JSON.stringify(report, null, 2)}\n`,
+			"utf-8",
+		);
 	}
 
 	if (options.json) {
@@ -2916,9 +3175,7 @@ interface FixAccountReport {
 	message: string;
 }
 
-function summarizeFixReports(
-	reports: FixAccountReport[],
-): {
+function summarizeFixReports(reports: FixAccountReport[]): {
 	healthy: number;
 	disabled: number;
 	warnings: number;
@@ -2967,24 +3224,32 @@ function findExistingAccountIndexForFlagged(
 	const flaggedEmail = sanitizeEmail(flagged.email);
 	const candidateAccountId = nextAccountId ?? flagged.accountId;
 	const candidateEmail = sanitizeEmail(nextEmail) ?? flaggedEmail;
-	const nextMatchIndex = findMatchingAccountIndex(storage.accounts, {
-		accountId: candidateAccountId,
-		email: candidateEmail,
-		refreshToken: nextRefreshToken,
-	}, {
-		allowUniqueAccountIdFallbackWithoutEmail: true,
-	});
+	const nextMatchIndex = findMatchingAccountIndex(
+		storage.accounts,
+		{
+			accountId: candidateAccountId,
+			email: candidateEmail,
+			refreshToken: nextRefreshToken,
+		},
+		{
+			allowUniqueAccountIdFallbackWithoutEmail: true,
+		},
+	);
 	if (nextMatchIndex !== undefined) {
 		return nextMatchIndex;
 	}
 
-	const flaggedMatchIndex = findMatchingAccountIndex(storage.accounts, {
-		accountId: candidateAccountId,
-		email: candidateEmail,
-		refreshToken: flagged.refreshToken,
-	}, {
-		allowUniqueAccountIdFallbackWithoutEmail: true,
-	});
+	const flaggedMatchIndex = findMatchingAccountIndex(
+		storage.accounts,
+		{
+			accountId: candidateAccountId,
+			email: candidateEmail,
+			refreshToken: flagged.refreshToken,
+		},
+		{
+			allowUniqueAccountIdFallbackWithoutEmail: true,
+		},
+	);
 	return flaggedMatchIndex ?? -1;
 }
 
@@ -2994,10 +3259,17 @@ function upsertRecoveredFlaggedAccount(
 	refreshResult: TokenSuccess,
 	now: number,
 ): { restored: boolean; changed: boolean; message: string } {
-	const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken)) ?? flagged.email;
+	const nextEmail =
+		sanitizeEmail(
+			extractAccountEmail(refreshResult.access, refreshResult.idToken),
+		) ?? flagged.email;
 	const tokenAccountId = extractAccountId(refreshResult.access);
 	const { accountId: nextAccountId, accountIdSource: nextAccountIdSource } =
-		resolveStoredAccountIdentity(flagged.accountId, flagged.accountIdSource, tokenAccountId);
+		resolveStoredAccountIdentity(
+			flagged.accountId,
+			flagged.accountIdSource,
+			tokenAccountId,
+		);
 	const existingIndex = findExistingAccountIndexForFlagged(
 		storage,
 		flagged,
@@ -3009,7 +3281,11 @@ function upsertRecoveredFlaggedAccount(
 	if (existingIndex >= 0) {
 		const existing = storage.accounts[existingIndex];
 		if (!existing) {
-			return { restored: false, changed: false, message: "existing account entry is missing" };
+			return {
+				restored: false,
+				changed: false,
+				message: "existing account entry is missing",
+			};
 		}
 		let changed = false;
 		if (existing.refreshToken !== refreshResult.refresh) {
@@ -3030,10 +3306,8 @@ function upsertRecoveredFlaggedAccount(
 		}
 		if (
 			nextAccountId !== undefined &&
-			(
-				(nextAccountId !== existing.accountId)
-				|| (nextAccountIdSource !== existing.accountIdSource)
-			)
+			(nextAccountId !== existing.accountId ||
+				nextAccountIdSource !== existing.accountIdSource)
 		) {
 			existing.accountId = nextAccountId;
 			existing.accountIdSource = nextAccountIdSource;
@@ -3043,7 +3317,10 @@ function upsertRecoveredFlaggedAccount(
 			existing.enabled = true;
 			changed = true;
 		}
-		if (existing.accountLabel !== flagged.accountLabel && flagged.accountLabel) {
+		if (
+			existing.accountLabel !== flagged.accountLabel &&
+			flagged.accountLabel
+		) {
 			existing.accountLabel = flagged.accountLabel;
 			changed = true;
 		}
@@ -3147,9 +3424,7 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 		});
 	}
 
-	const applyRefreshChecks = (
-		storage: AccountStorageV3,
-	): void => {
+	const applyRefreshChecks = (storage: AccountStorageV3): void => {
 		for (const check of refreshChecks) {
 			const { index: i, flagged, label, result } = check;
 			if (result.type === "success") {
@@ -3167,7 +3442,10 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 						expiresAt: result.expires,
 						accountId: nextIdentity.accountId,
 						accountIdSource: nextIdentity.accountIdSource,
-						email: sanitizeEmail(extractAccountEmail(result.access, result.idToken)) ?? flagged.email,
+						email:
+							sanitizeEmail(
+								extractAccountEmail(result.access, result.idToken),
+							) ?? flagged.email,
 						lastUsed: now,
 						lastError: undefined,
 					};
@@ -3179,12 +3457,18 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 						index: i,
 						label,
 						outcome: "healthy-flagged",
-						message: "session is healthy (left in flagged list due to --no-restore)",
+						message:
+							"session is healthy (left in flagged list due to --no-restore)",
 					});
 					continue;
 				}
 
-				const upsertResult = upsertRecoveredFlaggedAccount(storage, flagged, result, now);
+				const upsertResult = upsertRecoveredFlaggedAccount(
+					storage,
+					flagged,
+					result,
+					now,
+				);
 				if (upsertResult.restored) {
 					storageChanged = storageChanged || upsertResult.changed;
 					flaggedChanged = true;
@@ -3210,7 +3494,9 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 					expiresAt: result.expires,
 					accountId: nextIdentity.accountId,
 					accountIdSource: nextIdentity.accountIdSource,
-					email: sanitizeEmail(extractAccountEmail(result.access, result.idToken)) ?? flagged.email,
+					email:
+						sanitizeEmail(extractAccountEmail(result.access, result.idToken)) ??
+						flagged.email,
 					lastUsed: now,
 					lastError: upsertResult.message,
 				};
@@ -3247,9 +3533,7 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 
 	if (options.restore) {
 		if (options.dryRun) {
-			applyRefreshChecks(
-				(await loadAccounts()) ?? createEmptyAccountStorage(),
-			);
+			applyRefreshChecks((await loadAccounts()) ?? createEmptyAccountStorage());
 		} else {
 			await withAccountAndFlaggedStorageTransaction(
 				async (loadedStorage, persist) => {
@@ -3273,12 +3557,22 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 	}
 
 	const remainingFlagged = nextFlaggedAccounts.length;
-	const restored = reports.filter((report) => report.outcome === "restored").length;
-	const healthyFlagged = reports.filter((report) => report.outcome === "healthy-flagged").length;
-	const stillFlagged = reports.filter((report) => report.outcome === "still-flagged").length;
+	const restored = reports.filter(
+		(report) => report.outcome === "restored",
+	).length;
+	const healthyFlagged = reports.filter(
+		(report) => report.outcome === "healthy-flagged",
+	).length;
+	const stillFlagged = reports.filter(
+		(report) => report.outcome === "still-flagged",
+	).length;
 	const changed = storageChanged || flaggedChanged;
 
-	if (!options.dryRun && flaggedChanged && (!options.restore || !storageChanged)) {
+	if (
+		!options.dryRun &&
+		flaggedChanged &&
+		(!options.restore || !storageChanged)
+	) {
 		await saveFlaggedAccounts({
 			version: 1,
 			accounts: nextFlaggedAccounts,
@@ -3314,32 +3608,47 @@ async function runVerifyFlagged(args: string[]): Promise<number> {
 		),
 	);
 	for (const report of reports) {
-		const tone = report.outcome === "restored"
-			? "success"
-			: report.outcome === "healthy-flagged"
-				? "warning"
-				: report.outcome === "restore-skipped"
+		const tone =
+			report.outcome === "restored"
+				? "success"
+				: report.outcome === "healthy-flagged"
 					? "warning"
-					: "danger";
-		const marker = report.outcome === "restored"
-			? "✓"
-			: report.outcome === "healthy-flagged"
-				? "!"
-				: report.outcome === "restore-skipped"
+					: report.outcome === "restore-skipped"
+						? "warning"
+						: "danger";
+		const marker =
+			report.outcome === "restored"
+				? "✓"
+				: report.outcome === "healthy-flagged"
 					? "!"
-					: "✗";
+					: report.outcome === "restore-skipped"
+						? "!"
+						: "✗";
 		console.log(
 			`${stylePromptText(marker, tone)} ${stylePromptText(`${report.index + 1}. ${report.label}`, "accent")} ${stylePromptText("|", "muted")} ${styleAccountDetailText(report.message, tone)}`,
 		);
 	}
 	console.log("");
-	console.log(formatResultSummary([
-		{ text: `${restored} restored`, tone: restored > 0 ? "success" : "muted" },
-		{ text: `${healthyFlagged} healthy (kept flagged)`, tone: healthyFlagged > 0 ? "warning" : "muted" },
-		{ text: `${stillFlagged} still flagged`, tone: stillFlagged > 0 ? "danger" : "muted" },
-	]));
+	console.log(
+		formatResultSummary([
+			{
+				text: `${restored} restored`,
+				tone: restored > 0 ? "success" : "muted",
+			},
+			{
+				text: `${healthyFlagged} healthy (kept flagged)`,
+				tone: healthyFlagged > 0 ? "warning" : "muted",
+			},
+			{
+				text: `${stillFlagged} still flagged`,
+				tone: stillFlagged > 0 ? "danger" : "muted",
+			},
+		]),
+	);
 	if (options.dryRun) {
-		console.log(stylePromptText("Preview only: no changes were saved.", "warning"));
+		console.log(
+			stylePromptText("Preview only: no changes were saved.", "warning"),
+		);
 	} else if (!changed) {
 		console.log(stylePromptText("No storage changes were needed.", "muted"));
 	}
@@ -3459,7 +3768,9 @@ async function runFix(args: string[]): Promise<number> {
 
 		const refreshResult = await queuedRefresh(account.refreshToken);
 		if (refreshResult.type === "success") {
-			const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken));
+			const nextEmail = sanitizeEmail(
+				extractAccountEmail(refreshResult.access, refreshResult.idToken),
+			);
 			const nextAccountId = extractAccountId(refreshResult.access);
 			const previousEmail = account.email;
 			let accountChanged = false;
@@ -3489,7 +3800,9 @@ async function runFix(args: string[]): Promise<number> {
 
 			if (accountChanged) changed = true;
 			if (accountIdentityChanged && options.live && workingQuotaCache) {
-				quotaEmailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
+				quotaEmailFallbackState = buildQuotaEmailFallbackState(
+					storage.accounts,
+				);
 				quotaCacheChanged =
 					pruneUnsafeQuotaEmailCacheEntry(
 						workingQuotaCache,
@@ -3550,7 +3863,10 @@ async function runFix(args: string[]): Promise<number> {
 			continue;
 		}
 
-		const detail = normalizeFailureDetail(refreshResult.message, refreshResult.reason);
+		const detail = normalizeFailureDetail(
+			refreshResult.message,
+			refreshResult.reason,
+		);
 		refreshFailures.set(i, {
 			...refreshResult,
 			message: detail,
@@ -3576,13 +3892,17 @@ async function runFix(args: string[]): Promise<number> {
 	}
 
 	if (hardDisabledIndexes.length > 0) {
-		const enabledCount = storage.accounts.filter((account) => account.enabled !== false).length;
+		const enabledCount = storage.accounts.filter(
+			(account) => account.enabled !== false,
+		).length;
 		if (enabledCount === 0) {
-			const fallbackIndex =
-				hardDisabledIndexes.includes(activeIndex) ? activeIndex : hardDisabledIndexes[0];
-			const fallback = typeof fallbackIndex === "number"
-				? storage.accounts[fallbackIndex]
-				: undefined;
+			const fallbackIndex = hardDisabledIndexes.includes(activeIndex)
+				? activeIndex
+				: hardDisabledIndexes[0];
+			const fallback =
+				typeof fallbackIndex === "number"
+					? storage.accounts[fallbackIndex]
+					: undefined;
 			if (fallback && fallback.enabled === false) {
 				fallback.enabled = true;
 				changed = true;
@@ -3631,7 +3951,7 @@ async function runFix(args: string[]): Promise<number> {
 					recommendation,
 					recommendedSwitchCommand:
 						recommendation.recommendedIndex !== null &&
-							recommendation.recommendedIndex !== activeIndex
+						recommendation.recommendedIndex !== activeIndex
 							? `codex auth switch ${recommendation.recommendedIndex + 1}`
 							: null,
 					reports,
@@ -3643,16 +3963,26 @@ async function runFix(args: string[]): Promise<number> {
 		return 0;
 	}
 
-	console.log(stylePromptText(`Auto-fix scan (${options.dryRun ? "preview" : "apply"})`, "accent"));
-	console.log(formatResultSummary([
-		{ text: `${reportSummary.healthy} working`, tone: "success" },
-		{ text: `${reportSummary.disabled} disabled`, tone: reportSummary.disabled > 0 ? "danger" : "muted" },
-		{
-			text: `${reportSummary.warnings} warning${reportSummary.warnings === 1 ? "" : "s"}`,
-			tone: reportSummary.warnings > 0 ? "warning" : "muted",
-		},
-		{ text: `${reportSummary.skipped} already disabled`, tone: "muted" },
-	]));
+	console.log(
+		stylePromptText(
+			`Auto-fix scan (${options.dryRun ? "preview" : "apply"})`,
+			"accent",
+		),
+	);
+	console.log(
+		formatResultSummary([
+			{ text: `${reportSummary.healthy} working`, tone: "success" },
+			{
+				text: `${reportSummary.disabled} disabled`,
+				tone: reportSummary.disabled > 0 ? "danger" : "muted",
+			},
+			{
+				text: `${reportSummary.warnings} warning${reportSummary.warnings === 1 ? "" : "s"}`,
+				tone: reportSummary.warnings > 0 ? "warning" : "muted",
+			},
+			{ text: `${reportSummary.skipped} already disabled`, tone: "muted" },
+		]),
+	);
 	if (display.showPerAccountRows) {
 		console.log("");
 		for (const report of reports) {
@@ -3664,33 +3994,47 @@ async function runFix(args: string[]): Promise<number> {
 						: report.outcome === "warning-soft-failure"
 							? "!"
 							: "-";
-			const tone = report.outcome === "healthy"
-				? "success"
-				: report.outcome === "disabled-hard-failure"
-					? "danger"
-					: report.outcome === "warning-soft-failure"
-						? "warning"
-						: "muted";
+			const tone =
+				report.outcome === "healthy"
+					? "success"
+					: report.outcome === "disabled-hard-failure"
+						? "danger"
+						: report.outcome === "warning-soft-failure"
+							? "warning"
+							: "muted";
 			console.log(
 				`${stylePromptText(prefix, tone)} ${stylePromptText(`${report.index + 1}. ${report.label}`, "accent")} ${stylePromptText("|", "muted")} ${styleAccountDetailText(report.message, tone === "success" ? "muted" : tone)}`,
 			);
 		}
 	} else {
 		console.log("");
-		console.log(stylePromptText("Per-account lines are hidden in dashboard settings.", "muted"));
+		console.log(
+			stylePromptText(
+				"Per-account lines are hidden in dashboard settings.",
+				"muted",
+			),
+		);
 	}
 
 	if (display.showRecommendations) {
 		console.log("");
 		if (recommendation.recommendedIndex !== null) {
 			const target = recommendation.recommendedIndex + 1;
-			console.log(`${stylePromptText("Best next account:", "accent")} ${stylePromptText(String(target), "success")}`);
-			console.log(`${stylePromptText("Why:", "accent")} ${stylePromptText(recommendation.reason, "muted")}`);
+			console.log(
+				`${stylePromptText("Best next account:", "accent")} ${stylePromptText(String(target), "success")}`,
+			);
+			console.log(
+				`${stylePromptText("Why:", "accent")} ${stylePromptText(recommendation.reason, "muted")}`,
+			);
 			if (recommendation.recommendedIndex !== activeIndex) {
-				console.log(`${stylePromptText("Switch now with:", "accent")} codex auth switch ${target}`);
+				console.log(
+					`${stylePromptText("Switch now with:", "accent")} codex auth switch ${target}`,
+				);
 			}
 		} else {
-			console.log(`${stylePromptText("Note:", "accent")} ${stylePromptText(recommendation.reason, "muted")}`);
+			console.log(
+				`${stylePromptText("Note:", "accent")} ${stylePromptText(recommendation.reason, "muted")}`,
+			);
 		}
 	}
 	if (workingQuotaCache && quotaCacheChanged) {
@@ -3698,7 +4042,9 @@ async function runFix(args: string[]): Promise<number> {
 	}
 
 	if (changed && options.dryRun) {
-		console.log(`\n${stylePromptText("Preview only: no changes were saved.", "warning")}`);
+		console.log(
+			`\n${stylePromptText("Preview only: no changes were saved.", "warning")}`,
+		);
 	} else if (changed) {
 		console.log(`\n${stylePromptText("Saved updates.", "success")}`);
 	} else {
@@ -3736,7 +4082,8 @@ function hasPlaceholderEmail(value: string | undefined): boolean {
 
 function normalizeDoctorIndexes(storage: AccountStorageV3): boolean {
 	const total = storage.accounts.length;
-	const nextActive = total === 0 ? 0 : Math.max(0, Math.min(storage.activeIndex, total - 1));
+	const nextActive =
+		total === 0 ? 0 : Math.max(0, Math.min(storage.activeIndex, total - 1));
 	let changed = false;
 	if (storage.activeIndex !== nextActive) {
 		storage.activeIndex = nextActive;
@@ -3746,8 +4093,10 @@ function normalizeDoctorIndexes(storage: AccountStorageV3): boolean {
 	for (const family of MODEL_FAMILIES) {
 		const raw = storage.activeIndexByFamily[family];
 		const fallback = storage.activeIndex;
-		const candidate = typeof raw === "number" && Number.isFinite(raw) ? raw : fallback;
-		const clamped = total === 0 ? 0 : Math.max(0, Math.min(candidate, total - 1));
+		const candidate =
+			typeof raw === "number" && Number.isFinite(raw) ? raw : fallback;
+		const clamped =
+			total === 0 ? 0 : Math.max(0, Math.min(candidate, total - 1));
 		if (storage.activeIndexByFamily[family] !== clamped) {
 			storage.activeIndexByFamily[family] = clamped;
 			changed = true;
@@ -3756,15 +4105,16 @@ function normalizeDoctorIndexes(storage: AccountStorageV3): boolean {
 	return changed;
 }
 
-function getDoctorRefreshTokenKey(
-	refreshToken: unknown,
-): string | undefined {
+function getDoctorRefreshTokenKey(refreshToken: unknown): string | undefined {
 	if (typeof refreshToken !== "string") return undefined;
 	const trimmed = refreshToken.trim();
 	return trimmed || undefined;
 }
 
-function applyDoctorFixes(storage: AccountStorageV3): { changed: boolean; actions: DoctorFixAction[] } {
+function applyDoctorFixes(storage: AccountStorageV3): {
+	changed: boolean;
+	actions: DoctorFixAction[];
+} {
 	let changed = false;
 	const actions: DoctorFixAction[] = [];
 
@@ -3822,7 +4172,9 @@ function applyDoctorFixes(storage: AccountStorageV3): { changed: boolean; action
 		}
 	}
 
-	const enabledCount = storage.accounts.filter((account) => account.enabled !== false).length;
+	const enabledCount = storage.accounts.filter(
+		(account) => account.enabled !== false,
+	).length;
 	if (storage.accounts.length > 0 && enabledCount === 0) {
 		const index = resolveActiveIndex(storage, "codex");
 		const candidate = storage.accounts[index] ?? storage.accounts[0];
@@ -3879,7 +4231,8 @@ async function runDoctor(args: string[]): Promise<number> {
 			addCheck({
 				key: "storage-readable",
 				severity: stat.size > 0 ? "ok" : "warn",
-				message: stat.size > 0 ? "Storage file is readable" : "Storage file is empty",
+				message:
+					stat.size > 0 ? "Storage file is readable" : "Storage file is empty",
 				details: `${stat.size} bytes`,
 			});
 		} catch (error) {
@@ -3912,20 +4265,27 @@ async function runDoctor(args: string[]): Promise<number> {
 			const parsed = JSON.parse(raw) as unknown;
 			if (parsed && typeof parsed === "object") {
 				const payload = parsed as Record<string, unknown>;
-				const tokens = payload.tokens && typeof payload.tokens === "object"
-					? (payload.tokens as Record<string, unknown>)
-					: null;
-				const accessToken = tokens && typeof tokens.access_token === "string"
-					? tokens.access_token
-					: undefined;
-				const idToken = tokens && typeof tokens.id_token === "string"
-					? tokens.id_token
-					: undefined;
-				const accountIdFromFile = tokens && typeof tokens.account_id === "string"
-					? tokens.account_id
-					: undefined;
-				const emailFromFile = typeof payload.email === "string" ? payload.email : undefined;
-				codexAuthEmail = sanitizeEmail(emailFromFile ?? extractAccountEmail(accessToken, idToken));
+				const tokens =
+					payload.tokens && typeof payload.tokens === "object"
+						? (payload.tokens as Record<string, unknown>)
+						: null;
+				const accessToken =
+					tokens && typeof tokens.access_token === "string"
+						? tokens.access_token
+						: undefined;
+				const idToken =
+					tokens && typeof tokens.id_token === "string"
+						? tokens.id_token
+						: undefined;
+				const accountIdFromFile =
+					tokens && typeof tokens.account_id === "string"
+						? tokens.account_id
+						: undefined;
+				const emailFromFile =
+					typeof payload.email === "string" ? payload.email : undefined;
+				codexAuthEmail = sanitizeEmail(
+					emailFromFile ?? extractAccountEmail(accessToken, idToken),
+				);
 				codexAuthAccountId = accountIdFromFile ?? extractAccountId(accessToken);
 			}
 			addCheck({
@@ -3960,7 +4320,9 @@ async function runDoctor(args: string[]): Promise<number> {
 	if (existsSync(codexConfigPath)) {
 		try {
 			const configRaw = await fs.readFile(codexConfigPath, "utf-8");
-			const match = configRaw.match(/^\s*cli_auth_credentials_store\s*=\s*"([^"]+)"\s*$/m);
+			const match = configRaw.match(
+				/^\s*cli_auth_credentials_store\s*=\s*"([^"]+)"\s*$/m,
+			);
 			if (match?.[1]) {
 				codexAuthStoreMode = match[1].trim();
 			}
@@ -4029,7 +4391,8 @@ async function runDoctor(args: string[]): Promise<number> {
 		});
 
 		const activeIndex = resolveActiveIndex(storage, "codex");
-		const activeExists = activeIndex >= 0 && activeIndex < storage.accounts.length;
+		const activeExists =
+			activeIndex >= 0 && activeIndex < storage.accounts.length;
 		addCheck({
 			key: "active-index",
 			severity: activeExists ? "ok" : "error",
@@ -4038,7 +4401,9 @@ async function runDoctor(args: string[]): Promise<number> {
 				: "Active index is out of range",
 		});
 
-		const disabledCount = storage.accounts.filter((a) => a.enabled === false).length;
+		const disabledCount = storage.accounts.filter(
+			(a) => a.enabled === false,
+		).length;
 		addCheck({
 			key: "enabled-accounts",
 			severity: disabledCount >= storage.accounts.length ? "error" : "ok",
@@ -4117,7 +4482,10 @@ async function runDoctor(args: string[]): Promise<number> {
 			})),
 		);
 		const recommendation = recommendForecastAccount(forecastResults);
-		if (recommendation.recommendedIndex !== null && recommendation.recommendedIndex !== activeIndex) {
+		if (
+			recommendation.recommendedIndex !== null &&
+			recommendation.recommendedIndex !== activeIndex
+		) {
 			addCheck({
 				key: "recommended-switch",
 				severity: "warn",
@@ -4136,8 +4504,10 @@ async function runDoctor(args: string[]): Promise<number> {
 			const activeAccount = storage.accounts[activeIndex];
 			const managerActiveEmail = sanitizeEmail(activeAccount?.email);
 			const managerActiveAccountId = activeAccount?.accountId;
-			const codexActiveEmail = sanitizeEmail(codexCliState?.activeEmail) ?? codexAuthEmail;
-			const codexActiveAccountId = codexCliState?.activeAccountId ?? codexAuthAccountId;
+			const codexActiveEmail =
+				sanitizeEmail(codexCliState?.activeEmail) ?? codexAuthEmail;
+			const codexActiveAccountId =
+				codexCliState?.activeAccountId ?? codexAuthAccountId;
 			const isEmailMismatch =
 				!!managerActiveEmail &&
 				!!codexActiveEmail &&
@@ -4171,10 +4541,15 @@ async function runDoctor(args: string[]): Promise<number> {
 							message: `Prepared active-account token refresh for account ${activeIndex + 1} (dry-run)`,
 						});
 					} else {
-						const refreshResult = await queuedRefresh(activeAccount.refreshToken);
+						const refreshResult = await queuedRefresh(
+							activeAccount.refreshToken,
+						);
 						if (refreshResult.type === "success") {
 							const refreshedEmail = sanitizeEmail(
-								extractAccountEmail(refreshResult.access, refreshResult.idToken),
+								extractAccountEmail(
+									refreshResult.access,
+									refreshResult.idToken,
+								),
 							);
 							const refreshedAccountId = extractAccountId(refreshResult.access);
 							activeAccount.accessToken = refreshResult.access;
@@ -4196,7 +4571,10 @@ async function runDoctor(args: string[]): Promise<number> {
 								key: "doctor-refresh",
 								severity: "warn",
 								message: "Unable to refresh active account before Codex sync",
-								details: normalizeFailureDetail(refreshResult.message, refreshResult.reason),
+								details: normalizeFailureDetail(
+									refreshResult.message,
+									refreshResult.reason,
+								),
 							});
 						}
 					}
@@ -4228,7 +4606,8 @@ async function runDoctor(args: string[]): Promise<number> {
 						addCheck({
 							key: "codex-active-sync",
 							severity: "warn",
-							message: "Failed to sync manager active account into Codex auth state",
+							message:
+								"Failed to sync manager active account into Codex auth state",
 						});
 					}
 				} else {
@@ -4273,10 +4652,13 @@ async function runDoctor(args: string[]): Promise<number> {
 
 	console.log("Doctor diagnostics");
 	console.log(`Storage: ${storagePath}`);
-	console.log(`Summary: ${summary.ok} ok, ${summary.warn} warnings, ${summary.error} errors`);
+	console.log(
+		`Summary: ${summary.ok} ok, ${summary.warn} warnings, ${summary.error} errors`,
+	);
 	console.log("");
 	for (const check of checks) {
-		const marker = check.severity === "ok" ? "✓" : check.severity === "warn" ? "!" : "✗";
+		const marker =
+			check.severity === "ok" ? "✓" : check.severity === "warn" ? "!" : "✗";
 		console.log(`${marker} ${check.key}: ${check.message}`);
 		if (check.details) {
 			console.log(`  ${check.details}`);
@@ -4285,7 +4667,9 @@ async function runDoctor(args: string[]): Promise<number> {
 	if (options.fix) {
 		console.log("");
 		if (fixActions.length > 0) {
-			console.log(`Auto-fix actions (${options.dryRun ? "dry-run" : "applied"}):`);
+			console.log(
+				`Auto-fix actions (${options.dryRun ? "dry-run" : "applied"}):`,
+			);
 			for (const action of fixActions) {
 				console.log(`  - ${action.message}`);
 			}
@@ -4355,7 +4739,9 @@ async function handleManageAction(
 
 		const tokenResult = await runOAuthFlow(true, signInMode);
 		if (tokenResult.type !== "success") {
-			console.error(`Refresh failed: ${tokenResult.message ?? tokenResult.reason ?? "unknown error"}`);
+			console.error(
+				`Refresh failed: ${tokenResult.message ?? tokenResult.reason ?? "unknown error"}`,
+			);
 			return;
 		}
 
@@ -4381,8 +4767,7 @@ async function runAuthLogin(args: string[]): Promise<number> {
 	setStoragePath(null);
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
 	let menuQuotaRefreshStatus: string | undefined;
-	loginFlow:
-	while (true) {
+	loginFlow: while (true) {
 		let existingStorage = await loadAccounts();
 		if (existingStorage && existingStorage.accounts.length > 0) {
 			while (true) {
@@ -4394,11 +4779,17 @@ async function runAuthLogin(args: string[]): Promise<number> {
 				const displaySettings = await loadDashboardDisplaySettings();
 				applyUiThemeFromDashboardSettings(displaySettings);
 				const quotaCache = await loadQuotaCache();
-				const shouldAutoFetchLimits = displaySettings.menuAutoFetchLimits ?? true;
+				const shouldAutoFetchLimits =
+					displaySettings.menuAutoFetchLimits ?? true;
 				const showFetchStatus = displaySettings.menuShowFetchStatus ?? true;
-				const quotaTtlMs = displaySettings.menuQuotaTtlMs ?? DEFAULT_MENU_QUOTA_REFRESH_TTL_MS;
+				const quotaTtlMs =
+					displaySettings.menuQuotaTtlMs ?? DEFAULT_MENU_QUOTA_REFRESH_TTL_MS;
 				if (shouldAutoFetchLimits && !pendingMenuQuotaRefresh) {
-					const staleCount = countMenuQuotaRefreshTargets(currentStorage, quotaCache, quotaTtlMs);
+					const staleCount = countMenuQuotaRefreshTargets(
+						currentStorage,
+						quotaCache,
+						quotaTtlMs,
+					);
 					if (staleCount > 0) {
 						if (showFetchStatus) {
 							menuQuotaRefreshStatus = `${UI_COPY.mainMenu.loadingLimits} [0/${staleCount}]`;
@@ -4426,7 +4817,9 @@ async function runAuthLogin(args: string[]): Promise<number> {
 					toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
 					{
 						flaggedCount: flaggedStorage.accounts.length,
-						statusMessage: showFetchStatus ? () => menuQuotaRefreshStatus : undefined,
+						statusMessage: showFetchStatus
+							? () => menuQuotaRefreshStatus
+							: undefined,
 					},
 				);
 
@@ -4435,27 +4828,47 @@ async function runAuthLogin(args: string[]): Promise<number> {
 					return 0;
 				}
 				if (menuResult.mode === "check") {
-					await runActionPanel("Quick Check", "Checking local session + live status", async () => {
-						await runHealthCheck({ forceRefresh: false, liveProbe: true });
-					}, displaySettings);
+					await runActionPanel(
+						"Quick Check",
+						"Checking local session + live status",
+						async () => {
+							await runHealthCheck({ forceRefresh: false, liveProbe: true });
+						},
+						displaySettings,
+					);
 					continue;
 				}
 				if (menuResult.mode === "deep-check") {
-					await runActionPanel("Deep Check", "Refreshing and testing all accounts", async () => {
-						await runHealthCheck({ forceRefresh: true, liveProbe: true });
-					}, displaySettings);
+					await runActionPanel(
+						"Deep Check",
+						"Refreshing and testing all accounts",
+						async () => {
+							await runHealthCheck({ forceRefresh: true, liveProbe: true });
+						},
+						displaySettings,
+					);
 					continue;
 				}
 				if (menuResult.mode === "forecast") {
-					await runActionPanel("Best Account", "Comparing accounts", async () => {
-						await runForecast(["--live"]);
-					}, displaySettings);
+					await runActionPanel(
+						"Best Account",
+						"Comparing accounts",
+						async () => {
+							await runForecast(["--live"]);
+						},
+						displaySettings,
+					);
 					continue;
 				}
 				if (menuResult.mode === "fix") {
-					await runActionPanel("Auto-Fix", "Checking and fixing common issues", async () => {
-						await runFix(["--live"]);
-					}, displaySettings);
+					await runActionPanel(
+						"Auto-Fix",
+						"Checking and fixing common issues",
+						async () => {
+							await runFix(["--live"]);
+						},
+						displaySettings,
+					);
 					continue;
 				}
 				if (menuResult.mode === "settings") {
@@ -4463,27 +4876,45 @@ async function runAuthLogin(args: string[]): Promise<number> {
 					continue;
 				}
 				if (menuResult.mode === "verify-flagged") {
-					await runActionPanel("Problem Account Check", "Checking problem accounts", async () => {
-						await runVerifyFlagged([]);
-					}, displaySettings);
+					await runActionPanel(
+						"Problem Account Check",
+						"Checking problem accounts",
+						async () => {
+							await runVerifyFlagged([]);
+						},
+						displaySettings,
+					);
 					continue;
 				}
 				if (menuResult.mode === "fresh" && menuResult.deleteAll) {
-					await runActionPanel("Reset Accounts", "Deleting all saved accounts", async () => {
-						await clearAccountsAndReset();
-						console.log("Cleared saved accounts from active storage. Recovery snapshots remain available.");
-					}, displaySettings);
+					await runActionPanel(
+						"Reset Accounts",
+						"Deleting all saved accounts",
+						async () => {
+							await clearAccountsAndReset();
+							console.log(
+								"Cleared saved accounts from active storage. Recovery snapshots remain available.",
+							);
+						},
+						displaySettings,
+					);
 					continue;
 				}
 				if (menuResult.mode === "manage") {
-					const requiresInteractiveOAuth = typeof menuResult.refreshAccountIndex === "number";
+					const requiresInteractiveOAuth =
+						typeof menuResult.refreshAccountIndex === "number";
 					if (requiresInteractiveOAuth) {
 						await handleManageAction(currentStorage, menuResult);
 						continue;
 					}
-					await runActionPanel("Applying Change", "Updating selected account", async () => {
-						await handleManageAction(currentStorage, menuResult);
-					}, displaySettings);
+					await runActionPanel(
+						"Applying Change",
+						"Updating selected account",
+						async () => {
+							await handleManageAction(currentStorage, menuResult);
+						},
+						displaySettings,
+					);
 					continue;
 				}
 				if (menuResult.mode === "add") {
@@ -4496,7 +4927,9 @@ async function runAuthLogin(args: string[]): Promise<number> {
 		let existingCount = refreshedStorage?.accounts.length ?? 0;
 		let forceNewLogin = existingCount > 0;
 		let onboardingBackupDiscoveryWarning: string | null = null;
-		const loadNamedBackupsForOnboarding = async (): Promise<NamedBackupSummary[]> => {
+		const loadNamedBackupsForOnboarding = async (): Promise<
+			NamedBackupSummary[]
+		> => {
 			if (existingCount > 0) {
 				onboardingBackupDiscoveryWarning = null;
 				return [];
@@ -4513,9 +4946,7 @@ async function runAuthLogin(args: string[]): Promise<number> {
 				if (code && code !== "ENOENT") {
 					onboardingBackupDiscoveryWarning =
 						"Named backup discovery failed. Continuing with browser or manual sign-in only.";
-					console.warn(
-						onboardingBackupDiscoveryWarning,
-					);
+					console.warn(onboardingBackupDiscoveryWarning);
 				} else {
 					onboardingBackupDiscoveryWarning = null;
 				}
@@ -4525,16 +4956,19 @@ async function runAuthLogin(args: string[]): Promise<number> {
 		let namedBackups = await loadNamedBackupsForOnboarding();
 		while (true) {
 			const latestNamedBackup = namedBackups[0] ?? null;
-			const preferManualMode = loginOptions.manual || isBrowserLaunchSuppressed();
+			const preferManualMode =
+				loginOptions.manual || isBrowserLaunchSuppressed();
 			const signInMode = preferManualMode
 				? "manual"
 				: await promptOAuthSignInMode(
-					latestNamedBackup,
-					onboardingBackupDiscoveryWarning,
-				);
+						latestNamedBackup,
+						onboardingBackupDiscoveryWarning,
+					);
 			if (signInMode === "cancel") {
 				if (existingCount > 0) {
-					console.log(stylePromptText(UI_COPY.oauth.cancelledBackToMenu, "muted"));
+					console.log(
+						stylePromptText(UI_COPY.oauth.cancelledBackToMenu, "muted"),
+					);
 					continue loginFlow;
 				}
 				console.log("Cancelled.");
@@ -4546,15 +4980,18 @@ async function runAuthLogin(args: string[]): Promise<number> {
 					namedBackups = await loadNamedBackupsForOnboarding();
 					continue;
 				}
-				const restoreMode = await promptBackupRestoreMode(latestAvailableBackup);
+				const restoreMode = await promptBackupRestoreMode(
+					latestAvailableBackup,
+				);
 				if (restoreMode === "back") {
 					namedBackups = await loadNamedBackupsForOnboarding();
 					continue;
 				}
 
-				const selectedBackup = restoreMode === "manual"
-					? await promptManualBackupSelection(namedBackups)
-					: latestAvailableBackup;
+				const selectedBackup =
+					restoreMode === "manual"
+						? await promptManualBackupSelection(namedBackups)
+						: latestAvailableBackup;
 				if (!selectedBackup) {
 					namedBackups = await loadNamedBackupsForOnboarding();
 					continue;
@@ -4603,13 +5040,16 @@ async function runAuthLogin(args: string[]): Promise<number> {
 						displaySettings,
 					);
 				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
+					const message =
+						error instanceof Error ? error.message : String(error);
 					if (error instanceof StorageError) {
 						console.error(formatStorageErrorHint(error, selectedBackup.path));
 					} else {
 						console.error(`Backup restore failed: ${message}`);
 					}
-					const storageAfterRestoreAttempt = await loadAccounts().catch(() => null);
+					const storageAfterRestoreAttempt = await loadAccounts().catch(
+						() => null,
+					);
 					if ((storageAfterRestoreAttempt?.accounts.length ?? 0) > 0) {
 						continue loginFlow;
 					}
@@ -4627,13 +5067,17 @@ async function runAuthLogin(args: string[]): Promise<number> {
 			if (tokenResult.type !== "success") {
 				if (isUserCancelledOAuth(tokenResult)) {
 					if (existingCount > 0) {
-						console.log(stylePromptText(UI_COPY.oauth.cancelledBackToMenu, "muted"));
+						console.log(
+							stylePromptText(UI_COPY.oauth.cancelledBackToMenu, "muted"),
+						);
 						continue loginFlow;
 					}
 					console.log("Cancelled.");
 					return 0;
 				}
-				console.error(`Login failed: ${tokenResult.message ?? tokenResult.reason ?? "unknown error"}`);
+				console.error(
+					`Login failed: ${tokenResult.message ?? tokenResult.reason ?? "unknown error"}`,
+				);
 				return 1;
 			}
 
@@ -4648,7 +5092,9 @@ async function runAuthLogin(args: string[]): Promise<number> {
 			onboardingBackupDiscoveryWarning = null;
 			console.log(`Added account. Total: ${count}`);
 			if (count >= ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-				console.log(`Reached maximum account limit (${ACCOUNT_LIMITS.MAX_ACCOUNTS}).`);
+				console.log(
+					`Reached maximum account limit (${ACCOUNT_LIMITS.MAX_ACCOUNTS}).`,
+				);
 				break;
 			}
 
@@ -4656,7 +5102,6 @@ async function runAuthLogin(args: string[]): Promise<number> {
 			if (!addAnother) break;
 			forceNewLogin = true;
 		}
-		continue loginFlow;
 	}
 }
 
@@ -4680,7 +5125,9 @@ async function runSwitch(args: string[]): Promise<number> {
 		return 1;
 	}
 	if (targetIndex < 0 || targetIndex >= storage.accounts.length) {
-		console.error(`Index out of range. Valid range: 1-${storage.accounts.length}`);
+		console.error(
+			`Index out of range. Valid range: 1-${storage.accounts.length}`,
+		);
 		return 1;
 	}
 
@@ -4765,7 +5212,9 @@ async function persistAndSyncSelectedAccount({
 		const refreshResult = await queuedRefresh(account.refreshToken);
 		if (refreshResult.type === "success") {
 			const tokenAccountId = extractAccountId(refreshResult.access);
-			const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken));
+			const nextEmail = sanitizeEmail(
+				extractAccountEmail(refreshResult.access, refreshResult.idToken),
+			);
 			if (account.refreshToken !== refreshResult.refresh) {
 				account.refreshToken = refreshResult.refresh;
 			}
@@ -4828,7 +5277,9 @@ async function runBest(args: string[]): Promise<number> {
 	const storage = await loadAccounts();
 	if (!storage || storage.accounts.length === 0) {
 		if (options.json) {
-			console.log(JSON.stringify({ error: "No accounts configured." }, null, 2));
+			console.log(
+				JSON.stringify({ error: "No accounts configured." }, null, 2),
+			);
 		} else {
 			console.log("No accounts configured.");
 		}
@@ -4837,7 +5288,10 @@ async function runBest(args: string[]): Promise<number> {
 
 	const now = Date.now();
 	const refreshFailures = new Map<number, TokenFailure>();
-	const liveQuotaByIndex = new Map<number, Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>>();
+	const liveQuotaByIndex = new Map<
+		number,
+		Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>
+	>();
 	const probeIdTokenByIndex = new Map<number, string>();
 	const probeRefreshedIndices = new Set<number>();
 	const probeErrors: string[] = [];
@@ -4863,13 +5317,17 @@ async function runBest(args: string[]): Promise<number> {
 		if (account.enabled === false) continue;
 
 		let probeAccessToken = account.accessToken;
-		let probeAccountId = account.accountId ?? extractAccountId(account.accessToken);
+		let probeAccountId =
+			account.accountId ?? extractAccountId(account.accessToken);
 		if (!hasUsableAccessToken(account, now)) {
 			const refreshResult = await queuedRefresh(account.refreshToken);
 			if (refreshResult.type !== "success") {
 				refreshFailures.set(i, {
 					...refreshResult,
-					message: normalizeFailureDetail(refreshResult.message, refreshResult.reason),
+					message: normalizeFailureDetail(
+						refreshResult.message,
+						refreshResult.reason,
+					),
 				});
 				continue;
 			}
@@ -4910,7 +5368,9 @@ async function runBest(args: string[]): Promise<number> {
 		}
 
 		if (!probeAccessToken || !probeAccountId) {
-			probeErrors.push(`${formatAccountLabel(account, i)}: missing accountId for live probe`);
+			probeErrors.push(
+				`${formatAccountLabel(account, i)}: missing accountId for live probe`,
+			);
 			continue;
 		}
 
@@ -4945,10 +5405,16 @@ async function runBest(args: string[]): Promise<number> {
 	if (recommendation.recommendedIndex === null) {
 		await persistProbeChangesIfNeeded();
 		if (options.json) {
-			console.log(JSON.stringify({
-				error: recommendation.reason,
-				...(probeErrors.length > 0 ? { probeErrors } : {}),
-			}, null, 2));
+			console.log(
+				JSON.stringify(
+					{
+						error: recommendation.reason,
+						...(probeErrors.length > 0 ? { probeErrors } : {}),
+					},
+					null,
+					2,
+				),
+			);
 		} else {
 			console.log(`No best account available: ${recommendation.reason}`);
 			printProbeNotes();
@@ -4961,7 +5427,9 @@ async function runBest(args: string[]): Promise<number> {
 	if (!bestAccount) {
 		await persistProbeChangesIfNeeded();
 		if (options.json) {
-			console.log(JSON.stringify({ error: "Best account not found." }, null, 2));
+			console.log(
+				JSON.stringify({ error: "Best account not found." }, null, 2),
+			);
 		} else {
 			console.log("Best account not found.");
 		}
@@ -4972,7 +5440,8 @@ async function runBest(args: string[]): Promise<number> {
 	const currentIndex = resolveActiveIndex(storage, "codex");
 	if (currentIndex === bestIndex) {
 		const shouldSyncCurrentBest =
-			probeRefreshedIndices.has(bestIndex) || probeIdTokenByIndex.has(bestIndex);
+			probeRefreshedIndices.has(bestIndex) ||
+			probeIdTokenByIndex.has(bestIndex);
 		let alreadyBestSynced: boolean | undefined;
 		if (changed) {
 			bestAccount.lastUsed = now;
@@ -4990,19 +5459,31 @@ async function runBest(args: string[]): Promise<number> {
 					: {}),
 			});
 			if (!alreadyBestSynced && !options.json) {
-				console.warn("Codex auth sync did not complete. Multi-auth routing will still use this account.");
+				console.warn(
+					"Codex auth sync did not complete. Multi-auth routing will still use this account.",
+				);
 			}
 		}
 		if (options.json) {
-			console.log(JSON.stringify({
-				message: `Already on best account: ${formatAccountLabel(bestAccount, bestIndex)}`,
-				accountIndex: bestIndex + 1,
-				reason: recommendation.reason,
-				...(alreadyBestSynced !== undefined ? { synced: alreadyBestSynced } : {}),
-				...(probeErrors.length > 0 ? { probeErrors } : {}),
-			}, null, 2));
+			console.log(
+				JSON.stringify(
+					{
+						message: `Already on best account: ${formatAccountLabel(bestAccount, bestIndex)}`,
+						accountIndex: bestIndex + 1,
+						reason: recommendation.reason,
+						...(alreadyBestSynced !== undefined
+							? { synced: alreadyBestSynced }
+							: {}),
+						...(probeErrors.length > 0 ? { probeErrors } : {}),
+					},
+					null,
+					2,
+				),
+			);
 		} else {
-			console.log(`Already on best account ${bestIndex + 1}: ${formatAccountLabel(bestAccount, bestIndex)}`);
+			console.log(
+				`Already on best account ${bestIndex + 1}: ${formatAccountLabel(bestAccount, bestIndex)}`,
+			);
 			console.log(`Reason: ${recommendation.reason}`);
 			printProbeNotes();
 		}
@@ -5020,20 +5501,30 @@ async function runBest(args: string[]): Promise<number> {
 	});
 
 	if (options.json) {
-		console.log(JSON.stringify({
-			message: `Switched to best account: ${formatAccountLabel(bestAccount, targetIndex)}`,
-			accountIndex: parsed,
-			reason: recommendation.reason,
-			synced,
-			wasDisabled,
-			...(probeErrors.length > 0 ? { probeErrors } : {}),
-		}, null, 2));
+		console.log(
+			JSON.stringify(
+				{
+					message: `Switched to best account: ${formatAccountLabel(bestAccount, targetIndex)}`,
+					accountIndex: parsed,
+					reason: recommendation.reason,
+					synced,
+					wasDisabled,
+					...(probeErrors.length > 0 ? { probeErrors } : {}),
+				},
+				null,
+				2,
+			),
+		);
 	} else {
-		console.log(`Switched to best account ${parsed}: ${formatAccountLabel(bestAccount, targetIndex)}${wasDisabled ? " (re-enabled)" : ""}`);
+		console.log(
+			`Switched to best account ${parsed}: ${formatAccountLabel(bestAccount, targetIndex)}${wasDisabled ? " (re-enabled)" : ""}`,
+		);
 		console.log(`Reason: ${recommendation.reason}`);
 		printProbeNotes();
 		if (!synced) {
-			console.warn("Codex auth sync did not complete. Multi-auth routing will still use this account.");
+			console.warn(
+				"Codex auth sync did not complete. Multi-auth routing will still use this account.",
+			);
 		}
 	}
 	return 0;
@@ -5067,7 +5558,9 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 		const refreshResult = await queuedRefresh(account.refreshToken);
 		if (refreshResult.type === "success") {
 			const tokenAccountId = extractAccountId(refreshResult.access);
-			const nextEmail = sanitizeEmail(extractAccountEmail(refreshResult.access, refreshResult.idToken));
+			const nextEmail = sanitizeEmail(
+				extractAccountEmail(refreshResult.access, refreshResult.idToken),
+			);
 			if (account.refreshToken !== refreshResult.refresh) {
 				account.refreshToken = refreshResult.refresh;
 				changed = true;

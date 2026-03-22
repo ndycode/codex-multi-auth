@@ -33,6 +33,24 @@ export interface ForecastRecommendation {
 	reason: string;
 }
 
+export interface ForecastExplanationAccount {
+	index: number;
+	label: string;
+	isCurrent: boolean;
+	availability: ForecastAvailability;
+	riskScore: number;
+	riskLevel: ForecastRiskLevel;
+	waitMs: number;
+	reasons: string[];
+	selected: boolean;
+}
+
+export interface ForecastExplanation {
+	recommendedIndex: number | null;
+	recommendationReason: string;
+	considered: ForecastExplanationAccount[];
+}
+
 export interface ForecastSummary {
 	total: number;
 	ready: number;
@@ -75,7 +93,8 @@ function redactSensitiveReason(value: string): string {
 function summarizeRefreshFailure(failure: TokenFailure): string {
 	const reasonCode = failure.reason?.trim();
 	if (reasonCode && reasonCode.length > 0) {
-		const statusCode = typeof failure.statusCode === "number" ? ` (${failure.statusCode})` : "";
+		const statusCode =
+			typeof failure.statusCode === "number" ? ` (${failure.statusCode})` : "";
 		return `${reasonCode}${statusCode}`;
 	}
 	const fallback = failure.message?.trim() || "refresh failed";
@@ -111,7 +130,10 @@ function getRateLimitResetTimeForFamily(
 
 function getLiveQuotaWaitMs(snapshot: CodexQuotaSnapshot, now: number): number {
 	const waits: number[] = [];
-	for (const resetAt of [snapshot.primary.resetAtMs, snapshot.secondary.resetAtMs]) {
+	for (const resetAt of [
+		snapshot.primary.resetAtMs,
+		snapshot.secondary.resetAtMs,
+	]) {
 		if (typeof resetAt !== "number") continue;
 		if (!Number.isFinite(resetAt)) continue;
 		const remaining = resetAt - now;
@@ -120,8 +142,12 @@ function getLiveQuotaWaitMs(snapshot: CodexQuotaSnapshot, now: number): number {
 	return waits.length > 0 ? Math.max(...waits) : 0;
 }
 
-function describeQuotaUsage(label: string, usedPercent: number | undefined): string | null {
-	if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) return null;
+function describeQuotaUsage(
+	label: string,
+	usedPercent: number | undefined,
+): string | null {
+	if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent))
+		return null;
 	const bounded = Math.max(0, Math.min(100, Math.round(usedPercent)));
 	return `${label} quota ${bounded}% used`;
 }
@@ -138,12 +164,18 @@ export function isHardRefreshFailure(failure: TokenFailure): boolean {
 	);
 }
 
-function appendWaitReason(reasons: string[], prefix: string, waitMs: number): void {
+function appendWaitReason(
+	reasons: string[],
+	prefix: string,
+	waitMs: number,
+): void {
 	if (waitMs <= 0) return;
 	reasons.push(`${prefix} ${formatWaitTime(waitMs)}`);
 }
 
-export function evaluateForecastAccount(input: ForecastAccountInput): ForecastAccountResult {
+export function evaluateForecastAccount(
+	input: ForecastAccountInput,
+): ForecastAccountResult {
 	const { account, index, isCurrent, now } = input;
 	const reasons: string[] = [];
 	let availability: ForecastAvailability = "ready";
@@ -172,7 +204,10 @@ export function evaluateForecastAccount(input: ForecastAccountInput): ForecastAc
 		}
 	}
 
-	if (typeof account.coolingDownUntil === "number" && account.coolingDownUntil > now) {
+	if (
+		typeof account.coolingDownUntil === "number" &&
+		account.coolingDownUntil > now
+	) {
 		const remaining = account.coolingDownUntil - now;
 		waitMs = Math.max(waitMs, remaining);
 		if (availability === "ready") availability = "delayed";
@@ -180,7 +215,11 @@ export function evaluateForecastAccount(input: ForecastAccountInput): ForecastAc
 		appendWaitReason(reasons, "cooldown remaining", remaining);
 	}
 
-	const rateLimitResetAt = getRateLimitResetTimeForFamily(account, now, "codex");
+	const rateLimitResetAt = getRateLimitResetTimeForFamily(
+		account,
+		now,
+		"codex",
+	);
 	if (typeof rateLimitResetAt === "number") {
 		const remaining = Math.max(0, rateLimitResetAt - now);
 		waitMs = Math.max(waitMs, remaining);
@@ -193,7 +232,8 @@ export function evaluateForecastAccount(input: ForecastAccountInput): ForecastAc
 	if (quota) {
 		const primaryUsed = quota.primary.usedPercent ?? 0;
 		const secondaryUsed = quota.secondary.usedPercent ?? 0;
-		const quotaPressure = quota.status === 429 || primaryUsed >= 90 || secondaryUsed >= 90;
+		const quotaPressure =
+			quota.status === 429 || primaryUsed >= 90 || secondaryUsed >= 90;
 
 		if (quota.status === 429) {
 			availability = availability === "unavailable" ? "unavailable" : "delayed";
@@ -206,9 +246,15 @@ export function evaluateForecastAccount(input: ForecastAccountInput): ForecastAc
 			availability = "delayed";
 		}
 
-		const primaryUsage = describeQuotaUsage("primary", quota.primary.usedPercent);
+		const primaryUsage = describeQuotaUsage(
+			"primary",
+			quota.primary.usedPercent,
+		);
 		if (primaryUsage) reasons.push(primaryUsage);
-		const secondaryUsage = describeQuotaUsage("secondary", quota.secondary.usedPercent);
+		const secondaryUsage = describeQuotaUsage(
+			"secondary",
+			quota.secondary.usedPercent,
+		);
 		if (secondaryUsage) reasons.push(secondaryUsage);
 
 		if (primaryUsed >= 98 || secondaryUsed >= 98) {
@@ -222,9 +268,15 @@ export function evaluateForecastAccount(input: ForecastAccountInput): ForecastAc
 		}
 	}
 
-	const hasLastUsed = typeof account.lastUsed === "number" && Number.isFinite(account.lastUsed) && account.lastUsed > 0;
+	const hasLastUsed =
+		typeof account.lastUsed === "number" &&
+		Number.isFinite(account.lastUsed) &&
+		account.lastUsed > 0;
 	const lastUsedAge = hasLastUsed ? now - account.lastUsed : null;
-	if (lastUsedAge !== null && (!Number.isFinite(lastUsedAge) || lastUsedAge < 0)) {
+	if (
+		lastUsedAge !== null &&
+		(!Number.isFinite(lastUsedAge) || lastUsedAge < 0)
+	) {
 		riskScore += 5;
 	} else if (lastUsedAge !== null && lastUsedAge > 7 * 24 * 60 * 60 * 1000) {
 		riskScore += 10;
@@ -245,11 +297,16 @@ export function evaluateForecastAccount(input: ForecastAccountInput): ForecastAc
 	};
 }
 
-export function evaluateForecastAccounts(inputs: ForecastAccountInput[]): ForecastAccountResult[] {
+export function evaluateForecastAccounts(
+	inputs: ForecastAccountInput[],
+): ForecastAccountResult[] {
 	return inputs.map((input) => evaluateForecastAccount(input));
 }
 
-function compareForecastResults(a: ForecastAccountResult, b: ForecastAccountResult): number {
+function compareForecastResults(
+	a: ForecastAccountResult,
+	b: ForecastAccountResult,
+): number {
 	if (a.availability !== b.availability) {
 		const rank: Record<ForecastAvailability, number> = {
 			ready: 0,
@@ -259,7 +316,11 @@ function compareForecastResults(a: ForecastAccountResult, b: ForecastAccountResu
 		return rank[a.availability] - rank[b.availability];
 	}
 
-	if (a.availability === "delayed" && b.availability === "delayed" && a.waitMs !== b.waitMs) {
+	if (
+		a.availability === "delayed" &&
+		b.availability === "delayed" &&
+		a.waitMs !== b.waitMs
+	) {
 		return a.waitMs - b.waitMs;
 	}
 
@@ -274,12 +335,17 @@ function compareForecastResults(a: ForecastAccountResult, b: ForecastAccountResu
 	return a.index - b.index;
 }
 
-export function recommendForecastAccount(results: ForecastAccountResult[]): ForecastRecommendation {
-	const candidates = results.filter((result) => !result.disabled && !result.hardFailure);
+export function recommendForecastAccount(
+	results: ForecastAccountResult[],
+): ForecastRecommendation {
+	const candidates = results.filter(
+		(result) => !result.disabled && !result.hardFailure,
+	);
 	if (candidates.length === 0) {
 		return {
 			recommendedIndex: null,
-			reason: "No healthy accounts are available. Run `codex auth login` to add a fresh account.",
+			reason:
+				"No healthy accounts are available. Run `codex auth login` to add a fresh account.",
 		};
 	}
 
@@ -305,13 +371,38 @@ export function recommendForecastAccount(results: ForecastAccountResult[]): Fore
 	};
 }
 
-export function summarizeForecast(results: ForecastAccountResult[]): ForecastSummary {
+export function summarizeForecast(
+	results: ForecastAccountResult[],
+): ForecastSummary {
 	return {
 		total: results.length,
 		ready: results.filter((result) => result.availability === "ready").length,
-		delayed: results.filter((result) => result.availability === "delayed").length,
-		unavailable: results.filter((result) => result.availability === "unavailable").length,
+		delayed: results.filter((result) => result.availability === "delayed")
+			.length,
+		unavailable: results.filter(
+			(result) => result.availability === "unavailable",
+		).length,
 		highRisk: results.filter((result) => result.riskLevel === "high").length,
 	};
 }
 
+export function buildForecastExplanation(
+	results: ForecastAccountResult[],
+	recommendation: ForecastRecommendation,
+): ForecastExplanation {
+	return {
+		recommendedIndex: recommendation.recommendedIndex,
+		recommendationReason: recommendation.reason,
+		considered: results.map((result) => ({
+			index: result.index,
+			label: result.label,
+			isCurrent: result.isCurrent,
+			availability: result.availability,
+			riskScore: result.riskScore,
+			riskLevel: result.riskLevel,
+			waitMs: result.waitMs,
+			reasons: result.reasons,
+			selected: recommendation.recommendedIndex === result.index,
+		})),
+	};
+}
