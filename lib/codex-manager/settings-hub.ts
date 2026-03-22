@@ -64,6 +64,7 @@ import {
 	dashboardSettingsDataEqual,
 } from "./dashboard-settings-data.js";
 import { configureDashboardSettingsEntry } from "./dashboard-settings-entry.js";
+import { promptExperimentalSettingsEntry } from "./experimental-settings-entry.js";
 import { promptExperimentalSettingsMenu } from "./experimental-settings-prompt.js";
 import {
 	getExperimentalSelectOptions,
@@ -663,8 +664,9 @@ async function loadExperimentalSyncTarget(): Promise<
 async function promptExperimentalSettings(
 	initialConfig: PluginConfig,
 ): Promise<PluginConfig | null> {
-	return promptExperimentalSettingsMenu({
+	return promptExperimentalSettingsEntry({
 		initialConfig,
+		promptExperimentalSettingsMenu: promptExperimentalSettingsMenu as never,
 		isInteractive: () => input.isTTY && output.isTTY,
 		ui: getUiRuntimeOptions(),
 		cloneBackendPluginConfig,
