@@ -137,6 +137,41 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 			expect(body.output?.[1]?.summary?.[0]?.text).toBe('Draft summary');
 		});
 
+		it('preserves whitespace-only semantic deltas when no done events override them', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_whitespace_delta","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_space","type":"message","role":"assistant","phase":"final_answer"}}',
+				'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Hello","phase":"final_answer"}',
+				'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":" ","phase":"final_answer"}',
+				'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"world","phase":"final_answer"}',
+				'data: {"type":"response.output_item.added","output_index":1,"item":{"id":"rs_space","type":"reasoning"}}',
+				'data: {"type":"response.reasoning_summary_text.delta","output_index":1,"summary_index":0,"delta":"Need"}',
+				'data: {"type":"response.reasoning_summary_text.delta","output_index":1,"summary_index":0,"delta":" "}',
+				'data: {"type":"response.reasoning_summary_text.delta","output_index":1,"summary_index":0,"delta":"context."}',
+				'data: {"type":"response.done","response":{"id":"resp_whitespace_delta","object":"response"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				output_text?: string;
+				final_answer_text?: string;
+				reasoning_summary_text?: string;
+				output?: Array<{
+					content?: Array<{ text?: string }>;
+					summary?: Array<{ text?: string }>;
+				}>;
+			};
+
+			expect(body.output?.[0]?.content?.[0]?.text).toBe('Hello world');
+			expect(body.output_text).toBe('Hello world');
+			expect(body.final_answer_text).toBe('Hello world');
+			expect(body.output?.[1]?.summary?.[0]?.text).toBe('Need context.');
+			expect(body.reasoning_summary_text).toBe('Need context.');
+		});
+
 		it('preserves richer terminal output when semantic items arrive with empty content arrays', async () => {
 			const sseContent = [
 				'data: {"type":"response.created","response":{"id":"resp_rich_123","object":"response"}}',

@@ -53,6 +53,11 @@ function getStringField(record: MutableRecord, key: string): string | null {
 	return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function getDeltaField(record: MutableRecord, key: string): string | null {
+	const value = record[key];
+	return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 function cloneContentArray(content: unknown): MutableRecord[] {
 	if (!Array.isArray(content)) return [];
 	return content.filter(isRecord).map((part) => ({ ...part }));
@@ -451,7 +456,7 @@ function maybeCaptureResponseEvent(
 			state,
 			outputIndex,
 			getNumberField(eventRecord, "content_index"),
-			getStringField(eventRecord, "delta"),
+			getDeltaField(eventRecord, "delta"),
 			eventRecord.phase,
 		);
 		return;
@@ -489,7 +494,7 @@ function maybeCaptureResponseEvent(
 			state,
 			outputIndex,
 			getNumberField(eventRecord, "summary_index"),
-			getStringField(eventRecord, "delta"),
+			getDeltaField(eventRecord, "delta"),
 		);
 		return;
 	}
