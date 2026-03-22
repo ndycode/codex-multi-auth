@@ -168,7 +168,18 @@ export async function runVerifyFlaggedCommand(
 		});
 	}
 
-	const applyRefreshChecks = (storage: AccountStorageV3): void => {
+	const applyRefreshChecks = (
+		storage: AccountStorageV3,
+	): {
+		storageChanged: boolean;
+		flaggedChanged: boolean;
+		reports: VerifyFlaggedReport[];
+		nextFlaggedAccounts: FlaggedAccountMetadataV1[];
+	} => {
+		let nextStorageChanged = false;
+		let nextFlaggedChanged = false;
+		const nextReports: VerifyFlaggedReport[] = [];
+		const pendingFlaggedAccounts: FlaggedAccountMetadataV1[] = [];
 		for (const check of refreshChecks) {
 			const { index: i, flagged, label, result } = check;
 			if (result.type === "success") {
@@ -193,10 +204,10 @@ export async function runVerifyFlaggedCommand(
 						lastUsed: now,
 						lastError: undefined,
 					};
-					nextFlaggedAccounts.push(nextFlagged);
+					pendingFlaggedAccounts.push(nextFlagged);
 					if (JSON.stringify(nextFlagged) !== JSON.stringify(flagged))
-						flaggedChanged = true;
-					reports.push({
+						nextFlaggedChanged = true;
+					nextReports.push({
 						index: i,
 						label,
 						outcome: "healthy-flagged",
@@ -213,9 +224,9 @@ export async function runVerifyFlaggedCommand(
 					now,
 				);
 				if (upsertResult.restored) {
-					storageChanged = storageChanged || upsertResult.changed;
-					flaggedChanged = true;
-					reports.push({
+					nextStorageChanged = nextStorageChanged || upsertResult.changed;
+					nextFlaggedChanged = true;
+					nextReports.push({
 						index: i,
 						label,
 						outcome: "restored",
@@ -244,10 +255,10 @@ export async function runVerifyFlaggedCommand(
 					lastUsed: now,
 					lastError: upsertResult.message,
 				};
-				nextFlaggedAccounts.push(updatedFlagged);
+				pendingFlaggedAccounts.push(updatedFlagged);
 				if (JSON.stringify(updatedFlagged) !== JSON.stringify(flagged))
-					flaggedChanged = true;
-				reports.push({
+					nextFlaggedChanged = true;
+				nextReports.push({
 					index: i,
 					label,
 					outcome: "restore-skipped",
@@ -261,40 +272,83 @@ export async function runVerifyFlaggedCommand(
 				...flagged,
 				lastError: detail,
 			};
-			nextFlaggedAccounts.push(failedFlagged);
-			if ((flagged.lastError ?? "") !== detail) flaggedChanged = true;
-			reports.push({
+			pendingFlaggedAccounts.push(failedFlagged);
+			if ((flagged.lastError ?? "") !== detail) nextFlaggedChanged = true;
+			nextReports.push({
 				index: i,
 				label,
 				outcome: "still-flagged",
 				message: detail,
 			});
 		}
+		return {
+			storageChanged: nextStorageChanged,
+			flaggedChanged: nextFlaggedChanged,
+			reports: nextReports,
+			nextFlaggedAccounts: pendingFlaggedAccounts,
+		};
+	};
+
+	const assignRefreshCheckResult = (result: {
+		storageChanged: boolean;
+		flaggedChanged: boolean;
+		reports: VerifyFlaggedReport[];
+		nextFlaggedAccounts: FlaggedAccountMetadataV1[];
+	}): void => {
+		storageChanged = result.storageChanged;
+		flaggedChanged = result.flaggedChanged;
+		reports.length = 0;
+		reports.push(...result.reports);
+		nextFlaggedAccounts.length = 0;
+		nextFlaggedAccounts.push(...result.nextFlaggedAccounts);
 	};
 
 	if (options.restore) {
 		if (options.dryRun) {
-			applyRefreshChecks(
-				(await deps.loadAccounts()) ?? deps.createEmptyAccountStorage(),
+			assignRefreshCheckResult(
+				applyRefreshChecks(
+					(await deps.loadAccounts()) ?? deps.createEmptyAccountStorage(),
+				),
 			);
 		} else {
+			let transactionResult:
+				| {
+						storageChanged: boolean;
+						flaggedChanged: boolean;
+						reports: VerifyFlaggedReport[];
+						nextFlaggedAccounts: FlaggedAccountMetadataV1[];
+				  }
+				| undefined;
 			await deps.withAccountAndFlaggedStorageTransaction(
 				async (loadedStorage, persist) => {
 					const nextStorage = loadedStorage
 						? structuredClone(loadedStorage)
 						: deps.createEmptyAccountStorage();
-					applyRefreshChecks(nextStorage);
-					if (!storageChanged) return;
+					const attemptResult = applyRefreshChecks(nextStorage);
+					if (!attemptResult.storageChanged) {
+						transactionResult = attemptResult;
+						return;
+					}
 					deps.normalizeDoctorIndexes(nextStorage);
 					await persist(nextStorage, {
 						version: 1,
-						accounts: nextFlaggedAccounts,
+						accounts: attemptResult.nextFlaggedAccounts,
 					});
+					transactionResult = attemptResult;
 				},
 			);
+			if (!transactionResult) {
+				logError(
+					"verify-flagged: transaction completed without a result; storage may be unchanged",
+				);
+				return 1;
+			}
+			assignRefreshCheckResult(transactionResult);
 		}
 	} else {
-		applyRefreshChecks(deps.createEmptyAccountStorage());
+		assignRefreshCheckResult(
+			applyRefreshChecks(deps.createEmptyAccountStorage()),
+		);
 	}
 
 	const remainingFlagged = nextFlaggedAccounts.length;
