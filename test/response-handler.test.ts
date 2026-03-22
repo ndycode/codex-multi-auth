@@ -273,6 +273,28 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 			expect(body.phase_text).toBeUndefined();
 		});
 
+		it('clears stale reasoning_summary_text deltas when done events omit canonical text', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_stale_reasoning","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":1,"item":{"id":"rs_stale","type":"reasoning"}}',
+				'data: {"type":"response.reasoning_summary_text.delta","output_index":1,"summary_index":0,"delta":"Need more context"}',
+				'data: {"type":"response.reasoning_summary_text.done","output_index":1,"summary_index":0,"text":" "}',
+				'data: {"type":"response.done","response":{"id":"resp_stale_reasoning","object":"response"}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				reasoning_summary_text?: string;
+				output?: Array<{ summary?: Array<{ text?: string }> }>;
+			};
+
+			expect(body.output?.[1]?.summary).toBeUndefined();
+			expect(body.reasoning_summary_text).toBeUndefined();
+		});
+
 		it('tracks commentary and final_answer phase text separately when phase labels are present', async () => {
 			const sseContent = [
 				'data: {"type":"response.created","response":{"id":"resp_phase_123","object":"response"}}',

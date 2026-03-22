@@ -230,9 +230,12 @@ function setReasoningSummaryValue(
 	summaryIndex: number | null,
 	text: string | null,
 ): void {
-	if (!text) return;
 	const key = makeSummaryKey(outputIndex, summaryIndex);
 	if (!key) return;
+	if (!text) {
+		state.reasoningSummaryText.delete(key);
+		return;
+	}
 	state.reasoningSummaryText.set(key, text);
 }
 
