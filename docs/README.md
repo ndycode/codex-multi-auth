@@ -63,6 +63,9 @@ Public documentation for `codex-multi-auth`.
 | [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md) | Complete field and environment inventory |
 | [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md) | Configuration resolution flow |
 | [development/REPOSITORY_SCOPE.md](development/REPOSITORY_SCOPE.md) | Ownership map by repository path |
+| [development/RUNBOOK_ADD_AUTH_MANAGER_COMMAND.md](development/RUNBOOK_ADD_AUTH_MANAGER_COMMAND.md) | Safe workflow for adding a new `codex auth` command |
+| [development/RUNBOOK_ADD_CONFIG_FIELD_SAFELY.md](development/RUNBOOK_ADD_CONFIG_FIELD_SAFELY.md) | Safe workflow for introducing a new config/settings field |
+| [development/RUNBOOK_CHANGE_ROUTING_POLICY_SAFELY.md](development/RUNBOOK_CHANGE_ROUTING_POLICY_SAFELY.md) | Safe workflow for changing routing or account-selection policy |
 | [development/TESTING.md](development/TESTING.md) | Validation gates and test matrix |
 | [development/TUI_PARITY_CHECKLIST.md](development/TUI_PARITY_CHECKLIST.md) | Dashboard UX parity checklist |
 | [benchmarks/code-edit-format-benchmark.md](benchmarks/code-edit-format-benchmark.md) | Benchmark methodology and outputs |

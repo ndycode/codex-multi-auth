@@ -267,10 +267,21 @@ describe("Documentation Integrity", () => {
 		const configGuide = read("docs/configuration.md").toLowerCase();
 		const settingsRef = read("docs/reference/settings.md").toLowerCase();
 		const fieldInventoryPath = "docs/development/CONFIG_FIELDS.md";
+		const runbooks = [
+			"docs/development/RUNBOOK_ADD_AUTH_MANAGER_COMMAND.md",
+			"docs/development/RUNBOOK_ADD_CONFIG_FIELD_SAFELY.md",
+			"docs/development/RUNBOOK_CHANGE_ROUTING_POLICY_SAFELY.md",
+		];
 		expect(
 			existsSync(join(projectRoot, fieldInventoryPath)),
 			`${fieldInventoryPath} should exist`,
 		).toBe(true);
+		for (const runbook of runbooks) {
+			expect(
+				existsSync(join(projectRoot, runbook)),
+				`${runbook} should exist`,
+			).toBe(true);
+		}
 		const fieldInventory = read(fieldInventoryPath).toLowerCase();
 
 		expect(configGuide).toContain("stable environment overrides");
