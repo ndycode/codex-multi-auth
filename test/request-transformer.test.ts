@@ -1314,6 +1314,43 @@ describe('Request Transformer Module', () => {
 			expect(result.prompt_cache_retention).toBe('7d');
 		});
 
+		it('should inherit prompt_cache_retention from model-specific user config', async () => {
+			const body: RequestBody = {
+				model: 'gpt-5.4',
+				input: [],
+			};
+			const userConfig: UserConfig = {
+				global: { promptCacheRetention: '7d' },
+				models: {
+					'gpt-5.4': {
+						options: { promptCacheRetention: '24h' },
+					},
+				},
+			};
+			const result = await transformRequestBody(body, codexInstructions, userConfig);
+			expect(result.prompt_cache_retention).toBe('24h');
+		});
+
+		it('should inherit model-specific prompt_cache_retention in named params overload', async () => {
+			const userConfig: UserConfig = {
+				global: { promptCacheRetention: '7d' },
+				models: {
+					'gpt-5.4': {
+						options: { promptCacheRetention: '24h' },
+					},
+				},
+			};
+			const result = await transformRequestBody({
+				body: {
+					model: 'gpt-5.4',
+					input: [],
+				},
+				codexInstructions,
+				userConfig,
+			});
+			expect(result.prompt_cache_retention).toBe('24h');
+		});
+
 		it('should prefer body text verbosity over providerOptions', async () => {
 			const body: RequestBody = {
 				model: 'gpt-5',

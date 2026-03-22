@@ -141,5 +141,9 @@ describe("public api contract", () => {
 			codexInstructions: "codex",
 		});
 		expect(transformedNamed).toEqual(transformedPositional);
+		expect(transformedPositional.prompt_cache_retention).toBe(baseBody.prompt_cache_retention);
+		expect(transformedNamed.prompt_cache_retention).toBe(baseBody.prompt_cache_retention);
+		expect(transformedPositional.text?.format).toEqual(baseBody.text?.format);
+		expect(transformedNamed.text?.format).toEqual(baseBody.text?.format);
 	});
 });
