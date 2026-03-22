@@ -4,7 +4,12 @@ import type {
 	DashboardDisplaySettings,
 } from "../lib/dashboard-settings.js";
 import type { QuotaCacheData } from "../lib/quota-cache.js";
-import type { AccountStorageV3, NamedBackupSummary } from "../lib/storage.js";
+import {
+	formatStorageErrorHint,
+	StorageError,
+	type AccountStorageV3,
+	type NamedBackupSummary,
+} from "../lib/storage.js";
 import type { TokenResult } from "../lib/types.js";
 
 const {
@@ -23,12 +28,16 @@ const {
 	loadFlaggedAccountsMock,
 	saveAccountsMock,
 	setStoragePathMock,
+	getStoragePathMock,
 	getNamedBackupsMock,
 	restoreAccountsFromBackupMock,
 	setCodexCliActiveSelectionMock,
 	confirmMock,
 	applyUiThemeFromDashboardSettingsMock,
 	configureUnifiedSettingsMock,
+	leaseReleaseMock,
+	leaseAcquireMock,
+	refreshLeaseCoordinatorFromEnvironmentMock,
 } = vi.hoisted(() => ({
 	extractAccountEmailMock: vi.fn(),
 	extractAccountIdMock: vi.fn(),
@@ -45,12 +54,21 @@ const {
 	loadFlaggedAccountsMock: vi.fn(),
 	saveAccountsMock: vi.fn(),
 	setStoragePathMock: vi.fn(),
+	getStoragePathMock: vi.fn(),
 	getNamedBackupsMock: vi.fn(),
 	restoreAccountsFromBackupMock: vi.fn(),
 	setCodexCliActiveSelectionMock: vi.fn(),
 	confirmMock: vi.fn(),
 	applyUiThemeFromDashboardSettingsMock: vi.fn(),
 	configureUnifiedSettingsMock: vi.fn(),
+	leaseReleaseMock: vi.fn(async () => undefined),
+	leaseAcquireMock: vi.fn(async () => ({
+		role: "bypass",
+		release: leaseReleaseMock,
+	})),
+	refreshLeaseCoordinatorFromEnvironmentMock: vi.fn(() => ({
+		acquire: leaseAcquireMock,
+	})),
 }));
 
 vi.mock("../lib/auth/browser.js", () => ({
@@ -94,10 +112,17 @@ vi.mock("../lib/storage.js", async () => {
 		loadFlaggedAccounts: loadFlaggedAccountsMock,
 		saveAccounts: saveAccountsMock,
 		setStoragePath: setStoragePathMock,
+		getStoragePath: getStoragePathMock,
 		getNamedBackups: getNamedBackupsMock,
 		restoreAccountsFromBackup: restoreAccountsFromBackupMock,
 	};
 });
+
+vi.mock("../lib/refresh-lease.js", () => ({
+	RefreshLeaseCoordinator: {
+		fromEnvironment: refreshLeaseCoordinatorFromEnvironmentMock,
+	},
+}));
 
 vi.mock("../lib/codex-cli/writer.js", () => ({
 	setCodexCliActiveSelection: setCodexCliActiveSelectionMock,
@@ -246,7 +271,18 @@ beforeEach(() => {
 	getNamedBackupsMock.mockResolvedValue([]);
 	restoreAccountsFromBackupMock.mockResolvedValue(createStorage());
 	saveAccountsMock.mockResolvedValue(undefined);
+	getStoragePathMock.mockReturnValue(
+		"/mock/.codex/multi-auth/openai-codex-accounts.json",
+	);
 	setCodexCliActiveSelectionMock.mockResolvedValue(true);
+	leaseReleaseMock.mockResolvedValue(undefined);
+	leaseAcquireMock.mockImplementation(async () => ({
+		role: "bypass",
+		release: leaseReleaseMock,
+	}));
+	refreshLeaseCoordinatorFromEnvironmentMock.mockReturnValue({
+		acquire: leaseAcquireMock,
+	});
 	queuedRefreshMock.mockResolvedValue({
 		type: "success",
 		access: "fresh-access-token",
@@ -420,6 +456,27 @@ describe("codex-manager auth command helpers", () => {
 		);
 	});
 
+	it("propagates saveAccounts EBUSY errors before syncing the selected account", async () => {
+		const busyError = Object.assign(
+			new Error("EBUSY: resource busy or locked"),
+			{ code: "EBUSY" },
+		);
+		saveAccountsMock.mockRejectedValueOnce(busyError);
+		const storage = createStorage();
+
+		await expect(
+			persistAndSyncSelectedAccount({
+				storage,
+				targetIndex: 0,
+				parsed: 1,
+				switchReason: "rotation",
+				helpers: createHelpers(),
+			}),
+		).rejects.toBe(busyError);
+
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+	});
+
 	it("validates switch indices before mutating storage", async () => {
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		loadAccountsMock.mockResolvedValue(createStorage());
@@ -450,6 +507,19 @@ describe("codex-manager auth command helpers", () => {
 		};
 		expect(output.message).toContain("Already on best account");
 		expect(output.accountIndex).toBe(1);
+	});
+
+	it("prints best usage and exits 0 on --help", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+		const result = await runBest(["--help"], createHelpers());
+
+		expect(result).toBe(0);
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining("codex auth best"),
+		);
+		expect(loadAccountsMock).not.toHaveBeenCalled();
+		expect(leaseAcquireMock).not.toHaveBeenCalled();
 	});
 
 	it("reports json output when runBest switches to a healthier account", async () => {
@@ -605,6 +675,36 @@ describe("codex-manager auth command helpers", () => {
 		);
 	});
 
+	it("propagates live best save failures before syncing Codex auth", async () => {
+		const helpers = createHelpers({
+			hasUsableAccessToken: vi.fn(() => false),
+		});
+		const busyError = Object.assign(
+			new Error("EBUSY: resource busy or locked"),
+			{ code: "EBUSY" },
+		);
+		loadAccountsMock.mockResolvedValue(
+			createStorage([
+				{
+					email: "live@example.com",
+					refreshToken: "refresh-token-live",
+					accessToken: "stale-access-token",
+					accountId: "acct-live",
+					expiresAt: Date.now() - 1,
+					addedAt: 1,
+					lastUsed: 1,
+					enabled: true,
+				},
+			]),
+		);
+		saveAccountsMock.mockRejectedValueOnce(busyError);
+
+		await expect(runBest(["--live"], helpers)).rejects.toBe(busyError);
+
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+		expect(leaseAcquireMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("restores a backup through the extracted login flow and clamps family indices", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
 		const restoredStorage = createStorage([
@@ -683,6 +783,143 @@ describe("codex-manager auth command helpers", () => {
 			"gpt-5.1": 0,
 		});
 		expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("latest.json"));
+	});
+
+	it.each([
+		{
+			code: "EBUSY",
+			message: "File is busy",
+			hint: "File is locked",
+		},
+		{
+			code: "EACCES",
+			message: "Access denied",
+			hint: "Permission denied",
+		},
+	])(
+		"prints the storage hint for $code restore failures and stays in onboarding",
+		async ({ code, message, hint }) => {
+			const backupPath = "/mock/backups/locked.json";
+			const storageError = new StorageError(message, code, backupPath, hint);
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			loadAccountsMock
+				.mockResolvedValueOnce(null)
+				.mockResolvedValueOnce(null)
+				.mockResolvedValueOnce(null);
+			getNamedBackupsMock.mockResolvedValue([
+				{
+					path: backupPath,
+					fileName: "locked.json",
+					accountCount: 1,
+					mtimeMs: Date.now(),
+				},
+			]);
+			restoreAccountsFromBackupMock.mockRejectedValueOnce(storageError);
+			const deps = createAuthLoginDeps({
+				promptOAuthSignInMode: vi.fn()
+					.mockResolvedValueOnce("restore-backup" as const)
+					.mockResolvedValueOnce("cancel" as const),
+				promptBackupRestoreMode: vi.fn(async () => "latest" as const),
+			});
+
+			const result = await runAuthLogin([], deps);
+
+			expect(result).toBe(0);
+			expect(confirmMock).toHaveBeenCalledTimes(1);
+			expect(restoreAccountsFromBackupMock).toHaveBeenCalledWith(
+				backupPath,
+				{ persist: false },
+			);
+			expect(saveAccountsMock).not.toHaveBeenCalled();
+			expect(promptLoginModeMock).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				formatStorageErrorHint(storageError, backupPath),
+			);
+		},
+	);
+
+	it("reports generic backup restore failures and stays in onboarding when storage is still empty", async () => {
+		const backupPath = "/mock/backups/rate-limited.json";
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const rateLimitError = new Error("429 Too Many Requests");
+		loadAccountsMock
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce(null);
+		getNamedBackupsMock.mockResolvedValue([
+			{
+				path: backupPath,
+				fileName: "rate-limited.json",
+				accountCount: 1,
+				mtimeMs: Date.now(),
+			},
+		]);
+		restoreAccountsFromBackupMock.mockRejectedValueOnce(rateLimitError);
+		const deps = createAuthLoginDeps({
+			promptOAuthSignInMode: vi.fn()
+				.mockResolvedValueOnce("restore-backup" as const)
+				.mockResolvedValueOnce("cancel" as const),
+			promptBackupRestoreMode: vi.fn(async () => "latest" as const),
+		});
+
+		const result = await runAuthLogin([], deps);
+
+		expect(result).toBe(0);
+		expect(confirmMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(promptLoginModeMock).not.toHaveBeenCalled();
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Backup restore failed: 429 Too Many Requests",
+		);
+	});
+
+	it("returns to the existing-account menu when restore fails after accounts already exist", async () => {
+		const backupPath = "/mock/backups/existing.json";
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const existingStorage = createStorage([
+			{
+				email: "existing@example.com",
+				refreshToken: "refresh-token-existing",
+				accessToken: "access-token-existing",
+				accountId: "acct-existing",
+				expiresAt: Date.now() + 60_000,
+				addedAt: 1,
+				lastUsed: 1,
+				enabled: true,
+			},
+		]);
+		loadAccountsMock
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce(existingStorage)
+			.mockResolvedValueOnce(existingStorage)
+			.mockResolvedValueOnce(existingStorage);
+		getNamedBackupsMock.mockResolvedValue([
+			{
+				path: backupPath,
+				fileName: "existing.json",
+				accountCount: 1,
+				mtimeMs: Date.now(),
+			},
+		]);
+		restoreAccountsFromBackupMock.mockRejectedValueOnce(
+			new Error("save selected account failed"),
+		);
+		promptLoginModeMock.mockResolvedValue({ mode: "cancel" });
+		const deps = createAuthLoginDeps({
+			promptOAuthSignInMode: vi.fn(async () => "restore-backup" as const),
+			promptBackupRestoreMode: vi.fn(async () => "latest" as const),
+		});
+
+		const result = await runAuthLogin([], deps);
+
+		expect(result).toBe(0);
+		expect(confirmMock).toHaveBeenCalledTimes(1);
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Backup restore failed: save selected account failed",
+		);
 	});
 
 	it("prints usage from runAuthLogin without entering the interactive flow", async () => {
