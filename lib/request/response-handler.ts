@@ -18,6 +18,7 @@ interface ParsedResponseState {
 	outputText: Map<string, string>;
 	phaseText: Map<string, string>;
 	reasoningSummaryText: Map<string, string>;
+	seenResponseIds: Set<string>;
 }
 
 function createParsedResponseState(): ParsedResponseState {
@@ -28,6 +29,7 @@ function createParsedResponseState(): ParsedResponseState {
 		outputText: new Map<string, string>(),
 		phaseText: new Map<string, string>(),
 		reasoningSummaryText: new Map<string, string>(),
+		seenResponseIds: new Set<string>(),
 	};
 }
 
@@ -54,7 +56,11 @@ function mergeRecord(base: MutableRecord | null, update: MutableRecord): Mutable
 	if (!base) return { ...update };
 	const merged: MutableRecord = { ...base, ...update };
 	if ("content" in update || "content" in base) {
-		merged.content = cloneContentArray(update.content ?? base.content);
+		const updateContent = cloneContentArray(update.content);
+		merged.content =
+			updateContent.length > 0 || !("content" in base)
+				? updateContent
+				: cloneContentArray(base.content);
 	}
 	return merged;
 }
@@ -334,11 +340,13 @@ function extractResponseId(response: unknown): string | null {
 }
 
 function notifyResponseId(
+	state: ParsedResponseState,
 	onResponseId: ((responseId: string) => void) | undefined,
 	response: unknown,
 ): void {
 	const responseId = extractResponseId(response);
-	if (!responseId || !onResponseId) return;
+	if (!responseId || !onResponseId || state.seenResponseIds.has(responseId)) return;
+	state.seenResponseIds.add(responseId);
 	try {
 		onResponseId(responseId);
 	} catch (error) {
@@ -361,7 +369,7 @@ function maybeCaptureResponseEvent(
 
 	if (isRecord(data.response)) {
 		state.finalResponse = { ...data.response };
-		notifyResponseId(onResponseId, data.response);
+		notifyResponseId(state, onResponseId, data.response);
 	}
 
 	if (data.type === "response.done" || data.type === "response.completed") {
@@ -569,6 +577,7 @@ function createResponseIdCapturingStream(
 ): ReadableStream<Uint8Array> {
 	const decoder = new TextDecoder();
 	let bufferedText = "";
+	const state = createParsedResponseState();
 
 	const processBufferedLines = (flush = false): void => {
 		const lines = bufferedText.split(/\r?\n/);
@@ -585,7 +594,7 @@ function createResponseIdCapturingStream(
 			if (!payload || payload === "[DONE]") continue;
 			try {
 				const data = JSON.parse(payload) as SSEEventData;
-				maybeCaptureResponseEvent(createParsedResponseState(), data, onResponseId);
+				maybeCaptureResponseEvent(state, data, onResponseId);
 			} catch {
 				// Ignore malformed SSE lines and keep forwarding the raw stream.
 			}

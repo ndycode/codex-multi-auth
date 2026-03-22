@@ -761,6 +761,7 @@ describe('createEntitlementErrorResponse', () => {
 
 			expect(text).toContain('"resp_stream_123"');
 			expect(onResponseId).toHaveBeenCalledWith('resp_stream_123');
+			expect(onResponseId).toHaveBeenCalledTimes(1);
 		});
 	});
 

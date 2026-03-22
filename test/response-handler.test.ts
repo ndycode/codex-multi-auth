@@ -115,6 +115,31 @@ data: {"type":"response.completed","response":{"id":"resp_456","output":"done"}}
 			});
 		});
 
+		it('preserves richer terminal output when semantic items arrive with empty content arrays', async () => {
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_rich_123","object":"response"}}',
+				'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_123","type":"message","role":"assistant","content":[]}}',
+				'data: {"type":"response.completed","response":{"id":"resp_rich_123","object":"response","output":[{"id":"msg_123","type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello rich world"},{"type":"annotation","label":"kept"}]}]}}',
+				'',
+			].join('\n');
+			const response = new Response(sseContent);
+			const headers = new Headers();
+
+			const result = await convertSseToJson(response, headers);
+			const body = await result.json() as {
+				id: string;
+				output?: Array<{
+					content?: Array<{ type?: string; text?: string; label?: string }>;
+				}>;
+			};
+
+			expect(body.id).toBe('resp_rich_123');
+			expect(body.output?.[0]?.content).toEqual([
+				{ type: 'output_text', text: 'Hello rich world' },
+				{ type: 'annotation', label: 'kept' },
+			]);
+		});
+
 		it('tracks commentary and final_answer phase text separately when phase labels are present', async () => {
 			const sseContent = [
 				'data: {"type":"response.created","response":{"id":"resp_phase_123","object":"response"}}',
@@ -200,7 +225,11 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 
 		it('should report the final response id while converting SSE to JSON', async () => {
 			const onResponseId = vi.fn();
-			const sseContent = `data: {"type":"response.done","response":{"id":"resp_123","output":"test"}}`;
+			const sseContent = [
+				'data: {"type":"response.created","response":{"id":"resp_123","object":"response"}}',
+				'data: {"type":"response.done","response":{"id":"resp_123","output":"test"}}',
+				'',
+			].join('\n');
 			const response = new Response(sseContent);
 			const headers = new Headers();
 
@@ -209,6 +238,7 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 
 			expect(body).toEqual({ id: 'resp_123', output: 'test' });
 			expect(onResponseId).toHaveBeenCalledWith('resp_123');
+			expect(onResponseId).toHaveBeenCalledTimes(1);
 		});
 
 		it('should return the raw SSE text when an error event arrives before response.done', async () => {
