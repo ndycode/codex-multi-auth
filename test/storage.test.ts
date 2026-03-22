@@ -27,6 +27,7 @@ import {
 	withAccountAndFlaggedStorageTransaction,
 	withAccountStorageTransaction,
 } from "../lib/storage.js";
+import { formatStorageErrorHint } from "../lib/storage/error-hints.js";
 
 // Mocking the behavior we're about to implement for TDD
 // Since the functions aren't in lib/storage.ts yet, we'll need to mock them or
