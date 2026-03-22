@@ -127,6 +127,14 @@ export async function runBestCommand(
 	const probeRefreshedIndices = new Set<number>();
 	const probeErrors: string[] = [];
 	let changed = false;
+	const persistProbeChangesIfNeeded = async (
+		beforeSave?: () => void,
+	): Promise<void> => {
+		if (!changed) return;
+		beforeSave?.();
+		await deps.saveAccounts(storage);
+		changed = false;
+	};
 
 	for (let i = 0; i < storage.accounts.length; i += 1) {
 		const account = storage.accounts[i];
@@ -152,15 +160,28 @@ export async function runBestCommand(
 				deps.extractAccountEmail(refreshResult.access, refreshResult.idToken),
 			);
 			const refreshedAccountId = deps.extractAccountId(refreshResult.access);
+			const previousRefreshToken = account.refreshToken;
+			const previousAccessToken = account.accessToken;
+			const previousExpiresAt = account.expiresAt;
+			const previousEmail = account.email;
+			const previousAccountId = account.accountId;
+			const previousAccountIdSource = account.accountIdSource;
 			account.refreshToken = refreshResult.refresh;
 			account.accessToken = refreshResult.access;
 			account.expiresAt = refreshResult.expires;
 			if (refreshedEmail) account.email = refreshedEmail;
-			changed = true;
 			if (refreshedAccountId) {
 				account.accountId = refreshedAccountId;
 				account.accountIdSource = "token";
 			}
+			changed =
+				changed ||
+				previousRefreshToken !== account.refreshToken ||
+				previousAccessToken !== account.accessToken ||
+				previousExpiresAt !== account.expiresAt ||
+				previousEmail !== account.email ||
+				previousAccountId !== account.accountId ||
+				previousAccountIdSource !== account.accountIdSource;
 			if (refreshResult.idToken)
 				probeIdTokenByIndex.set(i, refreshResult.idToken);
 			probeRefreshedIndices.add(i);
@@ -210,6 +231,7 @@ export async function runBestCommand(
 	};
 
 	if (recommendation.recommendedIndex === null) {
+		await persistProbeChangesIfNeeded();
 		if (options.json) {
 			logInfo(
 				JSON.stringify(
@@ -231,6 +253,7 @@ export async function runBestCommand(
 	const bestIndex = recommendation.recommendedIndex;
 	const bestAccount = storage.accounts[bestIndex];
 	if (!bestAccount) {
+		await persistProbeChangesIfNeeded();
 		if (options.json) {
 			logInfo(JSON.stringify({ error: "Best account not found." }, null, 2));
 		} else {
@@ -245,12 +268,10 @@ export async function runBestCommand(
 			probeRefreshedIndices.has(bestIndex) ||
 			probeIdTokenByIndex.has(bestIndex);
 		let alreadyBestSynced: boolean | undefined;
+		await persistProbeChangesIfNeeded(() => {
+			bestAccount.lastUsed = now;
+		});
 		if (shouldSyncCurrentBest) {
-			if (changed) {
-				bestAccount.lastUsed = now;
-				await deps.saveAccounts(storage);
-				changed = false;
-			}
 			alreadyBestSynced = await deps.setCodexCliActiveSelection({
 				accountId: bestAccount.accountId,
 				email: bestAccount.email,
