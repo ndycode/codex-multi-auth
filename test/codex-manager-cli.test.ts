@@ -247,6 +247,14 @@ const stdinIsTTYDescriptor = Object.getOwnPropertyDescriptor(
 	process.stdin,
 	"isTTY",
 );
+const stdinReadableEndedDescriptor = Object.getOwnPropertyDescriptor(
+	process.stdin,
+	"readableEnded",
+);
+const stdinDestroyedDescriptor = Object.getOwnPropertyDescriptor(
+	process.stdin,
+	"destroyed",
+);
 const stdoutIsTTYDescriptor = Object.getOwnPropertyDescriptor(
 	process.stdout,
 	"isTTY",
@@ -269,11 +277,36 @@ function restoreTTYDescriptors(): void {
 	} else {
 		delete (process.stdin as unknown as { isTTY?: boolean }).isTTY;
 	}
+	if (stdinReadableEndedDescriptor) {
+		Object.defineProperty(
+			process.stdin,
+			"readableEnded",
+			stdinReadableEndedDescriptor,
+		);
+	} else {
+		delete (process.stdin as unknown as { readableEnded?: boolean }).readableEnded;
+	}
+	if (stdinDestroyedDescriptor) {
+		Object.defineProperty(process.stdin, "destroyed", stdinDestroyedDescriptor);
+	} else {
+		delete (process.stdin as unknown as { destroyed?: boolean }).destroyed;
+	}
 	if (stdoutIsTTYDescriptor) {
 		Object.defineProperty(process.stdout, "isTTY", stdoutIsTTYDescriptor);
 	} else {
 		delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
 	}
+}
+
+function setOpenStdinState(): void {
+	Object.defineProperty(process.stdin, "readableEnded", {
+		value: false,
+		configurable: true,
+	});
+	Object.defineProperty(process.stdin, "destroyed", {
+		value: false,
+		configurable: true,
+	});
 }
 
 function createDeferred<T>(): {
@@ -557,7 +590,7 @@ function readSettingsHubPanelContract(): string[] {
 }
 
 describe("codex manager cli commands", () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		vi.resetModules();
 		vi.clearAllMocks();
 		loadAccountsMock.mockReset();
@@ -574,6 +607,7 @@ describe("codex manager cli commands", () => {
 		loadCodexCliStateMock.mockReset();
 		promptAddAnotherAccountMock.mockReset();
 		promptLoginModeMock.mockReset();
+		promptQuestionMock.mockReset();
 		fetchCodexQuotaSnapshotMock.mockReset();
 		loadDashboardDisplaySettingsMock.mockReset();
 		saveDashboardDisplaySettingsMock.mockReset();
@@ -583,6 +617,12 @@ describe("codex manager cli commands", () => {
 		savePluginConfigMock.mockReset();
 		selectMock.mockReset();
 		confirmMock.mockReset();
+		planOcChatgptSyncMock.mockReset();
+		applyOcChatgptSyncMock.mockReset();
+		runNamedBackupExportMock.mockReset();
+		exportNamedBackupMock.mockReset();
+		detectOcChatgptMultiAuthTargetMock.mockReset();
+		normalizeAccountStorageMock.mockReset();
 		confirmMock.mockResolvedValue(true);
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
@@ -727,8 +767,35 @@ describe("codex manager cli commands", () => {
 		selectMock.mockResolvedValue(undefined);
 		getNamedBackupsMock.mockResolvedValue([]);
 		restoreTTYDescriptors();
+		setOpenStdinState();
 		setStoragePathMock.mockReset();
 		getStoragePathMock.mockReturnValue("/mock/openai-codex-accounts.json");
+		normalizeAccountStorageMock.mockImplementation((value) => value);
+
+		const authModule = await import("../lib/auth/auth.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockReset();
+		vi.mocked(authModule.exchangeAuthorizationCode).mockReset();
+		vi.mocked(authModule.parseAuthorizationInput).mockReset();
+		vi.mocked(authModule.parseAuthorizationInput).mockImplementation(
+			(input: string) => {
+				const codeMatch = input.match(/code=([^&]+)/);
+				const stateMatch = input.match(/state=([^&#]+)/);
+				return {
+					code: codeMatch?.[1],
+					state: stateMatch?.[1],
+				};
+			},
+		);
+
+		const browserModule = await import("../lib/auth/browser.js");
+		vi.mocked(browserModule.isBrowserLaunchSuppressed).mockReset();
+		vi.mocked(browserModule.isBrowserLaunchSuppressed).mockReturnValue(false);
+		vi.mocked(browserModule.openBrowserUrl).mockReset();
+		vi.mocked(browserModule.copyTextToClipboard).mockReset();
+		vi.mocked(browserModule.copyTextToClipboard).mockReturnValue(true);
+
+		const serverModule = await import("../lib/auth/server.js");
+		vi.mocked(serverModule.startLocalOAuthServer).mockReset();
 	});
 
 	afterEach(() => {
@@ -5342,6 +5409,54 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(0);
 		expect(promptQuestionMock).toHaveBeenCalledWith("");
+		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(
+			vi.mocked(serverModule.startLocalOAuthServer),
+		).not.toHaveBeenCalled();
+		expect(exchangeAuthorizationCodeMock).not.toHaveBeenCalled();
+		expect(storageState.accounts).toHaveLength(0);
+	});
+
+	it("skips manual callback prompting when stdin is already closed in non-tty mode", async () => {
+		setInteractiveTTY(false);
+		setOpenStdinState();
+		Object.defineProperty(process.stdin, "readableEnded", {
+			value: true,
+			configurable: true,
+		});
+		let storageState = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [] as Array<Record<string, unknown>>,
+		};
+		loadAccountsMock.mockImplementation(async () =>
+			structuredClone(storageState),
+		);
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const authModule = await import("../lib/auth/auth.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		const exchangeAuthorizationCodeMock = vi.mocked(
+			authModule.exchangeAuthorizationCode,
+		);
+
+		const browserModule = await import("../lib/auth/browser.js");
+		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+		const serverModule = await import("../lib/auth/server.js");
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login", "--manual"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptQuestionMock).not.toHaveBeenCalled();
 		expect(openBrowserUrlMock).not.toHaveBeenCalled();
 		expect(
 			vi.mocked(serverModule.startLocalOAuthServer),
