@@ -30,7 +30,9 @@ describe("wait utils", () => {
 
 	it("shows countdown toasts and sleeps in intervals", async () => {
 		const showToast = vi.fn(async () => undefined);
-		const sleep = vi.fn(async () => undefined);
+		const sleep = vi.fn(async (ms: number) => {
+			await vi.advanceTimersByTimeAsync(ms);
+		});
 		await sleepWithCountdown({
 			totalMs: 10_000,
 			message: "Waiting",
