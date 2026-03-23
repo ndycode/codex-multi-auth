@@ -22,6 +22,7 @@ export function printUsage(): void {
 			"Advanced:",
 			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
 			"  codex auth config explain [--json]",
+			"  codex auth debug bundle [--json]",
 			"  codex auth features",
 			"",
 			"Notes:",

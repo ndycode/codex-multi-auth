@@ -28,6 +28,7 @@ import {
 	promptAddAnotherAccount,
 	promptLoginMode,
 } from "./cli.js";
+import { loadCodexCliState } from "./codex-cli/state.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 import {
 	type BestCliOptions,
@@ -35,6 +36,7 @@ import {
 } from "./codex-manager/commands/best.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
 import { runConfigExplainCommand } from "./codex-manager/commands/config-explain.js";
+import { runDebugBundleCommand } from "./codex-manager/commands/debug-bundle.js";
 import {
 	runDoctor as runRepairDoctor,
 	type RepairCommandDeps,
@@ -93,6 +95,7 @@ import {
 	clearAccounts,
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
+	getLastAccountsSaveTimestamp,
 	getNamedBackups,
 	getStoragePath,
 	loadAccounts,
@@ -3238,6 +3241,21 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			});
 		}
 		console.error(`Unknown config command: ${subcommand ?? "(missing)"}`);
+		return 1;
+	}
+	if (command === "debug") {
+		const [subcommand, ...debugArgs] = rest;
+		if (subcommand === "bundle") {
+			return runDebugBundleCommand(debugArgs, {
+				getConfigReport: getPluginConfigExplainReport,
+				getStoragePath,
+				loadAccounts,
+				loadFlaggedAccounts,
+				loadCodexCliState,
+				getLastAccountsSaveTimestamp,
+			});
+		}
+		console.error(`Unknown debug command: ${subcommand ?? "(missing)"}`);
 		return 1;
 	}
 

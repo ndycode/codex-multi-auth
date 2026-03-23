@@ -276,7 +276,7 @@ describe("Documentation Integrity", () => {
 
 		expect(readme).toContain("codex auth fix --live --model gpt-5-codex");
 		expect(commandRef).toContain(
-			"| `--json` | verify-flagged, best, forecast, report, fix, doctor, config explain |",
+			"| `--json` | verify-flagged, best, forecast, report, fix, doctor, config explain, debug bundle |",
 		);
 		expect(commandRef).toContain("| `--live` | best, forecast, report, fix |");
 		expect(commandRef).toContain(
@@ -287,6 +287,7 @@ describe("Documentation Integrity", () => {
 			"codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
 		);
 		expect(help).toContain("codex auth config explain [--json]");
+		expect(help).toContain("codex auth debug bundle [--json]");
 		expect(authCommands).toContain(
 			"Missing index. Usage: codex auth switch <index>",
 		);

@@ -10,6 +10,7 @@ const getNamedBackupsMock = vi.fn();
 const restoreAccountsFromBackupMock = vi.fn();
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
+const loadCodexCliStateMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
 const promptLoginModeMock = vi.fn();
 const fetchCodexQuotaSnapshotMock = vi.fn();
@@ -171,6 +172,12 @@ vi.mock("../lib/refresh-queue.js", () => ({
 
 vi.mock("../lib/codex-cli/writer.js", () => ({
 	setCodexCliActiveSelection: setCodexCliActiveSelectionMock,
+}));
+
+vi.mock("../lib/codex-cli/state.js", () => ({
+	getCodexCliAuthPath: vi.fn(() => "/mock/.codex/auth.json"),
+	getCodexCliConfigPath: vi.fn(() => "/mock/.codex/config.toml"),
+	loadCodexCliState: loadCodexCliStateMock,
 }));
 
 vi.mock("../lib/quota-probe.js", () => ({
@@ -564,6 +571,7 @@ describe("codex manager cli commands", () => {
 		withFlaggedStorageTransactionMock.mockReset();
 		queuedRefreshMock.mockReset();
 		setCodexCliActiveSelectionMock.mockReset();
+		loadCodexCliStateMock.mockReset();
 		promptAddAnotherAccountMock.mockReset();
 		promptLoginModeMock.mockReset();
 		fetchCodexQuotaSnapshotMock.mockReset();
@@ -600,6 +608,7 @@ describe("codex manager cli commands", () => {
 			version: 1,
 			accounts: [],
 		};
+		loadCodexCliStateMock.mockResolvedValue(null);
 		withAccountStorageTransactionMock.mockImplementation(
 			async (handler) => {
 				const current = await getCurrentAccountSnapshot();
@@ -862,6 +871,151 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(1);
 		expect(errorSpy).toHaveBeenCalledWith("Unknown config command: unknown");
+	});
+
+	it("prints debug bundle output in json mode", async () => {
+		loadPluginConfigMock.mockReturnValue({
+			codexMode: true,
+			codexTuiV2: true,
+			codexTuiColorProfile: "truecolor",
+			codexTuiGlyphMode: "ascii",
+			fastSession: false,
+			fastSessionStrategy: "hybrid",
+			fastSessionMaxInputItems: 30,
+			retryAllAccountsRateLimited: true,
+			retryAllAccountsMaxWaitMs: 0,
+			retryAllAccountsMaxRetries: Infinity,
+			unsupportedCodexPolicy: "strict",
+			fallbackOnUnsupportedCodexModel: false,
+			fallbackToGpt52OnUnsupportedGpt53: true,
+			unsupportedCodexFallbackChain: {},
+			tokenRefreshSkewMs: 60000,
+			rateLimitToastDebounceMs: 60000,
+			toastDurationMs: 5000,
+			perProjectAccounts: true,
+			sessionRecovery: true,
+			autoResume: true,
+			parallelProbing: false,
+			parallelProbingMaxConcurrency: 2,
+			emptyResponseMaxRetries: 2,
+			emptyResponseRetryDelayMs: 1000,
+			pidOffsetEnabled: false,
+			fetchTimeoutMs: 60000,
+			streamStallTimeoutMs: 45000,
+			liveAccountSync: true,
+			liveAccountSyncDebounceMs: 250,
+			liveAccountSyncPollMs: 2000,
+			sessionAffinity: true,
+			sessionAffinityTtlMs: 1200000,
+			sessionAffinityMaxEntries: 512,
+			proactiveRefreshGuardian: true,
+			proactiveRefreshIntervalMs: 60000,
+			proactiveRefreshBufferMs: 300000,
+			networkErrorCooldownMs: 6000,
+			serverErrorCooldownMs: 4000,
+			storageBackupEnabled: true,
+			preemptiveQuotaEnabled: true,
+			preemptiveQuotaRemainingPercent5h: 5,
+			preemptiveQuotaRemainingPercent7d: 5,
+			preemptiveQuotaMaxDeferralMs: 7200000,
+		});
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			accounts: [{ refreshToken: "token-1", enabled: true }],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+		});
+		loadFlaggedAccountsMock.mockResolvedValueOnce({
+			version: 1,
+			accounts: [{ refreshToken: "flagged-1" }],
+		});
+		loadCodexCliStateMock.mockResolvedValueOnce({
+			path: "/mock/.codex/state.json",
+			accounts: [{ email: "codex@example.com" }],
+			activeEmail: "codex@example.com",
+			activeAccountId: "acc_codex",
+			syncVersion: 7,
+			sourceUpdatedAtMs: 1_710_000_000_000,
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"debug",
+			"bundle",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(loadCodexCliStateMock).toHaveBeenCalledWith({
+			forceRefresh: true,
+		});
+		expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toMatchObject({
+			storagePath: "/mock/openai-codex-accounts.json",
+			flaggedAccounts: { total: 1 },
+			codexCli: {
+				path: "/mock/.codex/state.json",
+				accountCount: 1,
+				activeEmail: "codex@example.com",
+				activeAccountId: "acc_codex",
+				syncVersion: 7,
+				sourceUpdatedAtMs: 1_710_000_000_000,
+			},
+		});
+	});
+
+	it.each([
+		["flagged accounts", () =>
+			loadFlaggedAccountsMock.mockRejectedValueOnce(
+				new Error("flagged storage unavailable"),
+			)],
+		["codex cli state", () =>
+			loadCodexCliStateMock.mockRejectedValueOnce(
+				new Error("codex cli state unavailable"),
+			)],
+	])(
+		"returns an error when debug bundle loading fails for %s",
+		async (_label, primeFailure) => {
+			loadAccountsMock.mockResolvedValueOnce({
+				version: 3,
+				accounts: [{ refreshToken: "token-1", enabled: true }],
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+			});
+			primeFailure();
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+			const exitCode = await runCodexMultiAuthCli([
+				"auth",
+				"debug",
+				"bundle",
+				"--json",
+			]);
+
+			expect(exitCode).toBe(1);
+			expect(logSpy).not.toHaveBeenCalled();
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("Failed to generate debug bundle:"),
+			);
+		},
+	);
+
+	it("rejects unknown debug bundle args", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"debug",
+			"bundle",
+			"--bogus",
+		]);
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith("Unknown option: --bogus");
 	});
 
 	it("prints populated account status for auth status", async () => {
