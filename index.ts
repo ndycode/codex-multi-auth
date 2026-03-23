@@ -528,7 +528,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		liveAccountSync = next.liveAccountSync;
 		liveAccountSyncPath = next.liveAccountSyncPath;
 	};
-
 	const ensureRefreshGuardian = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 	): void => {
