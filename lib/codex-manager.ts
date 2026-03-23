@@ -44,6 +44,7 @@ import {
 	runVerifyFlagged as runRepairVerifyFlagged,
 } from "./codex-manager/repair-commands.js";
 import { runForecastCommand } from "./codex-manager/commands/forecast.js";
+import { runInitConfigCommand } from "./codex-manager/commands/init-config.js";
 import { runReportCommand } from "./codex-manager/commands/report.js";
 import {
 	runFeaturesCommand,
@@ -3240,8 +3241,14 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 				getReport: getPluginConfigExplainReport,
 			});
 		}
+		if (subcommand === "template") {
+			return runInitConfigCommand(configArgs);
+		}
 		console.error(`Unknown config command: ${subcommand ?? "(missing)"}`);
 		return 1;
+	}
+	if (command === "init-config") {
+		return runInitConfigCommand(rest);
 	}
 	if (command === "debug") {
 		const [subcommand, ...debugArgs] = rest;
