@@ -22,6 +22,7 @@ import { UI_COPY } from "../ui/copy.js";
 import { getUiRuntimeOptions, setUiRuntimeOptions } from "../ui/runtime.js";
 import { select } from "../ui/select.js";
 import { sleep } from "../utils.js";
+import { promptBackendCategorySettingsEntry } from "./backend-category-entry.js";
 import {
 	applyBackendCategoryDefaults,
 	getBackendCategory,
@@ -67,6 +68,7 @@ import {
 	dashboardSettingsDataEqual,
 } from "./dashboard-settings-data.js";
 import { configureDashboardSettingsEntry } from "./dashboard-settings-entry.js";
+import { promptExperimentalSettingsEntry } from "./experimental-settings-entry.js";
 import { promptExperimentalSettingsMenu } from "./experimental-settings-prompt.js";
 import {
 	getExperimentalSelectOptions,
@@ -573,10 +575,11 @@ async function promptBackendCategorySettings(
 	category: BackendCategoryOption,
 	initialFocus: BackendSettingFocusKey,
 ): Promise<{ draft: PluginConfig; focusKey: BackendSettingFocusKey }> {
-	return promptBackendCategorySettingsMenu({
+	return promptBackendCategorySettingsEntry({
 		initial,
 		category,
 		initialFocus,
+		promptBackendCategorySettingsMenu,
 		ui: getUiRuntimeOptions(),
 		cloneBackendPluginConfig,
 		buildBackendSettingsPreview,
@@ -652,15 +655,16 @@ async function loadExperimentalSyncTarget(): Promise<
 async function promptExperimentalSettings(
 	initialConfig: PluginConfig,
 ): Promise<PluginConfig | null> {
-	return promptExperimentalSettingsMenu({
+	return promptExperimentalSettingsEntry({
 		initialConfig,
+		promptExperimentalSettingsMenu,
 		isInteractive: () => input.isTTY && output.isTTY,
 		ui: getUiRuntimeOptions(),
 		cloneBackendPluginConfig,
-		select: select as never,
-		getExperimentalSelectOptions: getExperimentalSelectOptions as never,
-		mapExperimentalMenuHotkey: mapExperimentalMenuHotkey as never,
-		mapExperimentalStatusHotkey: mapExperimentalStatusHotkey as never,
+		select,
+		getExperimentalSelectOptions,
+		mapExperimentalMenuHotkey,
+		mapExperimentalStatusHotkey,
 		formatDashboardSettingState,
 		copy: UI_COPY.settings,
 		input,
@@ -668,13 +672,22 @@ async function promptExperimentalSettings(
 		runNamedBackupExport,
 		loadAccounts,
 		loadExperimentalSyncTarget,
-		planOcChatgptSync: planOcChatgptSync as never,
-		applyOcChatgptSync: applyOcChatgptSync as never,
+		planOcChatgptSync,
+		applyOcChatgptSync,
 		getTargetKind: (targetState) => (targetState as { kind: string }).kind,
-		getTargetDestination: (targetState) =>
-			(targetState as { kind: string; destination?: unknown }).destination,
-		getTargetDetection: (targetState) =>
-			(targetState as { detection?: unknown }).detection,
+		getTargetDestination: (
+			targetState,
+		): import("../storage.js").AccountStorageV3 | null =>
+			(targetState as {
+				kind: string;
+				destination?: import("../storage.js").AccountStorageV3 | null;
+			}).destination ?? null,
+		getTargetDetection: (
+			targetState,
+		): ReturnType<typeof detectOcChatgptMultiAuthTarget> =>
+			(targetState as {
+				detection: ReturnType<typeof detectOcChatgptMultiAuthTarget>;
+			}).detection,
 		getTargetErrorMessage: (targetState) =>
 			(targetState as { kind: string; message?: string }).kind === "error"
 				? ((targetState as { message?: string }).message ?? "Unknown error")
