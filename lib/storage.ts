@@ -838,7 +838,7 @@ async function migrateLegacyProjectStorageIfNeeded(options?: {
 				targetStorage = fallbackStorage;
 				log.warn("Failed to persist migrated account storage", {
 					from: legacyPath,
-					to: state.currentStoragePath,
+					to: currentStoragePath,
 					error: String(error),
 				});
 				continue;
@@ -864,7 +864,7 @@ async function migrateLegacyProjectStorageIfNeeded(options?: {
 
 			log.info("Migrated legacy project account storage", {
 				from: legacyPath,
-				to: state.currentStoragePath,
+				to: currentStoragePath,
 				accounts: mergedStorage.accounts.length,
 			});
 			continue;
@@ -877,7 +877,7 @@ async function migrateLegacyProjectStorageIfNeeded(options?: {
 	if (migrated) {
 		return targetStorage;
 	}
-	if (targetStorage && !existsSync(state.currentStoragePath)) {
+	if (targetStorage && !existsSync(currentStoragePath)) {
 		return targetStorage;
 	}
 	return null;

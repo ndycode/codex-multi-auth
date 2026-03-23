@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import { setStoragePathState } from "../lib/storage/path-state.js";
+import { getIntentionalResetMarkerPath } from "../lib/storage/backup-paths.js";
 import {
 	buildNamedBackupPath,
 	clearAccounts,
@@ -1668,6 +1669,73 @@ describe("storage", () => {
 				expect(existsSync(currentStoragePath)).toBe(false);
 				expect(existsSync(legacyStoragePath)).toBe(true);
 			} finally {
+				setStoragePathDirect(testStoragePath);
+			}
+		});
+
+		it("does not export legacy accounts when an intentional reset marker appears during export fallback migration", async () => {
+			const currentStoragePath = join(
+				testWorkDir,
+				"accounts-reset-during-fallback-current.json",
+			);
+			const legacyStoragePath = join(
+				testWorkDir,
+				"accounts-reset-during-fallback-legacy.json",
+			);
+			const resetMarkerPath =
+				getIntentionalResetMarkerPath(currentStoragePath);
+			await fs.writeFile(
+				legacyStoragePath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: {},
+					accounts: [
+						{
+							accountId: "legacy",
+							refreshToken: "legacy-token",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+			);
+
+			const actualStorageParser = await vi.importActual<
+				typeof import("../lib/storage/storage-parser.js")
+			>("../lib/storage/storage-parser.js");
+			vi.resetModules();
+			vi.doMock("../lib/storage/storage-parser.js", () => ({
+				...actualStorageParser,
+				loadAccountsFromPath: vi.fn(async (path, deps) => {
+					if (path === legacyStoragePath && !existsSync(resetMarkerPath)) {
+						await fs.writeFile(resetMarkerPath, "");
+					}
+					return actualStorageParser.loadAccountsFromPath(path, deps);
+				}),
+			}));
+
+			try {
+				const isolatedStorageModule = await import("../lib/storage.js");
+				const isolatedPathState = await import("../lib/storage/path-state.js");
+				isolatedPathState.setStoragePathState({
+					currentStoragePath,
+					currentLegacyProjectStoragePath: legacyStoragePath,
+					currentLegacyWorktreeStoragePath: null,
+					currentProjectRoot: null,
+				});
+
+				await expect(
+					isolatedStorageModule.exportAccounts(exportPath),
+				).rejects.toThrow(/No accounts to export/);
+
+				expect(existsSync(currentStoragePath)).toBe(false);
+				expect(existsSync(resetMarkerPath)).toBe(true);
+				expect(existsSync(legacyStoragePath)).toBe(true);
+				expect(existsSync(exportPath)).toBe(false);
+			} finally {
+				vi.doUnmock("../lib/storage/storage-parser.js");
+				vi.resetModules();
 				setStoragePathDirect(testStoragePath);
 			}
 		});
