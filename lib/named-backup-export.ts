@@ -229,12 +229,12 @@ export async function exportNamedBackupFile(
 	const destination = resolveNamedBackupPath(name, storagePath);
 	const backupRoot = getNamedBackupRoot(storagePath);
 	const exportKey = normalizePathForComparison(destination);
-	if (!options?.force && inFlightNamedBackupExports.has(exportKey)) {
+	if (inFlightNamedBackupExports.has(exportKey)) {
 		throw new Error(`File already exists: ${destination}`);
 	}
+	inFlightNamedBackupExports.add(exportKey);
 	assertWithinDirectory(dirname(backupRoot), backupRoot);
 	await fs.mkdir(backupRoot, { recursive: true });
-	inFlightNamedBackupExports.add(exportKey);
 	try {
 		await dependencies.exportAccounts(
 			destination,

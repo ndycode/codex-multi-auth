@@ -130,13 +130,16 @@ export function mergeImportedAccounts(params: {
 	}
 
 	const deduplicatedAccounts = params.deduplicateAccounts(merged);
+	const deduplicatedExistingAccounts =
+		params.deduplicateAccounts(existingAccounts);
 	const newStorage: AccountStorageV3 = {
 		version: 3,
 		accounts: deduplicatedAccounts,
 		activeIndex: existingActiveIndex,
 		activeIndexByFamily: params.existing?.activeIndexByFamily,
 	};
-	const importedCount = deduplicatedAccounts.length - existingAccounts.length;
+	const importedCount =
+		deduplicatedAccounts.length - deduplicatedExistingAccounts.length;
 	const skippedCount = params.imported.accounts.length - importedCount;
 	return {
 		newStorage,

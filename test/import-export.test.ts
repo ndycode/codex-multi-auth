@@ -32,6 +32,32 @@ describe("import export helpers", () => {
 		expect(result.imported).toBe(1);
 	});
 
+	it("counts imports against deduplicated existing storage", () => {
+		const result = mergeImportedAccounts({
+			existing: {
+				version: 3,
+				accounts: [{ refreshToken: "a" }, { refreshToken: "a" }],
+				activeIndex: 0,
+				activeIndexByFamily: {},
+			},
+			imported: {
+				version: 3,
+				accounts: [{ refreshToken: "b" }],
+				activeIndex: 0,
+				activeIndexByFamily: {},
+			},
+			maxAccounts: 10,
+			deduplicateAccounts: (accounts) =>
+				Array.from(
+					new Map(accounts.map((account) => [account.refreshToken, account])).values(),
+				),
+		});
+
+		expect(result.total).toBe(2);
+		expect(result.imported).toBe(1);
+		expect(result.skipped).toBe(0);
+	});
+
 	it("throws for invalid import payloads and empty exports", async () => {
 		await expect(
 			readImportFile({

@@ -19,12 +19,28 @@ export async function runRuntimeOAuthFlow(
 		pluginName: string;
 	},
 ): Promise<TokenResult> {
+	const pluginPrefix = `[${deps.pluginName}]`;
+	const prefixLogMessage = (
+		message: string,
+		options?: { leadingNewline?: boolean },
+	): string => {
+		if (
+			message.startsWith(pluginPrefix) ||
+			message.startsWith(`\n${pluginPrefix}`)
+		) {
+			return message;
+		}
+		return options?.leadingNewline
+			? `\n${pluginPrefix} ${message}`
+			: `${pluginPrefix} ${message}`;
+	};
 	return deps.runBrowserOAuthFlow({
 		forceNewLogin,
 		manualModeLabel: deps.manualModeLabel,
 		logInfo: deps.logInfo,
-		logDebug: deps.logDebug,
-		logWarn: deps.logWarn,
+		logDebug: (message) => deps.logDebug(prefixLogMessage(message)),
+		logWarn: (message) =>
+			deps.logWarn(prefixLogMessage(message, { leadingNewline: true })),
 	});
 }
 

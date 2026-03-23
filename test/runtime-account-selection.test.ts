@@ -24,6 +24,15 @@ function createTokens(): TokenSuccess {
 	};
 }
 
+function createDeps(logInfo = vi.fn()) {
+	return {
+		envAccountId: process.env.CODEX_AUTH_ACCOUNT_ID,
+		logInfo,
+		getAccountIdCandidates,
+		selectBestAccountCandidate,
+	};
+}
+
 describe("resolveAccountSelection", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -39,7 +48,7 @@ describe("resolveAccountSelection", () => {
 		const tokens = createTokens();
 		const logInfo = vi.fn();
 
-		const result = resolveAccountSelection(tokens, { logInfo });
+		const result = resolveAccountSelection(tokens, createDeps(logInfo));
 
 		expect(result).toEqual({
 			...tokens,
@@ -58,7 +67,7 @@ describe("resolveAccountSelection", () => {
 		vi.mocked(getAccountIdCandidates).mockReturnValueOnce([]);
 		const tokens = createTokens();
 
-		const result = resolveAccountSelection(tokens, { logInfo: vi.fn() });
+		const result = resolveAccountSelection(tokens, createDeps());
 
 		expect(result).toBe(tokens);
 		expect(selectBestAccountCandidate).not.toHaveBeenCalled();
@@ -75,7 +84,7 @@ describe("resolveAccountSelection", () => {
 		]);
 		const tokens = createTokens();
 
-		const result = resolveAccountSelection(tokens, { logInfo: vi.fn() });
+		const result = resolveAccountSelection(tokens, createDeps());
 
 		expect(result).toEqual({
 			...tokens,
@@ -112,7 +121,7 @@ describe("resolveAccountSelection", () => {
 		vi.mocked(selectBestAccountCandidate).mockReturnValueOnce(candidates[1]);
 		const tokens = createTokens();
 
-		const result = resolveAccountSelection(tokens, { logInfo: vi.fn() });
+		const result = resolveAccountSelection(tokens, createDeps());
 
 		expect(selectBestAccountCandidate).toHaveBeenCalledWith(candidates);
 		expect(result).toEqual({
@@ -154,7 +163,7 @@ describe("resolveAccountSelection", () => {
 		vi.mocked(selectBestAccountCandidate).mockReturnValueOnce(null);
 		const tokens = createTokens();
 
-		const result = resolveAccountSelection(tokens, { logInfo: vi.fn() });
+		const result = resolveAccountSelection(tokens, createDeps());
 
 		expect(selectBestAccountCandidate).toHaveBeenCalledWith(candidates);
 		expect(result).toBe(tokens);
