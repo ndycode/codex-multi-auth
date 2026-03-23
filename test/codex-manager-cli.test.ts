@@ -5417,6 +5417,54 @@ describe("codex manager cli commands", () => {
 		expect(storageState.accounts).toHaveLength(0);
 	});
 
+	it("skips manual callback prompting when stdin is already closed in non-tty mode", async () => {
+		setInteractiveTTY(false);
+		setOpenStdinState();
+		Object.defineProperty(process.stdin, "readableEnded", {
+			value: true,
+			configurable: true,
+		});
+		let storageState = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [] as Array<Record<string, unknown>>,
+		};
+		loadAccountsMock.mockImplementation(async () =>
+			structuredClone(storageState),
+		);
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const authModule = await import("../lib/auth/auth.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		const exchangeAuthorizationCodeMock = vi.mocked(
+			authModule.exchangeAuthorizationCode,
+		);
+
+		const browserModule = await import("../lib/auth/browser.js");
+		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+		const serverModule = await import("../lib/auth/server.js");
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login", "--manual"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptQuestionMock).not.toHaveBeenCalled();
+		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(
+			vi.mocked(serverModule.startLocalOAuthServer),
+		).not.toHaveBeenCalled();
+		expect(exchangeAuthorizationCodeMock).not.toHaveBeenCalled();
+		expect(storageState.accounts).toHaveLength(0);
+	});
+
 	it("falls back to pasted manual input when Windows-style callback bind fails", async () => {
 		setInteractiveTTY(false);
 		const now = Date.now();
