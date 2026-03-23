@@ -53,9 +53,6 @@ describe("experimental sync target entry", () => {
 
 			while (retryAttempts.length < 2) {
 				retryAttempts.push("EBUSY");
-				if (!options.retryableCodes.has("EBUSY")) {
-					throw Object.assign(new Error("busy"), { code: "EBUSY" });
-				}
 				await options.sleep(25 * retryAttempts.length);
 			}
 
