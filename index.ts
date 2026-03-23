@@ -379,29 +379,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			selectBestAccountCandidate,
 		});
 
-	const runOAuthFlow = async (
-		forceNewLogin: boolean = false,
-	): Promise<TokenResult> =>
-		runRuntimeOAuthFlow(forceNewLogin, {
-			runBrowserOAuthFlow: (input) =>
-				runBrowserOAuthFlow({
-					...input,
-					createAuthorizationFlow,
-					redactOAuthUrlForLog,
-					startLocalOAuthServer,
-					openBrowserUrl,
-					pluginName: PLUGIN_NAME,
-					authManualLabel: AUTH_LABELS.OAUTH_MANUAL,
-					exchangeAuthorizationCode,
-					redirectUri: REDIRECT_URI,
-				}),
-			manualModeLabel: AUTH_LABELS.OAUTH_MANUAL,
-			logInfo,
-			logDebug,
-			logWarn,
-			pluginName: PLUGIN_NAME,
-		});
-
 	const persistAccountPool = createPersistAccounts({
 		persistAccountPoolResults,
 		withAccountStorageTransaction,
@@ -2780,7 +2757,25 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							logInfo(`=== OpenAI OAuth (Account ${accounts.length + 1}) ===`);
 							const forceNewLogin =
 								accounts.length > 0 || refreshAccountIndex !== undefined;
-							const result = await runOAuthFlow(forceNewLogin);
+							const result = await runRuntimeOAuthFlow(forceNewLogin, {
+								runBrowserOAuthFlow: (input) =>
+									runBrowserOAuthFlow({
+										...input,
+										createAuthorizationFlow,
+										redactOAuthUrlForLog,
+										startLocalOAuthServer,
+										openBrowserUrl,
+										pluginName: PLUGIN_NAME,
+										authManualLabel: AUTH_LABELS.OAUTH_MANUAL,
+										exchangeAuthorizationCode,
+										redirectUri: REDIRECT_URI,
+									}),
+								manualModeLabel: AUTH_LABELS.OAUTH_MANUAL,
+								logInfo,
+								logDebug,
+								logWarn,
+								pluginName: PLUGIN_NAME,
+							});
 
 							let resolved: TokenSuccessWithAccount | null = null;
 							if (result.type === "success") {
