@@ -211,6 +211,7 @@ import {
 	runRuntimeOAuthFlow,
 } from "./lib/runtime/auth-facade.js";
 import { runBrowserOAuthFlow } from "./lib/runtime/browser-oauth-flow.js";
+import { hydrateRuntimeEmails } from "./lib/runtime/hydrate-emails.js";
 import { buildLoginMenuAccounts } from "./lib/runtime/login-menu-accounts.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
 import { applyRuntimePreemptiveQuotaSettings } from "./lib/runtime/preemptive-quota.js";
@@ -389,78 +390,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		findMatchingAccountIndex,
 		modelFamilies: MODEL_FAMILIES,
 	});
-
-	const hydrateEmails = async (
-		storage: AccountStorageV3 | null,
-	): Promise<AccountStorageV3 | null> => {
-		if (!storage) return storage;
-		const skipHydrate =
-			process.env.VITEST_WORKER_ID !== undefined ||
-			process.env.NODE_ENV === "test" ||
-			process.env.CODEX_SKIP_EMAIL_HYDRATE === "1";
-		if (skipHydrate) return storage;
-
-		const accountsCopy = storage.accounts.map((account) =>
-			account ? { ...account } : account,
-		);
-		const accountsToHydrate = accountsCopy.filter(
-			(account) => account && !account.email,
-		);
-		if (accountsToHydrate.length === 0) return storage;
-
-		let changed = false;
-		await Promise.all(
-			accountsToHydrate.map(async (account) => {
-				try {
-					const refreshed = await queuedRefresh(account.refreshToken);
-					if (refreshed.type !== "success") return;
-					const id = extractAccountId(refreshed.access);
-					const email = sanitizeEmail(
-						extractAccountEmail(refreshed.access, refreshed.idToken),
-					);
-					if (
-						id &&
-						id !== account.accountId &&
-						shouldUpdateAccountIdFromToken(
-							account.accountIdSource,
-							account.accountId,
-						)
-					) {
-						account.accountId = id;
-						account.accountIdSource = "token";
-						changed = true;
-					}
-					if (email && email !== account.email) {
-						account.email = email;
-						changed = true;
-					}
-					if (refreshed.access && refreshed.access !== account.accessToken) {
-						account.accessToken = refreshed.access;
-						changed = true;
-					}
-					if (
-						typeof refreshed.expires === "number" &&
-						refreshed.expires !== account.expiresAt
-					) {
-						account.expiresAt = refreshed.expires;
-						changed = true;
-					}
-					if (refreshed.refresh && refreshed.refresh !== account.refreshToken) {
-						account.refreshToken = refreshed.refresh;
-						changed = true;
-					}
-				} catch {
-					logWarn(`[${PLUGIN_NAME}] Failed to hydrate email for account`);
-				}
-			}),
-		);
-
-		if (changed) {
-			storage.accounts = accountsCopy;
-			await saveAccounts(storage);
-		}
-		return storage;
-	};
 
 	const invalidateAccountManagerCache = (): void => {
 		cachedAccountManager = null;
@@ -2474,7 +2403,19 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 						if (!explicitLoginMode) {
 							while (true) {
-								const loadedStorage = await hydrateEmails(await loadAccounts());
+								const loadedStorage = await hydrateRuntimeEmails(
+									await loadAccounts(),
+									{
+										queuedRefresh,
+										extractAccountId,
+										sanitizeEmail,
+										extractAccountEmail,
+										shouldUpdateAccountIdFromToken,
+										saveAccounts,
+										logWarn,
+										pluginName: PLUGIN_NAME,
+									},
+								);
 								const workingStorage = loadedStorage
 									? {
 											...loadedStorage,
@@ -2533,7 +2474,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								}
 
 								const accountCheckDeps = {
-									hydrateEmails,
+									hydrateEmails: (storage: AccountStorageV3 | null) =>
+										hydrateRuntimeEmails(storage, {
+											queuedRefresh,
+											extractAccountId,
+											sanitizeEmail,
+											extractAccountEmail,
+											shouldUpdateAccountIdFromToken,
+											saveAccounts,
+											logWarn,
+											pluginName: PLUGIN_NAME,
+										}),
 									loadAccounts,
 									createEmptyStorage: () => ({
 										version: 3 as const,
