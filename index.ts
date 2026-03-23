@@ -204,7 +204,10 @@ import {
 	getRateLimitResetTimeForFamily,
 	resolveActiveIndex,
 } from "./lib/runtime/account-status.js";
-import { reloadRuntimeAccountManager } from "./lib/runtime/account-manager-cache.js";
+import {
+	invalidateRuntimeAccountManagerCache,
+	reloadRuntimeAccountManager,
+} from "./lib/runtime/account-manager-cache.js";
 import {
 	createAccountManagerReloader,
 	createPersistAccounts,
@@ -391,9 +394,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		modelFamilies: MODEL_FAMILIES,
 	});
 
-	const invalidateAccountManagerCache = (): void => {
-		cachedAccountManager = null;
-		accountManagerPromise = null;
+	const accountManagerCacheInvalidationDeps = {
+		setCachedAccountManager: (value: unknown) => {
+			cachedAccountManager = value as AccountManager | null;
+		},
+		setAccountManagerPromise: (value: Promise<unknown> | null) => {
+			accountManagerPromise = value as Promise<AccountManager> | null;
+		},
 	};
 
 	const reloadAccountManagerFromDisk =
@@ -2507,7 +2514,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									clampRuntimeActiveIndices: clampActiveIndices,
 									MODEL_FAMILIES,
 									saveAccounts,
-									invalidateAccountManagerCache,
+									invalidateAccountManagerCache: () =>
+										invalidateRuntimeAccountManagerCache(
+											accountManagerCacheInvalidationDeps,
+										),
 									saveFlaggedAccounts,
 									showLine: (message: string) => console.log(message),
 								};
@@ -2527,7 +2537,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										queuedRefresh,
 										resolveTokenSuccessAccount,
 										persistAccounts: persistAccountPool,
-										invalidateAccountManagerCache,
+										invalidateAccountManagerCache: () =>
+											invalidateRuntimeAccountManagerCache(
+												accountManagerCacheInvalidationDeps,
+											),
 										saveFlaggedAccounts,
 										showLine: (message) => console.log(message),
 									});
@@ -2552,7 +2565,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														flagged.refreshToken !== target.refreshToken,
 												),
 											});
-											invalidateAccountManagerCache();
+											invalidateRuntimeAccountManagerCache(
+												accountManagerCacheInvalidationDeps,
+											);
 											console.log(
 												`\nDeleted ${target.email ?? `Account ${menuResult.deleteAccountIndex + 1}`}.\n`,
 											);
@@ -2566,7 +2581,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										if (target) {
 											target.enabled = target.enabled === false ? true : false;
 											await saveAccounts(workingStorage);
-											invalidateAccountManagerCache();
+											invalidateRuntimeAccountManagerCache(
+												accountManagerCacheInvalidationDeps,
+											);
 											console.log(
 												`\n${target.email ?? `Account ${menuResult.toggleAccountIndex + 1}`} ${target.enabled === false ? "disabled" : "enabled"}.\n`,
 											);
@@ -2588,7 +2605,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									if (menuResult.deleteAll) {
 										await clearAccounts();
 										await clearFlaggedAccounts();
-										invalidateAccountManagerCache();
+										invalidateRuntimeAccountManagerCache(
+											accountManagerCacheInvalidationDeps,
+										);
 										console.log(
 											"\nCleared saved accounts from active storage. Recovery snapshots remain available. Starting fresh.\n",
 										);
@@ -2655,7 +2674,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								onSuccess: async (tokens) => {
 									try {
 										await persistAccountPool([tokens], startFresh);
-										invalidateAccountManagerCache();
+										invalidateRuntimeAccountManagerCache(
+											accountManagerCacheInvalidationDeps,
+										);
 									} catch (err) {
 										const storagePath = getStoragePath();
 										const errorCode =
@@ -2780,7 +2801,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									[resolved],
 									isFirstAccount && startFresh,
 								);
-								invalidateAccountManagerCache();
+								invalidateRuntimeAccountManagerCache(
+									accountManagerCacheInvalidationDeps,
+								);
 							} catch (err) {
 								const storagePath = getStoragePath();
 								const errorCode =
@@ -3924,7 +3947,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								);
 								try {
 									const result = await importAccounts(filePath);
-									invalidateAccountManagerCache();
+									invalidateRuntimeAccountManagerCache(
+										accountManagerCacheInvalidationDeps,
+									);
 									const lines = [`Import complete.`, ``];
 									if (result.imported > 0) {
 										lines.push(`New accounts: ${result.imported}`);
