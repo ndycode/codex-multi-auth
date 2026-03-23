@@ -24,6 +24,7 @@ import { sleep } from "../../utils.js";
 interface ReportCliOptions {
 	live: boolean;
 	json: boolean;
+	explain: boolean;
 	model: string;
 	outPath?: string;
 }
@@ -77,11 +78,12 @@ function isRetryableWriteError(error: unknown): boolean {
 function printReportUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
-			"Usage: codex auth report [--live] [--json] [--model MODEL] [--out PATH]",
+			"Usage: codex auth report [--live] [--json] [--explain] [--model MODEL] [--out PATH]",
 			"",
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
+			"  --explain          Print per-account reasoning in text mode",
 			"  --model, -m        Probe model for live mode (default: gpt-5-codex)",
 			"  --out              Write JSON report to a file path",
 		].join("\n"),
@@ -92,6 +94,7 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 	const options: ReportCliOptions = {
 		live: false,
 		json: false,
+		explain: false,
 		model: "gpt-5-codex",
 	};
 
@@ -104,6 +107,10 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 		}
 		if (arg === "--json" || arg === "-j") {
 			options.json = true;
+			continue;
+		}
+		if (arg === "--explain") {
+			options.explain = true;
 			continue;
 		}
 		if (arg === "--model" || arg === "-m") {
@@ -414,6 +421,23 @@ export async function runReportCommand(
 	}
 	if (report.forecast.probeErrors.length > 0) {
 		logInfo(`Probe notes: ${report.forecast.probeErrors.length}`);
+	}
+	if (options.explain) {
+		logInfo("");
+		for (const account of report.forecast.accounts) {
+			logInfo(
+				`Account ${account.index + 1}: ${account.availability}, ${account.riskLevel} risk (${account.riskScore})`,
+			);
+			if (account.reasons.length > 0) {
+				logInfo(`  Reasons: ${account.reasons.join("; ")}`);
+			}
+			if (account.refreshFailure?.message) {
+				logInfo(`  Refresh failure: ${account.refreshFailure.message}`);
+			}
+			if (account.liveQuota?.summary) {
+				logInfo(`  Live quota: ${account.liveQuota.summary}`);
+			}
+		}
 	}
 	return 0;
 }

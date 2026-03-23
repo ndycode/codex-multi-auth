@@ -278,6 +278,9 @@ describe("Documentation Integrity", () => {
 		expect(commandRef).toContain(
 			"| `--json` | verify-flagged, best, forecast, report, fix, doctor, config explain, debug bundle |",
 		);
+		expect(commandRef).toContain(
+			"| `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |",
+		);
 		expect(commandRef).toContain("| `--live` | best, forecast, report, fix |");
 		expect(commandRef).toContain(
 			"| `--model <model>` | best, forecast, report, fix |",
@@ -285,6 +288,9 @@ describe("Documentation Integrity", () => {
 		expect(help).toContain("codex auth login");
 		expect(help).toContain(
 			"codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
+		);
+		expect(help).toContain(
+			"codex auth report [--live] [--json] [--explain] [--model <model>] [--out <path>]",
 		);
 		expect(help).toContain("codex auth config explain [--json]");
 		expect(help).toContain("codex auth debug bundle [--json]");

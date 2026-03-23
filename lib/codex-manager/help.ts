@@ -20,7 +20,7 @@ export function printUsage(): void {
 			"  codex auth doctor [--json] [--fix] [--dry-run]",
 			"",
 			"Advanced:",
-			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
+			"  codex auth report [--live] [--json] [--explain] [--model <model>] [--out <path>]",
 			"  codex auth config explain [--json]",
 			"  codex auth debug bundle [--json]",
 			"  codex auth features",

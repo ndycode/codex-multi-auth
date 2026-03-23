@@ -65,7 +65,7 @@ Compatibility aliases are supported:
 | --- | --- | --- |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow |
 | `--json` | verify-flagged, best, forecast, report, fix, doctor, config explain, debug bundle | Print machine-readable output |
-| `--explain` | forecast | Include recommendation reasoning details in text and JSON output, even when recommendation summary lines are hidden |
+| `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |
 | `--live` | best, forecast, report, fix | Use live probe before decisions/output |
 | `--dry-run` | verify-flagged, fix, doctor | Preview without writing storage |
 | `--model <model>` | best, forecast, report, fix | Specify model for live probe paths |
