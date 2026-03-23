@@ -324,15 +324,25 @@ vi.mock("../lib/accounts.js", async () => {
 	};
 });
 
-vi.mock("../lib/storage.js", () => ({
-	getStoragePath: () => "",
-	loadAccounts: async () => null,
-	saveAccounts: async () => {},
-	setStoragePath: () => {},
-	setStorageBackupEnabled: () => {},
-	exportAccounts: async () => {},
-	importAccounts: async () => ({ imported: 0, total: 0 }),
-}));
+vi.mock("../lib/storage.js", async () => {
+	const actual = await vi.importActual("../lib/storage.js");
+	return {
+		...actual,
+		getStoragePath: () => "",
+		loadAccounts: async () => null,
+		saveAccounts: async () => {},
+		withAccountStorageTransaction: async <T>(
+			handler: (
+				loadedStorage: null,
+				persist: (storage: unknown) => Promise<void>,
+			) => Promise<T>,
+		): Promise<T> => handler(null, async (_storage: unknown) => {}),
+		setStoragePath: () => {},
+		setStorageBackupEnabled: () => {},
+		exportAccounts: async () => {},
+		importAccounts: async () => ({ imported: 0, total: 0 }),
+	};
+});
 
 vi.mock("../lib/recovery.js", () => ({
 	createSessionRecoveryHook: () => null,

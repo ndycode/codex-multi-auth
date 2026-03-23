@@ -14,7 +14,14 @@ vi.mock("node:fs", () => ({
 const originalFetch = global.fetch;
 let mockFetch: ReturnType<typeof vi.fn>;
 
-import { getModelFamily, getCodexInstructions, MODEL_FAMILIES, TOOL_REMAP_MESSAGE, __clearCacheForTesting } from "../lib/prompts/codex.js";
+import {
+	__clearCacheForTesting,
+	getCodexInstructions,
+	getModelFamily,
+	MODEL_FAMILIES,
+	prewarmCodexInstructions,
+	TOOL_REMAP_MESSAGE,
+} from "../lib/prompts/codex.js";
 
 const mockedReadFile = vi.mocked(fs.readFile);
 const mockedWriteFile = vi.mocked(fs.writeFile);
@@ -86,9 +93,15 @@ describe("Codex Prompts Module", () => {
 				expect(getModelFamily("gpt-5.1-codex-mini-low")).toBe("gpt-5-codex");
 			});
 
+			it("should route GPT-5.4 era general models through the latest available general prompt family", () => {
+				expect(getModelFamily("gpt-5.4")).toBe("gpt-5.2");
+				expect(getModelFamily("gpt-5.4-pro")).toBe("gpt-5.2");
+				expect(getModelFamily("gpt-5-mini")).toBe("gpt-5.2");
+			});
+
 		it("should detect models starting with codex-", () => {
-			expect(getModelFamily("codex-mini")).toBe("codex");
-			expect(getModelFamily("codex-latest")).toBe("codex");
+			expect(getModelFamily("codex-mini")).toBe("gpt-5-codex");
+			expect(getModelFamily("codex-latest")).toBe("gpt-5-codex");
 		});
 	});
 
@@ -154,6 +167,15 @@ describe("Codex Prompts Module", () => {
 				const result = await getCodexInstructions("codex-max");
 				expect(result).toBe("new instructions from github");
 				expect(mockFetch).toHaveBeenCalledTimes(2);
+				const rawGitHubUrls = mockFetch.mock.calls
+					.map((call) => call[0])
+					.filter(
+						(url): url is string =>
+							typeof url === "string" && url.includes("raw.githubusercontent.com"),
+					);
+				expect(
+					rawGitHubUrls.some((url) => url.includes("gpt-5.1-codex-max_prompt.md")),
+				).toBe(true);
 			});
 
 			it("should handle 304 Not Modified response", async () => {
@@ -237,6 +259,15 @@ describe("Codex Prompts Module", () => {
 
 				const result = await getCodexInstructions("gpt-5.2-codex");
 				expect(result).toBe("fallback instructions");
+				const rawGitHubUrls = mockFetch.mock.calls
+					.map((call) => call[0])
+					.filter(
+						(url): url is string =>
+							typeof url === "string" && url.includes("raw.githubusercontent.com"),
+					);
+				expect(rawGitHubUrls.some((url) => url.includes("gpt_5_codex_prompt.md"))).toBe(
+					true,
+				);
 			});
 
 			it("should parse tag from HTML content if URL parsing fails", async () => {
@@ -360,6 +391,46 @@ describe("Codex Prompts Module", () => {
 				const result = await getCodexInstructions("gpt-5.1");
 				expect(result).toBe("bundled fallback instructions");
 			});
+
+			it("prewarms unique prompt families once while retaining gpt-5.1 coverage", async () => {
+				mockedReadFile.mockRejectedValue(new Error("ENOENT"));
+				mockFetch.mockImplementation((input) => {
+					if (typeof input === "string" && input.includes("api.github.com")) {
+						return Promise.resolve({
+							ok: true,
+							json: () => Promise.resolve({ tag_name: "rust-v0.120.0" }),
+						});
+					}
+					return Promise.resolve({
+						ok: true,
+						text: () => Promise.resolve("prewarmed content"),
+						headers: { get: () => "etag" },
+					});
+				});
+				mockedMkdir.mockResolvedValue(undefined);
+				mockedWriteFile.mockResolvedValue(undefined);
+
+				prewarmCodexInstructions();
+
+				await vi.waitFor(() => {
+					const rawCalls = mockFetch.mock.calls.filter(
+						(call) =>
+							typeof call[0] === "string" &&
+							call[0].includes("raw.githubusercontent.com"),
+					);
+					expect(rawCalls).toHaveLength(3);
+				});
+
+				const rawUrls = mockFetch.mock.calls
+					.map((call) => call[0])
+					.filter(
+						(url): url is string =>
+							typeof url === "string" && url.includes("raw.githubusercontent.com"),
+					);
+				expect(rawUrls.filter((url) => url.includes("gpt_5_2_prompt.md"))).toHaveLength(1);
+				expect(rawUrls.some((url) => url.includes("gpt_5_codex_prompt.md"))).toBe(true);
+				expect(rawUrls.some((url) => url.includes("gpt_5_1_prompt.md"))).toBe(true);
+			});
 		});
 
 		describe("Cache size management", () => {
@@ -456,6 +527,48 @@ describe("Codex Prompts Module", () => {
 							call[0].includes("raw.githubusercontent.com"),
 					);
 					expect(rawGitHubCall?.[0]).toContain("gpt_5_codex_prompt.md");
+				});
+
+				it("should map gpt-5.4 prompts to the latest available general prompt file", async () => {
+					mockedReadFile.mockRejectedValue(new Error("ENOENT"));
+					mockFetch.mockResolvedValue({
+						ok: true,
+						json: () => Promise.resolve({ tag_name: "rust-v0.116.0" }),
+						text: () => Promise.resolve("content"),
+						headers: { get: () => "etag" },
+					});
+					mockedMkdir.mockResolvedValue(undefined);
+					mockedWriteFile.mockResolvedValue(undefined);
+
+					await getCodexInstructions("gpt-5.4");
+					const fetchCalls = mockFetch.mock.calls;
+					const rawGitHubCall = fetchCalls.find(
+						(call) =>
+							typeof call[0] === "string" &&
+							call[0].includes("raw.githubusercontent.com"),
+					);
+					expect(rawGitHubCall?.[0]).toContain("gpt_5_2_prompt.md");
+				});
+
+				it("should map gpt-5.2 prompts to the latest available general prompt file", async () => {
+					mockedReadFile.mockRejectedValue(new Error("ENOENT"));
+					mockFetch.mockResolvedValue({
+						ok: true,
+						json: () => Promise.resolve({ tag_name: "rust-v0.116.0" }),
+						text: () => Promise.resolve("content"),
+						headers: { get: () => "etag" },
+					});
+					mockedMkdir.mockResolvedValue(undefined);
+					mockedWriteFile.mockResolvedValue(undefined);
+
+					await getCodexInstructions("gpt-5.2");
+					const fetchCalls = mockFetch.mock.calls;
+					const rawGitHubCall = fetchCalls.find(
+						(call) =>
+							typeof call[0] === "string" &&
+							call[0].includes("raw.githubusercontent.com"),
+					);
+					expect(rawGitHubCall?.[0]).toContain("gpt_5_2_prompt.md");
 				});
 			});
 		});

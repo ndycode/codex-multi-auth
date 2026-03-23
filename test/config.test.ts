@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
 	applyFastSessionDefaults,
 	getModelConfig,
 	getReasoningConfig,
 } from '../lib/request/request-transformer.js';
+import * as logger from '../lib/logger.js';
 import type { UserConfig } from '../lib/types.js';
 
 describe('Configuration Parsing', () => {
@@ -90,11 +91,33 @@ describe('Configuration Parsing', () => {
 			expect(defaultReasoning.summary).toBe('auto');
 		});
 
-		it('should use minimal effort for lightweight models (nano/mini)', () => {
+		it('should keep lightweight general models on their fixed medium reasoning tier', () => {
 			const nanoReasoning = getReasoningConfig('gpt-5-nano', {});
 
-			expect(nanoReasoning.effort).toBe('minimal');
+			expect(nanoReasoning.effort).toBe('medium');
 			expect(nanoReasoning.summary).toBe('auto');
+		});
+
+		it('should warn when a lightweight model reasoning request is coerced', () => {
+			const warnSpy = vi.spyOn(logger, 'logWarn').mockImplementation(() => {});
+
+			try {
+				const miniReasoning = getReasoningConfig('gpt-5-mini', {
+					reasoningEffort: 'high',
+				});
+
+				expect(miniReasoning.effort).toBe('medium');
+				expect(warnSpy).toHaveBeenCalledWith(
+					'Coercing unsupported reasoning effort for model',
+					expect.objectContaining({
+						model: 'gpt-5-mini',
+						requestedEffort: 'high',
+						effectiveEffort: 'medium',
+					}),
+				);
+			} finally {
+				warnSpy.mockRestore();
+			}
 		});
 
 		it('should normalize "minimal" to "low" for gpt-5-codex', () => {
@@ -105,11 +128,16 @@ describe('Configuration Parsing', () => {
 			expect(codexMinimalReasoning.summary).toBe('auto');
 		});
 
-		it('should preserve "minimal" effort for non-codex models', () => {
+		it('should preserve "minimal" effort for GPT-5 general models that still support it', () => {
 			const gpt5MinimalConfig = { reasoningEffort: 'minimal' as const };
 			const gpt5MinimalReasoning = getReasoningConfig('gpt-5', gpt5MinimalConfig);
 
 			expect(gpt5MinimalReasoning.effort).toBe('minimal');
+		});
+
+		it('should default GPT-5.4 general models to none reasoning', () => {
+			const gpt54Reasoning = getReasoningConfig('gpt-5.4', {});
+			expect(gpt54Reasoning.effort).toBe('none');
 		});
 
 		it('should handle high effort setting', () => {
@@ -169,7 +197,7 @@ describe('Configuration Parsing', () => {
 	describe('Model-specific behavior', () => {
 		it('should detect lightweight models correctly', () => {
 			const miniReasoning = getReasoningConfig('gpt-5-mini', {});
-			expect(miniReasoning.effort).toBe('minimal');
+			expect(miniReasoning.effort).toBe('medium');
 		});
 
 		it('should detect codex models correctly', () => {
@@ -181,6 +209,13 @@ describe('Configuration Parsing', () => {
 		it('should handle standard gpt-5 model', () => {
 			const gpt5Reasoning = getReasoningConfig('gpt-5', {});
 			expect(gpt5Reasoning.effort).toBe('medium');
+		});
+
+		it('should clamp unsupported low effort on GPT-5.4-pro up to medium', () => {
+			const gpt54ProReasoning = getReasoningConfig('gpt-5.4-pro', {
+				reasoningEffort: 'low',
+			});
+			expect(gpt54ProReasoning.effort).toBe('medium');
 		});
 	});
 });

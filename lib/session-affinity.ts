@@ -10,6 +10,7 @@ export interface SessionAffinityOptions {
 interface SessionAffinityEntry {
 	accountIndex: number;
 	expiresAt: number;
+	lastResponseId?: string;
 	updatedAt: number;
 }
 
@@ -65,14 +66,66 @@ export class SessionAffinityStore {
 		if (!key) return;
 		if (!Number.isFinite(accountIndex) || accountIndex < 0) return;
 
-		if (this.entries.size >= this.maxEntries && !this.entries.has(key)) {
-			const oldest = this.findOldestKey();
-			if (oldest) this.entries.delete(oldest);
-		}
+		const existingEntry = this.entries.get(key);
 
-		this.entries.set(key, {
+		this.setEntry(key, {
 			accountIndex,
 			expiresAt: now + this.ttlMs,
+			lastResponseId: existingEntry?.lastResponseId,
+			updatedAt: now,
+		});
+	}
+
+	getLastResponseId(sessionKey: string | null | undefined, now = Date.now()): string | null {
+		const key = normalizeSessionKey(sessionKey);
+		if (!key) return null;
+
+		const entry = this.entries.get(key);
+		if (!entry) return null;
+		if (entry.expiresAt <= now) {
+			this.entries.delete(key);
+			return null;
+		}
+
+		const lastResponseId =
+			typeof entry.lastResponseId === "string" ? entry.lastResponseId.trim() : "";
+		return lastResponseId || null;
+	}
+
+	/**
+	 * Update the last response id for an existing live session.
+	 *
+	 * This method does not create a new affinity entry; callers that need to
+	 * upsert continuation state should use `rememberWithResponseId`.
+	 */
+	rememberLastResponseId(
+		sessionKey: string | null | undefined,
+		responseId: string | null | undefined,
+		now = Date.now(),
+	): void {
+		this.updateLastResponseId(sessionKey, responseId, now);
+	}
+
+	updateLastResponseId(
+		sessionKey: string | null | undefined,
+		responseId: string | null | undefined,
+		now = Date.now(),
+	): void {
+		const key = normalizeSessionKey(sessionKey);
+		const normalizedResponseId = typeof responseId === "string" ? responseId.trim() : "";
+		if (!key || !normalizedResponseId) return;
+
+		const entry = this.entries.get(key);
+		if (!entry) return;
+		if (entry.expiresAt <= now) {
+			this.entries.delete(key);
+			return;
+		}
+
+		this.setEntry(key, {
+			...entry,
+			expiresAt: now + this.ttlMs,
+			lastResponseId: normalizedResponseId,
 			updatedAt: now,
 		});
 	}
@@ -126,6 +179,15 @@ export class SessionAffinityStore {
 
 	size(): number {
 		return this.entries.size;
+	}
+
+	private setEntry(key: string, entry: SessionAffinityEntry): void {
+		if (this.entries.size >= this.maxEntries && !this.entries.has(key)) {
+			const oldest = this.findOldestKey();
+			if (oldest) this.entries.delete(oldest);
+		}
+
+		this.entries.set(key, entry);
 	}
 
 	private findOldestKey(): string | null {

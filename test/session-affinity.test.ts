@@ -113,4 +113,34 @@ describe("SessionAffinityStore", () => {
 		expect(store.getPreferredAccountIndex("s1", 2_001)).toBeNull();
 		expect(store.getPreferredAccountIndex("s2", 2_001)).toBe(1);
 	});
+
+	it("updates and retrieves the last response id for a live session", () => {
+		const store = new SessionAffinityStore({ ttlMs: 10_000, maxEntries: 4 });
+		store.remember("session-a", 1, 1_000);
+		store.updateLastResponseId("session-a", "resp_123", 2_000);
+
+		expect(store.getLastResponseId("session-a", 2_500)).toBe("resp_123");
+		expect(store.getPreferredAccountIndex("session-a", 2_500)).toBe(1);
+	});
+
+	it("does not persist response ids for missing or expired sessions", () => {
+		const store = new SessionAffinityStore({ ttlMs: 1_000, maxEntries: 4 });
+		store.updateLastResponseId("missing", "resp_missing", 1_000);
+		expect(store.getLastResponseId("missing", 1_500)).toBeNull();
+
+		store.remember("session-a", 1, 1_000);
+		store.updateLastResponseId("session-a", "resp_123", 2_500);
+		expect(store.getLastResponseId("session-a", 2_500)).toBeNull();
+		expect(store.size()).toBe(0);
+	});
+
+	it("preserves response id when account index is updated via remember()", () => {
+		const store = new SessionAffinityStore({ ttlMs: 10_000, maxEntries: 4 });
+		store.remember("session-a", 1, 1_000);
+		store.updateLastResponseId("session-a", "resp_123", 2_000);
+		store.remember("session-a", 2, 3_000);
+
+		expect(store.getLastResponseId("session-a", 3_500)).toBe("resp_123");
+		expect(store.getPreferredAccountIndex("session-a", 3_500)).toBe(2);
+	});
 });

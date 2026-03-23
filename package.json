@@ -4,6 +4,39 @@
 	"description": "Multi-account OAuth manager and codex auth wrapper for the official @openai/codex CLI, with switching, health checks, and recovery tools",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
+		},
+		"./auth": {
+			"types": "./dist/lib/auth/index.d.ts",
+			"import": "./dist/lib/auth/index.js",
+			"default": "./dist/lib/auth/index.js"
+		},
+		"./storage": {
+			"types": "./dist/lib/storage.d.ts",
+			"import": "./dist/lib/storage.js",
+			"default": "./dist/lib/storage.js"
+		},
+		"./config": {
+			"types": "./dist/lib/config.d.ts",
+			"import": "./dist/lib/config.js",
+			"default": "./dist/lib/config.js"
+		},
+		"./request": {
+			"types": "./dist/lib/request/index.d.ts",
+			"import": "./dist/lib/request/index.js",
+			"default": "./dist/lib/request/index.js"
+		},
+		"./cli": {
+			"types": "./dist/lib/codex-cli/index.d.ts",
+			"import": "./dist/lib/codex-cli/index.js",
+			"default": "./dist/lib/codex-cli/index.js"
+		},
+		"./package.json": "./package.json"
+	},
 	"type": "module",
 	"license": "MIT",
 	"author": "ndycode",
@@ -39,12 +72,13 @@
 	"scripts": {
 		"build": "tsc && node scripts/copy-oauth-success.js",
 		"typecheck": "tsc --noEmit",
+		"typecheck:scripts": "tsc -p tsconfig.scripts.json",
 		"lint": "npm run lint:ts && npm run lint:scripts",
 		"lint:ts": "eslint . --ext .ts",
-		"lint:scripts": "eslint scripts --ext .js",
+		"lint:scripts": "eslint scripts --ext .js,.mjs",
 		"lint:fix": "npm run lint:ts:fix && npm run lint:scripts:fix",
 		"lint:ts:fix": "eslint . --ext .ts --fix",
-		"lint:scripts:fix": "eslint scripts --ext .js --fix",
+		"lint:scripts:fix": "eslint scripts --ext .js,.mjs --fix",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:ui": "vitest --ui",
@@ -53,6 +87,7 @@
 		"test:model-matrix:report": "node scripts/test-model-matrix.js --smoke --report-json=.tmp/model-matrix-report.json",
 		"clean:repo": "node scripts/repo-hygiene.js clean --mode aggressive",
 		"clean:repo:check": "node scripts/repo-hygiene.js check",
+		"pack:check": "node scripts/check-pack-budget.mjs",
 		"bench:edit-formats": "node scripts/benchmark-edit-formats.mjs --preset=codex-core",
 		"bench:edit-formats:smoke": "node scripts/benchmark-edit-formats.mjs --smoke --preset=codex-core",
 		"bench:edit-formats:render": "node scripts/benchmark-render-dashboard.mjs",
@@ -64,6 +99,8 @@
 		"audit:all": "npm audit --audit-level=high",
 		"audit:dev:allowlist": "node scripts/audit-dev-allowlist.js",
 		"audit:ci": "npm run audit:prod && npm run audit:dev:allowlist",
+		"vendor:verify": "node scripts/verify-vendor-provenance.mjs",
+		"vendor:update-manifest": "node scripts/update-vendor-provenance.mjs",
 		"prepublishOnly": "npm run build",
 		"prepare": "husky"
 	},
@@ -88,7 +125,7 @@
 		"*.ts": [
 			"eslint --max-warnings=0 --fix --no-warn-ignored"
 		],
-		"scripts/**/*.js": [
+		"scripts/**/*.{js,mjs}": [
 			"eslint --max-warnings=0 --fix --no-warn-ignored"
 		]
 	},

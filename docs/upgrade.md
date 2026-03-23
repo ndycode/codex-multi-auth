@@ -32,10 +32,11 @@ npm uninstall -g @ndycode/codex-multi-auth
 npm i -g codex-multi-auth
 ```
 
-1. Verify routing and status:
+1. Verify routing and wrapper status:
 
 ```bash
 codex --version
+codex-multi-auth --version
 codex auth status
 ```
 
@@ -73,6 +74,16 @@ After source selection, environment variables still override individual setting 
 
 For day-to-day operator use, prefer stable overrides documented in [configuration.md](configuration.md).
 For maintainer/debug flows, see advanced/internal controls in [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md).
+
+---
+
+## Responses Background Mode Upgrade Note
+
+`backgroundResponses` and `CODEX_AUTH_BACKGROUND_RESPONSES=1` are opt-in compatibility controls for callers that intentionally send Responses API `background: true`.
+
+- Leave them disabled for existing stateless pipelines. The default routing remains `store=false`.
+- Enabling them switches background requests onto the stateful path, forces `store=true`, preserves caller-supplied input item IDs, and skips stateless-only defaults such as fast-session trimming and `reasoning.encrypted_content` injection.
+- No new npm scripts or storage migrations are required, but you should validate one known `background: true` request end to end before enabling the flag across shared automation.
 
 ---
 

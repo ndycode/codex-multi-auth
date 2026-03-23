@@ -62,8 +62,11 @@ npm i -g codex-multi-auth
 
 ### Option C: Verify wiring
 
+`codex --version` confirms the official Codex CLI is reachable. `codex-multi-auth --version` confirms the installed wrapper package version.
+
 ```bash
 codex --version
+codex-multi-auth --version
 codex auth status
 ```
 
@@ -93,54 +96,65 @@ codex auth check
 
 ## Quick Start
 
+Install and sign in:
+
 ```bash
+npm i -g @openai/codex
+npm i -g codex-multi-auth
 codex auth login
+```
+
+Verify the wrapper and the new account:
+
+```bash
 codex auth status
 codex auth check
+```
+
+Use these next:
+
+```bash
+codex auth list
+codex auth switch 2
 codex auth forecast --live
 ```
 
-Day-1 command set:
-
-```bash
-codex auth switch 2
-codex auth report --live --json
-codex auth fix --dry-run
-codex auth doctor --fix
-```
-
-If the shell should not launch a browser, use the manual callback flow:
-
-```bash
-codex auth login --manual
-CODEX_AUTH_NO_BROWSER=1 codex auth login
-```
-
-In non-TTY/manual shells, provide the full redirect URL on stdin instead of waiting for a browser callback:
-
-```bash
-echo "http://127.0.0.1:1455/auth/callback?code=..." | codex auth login --manual
-```
-
-No new npm scripts or storage migration steps are required for this login-flow update.
+If browser launch is blocked, use the alternate login paths in [docs/getting-started.md](docs/getting-started.md#alternate-login-paths).
 
 ---
 
 ## Command Toolkit
 
-| Command | What it does |
+### Start here
+
+| Command | What it answers |
 | --- | --- |
-| `codex auth login` | Open interactive account dashboard |
-| `codex auth list` | List saved accounts and active account |
-| `codex auth status` | Print short runtime/status summary |
-| `codex auth switch <index>` | Set active account by index |
-| `codex auth check` | Run quick account health checks |
-| `codex auth verify-flagged` | Re-test flagged accounts and optionally restore |
-| `codex auth forecast --live` | Forecast best next account with live probes |
-| `codex auth report --live --json` | Generate machine-readable health report |
-| `codex auth fix --dry-run` | Preview safe repairs |
-| `codex auth fix --live --model gpt-5-codex` | Run repairs with live probe model |
-| `codex auth doctor --fix` | Diagnose and apply safe fixes |
+| `codex auth login` | How do I add or re-open the account menu? |
+| `codex auth status` | Is the wrapper active right now? |
+| `codex auth check` | Do my saved accounts look healthy? |
+
+### Daily use
+
+| Command | What it answers |
+| --- | --- |
+| `codex auth list` | Which accounts are saved and which one is active? |
+| `codex auth switch <index>` | How do I move to a different saved account? |
+| `codex auth forecast --live` | Which account looks best for the next session? |
+
+### Repair
+
+| Command | What it answers |
+| --- | --- |
+| `codex auth verify-flagged` | Can any previously flagged account be restored? |
+| `codex auth fix --dry-run` | What safe storage or account repairs are available? |
+| `codex auth doctor --fix` | Can the CLI diagnose and apply the safest fixes now? |
+
+### Advanced
+
+| Command | What it answers |
+| --- | --- |
+| `codex auth report --live --json` | How do I get the full machine-readable health report? |
+| `codex auth fix --live --model gpt-5-codex` | How do I run live repair probes with a chosen model? |
 
 ---
 
@@ -199,6 +213,7 @@ Selected runtime/environment overrides:
 | `CODEX_TUI_V2=0/1` | Disable/enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | TUI color profile |
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | TUI glyph style |
+| `CODEX_AUTH_BACKGROUND_RESPONSES=0/1` | Opt in/out of stateful Responses `background: true` compatibility |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | Request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=<ms>` | Stream stall timeout override |
 
@@ -209,6 +224,8 @@ codex auth status
 codex auth check
 codex auth forecast --live
 ```
+
+Responses background mode stays opt-in. Enable `backgroundResponses` in settings or `CODEX_AUTH_BACKGROUND_RESPONSES=1` only for callers that intentionally send `background: true`, because those requests switch from stateless `store=false` routing to stateful `store=true`. See [docs/upgrade.md](docs/upgrade.md) for rollout guidance.
 
 ---
 
@@ -291,9 +308,9 @@ codex auth doctor --json
 
 ## Release Notes
 
-- Current stable: [docs/releases/v1.2.0.md](docs/releases/v1.2.0.md)
-- Previous stable: [docs/releases/v1.1.10.md](docs/releases/v1.1.10.md)
-- Earlier stable: [docs/releases/v0.1.9.md](docs/releases/v0.1.9.md)
+- Current stable: [docs/releases/v1.1.10.md](docs/releases/v1.1.10.md)
+- Previous stable: [docs/releases/v0.1.9.md](docs/releases/v0.1.9.md)
+- Earlier stable: [docs/releases/v0.1.8.md](docs/releases/v0.1.8.md)
 - Archived prerelease: [docs/releases/v0.1.0-beta.0.md](docs/releases/v0.1.0-beta.0.md)
 
 ## License

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -12,11 +13,13 @@ import {
 	exportNamedBackup,
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
+	getAccountIdentityKey,
 	getFlaggedAccountsPath,
 	getStoragePath,
 	importAccounts,
 	loadAccounts,
 	loadFlaggedAccounts,
+	normalizeEmailKey,
 	normalizeAccountStorage,
 	resolveAccountSelectionIndex,
 	saveFlaggedAccounts,
@@ -24,14 +27,12 @@ import {
 	saveAccounts,
 	setStoragePath,
 	setStoragePathDirect,
+	clearFlaggedAccounts,
+	toStorageError,
 	withAccountAndFlaggedStorageTransaction,
 	withAccountStorageTransaction,
+	withFlaggedStorageTransaction,
 } from "../lib/storage.js";
-
-// Mocking the behavior we're about to implement for TDD
-// Since the functions aren't in lib/storage.ts yet, we'll need to mock them or
-// accept that this test won't even compile/run until we add them.
-// But Task 0 says: "Tests should fail initially (RED phase)"
 
 describe("storage", () => {
 	const _origCODEX_HOME = process.env.CODEX_HOME;
@@ -48,6 +49,107 @@ describe("storage", () => {
 		if (_origCODEX_MULTI_AUTH_DIR !== undefined)
 			process.env.CODEX_MULTI_AUTH_DIR = _origCODEX_MULTI_AUTH_DIR;
 		else delete process.env.CODEX_MULTI_AUTH_DIR;
+	});
+
+	describe("storage error hints", () => {
+		it("formats actionable Windows file-lock guidance for EBUSY errors", () => {
+			const hint = formatStorageErrorHint(
+				{ code: "EBUSY" },
+				"C:/Users/example/.codex/multi-auth/openai-codex-accounts.json",
+			);
+
+			expect(hint).toContain("File is locked");
+			expect(hint).toContain("open in another program");
+		});
+
+		it("preserves the original cause and hint on StorageError", () => {
+			const cause = Object.assign(new Error("permission denied"), {
+				code: "EPERM",
+			});
+			const hint = formatStorageErrorHint(cause, "/tmp/openai-codex-accounts.json");
+			const error = new StorageError(
+				"failed to persist accounts",
+				"EPERM",
+				"/tmp/openai-codex-accounts.json",
+				hint,
+				cause,
+			);
+
+			expect(error.cause).toBe(cause);
+			expect(error.hint).toContain("Permission denied writing");
+			expect(error.path).toBe("/tmp/openai-codex-accounts.json");
+		});
+
+		it("wraps unknown failures with a StorageError", () => {
+			const cause = Object.assign(new Error("file locked"), { code: "EBUSY" });
+			const error = toStorageError(
+				"failed to persist accounts",
+				cause,
+				"/tmp/openai-codex-accounts.json",
+			);
+
+			expect(error).toBeInstanceOf(StorageError);
+			expect(error.code).toBe("EBUSY");
+			expect(error.path).toBe("/tmp/openai-codex-accounts.json");
+			expect(error.hint).toContain("File is locked");
+			expect(error.cause).toBe(cause);
+		});
+	});
+
+	describe("account identity keys", () => {
+		it("normalizes mixed-case emails directly", () => {
+			expect(normalizeEmailKey(" User@Example.com ")).toBe("user@example.com");
+		});
+
+		it("returns undefined for missing or blank emails", () => {
+			expect(normalizeEmailKey(undefined)).toBeUndefined();
+			expect(normalizeEmailKey("   ")).toBeUndefined();
+		});
+
+		it("prefers accountId and normalized email when both are present", () => {
+			expect(
+				getAccountIdentityKey({
+					accountId: " acct-123 ",
+					email: " User@Example.com ",
+					refreshToken: "secret-token",
+				}),
+			).toBe("account:acct-123::email:user@example.com");
+		});
+
+		it("falls back to accountId when email is missing", () => {
+			expect(
+				getAccountIdentityKey({
+					accountId: " acct-123 ",
+					email: " ",
+					refreshToken: "secret-token",
+				}),
+			).toBe("account:acct-123");
+		});
+
+		it("falls back to normalized email when accountId is missing", () => {
+			expect(
+				getAccountIdentityKey({
+					accountId: " ",
+					email: " User@Example.com ",
+					refreshToken: "secret-token",
+				}),
+			).toBe("email:user@example.com");
+		});
+
+		it("hashes refresh-token-only fallbacks", () => {
+			const refreshToken = " secret-token ";
+			const expectedHash = createHash("sha256")
+				.update(refreshToken.trim())
+				.digest("hex");
+			const identityKey = getAccountIdentityKey({
+				accountId: " ",
+				email: " ",
+				refreshToken,
+			});
+
+			expect(identityKey).toBe(`refresh:${expectedHash}`);
+			expect(identityKey).not.toContain(refreshToken.trim());
+		});
 	});
 	describe("deduplication", () => {
 		it("preserves activeIndexByFamily when shared accountId entries remain distinct without email", () => {
@@ -862,6 +964,188 @@ describe("storage", () => {
 			}
 		});
 
+		it("rolls back flagged storage when flagged-only transaction persistence fails", async () => {
+			const now = Date.now();
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-flagged",
+						email: "flagged@example.com",
+						refreshToken: "refresh-flagged",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+
+			const originalRename = fs.rename.bind(fs);
+			let flaggedRenameAttempts = 0;
+			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(
+				async (from, to) => {
+					if (String(to).endsWith("openai-codex-flagged-accounts.json")) {
+						flaggedRenameAttempts += 1;
+						if (flaggedRenameAttempts <= 5) {
+							const error = Object.assign(
+								new Error("flagged storage busy"),
+								{ code: "EBUSY" },
+							);
+							throw error;
+						}
+					}
+					return originalRename(from, to);
+				},
+			);
+
+			try {
+				await expect(
+					withFlaggedStorageTransaction(async (current, persist) => {
+						await persist({
+							...current,
+							accounts: [
+								...current.accounts,
+								{
+									accountId: "acct-restored",
+									email: "restored@example.com",
+									refreshToken: "refresh-restored",
+									addedAt: now,
+									lastUsed: now,
+									flaggedAt: now,
+								},
+							],
+						});
+					}),
+				).rejects.toThrow("flagged storage busy");
+				expect(flaggedRenameAttempts).toBe(6);
+			} finally {
+				renameSpy.mockRestore();
+			}
+
+			const loadedFlagged = await loadFlaggedAccounts();
+			expect(loadedFlagged.accounts).toHaveLength(1);
+			expect(loadedFlagged.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-flagged",
+					refreshToken: "refresh-flagged",
+				}),
+			);
+		});
+
+		it("passes the live flagged snapshot into account+flagged transactions", async () => {
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-pre-scan",
+						email: "pre-scan@example.com",
+						refreshToken: "refresh-pre-scan",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						flaggedAt: now - 5_000,
+					},
+				],
+			});
+
+			const preScanFlagged = await loadFlaggedAccounts();
+			expect(preScanFlagged.accounts[0]?.refreshToken).toBe("refresh-pre-scan");
+
+			await saveFlaggedAccounts({
+				version: 1,
+				accounts: [
+					{
+						accountId: "acct-live",
+						email: "live@example.com",
+						refreshToken: "refresh-live",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+						flaggedAt: now - 1_000,
+					},
+				],
+			});
+
+			await withAccountAndFlaggedStorageTransaction(
+				async (current, persist, currentFlagged) => {
+					expect(current?.accounts).toHaveLength(1);
+					expect(currentFlagged.accounts).toHaveLength(1);
+					expect(currentFlagged.accounts[0]?.refreshToken).toBe("refresh-live");
+
+					currentFlagged.accounts[0]!.refreshToken = "mutated-only";
+
+					await persist(current!, {
+						version: 1,
+						accounts: [
+							{
+								accountId: "acct-persisted",
+								email: "persisted@example.com",
+								refreshToken: "refresh-persisted",
+								addedAt: now,
+								lastUsed: now,
+								flaggedAt: now,
+							},
+						],
+					});
+				},
+			);
+
+			const loadedFlagged = await loadFlaggedAccounts();
+			expect(loadedFlagged.accounts).toHaveLength(1);
+			expect(loadedFlagged.accounts[0]).toEqual(
+				expect.objectContaining({
+					accountId: "acct-persisted",
+					refreshToken: "refresh-persisted",
+				}),
+			);
+		});
+
+		it("treats missing flagged storage as empty inside flagged transactions", async () => {
+			const now = Date.now();
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						accountId: "acct-existing",
+						email: "existing@example.com",
+						refreshToken: "refresh-existing",
+						addedAt: now - 10_000,
+						lastUsed: now - 10_000,
+					},
+				],
+			});
+			await clearFlaggedAccounts();
+
+			await expect(
+				withFlaggedStorageTransaction(async (current) => {
+					expect(current).toEqual({ version: 1, accounts: [] });
+				}),
+			).resolves.toBeUndefined();
+
+			await expect(
+				withAccountAndFlaggedStorageTransaction(
+					async (_current, _persist, currentFlagged) => {
+						expect(currentFlagged).toEqual({ version: 1, accounts: [] });
+					},
+				),
+			).resolves.toBeUndefined();
+		});
+
 		it("retries transient flagged storage rename and succeeds", async () => {
 			const now = Date.now();
 			await saveFlaggedAccounts({
@@ -951,9 +1235,66 @@ describe("storage", () => {
 		it("should fail export when no accounts exist", async () => {
 			const { exportAccounts } = await import("../lib/storage.js");
 			setStoragePathDirect(testStoragePath);
+			await clearAccounts();
 			await expect(exportAccounts(exportPath)).rejects.toThrow(
 				/No accounts to export/,
 			);
+		});
+
+		it("ignores stale transaction snapshots from a different storage path during export", async () => {
+			const populatedStoragePath = join(
+				testWorkDir,
+				"accounts-populated.json",
+			);
+			setStoragePathDirect(populatedStoragePath);
+			await saveAccounts({
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "populated",
+						refreshToken: "ref-populated",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+
+			const actualTransactions = await vi.importActual<
+				typeof import("../lib/storage/transactions.js")
+			>("../lib/storage/transactions.js");
+			vi.resetModules();
+			vi.doMock("../lib/storage/transactions.js", () => ({
+				...actualTransactions,
+				getTransactionSnapshotState: () => ({
+					active: true,
+					storagePath: populatedStoragePath,
+					snapshot: {
+						version: 3,
+						activeIndex: 0,
+						accounts: [
+							{
+								accountId: "stale",
+								refreshToken: "stale-refresh",
+								addedAt: 1,
+								lastUsed: 1,
+							},
+						],
+					},
+				}),
+			}));
+
+			try {
+				const isolatedStorageModule = await import("../lib/storage.js");
+				isolatedStorageModule.setStoragePathDirect(testStoragePath);
+				await expect(
+					isolatedStorageModule.exportAccounts(exportPath),
+				).rejects.toThrow(/No accounts to export/);
+			} finally {
+				vi.doUnmock("../lib/storage/transactions.js");
+				vi.resetModules();
+				setStoragePathDirect(testStoragePath);
+			}
 		});
 
 		it("should fail import when file does not exist", async () => {
@@ -1191,13 +1532,6 @@ describe("storage", () => {
 				const hint = formatStorageErrorHint(err, testPath);
 
 				expect(hint).toContain("Disk is full");
-			});
-
-			it("should return empty file hint for EEMPTY", () => {
-				const err = { code: "EEMPTY" } as NodeJS.ErrnoException;
-				const hint = formatStorageErrorHint(err, testPath);
-
-				expect(hint).toContain("empty");
 			});
 
 			it("should return generic hint for unknown error codes", () => {

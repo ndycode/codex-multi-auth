@@ -26,10 +26,14 @@ npm uninstall -g @ndycode/codex-multi-auth
 npm i -g codex-multi-auth
 ```
 
-Verify that the wrapper is active:
+Verify both installed surfaces:
+
+- `codex --version` checks the official `@openai/codex` CLI that the wrapper forwards to.
+- `codex-multi-auth --version` checks the installed wrapper package version.
 
 ```bash
 codex --version
+codex-multi-auth --version
 codex auth status
 ```
 
@@ -43,28 +47,30 @@ codex auth login
 
 Expected flow:
 
-Backup restore appears as `Restore Saved Backup` under the `Recover saved accounts` heading in the onboarding menu. This flow does not add any new CLI flags or npm scripts.
-See upgrade note: [onboarding restore behavior](upgrade.md#onboarding-restore-note).
-
 1. If no accounts are saved yet, the terminal opens directly to the sign-in menu.
-2. Choose one of the sign-in options:
-   - `Open Browser (Easy)` for the normal OAuth flow
-   - `Manual / Incognito` when you need to paste the callback yourself
-   - `Restore Saved Backup` under the `Recover saved accounts` heading when the current pool is empty and at least one valid named backup exists under `~/.codex/multi-auth/backups` by default, or under `%CODEX_MULTI_AUTH_DIR%\backups` if you override the storage root with `CODEX_MULTI_AUTH_DIR`
-3. If you choose `Restore Saved Backup`, the next menu lets you either:
-   - load the newest valid backup automatically
-   - pick a specific backup from a newest-first list
-   Empty, unreadable, or non-JSON backup sidecar files are skipped, so the menu entry appears only when at least one backup parses successfully and contains at least one account.
-4. If you use browser or manual sign-in, complete the official OAuth flow and return to the terminal.
-5. If you load a backup, the selected backup is restored, its active account is synced back into Codex CLI auth, and the login flow continues with that restored pool.
-6. Confirm the restored or newly signed-in account appears in the saved account list.
+2. Choose `Open Browser (Easy)` for the normal OAuth flow.
+3. Complete the official OAuth flow and return to the terminal.
+4. Confirm the new account appears in the saved account list.
 
 Verify the new account:
 
 ```bash
+codex auth status
 codex auth list
 codex auth check
 ```
+
+Choose the next account for your next session:
+
+```bash
+codex auth forecast --live
+```
+
+## Alternate Login Paths
+
+Use these only when the normal browser-first flow is unavailable.
+
+### Manual or no-browser login
 
 If browser launch is blocked or you want to handle the callback manually:
 
@@ -79,7 +85,24 @@ In non-TTY/manual shells, provide the full redirect URL on stdin:
 echo "http://127.0.0.1:1455/auth/callback?code=..." | codex auth login --manual
 ```
 
-`codex auth login` remains browser-first by default. No new npm scripts or storage migration steps are required for this auth-flow update.
+`codex auth login` remains browser-first by default.
+
+### Restore a saved backup during onboarding
+
+Backup restore appears as `Restore Saved Backup` under the `Recover saved accounts` heading in the onboarding menu.
+
+Use it when the current pool is empty and at least one valid named backup exists under `~/.codex/multi-auth/backups` by default, or under `%CODEX_MULTI_AUTH_DIR%\backups` if you override the storage root with `CODEX_MULTI_AUTH_DIR`.
+
+When you choose `Restore Saved Backup`, the next menu lets you either:
+
+- load the newest valid backup automatically
+- pick a specific backup from a newest-first list
+
+Empty, unreadable, or non-JSON backup sidecar files are skipped, so the menu entry appears only when at least one backup parses successfully and contains at least one account.
+
+If you load a backup, the selected backup is restored, its active account is synced back into Codex CLI auth, and the login flow continues with that restored pool.
+
+See upgrade note: [onboarding restore behavior](upgrade.md#onboarding-restore-note).
 
 ---
 
@@ -103,9 +126,6 @@ codex auth list
 codex auth switch 2
 codex auth check
 codex auth forecast --live
-codex auth report --live --json
-codex auth fix --dry-run
-codex auth doctor --fix
 ```
 
 ---
@@ -149,6 +169,7 @@ codex auth check
 
 ## Next
 
+- [index.md](index.md)
 - [faq.md](faq.md)
 - [architecture.md](architecture.md)
 - [features.md](features.md)

@@ -153,6 +153,18 @@ describe('Fetch Helpers Module', () => {
 			expect(rewriteUrlForCodex(url)).toBe('https://chatgpt.com/backend-api/codex/responses');
 		});
 
+		it('should preserve response subresource paths for background polling and cancel routes', () => {
+			const retrieveUrl = 'https://api.openai.com/v1/responses/resp_123';
+			const cancelUrl = 'https://api.openai.com/v1/responses/resp_123/cancel';
+
+			expect(rewriteUrlForCodex(retrieveUrl)).toBe(
+				'https://chatgpt.com/backend-api/v1/codex/responses/resp_123',
+			);
+			expect(rewriteUrlForCodex(cancelUrl)).toBe(
+				'https://chatgpt.com/backend-api/v1/codex/responses/resp_123/cancel',
+			);
+		});
+
 		it('should keep backend-api paths when URL is already on codex origin', () => {
 			const url = 'https://chatgpt.com/backend-api/other';
 			expect(rewriteUrlForCodex(url)).toBe(url);
@@ -743,6 +755,26 @@ describe('createEntitlementErrorResponse', () => {
 			const text = await result.text();
 			expect(text).toBe('stream body');
 		});
+
+		it('captures response ids from streaming semantic SSE without rewriting the stream', async () => {
+			const onResponseId = vi.fn();
+			const response = new Response(
+				[
+					'data: {"type":"response.created","response":{"id":"resp_stream_123"}}',
+					'',
+					'data: {"type":"response.done","response":{"id":"resp_stream_123"}}',
+					'',
+				].join('\n'),
+				{ status: 200, headers: new Headers({ 'content-type': 'text/event-stream' }) },
+			);
+
+			const result = await handleSuccessResponse(response, true, { onResponseId });
+			const text = await result.text();
+
+			expect(text).toContain('"resp_stream_123"');
+			expect(onResponseId).toHaveBeenCalledWith('resp_stream_123');
+			expect(onResponseId).toHaveBeenCalledTimes(1);
+		});
 	});
 
 	describe('handleErrorResponse error normalization', () => {
@@ -1094,6 +1126,82 @@ describe('createEntitlementErrorResponse', () => {
 				expect(result).toBeDefined();
 				expect(result?.body.model).toBe('gpt-5-codex');
 				expect(typeof result?.updatedInit.body).toBe('string');
+			});
+
+			it('rethrows background-mode compatibility errors instead of falling back to the raw request', async () => {
+				const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
+
+				await expect(
+					transformRequestForCodex(
+						{
+							body: JSON.stringify({
+								model: 'gpt-5.4',
+								background: true,
+								input: [{ type: 'message', role: 'user', content: 'hello' }],
+							}),
+						},
+						'https://example.com',
+						{ global: {}, models: {} },
+					),
+				).rejects.toThrow(
+					'Responses background mode is disabled. Enable pluginConfig.backgroundResponses or CODEX_AUTH_BACKGROUND_RESPONSES=1 to opt in.',
+				);
+			});
+
+			it('suppresses deferred fast-session trimming for allowed background requests', async () => {
+				const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
+
+				const result = await transformRequestForCodex(
+					{
+						body: JSON.stringify({
+							model: 'gpt-5.4',
+							background: true,
+							input: [
+								{ id: 'msg_1', type: 'message', role: 'user', content: 'hello' },
+								{ id: 'msg_2', type: 'message', role: 'assistant', content: 'hi' },
+							],
+						}),
+					},
+					'https://example.com',
+					{ global: {}, models: {} },
+					true,
+					undefined,
+					{
+						fastSession: true,
+						fastSessionStrategy: 'always',
+						fastSessionMaxInputItems: 1,
+						deferFastSessionInputTrimming: true,
+						allowBackgroundResponses: true,
+					},
+				);
+
+				expect(result).toBeDefined();
+				expect(result?.body.background).toBe(true);
+				expect(result?.deferredFastSessionInputTrim).toBeUndefined();
+			});
+
+			it('rethrows store=false background guardrail errors at the fetch layer', async () => {
+				const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
+
+				await expect(
+					transformRequestForCodex(
+						{
+							body: JSON.stringify({
+								model: 'gpt-5.4',
+								background: true,
+								store: false,
+								input: [{ type: 'message', role: 'user', content: 'hello' }],
+							}),
+						},
+						'https://example.com',
+						{ global: {}, models: {} },
+						true,
+						undefined,
+						{ allowBackgroundResponses: true },
+					),
+				).rejects.toThrow(
+					'Responses background mode requires store=true and cannot be combined with stateless store=false routing.',
+				);
 			});
 
 			it('returns undefined when parsedBody is empty object and init body is unavailable', async () => {

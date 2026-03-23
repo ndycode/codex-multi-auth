@@ -1,8 +1,7 @@
-import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
+import { StorageError } from "./errors.js";
 import { createLogger } from "./logger.js";
 import {
 	exportNamedBackupFile,
@@ -10,7 +9,75 @@ import {
 	resolveNamedBackupPath,
 } from "./named-backup-export.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
-import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
+import { clearAccountStorageArtifacts } from "./storage/account-clear.js";
+import { clearAccountsEntry } from "./storage/account-clear-entry.js";
+import {
+	collectDistinctIdentityValues,
+	findNewestMatchingIndex as findNewestMatchingIndexByRef,
+	selectNewestAccount,
+} from "./storage/account-match-utils.js";
+import { cloneAccountStorageForPersistence } from "./storage/account-persistence.js";
+import {
+	describeAccountSnapshot as describeAccountSnapshotWithDeps,
+	statSnapshot as statSnapshotWithDeps,
+} from "./storage/account-snapshot.js";
+import {
+	exportAccountsSnapshot,
+	importAccountsSnapshot,
+} from "./storage/account-port.js";
+import { saveAccountsToDisk } from "./storage/account-save.js";
+import { saveAccountsEntry } from "./storage/account-save-entry.js";
+import { buildBackupMetadata } from "./storage/backup-metadata-builder.js";
+import {
+	type BackupMetadataSection,
+	type BackupSnapshotKind,
+	type BackupSnapshotMetadata,
+	buildMetadataSection,
+} from "./storage/backup-metadata.js";
+import { isCacheLikeBackupArtifactName } from "./storage/cache-artifacts.js";
+import {
+	ACCOUNTS_BACKUP_SUFFIX,
+	ACCOUNTS_WAL_SUFFIX,
+	getAccountsBackupPath,
+	getAccountsBackupRecoveryCandidates,
+	getAccountsWalPath,
+	getIntentionalResetMarkerPath,
+	RESET_MARKER_SUFFIX,
+} from "./storage/backup-paths.js";
+import { restoreAccountsFromBackupPath } from "./storage/backup-restore.js";
+import { looksLikeSyntheticFixtureStorage } from "./storage/fixture-guards.js";
+import { loadFlaggedAccountsFromFile } from "./storage/flagged-storage-file.js";
+import { clearFlaggedAccountsEntry } from "./storage/flagged-entry.js";
+import { loadFlaggedAccountsEntry } from "./storage/flagged-load-entry.js";
+import { saveFlaggedAccountsEntry } from "./storage/flagged-save-entry.js";
+import { normalizeFlaggedStorage } from "./storage/flagged-storage.js";
+import {
+	clearFlaggedAccountsOnDisk,
+	loadFlaggedAccountsState,
+	saveFlaggedAccountsUnlockedToDisk,
+} from "./storage/flagged-storage-io.js";
+import { computeSha256 } from "./storage/hash.js";
+import { ensureCodexGitignoreEntry } from "./storage/gitignore.js";
+import {
+	exportAccountsToFile,
+	mergeImportedAccounts,
+	readImportFile,
+} from "./storage/import-export.js";
+import { formatStorageErrorHint } from "./storage/error-hints.js";
+export { StorageError } from "./errors.js";
+export { formatStorageErrorHint, toStorageError } from "./storage/error-hints.js";
+export {
+	getAccountIdentityKey,
+	normalizeEmailKey,
+} from "./storage/identity.js";
+import {
+	type AccountIdentityRef,
+	toAccountIdentityRef,
+} from "./storage/identity.js";
+import {
+	getFlaggedAccountsPath as buildFlaggedAccountsPath,
+	getLegacyFlaggedAccountsPath as buildLegacyFlaggedAccountsPath,
+} from "./storage/file-paths.js";
 import {
 	type AccountMetadataV1,
 	type AccountMetadataV3,
@@ -20,6 +87,16 @@ import {
 	migrateV1ToV3,
 	type RateLimitStateV3,
 } from "./storage/migrations.js";
+import { exportNamedBackupEntry } from "./storage/named-backup-entry.js";
+import {
+	collectNamedBackups,
+	type NamedBackupSummary,
+} from "./storage/named-backups.js";
+import { getNamedBackupsEntry } from "./storage/named-backups-entry.js";
+import {
+	getStoragePathState,
+	setStoragePathState,
+} from "./storage/path-state.js";
 import {
 	findProjectRoot,
 	getConfigDir,
@@ -28,6 +105,27 @@ import {
 	resolvePath,
 	resolveProjectStorageIdentityRoot,
 } from "./storage/paths.js";
+import {
+	loadNormalizedStorageFromPath,
+	mergeStorageForMigration,
+} from "./storage/project-migration.js";
+import { clampIndex, isRecord } from "./storage/record-utils.js";
+import { buildRestoreAssessment } from "./storage/restore-assessment.js";
+import { restoreAccountsFromBackupEntry } from "./storage/restore-backup-entry.js";
+import {
+	createEmptyStorageWithRestoreMetadata as createEmptyStorageWithMetadata,
+	withRestoreMetadata,
+} from "./storage/restore-metadata.js";
+import {
+	loadAccountsFromPath,
+	parseAndNormalizeStorage,
+} from "./storage/storage-parser.js";
+import {
+	getTransactionSnapshotState,
+	runInTransactionSnapshotContext,
+	withAccountStorageTransaction as runWithAccountStorageTransaction,
+	withStorageLock,
+} from "./storage/transactions.js";
 
 export type {
 	CooldownReason,
@@ -36,18 +134,16 @@ export type {
 	AccountStorageV1,
 	AccountMetadataV3,
 	AccountStorageV3,
+	NamedBackupSummary,
 };
 
 const log = createLogger("storage");
 const ACCOUNTS_FILE_NAME = "openai-codex-accounts.json";
 const FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-flagged-accounts.json";
 const LEGACY_FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-blocked-accounts.json";
-const ACCOUNTS_BACKUP_SUFFIX = ".bak";
-const ACCOUNTS_WAL_SUFFIX = ".wal";
 const ACCOUNTS_BACKUP_HISTORY_DEPTH = 3;
 const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
-const RESET_MARKER_SUFFIX = ".reset-intent";
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
 
@@ -64,44 +160,6 @@ export interface FlaggedAccountStorageV1 {
 
 type RestoreReason = "empty-storage" | "intentional-reset" | "missing-storage";
 
-type AccountStorageWithMetadata = AccountStorageV3 & {
-	restoreEligible?: boolean;
-	restoreReason?: RestoreReason;
-};
-
-type BackupSnapshotKind =
-	| "accounts-primary"
-	| "accounts-wal"
-	| "accounts-backup"
-	| "accounts-backup-history"
-	| "accounts-discovered-backup"
-	| "flagged-primary"
-	| "flagged-backup"
-	| "flagged-backup-history"
-	| "flagged-discovered-backup";
-
-type BackupSnapshotMetadata = {
-	kind: BackupSnapshotKind;
-	path: string;
-	index?: number;
-	exists: boolean;
-	valid: boolean;
-	bytes?: number;
-	mtimeMs?: number;
-	version?: number;
-	accountCount?: number;
-	flaggedCount?: number;
-	schemaErrors?: string[];
-};
-
-type BackupMetadataSection = {
-	storagePath: string;
-	latestValidPath?: string;
-	snapshotCount: number;
-	validSnapshotCount: number;
-	snapshots: BackupSnapshotMetadata[];
-};
-
 export type BackupMetadata = {
 	accounts: BackupMetadataSection;
 	flaggedAccounts: BackupMetadataSection;
@@ -115,140 +173,6 @@ export type RestoreAssessment = {
 	backupMetadata: BackupMetadata;
 };
 
-export interface NamedBackupSummary {
-	path: string;
-	fileName: string;
-	accountCount: number;
-	mtimeMs: number;
-}
-
-async function collectNamedBackups(storagePath: string): Promise<NamedBackupSummary[]> {
-	const backupRoot = getNamedBackupRoot(storagePath);
-	let entries: Array<{ isFile(): boolean; name: string }>;
-	try {
-		entries = await fs.readdir(backupRoot, {
-			withFileTypes: true,
-			encoding: "utf8",
-		});
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") return [];
-		throw error;
-	}
-
-	const candidates: NamedBackupSummary[] = [];
-	for (const entry of entries) {
-		if (!entry.isFile()) continue;
-		if (!entry.name.toLowerCase().endsWith(".json")) continue;
-		const candidatePath = join(backupRoot, entry.name);
-		try {
-			const statsBefore = await fs.stat(candidatePath);
-			const { normalized } = await loadAccountsFromPath(candidatePath);
-			if (!normalized || normalized.accounts.length === 0) continue;
-			const statsAfter = await fs.stat(candidatePath).catch(() => null);
-			if (statsAfter && statsAfter.mtimeMs !== statsBefore.mtimeMs) {
-				log.debug("backup file changed between stat and load, mtime may be stale", {
-					candidatePath,
-					fileName: entry.name,
-					beforeMtimeMs: statsBefore.mtimeMs,
-					afterMtimeMs: statsAfter.mtimeMs,
-				});
-			}
-			candidates.push({
-				path: candidatePath,
-				fileName: entry.name,
-				accountCount: normalized.accounts.length,
-				mtimeMs: statsBefore.mtimeMs,
-			});
-		} catch (error) {
-			log.debug("Skipping named backup candidate after loadAccountsFromPath/fs.stat failure", {
-				candidatePath,
-				fileName: entry.name,
-				error: error instanceof Error
-					? {
-						message: error.message,
-						stack: error.stack,
-					}
-					: String(error),
-			});
-			continue;
-		}
-	}
-
-	candidates.sort((left, right) => {
-		const mtimeDelta = right.mtimeMs - left.mtimeMs;
-		if (mtimeDelta !== 0) return mtimeDelta;
-		return left.fileName.localeCompare(right.fileName);
-	});
-	return candidates;
-}
-
-/**
- * Custom error class for storage operations with platform-aware hints.
- */
-export class StorageError extends Error {
-	readonly code: string;
-	readonly path: string;
-	readonly hint: string;
-
-	constructor(
-		message: string,
-		code: string,
-		path: string,
-		hint: string,
-		cause?: Error,
-	) {
-		super(message, { cause });
-		this.name = "StorageError";
-		this.code = code;
-		this.path = path;
-		this.hint = hint;
-	}
-}
-
-/**
- * Generate platform-aware troubleshooting hint based on error code.
- */
-export function formatStorageErrorHint(error: unknown, path: string): string {
-	const err = error as NodeJS.ErrnoException;
-	const code = err?.code || "UNKNOWN";
-	const isWindows = process.platform === "win32";
-
-	switch (code) {
-		case "EACCES":
-		case "EPERM":
-			return isWindows
-				? `Permission denied writing to ${path}. Check antivirus exclusions for this folder. Ensure you have write permissions.`
-				: `Permission denied writing to ${path}. Check folder permissions. Try: chmod 755 ~/.codex`;
-		case "EBUSY":
-			return `File is locked at ${path}. The file may be open in another program. Close any editors or processes accessing it.`;
-		case "ENOSPC":
-			return `Disk is full. Free up space and try again. Path: ${path}`;
-		case "EEMPTY":
-			return `File written but is empty. This may indicate a disk or filesystem issue. Path: ${path}`;
-		default:
-			return isWindows
-				? `Failed to write to ${path}. Check folder permissions and ensure path contains no special characters.`
-				: `Failed to write to ${path}. Check folder permissions and disk space.`;
-	}
-}
-
-let storageMutex: Promise<void> = Promise.resolve();
-const transactionSnapshotContext = new AsyncLocalStorage<{
-	snapshot: AccountStorageV3 | null;
-	storagePath: string;
-	active: boolean;
-}>();
-
-function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
-	const previousMutex = storageMutex;
-	let releaseLock: () => void;
-	storageMutex = new Promise<void>((resolve) => {
-		releaseLock = resolve;
-	});
-	return previousMutex.then(fn).finally(() => releaseLock());
-}
-
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
 
 type AccountLike = {
@@ -259,132 +183,32 @@ type AccountLike = {
 	lastUsed?: number;
 };
 
-function looksLikeSyntheticFixtureAccount(account: AccountMetadataV3): boolean {
-	const email =
-		typeof account.email === "string" ? account.email.trim().toLowerCase() : "";
-	const refreshToken =
-		typeof account.refreshToken === "string"
-			? account.refreshToken.trim().toLowerCase()
-			: "";
-	const accountId =
-		typeof account.accountId === "string"
-			? account.accountId.trim().toLowerCase()
-			: "";
-	if (!/^account\d+@example\.com$/.test(email)) {
-		return false;
-	}
-	const hasSyntheticRefreshToken =
-		refreshToken.startsWith("fake_refresh") ||
-		/^fake_refresh_token_\d+(_for_testing_only)?$/.test(refreshToken);
-	if (!hasSyntheticRefreshToken) {
-		return false;
-	}
-	if (accountId.length === 0) {
-		return true;
-	}
-	return /^acc(_|-)?\d+$/.test(accountId);
-}
-
-function looksLikeSyntheticFixtureStorage(
-	storage: AccountStorageV3 | null,
-): boolean {
-	if (!storage || storage.accounts.length === 0) return false;
-	return storage.accounts.every((account) =>
-		looksLikeSyntheticFixtureAccount(account),
-	);
-}
-
 async function ensureGitignore(storagePath: string): Promise<void> {
 	const state = getStoragePathState();
 	if (!state.currentStoragePath) return;
-
-	const configDir = dirname(storagePath);
-	const inferredProjectRoot = dirname(configDir);
-	const candidateRoots = [state.currentProjectRoot, inferredProjectRoot].filter(
-		(root): root is string => typeof root === "string" && root.length > 0,
-	);
-	const projectRoot = candidateRoots.find((root) =>
-		existsSync(join(root, ".git")),
-	);
-	if (!projectRoot) return;
-	const gitignorePath = join(projectRoot, ".gitignore");
-
-	try {
-		let content = "";
-		if (existsSync(gitignorePath)) {
-			content = await fs.readFile(gitignorePath, "utf-8");
-			const lines = content.split("\n").map((l) => l.trim());
-			if (
-				lines.includes(".codex") ||
-				lines.includes(".codex/") ||
-				lines.includes("/.codex") ||
-				lines.includes("/.codex/")
-			) {
-				return;
-			}
-		}
-
-		const newContent =
-			content.endsWith("\n") || content === "" ? content : content + "\n";
-		await fs.writeFile(gitignorePath, newContent + ".codex/\n", "utf-8");
-		log.debug("Added .codex to .gitignore", { path: gitignorePath });
-	} catch (error) {
-		log.warn("Failed to update .gitignore", { error: String(error) });
-	}
-}
-
-type StoragePathState = {
-	currentStoragePath: string | null;
-	currentLegacyProjectStoragePath: string | null;
-	currentLegacyWorktreeStoragePath: string | null;
-	currentProjectRoot: string | null;
-};
-
-let currentStorageState: StoragePathState = {
-	currentStoragePath: null,
-	currentLegacyProjectStoragePath: null,
-	currentLegacyWorktreeStoragePath: null,
-	currentProjectRoot: null,
-};
-
-const storagePathStateContext = new AsyncLocalStorage<StoragePathState>();
-
-function getStoragePathState(): StoragePathState {
-	return storagePathStateContext.getStore() ?? currentStorageState;
-}
-
-function setStoragePathState(state: StoragePathState): void {
-	currentStorageState = state;
-	storagePathStateContext.enterWith(state);
+	await ensureCodexGitignoreEntry({
+		storagePath,
+		currentProjectRoot: state.currentProjectRoot,
+		logDebug: (message, details) => {
+			log.debug(message, details);
+		},
+		logWarn: (message, details) => {
+			log.warn(message, details);
+		},
+	});
 }
 
 export function setStorageBackupEnabled(enabled: boolean): void {
 	storageBackupEnabled = enabled;
 }
 
-function getAccountsBackupPath(path: string): string {
-	return `${path}${ACCOUNTS_BACKUP_SUFFIX}`;
-}
-
-function getAccountsBackupPathAtIndex(path: string, index: number): string {
-	if (index <= 0) {
-		return getAccountsBackupPath(path);
-	}
-	return `${path}${ACCOUNTS_BACKUP_SUFFIX}.${index}`;
-}
-
-function getAccountsBackupRecoveryCandidates(path: string): string[] {
-	const candidates: string[] = [];
-	for (let i = 0; i < ACCOUNTS_BACKUP_HISTORY_DEPTH; i += 1) {
-		candidates.push(getAccountsBackupPathAtIndex(path, i));
-	}
-	return candidates;
-}
-
 async function getAccountsBackupRecoveryCandidatesWithDiscovery(
 	path: string,
 ): Promise<string[]> {
-	const knownCandidates = getAccountsBackupRecoveryCandidates(path);
+	const knownCandidates = getAccountsBackupRecoveryCandidates(
+		path,
+		ACCOUNTS_BACKUP_HISTORY_DEPTH,
+	);
 	const discoveredCandidates = new Set<string>();
 	const candidatePrefix = `${basename(path)}.`;
 	const knownCandidateSet = new Set(knownCandidates);
@@ -418,10 +242,6 @@ async function getAccountsBackupRecoveryCandidatesWithDiscovery(
 		a.localeCompare(b, undefined, { sensitivity: "base" }),
 	);
 	return [...knownCandidates, ...discoveredOrdered];
-}
-
-function getAccountsWalPath(path: string): string {
-	return `${path}${ACCOUNTS_WAL_SUFFIX}`;
 }
 
 async function copyFileWithRetry(
@@ -481,7 +301,10 @@ async function renameFileWithRetry(
 }
 
 async function createRotatingAccountsBackup(path: string): Promise<void> {
-	const candidates = getAccountsBackupRecoveryCandidates(path);
+	const candidates = getAccountsBackupRecoveryCandidates(
+		path,
+		ACCOUNTS_BACKUP_HISTORY_DEPTH,
+	);
 	const rotationNonce = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 	const stagedWrites: Array<{ targetPath: string; stagedPath: string }> = [];
 	const buildStagedPath = (targetPath: string, label: string): string =>
@@ -596,62 +419,15 @@ async function cleanupStaleRotatingBackupArtifacts(
 	}
 }
 
-function computeSha256(value: string): string {
-	return createHash("sha256").update(value).digest("hex");
-}
-
-function getIntentionalResetMarkerPath(path: string): string {
-	return `${path}${RESET_MARKER_SUFFIX}`;
-}
-
-function createEmptyStorageWithMetadata(
-	restoreEligible: boolean,
-	restoreReason: RestoreReason,
-): AccountStorageWithMetadata {
-	return {
-		version: 3,
-		accounts: [],
-		activeIndex: 0,
-		activeIndexByFamily: {},
-		restoreEligible,
-		restoreReason,
-	};
-}
-
-function withRestoreMetadata(
-	storage: AccountStorageV3,
-	restoreEligible: boolean,
-	restoreReason: RestoreReason,
-): AccountStorageWithMetadata {
-	return {
-		...storage,
-		restoreEligible,
-		restoreReason,
-	};
-}
-
-function isCacheLikeBackupArtifactName(entryName: string): boolean {
-	return entryName.toLowerCase().includes(".cache");
-}
-
 async function statSnapshot(path: string): Promise<{
 	exists: boolean;
 	bytes?: number;
 	mtimeMs?: number;
 }> {
-	try {
-		const stats = await fs.stat(path);
-		return { exists: true, bytes: stats.size, mtimeMs: stats.mtimeMs };
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.warn("Failed to stat backup candidate", {
-				path,
-				error: String(error),
-			});
-		}
-		return { exists: false };
-	}
+	return statSnapshotWithDeps(path, {
+		stat: fs.stat,
+		logWarn: (message, meta) => log.warn(message, meta),
+	});
 }
 
 async function describeAccountSnapshot(
@@ -659,43 +435,16 @@ async function describeAccountSnapshot(
 	kind: BackupSnapshotKind,
 	index?: number,
 ): Promise<BackupSnapshotMetadata> {
-	const stats = await statSnapshot(path);
-	if (!stats.exists) {
-		return { kind, path, index, exists: false, valid: false };
-	}
-	try {
-		const { normalized, schemaErrors, storedVersion } =
-			await loadAccountsFromPath(path);
-		return {
-			kind,
-			path,
-			index,
-			exists: true,
-			valid: !!normalized,
-			bytes: stats.bytes,
-			mtimeMs: stats.mtimeMs,
-			version: typeof storedVersion === "number" ? storedVersion : undefined,
-			accountCount: normalized?.accounts.length,
-			schemaErrors: schemaErrors.length > 0 ? schemaErrors : undefined,
-		};
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.warn("Failed to inspect account snapshot", {
-				path,
-				error: String(error),
-			});
-		}
-		return {
-			kind,
-			path,
-			index,
-			exists: true,
-			valid: false,
-			bytes: stats.bytes,
-			mtimeMs: stats.mtimeMs,
-		};
-	}
+	return describeAccountSnapshotWithDeps(path, kind, {
+		index,
+		statSnapshot,
+		loadAccountsFromPath: (targetPath) =>
+			loadAccountsFromPath(targetPath, {
+				normalizeAccountStorage,
+				isRecord,
+			}),
+		logWarn: (message, meta) => log.warn(message, meta),
+	});
 }
 
 async function describeAccountsWalSnapshot(
@@ -735,7 +484,11 @@ async function describeAccountsWalSnapshot(
 			};
 		}
 		const { normalized, storedVersion, schemaErrors } =
-			parseAndNormalizeStorage(JSON.parse(entry.content) as unknown);
+			parseAndNormalizeStorage(
+				JSON.parse(entry.content) as unknown,
+				normalizeAccountStorage,
+				isRecord,
+			);
 		return {
 			kind: "accounts-wal",
 			path,
@@ -762,9 +515,14 @@ async function describeAccountsWalSnapshot(
 async function loadFlaggedAccountsFromPath(
 	path: string,
 ): Promise<FlaggedAccountStorageV1> {
-	const content = await fs.readFile(path, "utf-8");
-	const data = JSON.parse(content) as unknown;
-	return normalizeFlaggedStorage(data);
+	return loadFlaggedAccountsFromFile(path, {
+		readFile: fs.readFile,
+		normalizeFlaggedStorage: (data) =>
+			normalizeFlaggedStorage(data, {
+				isRecord,
+				now: () => Date.now(),
+			}),
+	});
 }
 
 async function describeFlaggedSnapshot(
@@ -807,28 +565,6 @@ async function describeFlaggedSnapshot(
 			mtimeMs: stats.mtimeMs,
 		};
 	}
-}
-
-function latestValidSnapshot(
-	snapshots: BackupSnapshotMetadata[],
-): BackupSnapshotMetadata | undefined {
-	return snapshots
-		.filter((snapshot) => snapshot.valid)
-		.sort((left, right) => (right.mtimeMs ?? 0) - (left.mtimeMs ?? 0))[0];
-}
-
-function buildMetadataSection(
-	storagePath: string,
-	snapshots: BackupSnapshotMetadata[],
-): BackupMetadataSection {
-	const latestValid = latestValidSnapshot(snapshots);
-	return {
-		storagePath,
-		latestValidPath: latestValid?.path,
-		snapshotCount: snapshots.length,
-		validSnapshotCount: snapshots.filter((snapshot) => snapshot.valid).length,
-		snapshots,
-	};
 }
 
 type AccountsJournalEntry = {
@@ -915,85 +651,62 @@ export function buildNamedBackupPath(name: string): string {
 }
 
 export async function getNamedBackups(): Promise<NamedBackupSummary[]> {
-	return collectNamedBackups(getStoragePath());
+	return getNamedBackupsEntry({
+		getStoragePath,
+		collectNamedBackups,
+		loadAccountsFromPath: (path) =>
+			loadAccountsFromPath(path, {
+				normalizeAccountStorage,
+				isRecord,
+			}),
+		logDebug: (message, details) => {
+			log.debug(message, details);
+		},
+	});
 }
 
 export async function restoreAccountsFromBackup(
 	path: string,
 	options?: { persist?: boolean },
 ): Promise<AccountStorageV3> {
-	const backupRoot = getNamedBackupRoot(getStoragePath());
-	let resolvedBackupRoot: string;
-	try {
-		resolvedBackupRoot = await fs.realpath(backupRoot);
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
-			throw new Error(`Backup root does not exist: ${backupRoot}`);
-		}
-		throw error;
-	}
-	let resolvedBackupPath: string;
-	try {
-		resolvedBackupPath = await fs.realpath(path);
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
-			throw new Error(`Backup file no longer exists: ${path}`);
-		}
-		throw error;
-	}
-	const relativePath = relative(resolvedBackupRoot, resolvedBackupPath);
-	const isInsideBackupRoot =
-		relativePath.length > 0 &&
-		!relativePath.startsWith("..") &&
-		!isAbsolute(relativePath);
-	if (!isInsideBackupRoot) {
-		throw new Error(`Backup path must stay inside ${resolvedBackupRoot}: ${path}`);
-	}
-
-	const { normalized } = await (async () => {
-		try {
-			return await loadAccountsFromPath(resolvedBackupPath);
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") {
-				throw new Error(
-					`Backup file no longer exists: ${path}`,
-				);
-			}
-			throw error;
-		}
-	})();
-	if (!normalized || normalized.accounts.length === 0) {
-		throw new Error(`Backup does not contain any accounts: ${resolvedBackupPath}`);
-	}
-	if (options?.persist !== false) {
-		await saveAccounts(normalized);
-	}
-	return normalized;
+	return restoreAccountsFromBackupEntry({
+		path,
+		options,
+		restoreAccountsFromBackupPath,
+		getNamedBackupRoot,
+		getStoragePath,
+		realpath: fs.realpath,
+		loadAccountsFromPath: (path) =>
+			loadAccountsFromPath(path, {
+				normalizeAccountStorage,
+				isRecord,
+			}),
+		saveAccounts,
+	});
 }
 
 export async function exportNamedBackup(
 	name: string,
 	options?: { force?: boolean },
 ): Promise<string> {
-	return exportNamedBackupFile(
+	return exportNamedBackupEntry({
 		name,
-		{
-			getStoragePath,
-			exportAccounts,
-		},
 		options,
-	);
+		exportNamedBackupFile,
+		getStoragePath,
+		exportAccounts,
+	});
 }
 
 export function getFlaggedAccountsPath(): string {
-	return join(dirname(getStoragePath()), FLAGGED_ACCOUNTS_FILE_NAME);
+	return buildFlaggedAccountsPath(getStoragePath(), FLAGGED_ACCOUNTS_FILE_NAME);
 }
 
 function getLegacyFlaggedAccountsPath(): string {
-	return join(dirname(getStoragePath()), LEGACY_FLAGGED_ACCOUNTS_FILE_NAME);
+	return buildLegacyFlaggedAccountsPath(
+		getStoragePath(),
+		LEGACY_FLAGGED_ACCOUNTS_FILE_NAME,
+	);
 }
 
 async function migrateLegacyProjectStorageIfNeeded(
@@ -1030,6 +743,16 @@ async function migrateLegacyProjectStorageIfNeeded(
 	let targetStorage = await loadNormalizedStorageFromPath(
 		state.currentStoragePath,
 		"current account storage",
+		{
+			loadAccountsFromPath: (path) =>
+				loadAccountsFromPath(path, {
+					normalizeAccountStorage,
+					isRecord,
+				}),
+			logWarn: (message, details) => {
+				log.warn(message, details);
+			},
+		},
 	);
 	let migrated = false;
 
@@ -1037,6 +760,16 @@ async function migrateLegacyProjectStorageIfNeeded(
 		const legacyStorage = await loadNormalizedStorageFromPath(
 			legacyPath,
 			"legacy account storage",
+			{
+				loadAccountsFromPath: (path) =>
+					loadAccountsFromPath(path, {
+						normalizeAccountStorage,
+						isRecord,
+					}),
+				logWarn: (message, details) => {
+					log.warn(message, details);
+				},
+			},
 		);
 		if (!legacyStorage) {
 			continue;
@@ -1045,6 +778,7 @@ async function migrateLegacyProjectStorageIfNeeded(
 		const mergedStorage = mergeStorageForMigration(
 			targetStorage,
 			legacyStorage,
+			normalizeAccountStorage,
 		);
 		const fallbackStorage = targetStorage ?? legacyStorage;
 
@@ -1096,162 +830,20 @@ async function migrateLegacyProjectStorageIfNeeded(
 	return null;
 }
 
-async function loadNormalizedStorageFromPath(
-	path: string,
-	label: string,
-): Promise<AccountStorageV3 | null> {
-	try {
-		const { normalized, schemaErrors } = await loadAccountsFromPath(path);
-		if (schemaErrors.length > 0) {
-			log.warn(`${label} schema validation warnings`, {
-				path,
-				errors: schemaErrors.slice(0, 5),
-			});
-		}
-		return normalized;
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.warn(`Failed to load ${label}`, {
-				path,
-				error: String(error),
-			});
-		}
-		return null;
-	}
-}
-
-function mergeStorageForMigration(
-	current: AccountStorageV3 | null,
-	incoming: AccountStorageV3,
-): AccountStorageV3 {
-	if (!current) {
-		return incoming;
-	}
-
-	const merged = normalizeAccountStorage({
-		version: 3,
-		activeIndex: current.activeIndex,
-		activeIndexByFamily: current.activeIndexByFamily,
-		accounts: [...current.accounts, ...incoming.accounts],
-	});
-	if (!merged) {
-		return current;
-	}
-	return merged;
-}
-
-function selectNewestAccount<T extends AccountLike>(
-	current: T | undefined,
-	candidate: T,
-): T {
-	if (!current) return candidate;
-	const currentLastUsed = current.lastUsed || 0;
-	const candidateLastUsed = candidate.lastUsed || 0;
-	if (candidateLastUsed > currentLastUsed) return candidate;
-	if (candidateLastUsed < currentLastUsed) return current;
-	const currentAddedAt = current.addedAt || 0;
-	const candidateAddedAt = candidate.addedAt || 0;
-	return candidateAddedAt >= currentAddedAt ? candidate : current;
-}
-
-function normalizeAccountIdKey(
-	accountId: string | undefined,
-): string | undefined {
-	if (!accountId) return undefined;
-	const trimmed = accountId.trim();
-	return trimmed || undefined;
-}
-
-/**
- * Normalize email keys for case-insensitive account identity matching.
- */
-export function normalizeEmailKey(
-	email: string | undefined,
-): string | undefined {
-	if (!email) return undefined;
-	const trimmed = email.trim();
-	if (!trimmed) return undefined;
-	return trimmed.toLowerCase();
-}
-
-function normalizeRefreshTokenKey(
-	refreshToken: string | undefined,
-): string | undefined {
-	if (!refreshToken) return undefined;
-	const trimmed = refreshToken.trim();
-	return trimmed || undefined;
-}
-
-type AccountIdentityRef = {
-	accountId?: string;
-	emailKey?: string;
-	refreshToken?: string;
-};
-
 type AccountMatchOptions = {
 	allowUniqueAccountIdFallbackWithoutEmail?: boolean;
 };
-
-function toAccountIdentityRef(
-	account:
-		| Pick<AccountLike, "accountId" | "email" | "refreshToken">
-		| null
-		| undefined,
-): AccountIdentityRef {
-	return {
-		accountId: normalizeAccountIdKey(account?.accountId),
-		emailKey: normalizeEmailKey(account?.email),
-		refreshToken: normalizeRefreshTokenKey(account?.refreshToken),
-	};
-}
-
-function collectDistinctIdentityValues(
-	values: Array<string | undefined>,
-): Set<string> {
-	const distinct = new Set<string>();
-	for (const value of values) {
-		if (value) distinct.add(value);
-	}
-	return distinct;
-}
-
-export function getAccountIdentityKey(
-	account: Pick<AccountLike, "accountId" | "email" | "refreshToken">,
-): string | undefined {
-	const ref = toAccountIdentityRef(account);
-	if (ref.accountId && ref.emailKey) {
-		return `account:${ref.accountId}::email:${ref.emailKey}`;
-	}
-	if (ref.accountId) return `account:${ref.accountId}`;
-	if (ref.emailKey) return `email:${ref.emailKey}`;
-	if (ref.refreshToken) return `refresh:${ref.refreshToken}`;
-	return undefined;
-}
 
 function findNewestMatchingIndex<T extends AccountLike>(
 	accounts: readonly T[],
 	predicate: (ref: AccountIdentityRef) => boolean,
 ): number | undefined {
-	let matchIndex: number | undefined;
-	let match: T | undefined;
-	for (let i = 0; i < accounts.length; i += 1) {
-		const account = accounts[i];
-		if (!account) continue;
-		const ref = toAccountIdentityRef(account);
-		if (!predicate(ref)) continue;
-		if (matchIndex === undefined) {
-			matchIndex = i;
-			match = account;
-			continue;
-		}
-		const newest = selectNewestAccount(match, account);
-		if (newest === account) {
-			matchIndex = i;
-			match = account;
-		}
-	}
-	return matchIndex;
+	return findNewestMatchingIndexByRef(
+		accounts,
+		(account) => toAccountIdentityRef(account),
+		predicate,
+		selectNewestAccount,
+	);
 }
 
 function findCompositeAccountMatchIndex<T extends AccountLike>(
@@ -1330,7 +922,10 @@ function findCompatibleRefreshTokenMatchIndex<T extends AccountLike>(
 			matchingAccount = account;
 			continue;
 		}
-		const newest: T = selectNewestAccount(matchingAccount ?? undefined, account);
+		const newest: T = selectNewestAccount(
+			matchingAccount ?? undefined,
+			account,
+		);
 		if (newest === account) {
 			matchingIndex = i;
 			matchingAccount = account;
@@ -1467,15 +1062,6 @@ export function deduplicateAccountsByEmail<
 	return deduplicateAccountsByIdentity(accounts);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function clampIndex(index: number, length: number): number {
-	if (length <= 0) return 0;
-	return Math.max(0, Math.min(index, length - 1));
-}
-
 function extractActiveAccountRef(
 	accounts: unknown[],
 	activeIndex: number,
@@ -1601,121 +1187,28 @@ export async function loadAccounts(): Promise<AccountStorageV3 | null> {
 
 export async function getBackupMetadata(): Promise<BackupMetadata> {
 	const storagePath = getStoragePath();
-	const walPath = getAccountsWalPath(storagePath);
-	const accountCandidates =
-		await getAccountsBackupRecoveryCandidatesWithDiscovery(storagePath);
-	const accountSnapshots: BackupSnapshotMetadata[] = [
-		await describeAccountSnapshot(storagePath, "accounts-primary"),
-		await describeAccountsWalSnapshot(walPath),
-	];
-	for (const [index, candidate] of accountCandidates.entries()) {
-		const kind: BackupSnapshotKind =
-			candidate === `${storagePath}.bak`
-				? "accounts-backup"
-				: candidate.startsWith(`${storagePath}.bak.`)
-					? "accounts-backup-history"
-					: "accounts-discovered-backup";
-		accountSnapshots.push(
-			await describeAccountSnapshot(candidate, kind, index),
-		);
-	}
-
 	const flaggedPath = getFlaggedAccountsPath();
-	const flaggedCandidates =
-		await getAccountsBackupRecoveryCandidatesWithDiscovery(flaggedPath);
-	const flaggedSnapshots: BackupSnapshotMetadata[] = [
-		await describeFlaggedSnapshot(flaggedPath, "flagged-primary"),
-	];
-	for (const [index, candidate] of flaggedCandidates.entries()) {
-		const kind: BackupSnapshotKind =
-			candidate === `${flaggedPath}.bak`
-				? "flagged-backup"
-				: candidate.startsWith(`${flaggedPath}.bak.`)
-					? "flagged-backup-history"
-					: "flagged-discovered-backup";
-		flaggedSnapshots.push(
-			await describeFlaggedSnapshot(candidate, kind, index),
-		);
-	}
-
-	return {
-		accounts: buildMetadataSection(storagePath, accountSnapshots),
-		flaggedAccounts: buildMetadataSection(flaggedPath, flaggedSnapshots),
-	};
+	return buildBackupMetadata({
+		storagePath,
+		flaggedPath,
+		walPath: getAccountsWalPath(storagePath),
+		getAccountsBackupRecoveryCandidatesWithDiscovery,
+		describeAccountSnapshot,
+		describeAccountsWalSnapshot,
+		describeFlaggedSnapshot,
+		buildMetadataSection,
+	});
 }
 
 export async function getRestoreAssessment(): Promise<RestoreAssessment> {
 	const storagePath = getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(storagePath);
 	const backupMetadata = await getBackupMetadata();
-	if (existsSync(resetMarkerPath)) {
-		return {
-			storagePath,
-			restoreEligible: false,
-			restoreReason: "intentional-reset",
-			backupMetadata,
-		};
-	}
-	const primarySnapshot = backupMetadata.accounts.snapshots.find(
-		(snapshot) => snapshot.kind === "accounts-primary",
-	);
-	if (!primarySnapshot?.exists) {
-		return {
-			storagePath,
-			restoreEligible: true,
-			restoreReason: "missing-storage",
-			latestSnapshot: backupMetadata.accounts.latestValidPath
-				? backupMetadata.accounts.snapshots.find(
-						(snapshot) =>
-							snapshot.path === backupMetadata.accounts.latestValidPath,
-					)
-				: undefined,
-			backupMetadata,
-		};
-	}
-	if (primarySnapshot.valid && primarySnapshot.accountCount === 0) {
-		return {
-			storagePath,
-			restoreEligible: true,
-			restoreReason: "empty-storage",
-			latestSnapshot: primarySnapshot,
-			backupMetadata,
-		};
-	}
-	return {
+	return buildRestoreAssessment({
 		storagePath,
-		restoreEligible: false,
-		latestSnapshot: backupMetadata.accounts.latestValidPath
-			? backupMetadata.accounts.snapshots.find(
-					(snapshot) =>
-						snapshot.path === backupMetadata.accounts.latestValidPath,
-				)
-			: undefined,
 		backupMetadata,
-	};
-}
-
-function parseAndNormalizeStorage(data: unknown): {
-	normalized: AccountStorageV3 | null;
-	storedVersion: unknown;
-	schemaErrors: string[];
-} {
-	const schemaErrors = getValidationErrors(AnyAccountStorageSchema, data);
-	const normalized = normalizeAccountStorage(data);
-	const storedVersion = isRecord(data)
-		? (data as { version?: unknown }).version
-		: undefined;
-	return { normalized, storedVersion, schemaErrors };
-}
-
-async function loadAccountsFromPath(path: string): Promise<{
-	normalized: AccountStorageV3 | null;
-	storedVersion: unknown;
-	schemaErrors: string[];
-}> {
-	const content = await fs.readFile(path, "utf-8");
-	const data = JSON.parse(content) as unknown;
-	return parseAndNormalizeStorage(data);
+		hasResetMarker: existsSync(resetMarkerPath),
+	});
 }
 
 async function loadAccountsFromJournal(
@@ -1743,7 +1236,11 @@ async function loadAccountsFromJournal(
 			return null;
 		}
 		const data = JSON.parse(entry.content) as unknown;
-		const { normalized } = parseAndNormalizeStorage(data);
+		const { normalized } = parseAndNormalizeStorage(
+			data,
+			normalizeAccountStorage,
+			isRecord,
+		);
 		if (!normalized) return null;
 		log.warn("Recovered account storage from WAL journal", { path, walPath });
 		return normalized;
@@ -1771,7 +1268,10 @@ async function loadAccountsInternal(
 
 	try {
 		const { normalized, storedVersion, schemaErrors } =
-			await loadAccountsFromPath(path);
+			await loadAccountsFromPath(path, {
+				normalizeAccountStorage,
+				isRecord,
+			});
 		if (schemaErrors.length > 0) {
 			log.warn("Account storage schema validation warnings", {
 				errors: schemaErrors.slice(0, 5),
@@ -1808,7 +1308,10 @@ async function loadAccountsInternal(
 			for (const backupPath of backupCandidates) {
 				if (backupPath === path) continue;
 				try {
-					const backup = await loadAccountsFromPath(backupPath);
+					const backup = await loadAccountsFromPath(backupPath, {
+						normalizeAccountStorage,
+						isRecord,
+					});
 					if (!backup.normalized) continue;
 					if (looksLikeSyntheticFixtureStorage(backup.normalized)) continue;
 					if (backup.normalized.accounts.length <= 0) continue;
@@ -1880,7 +1383,10 @@ async function loadAccountsInternal(
 				await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
 			for (const backupPath of backupCandidates) {
 				try {
-					const backup = await loadAccountsFromPath(backupPath);
+					const backup = await loadAccountsFromPath(backupPath, {
+						normalizeAccountStorage,
+						isRecord,
+					});
 					if (backup.schemaErrors.length > 0) {
 						log.warn("Backup account storage schema validation warnings", {
 							path: backupPath,
@@ -1929,167 +1435,137 @@ async function loadAccountsInternal(
 async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 	const path = getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
-	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
-	const tempPath = `${path}.${uniqueSuffix}.tmp`;
 	const walPath = getAccountsWalPath(path);
-
-	try {
-		await fs.mkdir(dirname(path), { recursive: true });
-		await ensureGitignore(path);
-
-		if (looksLikeSyntheticFixtureStorage(storage)) {
-			try {
-				const existing = await loadNormalizedStorageFromPath(
-					path,
-					"existing account storage",
-				);
-				if (
-					existing &&
-					existing.accounts.length > 0 &&
-					!looksLikeSyntheticFixtureStorage(existing)
-				) {
-					throw new StorageError(
-						"Refusing to overwrite non-synthetic account storage with synthetic fixture payload",
-						"EINVALID",
-						path,
-						"Detected synthetic fixture-like account payload. Use explicit account import/login commands instead.",
-					);
+	return saveAccountsToDisk(storage, {
+		path,
+		resetMarkerPath,
+		walPath,
+		storageBackupEnabled: storageBackupEnabled && existsSync(path),
+		ensureDirectory: async () => {
+			await fs.mkdir(dirname(path), { recursive: true });
+		},
+		ensureGitignore: () => ensureGitignore(path),
+		looksLikeSyntheticFixtureStorage,
+		loadExistingStorage: () =>
+			loadNormalizedStorageFromPath(path, "existing account storage", {
+				loadAccountsFromPath: (candidatePath) =>
+					loadAccountsFromPath(candidatePath, {
+						normalizeAccountStorage,
+						isRecord,
+					}),
+				logWarn: (message, details) => {
+					log.warn(message, details);
+				},
+			}),
+		createSyntheticFixtureError: () =>
+			new StorageError(
+				"Refusing to overwrite non-synthetic account storage with synthetic fixture payload",
+				"EINVALID",
+				path,
+				"Detected synthetic fixture-like account payload. Use explicit account import/login commands instead.",
+			),
+		createRotatingAccountsBackup,
+		computeSha256,
+		writeJournal: async (content: string, journalPath: string) => {
+			const journalEntry: AccountsJournalEntry = {
+				version: 1,
+				createdAt: Date.now(),
+				path: journalPath,
+				checksum: computeSha256(content),
+				content,
+			};
+			await fs.writeFile(walPath, JSON.stringify(journalEntry), {
+				encoding: "utf-8",
+				mode: 0o600,
+			});
+		},
+		writeTemp: (tempPath: string, content: string) =>
+			fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 }),
+		statTemp: (tempPath: string) => fs.stat(tempPath),
+		renameTempToPath: async (tempPath: string) => {
+			let lastError: NodeJS.ErrnoException | null = null;
+			for (let attempt = 0; attempt < 5; attempt++) {
+				try {
+					await fs.rename(tempPath, path);
+					return;
+				} catch (renameError) {
+					const code = (renameError as NodeJS.ErrnoException).code;
+					if (code === "EPERM" || code === "EBUSY") {
+						lastError = renameError as NodeJS.ErrnoException;
+						await new Promise((r) => setTimeout(r, 10 * 2 ** attempt));
+						continue;
+					}
+					throw renameError;
 				}
-			} catch (error) {
-				if (error instanceof StorageError) {
-					throw error;
-				}
-				// Ignore existing-file probe failures and continue with normal save flow.
 			}
-		}
-
-		if (storageBackupEnabled && existsSync(path)) {
+			if (lastError) throw lastError;
+		},
+		cleanupResetMarker: async () => {
 			try {
-				await createRotatingAccountsBackup(path);
-			} catch (backupError) {
-				log.warn("Failed to create account storage backup", {
-					path,
-					backupPath: getAccountsBackupPath(path),
-					error: String(backupError),
-				});
+				await fs.unlink(resetMarkerPath);
+			} catch {
+				// Best effort cleanup.
 			}
-		}
-
-		const content = JSON.stringify(storage, null, 2);
-		const journalEntry: AccountsJournalEntry = {
-			version: 1,
-			createdAt: Date.now(),
-			path,
-			checksum: computeSha256(content),
-			content,
-		};
-		await fs.writeFile(walPath, JSON.stringify(journalEntry), {
-			encoding: "utf-8",
-			mode: 0o600,
-		});
-		await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
-
-		const stats = await fs.stat(tempPath);
-		if (stats.size === 0) {
-			const emptyError = Object.assign(
-				new Error("File written but size is 0"),
-				{ code: "EEMPTY" },
+		},
+		cleanupWal: async () => {
+			try {
+				await fs.unlink(walPath);
+			} catch {
+				// Best effort cleanup.
+			}
+		},
+		cleanupTemp: async (tempPath: string) => {
+			try {
+				await fs.unlink(tempPath);
+			} catch {
+				// Ignore cleanup failure.
+			}
+		},
+		onSaved: () => {
+			lastAccountsSaveTimestamp = Date.now();
+		},
+		logWarn: (message: string, details: Record<string, unknown>) => {
+			log.warn(message, details);
+		},
+		logError: (message: string, details: Record<string, unknown>) => {
+			log.error(message, details);
+		},
+		createStorageError: (error: unknown) => {
+			const err = error as NodeJS.ErrnoException;
+			const code = err?.code || "UNKNOWN";
+			const hint = formatStorageErrorHint(error, path);
+			return new StorageError(
+				`Failed to save accounts: ${err?.message || "Unknown error"}`,
+				code,
+				path,
+				hint,
+				err instanceof Error ? err : undefined,
 			);
-			throw emptyError;
-		}
-
-		// Retry rename with exponential backoff for Windows EPERM/EBUSY
-		let lastError: NodeJS.ErrnoException | null = null;
-		for (let attempt = 0; attempt < 5; attempt++) {
-			try {
-				await fs.rename(tempPath, path);
-				try {
-					await fs.unlink(resetMarkerPath);
-				} catch {
-					// Best effort cleanup.
-				}
-				lastAccountsSaveTimestamp = Date.now();
-				try {
-					await fs.unlink(walPath);
-				} catch {
-					// Best effort cleanup.
-				}
-				return;
-			} catch (renameError) {
-				const code = (renameError as NodeJS.ErrnoException).code;
-				if (code === "EPERM" || code === "EBUSY") {
-					lastError = renameError as NodeJS.ErrnoException;
-					await new Promise((r) => setTimeout(r, 10 * 2 ** attempt));
-					continue;
-				}
-				throw renameError;
-			}
-		}
-		if (lastError) throw lastError;
-	} catch (error) {
-		try {
-			await fs.unlink(tempPath);
-		} catch {
-			// Ignore cleanup failure.
-		}
-
-		const err = error as NodeJS.ErrnoException;
-		const code = err?.code || "UNKNOWN";
-		const hint = formatStorageErrorHint(error, path);
-
-		log.error("Failed to save accounts", {
-			path,
-			code,
-			message: err?.message,
-			hint,
-		});
-
-		throw new StorageError(
-			`Failed to save accounts: ${err?.message || "Unknown error"}`,
-			code,
-			path,
-			hint,
-			err instanceof Error ? err : undefined,
-		);
-	}
+		},
+		backupPath: getAccountsBackupPath(path),
+		createTempPath: () =>
+			`${path}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`,
+	});
 }
 
-function cloneAccountStorageForPersistence(
-	storage: AccountStorageV3 | null | undefined,
-): AccountStorageV3 {
+function cloneFlaggedStorageForPersistence(
+	storage: FlaggedAccountStorageV1 | null | undefined,
+): FlaggedAccountStorageV1 {
 	return {
-		version: 3,
+		version: 1,
 		accounts: structuredClone(storage?.accounts ?? []),
-		activeIndex:
-			typeof storage?.activeIndex === "number" &&
-			Number.isFinite(storage.activeIndex)
-				? storage.activeIndex
-				: 0,
-		activeIndexByFamily: structuredClone(storage?.activeIndexByFamily ?? {}),
 	};
 }
-
 export async function withAccountStorageTransaction<T>(
 	handler: (
 		current: AccountStorageV3 | null,
 		persist: (storage: AccountStorageV3) => Promise<void>,
 	) => Promise<T>,
 ): Promise<T> {
-	return withStorageLock(async () => {
-		const storagePath = getStoragePath();
-		const state = {
-			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
-			storagePath,
-			active: true,
-		};
-		const current = state.snapshot;
-		const persist = async (storage: AccountStorageV3): Promise<void> => {
-			await saveAccountsUnlocked(storage);
-			state.snapshot = storage;
-		};
-		return transactionSnapshotContext.run(state, () =>
-			handler(current, persist),
-		);
+	return runWithAccountStorageTransaction(handler, {
+		getStoragePath,
+		loadCurrent: () => loadAccountsInternal(saveAccountsUnlocked),
+		saveAccounts: saveAccountsUnlocked,
 	});
 }
 
@@ -2100,6 +1576,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,
 		) => Promise<void>,
+		currentFlagged: FlaggedAccountStorageV1,
 	) => Promise<T>,
 ): Promise<T> {
 	return withStorageLock(async () => {
@@ -2110,15 +1587,17 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			active: true,
 		};
 		const current = state.snapshot;
+		const currentFlagged = await loadFlaggedAccounts();
 		const persist = async (
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,
 		): Promise<void> => {
 			const previousAccounts = cloneAccountStorageForPersistence(state.snapshot);
 			const nextAccounts = cloneAccountStorageForPersistence(accountStorage);
+			const nextFlagged = cloneFlaggedStorageForPersistence(flaggedStorage);
 			await saveAccountsUnlocked(nextAccounts);
 			try {
-				await saveFlaggedAccountsUnlocked(flaggedStorage);
+				await saveFlaggedAccountsUnlocked(nextFlagged);
 				state.snapshot = nextAccounts;
 			} catch (error) {
 				try {
@@ -2141,9 +1620,49 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 				throw error;
 			}
 		};
-		return transactionSnapshotContext.run(state, () =>
-			handler(current, persist),
+		return runInTransactionSnapshotContext(state, () =>
+			handler(current, persist, currentFlagged),
 		);
+	});
+}
+
+export async function withFlaggedStorageTransaction<T>(
+	handler: (
+		current: FlaggedAccountStorageV1,
+		persist: (storage: FlaggedAccountStorageV1) => Promise<void>,
+	) => Promise<T>,
+): Promise<T> {
+	return withStorageLock(async () => {
+		const current = await loadFlaggedAccounts();
+		let snapshot = cloneFlaggedStorageForPersistence(current);
+		const persist = async (storage: FlaggedAccountStorageV1): Promise<void> => {
+			const previousStorage = cloneFlaggedStorageForPersistence(snapshot);
+			const nextStorage = cloneFlaggedStorageForPersistence(storage);
+			try {
+				await saveFlaggedAccountsUnlocked(nextStorage);
+				snapshot = nextStorage;
+			} catch (error) {
+				try {
+					await saveFlaggedAccountsUnlocked(previousStorage);
+					snapshot = previousStorage;
+				} catch (rollbackError) {
+					const combinedError = new AggregateError(
+						[error, rollbackError],
+						"Flagged save failed and flagged storage rollback also failed",
+					);
+					log.error(
+						"Failed to rollback flagged storage after flagged save failure",
+						{
+							error: String(error),
+							rollbackError: String(rollbackError),
+						},
+					);
+					throw combinedError;
+				}
+				throw error;
+			}
+		};
+		return handler(structuredClone(snapshot), persist);
 	});
 }
 
@@ -2155,8 +1674,10 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
  * @throws StorageError with platform-aware hints on failure
  */
 export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
-	return withStorageLock(async () => {
-		await saveAccountsUnlocked(storage);
+	return saveAccountsEntry({
+		storage,
+		withStorageLock,
+		saveUnlocked: saveAccountsUnlocked,
 	});
 }
 
@@ -2165,303 +1686,87 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  * Silently ignores if file doesn't exist.
  */
 export async function clearAccounts(): Promise<void> {
-	return withStorageLock(async () => {
-		const path = getStoragePath();
-		const resetMarkerPath = getIntentionalResetMarkerPath(path);
-		const walPath = getAccountsWalPath(path);
-		const backupPaths =
-			await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
-		await fs.writeFile(
-			resetMarkerPath,
-			JSON.stringify({ version: 1, createdAt: Date.now() }),
-			{ encoding: "utf-8", mode: 0o600 },
-		);
-		const clearPath = async (targetPath: string): Promise<void> => {
-			try {
-				await fs.unlink(targetPath);
-			} catch (error) {
-				const code = (error as NodeJS.ErrnoException).code;
-				if (code !== "ENOENT") {
-					log.error("Failed to clear account storage artifact", {
-						path: targetPath,
-						error: String(error),
-					});
-				}
-			}
-		};
-
-		try {
-			await Promise.all([
-				clearPath(path),
-				clearPath(walPath),
-				...backupPaths.map(clearPath),
-			]);
-		} catch {
-			// Individual path cleanup is already best-effort with per-artifact logging.
-		}
+	const path = getStoragePath();
+	return clearAccountsEntry({
+		path,
+		withStorageLock,
+		resetMarkerPath: getIntentionalResetMarkerPath(path),
+		walPath: getAccountsWalPath(path),
+		getBackupPaths: () =>
+			getAccountsBackupRecoveryCandidatesWithDiscovery(path),
+		clearAccountStorageArtifacts,
+		logError: (message: string, details: Record<string, unknown>) => {
+			log.error(message, details);
+		},
 	});
 }
 
-function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
-	if (!isRecord(data) || data.version !== 1 || !Array.isArray(data.accounts)) {
-		return { version: 1, accounts: [] };
-	}
-
-	const byRefreshToken = new Map<string, FlaggedAccountMetadataV1>();
-	for (const rawAccount of data.accounts) {
-		if (!isRecord(rawAccount)) continue;
-		const refreshToken =
-			typeof rawAccount.refreshToken === "string"
-				? rawAccount.refreshToken.trim()
-				: "";
-		if (!refreshToken) continue;
-
-		const flaggedAt =
-			typeof rawAccount.flaggedAt === "number"
-				? rawAccount.flaggedAt
-				: Date.now();
-		const isAccountIdSource = (
-			value: unknown,
-		): value is AccountMetadataV3["accountIdSource"] =>
-			value === "token" ||
-			value === "id_token" ||
-			value === "org" ||
-			value === "manual";
-		const isSwitchReason = (
-			value: unknown,
-		): value is AccountMetadataV3["lastSwitchReason"] =>
-			value === "rate-limit" ||
-			value === "initial" ||
-			value === "rotation" ||
-			value === "best" ||
-			value === "restore";
-		const isCooldownReason = (
-			value: unknown,
-		): value is AccountMetadataV3["cooldownReason"] =>
-			value === "auth-failure" ||
-			value === "network-error" ||
-			value === "rate-limit";
-
-		let rateLimitResetTimes:
-			| AccountMetadataV3["rateLimitResetTimes"]
-			| undefined;
-		if (isRecord(rawAccount.rateLimitResetTimes)) {
-			const normalizedRateLimits: Record<string, number | undefined> = {};
-			for (const [key, value] of Object.entries(
-				rawAccount.rateLimitResetTimes,
-			)) {
-				if (typeof value === "number") {
-					normalizedRateLimits[key] = value;
-				}
-			}
-			if (Object.keys(normalizedRateLimits).length > 0) {
-				rateLimitResetTimes = normalizedRateLimits;
-			}
-		}
-
-		const accountIdSource = isAccountIdSource(rawAccount.accountIdSource)
-			? rawAccount.accountIdSource
-			: undefined;
-		const lastSwitchReason = isSwitchReason(rawAccount.lastSwitchReason)
-			? rawAccount.lastSwitchReason
-			: undefined;
-		const cooldownReason = isCooldownReason(rawAccount.cooldownReason)
-			? rawAccount.cooldownReason
-			: undefined;
-
-		const normalized: FlaggedAccountMetadataV1 = {
-			refreshToken,
-			addedAt:
-				typeof rawAccount.addedAt === "number" ? rawAccount.addedAt : flaggedAt,
-			lastUsed:
-				typeof rawAccount.lastUsed === "number"
-					? rawAccount.lastUsed
-					: flaggedAt,
-			accountId:
-				typeof rawAccount.accountId === "string"
-					? rawAccount.accountId
-					: undefined,
-			accountIdSource,
-			accountLabel:
-				typeof rawAccount.accountLabel === "string"
-					? rawAccount.accountLabel
-					: undefined,
-			email:
-				typeof rawAccount.email === "string" ? rawAccount.email : undefined,
-			enabled:
-				typeof rawAccount.enabled === "boolean"
-					? rawAccount.enabled
-					: undefined,
-			lastSwitchReason,
-			rateLimitResetTimes,
-			coolingDownUntil:
-				typeof rawAccount.coolingDownUntil === "number"
-					? rawAccount.coolingDownUntil
-					: undefined,
-			cooldownReason,
-			flaggedAt,
-			flaggedReason:
-				typeof rawAccount.flaggedReason === "string"
-					? rawAccount.flaggedReason
-					: undefined,
-			lastError:
-				typeof rawAccount.lastError === "string"
-					? rawAccount.lastError
-					: undefined,
-		};
-		byRefreshToken.set(refreshToken, normalized);
-	}
-
-	return {
-		version: 1,
-		accounts: Array.from(byRefreshToken.values()),
-	};
-}
-
 export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
-	const path = getFlaggedAccountsPath();
-	const resetMarkerPath = getIntentionalResetMarkerPath(path);
-	const empty: FlaggedAccountStorageV1 = { version: 1, accounts: [] };
-
-	try {
-		const content = await fs.readFile(path, "utf-8");
-		const data = JSON.parse(content) as unknown;
-		const loaded = normalizeFlaggedStorage(data);
-		if (existsSync(resetMarkerPath)) {
-			return empty;
-		}
-		return loaded;
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			log.error("Failed to load flagged account storage", {
-				path,
-				error: String(error),
-			});
-			return empty;
-		}
-	}
-
-	const legacyPath = getLegacyFlaggedAccountsPath();
-	if (!existsSync(legacyPath)) {
-		return empty;
-	}
-
-	try {
-		const legacyContent = await fs.readFile(legacyPath, "utf-8");
-		const legacyData = JSON.parse(legacyContent) as unknown;
-		const migrated = normalizeFlaggedStorage(legacyData);
-		if (migrated.accounts.length > 0) {
-			await saveFlaggedAccounts(migrated);
-		}
-		try {
-			await fs.unlink(legacyPath);
-		} catch {
-			// Best effort cleanup.
-		}
-		log.info("Migrated legacy flagged account storage", {
-			from: legacyPath,
-			to: path,
-			accounts: migrated.accounts.length,
-		});
-		return migrated;
-	} catch (error) {
-		log.error("Failed to migrate legacy flagged account storage", {
-			from: legacyPath,
-			to: path,
-			error: String(error),
-		});
-		return empty;
-	}
+	return loadFlaggedAccountsEntry({
+		getFlaggedAccountsPath,
+		getLegacyFlaggedAccountsPath,
+		getIntentionalResetMarkerPath,
+		normalizeFlaggedStorage: (data) =>
+			normalizeFlaggedStorage(data, {
+				isRecord,
+				now: () => Date.now(),
+			}),
+		saveFlaggedAccounts,
+		loadFlaggedAccountsState,
+		logError: (message, details) => {
+			log.error(message, details);
+		},
+		logInfo: (message, details) => {
+			log.info(message, details);
+		},
+	});
 }
 
 async function saveFlaggedAccountsUnlocked(
 	storage: FlaggedAccountStorageV1,
 ): Promise<void> {
 	const path = getFlaggedAccountsPath();
-	const markerPath = getIntentionalResetMarkerPath(path);
-	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
-	const tempPath = `${path}.${uniqueSuffix}.tmp`;
-
-	try {
-		await fs.mkdir(dirname(path), { recursive: true });
-		if (existsSync(path)) {
-			try {
-				await copyFileWithRetry(path, `${path}.bak`, {
-					allowMissingSource: true,
-				});
-			} catch (backupError) {
-				log.warn("Failed to create flagged backup snapshot", {
-					path,
-					error: String(backupError),
-				});
-			}
-		}
-		const content = JSON.stringify(normalizeFlaggedStorage(storage), null, 2);
-		await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
-		await renameFileWithRetry(tempPath, path);
-		try {
-			await fs.unlink(markerPath);
-		} catch {
-			// Best effort cleanup.
-		}
-	} catch (error) {
-		try {
-			await fs.unlink(tempPath);
-		} catch {
-			// Ignore cleanup failures.
-		}
-		log.error("Failed to save flagged account storage", {
-			path,
-			error: String(error),
-		});
-		throw error;
-	}
+	return saveFlaggedAccountsUnlockedToDisk(storage, {
+		path,
+		markerPath: getIntentionalResetMarkerPath(path),
+		normalizeFlaggedStorage: (data) =>
+			normalizeFlaggedStorage(data, {
+				isRecord,
+				now: () => Date.now(),
+			}),
+		copyFileWithRetry,
+		renameFileWithRetry,
+		logWarn: (message, details) => {
+			log.warn(message, details);
+		},
+		logError: (message, details) => {
+			log.error(message, details);
+		},
+	});
 }
 
 export async function saveFlaggedAccounts(
 	storage: FlaggedAccountStorageV1,
 ): Promise<void> {
-	return withStorageLock(async () => {
-		await saveFlaggedAccountsUnlocked(storage);
+	return saveFlaggedAccountsEntry({
+		storage,
+		withStorageLock,
+		saveUnlocked: saveFlaggedAccountsUnlocked,
 	});
 }
 
 export async function clearFlaggedAccounts(): Promise<void> {
-	return withStorageLock(async () => {
-		const path = getFlaggedAccountsPath();
-		const markerPath = getIntentionalResetMarkerPath(path);
-		try {
-			await fs.writeFile(markerPath, "reset", {
-				encoding: "utf-8",
-				mode: 0o600,
-			});
-		} catch (error) {
-			log.error("Failed to write flagged reset marker", {
-				path,
-				markerPath,
-				error: String(error),
-			});
-			throw error;
-		}
-		const backupPaths =
-			await getAccountsBackupRecoveryCandidatesWithDiscovery(path);
-		for (const candidate of [path, ...backupPaths, markerPath]) {
-			try {
-				await fs.unlink(candidate);
-			} catch (error) {
-				const code = (error as NodeJS.ErrnoException).code;
-				if (code !== "ENOENT") {
-					log.error("Failed to clear flagged account storage", {
-						path: candidate,
-						error: String(error),
-					});
-					if (candidate === path) {
-						throw error;
-					}
-				}
-			}
-		}
+	const path = getFlaggedAccountsPath();
+	return clearFlaggedAccountsEntry({
+		path,
+		withStorageLock,
+		markerPath: getIntentionalResetMarkerPath(path),
+		getBackupPaths: () =>
+			getAccountsBackupRecoveryCandidatesWithDiscovery(path),
+		clearFlaggedAccountsOnDisk,
+		logError: (message, details) => {
+			log.error(message, details);
+		},
 	});
 }
 
@@ -2478,45 +1783,19 @@ export async function exportAccounts(
 ): Promise<void> {
 	const resolvedPath = resolvePath(filePath);
 	const currentStoragePath = getStoragePath();
-
-	if (!force && existsSync(resolvedPath)) {
-		throw new Error(`File already exists: ${resolvedPath}`);
-	}
-
-	const transactionState = transactionSnapshotContext.getStore();
-	const storage =
-		transactionState?.active &&
-		transactionState.storagePath === currentStoragePath
-			? transactionState.snapshot
-			: transactionState?.active
-				? await loadAccountsInternal(saveAccountsUnlocked)
-				: await withAccountStorageTransaction((current) =>
-						Promise.resolve(current),
-					);
-	if (!storage || storage.accounts.length === 0) {
-		throw new Error("No accounts to export");
-	}
-
-	await fs.mkdir(dirname(resolvedPath), { recursive: true });
-	await beforeCommit?.(resolvedPath);
-	if (!force && existsSync(resolvedPath)) {
-		throw new Error(`File already exists: ${resolvedPath}`);
-	}
-
-	const content = JSON.stringify(
-		{
-			version: storage.version,
-			accounts: storage.accounts,
-			activeIndex: storage.activeIndex,
-			activeIndexByFamily: storage.activeIndexByFamily,
+	await exportAccountsSnapshot({
+		resolvedPath,
+		force,
+		currentStoragePath,
+		transactionState: getTransactionSnapshotState(),
+		loadAccountsInternal: () => loadAccountsInternal(saveAccountsUnlocked),
+		readCurrentStorage: () =>
+			withAccountStorageTransaction((current) => Promise.resolve(current)),
+		exportAccountsToFile,
+		beforeCommit,
+		logInfo: (message, details) => {
+			log.info(message, details);
 		},
-		null,
-		2,
-	);
-	await fs.writeFile(resolvedPath, content, { encoding: "utf-8", mode: 0o600 });
-	log.info("Exported accounts", {
-		path: resolvedPath,
-		count: storage.accounts.length,
 	});
 }
 
@@ -2530,67 +1809,16 @@ export async function importAccounts(
 	filePath: string,
 ): Promise<{ imported: number; total: number; skipped: number }> {
 	const resolvedPath = resolvePath(filePath);
-
-	// Check file exists with friendly error
-	if (!existsSync(resolvedPath)) {
-		throw new Error(`Import file not found: ${resolvedPath}`);
-	}
-
-	const content = await fs.readFile(resolvedPath, "utf-8");
-
-	let imported: unknown;
-	try {
-		imported = JSON.parse(content);
-	} catch {
-		throw new Error(`Invalid JSON in import file: ${resolvedPath}`);
-	}
-
-	const normalized = normalizeAccountStorage(imported);
-	if (!normalized) {
-		throw new Error("Invalid account storage format");
-	}
-
-	const {
-		imported: importedCount,
-		total,
-		skipped: skippedCount,
-	} = await withAccountStorageTransaction(async (existing, persist) => {
-		const existingAccounts = existing?.accounts ?? [];
-		const existingActiveIndex = existing?.activeIndex ?? 0;
-
-		const merged = [...existingAccounts, ...normalized.accounts];
-
-		if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-			const deduped = deduplicateAccounts(merged);
-			if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-				throw new Error(
-					`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`,
-				);
-			}
-		}
-
-		const deduplicatedAccounts = deduplicateAccounts(merged);
-
-		const newStorage: AccountStorageV3 = {
-			version: 3,
-			accounts: deduplicatedAccounts,
-			activeIndex: existingActiveIndex,
-			activeIndexByFamily: existing?.activeIndexByFamily,
-		};
-
-		await persist(newStorage);
-
-		const imported = deduplicatedAccounts.length - existingAccounts.length;
-		const skipped = normalized.accounts.length - imported;
-		return { imported, total: deduplicatedAccounts.length, skipped };
+	return importAccountsSnapshot({
+		resolvedPath,
+		readImportFile,
+		normalizeAccountStorage,
+		withAccountStorageTransaction,
+		mergeImportedAccounts,
+		maxAccounts: ACCOUNT_LIMITS.MAX_ACCOUNTS,
+		deduplicateAccounts,
+		logInfo: (message, details) => {
+			log.info(message, details);
+		},
 	});
-
-	log.info("Imported accounts", {
-		path: resolvedPath,
-		imported: importedCount,
-		skipped: skippedCount,
-		total,
-	});
-
-	return { imported: importedCount, total, skipped: skippedCount };
 }

@@ -1,0 +1,54 @@
+{
+  "generatedAt": "2026-03-22",
+  "components": [
+    {
+      "name": "@codex-ai/plugin",
+      "version": "1.2.10-codex.1",
+      "source": "vendored dist shim",
+      "root": "vendor/codex-ai-plugin",
+      "files": [
+        {
+          "path": "vendor/codex-ai-plugin/package.json",
+          "sha256": "b4dda9e535af9546e647f7651e1da57db1dae8af40d14eb4d97bb0ba972b8bc8"
+        },
+        {
+          "path": "vendor/codex-ai-plugin/dist/index.js",
+          "sha256": "aee9a2454b1778ff0af7c648a172074fe61446e21e76bac0e354ef1d12c0dc22"
+        },
+        {
+          "path": "vendor/codex-ai-plugin/dist/index.d.ts",
+          "sha256": "9cd22362749c262f7f87e05ea981659a14f0e03450aeb6ab4e7ad39693662c10"
+        },
+        {
+          "path": "vendor/codex-ai-plugin/dist/tool.js",
+          "sha256": "79b5301d1a200b5614d1b38420b62b6080ce77999be2bc25fc1c5239abe9f197"
+        },
+        {
+          "path": "vendor/codex-ai-plugin/dist/tool.d.ts",
+          "sha256": "c04a703b191beeadb97293d059a93bad4fd445afacc4849fcf25346b1456f160"
+        }
+      ]
+    },
+    {
+      "name": "@codex-ai/sdk",
+      "version": "1.2.10-codex.1",
+      "source": "vendored dist shim",
+      "root": "vendor/codex-ai-sdk",
+      "files": [
+        {
+          "path": "vendor/codex-ai-sdk/package.json",
+          "sha256": "8addd64386f878ba30f3ab12e2b86bdcd1d8eeb24cb2ad692be7de73587211a4"
+        },
+        {
+          "path": "vendor/codex-ai-sdk/dist/index.js",
+          "sha256": "aee9a2454b1778ff0af7c648a172074fe61446e21e76bac0e354ef1d12c0dc22",
+          "note": "Intentionally identical to vendor/codex-ai-plugin/dist/index.js; both shims export an empty ESM module."
+        },
+        {
+          "path": "vendor/codex-ai-sdk/dist/index.d.ts",
+          "sha256": "41bffc0c5a2d44f83ab4d8bd3618c35bd0cd0bf19534185943e26d23a0e41b23"
+        }
+      ]
+    }
+  ]
+}

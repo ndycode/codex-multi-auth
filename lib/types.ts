@@ -24,13 +24,111 @@ export interface ConfigOptions {
 	reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	reasoningSummary?: "auto" | "concise" | "detailed" | "off" | "on";
 	textVerbosity?: "low" | "medium" | "high";
+	promptCacheRetention?: PromptCacheRetention;
 	include?: string[];
 }
+
+export type PromptCacheRetention =
+	| "5m"
+	| "1h"
+	| "24h"
+	| "7d"
+	| (string & {});
 
 export interface ReasoningConfig {
 	effort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	summary: "auto" | "concise" | "detailed";
 }
+
+export interface ToolParametersSchema {
+	type: "object";
+	properties?: Record<string, unknown>;
+	required?: string[];
+	[key: string]: unknown;
+}
+
+export interface ToolFunction {
+	name: string;
+	description?: string;
+	parameters?: ToolParametersSchema;
+	[key: string]: unknown;
+}
+
+export interface FunctionToolDefinition {
+	type: "function";
+	function: ToolFunction;
+	defer_loading?: boolean;
+	[key: string]: unknown;
+}
+
+export interface ToolSearchToolDefinition {
+	type: "tool_search";
+	max_num_results?: number;
+	search_context_size?: "low" | "medium" | "high";
+	filters?: Record<string, unknown>;
+	[key: string]: unknown;
+}
+
+export interface RemoteMcpToolDefinition {
+	type: "mcp";
+	server_label?: string;
+	server_url?: string;
+	connector_id?: string;
+	headers?: Record<string, string>;
+	allowed_tools?: string[];
+	require_approval?: "never" | "always" | "auto" | Record<string, unknown>;
+	defer_loading?: boolean;
+	[key: string]: unknown;
+}
+
+export interface ComputerUseToolDefinition {
+	type: "computer" | "computer_use_preview";
+	display_width?: number;
+	display_height?: number;
+	environment?: string;
+	[key: string]: unknown;
+}
+
+export interface ToolNamespaceDefinition {
+	type: "namespace";
+	name?: string;
+	description?: string;
+	tools?: RequestToolDefinition[];
+	[key: string]: unknown;
+}
+
+export type RequestToolDefinition =
+	| FunctionToolDefinition
+	| ToolSearchToolDefinition
+	| RemoteMcpToolDefinition
+	| ComputerUseToolDefinition
+	| ToolNamespaceDefinition
+	| {
+			type?: string;
+			[key: string]: unknown;
+	  };
+
+export type TextFormatConfig =
+	| {
+			type: "text";
+			[key: string]: unknown;
+	  }
+	| {
+			type: "json_object";
+			[key: string]: unknown;
+	  }
+	| {
+			type: "json_schema";
+			name?: string;
+			description?: string;
+			schema?: Record<string, unknown>;
+			strict?: boolean;
+			[key: string]: unknown;
+	  }
+	| {
+			type: string;
+			[key: string]: unknown;
+	  };
 
 export interface OAuthServerInfo {
 	port: number;
@@ -91,14 +189,16 @@ export interface InputItem {
  */
 export interface RequestBody {
 	model: string;
+	background?: boolean;
 	store?: boolean;
 	stream?: boolean;
 	instructions?: string;
 	input?: InputItem[];
-	tools?: unknown;
+	tools?: RequestToolDefinition[];
 	reasoning?: Partial<ReasoningConfig>;
 	text?: {
 		verbosity?: "low" | "medium" | "high";
+		format?: TextFormatConfig;
 	};
 	include?: string[];
 	providerOptions?: {
@@ -107,6 +207,10 @@ export interface RequestBody {
 	};
 	/** Stable key to enable prompt-token caching on Codex backend */
 	prompt_cache_key?: string;
+	/** Retention mode for server-side prompt cache entries */
+	prompt_cache_retention?: PromptCacheRetention;
+	/** Resume a prior Responses API turn without resending the full transcript */
+	previous_response_id?: string;
 	max_output_tokens?: number;
 	max_completion_tokens?: number;
 	[key: string]: unknown;

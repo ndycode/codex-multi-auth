@@ -95,6 +95,30 @@ Optional plugin-host smoke:
 
 * * *
 
+## Refactor Guardrail Checklist
+
+Before approving a large runtime, manager, or storage refactor, run the narrow suites that protect the highest-risk invariants:
+
+```bash
+npm test -- test/index.test.ts test/index-retry.test.ts
+npm test -- test/codex-manager-cli.test.ts
+npm test -- test/storage.test.ts test/storage-async.test.ts test/storage-recovery-paths.test.ts test/paths.test.ts
+```
+
+Key guardrails to watch:
+
+- request invariants stay locked: `stream: true`, `store: false`, and `reasoning.encrypted_content`
+- storage failures still produce actionable `StorageError` hints
+- linked-worktree and forged-path protections remain covered by `test/paths.test.ts`
+
+Runbooks for common maintenance tasks:
+
+- [RUNBOOK_ADD_AUTH_COMMAND.md](RUNBOOK_ADD_AUTH_COMMAND.md)
+- [RUNBOOK_ADD_CONFIG_FIELD.md](RUNBOOK_ADD_CONFIG_FIELD.md)
+- [RUNBOOK_CHANGE_ROUTING_POLICY.md](RUNBOOK_CHANGE_ROUTING_POLICY.md)
+
+* * *
+
 ## Docs QA (when docs change)
 
 1. Verify every command snippet is runnable.

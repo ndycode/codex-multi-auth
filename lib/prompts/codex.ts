@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { CacheMetadata, GitHubRelease } from "../types.js";
 import { logWarn, logError, logDebug } from "../logger.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
+import { getModelProfile, type PromptModelFamily } from "../request/helpers/model-map.js";
 
 const GITHUB_API_RELEASES =
 	"https://api.github.com/repos/openai/codex/releases/latest";
@@ -44,12 +45,7 @@ function setCacheEntry(key: string, value: { content: string; timestamp: number 
  * Model family type for prompt selection
  * Maps to different system prompts in the Codex CLI
  */
-export type ModelFamily =
-	| "gpt-5-codex"
-	| "codex-max"
-	| "codex"
-	| "gpt-5.2"
-	| "gpt-5.1";
+export type ModelFamily = PromptModelFamily;
 
 /**
  * All supported model families
@@ -87,38 +83,16 @@ const CACHE_FILES: Record<ModelFamily, string> = {
 };
 
 /**
- * Determine the model family based on the normalized model name
- * @param normalizedModel - The normalized model name (e.g., "gpt-5-codex", "gpt-5.1-codex-max", "gpt-5.2", "gpt-5.1")
+ * Determine the prompt family based on the effective model name.
+ *
+ * GPT-5.4-era general-purpose models intentionally stay on the GPT-5.2 prompt
+ * family until upstream Codex releases a newer general prompt file.
+ *
+ * @param normalizedModel - The normalized model name (e.g., "gpt-5-codex", "gpt-5.4", "gpt-5-mini")
  * @returns The model family for prompt selection
  */
 export function getModelFamily(normalizedModel: string): ModelFamily {
-	if (normalizedModel.includes("codex-max")) {
-		return "codex-max";
-	}
-	if (
-		normalizedModel.includes("gpt-5-codex") ||
-		normalizedModel.includes("gpt 5 codex") ||
-		normalizedModel.includes("gpt-5.3-codex-spark") ||
-		normalizedModel.includes("gpt 5.3 codex spark") ||
-		normalizedModel.includes("gpt-5.3-codex") ||
-		normalizedModel.includes("gpt 5.3 codex") ||
-		normalizedModel.includes("gpt-5.2-codex") ||
-		normalizedModel.includes("gpt 5.2 codex") ||
-		normalizedModel.includes("gpt-5.1-codex") ||
-		normalizedModel.includes("gpt 5.1 codex")
-	) {
-		return "gpt-5-codex";
-	}
-	if (
-		normalizedModel.includes("codex") ||
-		normalizedModel.startsWith("codex-")
-	) {
-		return "codex";
-	}
-	if (normalizedModel.includes("gpt-5.2")) {
-		return "gpt-5.2";
-	}
-	return "gpt-5.1";
+	return getModelProfile(normalizedModel).promptFamily;
 }
 
 async function readFileOrNull(path: string): Promise<string | null> {
@@ -396,8 +370,15 @@ function refreshInstructionsInBackground(
  * Prewarm instruction caches for the provided models/families.
  */
 export function prewarmCodexInstructions(models: string[] = []): void {
-	const candidates = models.length > 0 ? models : ["gpt-5-codex", "gpt-5.2", "gpt-5.1"];
+	const candidates = models.length > 0 ? models : ["gpt-5-codex", "gpt-5.4", "gpt-5.1"];
+	const prewarmTargets = new Map<string, string>();
 	for (const model of candidates) {
+		const promptFamily = getModelFamily(model);
+		if (!prewarmTargets.has(promptFamily)) {
+			prewarmTargets.set(promptFamily, model);
+		}
+	}
+	for (const model of prewarmTargets.values()) {
 		void getCodexInstructions(model).catch((error) => {
 			logDebug("Codex instruction prewarm failed", {
 				model,

@@ -27,6 +27,7 @@ Check which `codex` executable is running:
 ```bash
 where codex
 codex --version
+codex-multi-auth --version
 codex auth status
 codex multi auth status
 npm ls -g codex-multi-auth
@@ -118,6 +119,7 @@ Attach these outputs when opening a bug report:
 - `codex auth report --json`
 - `codex auth doctor --json`
 - `codex --version`
+- `codex-multi-auth --version`
 - `npm ls -g codex-multi-auth`
 - the failing command and full terminal output
 

@@ -1,9 +1,13 @@
-import { readFileSync, existsSync, promises as fs } from "node:fs";
+import { existsSync, promises as fs, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { PluginConfig } from "./types.js";
 import { logWarn } from "./logger.js";
-import { PluginConfigSchema, getValidationErrors } from "./schemas.js";
-import { getCodexHomeDir, getCodexMultiAuthDir, getLegacyCodexDir } from "./runtime-paths.js";
+import {
+	getCodexHomeDir,
+	getCodexMultiAuthDir,
+	getLegacyCodexDir,
+} from "./runtime-paths.js";
+import { getValidationErrors, PluginConfigSchema } from "./schemas.js";
+import type { PluginConfig } from "./types.js";
 import {
 	getUnifiedSettingsPath,
 	loadUnifiedPluginConfigSync,
@@ -15,7 +19,10 @@ const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 const CODEX_HOME_DIR = getCodexHomeDir();
 const LEGACY_CODEX_DIR = getLegacyCodexDir();
 const IS_CUSTOM_CODEX_HOME = CODEX_HOME_DIR !== LEGACY_CODEX_DIR;
-const LEGACY_CODEX_HOME_CONFIG_PATH = join(CODEX_HOME_DIR, "codex-multi-auth-config.json");
+const LEGACY_CODEX_HOME_CONFIG_PATH = join(
+	CODEX_HOME_DIR,
+	"codex-multi-auth-config.json",
+);
 const LEGACY_CODEX_HOME_AUTH_CONFIG_PATH = join(
 	CODEX_HOME_DIR,
 	"openai-codex-auth-config.json",
@@ -36,6 +43,36 @@ const configSaveQueues = new Map<string, Promise<void>>();
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
+
+type ConfigExplainStorageKind =
+	| "unified"
+	| "file"
+	| "none"
+	| "unreadable";
+
+type ConfigExplainStoredSource = Extract<
+	ConfigExplainStorageKind,
+	"unified" | "file"
+>;
+
+export type ConfigExplainSource =
+	| "env"
+	| ConfigExplainStoredSource
+	| "default";
+
+export interface ConfigExplainEntry {
+	key: keyof PluginConfig;
+	value: unknown;
+	defaultValue: unknown;
+	source: ConfigExplainSource;
+	envNames: string[];
+}
+
+export interface ConfigExplainReport {
+	configPath: string | null;
+	storageKind: ConfigExplainStorageKind;
+	entries: ConfigExplainEntry[];
+}
 
 function logConfigWarnOnce(message: string): void {
 	if (emittedConfigWarnings.has(message)) {
@@ -148,6 +185,8 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	sessionAffinity: true,
 	sessionAffinityTtlMs: 20 * 60_000,
 	sessionAffinityMaxEntries: 512,
+	responseContinuation: false,
+	backgroundResponses: false,
 	proactiveRefreshGuardian: true,
 	proactiveRefreshIntervalMs: 60_000,
 	proactiveRefreshBufferMs: 5 * 60_000,
@@ -309,7 +348,10 @@ async function writeJsonFileAtomicWithRetry(
 	}
 }
 
-async function withConfigSaveLock(path: string, task: () => Promise<void>): Promise<void> {
+async function withConfigSaveLock(
+	path: string,
+	task: () => Promise<void>,
+): Promise<void> {
 	const previous = configSaveQueues.get(path) ?? Promise.resolve();
 	const queued = previous.catch(() => {}).then(task);
 	configSaveQueues.set(path, queued);
@@ -330,7 +372,9 @@ async function withConfigSaveLock(path: string, task: () => Promise<void>): Prom
  * @param configPath - Filesystem path to the JSON config file. Concurrent writes may cause transient read/parse failures; callers should tolerate `null`. On Windows, path casing and exclusive locks can affect readability.
  * @returns The parsed top-level JSON object as a Record<string, unknown> when the file exists and contains an object, or `null` if the file is missing, malformed, or could not be read.
  */
-function readConfigRecordFromPath(configPath: string): Record<string, unknown> | null {
+function readConfigRecordFromPath(
+	configPath: string,
+): Record<string, unknown> | null {
 	if (!existsSync(configPath)) return null;
 	try {
 		const fileContent = readFileSync(configPath, "utf-8");
@@ -347,6 +391,45 @@ function readConfigRecordFromPath(configPath: string): Record<string, unknown> |
 	}
 }
 
+function resolveStoredPluginConfigRecord(): {
+	configPath: string | null;
+	storageKind: ConfigExplainStorageKind;
+	record: Record<string, unknown> | null;
+} {
+	const unifiedConfig = loadUnifiedPluginConfigSync();
+	if (isRecord(unifiedConfig)) {
+		return {
+			configPath: getUnifiedSettingsPath(),
+			storageKind: "unified",
+			record: unifiedConfig,
+		};
+	}
+
+	const configPath = resolvePluginConfigPath();
+	if (!configPath) {
+		return {
+			configPath: null,
+			storageKind: "none",
+			record: null,
+		};
+	}
+
+	const record = readConfigRecordFromPath(configPath);
+	if (record) {
+		return {
+			configPath,
+			storageKind: "file",
+			record,
+		};
+	}
+
+	return {
+		configPath,
+		storageKind: existsSync(configPath) ? "unreadable" : "none",
+		record: null,
+	};
+}
+
 /**
  * Prepare a partial PluginConfig for persistence by removing undefined values,
  * omitting non-finite numbers, and shallow-copying nested object records.
@@ -357,7 +440,9 @@ function readConfigRecordFromPath(configPath: string): Record<string, unknown> |
  * Concurrency: synchronous and side-effect free; callers are responsible for coordinating concurrent writes to the filesystem.
  * Filesystem: no Windows-specific path normalization or filesystem I/O is performed by this function.
  */
-function sanitizePluginConfigForSave(config: Partial<PluginConfig>): Record<string, unknown> {
+function sanitizePluginConfigForSave(
+	config: Partial<PluginConfig>,
+): Record<string, unknown> {
 	const entries = Object.entries(config as Record<string, unknown>);
 	const sanitized: Record<string, unknown> = {};
 	for (const [key, value] of entries) {
@@ -385,7 +470,9 @@ function sanitizePluginConfigForSave(config: Partial<PluginConfig>): Record<stri
  * @param configPatch - Partial PluginConfig containing changes to persist; undefined fields are ignored.
  * @returns void
  */
-export async function savePluginConfig(configPatch: Partial<PluginConfig>): Promise<void> {
+export async function savePluginConfig(
+	configPatch: Partial<PluginConfig>,
+): Promise<void> {
 	const sanitizedPatch = sanitizePluginConfigForSave(configPatch);
 	const envPath = (process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim();
 
@@ -405,7 +492,9 @@ export async function savePluginConfig(configPatch: Partial<PluginConfig>): Prom
 		const unifiedConfig = loadUnifiedPluginConfigSync();
 		const legacyPath = unifiedConfig ? null : resolvePluginConfigPath();
 		const merged = {
-			...(unifiedConfig ?? (legacyPath ? readConfigRecordFromPath(legacyPath) : null) ?? {}),
+			...(unifiedConfig ??
+				(legacyPath ? readConfigRecordFromPath(legacyPath) : null) ??
+				{}),
 			...sanitizedPatch,
 		};
 		await saveUnifiedPluginConfig(merged);
@@ -549,14 +638,20 @@ export function getFastSession(pluginConfig: PluginConfig): boolean {
 	);
 }
 
-export function getFastSessionStrategy(pluginConfig: PluginConfig): "hybrid" | "always" {
-	const env = (process.env.CODEX_AUTH_FAST_SESSION_STRATEGY ?? "").trim().toLowerCase();
+export function getFastSessionStrategy(
+	pluginConfig: PluginConfig,
+): "hybrid" | "always" {
+	const env = (process.env.CODEX_AUTH_FAST_SESSION_STRATEGY ?? "")
+		.trim()
+		.toLowerCase();
 	if (env === "always") return "always";
 	if (env === "hybrid") return "hybrid";
 	return pluginConfig.fastSessionStrategy === "always" ? "always" : "hybrid";
 }
 
-export function getFastSessionMaxInputItems(pluginConfig: PluginConfig): number {
+export function getFastSessionMaxInputItems(
+	pluginConfig: PluginConfig,
+): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_FAST_SESSION_MAX_INPUT_ITEMS",
 		pluginConfig.fastSessionMaxInputItems,
@@ -565,7 +660,9 @@ export function getFastSessionMaxInputItems(pluginConfig: PluginConfig): number 
 	);
 }
 
-export function getRetryAllAccountsRateLimited(pluginConfig: PluginConfig): boolean {
+export function getRetryAllAccountsRateLimited(
+	pluginConfig: PluginConfig,
+): boolean {
 	return resolveBooleanSetting(
 		"CODEX_AUTH_RETRY_ALL_RATE_LIMITED",
 		pluginConfig.retryAllAccountsRateLimited,
@@ -573,7 +670,9 @@ export function getRetryAllAccountsRateLimited(pluginConfig: PluginConfig): bool
 	);
 }
 
-export function getRetryAllAccountsMaxWaitMs(pluginConfig: PluginConfig): number {
+export function getRetryAllAccountsMaxWaitMs(
+	pluginConfig: PluginConfig,
+): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_RETRY_ALL_MAX_WAIT_MS",
 		pluginConfig.retryAllAccountsMaxWaitMs,
@@ -582,7 +681,9 @@ export function getRetryAllAccountsMaxWaitMs(pluginConfig: PluginConfig): number
 	);
 }
 
-export function getRetryAllAccountsMaxRetries(pluginConfig: PluginConfig): number {
+export function getRetryAllAccountsMaxRetries(
+	pluginConfig: PluginConfig,
+): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_RETRY_ALL_MAX_RETRIES",
 		pluginConfig.retryAllAccountsMaxRetries,
@@ -594,7 +695,9 @@ export function getRetryAllAccountsMaxRetries(pluginConfig: PluginConfig): numbe
 export function getUnsupportedCodexPolicy(
 	pluginConfig: PluginConfig,
 ): UnsupportedCodexPolicy {
-	const envPolicy = parseStringEnv(process.env.CODEX_AUTH_UNSUPPORTED_MODEL_POLICY);
+	const envPolicy = parseStringEnv(
+		process.env.CODEX_AUTH_UNSUPPORTED_MODEL_POLICY,
+	);
 	if (envPolicy && UNSUPPORTED_CODEX_POLICIES.has(envPolicy)) {
 		return envPolicy as UnsupportedCodexPolicy;
 	}
@@ -615,19 +718,21 @@ export function getUnsupportedCodexPolicy(
 	}
 
 	if (typeof pluginConfig.fallbackOnUnsupportedCodexModel === "boolean") {
-		return pluginConfig.fallbackOnUnsupportedCodexModel
-			? "fallback"
-			: "strict";
+		return pluginConfig.fallbackOnUnsupportedCodexModel ? "fallback" : "strict";
 	}
 
 	return "strict";
 }
 
-export function getFallbackOnUnsupportedCodexModel(pluginConfig: PluginConfig): boolean {
+export function getFallbackOnUnsupportedCodexModel(
+	pluginConfig: PluginConfig,
+): boolean {
 	return getUnsupportedCodexPolicy(pluginConfig) === "fallback";
 }
 
-export function getFallbackToGpt52OnUnsupportedGpt53(pluginConfig: PluginConfig): boolean {
+export function getFallbackToGpt52OnUnsupportedGpt53(
+	pluginConfig: PluginConfig,
+): boolean {
 	return resolveBooleanSetting(
 		"CODEX_AUTH_FALLBACK_GPT53_TO_GPT52",
 		pluginConfig.fallbackToGpt52OnUnsupportedGpt53,
@@ -659,7 +764,9 @@ export function getUnsupportedCodexFallbackChain(
 		if (!normalizedKey) continue;
 
 		const targets = value
-			.map((target) => (typeof target === "string" ? normalizeModel(target) : ""))
+			.map((target) =>
+				typeof target === "string" ? normalizeModel(target) : "",
+			)
 			.filter((target) => target.length > 0);
 
 		if (targets.length > 0) {
@@ -679,7 +786,9 @@ export function getTokenRefreshSkewMs(pluginConfig: PluginConfig): number {
 	);
 }
 
-export function getRateLimitToastDebounceMs(pluginConfig: PluginConfig): number {
+export function getRateLimitToastDebounceMs(
+	pluginConfig: PluginConfig,
+): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_RATE_LIMIT_TOAST_DEBOUNCE_MS",
 		pluginConfig.rateLimitToastDebounceMs,
@@ -729,7 +838,9 @@ export function getParallelProbing(pluginConfig: PluginConfig): boolean {
 	);
 }
 
-export function getParallelProbingMaxConcurrency(pluginConfig: PluginConfig): number {
+export function getParallelProbingMaxConcurrency(
+	pluginConfig: PluginConfig,
+): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY",
 		pluginConfig.parallelProbingMaxConcurrency,
@@ -747,7 +858,9 @@ export function getEmptyResponseMaxRetries(pluginConfig: PluginConfig): number {
 	);
 }
 
-export function getEmptyResponseRetryDelayMs(pluginConfig: PluginConfig): number {
+export function getEmptyResponseRetryDelayMs(
+	pluginConfig: PluginConfig,
+): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_EMPTY_RESPONSE_RETRY_DELAY_MS",
 		pluginConfig.emptyResponseRetryDelayMs,
@@ -828,7 +941,9 @@ export function getLiveAccountSync(pluginConfig: PluginConfig): boolean {
  * Windows filesystem: value is independent of filesystem semantics.
  * Token redaction: this value contains no secrets and is safe to log.
  */
-export function getLiveAccountSyncDebounceMs(pluginConfig: PluginConfig): number {
+export function getLiveAccountSyncDebounceMs(
+	pluginConfig: PluginConfig,
+): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_LIVE_ACCOUNT_SYNC_DEBOUNCE_MS",
 		pluginConfig.liveAccountSyncDebounceMs,
@@ -908,12 +1023,49 @@ export function getSessionAffinityTtlMs(pluginConfig: PluginConfig): number {
  * Filesystem: value is runtime-only and unaffected by Windows filesystem semantics.
  * Security: this setting contains no secrets and is safe to log; it does not include tokens or credentials.
  */
-export function getSessionAffinityMaxEntries(pluginConfig: PluginConfig): number {
+export function getSessionAffinityMaxEntries(
+	pluginConfig: PluginConfig,
+): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_SESSION_AFFINITY_MAX_ENTRIES",
 		pluginConfig.sessionAffinityMaxEntries,
 		512,
 		{ min: 8 },
+	);
+}
+
+/**
+ * Controls whether the plugin should automatically continue Responses API turns
+ * with the last known `previous_response_id` for the active session key.
+ *
+ * Reads the `responseContinuation` value from `pluginConfig` and allows an
+ * environment override via `CODEX_AUTH_RESPONSE_CONTINUATION`.
+ *
+ * @param pluginConfig - The plugin configuration to consult for the setting
+ * @returns `true` if automatic response continuation is enabled, `false` otherwise
+ */
+export function getResponseContinuation(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_RESPONSE_CONTINUATION",
+		pluginConfig.responseContinuation,
+		false,
+	);
+}
+
+/**
+ * Controls whether the plugin may preserve explicit Responses API background requests.
+ *
+ * Background mode is disabled by default because the normal Codex request path is stateless (`store=false`).
+ * When enabled, callers may opt into `background: true`, which switches the request to `store=true`.
+ *
+ * @param pluginConfig - The plugin configuration to consult for the setting
+ * @returns `true` if stateful background responses are allowed, `false` otherwise
+ */
+export function getBackgroundResponses(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_BACKGROUND_RESPONSES",
+		pluginConfig.backgroundResponses,
+		false,
 	);
 }
 
@@ -927,7 +1079,9 @@ export function getSessionAffinityMaxEntries(pluginConfig: PluginConfig): number
  * @param pluginConfig - The plugin configuration object to read the setting from
  * @returns `true` if the proactive refresh guardian is enabled, `false` otherwise.
  */
-export function getProactiveRefreshGuardian(pluginConfig: PluginConfig): boolean {
+export function getProactiveRefreshGuardian(
+	pluginConfig: PluginConfig,
+): boolean {
 	return resolveBooleanSetting(
 		"CODEX_AUTH_PROACTIVE_GUARDIAN",
 		pluginConfig.proactiveRefreshGuardian,
@@ -948,7 +1102,9 @@ export function getProactiveRefreshGuardian(pluginConfig: PluginConfig): boolean
  * @param pluginConfig - Plugin configuration used as the fallback source for the interval value
  * @returns The proactive refresh interval in milliseconds (>= 5000)
  */
-export function getProactiveRefreshIntervalMs(pluginConfig: PluginConfig): number {
+export function getProactiveRefreshIntervalMs(
+	pluginConfig: PluginConfig,
+): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_PROACTIVE_GUARDIAN_INTERVAL_MS",
 		pluginConfig.proactiveRefreshIntervalMs,
@@ -967,7 +1123,9 @@ export function getProactiveRefreshIntervalMs(pluginConfig: PluginConfig): numbe
  * Windows filesystem: not related to filesystem behavior.
  * Token redaction: environment values and config contents may be redacted in logs and diagnostics.
  */
-export function getProactiveRefreshBufferMs(pluginConfig: PluginConfig): number {
+export function getProactiveRefreshBufferMs(
+	pluginConfig: PluginConfig,
+): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_PROACTIVE_GUARDIAN_BUFFER_MS",
 		pluginConfig.proactiveRefreshBufferMs,
@@ -1053,7 +1211,9 @@ export function getPreemptiveQuotaEnabled(pluginConfig: PluginConfig): boolean {
  * @param pluginConfig - Plugin configuration to read the setting from. The value may be overridden by the CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT environment variable; environment override semantics are the same on Windows. Safe to call concurrently. The returned value does not contain sensitive tokens and requires no redaction.
  * @returns The percentage (0–100) used as the preemptive quota threshold for 5-hour intervals.
  */
-export function getPreemptiveQuotaRemainingPercent5h(pluginConfig: PluginConfig): number {
+export function getPreemptiveQuotaRemainingPercent5h(
+	pluginConfig: PluginConfig,
+): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT",
 		pluginConfig.preemptiveQuotaRemainingPercent5h,
@@ -1075,7 +1235,9 @@ export function getPreemptiveQuotaRemainingPercent5h(pluginConfig: PluginConfig)
  * @param pluginConfig - Plugin configuration object used as a fallback when the environment variable is not set
  * @returns The reserved quota percentage for the 7-day window, an integer between `0` and `100`
  */
-export function getPreemptiveQuotaRemainingPercent7d(pluginConfig: PluginConfig): number {
+export function getPreemptiveQuotaRemainingPercent7d(
+	pluginConfig: PluginConfig,
+): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_PREEMPTIVE_QUOTA_7D_REMAINING_PCT",
 		pluginConfig.preemptiveQuotaRemainingPercent7d,
@@ -1096,11 +1258,339 @@ export function getPreemptiveQuotaRemainingPercent7d(pluginConfig: PluginConfig)
  * Filesystem note: config persistence/visibility may differ on Windows vs POSIX filesystems.
  * Security: the returned value contains no sensitive tokens and is safe to log.
  */
-export function getPreemptiveQuotaMaxDeferralMs(pluginConfig: PluginConfig): number {
+export function getPreemptiveQuotaMaxDeferralMs(
+	pluginConfig: PluginConfig,
+): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_PREEMPTIVE_QUOTA_MAX_DEFERRAL_MS",
 		pluginConfig.preemptiveQuotaMaxDeferralMs,
 		2 * 60 * 60_000,
 		{ min: 1_000 },
 	);
+}
+
+type ConfigExplainMeta = {
+	key: keyof PluginConfig;
+	envNames: string[];
+	getValue: (pluginConfig: PluginConfig) => unknown;
+	sourceKeys?: (keyof PluginConfig)[];
+};
+
+/**
+ * CLI-only helper that temporarily clears env overrides while a synchronous getter runs.
+ *
+ * This is intentionally limited to synchronous callers; async use would expose the env mutation
+ * window to concurrent readers or child-process inheritance.
+ */
+function withExplainEnvUnset<T>(envNames: string[], run: () => T): T {
+	if (envNames.length === 0) {
+		return run();
+	}
+	const previous = new Map<string, string | undefined>();
+	for (const name of envNames) {
+		previous.set(name, process.env[name]);
+		delete process.env[name];
+	}
+	try {
+		return run();
+	} finally {
+		for (const [name, value] of previous) {
+			if (value === undefined) {
+				delete process.env[name];
+			} else {
+				process.env[name] = value;
+			}
+		}
+	}
+}
+
+function configExplainValuesEqual(left: unknown, right: unknown): boolean {
+	return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function resolveConfigExplainSource(
+	entry: ConfigExplainMeta,
+	pluginConfig: PluginConfig,
+	storedRecord: Partial<PluginConfig> | null,
+	storageKind: ConfigExplainStorageKind,
+): ConfigExplainSource {
+	const effectiveValue = entry.getValue(pluginConfig);
+	const noEnvValue = withExplainEnvUnset(entry.envNames, () =>
+		entry.getValue(pluginConfig),
+	);
+	if (!configExplainValuesEqual(effectiveValue, noEnvValue)) {
+		return "env";
+	}
+	const storedKeys = entry.sourceKeys ?? [entry.key];
+	const hasStoredSource =
+		(storageKind === "unified" || storageKind === "file") &&
+		storedRecord !== null &&
+		storedKeys.some((key) => Object.hasOwn(storedRecord, key));
+	if (hasStoredSource) {
+		return storageKind;
+	}
+	return "default";
+}
+
+function normalizeConfigExplainValue(value: unknown): unknown {
+	if (typeof value === "number" && !Number.isFinite(value)) {
+		if (Number.isNaN(value)) return "NaN";
+		return value > 0 ? "Infinity" : "-Infinity";
+	}
+	if (Array.isArray(value)) {
+		return value.map((item) => normalizeConfigExplainValue(item));
+	}
+	if (isRecord(value)) {
+		const normalized: Record<string, unknown> = {};
+		for (const [key, item] of Object.entries(value)) {
+			normalized[key] = normalizeConfigExplainValue(item);
+		}
+		return normalized;
+	}
+	return value;
+}
+
+const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
+	{ key: "codexMode", envNames: ["CODEX_MODE"], getValue: getCodexMode },
+	{ key: "codexTuiV2", envNames: ["CODEX_TUI_V2"], getValue: getCodexTuiV2 },
+	{
+		key: "codexTuiColorProfile",
+		envNames: ["CODEX_TUI_COLOR_PROFILE"],
+		getValue: getCodexTuiColorProfile,
+	},
+	{
+		key: "codexTuiGlyphMode",
+		envNames: ["CODEX_TUI_GLYPHS"],
+		getValue: getCodexTuiGlyphMode,
+	},
+	{
+		key: "fastSession",
+		envNames: ["CODEX_AUTH_FAST_SESSION"],
+		getValue: getFastSession,
+	},
+	{
+		key: "fastSessionStrategy",
+		envNames: ["CODEX_AUTH_FAST_SESSION_STRATEGY"],
+		getValue: getFastSessionStrategy,
+	},
+	{
+		key: "fastSessionMaxInputItems",
+		envNames: ["CODEX_AUTH_FAST_SESSION_MAX_INPUT_ITEMS"],
+		getValue: getFastSessionMaxInputItems,
+	},
+	{
+		key: "retryAllAccountsRateLimited",
+		envNames: ["CODEX_AUTH_RETRY_ALL_RATE_LIMITED"],
+		getValue: getRetryAllAccountsRateLimited,
+	},
+	{
+		key: "retryAllAccountsMaxWaitMs",
+		envNames: ["CODEX_AUTH_RETRY_ALL_MAX_WAIT_MS"],
+		getValue: getRetryAllAccountsMaxWaitMs,
+	},
+	{
+		key: "retryAllAccountsMaxRetries",
+		envNames: ["CODEX_AUTH_RETRY_ALL_MAX_RETRIES"],
+		getValue: getRetryAllAccountsMaxRetries,
+	},
+	{
+		key: "unsupportedCodexPolicy",
+		envNames: [
+			"CODEX_AUTH_UNSUPPORTED_MODEL_POLICY",
+			"CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL",
+		],
+		getValue: getUnsupportedCodexPolicy,
+		sourceKeys: ["unsupportedCodexPolicy", "fallbackOnUnsupportedCodexModel"],
+	},
+	{
+		key: "fallbackOnUnsupportedCodexModel",
+		envNames: [
+			"CODEX_AUTH_UNSUPPORTED_MODEL_POLICY",
+			"CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL",
+		],
+		getValue: getFallbackOnUnsupportedCodexModel,
+		sourceKeys: ["unsupportedCodexPolicy", "fallbackOnUnsupportedCodexModel"],
+	},
+	{
+		key: "fallbackToGpt52OnUnsupportedGpt53",
+		envNames: ["CODEX_AUTH_FALLBACK_GPT53_TO_GPT52"],
+		getValue: getFallbackToGpt52OnUnsupportedGpt53,
+	},
+	{
+		key: "unsupportedCodexFallbackChain",
+		envNames: [],
+		getValue: getUnsupportedCodexFallbackChain,
+	},
+	{
+		key: "tokenRefreshSkewMs",
+		envNames: ["CODEX_AUTH_TOKEN_REFRESH_SKEW_MS"],
+		getValue: getTokenRefreshSkewMs,
+	},
+	{
+		key: "rateLimitToastDebounceMs",
+		envNames: ["CODEX_AUTH_RATE_LIMIT_TOAST_DEBOUNCE_MS"],
+		getValue: getRateLimitToastDebounceMs,
+	},
+	{
+		key: "toastDurationMs",
+		envNames: ["CODEX_AUTH_TOAST_DURATION_MS"],
+		getValue: getToastDurationMs,
+	},
+	{
+		key: "perProjectAccounts",
+		envNames: ["CODEX_AUTH_PER_PROJECT_ACCOUNTS"],
+		getValue: getPerProjectAccounts,
+	},
+	{
+		key: "sessionRecovery",
+		envNames: ["CODEX_AUTH_SESSION_RECOVERY"],
+		getValue: getSessionRecovery,
+	},
+	{
+		key: "autoResume",
+		envNames: ["CODEX_AUTH_AUTO_RESUME"],
+		getValue: getAutoResume,
+	},
+	{
+		key: "parallelProbing",
+		envNames: ["CODEX_AUTH_PARALLEL_PROBING"],
+		getValue: getParallelProbing,
+	},
+	{
+		key: "parallelProbingMaxConcurrency",
+		envNames: ["CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY"],
+		getValue: getParallelProbingMaxConcurrency,
+	},
+	{
+		key: "emptyResponseMaxRetries",
+		envNames: ["CODEX_AUTH_EMPTY_RESPONSE_MAX_RETRIES"],
+		getValue: getEmptyResponseMaxRetries,
+	},
+	{
+		key: "emptyResponseRetryDelayMs",
+		envNames: ["CODEX_AUTH_EMPTY_RESPONSE_RETRY_DELAY_MS"],
+		getValue: getEmptyResponseRetryDelayMs,
+	},
+	{
+		key: "pidOffsetEnabled",
+		envNames: ["CODEX_AUTH_PID_OFFSET_ENABLED"],
+		getValue: getPidOffsetEnabled,
+	},
+	{
+		key: "fetchTimeoutMs",
+		envNames: ["CODEX_AUTH_FETCH_TIMEOUT_MS"],
+		getValue: getFetchTimeoutMs,
+	},
+	{
+		key: "streamStallTimeoutMs",
+		envNames: ["CODEX_AUTH_STREAM_STALL_TIMEOUT_MS"],
+		getValue: getStreamStallTimeoutMs,
+	},
+	{
+		key: "liveAccountSync",
+		envNames: ["CODEX_AUTH_LIVE_ACCOUNT_SYNC"],
+		getValue: getLiveAccountSync,
+	},
+	{
+		key: "liveAccountSyncDebounceMs",
+		envNames: ["CODEX_AUTH_LIVE_ACCOUNT_SYNC_DEBOUNCE_MS"],
+		getValue: getLiveAccountSyncDebounceMs,
+	},
+	{
+		key: "liveAccountSyncPollMs",
+		envNames: ["CODEX_AUTH_LIVE_ACCOUNT_SYNC_POLL_MS"],
+		getValue: getLiveAccountSyncPollMs,
+	},
+	{
+		key: "sessionAffinity",
+		envNames: ["CODEX_AUTH_SESSION_AFFINITY"],
+		getValue: getSessionAffinity,
+	},
+	{
+		key: "sessionAffinityTtlMs",
+		envNames: ["CODEX_AUTH_SESSION_AFFINITY_TTL_MS"],
+		getValue: getSessionAffinityTtlMs,
+	},
+	{
+		key: "sessionAffinityMaxEntries",
+		envNames: ["CODEX_AUTH_SESSION_AFFINITY_MAX_ENTRIES"],
+		getValue: getSessionAffinityMaxEntries,
+	},
+	{
+		key: "proactiveRefreshGuardian",
+		envNames: ["CODEX_AUTH_PROACTIVE_GUARDIAN"],
+		getValue: getProactiveRefreshGuardian,
+	},
+	{
+		key: "proactiveRefreshIntervalMs",
+		envNames: ["CODEX_AUTH_PROACTIVE_GUARDIAN_INTERVAL_MS"],
+		getValue: getProactiveRefreshIntervalMs,
+	},
+	{
+		key: "proactiveRefreshBufferMs",
+		envNames: ["CODEX_AUTH_PROACTIVE_GUARDIAN_BUFFER_MS"],
+		getValue: getProactiveRefreshBufferMs,
+	},
+	{
+		key: "networkErrorCooldownMs",
+		envNames: ["CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS"],
+		getValue: getNetworkErrorCooldownMs,
+	},
+	{
+		key: "serverErrorCooldownMs",
+		envNames: ["CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS"],
+		getValue: getServerErrorCooldownMs,
+	},
+	{
+		key: "storageBackupEnabled",
+		envNames: ["CODEX_AUTH_STORAGE_BACKUP_ENABLED"],
+		getValue: getStorageBackupEnabled,
+	},
+	{
+		key: "preemptiveQuotaEnabled",
+		envNames: ["CODEX_AUTH_PREEMPTIVE_QUOTA_ENABLED"],
+		getValue: getPreemptiveQuotaEnabled,
+	},
+	{
+		key: "preemptiveQuotaRemainingPercent5h",
+		envNames: ["CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT"],
+		getValue: getPreemptiveQuotaRemainingPercent5h,
+	},
+	{
+		key: "preemptiveQuotaRemainingPercent7d",
+		envNames: ["CODEX_AUTH_PREEMPTIVE_QUOTA_7D_REMAINING_PCT"],
+		getValue: getPreemptiveQuotaRemainingPercent7d,
+	},
+	{
+		key: "preemptiveQuotaMaxDeferralMs",
+		envNames: ["CODEX_AUTH_PREEMPTIVE_QUOTA_MAX_DEFERRAL_MS"],
+		getValue: getPreemptiveQuotaMaxDeferralMs,
+	},
+];
+
+export function getPluginConfigExplainReport(): ConfigExplainReport {
+	const pluginConfig = loadPluginConfig();
+	const stored = resolveStoredPluginConfigRecord();
+	const storedRecord = stored.record ?? null;
+	const entries = CONFIG_EXPLAIN_ENTRIES.map((entry) => {
+		const value = entry.getValue(pluginConfig);
+		return {
+			key: entry.key,
+			value: normalizeConfigExplainValue(value),
+			defaultValue: normalizeConfigExplainValue(DEFAULT_PLUGIN_CONFIG[entry.key]),
+			source: resolveConfigExplainSource(
+				entry,
+				pluginConfig,
+				storedRecord,
+				stored.storageKind,
+			),
+			envNames: entry.envNames,
+		};
+	});
+
+	return {
+		configPath: stored.configPath,
+		storageKind: stored.storageKind,
+		entries,
+	};
 }

@@ -164,3 +164,24 @@ export class CodexRateLimitError extends CodexError {
 		this.accountId = options?.accountId;
 	}
 }
+
+/**
+ * Storage-specific error with a filesystem code, target path, and user-facing hint.
+ */
+export class StorageError extends CodexError {
+	override readonly name = "StorageError";
+	readonly path: string;
+	readonly hint: string;
+
+	constructor(
+		message: string,
+		code: string,
+		path: string,
+		hint: string,
+		cause?: Error,
+	) {
+		super(message, { code, cause });
+		this.path = path;
+		this.hint = hint;
+	}
+}

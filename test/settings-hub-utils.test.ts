@@ -644,6 +644,62 @@ describe("settings-hub utility coverage", () => {
 			]);
 		});
 
+		it("returns null for statusline settings when stdin or stdout is not a tty", async () => {
+			const api = await loadSettingsHubTestApi();
+			setStreamIsTTY(process.stdin, false);
+			setStreamIsTTY(process.stdout, false);
+			await expect(
+				api.promptStatuslineSettings({
+					...DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+				}),
+			).resolves.toBeNull();
+		});
+
+		it("supports statusline reorder hotkeys before saving", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(
+				triggerSettingsHubHotkey("]"),
+				triggerSettingsHubHotkey("s"),
+			);
+			const selected = await api.promptStatuslineSettings({
+				...DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+				menuStatuslineFields: ["last-used", "limits", "status"],
+			});
+			expect(selected?.menuStatuslineFields).toEqual([
+				"limits",
+				"last-used",
+				"status",
+			]);
+		});
+
+		it("supports statusline reset hotkeys before saving", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(
+				triggerSettingsHubHotkey("r"),
+				triggerSettingsHubHotkey("s"),
+			);
+			const selected = await api.promptStatuslineSettings({
+				...DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+				menuStatuslineFields: ["status"],
+			});
+			expect(selected?.menuStatuslineFields).toEqual(
+				DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuStatuslineFields,
+			);
+		});
+
+		it("keeps the last statusline field enabled when toggled off by numeric hotkey", async () => {
+			const api = await loadSettingsHubTestApi();
+			queueSelectResults(
+				triggerSettingsHubHotkey("1"),
+				triggerSettingsHubHotkey("s"),
+			);
+			const selected = await api.promptStatuslineSettings({
+				...DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+				menuStatuslineFields: ["last-used"],
+			});
+			expect(selected?.menuStatuslineFields).toEqual(["last-used"]);
+		});
+
 		it("toggles behavior settings before returning the draft", async () => {
 			const api = await loadSettingsHubTestApi();
 			queueSelectResults({ type: "toggle-pause" }, { type: "save" });

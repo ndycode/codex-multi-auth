@@ -30,6 +30,9 @@ const userDocs = [
 	"docs/reference/error-contracts.md",
 	"docs/reference/settings.md",
 	"docs/reference/storage-paths.md",
+	"docs/releases/v1.1.10.md",
+	"docs/releases/v0.1.9.md",
+	"docs/releases/v0.1.8.md",
 	"docs/releases/v0.1.7.md",
 	"docs/releases/v0.1.6.md",
 	"docs/releases/v0.1.5.md",
@@ -55,6 +58,12 @@ const compatibilityAliasAllowedFiles = new Set([
 	"docs/troubleshooting.md",
 	"docs/upgrade.md",
 ]);
+
+const maintainerRunbooks = [
+	"docs/development/RUNBOOK_ADD_AUTH_COMMAND.md",
+	"docs/development/RUNBOOK_ADD_CONFIG_FIELD.md",
+	"docs/development/RUNBOOK_CHANGE_ROUTING_POLICY.md",
+];
 
 function read(filePath: string): string {
 	return readFileSync(join(projectRoot, filePath), "utf-8");
@@ -123,7 +132,7 @@ describe("Documentation Integrity", () => {
 		expect(portal).toContain("releases/v0.1.0-beta.0.md");
 		expect(portal).toContain("releases/legacy-pre-0.1-history.md");
 		expect(portal).toContain(
-			"| [User Guides release notes](#user-guides) | Stable, previous, and archived release notes |",
+			"| [Daily Use release notes](#daily-use) | Stable, previous, and archived release notes |",
 		);
 
 		const beta = read("docs/releases/v0.1.0-beta.0.md");
@@ -224,6 +233,11 @@ describe("Documentation Integrity", () => {
 		expect(publicApi).toContain("tier c");
 		expect(publicApi).toContain("options-object");
 		expect(publicApi).toContain("semver");
+		expect(publicApi).toContain("codex-multi-auth/auth");
+		expect(publicApi).toContain("codex-multi-auth/storage");
+		expect(publicApi).toContain("codex-multi-auth/config");
+		expect(publicApi).toContain("codex-multi-auth/request");
+		expect(publicApi).toContain("codex-multi-auth/cli");
 
 		expect(errorContracts).toContain("exit codes");
 		expect(errorContracts).toContain("json mode contract");
@@ -241,26 +255,68 @@ describe("Documentation Integrity", () => {
 	it("keeps fix command flag docs aligned across README, reference, and CLI usage text", () => {
 		const readme = read("README.md");
 		const commandRef = read("docs/reference/commands.md");
-		const managerPath = "lib/codex-manager.ts";
+		const helpPath = "lib/codex-manager/help.ts";
+		const authCommandsPath = "lib/codex-manager/auth-commands.ts";
+		const switchPath = "lib/codex-manager/commands/switch.ts";
 		expect(
-			existsSync(join(projectRoot, managerPath)),
-			`${managerPath} should exist`,
+			existsSync(join(projectRoot, helpPath)),
+			`${helpPath} should exist`,
 		).toBe(true);
-		const manager = read(managerPath);
+		expect(
+			existsSync(join(projectRoot, authCommandsPath)),
+			`${authCommandsPath} should exist`,
+		).toBe(true);
+		expect(
+			existsSync(join(projectRoot, switchPath)),
+			`${switchPath} should exist`,
+		).toBe(true);
+		const help = read(helpPath);
+		const authCommands = read(authCommandsPath);
+		const switchCommand = read(switchPath);
 
 		expect(readme).toContain("codex auth fix --live --model gpt-5-codex");
-		expect(commandRef).toContain("| `--live` | forecast, report, fix |");
 		expect(commandRef).toContain(
-			"| `--model <model>` | forecast, report, fix |",
+			"| `--json` | verify-flagged, best, forecast, report, fix, doctor, config explain, debug bundle |",
 		);
-		expect(manager).toContain("codex auth login");
-		expect(manager).toContain(
+		expect(commandRef).toContain(
+			"| `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |",
+		);
+		expect(commandRef).toContain("| `--live` | best, forecast, report, fix |");
+		expect(commandRef).toContain(
+			"| `--model <model>` | best, forecast, report, fix |",
+		);
+		expect(help).toContain("codex auth login");
+		expect(help).toContain(
 			"codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
 		);
-		expect(manager).toContain(
+		expect(help).toContain(
+			"codex auth report [--live] [--json] [--explain] [--model <model>] [--out <path>]",
+		);
+		expect(help).toContain("codex auth config explain [--json]");
+		expect(help).toContain("codex auth debug bundle [--json]");
+		expect(authCommands).toContain(
 			"Missing index. Usage: codex auth switch <index>",
 		);
-		expect(manager).not.toContain("codex-multi-auth auth switch <index>");
+		expect(authCommands).not.toContain("codex-multi-auth auth switch <index>");
+		expect(switchCommand).toContain(
+			"Missing index. Usage: codex auth switch <index>",
+		);
+		expect(switchCommand).not.toContain("codex-multi-auth auth switch <index>");
+	});
+
+	it("keeps maintainer runbooks present", () => {
+		const runbooks = [
+			"docs/development/RUNBOOK_ADD_AUTH_MANAGER_COMMAND.md",
+			"docs/development/RUNBOOK_ADD_CONFIG_FIELD_SAFELY.md",
+			"docs/development/RUNBOOK_CHANGE_ROUTING_POLICY_SAFELY.md",
+		];
+
+		for (const runbook of runbooks) {
+			expect(
+				existsSync(join(projectRoot, runbook)),
+				`${runbook} should exist`,
+			).toBe(true);
+		}
 	});
 
 	it("documents stable overrides separately from advanced and internal overrides", () => {
@@ -454,6 +510,28 @@ describe("Documentation Integrity", () => {
 		const conduct = read("CODE_OF_CONDUCT.md").toLowerCase();
 		expect(conduct).toContain("respectful");
 		expect(conduct).toContain("security.md");
+	});
+
+	it("publishes maintainer runbooks for refactor-era changes", () => {
+		const docsPortal = read("docs/README.md");
+		const testingGuide = read("docs/development/TESTING.md");
+
+		for (const filePath of maintainerRunbooks) {
+			expect(existsSync(join(projectRoot, filePath)), `${filePath} should exist`).toBe(
+				true,
+			);
+			const content = read(filePath).toLowerCase();
+			expect(content).toContain("validation");
+			expect(content).toContain("review checklist");
+		}
+
+		expect(docsPortal).toContain("development/RUNBOOK_ADD_AUTH_COMMAND.md");
+		expect(docsPortal).toContain("development/RUNBOOK_ADD_CONFIG_FIELD.md");
+		expect(docsPortal).toContain("development/RUNBOOK_CHANGE_ROUTING_POLICY.md");
+		expect(testingGuide).toContain("## Refactor Guardrail Checklist");
+		expect(testingGuide).toContain("stream: true");
+		expect(testingGuide).toContain("store: false");
+		expect(testingGuide).toContain("reasoning.encrypted_content");
 	});
 
 	it("has valid internal links in README.md", () => {

@@ -1,14 +1,7 @@
-import { promises as fs } from "node:fs";
 import { stdin as input, stdout as output } from "node:process";
-import { createInterface } from "node:readline/promises";
-import {
-	getDefaultPluginConfig,
-	loadPluginConfig,
-	savePluginConfig,
-} from "../config.js";
+import { loadPluginConfig, savePluginConfig } from "../config.js";
 import {
 	type DashboardAccentColor,
-	type DashboardAccountSortMode,
 	type DashboardDisplaySettings,
 	type DashboardStatuslineField,
 	type DashboardThemePreset,
@@ -25,31 +18,98 @@ import {
 import { detectOcChatgptMultiAuthTarget } from "../oc-chatgpt-target-detection.js";
 import { loadAccounts, normalizeAccountStorage } from "../storage.js";
 import type { PluginConfig } from "../types.js";
-import { ANSI } from "../ui/ansi.js";
 import { UI_COPY } from "../ui/copy.js";
 import { getUiRuntimeOptions, setUiRuntimeOptions } from "../ui/runtime.js";
-import { type MenuItem, select, type SelectOptions } from "../ui/select.js";
-import { getUnifiedSettingsPath } from "../unified-settings.js";
+import { select } from "../ui/select.js";
 import { sleep } from "../utils.js";
+import { promptBackendCategorySettingsEntry } from "./backend-category-entry.js";
+import {
+	applyBackendCategoryDefaults,
+	getBackendCategory,
+	getBackendCategoryInitialFocus,
+	resolveFocusedBackendNumberKey,
+} from "./backend-category-helpers.js";
+import { promptBackendCategorySettingsMenu } from "./backend-category-prompt.js";
+import { configureBackendSettingsController } from "./backend-settings-controller.js";
+import { configureBackendSettingsEntry } from "./backend-settings-entry.js";
+import {
+	backendSettingsEqual,
+	buildBackendConfigPatch,
+	buildBackendSettingsPreview,
+	clampBackendNumberForTests,
+	cloneBackendPluginConfig,
+	formatBackendNumberValue,
+} from "./backend-settings-helpers.js";
+import { promptBackendSettingsMenu } from "./backend-settings-prompt.js";
+import {
+	BACKEND_CATEGORY_OPTIONS,
+	BACKEND_DEFAULTS,
+	BACKEND_NUMBER_OPTION_BY_KEY,
+	BACKEND_TOGGLE_OPTION_BY_KEY,
+	type BackendCategoryOption,
+	type BackendNumberSettingOption,
+	type BackendSettingFocusKey,
+} from "./backend-settings-schema.js";
+import { promptBehaviorSettingsPanel } from "./behavior-settings-panel.js";
+import {
+	promptDashboardDisplayPanel,
+	type DashboardDisplaySettingKey,
+	type DashboardDisplaySettingOption,
+} from "./dashboard-display-panel.js";
+import {
+	formatDashboardSettingState,
+	formatMenuLayoutMode,
+	formatMenuQuotaTtl,
+	formatMenuSortMode,
+} from "./dashboard-formatters.js";
+import { configureDashboardSettingsController } from "./dashboard-settings-controller.js";
+import {
+	cloneDashboardSettingsData,
+	dashboardSettingsDataEqual,
+} from "./dashboard-settings-data.js";
+import { configureDashboardSettingsEntry } from "./dashboard-settings-entry.js";
+import { promptExperimentalSettingsEntry } from "./experimental-settings-entry.js";
+import { promptExperimentalSettingsMenu } from "./experimental-settings-prompt.js";
+import {
+	getExperimentalSelectOptions,
+	mapExperimentalMenuHotkey,
+	mapExperimentalStatusHotkey,
+} from "./experimental-settings-schema.js";
+import { loadExperimentalSyncTargetState } from "./experimental-sync-target.js";
+import { loadExperimentalSyncTargetEntry } from "./experimental-sync-target-entry.js";
+import { promptSettingsHubEntry } from "./settings-hub-entry.js";
+import {
+	buildSettingsHubItems,
+	findSettingsHubInitialCursor,
+} from "./settings-hub-menu.js";
+import { promptSettingsHubMenu } from "./settings-hub-prompt.js";
+import {
+	promptBehaviorSettingsPanelEntry,
+	promptDashboardDisplaySettingsPanelEntry,
+	promptStatuslineSettingsPanelEntry,
+	promptThemeSettingsPanelEntry,
+	reorderStatuslineField,
+} from "./settings-panels.js";
+import {
+	readFileWithRetry,
+	resolvePluginConfigSavePathKey,
+	warnPersistFailure,
+} from "./settings-persist-utils.js";
+import {
+	buildAccountListPreview as buildAccountListPreviewBase,
+	buildSummaryPreviewText as buildSummaryPreviewTextBase,
+	highlightPreviewToken,
+	normalizeStatuslineFields,
+} from "./settings-preview.js";
+import { withQueuedRetry } from "./settings-write-queue.js";
 
-type DashboardDisplaySettingKey =
-	| "menuShowStatusBadge"
-	| "menuShowCurrentBadge"
-	| "menuShowLastUsed"
-	| "menuShowQuotaSummary"
-	| "menuShowQuotaCooldown"
-	| "menuShowDetailsForUnselectedRows"
-	| "menuShowFetchStatus"
-	| "menuHighlightCurrentRow"
-	| "menuSortEnabled"
-	| "menuSortPinCurrent"
-	| "menuSortQuickSwitchVisibleRow";
-
-interface DashboardDisplaySettingOption {
-	key: DashboardDisplaySettingKey;
-	label: string;
-	description: string;
-}
+import { promptStatuslineSettingsPanel } from "./statusline-settings-panel.js";
+import { promptThemeSettingsPanel } from "./theme-settings-panel.js";
+import {
+	configureUnifiedSettingsController,
+	type SettingsHubActionType,
+} from "./unified-settings-controller.js";
+import { configureUnifiedSettingsEntry } from "./unified-settings-entry.js";
 
 const DASHBOARD_DISPLAY_OPTIONS: DashboardDisplaySettingOption[] = [
 	{
@@ -104,11 +164,6 @@ const DASHBOARD_DISPLAY_OPTIONS: DashboardDisplaySettingOption[] = [
 	},
 ];
 
-const DEFAULT_STATUSLINE_FIELDS: DashboardStatuslineField[] = [
-	"last-used",
-	"limits",
-	"status",
-];
 const STATUSLINE_FIELD_OPTIONS: Array<{
 	key: DashboardStatuslineField;
 	label: string;
@@ -139,128 +194,6 @@ const ACCENT_COLOR_OPTIONS: DashboardAccentColor[] = [
 	"blue",
 	"yellow",
 ];
-const PREVIEW_ACCOUNT_EMAIL = "demo@example.com";
-const PREVIEW_LAST_USED = "today";
-const PREVIEW_STATUS = "active";
-const PREVIEW_LIMITS = "5h ██████▒▒▒▒ 62% | 7d █████▒▒▒▒▒ 49%";
-const PREVIEW_LIMIT_COOLDOWNS = "5h reset 1h 20m | 7d reset 2d 04h";
-type PreviewFocusKey =
-	| DashboardDisplaySettingKey
-	| DashboardStatuslineField
-	| "menuSortMode"
-	| "menuLayoutMode"
-	| null;
-
-type DashboardConfigAction =
-	| { type: "toggle"; key: DashboardDisplaySettingKey }
-	| { type: "cycle-sort-mode" }
-	| { type: "cycle-layout-mode" }
-	| { type: "reset" }
-	| { type: "save" }
-	| { type: "cancel" };
-
-type StatuslineConfigAction =
-	| { type: "toggle"; key: DashboardStatuslineField }
-	| { type: "move-up"; key: DashboardStatuslineField }
-	| { type: "move-down"; key: DashboardStatuslineField }
-	| { type: "reset" }
-	| { type: "save" }
-	| { type: "cancel" };
-
-type BehaviorConfigAction =
-	| { type: "set-delay"; delayMs: number }
-	| { type: "toggle-pause" }
-	| { type: "toggle-menu-limit-fetch" }
-	| { type: "toggle-menu-fetch-status" }
-	| { type: "set-menu-quota-ttl"; ttlMs: number }
-	| { type: "reset" }
-	| { type: "save" }
-	| { type: "cancel" };
-
-type ThemeConfigAction =
-	| { type: "set-palette"; palette: DashboardThemePreset }
-	| { type: "set-accent"; accent: DashboardAccentColor }
-	| { type: "reset" }
-	| { type: "save" }
-	| { type: "cancel" };
-
-type BackendToggleSettingKey =
-	| "liveAccountSync"
-	| "sessionAffinity"
-	| "proactiveRefreshGuardian"
-	| "retryAllAccountsRateLimited"
-	| "parallelProbing"
-	| "storageBackupEnabled"
-	| "preemptiveQuotaEnabled"
-	| "fastSession"
-	| "sessionRecovery"
-	| "autoResume"
-	| "perProjectAccounts";
-
-type BackendNumberSettingKey =
-	| "liveAccountSyncDebounceMs"
-	| "liveAccountSyncPollMs"
-	| "sessionAffinityTtlMs"
-	| "sessionAffinityMaxEntries"
-	| "proactiveRefreshIntervalMs"
-	| "proactiveRefreshBufferMs"
-	| "parallelProbingMaxConcurrency"
-	| "fastSessionMaxInputItems"
-	| "networkErrorCooldownMs"
-	| "serverErrorCooldownMs"
-	| "fetchTimeoutMs"
-	| "streamStallTimeoutMs"
-	| "tokenRefreshSkewMs"
-	| "preemptiveQuotaRemainingPercent5h"
-	| "preemptiveQuotaRemainingPercent7d"
-	| "preemptiveQuotaMaxDeferralMs";
-
-type BackendSettingFocusKey =
-	| BackendToggleSettingKey
-	| BackendNumberSettingKey
-	| null;
-
-interface BackendToggleSettingOption {
-	key: BackendToggleSettingKey;
-	label: string;
-	description: string;
-}
-
-interface BackendNumberSettingOption {
-	key: BackendNumberSettingKey;
-	label: string;
-	description: string;
-	min: number;
-	max: number;
-	step: number;
-	unit: "ms" | "percent" | "count";
-}
-
-type BackendCategoryKey =
-	| "session-sync"
-	| "rotation-quota"
-	| "refresh-recovery"
-	| "performance-timeouts";
-
-interface BackendCategoryOption {
-	key: BackendCategoryKey;
-	label: string;
-	description: string;
-	toggleKeys: BackendToggleSettingKey[];
-	numberKeys: BackendNumberSettingKey[];
-}
-
-type BackendCategoryConfigAction =
-	| { type: "toggle"; key: BackendToggleSettingKey }
-	| { type: "bump"; key: BackendNumberSettingKey; direction: -1 | 1 }
-	| { type: "reset-category" }
-	| { type: "back" };
-
-type BackendSettingsHubAction =
-	| { type: "open-category"; key: BackendCategoryKey }
-	| { type: "reset" }
-	| { type: "save" }
-	| { type: "cancel" };
 
 type SettingsHubAction =
 	| { type: "account-list" }
@@ -271,332 +204,7 @@ type SettingsHubAction =
 	| { type: "backend" }
 	| { type: "back" };
 
-type ExperimentalSettingsAction =
-	| { type: "sync" }
-	| { type: "backup" }
-	| { type: "toggle-refresh-guardian" }
-	| { type: "decrease-refresh-interval" }
-	| { type: "increase-refresh-interval" }
-	| { type: "apply" }
-	| { type: "save" }
-	| { type: "back" };
-
-function getExperimentalSelectOptions(
-	ui: ReturnType<typeof getUiRuntimeOptions>,
-	help: string,
-	onInput?: SelectOptions<ExperimentalSettingsAction>["onInput"],
-): SelectOptions<ExperimentalSettingsAction> {
-	return {
-		message: UI_COPY.settings.experimentalTitle,
-		subtitle: UI_COPY.settings.experimentalSubtitle,
-		help,
-		clearScreen: true,
-		theme: ui.theme,
-		selectedEmphasis: "minimal",
-		onInput,
-	};
-}
-
-function mapExperimentalMenuHotkey(
-	raw: string,
-): ExperimentalSettingsAction | undefined {
-	if (raw === "1") return { type: "sync" };
-	if (raw === "2") return { type: "backup" };
-	if (raw === "3") return { type: "toggle-refresh-guardian" };
-	if (raw === "[" || raw === "-") return { type: "decrease-refresh-interval" };
-	if (raw === "]" || raw === "+") return { type: "increase-refresh-interval" };
-	const lower = raw.toLowerCase();
-	if (lower === "q") return { type: "back" };
-	if (lower === "s") return { type: "save" };
-	return undefined;
-}
-
-function mapExperimentalStatusHotkey(
-	raw: string,
-): ExperimentalSettingsAction | undefined {
-	return raw.toLowerCase() === "q" ? { type: "back" } : undefined;
-}
-
-const BACKEND_TOGGLE_OPTIONS: BackendToggleSettingOption[] = [
-	{
-		key: "liveAccountSync",
-		label: "Enable Live Sync",
-		description: "Keep accounts synced when files change in another window.",
-	},
-	{
-		key: "sessionAffinity",
-		label: "Enable Session Affinity",
-		description: "Try to keep each conversation on the same account.",
-	},
-	{
-		key: "proactiveRefreshGuardian",
-		label: "Enable Token Refresh Guard",
-		description: "Refresh tokens early in the background.",
-	},
-	{
-		key: "retryAllAccountsRateLimited",
-		label: "Retry When All Rate-Limited",
-		description: "If all accounts are limited, wait and try again.",
-	},
-	{
-		key: "parallelProbing",
-		label: "Enable Parallel Probing",
-		description: "Check multiple accounts at the same time.",
-	},
-	{
-		key: "storageBackupEnabled",
-		label: "Enable Storage Backups",
-		description: "Create a backup before account data changes.",
-	},
-	{
-		key: "preemptiveQuotaEnabled",
-		label: "Enable Quota Deferral",
-		description: "Delay requests before limits are fully exhausted.",
-	},
-	{
-		key: "fastSession",
-		label: "Enable Fast Session Mode",
-		description: "Use lighter request handling for faster responses.",
-	},
-	{
-		key: "sessionRecovery",
-		label: "Enable Session Recovery",
-		description: "Restore recoverable sessions after restart.",
-	},
-	{
-		key: "autoResume",
-		label: "Enable Auto Resume",
-		description: "Automatically continue sessions when possible.",
-	},
-	{
-		key: "perProjectAccounts",
-		label: "Enable Per-Project Accounts",
-		description: "Keep separate account lists for each project.",
-	},
-];
-
-const BACKEND_NUMBER_OPTIONS: BackendNumberSettingOption[] = [
-	{
-		key: "liveAccountSyncDebounceMs",
-		label: "Live Sync Debounce",
-		description: "Wait this long before applying sync file changes.",
-		min: 50,
-		max: 10_000,
-		step: 50,
-		unit: "ms",
-	},
-	{
-		key: "liveAccountSyncPollMs",
-		label: "Live Sync Poll",
-		description: "How often to check files for account updates.",
-		min: 500,
-		max: 60_000,
-		step: 500,
-		unit: "ms",
-	},
-	{
-		key: "sessionAffinityTtlMs",
-		label: "Session Affinity TTL",
-		description: "How long conversation-to-account mapping is kept.",
-		min: 1_000,
-		max: 24 * 60 * 60_000,
-		step: 60_000,
-		unit: "ms",
-	},
-	{
-		key: "sessionAffinityMaxEntries",
-		label: "Session Affinity Max Entries",
-		description: "Maximum stored conversation mappings.",
-		min: 8,
-		max: 4_096,
-		step: 32,
-		unit: "count",
-	},
-	{
-		key: "proactiveRefreshIntervalMs",
-		label: "Refresh Guard Interval",
-		description: "How often to scan for tokens near expiry.",
-		min: 5_000,
-		max: 10 * 60_000,
-		step: 5_000,
-		unit: "ms",
-	},
-	{
-		key: "proactiveRefreshBufferMs",
-		label: "Refresh Guard Buffer",
-		description: "How early to refresh before expiry.",
-		min: 30_000,
-		max: 10 * 60_000,
-		step: 30_000,
-		unit: "ms",
-	},
-	{
-		key: "parallelProbingMaxConcurrency",
-		label: "Parallel Probe Concurrency",
-		description: "Maximum checks running at once.",
-		min: 1,
-		max: 5,
-		step: 1,
-		unit: "count",
-	},
-	{
-		key: "fastSessionMaxInputItems",
-		label: "Fast Session Max Inputs",
-		description: "Max number of input items kept in fast mode.",
-		min: 8,
-		max: 200,
-		step: 2,
-		unit: "count",
-	},
-	{
-		key: "networkErrorCooldownMs",
-		label: "Network Error Cooldown",
-		description: "Wait time after network errors before retry.",
-		min: 0,
-		max: 120_000,
-		step: 500,
-		unit: "ms",
-	},
-	{
-		key: "serverErrorCooldownMs",
-		label: "Server Error Cooldown",
-		description: "Wait time after server errors before retry.",
-		min: 0,
-		max: 120_000,
-		step: 500,
-		unit: "ms",
-	},
-	{
-		key: "fetchTimeoutMs",
-		label: "Request Timeout",
-		description: "Max time to wait for a request.",
-		min: 1_000,
-		max: 10 * 60_000,
-		step: 5_000,
-		unit: "ms",
-	},
-	{
-		key: "streamStallTimeoutMs",
-		label: "Stream Stall Timeout",
-		description: "Max wait before a stuck stream is retried.",
-		min: 1_000,
-		max: 10 * 60_000,
-		step: 5_000,
-		unit: "ms",
-	},
-	{
-		key: "tokenRefreshSkewMs",
-		label: "Token Refresh Buffer",
-		description: "Refresh this long before token expiry.",
-		min: 0,
-		max: 10 * 60_000,
-		step: 10_000,
-		unit: "ms",
-	},
-	{
-		key: "preemptiveQuotaRemainingPercent5h",
-		label: "5h Remaining Threshold",
-		description: "Start delaying when 5h remaining reaches this percent.",
-		min: 0,
-		max: 100,
-		step: 1,
-		unit: "percent",
-	},
-	{
-		key: "preemptiveQuotaRemainingPercent7d",
-		label: "7d Remaining Threshold",
-		description: "Start delaying when weekly remaining reaches this percent.",
-		min: 0,
-		max: 100,
-		step: 1,
-		unit: "percent",
-	},
-	{
-		key: "preemptiveQuotaMaxDeferralMs",
-		label: "Max Preemptive Deferral",
-		description: "Maximum time allowed for quota-based delay.",
-		min: 1_000,
-		max: 24 * 60 * 60_000,
-		step: 60_000,
-		unit: "ms",
-	},
-];
-
-const BACKEND_DEFAULTS = getDefaultPluginConfig();
-const BACKEND_TOGGLE_OPTION_BY_KEY = new Map<
-	BackendToggleSettingKey,
-	BackendToggleSettingOption
->(BACKEND_TOGGLE_OPTIONS.map((option) => [option.key, option]));
-const BACKEND_NUMBER_OPTION_BY_KEY = new Map<
-	BackendNumberSettingKey,
-	BackendNumberSettingOption
->(BACKEND_NUMBER_OPTIONS.map((option) => [option.key, option]));
-const BACKEND_CATEGORY_OPTIONS: BackendCategoryOption[] = [
-	{
-		key: "session-sync",
-		label: "Session & Sync",
-		description: "Sync and session behavior.",
-		toggleKeys: [
-			"liveAccountSync",
-			"sessionAffinity",
-			"perProjectAccounts",
-			"sessionRecovery",
-			"autoResume",
-		],
-		numberKeys: [
-			"liveAccountSyncDebounceMs",
-			"liveAccountSyncPollMs",
-			"sessionAffinityTtlMs",
-			"sessionAffinityMaxEntries",
-		],
-	},
-	{
-		key: "rotation-quota",
-		label: "Rotation & Quota",
-		description: "Quota and retry behavior.",
-		toggleKeys: ["preemptiveQuotaEnabled", "retryAllAccountsRateLimited"],
-		numberKeys: [
-			"preemptiveQuotaRemainingPercent5h",
-			"preemptiveQuotaRemainingPercent7d",
-			"preemptiveQuotaMaxDeferralMs",
-		],
-	},
-	{
-		key: "refresh-recovery",
-		label: "Refresh & Recovery",
-		description: "Token refresh and recovery safety.",
-		toggleKeys: ["storageBackupEnabled"],
-		numberKeys: ["proactiveRefreshBufferMs", "tokenRefreshSkewMs"],
-	},
-	{
-		key: "performance-timeouts",
-		label: "Performance & Timeouts",
-		description: "Speed, probing, and timeout controls.",
-		toggleKeys: ["fastSession", "parallelProbing"],
-		numberKeys: [
-			"fastSessionMaxInputItems",
-			"parallelProbingMaxConcurrency",
-			"fetchTimeoutMs",
-			"streamStallTimeoutMs",
-			"networkErrorCooldownMs",
-			"serverErrorCooldownMs",
-		],
-	},
-];
-
 type DashboardSettingKey = keyof DashboardDisplaySettings;
-
-const RETRYABLE_SETTINGS_WRITE_CODES = new Set([
-	"EBUSY",
-	"EPERM",
-	"EAGAIN",
-	"ENOTEMPTY",
-	"EACCES",
-]);
-const SETTINGS_WRITE_MAX_ATTEMPTS = 4;
-const SETTINGS_WRITE_BASE_DELAY_MS = 20;
-const SETTINGS_WRITE_MAX_DELAY_MS = 30_000;
-const settingsWriteQueues = new Map<string, Promise<void>>();
 
 const ACCOUNT_LIST_PANEL_KEYS = [
 	"menuShowStatusBadge",
@@ -628,103 +236,6 @@ const THEME_PANEL_KEYS = [
 	"uiThemePreset",
 	"uiAccentColor",
 ] as const satisfies readonly DashboardSettingKey[];
-
-function readErrorNumber(value: unknown): number | undefined {
-	if (typeof value === "number" && Number.isFinite(value)) return value;
-	if (typeof value === "string" && value.trim().length > 0) {
-		const parsed = Number.parseInt(value, 10);
-		if (Number.isFinite(parsed)) return parsed;
-	}
-	return undefined;
-}
-
-function getErrorStatusCode(error: unknown): number | undefined {
-	if (!error || typeof error !== "object") return undefined;
-	const record = error as Record<string, unknown>;
-	return readErrorNumber(record.status) ?? readErrorNumber(record.statusCode);
-}
-
-function getRetryAfterMs(error: unknown): number | undefined {
-	if (!error || typeof error !== "object") return undefined;
-	const record = error as Record<string, unknown>;
-	return (
-		readErrorNumber(record.retryAfterMs) ??
-		readErrorNumber(record.retry_after_ms) ??
-		readErrorNumber(record.retryAfter) ??
-		readErrorNumber(record.retry_after)
-	);
-}
-
-function isRetryableSettingsWriteError(error: unknown): boolean {
-	const statusCode = getErrorStatusCode(error);
-	if (statusCode === 429) return true;
-	const code = (error as NodeJS.ErrnoException | undefined)?.code;
-	return typeof code === "string" && RETRYABLE_SETTINGS_WRITE_CODES.has(code);
-}
-
-function resolveRetryDelayMs(error: unknown, attempt: number): number {
-	const retryAfterMs = getRetryAfterMs(error);
-	if (
-		typeof retryAfterMs === "number" &&
-		Number.isFinite(retryAfterMs) &&
-		retryAfterMs > 0
-	) {
-		return Math.max(
-			10,
-			Math.min(SETTINGS_WRITE_MAX_DELAY_MS, Math.round(retryAfterMs)),
-		);
-	}
-	return Math.min(
-		SETTINGS_WRITE_MAX_DELAY_MS,
-		SETTINGS_WRITE_BASE_DELAY_MS * 2 ** attempt,
-	);
-}
-
-async function enqueueSettingsWrite<T>(
-	pathKey: string,
-	task: () => Promise<T>,
-): Promise<T> {
-	const previous = settingsWriteQueues.get(pathKey) ?? Promise.resolve();
-	const queued = previous.catch(() => {}).then(task);
-	const queueTail = queued.then(
-		() => undefined,
-		() => undefined,
-	);
-	settingsWriteQueues.set(pathKey, queueTail);
-	try {
-		return await queued;
-	} finally {
-		if (settingsWriteQueues.get(pathKey) === queueTail) {
-			settingsWriteQueues.delete(pathKey);
-		}
-	}
-}
-
-async function withQueuedRetry<T>(
-	pathKey: string,
-	task: () => Promise<T>,
-): Promise<T> {
-	return enqueueSettingsWrite(pathKey, async () => {
-		let lastError: unknown;
-		for (let attempt = 0; attempt < SETTINGS_WRITE_MAX_ATTEMPTS; attempt += 1) {
-			try {
-				return await task();
-			} catch (error) {
-				lastError = error;
-				if (
-					!isRetryableSettingsWriteError(error) ||
-					attempt + 1 >= SETTINGS_WRITE_MAX_ATTEMPTS
-				) {
-					throw error;
-				}
-				await sleep(resolveRetryDelayMs(error, attempt));
-			}
-		}
-		throw lastError instanceof Error
-			? lastError
-			: new Error("settings save retry exhausted");
-	});
-}
 
 function copyDashboardSettingValue(
 	target: DashboardDisplaySettings,
@@ -761,22 +272,6 @@ function mergeDashboardSettingsForKeys(
 	return cloneDashboardSettings(next);
 }
 
-function resolvePluginConfigSavePathKey(): string {
-	const envPath = (process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim();
-	return envPath.length > 0 ? envPath : getUnifiedSettingsPath();
-}
-
-function formatPersistError(error: unknown): string {
-	if (error instanceof Error) return error.message;
-	return String(error);
-}
-
-function warnPersistFailure(scope: string, error: unknown): void {
-	console.warn(
-		`Settings save failed (${scope}) after retries: ${formatPersistError(error)}`,
-	);
-}
-
 async function persistDashboardSettingsSelection(
 	selected: DashboardDisplaySettings,
 	keys: readonly DashboardSettingKey[],
@@ -784,38 +279,21 @@ async function persistDashboardSettingsSelection(
 ): Promise<DashboardDisplaySettings> {
 	const fallback = cloneDashboardSettings(selected);
 	try {
-		return await withQueuedRetry(getDashboardSettingsPath(), async () => {
-			const latest = cloneDashboardSettings(
-				await loadDashboardDisplaySettings(),
-			);
-			const merged = mergeDashboardSettingsForKeys(latest, selected, keys);
-			await saveDashboardDisplaySettings(merged);
-			return merged;
-		});
+		return await withQueuedRetry(
+			getDashboardSettingsPath(),
+			async () => {
+				const latest = cloneDashboardSettings(
+					await loadDashboardDisplaySettings(),
+				);
+				const merged = mergeDashboardSettingsForKeys(latest, selected, keys);
+				await saveDashboardDisplaySettings(merged);
+				return merged;
+			},
+			{ sleep },
+		);
 	} catch (error) {
 		warnPersistFailure(scope, error);
 		return fallback;
-	}
-}
-
-async function readFileWithRetry(path: string): Promise<string> {
-	for (let attempt = 0; ; attempt += 1) {
-		try {
-			return await fs.readFile(path, "utf-8");
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") {
-				throw error;
-			}
-			if (
-				!code ||
-				!RETRYABLE_SETTINGS_WRITE_CODES.has(code) ||
-				attempt >= SETTINGS_WRITE_MAX_ATTEMPTS - 1
-			) {
-				throw error;
-			}
-			await sleep(25 * 2 ** attempt);
-		}
 	}
 }
 
@@ -825,9 +303,13 @@ async function persistBackendConfigSelection(
 ): Promise<PluginConfig> {
 	const fallback = cloneBackendPluginConfig(selected);
 	try {
-		await withQueuedRetry(resolvePluginConfigSavePathKey(), async () => {
-			await savePluginConfig(buildBackendConfigPatch(selected));
-		});
+		await withQueuedRetry(
+			resolvePluginConfigSavePathKey(),
+			async () => {
+				await savePluginConfig(buildBackendConfigPatch(selected));
+			},
+			{ sleep },
+		);
 		return fallback;
 	} catch (error) {
 		warnPersistFailure(scope, error);
@@ -835,312 +317,59 @@ async function persistBackendConfigSelection(
 	}
 }
 
-function normalizeStatuslineFields(
-	fields: DashboardStatuslineField[] | undefined,
-): DashboardStatuslineField[] {
-	const source = fields ?? DEFAULT_STATUSLINE_FIELDS;
-	const seen = new Set<DashboardStatuslineField>();
-	const normalized: DashboardStatuslineField[] = [];
-	for (const field of source) {
-		if (seen.has(field)) continue;
-		seen.add(field);
-		normalized.push(field);
-	}
-	if (normalized.length === 0) {
-		return [...DEFAULT_STATUSLINE_FIELDS];
-	}
-	return normalized;
-}
-
-function highlightPreviewToken(
-	text: string,
-	ui: ReturnType<typeof getUiRuntimeOptions>,
-): string {
-	if (!output.isTTY) return text;
-	if (ui.v2Enabled) {
-		return `${ui.theme.colors.accent}${ANSI.bold}${text}${ui.theme.colors.reset}`;
-	}
-	return `${ANSI.cyan}${ANSI.bold}${text}${ANSI.reset}`;
-}
-
-function isLastUsedPreviewFocus(focus: PreviewFocusKey): boolean {
-	return focus === "menuShowLastUsed" || focus === "last-used";
-}
-
-function isLimitsPreviewFocus(focus: PreviewFocusKey): boolean {
-	return focus === "menuShowQuotaSummary" || focus === "limits";
-}
-
-function isLimitsCooldownPreviewFocus(focus: PreviewFocusKey): boolean {
-	return focus === "menuShowQuotaCooldown";
-}
-
-function isStatusPreviewFocus(focus: PreviewFocusKey): boolean {
-	return focus === "menuShowStatusBadge" || focus === "status";
-}
-
-function isCurrentBadgePreviewFocus(focus: PreviewFocusKey): boolean {
-	return focus === "menuShowCurrentBadge";
-}
-
-function isCurrentRowPreviewFocus(focus: PreviewFocusKey): boolean {
-	return focus === "menuHighlightCurrentRow";
-}
-
-function isExpandedRowsPreviewFocus(focus: PreviewFocusKey): boolean {
-	return (
-		focus === "menuShowDetailsForUnselectedRows" || focus === "menuLayoutMode"
-	);
-}
-
-function buildSummaryPreviewText(
-	settings: DashboardDisplaySettings,
-	ui: ReturnType<typeof getUiRuntimeOptions>,
-	focus: PreviewFocusKey = null,
-): string {
-	const partsByField = new Map<DashboardStatuslineField, string>();
-	if (settings.menuShowLastUsed !== false) {
-		const part = `last used: ${PREVIEW_LAST_USED}`;
-		partsByField.set(
-			"last-used",
-			isLastUsedPreviewFocus(focus) ? highlightPreviewToken(part, ui) : part,
-		);
-	}
-	if (settings.menuShowQuotaSummary !== false) {
-		const limitsText =
-			settings.menuShowQuotaCooldown === false
-				? PREVIEW_LIMITS
-				: `${PREVIEW_LIMITS} | ${PREVIEW_LIMIT_COOLDOWNS}`;
-		const part = `limits: ${limitsText}`;
-		partsByField.set(
-			"limits",
-			isLimitsPreviewFocus(focus) || isLimitsCooldownPreviewFocus(focus)
-				? highlightPreviewToken(part, ui)
-				: part,
-		);
-	}
-	if (settings.menuShowStatusBadge === false) {
-		const part = `status: ${PREVIEW_STATUS}`;
-		partsByField.set(
-			"status",
-			isStatusPreviewFocus(focus) ? highlightPreviewToken(part, ui) : part,
-		);
-	}
-
-	const orderedParts = normalizeStatuslineFields(settings.menuStatuslineFields)
-		.map((field) => partsByField.get(field))
-		.filter(
-			(part): part is string => typeof part === "string" && part.length > 0,
-		);
-	if (orderedParts.length > 0) {
-		return orderedParts.join(" | ");
-	}
-
-	const showsStatusField = normalizeStatuslineFields(
-		settings.menuStatuslineFields,
-	).includes("status");
-	if (showsStatusField && settings.menuShowStatusBadge !== false) {
-		const note = "status text appears only when status badges are hidden";
-		return isStatusPreviewFocus(focus) ? highlightPreviewToken(note, ui) : note;
-	}
-	return "no summary text is visible with current account-list settings";
-}
-
-function buildAccountListPreview(
-	settings: DashboardDisplaySettings,
-	ui: ReturnType<typeof getUiRuntimeOptions>,
-	focus: PreviewFocusKey = null,
-): { label: string; hint: string } {
-	const badges: string[] = [];
-	if (settings.menuShowCurrentBadge !== false) {
-		const currentBadge = "[current]";
-		badges.push(
-			isCurrentBadgePreviewFocus(focus)
-				? highlightPreviewToken(currentBadge, ui)
-				: currentBadge,
-		);
-	}
-	if (settings.menuShowStatusBadge !== false) {
-		const statusBadge = "[active]";
-		badges.push(
-			isStatusPreviewFocus(focus)
-				? highlightPreviewToken(statusBadge, ui)
-				: statusBadge,
-		);
-	}
-	const badgeSuffix = badges.length > 0 ? ` ${badges.join(" ")}` : "";
-	const accountEmail = isCurrentRowPreviewFocus(focus)
-		? highlightPreviewToken(PREVIEW_ACCOUNT_EMAIL, ui)
-		: PREVIEW_ACCOUNT_EMAIL;
-	const rowDetailMode =
-		resolveMenuLayoutMode(settings) === "expanded-rows"
-			? "details shown on all rows"
-			: "details shown on selected row only";
-	const detailModeText = isExpandedRowsPreviewFocus(focus)
-		? highlightPreviewToken(rowDetailMode, ui)
-		: rowDetailMode;
-	return {
-		label: `1. ${accountEmail}${badgeSuffix}`,
-		hint: `${buildSummaryPreviewText(settings, ui, focus)}\n${detailModeText}`,
-	};
-}
-
 function cloneDashboardSettings(
 	settings: DashboardDisplaySettings,
 ): DashboardDisplaySettings {
-	const layoutMode = resolveMenuLayoutMode(settings);
-	return {
-		showPerAccountRows: settings.showPerAccountRows,
-		showQuotaDetails: settings.showQuotaDetails,
-		showForecastReasons: settings.showForecastReasons,
-		showRecommendations: settings.showRecommendations,
-		showLiveProbeNotes: settings.showLiveProbeNotes,
-		actionAutoReturnMs: settings.actionAutoReturnMs ?? 2_000,
-		actionPauseOnKey: settings.actionPauseOnKey ?? true,
-		menuAutoFetchLimits: settings.menuAutoFetchLimits ?? true,
-		menuSortEnabled:
-			settings.menuSortEnabled ??
-			DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortEnabled ??
-			true,
-		menuSortMode:
-			settings.menuSortMode ??
-			DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortMode ??
-			"ready-first",
-		menuSortPinCurrent:
-			settings.menuSortPinCurrent ??
-			DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortPinCurrent ??
-			false,
-		menuSortQuickSwitchVisibleRow:
-			settings.menuSortQuickSwitchVisibleRow ?? true,
-		uiThemePreset: settings.uiThemePreset ?? "green",
-		uiAccentColor: settings.uiAccentColor ?? "green",
-		menuShowStatusBadge: settings.menuShowStatusBadge ?? true,
-		menuShowCurrentBadge: settings.menuShowCurrentBadge ?? true,
-		menuShowLastUsed: settings.menuShowLastUsed ?? true,
-		menuShowQuotaSummary: settings.menuShowQuotaSummary ?? true,
-		menuShowQuotaCooldown: settings.menuShowQuotaCooldown ?? true,
-		menuShowFetchStatus: settings.menuShowFetchStatus ?? true,
-		menuShowDetailsForUnselectedRows: layoutMode === "expanded-rows",
-		menuLayoutMode: layoutMode,
-		menuQuotaTtlMs: settings.menuQuotaTtlMs ?? 5 * 60_000,
-		menuFocusStyle: settings.menuFocusStyle ?? "row-invert",
-		menuHighlightCurrentRow: settings.menuHighlightCurrentRow ?? true,
-		menuStatuslineFields: [
-			...normalizeStatuslineFields(settings.menuStatuslineFields),
-		],
-	};
+	return cloneDashboardSettingsData(settings, {
+		resolveMenuLayoutMode,
+		normalizeStatuslineFields,
+	});
 }
 
 function dashboardSettingsEqual(
 	left: DashboardDisplaySettings,
 	right: DashboardDisplaySettings,
 ): boolean {
-	return (
-		left.showPerAccountRows === right.showPerAccountRows &&
-		left.showQuotaDetails === right.showQuotaDetails &&
-		left.showForecastReasons === right.showForecastReasons &&
-		left.showRecommendations === right.showRecommendations &&
-		left.showLiveProbeNotes === right.showLiveProbeNotes &&
-		(left.actionAutoReturnMs ?? 2_000) ===
-			(right.actionAutoReturnMs ?? 2_000) &&
-		(left.actionPauseOnKey ?? true) === (right.actionPauseOnKey ?? true) &&
-		(left.menuAutoFetchLimits ?? true) ===
-			(right.menuAutoFetchLimits ?? true) &&
-		(left.menuSortEnabled ??
-			DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortEnabled ??
-			true) ===
-			(right.menuSortEnabled ??
-				DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortEnabled ??
-				true) &&
-		(left.menuSortMode ??
-			DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortMode ??
-			"ready-first") ===
-			(right.menuSortMode ??
-				DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortMode ??
-				"ready-first") &&
-		(left.menuSortPinCurrent ??
-			DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortPinCurrent ??
-			false) ===
-			(right.menuSortPinCurrent ??
-				DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortPinCurrent ??
-				false) &&
-		(left.menuSortQuickSwitchVisibleRow ?? true) ===
-			(right.menuSortQuickSwitchVisibleRow ?? true) &&
-		(left.uiThemePreset ?? "green") === (right.uiThemePreset ?? "green") &&
-		(left.uiAccentColor ?? "green") === (right.uiAccentColor ?? "green") &&
-		(left.menuShowStatusBadge ?? true) ===
-			(right.menuShowStatusBadge ?? true) &&
-		(left.menuShowCurrentBadge ?? true) ===
-			(right.menuShowCurrentBadge ?? true) &&
-		(left.menuShowLastUsed ?? true) === (right.menuShowLastUsed ?? true) &&
-		(left.menuShowQuotaSummary ?? true) ===
-			(right.menuShowQuotaSummary ?? true) &&
-		(left.menuShowQuotaCooldown ?? true) ===
-			(right.menuShowQuotaCooldown ?? true) &&
-		(left.menuShowFetchStatus ?? true) ===
-			(right.menuShowFetchStatus ?? true) &&
-		resolveMenuLayoutMode(left) === resolveMenuLayoutMode(right) &&
-		(left.menuQuotaTtlMs ?? 5 * 60_000) ===
-			(right.menuQuotaTtlMs ?? 5 * 60_000) &&
-		(left.menuFocusStyle ?? "row-invert") ===
-			(right.menuFocusStyle ?? "row-invert") &&
-		(left.menuHighlightCurrentRow ?? true) ===
-			(right.menuHighlightCurrentRow ?? true) &&
-		JSON.stringify(normalizeStatuslineFields(left.menuStatuslineFields)) ===
-			JSON.stringify(normalizeStatuslineFields(right.menuStatuslineFields))
-	);
+	return dashboardSettingsDataEqual(left, right, {
+		resolveMenuLayoutMode,
+		normalizeStatuslineFields,
+	});
 }
 
-function cloneBackendPluginConfig(config: PluginConfig): PluginConfig {
-	const fallbackChain = config.unsupportedCodexFallbackChain;
-	return {
-		...BACKEND_DEFAULTS,
-		...config,
-		unsupportedCodexFallbackChain:
-			fallbackChain && typeof fallbackChain === "object"
-				? { ...fallbackChain }
-				: {},
-	};
-}
-
-function backendSettingsSnapshot(
-	config: PluginConfig,
-): Record<string, unknown> {
-	const snapshot: Record<string, unknown> = {};
-	for (const option of BACKEND_TOGGLE_OPTIONS) {
-		snapshot[option.key] =
-			config[option.key] ?? BACKEND_DEFAULTS[option.key] ?? false;
-	}
-	for (const option of BACKEND_NUMBER_OPTIONS) {
-		snapshot[option.key] =
-			config[option.key] ?? BACKEND_DEFAULTS[option.key] ?? option.min;
-	}
-	return snapshot;
-}
-
-function backendSettingsEqual(
-	left: PluginConfig,
-	right: PluginConfig,
-): boolean {
-	return (
-		JSON.stringify(backendSettingsSnapshot(left)) ===
-		JSON.stringify(backendSettingsSnapshot(right))
-	);
-}
-
-function formatBackendNumberValue(
-	option: BackendNumberSettingOption,
-	value: number,
+function buildSummaryPreviewText(
+	settings: DashboardDisplaySettings,
+	ui: ReturnType<typeof getUiRuntimeOptions>,
+	focus:
+		| DashboardDisplaySettingKey
+		| DashboardStatuslineField
+		| "menuSortMode"
+		| "menuLayoutMode"
+		| null = null,
 ): string {
-	if (option.unit === "percent") return `${Math.round(value)}%`;
-	if (option.unit === "count") return `${Math.round(value)}`;
-	if (value >= 60_000 && value % 60_000 === 0) {
-		return `${Math.round(value / 60_000)}m`;
-	}
-	if (value >= 1_000 && value % 1_000 === 0) {
-		return `${Math.round(value / 1_000)}s`;
-	}
-	return `${Math.round(value)}ms`;
+	return buildSummaryPreviewTextBase(
+		settings,
+		ui,
+		resolveMenuLayoutMode,
+		focus,
+	);
+}
+
+function buildAccountListPreview(
+	settings: DashboardDisplaySettings,
+	ui: ReturnType<typeof getUiRuntimeOptions>,
+	focus:
+		| DashboardDisplaySettingKey
+		| DashboardStatuslineField
+		| "menuSortMode"
+		| "menuLayoutMode"
+		| null = null,
+): { label: string; hint: string } {
+	return buildAccountListPreviewBase(
+		settings,
+		ui,
+		resolveMenuLayoutMode,
+		focus,
+	);
 }
 
 function clampBackendNumber(
@@ -1148,78 +377,6 @@ function clampBackendNumber(
 	value: number,
 ): number {
 	return Math.max(option.min, Math.min(option.max, Math.round(value)));
-}
-
-function buildBackendSettingsPreview(
-	config: PluginConfig,
-	ui: ReturnType<typeof getUiRuntimeOptions>,
-	focus: BackendSettingFocusKey = null,
-): { label: string; hint: string } {
-	const liveSync =
-		config.liveAccountSync ?? BACKEND_DEFAULTS.liveAccountSync ?? true;
-	const affinity =
-		config.sessionAffinity ?? BACKEND_DEFAULTS.sessionAffinity ?? true;
-	const preemptive =
-		config.preemptiveQuotaEnabled ??
-		BACKEND_DEFAULTS.preemptiveQuotaEnabled ??
-		true;
-	const threshold5h =
-		config.preemptiveQuotaRemainingPercent5h ??
-		BACKEND_DEFAULTS.preemptiveQuotaRemainingPercent5h ??
-		5;
-	const threshold7d =
-		config.preemptiveQuotaRemainingPercent7d ??
-		BACKEND_DEFAULTS.preemptiveQuotaRemainingPercent7d ??
-		5;
-	const fetchTimeout =
-		config.fetchTimeoutMs ?? BACKEND_DEFAULTS.fetchTimeoutMs ?? 60_000;
-	const stallTimeout =
-		config.streamStallTimeoutMs ??
-		BACKEND_DEFAULTS.streamStallTimeoutMs ??
-		45_000;
-	const fetchTimeoutOption = BACKEND_NUMBER_OPTION_BY_KEY.get("fetchTimeoutMs");
-	const stallTimeoutOption = BACKEND_NUMBER_OPTION_BY_KEY.get(
-		"streamStallTimeoutMs",
-	);
-
-	const highlightIfFocused = (
-		key: BackendSettingFocusKey,
-		text: string,
-	): string => {
-		if (focus !== key) return text;
-		return highlightPreviewToken(text, ui);
-	};
-
-	const label = [
-		`live sync ${highlightIfFocused("liveAccountSync", liveSync ? "on" : "off")}`,
-		`affinity ${highlightIfFocused("sessionAffinity", affinity ? "on" : "off")}`,
-		`preemptive ${highlightIfFocused("preemptiveQuotaEnabled", preemptive ? "on" : "off")}`,
-	].join(" | ");
-
-	const hint = [
-		`thresholds 5h<=${highlightIfFocused("preemptiveQuotaRemainingPercent5h", `${threshold5h}%`)}`,
-		`7d<=${highlightIfFocused("preemptiveQuotaRemainingPercent7d", `${threshold7d}%`)}`,
-		`timeouts ${highlightIfFocused("fetchTimeoutMs", fetchTimeoutOption ? formatBackendNumberValue(fetchTimeoutOption, fetchTimeout) : `${fetchTimeout}ms`)}/${highlightIfFocused("streamStallTimeoutMs", stallTimeoutOption ? formatBackendNumberValue(stallTimeoutOption, stallTimeout) : `${stallTimeout}ms`)}`,
-	].join(" | ");
-
-	return { label, hint };
-}
-
-function buildBackendConfigPatch(config: PluginConfig): Partial<PluginConfig> {
-	const patch: Partial<PluginConfig> = {};
-	for (const option of BACKEND_TOGGLE_OPTIONS) {
-		const value = config[option.key];
-		if (typeof value === "boolean") {
-			patch[option.key] = value;
-		}
-	}
-	for (const option of BACKEND_NUMBER_OPTIONS) {
-		const value = config[option.key];
-		if (typeof value === "number" && Number.isFinite(value)) {
-			patch[option.key] = clampBackendNumber(option, value);
-		}
-	}
-	return patch;
 }
 
 function applyUiThemeFromDashboardSettings(
@@ -1233,14 +390,6 @@ function applyUiThemeFromDashboardSettings(
 		palette: settings.uiThemePreset ?? "green",
 		accent: settings.uiAccentColor ?? "green",
 	});
-}
-
-function formatDashboardSettingState(value: boolean): string {
-	return value ? "[x]" : "[ ]";
-}
-
-function formatMenuSortMode(mode: DashboardAccountSortMode): string {
-	return mode === "ready-first" ? "Ready-First" : "Manual";
 }
 
 function resolveMenuLayoutMode(
@@ -1257,37 +406,11 @@ function resolveMenuLayoutMode(
 		: "compact-details";
 }
 
-function formatMenuLayoutMode(
-	mode: "compact-details" | "expanded-rows",
-): string {
-	return mode === "expanded-rows" ? "Expanded Rows" : "Compact + Details Pane";
-}
-
-function formatMenuQuotaTtl(ttlMs: number): string {
-	if (ttlMs >= 60_000 && ttlMs % 60_000 === 0) {
-		return `${Math.round(ttlMs / 60_000)}m`;
-	}
-	if (ttlMs >= 1_000 && ttlMs % 1_000 === 0) {
-		return `${Math.round(ttlMs / 1_000)}s`;
-	}
-	return `${ttlMs}ms`;
-}
-
-function clampBackendNumberForTests(settingKey: string, value: number): number {
-	const option = BACKEND_NUMBER_OPTION_BY_KEY.get(
-		settingKey as BackendNumberSettingKey,
-	);
-	if (!option) {
-		throw new Error(`Unknown backend numeric setting key: ${settingKey}`);
-	}
-	return clampBackendNumber(option, value);
-}
-
 async function withQueuedRetryForTests<T>(
 	pathKey: string,
 	task: () => Promise<T>,
 ): Promise<T> {
-	return withQueuedRetry(pathKey, task);
+	return withQueuedRetry(pathKey, task, { sleep });
 }
 
 async function persistDashboardSettingsSelectionForTests(
@@ -1323,7 +446,7 @@ const __testOnly = {
 	buildAccountListPreview,
 	buildSummaryPreviewText,
 	normalizeStatuslineFields,
-	reorderField,
+	reorderField: reorderStatuslineField,
 	promptDashboardDisplaySettings,
 	promptStatuslineSettings,
 	promptBehaviorSettings,
@@ -1335,836 +458,116 @@ const __testOnly = {
 async function promptDashboardDisplaySettings(
 	initial: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings | null> {
-	if (!input.isTTY || !output.isTTY) {
-		return null;
-	}
-
-	const ui = getUiRuntimeOptions();
-	let draft = cloneDashboardSettings(initial);
-	let focusKey: DashboardDisplaySettingKey | "menuSortMode" | "menuLayoutMode" =
-		DASHBOARD_DISPLAY_OPTIONS[0]?.key ?? "menuShowStatusBadge";
-	while (true) {
-		const preview = buildAccountListPreview(draft, ui, focusKey);
-		const optionItems: MenuItem<DashboardConfigAction>[] =
-			DASHBOARD_DISPLAY_OPTIONS.map((option, index) => {
-				const enabled = draft[option.key] ?? true;
-				const label = `${formatDashboardSettingState(enabled)} ${index + 1}. ${option.label}`;
-				const color: MenuItem<DashboardConfigAction>["color"] = enabled
-					? "green"
-					: "yellow";
-				return {
-					label,
-					hint: option.description,
-					value: { type: "toggle", key: option.key } as DashboardConfigAction,
-					color,
-				};
-			});
-		const sortMode =
-			draft.menuSortMode ??
-			DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortMode ??
-			"ready-first";
-		const sortModeItem: MenuItem<DashboardConfigAction> = {
-			label: `Sort mode: ${formatMenuSortMode(sortMode)}`,
-			hint: "Applies when smart sort is enabled.",
-			value: { type: "cycle-sort-mode" },
-			color: sortMode === "ready-first" ? "green" : "yellow",
-		};
-		const layoutMode = resolveMenuLayoutMode(draft);
-		const layoutModeItem: MenuItem<DashboardConfigAction> = {
-			label: `Layout: ${formatMenuLayoutMode(layoutMode)}`,
-			hint: "Compact shows one-line rows with a selected details pane.",
-			value: { type: "cycle-layout-mode" },
-			color: layoutMode === "compact-details" ? "green" : "yellow",
-		};
-		const items: MenuItem<DashboardConfigAction>[] = [
-			{
-				label: UI_COPY.settings.previewHeading,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			{
-				label: preview.label,
-				hint: preview.hint,
-				value: { type: "cancel" },
-				color: "green",
-				disabled: true,
-				hideUnavailableSuffix: true,
-			},
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.displayHeading,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			...optionItems,
-			sortModeItem,
-			layoutModeItem,
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.resetDefault,
-				value: { type: "reset" },
-				color: "yellow",
-			},
-			{
-				label: UI_COPY.settings.saveAndBack,
-				value: { type: "save" },
-				color: "green",
-			},
-			{
-				label: UI_COPY.settings.backNoSave,
-				value: { type: "cancel" },
-				color: "red",
-			},
-		];
-		const initialCursor = items.findIndex(
-			(item) =>
-				(item.value.type === "toggle" && item.value.key === focusKey) ||
-				(item.value.type === "cycle-sort-mode" &&
-					focusKey === "menuSortMode") ||
-				(item.value.type === "cycle-layout-mode" &&
-					focusKey === "menuLayoutMode"),
-		);
-
-		const updateFocusedPreview = (cursor: number) => {
-			const focusedItem = items[cursor];
-			const focusedKey =
-				focusedItem?.value.type === "toggle"
-					? focusedItem.value.key
-					: focusedItem?.value.type === "cycle-sort-mode"
-						? "menuSortMode"
-						: focusedItem?.value.type === "cycle-layout-mode"
-							? "menuLayoutMode"
-							: focusKey;
-			const nextPreview = buildAccountListPreview(draft, ui, focusedKey);
-			const previewItem = items[1];
-			if (!previewItem) return;
-			previewItem.label = nextPreview.label;
-			previewItem.hint = nextPreview.hint;
-		};
-
-		const result = await select<DashboardConfigAction>(items, {
-			message: UI_COPY.settings.accountListTitle,
-			subtitle: UI_COPY.settings.accountListSubtitle,
-			help: UI_COPY.settings.accountListHelp,
-			clearScreen: true,
-			theme: ui.theme,
-			selectedEmphasis: "minimal",
-			initialCursor: initialCursor >= 0 ? initialCursor : undefined,
-			onCursorChange: ({ cursor }) => {
-				const focusedItem = items[cursor];
-				if (focusedItem?.value.type === "toggle") {
-					focusKey = focusedItem.value.key;
-				} else if (focusedItem?.value.type === "cycle-sort-mode") {
-					focusKey = "menuSortMode";
-				} else if (focusedItem?.value.type === "cycle-layout-mode") {
-					focusKey = "menuLayoutMode";
-				}
-				updateFocusedPreview(cursor);
-			},
-			onInput: (raw) => {
-				const lower = raw.toLowerCase();
-				if (lower === "q") return { type: "cancel" };
-				if (lower === "s") return { type: "save" };
-				if (lower === "r") return { type: "reset" };
-				if (lower === "m") return { type: "cycle-sort-mode" };
-				if (lower === "l") return { type: "cycle-layout-mode" };
-				const parsed = Number.parseInt(raw, 10);
-				if (
-					Number.isFinite(parsed) &&
-					parsed >= 1 &&
-					parsed <= DASHBOARD_DISPLAY_OPTIONS.length
-				) {
-					const target = DASHBOARD_DISPLAY_OPTIONS[parsed - 1];
-					if (target) {
-						return { type: "toggle", key: target.key };
-					}
-				}
-				if (parsed === DASHBOARD_DISPLAY_OPTIONS.length + 1) {
-					return { type: "cycle-sort-mode" };
-				}
-				if (parsed === DASHBOARD_DISPLAY_OPTIONS.length + 2) {
-					return { type: "cycle-layout-mode" };
-				}
-				return undefined;
-			},
-		});
-
-		if (!result || result.type === "cancel") {
-			return null;
-		}
-		if (result.type === "save") {
-			return draft;
-		}
-		if (result.type === "reset") {
-			draft = applyDashboardDefaultsForKeys(draft, ACCOUNT_LIST_PANEL_KEYS);
-			focusKey = DASHBOARD_DISPLAY_OPTIONS[0]?.key ?? focusKey;
-			continue;
-		}
-		if (result.type === "cycle-sort-mode") {
-			const currentMode =
-				draft.menuSortMode ??
-				DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortMode ??
-				"ready-first";
-			const nextMode: DashboardAccountSortMode =
-				currentMode === "ready-first" ? "manual" : "ready-first";
-			draft = {
-				...draft,
-				menuSortMode: nextMode,
-				menuSortEnabled:
-					nextMode === "ready-first"
-						? true
-						: (draft.menuSortEnabled ??
-							DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortEnabled ??
-							true),
-			};
-			focusKey = "menuSortMode";
-			continue;
-		}
-		if (result.type === "cycle-layout-mode") {
-			const currentLayout = resolveMenuLayoutMode(draft);
-			const nextLayout =
-				currentLayout === "compact-details"
-					? "expanded-rows"
-					: "compact-details";
-			draft = {
-				...draft,
-				menuLayoutMode: nextLayout,
-				menuShowDetailsForUnselectedRows: nextLayout === "expanded-rows",
-			};
-			focusKey = "menuLayoutMode";
-			continue;
-		}
-		focusKey = result.key;
-		draft = {
-			...draft,
-			[result.key]: !draft[result.key],
-		};
-	}
+	return promptDashboardDisplaySettingsPanelEntry({
+		initial,
+		promptDashboardDisplayPanel,
+		cloneDashboardSettings,
+		buildAccountListPreview,
+		formatDashboardSettingState,
+		formatMenuSortMode,
+		resolveMenuLayoutMode: (settings = DEFAULT_DASHBOARD_DISPLAY_SETTINGS) =>
+			resolveMenuLayoutMode(settings),
+		formatMenuLayoutMode,
+		applyDashboardDefaultsForKeys,
+		DASHBOARD_DISPLAY_OPTIONS,
+		ACCOUNT_LIST_PANEL_KEYS,
+		UI_COPY,
+	});
 }
 
 async function configureDashboardDisplaySettings(
 	currentSettings?: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings> {
-	const current = currentSettings ?? (await loadDashboardDisplaySettings());
-	if (!input.isTTY || !output.isTTY) {
-		console.log("Settings require interactive mode.");
-		console.log(`Settings file: ${getDashboardSettingsPath()}`);
-		return current;
-	}
-
-	const selected = await promptDashboardDisplaySettings(current);
-	if (!selected) return current;
-	if (dashboardSettingsEqual(current, selected)) return current;
-
-	const merged = await persistDashboardSettingsSelection(
-		selected,
-		ACCOUNT_LIST_PANEL_KEYS,
-		"account-list",
-	);
-	applyUiThemeFromDashboardSettings(merged);
-	return merged;
-}
-
-function reorderField(
-	fields: DashboardStatuslineField[],
-	key: DashboardStatuslineField,
-	direction: -1 | 1,
-): DashboardStatuslineField[] {
-	const index = fields.indexOf(key);
-	if (index < 0) return fields;
-	const target = index + direction;
-	if (target < 0 || target >= fields.length) return fields;
-	const next = [...fields];
-	const current = next[index];
-	const swap = next[target];
-	if (!current || !swap) return fields;
-	next[index] = swap;
-	next[target] = current;
-	return next;
+	return configureDashboardSettingsEntry(currentSettings, {
+		configureDashboardSettingsController,
+		loadDashboardDisplaySettings,
+		promptSettings: promptDashboardDisplaySettings,
+		settingsEqual: dashboardSettingsEqual,
+		persistSelection: (selected) =>
+			persistDashboardSettingsSelection(
+				selected,
+				ACCOUNT_LIST_PANEL_KEYS,
+				"account-list",
+			),
+		applyUiThemeFromDashboardSettings,
+		isInteractive: () => input.isTTY && output.isTTY,
+		getDashboardSettingsPath,
+		writeLine: (message) => {
+			console.log(message);
+		},
+	});
 }
 
 async function promptStatuslineSettings(
 	initial: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings | null> {
-	if (!input.isTTY || !output.isTTY) {
-		return null;
-	}
-
-	const ui = getUiRuntimeOptions();
-	let draft = cloneDashboardSettings(initial);
-	let focusKey: DashboardStatuslineField =
-		draft.menuStatuslineFields?.[0] ?? "last-used";
-	while (true) {
-		const preview = buildAccountListPreview(draft, ui, focusKey);
-		const selectedSet = new Set(
-			normalizeStatuslineFields(draft.menuStatuslineFields),
-		);
-		const ordered = normalizeStatuslineFields(draft.menuStatuslineFields);
-		const orderMap = new Map<DashboardStatuslineField, number>();
-		for (let index = 0; index < ordered.length; index += 1) {
-			const key = ordered[index];
-			if (key) orderMap.set(key, index + 1);
-		}
-
-		const optionItems: MenuItem<StatuslineConfigAction>[] =
-			STATUSLINE_FIELD_OPTIONS.map((option, index) => {
-				const enabled = selectedSet.has(option.key);
-				const rank = orderMap.get(option.key);
-				const label = `${formatDashboardSettingState(enabled)} ${index + 1}. ${option.label}${rank ? ` (order ${rank})` : ""}`;
-				return {
-					label,
-					hint: option.description,
-					value: { type: "toggle", key: option.key },
-					color: enabled ? "green" : "yellow",
-				};
-			});
-
-		const items: MenuItem<StatuslineConfigAction>[] = [
-			{
-				label: UI_COPY.settings.previewHeading,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			{
-				label: preview.label,
-				hint: preview.hint,
-				value: { type: "cancel" },
-				color: "green",
-				disabled: true,
-				hideUnavailableSuffix: true,
-			},
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.displayHeading,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			...optionItems,
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.moveUp,
-				value: { type: "move-up", key: focusKey },
-				color: "green",
-			},
-			{
-				label: UI_COPY.settings.moveDown,
-				value: { type: "move-down", key: focusKey },
-				color: "green",
-			},
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.resetDefault,
-				value: { type: "reset" },
-				color: "yellow",
-			},
-			{
-				label: UI_COPY.settings.saveAndBack,
-				value: { type: "save" },
-				color: "green",
-			},
-			{
-				label: UI_COPY.settings.backNoSave,
-				value: { type: "cancel" },
-				color: "red",
-			},
-		];
-
-		const initialCursor = items.findIndex(
-			(item) => item.value.type === "toggle" && item.value.key === focusKey,
-		);
-
-		const updateFocusedPreview = (cursor: number) => {
-			const focusedItem = items[cursor];
-			const focusedKey =
-				focusedItem?.value.type === "toggle" ? focusedItem.value.key : focusKey;
-			const nextPreview = buildAccountListPreview(draft, ui, focusedKey);
-			const previewItem = items[1];
-			if (!previewItem) return;
-			previewItem.label = nextPreview.label;
-			previewItem.hint = nextPreview.hint;
-		};
-
-		const result = await select<StatuslineConfigAction>(items, {
-			message: UI_COPY.settings.summaryTitle,
-			subtitle: UI_COPY.settings.summarySubtitle,
-			help: UI_COPY.settings.summaryHelp,
-			clearScreen: true,
-			theme: ui.theme,
-			selectedEmphasis: "minimal",
-			initialCursor: initialCursor >= 0 ? initialCursor : undefined,
-			onCursorChange: ({ cursor }) => {
-				const focusedItem = items[cursor];
-				if (focusedItem?.value.type === "toggle") {
-					focusKey = focusedItem.value.key;
-				}
-				updateFocusedPreview(cursor);
-			},
-			onInput: (raw) => {
-				const lower = raw.toLowerCase();
-				if (lower === "q") return { type: "cancel" };
-				if (lower === "s") return { type: "save" };
-				if (lower === "r") return { type: "reset" };
-				if (lower === "[") return { type: "move-up", key: focusKey };
-				if (lower === "]") return { type: "move-down", key: focusKey };
-				const parsed = Number.parseInt(raw, 10);
-				if (
-					Number.isFinite(parsed) &&
-					parsed >= 1 &&
-					parsed <= STATUSLINE_FIELD_OPTIONS.length
-				) {
-					const target = STATUSLINE_FIELD_OPTIONS[parsed - 1];
-					if (target) {
-						return { type: "toggle", key: target.key };
-					}
-				}
-				return undefined;
-			},
-		});
-
-		if (!result || result.type === "cancel") {
-			return null;
-		}
-		if (result.type === "save") {
-			return draft;
-		}
-		if (result.type === "reset") {
-			draft = applyDashboardDefaultsForKeys(draft, STATUSLINE_PANEL_KEYS);
-			focusKey = draft.menuStatuslineFields?.[0] ?? "last-used";
-			continue;
-		}
-		if (result.type === "move-up") {
-			draft = {
-				...draft,
-				menuStatuslineFields: reorderField(
-					normalizeStatuslineFields(draft.menuStatuslineFields),
-					result.key,
-					-1,
-				),
-			};
-			focusKey = result.key;
-			continue;
-		}
-		if (result.type === "move-down") {
-			draft = {
-				...draft,
-				menuStatuslineFields: reorderField(
-					normalizeStatuslineFields(draft.menuStatuslineFields),
-					result.key,
-					1,
-				),
-			};
-			focusKey = result.key;
-			continue;
-		}
-
-		focusKey = result.key;
-		const fields = normalizeStatuslineFields(draft.menuStatuslineFields);
-		const isEnabled = fields.includes(result.key);
-		if (isEnabled) {
-			const next = fields.filter((field) => field !== result.key);
-			draft = {
-				...draft,
-				menuStatuslineFields: next.length > 0 ? next : [result.key],
-			};
-		} else {
-			draft = {
-				...draft,
-				menuStatuslineFields: [...fields, result.key],
-			};
-		}
-	}
+	return promptStatuslineSettingsPanelEntry({
+		initial,
+		promptStatuslineSettingsPanel,
+		cloneDashboardSettings,
+		buildAccountListPreview,
+		normalizeStatuslineFields,
+		formatDashboardSettingState,
+		applyDashboardDefaultsForKeys,
+		STATUSLINE_FIELD_OPTIONS,
+		STATUSLINE_PANEL_KEYS,
+		UI_COPY,
+	});
 }
 
 async function configureStatuslineSettings(
 	currentSettings?: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings> {
-	const current = currentSettings ?? (await loadDashboardDisplaySettings());
-	if (!input.isTTY || !output.isTTY) {
-		console.log("Settings require interactive mode.");
-		console.log(`Settings file: ${getDashboardSettingsPath()}`);
-		return current;
-	}
-
-	const selected = await promptStatuslineSettings(current);
-	if (!selected) return current;
-	if (dashboardSettingsEqual(current, selected)) return current;
-
-	const merged = await persistDashboardSettingsSelection(
-		selected,
-		STATUSLINE_PANEL_KEYS,
-		"summary-fields",
-	);
-	applyUiThemeFromDashboardSettings(merged);
-	return merged;
-}
-
-function formatDelayLabel(delayMs: number): string {
-	return delayMs <= 0
-		? "Instant return"
-		: `${Math.round(delayMs / 1000)}s auto-return`;
+	return configureDashboardSettingsEntry(currentSettings, {
+		configureDashboardSettingsController,
+		loadDashboardDisplaySettings,
+		promptSettings: promptStatuslineSettings,
+		settingsEqual: dashboardSettingsEqual,
+		persistSelection: (selected) =>
+			persistDashboardSettingsSelection(
+				selected,
+				STATUSLINE_PANEL_KEYS,
+				"summary-fields",
+			),
+		applyUiThemeFromDashboardSettings,
+		isInteractive: () => input.isTTY && output.isTTY,
+		getDashboardSettingsPath,
+		writeLine: (message) => {
+			console.log(message);
+		},
+	});
 }
 
 async function promptBehaviorSettings(
 	initial: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings | null> {
-	if (!input.isTTY || !output.isTTY) return null;
-	const ui = getUiRuntimeOptions();
-	let draft = cloneDashboardSettings(initial);
-	let focus: BehaviorConfigAction = {
-		type: "set-delay",
-		delayMs: draft.actionAutoReturnMs ?? 2_000,
-	};
-
-	while (true) {
-		const currentDelay = draft.actionAutoReturnMs ?? 2_000;
-		const pauseOnKey = draft.actionPauseOnKey ?? true;
-		const autoFetchLimits = draft.menuAutoFetchLimits ?? true;
-		const fetchStatusVisible = draft.menuShowFetchStatus ?? true;
-		const menuQuotaTtlMs = draft.menuQuotaTtlMs ?? 5 * 60_000;
-		const delayItems: MenuItem<BehaviorConfigAction>[] =
-			AUTO_RETURN_OPTIONS_MS.map((delayMs) => {
-				const color: MenuItem<BehaviorConfigAction>["color"] =
-					currentDelay === delayMs ? "green" : "yellow";
-				return {
-					label: `${currentDelay === delayMs ? "[x]" : "[ ]"} ${formatDelayLabel(delayMs)}`,
-					hint:
-						delayMs === 1_000
-							? "Fastest loop for frequent actions."
-							: delayMs === 2_000
-								? "Balanced default for most users."
-								: "More time to read action output.",
-					value: { type: "set-delay", delayMs },
-					color,
-				};
-			});
-		const pauseColor: MenuItem<BehaviorConfigAction>["color"] = pauseOnKey
-			? "green"
-			: "yellow";
-		const items: MenuItem<BehaviorConfigAction>[] = [
-			{
-				label: UI_COPY.settings.actionTiming,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			...delayItems,
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: `${pauseOnKey ? "[x]" : "[ ]"} Pause on key press`,
-				hint: "Press any key to stop auto-return.",
-				value: { type: "toggle-pause" },
-				color: pauseColor,
-			},
-			{
-				label: `${autoFetchLimits ? "[x]" : "[ ]"} Auto-fetch limits on menu open (5m cache)`,
-				hint: "Refreshes account limits automatically when opening the menu.",
-				value: { type: "toggle-menu-limit-fetch" },
-				color: autoFetchLimits ? "green" : "yellow",
-			},
-			{
-				label: `${fetchStatusVisible ? "[x]" : "[ ]"} Show limit refresh status`,
-				hint: "Shows background fetch progress like [2/7] in menu subtitle.",
-				value: { type: "toggle-menu-fetch-status" },
-				color: fetchStatusVisible ? "green" : "yellow",
-			},
-			{
-				label: `Limit cache TTL: ${formatMenuQuotaTtl(menuQuotaTtlMs)}`,
-				hint: "How fresh cached quota data must be before refresh runs.",
-				value: { type: "set-menu-quota-ttl", ttlMs: menuQuotaTtlMs },
-				color: "yellow",
-			},
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.resetDefault,
-				value: { type: "reset" },
-				color: "yellow",
-			},
-			{
-				label: UI_COPY.settings.saveAndBack,
-				value: { type: "save" },
-				color: "green",
-			},
-			{
-				label: UI_COPY.settings.backNoSave,
-				value: { type: "cancel" },
-				color: "red",
-			},
-		];
-		const initialCursor = items.findIndex((item) => {
-			const value = item.value;
-			if (value.type !== focus.type) return false;
-			if (value.type === "set-delay" && focus.type === "set-delay") {
-				return value.delayMs === focus.delayMs;
-			}
-			return true;
-		});
-
-		const result = await select<BehaviorConfigAction>(items, {
-			message: UI_COPY.settings.behaviorTitle,
-			subtitle: UI_COPY.settings.behaviorSubtitle,
-			help: UI_COPY.settings.behaviorHelp,
-			clearScreen: true,
-			theme: ui.theme,
-			selectedEmphasis: "minimal",
-			initialCursor: initialCursor >= 0 ? initialCursor : undefined,
-			onCursorChange: ({ cursor }) => {
-				const item = items[cursor];
-				if (item && !item.separator && item.kind !== "heading") {
-					focus = item.value;
-				}
-			},
-			onInput: (raw) => {
-				const lower = raw.toLowerCase();
-				if (lower === "q") return { type: "cancel" };
-				if (lower === "s") return { type: "save" };
-				if (lower === "r") return { type: "reset" };
-				if (lower === "p") return { type: "toggle-pause" };
-				if (lower === "l") return { type: "toggle-menu-limit-fetch" };
-				if (lower === "f") return { type: "toggle-menu-fetch-status" };
-				if (lower === "t")
-					return { type: "set-menu-quota-ttl", ttlMs: menuQuotaTtlMs };
-				const parsed = Number.parseInt(raw, 10);
-				if (
-					Number.isFinite(parsed) &&
-					parsed >= 1 &&
-					parsed <= AUTO_RETURN_OPTIONS_MS.length
-				) {
-					const delayMs = AUTO_RETURN_OPTIONS_MS[parsed - 1];
-					if (typeof delayMs === "number")
-						return { type: "set-delay", delayMs };
-				}
-				return undefined;
-			},
-		});
-
-		if (!result || result.type === "cancel") return null;
-		if (result.type === "save") return draft;
-		if (result.type === "reset") {
-			draft = applyDashboardDefaultsForKeys(draft, BEHAVIOR_PANEL_KEYS);
-			focus = { type: "set-delay", delayMs: draft.actionAutoReturnMs ?? 2_000 };
-			continue;
-		}
-		if (result.type === "toggle-pause") {
-			draft = {
-				...draft,
-				actionPauseOnKey: !(draft.actionPauseOnKey ?? true),
-			};
-			focus = result;
-			continue;
-		}
-		if (result.type === "toggle-menu-limit-fetch") {
-			draft = {
-				...draft,
-				menuAutoFetchLimits: !(draft.menuAutoFetchLimits ?? true),
-			};
-			focus = result;
-			continue;
-		}
-		if (result.type === "toggle-menu-fetch-status") {
-			draft = {
-				...draft,
-				menuShowFetchStatus: !(draft.menuShowFetchStatus ?? true),
-			};
-			focus = result;
-			continue;
-		}
-		if (result.type === "set-menu-quota-ttl") {
-			const currentIndex = MENU_QUOTA_TTL_OPTIONS_MS.findIndex(
-				(value) => value === menuQuotaTtlMs,
-			);
-			const nextIndex =
-				currentIndex < 0
-					? 0
-					: (currentIndex + 1) % MENU_QUOTA_TTL_OPTIONS_MS.length;
-			const nextTtl =
-				MENU_QUOTA_TTL_OPTIONS_MS[nextIndex] ??
-				MENU_QUOTA_TTL_OPTIONS_MS[0] ??
-				menuQuotaTtlMs;
-			draft = {
-				...draft,
-				menuQuotaTtlMs: nextTtl,
-			};
-			focus = { type: "set-menu-quota-ttl", ttlMs: nextTtl };
-			continue;
-		}
-		draft = {
-			...draft,
-			actionAutoReturnMs: result.delayMs,
-		};
-		focus = result;
-	}
+	return promptBehaviorSettingsPanelEntry({
+		initial,
+		promptBehaviorSettingsPanel,
+		cloneDashboardSettings,
+		applyDashboardDefaultsForKeys,
+		formatMenuQuotaTtl,
+		AUTO_RETURN_OPTIONS_MS,
+		MENU_QUOTA_TTL_OPTIONS_MS,
+		BEHAVIOR_PANEL_KEYS,
+		UI_COPY,
+	});
 }
 
 async function promptThemeSettings(
 	initial: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings | null> {
-	if (!input.isTTY || !output.isTTY) return null;
-	const baseline = cloneDashboardSettings(initial);
-	let draft = cloneDashboardSettings(initial);
-	let focus: ThemeConfigAction = {
-		type: "set-palette",
-		palette: draft.uiThemePreset ?? "green",
-	};
-	while (true) {
-		const ui = getUiRuntimeOptions();
-		const palette = draft.uiThemePreset ?? "green";
-		const accent = draft.uiAccentColor ?? "green";
-		const paletteItems: MenuItem<ThemeConfigAction>[] =
-			THEME_PRESET_OPTIONS.map((candidate, index) => {
-				const color: MenuItem<ThemeConfigAction>["color"] =
-					palette === candidate ? "green" : "yellow";
-				return {
-					label: `${palette === candidate ? "[x]" : "[ ]"} ${index + 1}. ${candidate === "green" ? "Green base" : "Blue base"}`,
-					hint:
-						candidate === "green"
-							? "High-contrast default."
-							: "Codex-style blue look.",
-					value: { type: "set-palette", palette: candidate },
-					color,
-				};
-			});
-		const accentItems: MenuItem<ThemeConfigAction>[] = ACCENT_COLOR_OPTIONS.map(
-			(candidate) => {
-				const color: MenuItem<ThemeConfigAction>["color"] =
-					accent === candidate ? "green" : "yellow";
-				return {
-					label: `${accent === candidate ? "[x]" : "[ ]"} ${candidate}`,
-					value: { type: "set-accent", accent: candidate },
-					color,
-				};
-			},
-		);
-		const items: MenuItem<ThemeConfigAction>[] = [
-			{
-				label: UI_COPY.settings.baseTheme,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			...paletteItems,
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.accentColor,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			...accentItems,
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.resetDefault,
-				value: { type: "reset" },
-				color: "yellow",
-			},
-			{
-				label: UI_COPY.settings.saveAndBack,
-				value: { type: "save" },
-				color: "green",
-			},
-			{
-				label: UI_COPY.settings.backNoSave,
-				value: { type: "cancel" },
-				color: "red",
-			},
-		];
-		const initialCursor = items.findIndex((item) => {
-			const value = item.value;
-			if (value.type !== focus.type) return false;
-			if (value.type === "set-palette" && focus.type === "set-palette") {
-				return value.palette === focus.palette;
-			}
-			if (value.type === "set-accent" && focus.type === "set-accent") {
-				return value.accent === focus.accent;
-			}
-			return true;
-		});
-		const result = await select<ThemeConfigAction>(items, {
-			message: UI_COPY.settings.themeTitle,
-			subtitle: UI_COPY.settings.themeSubtitle,
-			help: UI_COPY.settings.themeHelp,
-			clearScreen: true,
-			theme: ui.theme,
-			selectedEmphasis: "minimal",
-			initialCursor: initialCursor >= 0 ? initialCursor : undefined,
-			onCursorChange: ({ cursor }) => {
-				const item = items[cursor];
-				if (item && !item.separator && item.kind !== "heading") {
-					focus = item.value;
-				}
-			},
-			onInput: (raw) => {
-				const lower = raw.toLowerCase();
-				if (lower === "q") return { type: "cancel" };
-				if (lower === "s") return { type: "save" };
-				if (lower === "r") return { type: "reset" };
-				if (raw === "1") return { type: "set-palette", palette: "green" };
-				if (raw === "2") return { type: "set-palette", palette: "blue" };
-				return undefined;
-			},
-		});
-		if (!result || result.type === "cancel") {
-			applyUiThemeFromDashboardSettings(baseline);
-			return null;
-		}
-		if (result.type === "save") return draft;
-		if (result.type === "reset") {
-			draft = applyDashboardDefaultsForKeys(draft, THEME_PANEL_KEYS);
-			focus = { type: "set-palette", palette: draft.uiThemePreset ?? "green" };
-			applyUiThemeFromDashboardSettings(draft);
-			continue;
-		}
-		if (result.type === "set-palette") {
-			draft = { ...draft, uiThemePreset: result.palette };
-			focus = result;
-			applyUiThemeFromDashboardSettings(draft);
-			continue;
-		}
-		draft = { ...draft, uiAccentColor: result.accent };
-		focus = result;
-		applyUiThemeFromDashboardSettings(draft);
-	}
-}
-
-function resolveFocusedBackendNumberKey(
-	focus: BackendSettingFocusKey,
-	numberOptions: BackendNumberSettingOption[] = BACKEND_NUMBER_OPTIONS,
-): BackendNumberSettingKey {
-	const numberKeys = new Set<BackendNumberSettingKey>(
-		numberOptions.map((option) => option.key),
-	);
-	if (focus && numberKeys.has(focus as BackendNumberSettingKey)) {
-		return focus as BackendNumberSettingKey;
-	}
-	return numberOptions[0]?.key ?? "fetchTimeoutMs";
-}
-
-function getBackendCategory(
-	key: BackendCategoryKey,
-): BackendCategoryOption | null {
-	return (
-		BACKEND_CATEGORY_OPTIONS.find((category) => category.key === key) ?? null
-	);
-}
-
-function getBackendCategoryInitialFocus(
-	category: BackendCategoryOption,
-): BackendSettingFocusKey {
-	const firstToggle = category.toggleKeys[0];
-	if (firstToggle) return firstToggle;
-	return category.numberKeys[0] ?? null;
-}
-
-function applyBackendCategoryDefaults(
-	draft: PluginConfig,
-	category: BackendCategoryOption,
-): PluginConfig {
-	const next = { ...draft };
-	for (const key of category.toggleKeys) {
-		next[key] = BACKEND_DEFAULTS[key] ?? false;
-	}
-	for (const key of category.numberKeys) {
-		const option = BACKEND_NUMBER_OPTION_BY_KEY.get(key);
-		const fallback = option?.min ?? 0;
-		next[key] = BACKEND_DEFAULTS[key] ?? fallback;
-	}
-	return next;
+	return promptThemeSettingsPanelEntry({
+		initial,
+		promptThemeSettingsPanel,
+		cloneDashboardSettings,
+		applyDashboardDefaultsForKeys,
+		applyUiThemeFromDashboardSettings,
+		THEME_PRESET_OPTIONS,
+		ACCENT_COLOR_OPTIONS,
+		THEME_PANEL_KEYS,
+		UI_COPY,
+	});
 }
 
 async function promptBackendCategorySettings(
@@ -2172,344 +575,56 @@ async function promptBackendCategorySettings(
 	category: BackendCategoryOption,
 	initialFocus: BackendSettingFocusKey,
 ): Promise<{ draft: PluginConfig; focusKey: BackendSettingFocusKey }> {
-	const ui = getUiRuntimeOptions();
-	let draft = cloneBackendPluginConfig(initial);
-	let focusKey: BackendSettingFocusKey = initialFocus;
-	if (
-		!focusKey ||
-		(!category.toggleKeys.includes(focusKey as BackendToggleSettingKey) &&
-			!category.numberKeys.includes(focusKey as BackendNumberSettingKey))
-	) {
-		focusKey = getBackendCategoryInitialFocus(category);
-	}
-
-	const toggleOptions = category.toggleKeys
-		.map((key) => BACKEND_TOGGLE_OPTION_BY_KEY.get(key))
-		.filter((option): option is BackendToggleSettingOption => !!option);
-	const numberOptions = category.numberKeys
-		.map((key) => BACKEND_NUMBER_OPTION_BY_KEY.get(key))
-		.filter((option): option is BackendNumberSettingOption => !!option);
-
-	while (true) {
-		const preview = buildBackendSettingsPreview(draft, ui, focusKey);
-		const toggleItems: MenuItem<BackendCategoryConfigAction>[] =
-			toggleOptions.map((option, index) => {
-				const enabled =
-					draft[option.key] ?? BACKEND_DEFAULTS[option.key] ?? false;
-				return {
-					label: `${formatDashboardSettingState(enabled)} ${index + 1}. ${option.label}`,
-					hint: option.description,
-					value: { type: "toggle", key: option.key },
-					color: enabled ? "green" : "yellow",
-				};
-			});
-		const numberItems: MenuItem<BackendCategoryConfigAction>[] =
-			numberOptions.map((option) => {
-				const rawValue =
-					draft[option.key] ?? BACKEND_DEFAULTS[option.key] ?? option.min;
-				const numericValue =
-					typeof rawValue === "number" && Number.isFinite(rawValue)
-						? rawValue
-						: option.min;
-				const clampedValue = clampBackendNumber(option, numericValue);
-				const valueLabel = formatBackendNumberValue(option, clampedValue);
-				return {
-					label: `${option.label}: ${valueLabel}`,
-					hint: `${option.description} Step ${formatBackendNumberValue(option, option.step)}.`,
-					value: { type: "bump", key: option.key, direction: 1 },
-					color: "yellow",
-				};
-			});
-
-		const focusedNumberKey = resolveFocusedBackendNumberKey(
-			focusKey,
-			numberOptions,
-		);
-		const items: MenuItem<BackendCategoryConfigAction>[] = [
-			{
-				label: UI_COPY.settings.previewHeading,
-				value: { type: "back" },
-				kind: "heading",
-			},
-			{
-				label: preview.label,
-				hint: preview.hint,
-				value: { type: "back" },
-				disabled: true,
-				color: "green",
-				hideUnavailableSuffix: true,
-			},
-			{ label: "", value: { type: "back" }, separator: true },
-			{
-				label: UI_COPY.settings.backendToggleHeading,
-				value: { type: "back" },
-				kind: "heading",
-			},
-			...toggleItems,
-			{ label: "", value: { type: "back" }, separator: true },
-			{
-				label: UI_COPY.settings.backendNumberHeading,
-				value: { type: "back" },
-				kind: "heading",
-			},
-			...numberItems,
-		];
-
-		if (numberOptions.length > 0) {
-			items.push({ label: "", value: { type: "back" }, separator: true });
-			items.push({
-				label: UI_COPY.settings.backendDecrease,
-				value: { type: "bump", key: focusedNumberKey, direction: -1 },
-				color: "yellow",
-			});
-			items.push({
-				label: UI_COPY.settings.backendIncrease,
-				value: { type: "bump", key: focusedNumberKey, direction: 1 },
-				color: "green",
-			});
-		}
-
-		items.push({ label: "", value: { type: "back" }, separator: true });
-		items.push({
-			label: UI_COPY.settings.backendResetCategory,
-			value: { type: "reset-category" },
-			color: "yellow",
-		});
-		items.push({
-			label: UI_COPY.settings.backendBackToCategories,
-			value: { type: "back" },
-			color: "red",
-		});
-
-		const initialCursor = items.findIndex((item) => {
-			if (item.separator || item.disabled || item.kind === "heading")
-				return false;
-			if (item.value.type === "toggle" && focusKey === item.value.key)
-				return true;
-			if (item.value.type === "bump" && focusKey === item.value.key)
-				return true;
-			return false;
-		});
-
-		const result = await select<BackendCategoryConfigAction>(items, {
-			message: `${UI_COPY.settings.backendCategoryTitle}: ${category.label}`,
-			subtitle: category.description,
-			help: UI_COPY.settings.backendCategoryHelp,
-			clearScreen: true,
-			theme: ui.theme,
-			selectedEmphasis: "minimal",
-			initialCursor: initialCursor >= 0 ? initialCursor : undefined,
-			onCursorChange: ({ cursor }) => {
-				const focusedItem = items[cursor];
-				if (
-					focusedItem?.value.type === "toggle" ||
-					focusedItem?.value.type === "bump"
-				) {
-					focusKey = focusedItem.value.key;
-				}
-			},
-			onInput: (raw) => {
-				const lower = raw.toLowerCase();
-				if (lower === "q") return { type: "back" };
-				if (lower === "r") return { type: "reset-category" };
-				if (
-					numberOptions.length > 0 &&
-					(lower === "+" || lower === "=" || lower === "]" || lower === "d")
-				) {
-					return {
-						type: "bump",
-						key: resolveFocusedBackendNumberKey(focusKey, numberOptions),
-						direction: 1,
-					};
-				}
-				if (
-					numberOptions.length > 0 &&
-					(lower === "-" || lower === "[" || lower === "a")
-				) {
-					return {
-						type: "bump",
-						key: resolveFocusedBackendNumberKey(focusKey, numberOptions),
-						direction: -1,
-					};
-				}
-				const parsed = Number.parseInt(raw, 10);
-				if (
-					Number.isFinite(parsed) &&
-					parsed >= 1 &&
-					parsed <= toggleOptions.length
-				) {
-					const target = toggleOptions[parsed - 1];
-					if (target) return { type: "toggle", key: target.key };
-				}
-				return undefined;
-			},
-		});
-
-		if (!result || result.type === "back") {
-			return { draft, focusKey };
-		}
-		if (result.type === "reset-category") {
-			draft = applyBackendCategoryDefaults(draft, category);
-			focusKey = getBackendCategoryInitialFocus(category);
-			continue;
-		}
-		if (result.type === "toggle") {
-			const currentValue =
-				draft[result.key] ?? BACKEND_DEFAULTS[result.key] ?? false;
-			draft = { ...draft, [result.key]: !currentValue };
-			focusKey = result.key;
-			continue;
-		}
-
-		const option = BACKEND_NUMBER_OPTION_BY_KEY.get(result.key);
-		if (!option) continue;
-		const currentValue =
-			draft[result.key] ?? BACKEND_DEFAULTS[result.key] ?? option.min;
-		const numericCurrent =
-			typeof currentValue === "number" && Number.isFinite(currentValue)
-				? currentValue
-				: option.min;
-		draft = {
-			...draft,
-			[result.key]: clampBackendNumber(
-				option,
-				numericCurrent + option.step * result.direction,
-			),
-		};
-		focusKey = result.key;
-	}
+	return promptBackendCategorySettingsEntry({
+		initial,
+		category,
+		initialFocus,
+		promptBackendCategorySettingsMenu,
+		ui: getUiRuntimeOptions(),
+		cloneBackendPluginConfig,
+		buildBackendSettingsPreview,
+		highlightPreviewToken,
+		resolveFocusedBackendNumberKey,
+		clampBackendNumber,
+		formatBackendNumberValue,
+		formatDashboardSettingState,
+		applyBackendCategoryDefaults: (config, selectedCategory) =>
+			applyBackendCategoryDefaults(config, selectedCategory, {
+				backendDefaults: BACKEND_DEFAULTS,
+				numberOptionByKey: BACKEND_NUMBER_OPTION_BY_KEY,
+			}),
+		getBackendCategoryInitialFocus,
+		backendDefaults: BACKEND_DEFAULTS,
+		toggleOptionByKey: BACKEND_TOGGLE_OPTION_BY_KEY,
+		numberOptionByKey: BACKEND_NUMBER_OPTION_BY_KEY,
+		select,
+		copy: UI_COPY.settings,
+	});
 }
 
 async function promptBackendSettings(
 	initial: PluginConfig,
 ): Promise<PluginConfig | null> {
-	if (!input.isTTY || !output.isTTY) return null;
-
-	const ui = getUiRuntimeOptions();
-	let draft = cloneBackendPluginConfig(initial);
-	let activeCategory = BACKEND_CATEGORY_OPTIONS[0]?.key ?? "session-sync";
-	const focusByCategory: Partial<
-		Record<BackendCategoryKey, BackendSettingFocusKey>
-	> = {};
-	for (const category of BACKEND_CATEGORY_OPTIONS) {
-		focusByCategory[category.key] = getBackendCategoryInitialFocus(category);
+	const interactive = input.isTTY && output.isTTY;
+	if (!interactive) {
+		return null;
 	}
 
-	while (true) {
-		const previewFocus = focusByCategory[activeCategory] ?? null;
-		const preview = buildBackendSettingsPreview(draft, ui, previewFocus);
-		const categoryItems: MenuItem<BackendSettingsHubAction>[] =
-			BACKEND_CATEGORY_OPTIONS.map((category, index) => {
-				return {
-					label: `${index + 1}. ${category.label}`,
-					hint: category.description,
-					value: { type: "open-category", key: category.key },
-					color: "green",
-				};
-			});
-
-		const items: MenuItem<BackendSettingsHubAction>[] = [
-			{
-				label: UI_COPY.settings.previewHeading,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			{
-				label: preview.label,
-				hint: preview.hint,
-				value: { type: "cancel" },
-				disabled: true,
-				color: "green",
-				hideUnavailableSuffix: true,
-			},
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.backendCategoriesHeading,
-				value: { type: "cancel" },
-				kind: "heading",
-			},
-			...categoryItems,
-			{ label: "", value: { type: "cancel" }, separator: true },
-			{
-				label: UI_COPY.settings.resetDefault,
-				value: { type: "reset" },
-				color: "yellow",
-			},
-			{
-				label: UI_COPY.settings.saveAndBack,
-				value: { type: "save" },
-				color: "green",
-			},
-			{
-				label: UI_COPY.settings.backNoSave,
-				value: { type: "cancel" },
-				color: "red",
-			},
-		];
-
-		const initialCursor = items.findIndex((item) => {
-			if (item.separator || item.disabled || item.kind === "heading")
-				return false;
-			return (
-				item.value.type === "open-category" && item.value.key === activeCategory
-			);
-		});
-
-		const result = await select<BackendSettingsHubAction>(items, {
-			message: UI_COPY.settings.backendTitle,
-			subtitle: UI_COPY.settings.backendSubtitle,
-			help: UI_COPY.settings.backendHelp,
-			clearScreen: true,
-			theme: ui.theme,
-			selectedEmphasis: "minimal",
-			initialCursor: initialCursor >= 0 ? initialCursor : undefined,
-			onCursorChange: ({ cursor }) => {
-				const focusedItem = items[cursor];
-				if (focusedItem?.value.type === "open-category") {
-					activeCategory = focusedItem.value.key;
-				}
-			},
-			onInput: (raw) => {
-				const lower = raw.toLowerCase();
-				if (lower === "q") return { type: "cancel" };
-				if (lower === "s") return { type: "save" };
-				if (lower === "r") return { type: "reset" };
-				const parsed = Number.parseInt(raw, 10);
-				if (
-					Number.isFinite(parsed) &&
-					parsed >= 1 &&
-					parsed <= BACKEND_CATEGORY_OPTIONS.length
-				) {
-					const target = BACKEND_CATEGORY_OPTIONS[parsed - 1];
-					if (target) return { type: "open-category", key: target.key };
-				}
-				return undefined;
-			},
-		});
-
-		if (!result || result.type === "cancel") return null;
-		if (result.type === "save") return draft;
-		if (result.type === "reset") {
-			draft = cloneBackendPluginConfig(BACKEND_DEFAULTS);
-			for (const category of BACKEND_CATEGORY_OPTIONS) {
-				focusByCategory[category.key] =
-					getBackendCategoryInitialFocus(category);
-			}
-			activeCategory = BACKEND_CATEGORY_OPTIONS[0]?.key ?? activeCategory;
-			continue;
-		}
-
-		const category = getBackendCategory(result.key);
-		if (!category) continue;
-		activeCategory = category.key;
-		const categoryResult = await promptBackendCategorySettings(
-			draft,
-			category,
-			focusByCategory[category.key] ?? getBackendCategoryInitialFocus(category),
-		);
-		draft = categoryResult.draft;
-		focusByCategory[category.key] = categoryResult.focusKey;
-	}
+	return promptBackendSettingsMenu({
+		initial,
+		isInteractive: () => interactive,
+		ui: getUiRuntimeOptions(),
+		cloneBackendPluginConfig,
+		backendCategoryOptions: BACKEND_CATEGORY_OPTIONS,
+		getBackendCategoryInitialFocus,
+		buildBackendSettingsPreview,
+		highlightPreviewToken,
+		select,
+		getBackendCategory,
+		promptBackendCategorySettings,
+		backendDefaults: BACKEND_DEFAULTS,
+		copy: UI_COPY.settings,
+	});
 }
 
 async function loadExperimentalSyncTarget(): Promise<
@@ -2528,425 +643,130 @@ async function loadExperimentalSyncTarget(): Promise<
 			destination: import("../storage.js").AccountStorageV3 | null;
 	  }
 > {
-	const detection = detectOcChatgptMultiAuthTarget();
-	if (detection.kind === "ambiguous") {
-		return { kind: "blocked-ambiguous", detection };
-	}
-	if (detection.kind === "none") {
-		return { kind: "blocked-none", detection };
-	}
-	try {
-		const raw = JSON.parse(
-			await readFileWithRetry(detection.descriptor.accountPath),
-		);
-		const normalized = normalizeAccountStorage(raw);
-		if (!normalized) {
-			return {
-				kind: "error",
-				message: "Invalid target account storage format",
-			};
-		}
-		return { kind: "target", detection, destination: normalized };
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
-			return { kind: "target", detection, destination: null };
-		}
-		return {
-			kind: "error",
-			message: error instanceof Error ? error.message : String(error),
-		};
-	}
+	return loadExperimentalSyncTargetEntry({
+		loadExperimentalSyncTargetState,
+		detectTarget: detectOcChatgptMultiAuthTarget,
+		readFileWithRetry,
+		normalizeAccountStorage,
+		sleep,
+	});
 }
 
 async function promptExperimentalSettings(
 	initialConfig: PluginConfig,
 ): Promise<PluginConfig | null> {
-	if (!input.isTTY || !output.isTTY) return null;
-	const ui = getUiRuntimeOptions();
-	let draft = cloneBackendPluginConfig(initialConfig);
-	while (true) {
-		const action = await select<ExperimentalSettingsAction>(
-			[
-				{
-					label: UI_COPY.settings.experimentalSync,
-					value: { type: "sync" },
-					color: "yellow",
-				},
-				{
-					label: UI_COPY.settings.experimentalBackup,
-					value: { type: "backup" },
-					color: "green",
-				},
-				{
-					label: `${formatDashboardSettingState(draft.proactiveRefreshGuardian ?? false)} ${UI_COPY.settings.experimentalRefreshGuard}`,
-					value: { type: "toggle-refresh-guardian" },
-					color: "yellow",
-				},
-				{
-					label: `${UI_COPY.settings.experimentalRefreshInterval}: ${Math.round((draft.proactiveRefreshIntervalMs ?? 60000) / 60000)} min`,
-					value: { type: "back" },
-					disabled: true,
-					hideUnavailableSuffix: true,
-					color: "green",
-				},
-				{
-					label: UI_COPY.settings.experimentalDecreaseInterval,
-					value: { type: "decrease-refresh-interval" },
-					color: "yellow",
-				},
-				{
-					label: UI_COPY.settings.experimentalIncreaseInterval,
-					value: { type: "increase-refresh-interval" },
-					color: "green",
-				},
-				{
-					label: UI_COPY.settings.saveAndBack,
-					value: { type: "save" },
-					color: "green",
-				},
-				{
-					label: UI_COPY.settings.backNoSave,
-					value: { type: "back" },
-					color: "red",
-				},
-			],
-			getExperimentalSelectOptions(
-				ui,
-				UI_COPY.settings.experimentalHelpMenu,
-				mapExperimentalMenuHotkey,
-			),
-		);
-		if (!action || action.type === "back") return null;
-		if (action.type === "save") return draft;
-		if (action.type === "toggle-refresh-guardian") {
-			draft = {
-				...draft,
-				proactiveRefreshGuardian: !(draft.proactiveRefreshGuardian ?? false),
+	return promptExperimentalSettingsEntry({
+		initialConfig,
+		promptExperimentalSettingsMenu,
+		isInteractive: () => input.isTTY && output.isTTY,
+		ui: getUiRuntimeOptions(),
+		cloneBackendPluginConfig,
+		select,
+		getExperimentalSelectOptions,
+		mapExperimentalMenuHotkey,
+		mapExperimentalStatusHotkey,
+		formatDashboardSettingState,
+		copy: UI_COPY.settings,
+		input,
+		output,
+		runNamedBackupExport,
+		loadAccounts,
+		loadExperimentalSyncTarget,
+		planOcChatgptSync,
+		applyOcChatgptSync,
+		getTargetKind: (targetState) => (targetState as { kind: string }).kind,
+		getTargetDestination: (
+			targetState,
+		): import("../storage.js").AccountStorageV3 | null =>
+			(targetState as {
+				kind: string;
+				destination?: import("../storage.js").AccountStorageV3 | null;
+			}).destination ?? null,
+		getTargetDetection: (
+			targetState,
+		): ReturnType<typeof detectOcChatgptMultiAuthTarget> =>
+			(targetState as {
+				detection: ReturnType<typeof detectOcChatgptMultiAuthTarget>;
+			}).detection,
+		getTargetErrorMessage: (targetState) =>
+			(targetState as { kind: string; message?: string }).kind === "error"
+				? ((targetState as { message?: string }).message ?? "Unknown error")
+				: null,
+		getPlanKind: (plan) => (plan as { kind: string }).kind,
+		getPlanBlockedReason: (plan) => {
+			const candidate = plan as {
+				kind: string;
+				detection?: { reason?: string };
 			};
-			continue;
-		}
-		if (action.type === "decrease-refresh-interval") {
-			draft = {
-				...draft,
-				proactiveRefreshIntervalMs: Math.max(
-					60_000,
-					(draft.proactiveRefreshIntervalMs ?? 60000) - 60000,
-				),
-			};
-			continue;
-		}
-		if (action.type === "increase-refresh-interval") {
-			draft = {
-				...draft,
-				proactiveRefreshIntervalMs: Math.min(
-					600000,
-					(draft.proactiveRefreshIntervalMs ?? 60000) + 60000,
-				),
-			};
-			continue;
-		}
-		if (action.type === "backup") {
-			const prompt = createInterface({ input, output });
-			try {
-				const backupName = (
-					await prompt.question(UI_COPY.settings.experimentalBackupPrompt)
-				).trim();
-				if (!backupName || backupName.toLowerCase() === "q") {
-					continue;
+			return candidate.kind === "blocked-ambiguous"
+				? `Sync blocked: ${candidate.detection?.reason ?? "unknown"}`
+				: `Sync unavailable: ${candidate.detection?.reason ?? "unknown"}`;
+		},
+		getPlanPreview: (plan) =>
+			(
+				plan as {
+					preview: {
+						toAdd: unknown[];
+						toUpdate: unknown[];
+						toSkip: unknown[];
+						unchangedDestinationOnly: unknown[];
+						activeSelectionBehavior: string;
+					};
 				}
-				try {
-					const backupResult = await runNamedBackupExport({ name: backupName });
-					const backupLabel =
-						backupResult.kind === "exported"
-							? `Saved backup to ${backupResult.path}`
-							: backupResult.kind === "collision"
-								? `Backup already exists: ${backupResult.path}`
-								: backupResult.error instanceof Error
-									? backupResult.error.message
-									: String(backupResult.error);
-					await select<ExperimentalSettingsAction>(
-						[
-							{
-								label: backupLabel,
-								value: { type: "back" },
-								disabled: true,
-								hideUnavailableSuffix: true,
-								color: backupResult.kind === "exported" ? "green" : "yellow",
-							},
-							{
-								label: UI_COPY.settings.back,
-								value: { type: "back" },
-								color: "red",
-							},
-						],
-						getExperimentalSelectOptions(
-							ui,
-							UI_COPY.settings.experimentalHelpStatus,
-							mapExperimentalStatusHotkey,
-						),
-					);
-				} catch (error) {
-					const message =
-						error instanceof Error ? error.message : String(error);
-					await select<ExperimentalSettingsAction>(
-						[
-							{
-								label: message,
-								value: { type: "back" },
-								disabled: true,
-								hideUnavailableSuffix: true,
-								color: "yellow",
-							},
-							{
-								label: UI_COPY.settings.back,
-								value: { type: "back" },
-								color: "red",
-							},
-						],
-						getExperimentalSelectOptions(
-							ui,
-							UI_COPY.settings.experimentalHelpStatus,
-							mapExperimentalStatusHotkey,
-						),
-					);
-				}
-			} finally {
-				prompt.close();
-			}
-			continue;
-		}
-
-		const source = await loadAccounts();
-		const targetState = await loadExperimentalSyncTarget();
-		if (targetState.kind === "error") {
-			await select<ExperimentalSettingsAction>(
-				[
-					{
-						label: targetState.message,
-						value: { type: "back" },
-						disabled: true,
-						hideUnavailableSuffix: true,
-						color: "yellow",
-					},
-					{
-						label: UI_COPY.settings.back,
-						value: { type: "back" },
-						color: "red",
-					},
-				],
-				getExperimentalSelectOptions(
-					ui,
-					UI_COPY.settings.experimentalHelpStatus,
-					mapExperimentalStatusHotkey,
-				),
-			);
-			continue;
-		}
-		const plan = await planOcChatgptSync({
-			source,
-			destination:
-				targetState.kind === "target" ? targetState.destination : null,
-			dependencies:
-				targetState.kind === "target"
-					? { detectTarget: () => targetState.detection }
-					: undefined,
-		});
-		if (plan.kind !== "ready") {
-			await select<ExperimentalSettingsAction>(
-				[
-					{
-						label:
-							plan.kind === "blocked-ambiguous"
-								? `Sync blocked: ${plan.detection.reason}`
-								: `Sync unavailable: ${plan.detection.reason}`,
-						value: { type: "back" },
-						disabled: true,
-						hideUnavailableSuffix: true,
-						color: "yellow",
-					},
-					{
-						label: UI_COPY.settings.back,
-						value: { type: "back" },
-						color: "red",
-					},
-				],
-				getExperimentalSelectOptions(
-					ui,
-					UI_COPY.settings.experimentalHelpStatus,
-					mapExperimentalStatusHotkey,
-				),
-			);
-			continue;
-		}
-
-		const review = await select<ExperimentalSettingsAction>(
-			[
-				{
-					label: `Preview: add ${plan.preview.toAdd.length} | update ${plan.preview.toUpdate.length} | skip ${plan.preview.toSkip.length}`,
-					value: { type: "back" },
-					disabled: true,
-					hideUnavailableSuffix: true,
-					color: "green",
-				},
-				{
-					label: `Preserve destination-only: ${plan.preview.unchangedDestinationOnly.length}`,
-					value: { type: "back" },
-					disabled: true,
-					hideUnavailableSuffix: true,
-					color: "green",
-				},
-				{
-					label: `Active selection: ${plan.preview.activeSelectionBehavior}`,
-					value: { type: "back" },
-					disabled: true,
-					hideUnavailableSuffix: true,
-					color: "green",
-				},
-				{
-					label: UI_COPY.settings.experimentalApplySync,
-					value: { type: "apply" },
-					color: "green",
-				},
-				{
-					label: UI_COPY.settings.backNoSave,
-					value: { type: "back" },
-					color: "red",
-				},
-			],
-			getExperimentalSelectOptions(
-				ui,
-				UI_COPY.settings.experimentalHelpPreview,
-				(raw) => {
-					const lower = raw.toLowerCase();
-					if (lower === "q") return { type: "back" };
-					if (lower === "a") return { type: "apply" };
-					return undefined;
-				},
-			),
-		);
-		if (!review || review.type === "back") continue;
-
-		const applied = await applyOcChatgptSync({
-			source,
-			destination:
-				targetState.kind === "target" ? targetState.destination : undefined,
-			dependencies:
-				targetState.kind === "target"
-					? { detectTarget: () => targetState.detection }
-					: undefined,
-		});
-		await select<ExperimentalSettingsAction>(
-			[
-				{
-					label:
-						applied.kind === "applied"
-							? `Applied sync to ${applied.target.accountPath}`
-							: applied.kind === "error"
-								? applied.error instanceof Error
-									? applied.error.message
-									: String(applied.error)
-								: "Sync did not apply",
-					value: { type: "back" },
-					disabled: true,
-					hideUnavailableSuffix: true,
-					color: applied.kind === "applied" ? "green" : "yellow",
-				},
-				{ label: UI_COPY.settings.back, value: { type: "back" }, color: "red" },
-			],
-			getExperimentalSelectOptions(
-				ui,
-				UI_COPY.settings.experimentalHelpStatus,
-				mapExperimentalStatusHotkey,
-			),
-		);
-	}
+			).preview,
+		getAppliedLabel: (applied) => {
+			const candidate = applied as {
+				kind: string;
+				target?: { accountPath?: string };
+				error?: unknown;
+			};
+			return {
+				label:
+					candidate.kind === "applied"
+						? `Applied sync to ${candidate.target?.accountPath ?? "target"}`
+						: candidate.kind === "error"
+							? candidate.error instanceof Error
+								? candidate.error.message
+								: String(candidate.error)
+							: "Sync did not apply",
+				color: candidate.kind === "applied" ? "green" : "yellow",
+			};
+		},
+	});
 }
 
 async function configureBackendSettings(
 	currentConfig?: PluginConfig,
 ): Promise<PluginConfig> {
-	const current = cloneBackendPluginConfig(currentConfig ?? loadPluginConfig());
-	if (!input.isTTY || !output.isTTY) {
-		console.log("Settings require interactive mode.");
-		return current;
-	}
-
-	const selected = await promptBackendSettings(current);
-	if (!selected) return current;
-	if (backendSettingsEqual(current, selected)) return current;
-
-	return persistBackendConfigSelection(selected, "backend");
+	return configureBackendSettingsEntry(currentConfig, {
+		configureBackendSettingsController,
+		cloneBackendPluginConfig,
+		loadPluginConfig,
+		promptBackendSettings,
+		backendSettingsEqual,
+		persistBackendConfigSelection,
+		isInteractive: () => input.isTTY && output.isTTY,
+		writeLine: (message) => {
+			console.log(message);
+		},
+	});
 }
 
 async function promptSettingsHub(
 	initialFocus: SettingsHubAction["type"] = "account-list",
 ): Promise<SettingsHubAction | null> {
-	if (!input.isTTY || !output.isTTY) return null;
-	const ui = getUiRuntimeOptions();
-	const items: MenuItem<SettingsHubAction>[] = [
-		{
-			label: UI_COPY.settings.sectionTitle,
-			value: { type: "back" },
-			kind: "heading",
-		},
-		{
-			label: UI_COPY.settings.accountList,
-			value: { type: "account-list" },
-			color: "green",
-		},
-		{
-			label: UI_COPY.settings.summaryFields,
-			value: { type: "summary-fields" },
-			color: "green",
-		},
-		{
-			label: UI_COPY.settings.behavior,
-			value: { type: "behavior" },
-			color: "green",
-		},
-		{ label: UI_COPY.settings.theme, value: { type: "theme" }, color: "green" },
-		{ label: "", value: { type: "back" }, separator: true },
-		{
-			label: UI_COPY.settings.advancedTitle,
-			value: { type: "back" },
-			kind: "heading",
-		},
-		{
-			label: UI_COPY.settings.experimental,
-			value: { type: "experimental" },
-			color: "yellow",
-		},
-		{
-			label: UI_COPY.settings.backend,
-			value: { type: "backend" },
-			color: "green",
-		},
-		{ label: "", value: { type: "back" }, separator: true },
-		{
-			label: UI_COPY.settings.exitTitle,
-			value: { type: "back" },
-			kind: "heading",
-		},
-		{ label: UI_COPY.settings.back, value: { type: "back" }, color: "red" },
-	];
-	const initialCursor = items.findIndex((item) => {
-		if (item.separator || item.disabled || item.kind === "heading")
-			return false;
-		return item.value.type === initialFocus;
-	});
-	return select<SettingsHubAction>(items, {
-		message: UI_COPY.settings.title,
-		subtitle: UI_COPY.settings.subtitle,
-		help: UI_COPY.settings.help,
-		clearScreen: true,
-		theme: ui.theme,
-		selectedEmphasis: "minimal",
-		initialCursor: initialCursor >= 0 ? initialCursor : undefined,
-		onInput: (raw) => {
-			const lower = raw.toLowerCase();
-			if (lower === "q") return { type: "back" };
-			return undefined;
+	return promptSettingsHubEntry({
+		initialFocus,
+		promptSettingsHubMenu,
+		isInteractive: () => input.isTTY && output.isTTY,
+		getUiRuntimeOptions,
+		buildItems: () => buildSettingsHubItems(UI_COPY.settings),
+		findInitialCursor: findSettingsHubInitialCursor,
+		select,
+		copy: {
+			title: UI_COPY.settings.title,
+			subtitle: UI_COPY.settings.subtitle,
+			help: UI_COPY.settings.help,
 		},
 	});
 }
@@ -2956,65 +776,28 @@ async function promptSettingsHub(
 async function configureUnifiedSettings(
 	initialSettings?: DashboardDisplaySettings,
 ): Promise<DashboardDisplaySettings> {
-	let current = cloneDashboardSettings(
-		initialSettings ?? (await loadDashboardDisplaySettings()),
-	);
-	let backendConfig = cloneBackendPluginConfig(loadPluginConfig());
-	applyUiThemeFromDashboardSettings(current);
-	let hubFocus: SettingsHubAction["type"] = "account-list";
-	while (true) {
-		const action = await promptSettingsHub(hubFocus);
-		if (!action || action.type === "back") {
-			return current;
-		}
-		hubFocus = action.type;
-		if (action.type === "account-list") {
-			current = await configureDashboardDisplaySettings(current);
-			continue;
-		}
-		if (action.type === "summary-fields") {
-			current = await configureStatuslineSettings(current);
-			continue;
-		}
-		if (action.type === "behavior") {
-			const selected = await promptBehaviorSettings(current);
-			if (selected && !dashboardSettingsEqual(current, selected)) {
-				current = await persistDashboardSettingsSelection(
-					selected,
-					BEHAVIOR_PANEL_KEYS,
-					"behavior",
-				);
-			}
-			continue;
-		}
-		if (action.type === "theme") {
-			const selected = await promptThemeSettings(current);
-			if (selected && !dashboardSettingsEqual(current, selected)) {
-				current = await persistDashboardSettingsSelection(
-					selected,
-					THEME_PANEL_KEYS,
-					"theme",
-				);
-				applyUiThemeFromDashboardSettings(current);
-			}
-			continue;
-		}
-		if (action.type === "experimental") {
-			const selected = await promptExperimentalSettings(backendConfig);
-			if (selected && !backendSettingsEqual(backendConfig, selected)) {
-				backendConfig = await persistBackendConfigSelection(
-					selected,
-					"experimental",
-				);
-			} else if (selected) {
-				backendConfig = selected;
-			}
-			continue;
-		}
-		if (action.type === "backend") {
-			backendConfig = await configureBackendSettings(backendConfig);
-		}
-	}
+	return configureUnifiedSettingsEntry(initialSettings, {
+		configureUnifiedSettingsController,
+		cloneDashboardSettings,
+		cloneBackendPluginConfig,
+		loadDashboardDisplaySettings,
+		loadPluginConfig,
+		applyUiThemeFromDashboardSettings,
+		promptSettingsHub: async (focus) =>
+			promptSettingsHub(focus as SettingsHubActionType),
+		configureDashboardDisplaySettings,
+		configureStatuslineSettings,
+		promptBehaviorSettings,
+		promptThemeSettings,
+		dashboardSettingsEqual,
+		persistDashboardSettingsSelection,
+		promptExperimentalSettings,
+		backendSettingsEqual,
+		persistBackendConfigSelection,
+		configureBackendSettings,
+		BEHAVIOR_PANEL_KEYS,
+		THEME_PANEL_KEYS,
+	});
 }
 
 export {

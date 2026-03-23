@@ -1,6 +1,6 @@
 # Settings Reference
 
-Reference for dashboard and backend settings available from `codex auth login` -> `Settings`.
+Reference for dashboard display settings and backend `pluginConfig` values available from `codex auth login` -> `Settings`.
 
 ---
 
@@ -21,7 +21,7 @@ When `CODEX_MULTI_AUTH_DIR` is set, this root moves accordingly.
 
 ## Account List View
 
-Controls account-row display and sorting behavior:
+Controls account-row display and sort behavior.
 
 - `menuShowStatusBadge`
 - `menuShowCurrentBadge`
@@ -37,44 +37,67 @@ Controls account-row display and sorting behavior:
 - `menuSortQuickSwitchVisibleRow`
 - `menuLayoutMode`
 
+| Key | Default | Effect |
+| --- | --- | --- |
+| `menuShowStatusBadge` | `true` | Show ready/cooldown/disabled status badges on account rows |
+| `menuShowCurrentBadge` | `true` | Mark the current account row |
+| `menuShowLastUsed` | `true` | Include last-used text in row details |
+| `menuShowQuotaSummary` | `true` | Show compact quota usage summaries |
+| `menuShowQuotaCooldown` | `true` | Show quota reset/cooldown details |
+| `menuShowFetchStatus` | `true` | Show quota fetch/probe status text |
+| `menuShowDetailsForUnselectedRows` | `false` | Expand details for unselected rows |
+| `menuHighlightCurrentRow` | `true` | Emphasize the current account row |
+| `menuSortEnabled` | `true` | Enable menu sorting |
+| `menuSortMode` | `ready-first` | Sort rows by readiness/risk heuristic |
+| `menuSortPinCurrent` | `false` | Keep the current account pinned while sorting |
+| `menuSortQuickSwitchVisibleRow` | `true` | Keep quick-switch numbering aligned to visible sorted rows |
+| `menuLayoutMode` | `compact-details` | Choose compact or expanded row layout |
+
 ## Summary Line
 
-Controls detail-line fields and order:
+Controls the fields shown in the per-account summary line.
 
 - `menuStatuslineFields`
 - `last-used`
 - `limits`
 - `status`
 
+| Key | Default | Effect |
+| --- | --- | --- |
+| `menuStatuslineFields` | `last-used, limits, status` | Controls which summary fields appear and in what order |
+
 ## Menu Behavior
 
-Controls result-screen and fetch behavior:
+Controls result-screen return behavior and menu quota refresh behavior.
 
-- `actionAutoReturnMs`
-- `actionPauseOnKey`
-- `menuAutoFetchLimits`
-- `menuShowFetchStatus`
-- `menuQuotaTtlMs`
+| Key | Default | Effect |
+| --- | --- | --- |
+| `actionAutoReturnMs` | `2000` | Delay before returning from action/result screens |
+| `actionPauseOnKey` | `true` | Pause on keypress before auto-return completes |
+| `menuAutoFetchLimits` | `true` | Refresh quota snapshots automatically in the menu |
+| `menuQuotaTtlMs` | `300000` | Reuse cached quota data before refetching |
 
 ## Color Theme
 
-Controls display style:
+Controls display style.
 
-- `uiThemePreset`
-- `uiAccentColor`
-- `menuFocusStyle`
+| Key | Default | Effect |
+| --- | --- | --- |
+| `uiThemePreset` | `green` | Overall theme preset |
+| `uiAccentColor` | `green` | Accent color for TUI elements |
+| `menuFocusStyle` | `row-invert` | Focus/highlight style in selection menus |
 
 ---
 
 ## Experimental
 
-Experimental currently hosts:
+Experimental settings currently cover:
 
-- one-way sync preview and apply into `oc-chatgpt-multi-auth`
+- one-way sync preview/apply into `oc-chatgpt-multi-auth`
 - named local pool backup export with filename prompt
 - refresh guard controls (`proactiveRefreshGuardian`, `proactiveRefreshIntervalMs`)
 
-Experimental TUI shortcuts:
+Experimental shortcuts:
 
 - `1` sync preview
 - `2` named backup export
@@ -103,53 +126,55 @@ Named backup behavior:
 
 ### Session & Sync
 
-Examples:
-
-- `liveAccountSync`
-- `liveAccountSyncDebounceMs`
-- `liveAccountSyncPollMs`
-- `sessionAffinity`
-- `sessionAffinityTtlMs`
-- `sessionAffinityMaxEntries`
-- `perProjectAccounts`
+| Key | Default | Effect |
+| --- | --- | --- |
+| `liveAccountSync` | `true` | Watch account storage for external changes |
+| `liveAccountSyncDebounceMs` | `250` | Debounce live-sync reloads |
+| `liveAccountSyncPollMs` | `2000` | Poll interval for live-sync fallback |
+| `sessionAffinity` | `true` | Keep sessions sticky to a recent account |
+| `sessionAffinityTtlMs` | `1200000` | Session affinity retention window |
+| `sessionAffinityMaxEntries` | `512` | Maximum affinity cache entries |
+| `perProjectAccounts` | `true` | Scope account pools per project when CLI sync is off |
 
 ### Rotation & Quota
 
-Examples:
-
-- `preemptiveQuotaEnabled`
-- `preemptiveQuotaRemainingPercent5h`
-- `preemptiveQuotaRemainingPercent7d`
-- `preemptiveQuotaMaxDeferralMs`
-- `retryAllAccountsRateLimited`
-- `retryAllAccountsMaxWaitMs`
-- `retryAllAccountsMaxRetries`
+| Key | Default | Effect |
+| --- | --- | --- |
+| `preemptiveQuotaEnabled` | `true` | Defer requests before remaining quota is critically low |
+| `preemptiveQuotaRemainingPercent5h` | `5` | 5-hour quota threshold |
+| `preemptiveQuotaRemainingPercent7d` | `5` | 7-day quota threshold |
+| `preemptiveQuotaMaxDeferralMs` | `7200000` | Maximum quota-based deferral window |
+| `retryAllAccountsRateLimited` | `true` | Retry across the whole pool when all accounts are rate-limited |
+| `retryAllAccountsMaxWaitMs` | `0` | Maximum wait budget for all-accounts-rate-limited retries |
+| `retryAllAccountsMaxRetries` | `Infinity` | Maximum retry attempts for all-accounts-rate-limited loops |
 
 ### Refresh & Recovery
 
-Examples:
-
-- `tokenRefreshSkewMs`
-- `proactiveRefreshBufferMs`
-- `storageBackupEnabled`
-- `sessionRecovery`
-- `autoResume`
+| Key | Default | Effect |
+| --- | --- | --- |
+| `tokenRefreshSkewMs` | `60000` | Refresh tokens before expiry |
+| `proactiveRefreshGuardian` | `true` | Run background proactive refresh checks |
+| `proactiveRefreshIntervalMs` | `60000` | Refresh guardian polling interval |
+| `proactiveRefreshBufferMs` | `300000` | Refresh-before-expiry buffer |
+| `storageBackupEnabled` | `true` | Write rotating account-storage backups |
+| `sessionRecovery` | `true` | Restore recoverable conversation state |
+| `autoResume` | `true` | Automatically resume recoverable sessions |
 
 ### Performance & Timeouts
 
-Examples:
-
-- `parallelProbing`
-- `parallelProbingMaxConcurrency`
-- `fastSession`
-- `fastSessionStrategy`
-- `fastSessionMaxInputItems`
-- `emptyResponseMaxRetries`
-- `emptyResponseRetryDelayMs`
-- `fetchTimeoutMs`
-- `streamStallTimeoutMs`
-- `networkErrorCooldownMs`
-- `serverErrorCooldownMs`
+| Key | Default | Effect |
+| --- | --- | --- |
+| `parallelProbing` | `false` | Probe multiple accounts concurrently |
+| `parallelProbingMaxConcurrency` | `2` | Concurrency cap for parallel probing |
+| `fastSession` | `false` | Enable fast-session request trimming |
+| `fastSessionStrategy` | `hybrid` | Choose fast-session trimming strategy |
+| `fastSessionMaxInputItems` | `30` | Cap history items in fast-session mode |
+| `emptyResponseMaxRetries` | `2` | Retries for empty/invalid responses |
+| `emptyResponseRetryDelayMs` | `1000` | Delay between empty-response retries |
+| `fetchTimeoutMs` | `60000` | Request timeout |
+| `streamStallTimeoutMs` | `45000` | Stream stall timeout |
+| `networkErrorCooldownMs` | `6000` | Cooldown after network failures |
+| `serverErrorCooldownMs` | `4000` | Cooldown after server failures |
 
 ---
 
@@ -165,8 +190,6 @@ Common operator overrides:
 - `CODEX_TUI_GLYPHS`
 - `CODEX_AUTH_FETCH_TIMEOUT_MS`
 - `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS`
-
----
 
 ## Advanced and Internal Overrides
 

@@ -2,7 +2,12 @@ import { logDebug, logWarn } from "../logger.js";
 import { TOOL_REMAP_MESSAGE } from "../prompts/codex.js";
 import { CODEX_HOST_BRIDGE } from "../prompts/codex-host-bridge.js";
 import { getHostCodexPrompt } from "../prompts/host-codex-prompt.js";
-import { getNormalizedModel } from "./helpers/model-map.js";
+import {
+	getModelCapabilities,
+	getModelProfile,
+	resolveNormalizedModel,
+	type ModelReasoningEffort,
+} from "./helpers/model-map.js";
 import {
 	filterHostSystemPromptsWithCachedPrompt,
 	normalizeOrphanedToolOutputs,
@@ -14,12 +19,17 @@ import type {
 	InputItem,
 	ReasoningConfig,
 	RequestBody,
+	RequestToolDefinition,
 	UserConfig,
 } from "../types.js";
 
 type CollaborationMode = "plan" | "default" | "unknown";
 type FastSessionStrategy = "hybrid" | "always";
 type SupportedReasoningSummary = "auto" | "concise" | "detailed";
+type ToolCapabilityRemovalCounts = {
+	toolSearch: number;
+	computerUse: number;
+};
 
 export interface TransformRequestBodyParams {
 	body: RequestBody;
@@ -29,6 +39,8 @@ export interface TransformRequestBodyParams {
 	fastSession?: boolean;
 	fastSessionStrategy?: FastSessionStrategy;
 	fastSessionMaxInputItems?: number;
+	deferFastSessionInputTrimming?: boolean;
+	allowBackgroundResponses?: boolean;
 }
 
 const PLAN_MODE_ONLY_TOOLS = new Set(["request_user_input"]);
@@ -41,117 +53,14 @@ export {
 /**
  * Normalize model name to Codex-supported variants
  *
- * Uses explicit model map for known models, with fallback pattern matching
- * for unknown/custom model names.
+ * Uses the shared model catalog so request routing, prompt selection, and CLI
+ * diagnostics all agree on the same effective model.
  *
  * @param model - Original model name (e.g., "gpt-5-codex-low", "openai/gpt-5-codex")
- * @returns Normalized model name (e.g., "gpt-5-codex", "gpt-5.1-codex-max")
+ * @returns Normalized model name (e.g., "gpt-5-codex", "gpt-5.4", "gpt-5.1-codex-max")
  */
 export function normalizeModel(model: string | undefined): string {
-	if (!model) return "gpt-5.1";
-
-	// Strip provider prefix if present (e.g., "openai/gpt-5-codex" → "gpt-5-codex")
-	const modelId = model.includes("/") ? model.split("/").pop() ?? model : model;
-
-	// Try explicit model map first (handles all known model variants)
-	const mappedModel = getNormalizedModel(modelId);
-	if (mappedModel) {
-		return mappedModel;
-	}
-
-	// Fallback: Pattern-based matching for unknown/custom model names
-	// This preserves backwards compatibility with old verbose names
-	// like "GPT 5 Codex Low (ChatGPT Subscription)"
-	const normalized = modelId.toLowerCase();
-
-	// Priority order for pattern matching (most specific first):
-	// 1. GPT-5.3 Codex Spark (legacy alias -> canonical gpt-5-codex)
-	if (
-		normalized.includes("gpt-5.3-codex-spark") ||
-		normalized.includes("gpt 5.3 codex spark")
-	) {
-		return "gpt-5-codex";
-	}
-
-	// 2. GPT-5.3 Codex (legacy alias -> canonical gpt-5-codex)
-	if (
-		normalized.includes("gpt-5.3-codex") ||
-		normalized.includes("gpt 5.3 codex")
-	) {
-		return "gpt-5-codex";
-	}
-
-	// 3. GPT-5.2 Codex (legacy alias -> canonical gpt-5-codex)
-	if (
-		normalized.includes("gpt-5.2-codex") ||
-		normalized.includes("gpt 5.2 codex")
-	) {
-		return "gpt-5-codex";
-	}
-
-	// 4. GPT-5.2 (general purpose)
-	if (normalized.includes("gpt-5.2") || normalized.includes("gpt 5.2")) {
-		return "gpt-5.2";
-	}
-
-	// 5. GPT-5.1 Codex Max
-	if (
-		normalized.includes("gpt-5.1-codex-max") ||
-		normalized.includes("gpt 5.1 codex max")
-	) {
-		return "gpt-5.1-codex-max";
-	}
-
-	// 6. GPT-5.1 Codex Mini
-	if (
-		normalized.includes("gpt-5.1-codex-mini") ||
-		normalized.includes("gpt 5.1 codex mini")
-	) {
-		return "gpt-5.1-codex-mini";
-	}
-
-	// 7. Legacy Codex Mini
-	if (
-		normalized.includes("codex-mini-latest") ||
-		normalized.includes("gpt-5-codex-mini") ||
-		normalized.includes("gpt 5 codex mini")
-	) {
-		return "gpt-5.1-codex-mini";
-	}
-
-	// 8. GPT-5 Codex canonical + GPT-5.1 Codex legacy alias
-	if (
-		normalized.includes("gpt-5-codex") ||
-		normalized.includes("gpt 5 codex")
-	) {
-		return "gpt-5-codex";
-	}
-
-	// 9. GPT-5.1 Codex (legacy alias)
-	if (
-		normalized.includes("gpt-5.1-codex") ||
-		normalized.includes("gpt 5.1 codex")
-	) {
-		return "gpt-5-codex";
-	}
-
-	// 10. GPT-5.1 (general-purpose)
-	if (normalized.includes("gpt-5.1") || normalized.includes("gpt 5.1")) {
-		return "gpt-5.1";
-	}
-
-	// 11. GPT-5 Codex family (any other variant with "codex")
-	if (normalized.includes("codex")) {
-		return "gpt-5-codex";
-	}
-
-	// 12. GPT-5 family (any variant) - default to 5.1
-	if (normalized.includes("gpt-5") || normalized.includes("gpt 5")) {
-		return "gpt-5.1";
-	}
-
-	// Default fallback
-	return "gpt-5.1";
+	return resolveNormalizedModel(model);
 }
 
 /**
@@ -296,6 +205,18 @@ function resolveTextVerbosity(
 	);
 }
 
+function resolvePromptCacheRetention(
+	modelConfig: ConfigOptions,
+	body: RequestBody,
+): RequestBody["prompt_cache_retention"] {
+	const providerOpenAI = body.providerOptions?.openai;
+	return (
+		body.prompt_cache_retention ??
+		providerOpenAI?.promptCacheRetention ??
+		modelConfig.promptCacheRetention
+	);
+}
+
 function resolveInclude(modelConfig: ConfigOptions, body: RequestBody): string[] {
 	const providerOpenAI = body.providerOptions?.openai;
 	const base =
@@ -308,6 +229,30 @@ function resolveInclude(modelConfig: ConfigOptions, body: RequestBody): string[]
 		include.push("reasoning.encrypted_content");
 	}
 	return include;
+}
+
+function isBackgroundModeRequested(body: RequestBody): boolean {
+	return body.background === true;
+}
+
+function assertBackgroundModeCompatibility(
+	body: RequestBody,
+	allowBackgroundResponses: boolean,
+): boolean {
+	if (!isBackgroundModeRequested(body)) {
+		return false;
+	}
+	if (!allowBackgroundResponses) {
+		throw new Error(
+			"Responses background mode is disabled. Enable pluginConfig.backgroundResponses or CODEX_AUTH_BACKGROUND_RESPONSES=1 to opt in.",
+		);
+	}
+	if (body.store === false || body.providerOptions?.openai?.store === false) {
+		throw new Error(
+			"Responses background mode requires store=true and cannot be combined with stateless store=false routing.",
+		);
+	}
+	return true;
 }
 
 function parseCollaborationMode(value: string | undefined): CollaborationMode | undefined {
@@ -360,20 +305,16 @@ function detectCollaborationMode(body: RequestBody): CollaborationMode {
 	return "unknown";
 }
 
-function sanitizePlanOnlyTools(tools: unknown, mode: CollaborationMode): unknown {
+function sanitizePlanOnlyTools(
+	tools: RequestToolDefinition[] | undefined,
+	mode: CollaborationMode,
+): RequestToolDefinition[] | undefined {
 	if (!Array.isArray(tools) || mode === "plan") return tools;
 
 	let removed = 0;
-	const filtered = tools.filter((entry) => {
-		if (!entry || typeof entry !== "object") return true;
-		const functionDef = (entry as { function?: unknown }).function;
-		if (!functionDef || typeof functionDef !== "object") return true;
-		const name = (functionDef as { name?: unknown }).name;
-		if (typeof name !== "string") return true;
-		if (!PLAN_MODE_ONLY_TOOLS.has(name)) return true;
-		removed++;
-		return false;
-	});
+	const filtered = tools
+		.map((entry) => sanitizePlanOnlyToolEntry(entry, mode, () => removed++))
+		.filter((entry) => entry !== null);
 
 	if (removed > 0) {
 		logWarn(
@@ -381,6 +322,120 @@ function sanitizePlanOnlyTools(tools: unknown, mode: CollaborationMode): unknown
 		);
 	}
 	return filtered;
+}
+
+function sanitizePlanOnlyToolEntry(
+	entry: RequestToolDefinition,
+	mode: CollaborationMode,
+	onRemoved: () => void,
+): RequestToolDefinition | null {
+	if (!entry || typeof entry !== "object" || mode === "plan") {
+		return entry;
+	}
+
+	const record = entry as Record<string, unknown>;
+	if (record.type === "namespace" && Array.isArray(record.tools)) {
+		const namespaceTools = record.tools as RequestToolDefinition[];
+		const nestedTools = namespaceTools
+			.map((nestedTool) => sanitizePlanOnlyToolEntry(nestedTool, mode, onRemoved))
+			.filter((nestedTool) => nestedTool !== null);
+		const changed =
+			nestedTools.length !== namespaceTools.length ||
+			nestedTools.some((nestedTool, index) => nestedTool !== namespaceTools[index]);
+		if (nestedTools.length === 0) {
+			return null;
+		}
+		if (!changed) {
+			return entry;
+		}
+		return {
+			...record,
+			tools: nestedTools,
+		};
+	}
+
+	const functionDef = (entry as { function?: unknown }).function;
+	if (!functionDef || typeof functionDef !== "object") {
+		return entry;
+	}
+	const name = (functionDef as { name?: unknown }).name;
+	if (typeof name !== "string" || !PLAN_MODE_ONLY_TOOLS.has(name)) {
+		return entry;
+	}
+	onRemoved();
+	return null;
+}
+
+const COMPUTER_TOOL_TYPES = new Set(["computer", "computer_use_preview"]);
+
+function sanitizeModelIncompatibleTools(
+	tools: RequestToolDefinition[] | undefined,
+	model: string | undefined,
+): RequestToolDefinition[] | undefined {
+	if (!Array.isArray(tools)) return tools;
+
+	const capabilities = getModelCapabilities(model);
+	const removed: ToolCapabilityRemovalCounts = {
+		toolSearch: 0,
+		computerUse: 0,
+	};
+	const filtered = tools
+		.map((tool) => sanitizeModelIncompatibleToolEntry(tool, capabilities, removed))
+		.filter((tool) => tool !== null);
+
+	if (removed.toolSearch > 0) {
+		logWarn(
+			`Removed ${removed.toolSearch} tool_search definition(s) because ${model ?? "the selected model"} does not support tool search`,
+		);
+	}
+	if (removed.computerUse > 0) {
+		logWarn(
+			`Removed ${removed.computerUse} computer tool definition(s) because ${model ?? "the selected model"} does not support computer use`,
+		);
+	}
+
+	return filtered;
+}
+
+function sanitizeModelIncompatibleToolEntry(
+	tool: RequestToolDefinition,
+	capabilities: ReturnType<typeof getModelCapabilities>,
+	removed: ToolCapabilityRemovalCounts,
+): RequestToolDefinition | null {
+	if (!tool || typeof tool !== "object") {
+		return tool;
+	}
+
+	const record = tool as Record<string, unknown>;
+	const type = typeof record.type === "string" ? record.type : "";
+	if (type === "tool_search" && !capabilities.toolSearch) {
+		removed.toolSearch += 1;
+		return null;
+	}
+	if (COMPUTER_TOOL_TYPES.has(type) && !capabilities.computerUse) {
+		removed.computerUse += 1;
+		return null;
+	}
+	if (type === "namespace" && Array.isArray(record.tools)) {
+		const namespaceTools = record.tools as RequestToolDefinition[];
+		const nestedTools = namespaceTools
+			.map((nestedTool) => sanitizeModelIncompatibleToolEntry(nestedTool, capabilities, removed))
+			.filter((nestedTool) => nestedTool !== null);
+		const changed =
+			nestedTools.length !== namespaceTools.length ||
+			nestedTools.some((nestedTool, index) => nestedTool !== namespaceTools[index]);
+		if (nestedTools.length === 0) {
+			return null;
+		}
+		if (!changed) {
+			return tool;
+		}
+		return {
+			...record,
+			tools: nestedTools,
+		};
+	}
+	return tool;
 }
 
 /**
@@ -399,114 +454,15 @@ export function getReasoningConfig(
 	modelName: string | undefined,
 	userConfig: ConfigOptions = {},
 ): ReasoningConfig {
-	const normalizedName = modelName?.toLowerCase() ?? "";
-
-	// Canonical GPT-5 Codex (stable) defaults to high and does not support "none".
-	const isGpt5Codex =
-		normalizedName.includes("gpt-5-codex") ||
-		normalizedName.includes("gpt 5 codex");
-
-	// Legacy GPT-5.3 Codex alias behavior (supports xhigh, but not "none")
-	const isGpt53Codex =
-		normalizedName.includes("gpt-5.3-codex") ||
-		normalizedName.includes("gpt 5.3 codex");
-
-	// Legacy GPT-5.2 Codex alias behavior (supports xhigh, but not "none")
-	const isGpt52Codex =
-		normalizedName.includes("gpt-5.2-codex") ||
-		normalizedName.includes("gpt 5.2 codex");
-
-	// GPT-5.2 general purpose (not codex variant)
-	const isGpt52General =
-		(normalizedName.includes("gpt-5.2") || normalizedName.includes("gpt 5.2")) &&
-		!isGpt52Codex;
-	const isCodexMax =
-		normalizedName.includes("codex-max") ||
-		normalizedName.includes("codex max");
-	const isCodexMini =
-		normalizedName.includes("codex-mini") ||
-		normalizedName.includes("codex mini") ||
-		normalizedName.includes("codex_mini") ||
-		normalizedName.includes("codex-mini-latest");
-	const isCodex = normalizedName.includes("codex") && !isCodexMini;
-	const isLightweight =
-		!isCodexMini &&
-		(normalizedName.includes("nano") ||
-			normalizedName.includes("mini"));
-
-	// GPT-5.1 general purpose (not codex variants) - supports "none" per OpenAI API docs
-	const isGpt51General =
-		(
-			normalizedName.includes("gpt-5.1") ||
-			normalizedName.includes("gpt 5.1") ||
-			normalizedName === "gpt-5" ||
-			normalizedName.startsWith("gpt-5-")
-		) &&
-		!isCodex &&
-		!isGpt52General &&
-		!isCodexMax &&
-		!isCodexMini;
-
-	// GPT-5.2 general, legacy GPT-5.2/5.3 Codex aliases, and Codex Max support xhigh reasoning
-	const supportsXhigh =
-		isGpt52General || isGpt53Codex || isGpt52Codex || isCodexMax;
-
-	// GPT 5.1 general and GPT 5.2 general support "none" reasoning per:
-	// - OpenAI API docs: "gpt-5.1 defaults to none, supports: none, low, medium, high"
-	// - Codex CLI: ReasoningEffort enum includes None variant (codex-rs/protocol/src/openai_models.rs)
-	// - Codex CLI: docs/config.md lists "none" as valid for model_reasoning_effort
-	// - gpt-5.2 (being newer) also supports: none, low, medium, high, xhigh
-	// - Codex models (including GPT-5 Codex and legacy GPT-5.3/5.2 Codex aliases) do NOT support "none"
-	const supportsNone = isGpt52General || isGpt51General;
-
-	// Default based on model type (Codex CLI defaults + plugin opinionated tuning)
-	// Note: OpenAI docs say gpt-5.1 defaults to "none", but we default to "medium"
-	// for better coding assistance unless user explicitly requests "none".
-	// - Canonical GPT-5 Codex defaults to high in stable Codex.
-	// - Legacy GPT-5.3/5.2 Codex aliases default to xhigh for backward compatibility.
-	const defaultEffort: ReasoningConfig["effort"] = isCodexMini
-		? "medium"
-		: isGpt5Codex
-			? "high"
-			: isGpt53Codex || isGpt52Codex
-				? "xhigh"
-			: supportsXhigh
-			? "high"
-			: isLightweight
-				? "minimal"
-				: "medium";
-
-	// Get user-requested effort
-	let effort = userConfig.reasoningEffort || defaultEffort;
-
-	if (isCodexMini) {
-		if (effort === "minimal" || effort === "low" || effort === "none") {
-			effort = "medium";
-		}
-		if (effort === "xhigh") {
-			effort = "high";
-		}
-		if (effort !== "high" && effort !== "medium") {
-			effort = "medium";
-		}
-	}
-
-	// For models that don't support xhigh, downgrade to high
-	if (!supportsXhigh && effort === "xhigh") {
-		effort = "high";
-	}
-
-	// For models that don't support "none", upgrade to "low"
-	// (Codex models don't support "none" - only GPT-5.1 and GPT-5.2 general purpose do)
-	if (!supportsNone && effort === "none") {
-		effort = "low";
-	}
-
-	// Normalize "minimal" to "low" for Codex families
-		// Codex CLI presets are low/medium/high (or xhigh for Codex Max / GPT-5.3/5.2 Codex)
-	if (isCodex && effort === "minimal") {
-		effort = "low";
-	}
+	const profile = getModelProfile(modelName);
+	const defaultEffort = profile.defaultReasoningEffort;
+	const requestedEffort = userConfig.reasoningEffort ?? defaultEffort;
+	const effort = coerceReasoningEffort(
+		profile.normalizedModel,
+		requestedEffort,
+		profile.supportedReasoningEfforts,
+		defaultEffort,
+	);
 
 	const summary = sanitizeReasoningSummary(userConfig.reasoningSummary);
 
@@ -514,6 +470,48 @@ export function getReasoningConfig(
 		effort,
 		summary,
 	};
+}
+
+const REASONING_FALLBACKS: Record<
+	ModelReasoningEffort,
+	readonly ModelReasoningEffort[]
+> = {
+	none: ["none", "low", "minimal", "medium", "high", "xhigh"],
+	minimal: ["minimal", "low", "none", "medium", "high", "xhigh"],
+	low: ["low", "minimal", "none", "medium", "high", "xhigh"],
+	medium: ["medium", "low", "high", "minimal", "none", "xhigh"],
+	high: ["high", "medium", "xhigh", "low", "minimal", "none"],
+	xhigh: ["xhigh", "high", "medium", "low", "minimal", "none"],
+} as const;
+
+function coerceReasoningEffort(
+	modelName: string,
+	effort: ModelReasoningEffort,
+	supportedEfforts: readonly ModelReasoningEffort[],
+	defaultEffort: ModelReasoningEffort,
+): ReasoningConfig["effort"] {
+	if (supportedEfforts.includes(effort)) {
+		return effort;
+	}
+
+	const fallbackOrder = REASONING_FALLBACKS[effort] ?? [defaultEffort];
+	for (const candidate of fallbackOrder) {
+		if (supportedEfforts.includes(candidate)) {
+			logWarn("Coercing unsupported reasoning effort for model", {
+				model: modelName,
+				requestedEffort: effort,
+				effectiveEffort: candidate,
+			});
+			return candidate;
+		}
+	}
+
+	logWarn("Falling back to default reasoning effort for model", {
+		model: modelName,
+		requestedEffort: effort,
+		effectiveEffort: defaultEffort,
+	});
+	return defaultEffort;
 }
 
 function sanitizeReasoningSummary(
@@ -551,8 +549,10 @@ function sanitizeReasoningSummary(
  */
 export function filterInput(
 	input: InputItem[] | undefined,
+	options?: { stripIds?: boolean },
 ): InputItem[] | undefined {
 	if (!Array.isArray(input)) return input;
+	const stripIds = options?.stripIds ?? true;
 	const filtered: InputItem[] = [];
 	for (const item of input) {
 		if (!item || typeof item !== "object") {
@@ -563,7 +563,7 @@ export function filterInput(
 			continue;
 		}
 		// Strip IDs from all items (Codex API stateless mode).
-		if ("id" in item) {
+		if (stripIds && "id" in item) {
 			const { id: _omit, ...itemWithoutId } = item;
 			void _omit;
 			filtered.push(itemWithoutId as InputItem);
@@ -650,6 +650,15 @@ export function trimInputForFastSession(
 	return trimmed.slice(trimmed.length - safeMax);
 }
 
+export interface FastSessionInputTrimPlan {
+	shouldApply: boolean;
+	isTrivialTurn: boolean;
+	trim?: {
+		maxItems: number;
+		preferLatestUserOnly: boolean;
+	};
+}
+
 function isTrivialLatestPrompt(text: string): boolean {
 	const normalized = text.trim();
 	if (!normalized) return false;
@@ -706,6 +715,33 @@ function isComplexFastSessionRequest(
 	const recentUserTexts = userTexts.slice(-3);
 	if (recentUserTexts.some(isStructurallyComplexPrompt)) return true;
 	return false;
+}
+
+export function resolveFastSessionInputTrimPlan(
+	body: RequestBody,
+	fastSession: boolean,
+	fastSessionStrategy: FastSessionStrategy,
+	fastSessionMaxInputItems: number,
+): FastSessionInputTrimPlan {
+	const shouldApplyFastSessionTuning =
+		fastSession &&
+		(fastSessionStrategy === "always" ||
+			!isComplexFastSessionRequest(body, fastSessionMaxInputItems));
+	const latestUserText = getLatestUserText(body.input);
+	const isTrivialTurn = isTrivialLatestPrompt(latestUserText ?? "");
+	const shouldPreferLatestUserOnly =
+		shouldApplyFastSessionTuning && isTrivialTurn;
+
+	return {
+		shouldApply: shouldApplyFastSessionTuning,
+		isTrivialTurn,
+		trim: shouldApplyFastSessionTuning
+			? {
+					maxItems: fastSessionMaxInputItems,
+					preferLatestUserOnly: shouldPreferLatestUserOnly,
+				}
+			: undefined,
+	};
 }
 
 function getLatestUserText(input: InputItem[] | undefined): string | undefined {
@@ -820,7 +856,7 @@ export function addToolRemapMessage(
  * NOTE: Configuration follows Codex CLI patterns instead of host defaults:
  * - host may set textVerbosity="low" for gpt-5, but Codex CLI uses "medium"
  * - host may exclude gpt-5-codex from reasoning configuration
- * - This plugin uses store=false (stateless), requiring encrypted reasoning content
+ * - This plugin defaults to store=false (stateless), with an explicit opt-in for background mode
  *
  * @param body - Original request body
  * @param codexInstructions - Codex system instructions
@@ -840,6 +876,8 @@ export async function transformRequestBody(
 	fastSession?: boolean,
 	fastSessionStrategy?: FastSessionStrategy,
 	fastSessionMaxInputItems?: number,
+	deferFastSessionInputTrimming?: boolean,
+	allowBackgroundResponses?: boolean,
 ): Promise<RequestBody>;
 export async function transformRequestBody(
 	bodyOrParams: RequestBody | TransformRequestBodyParams,
@@ -849,6 +887,8 @@ export async function transformRequestBody(
 	fastSession = false,
 	fastSessionStrategy: FastSessionStrategy = "hybrid",
 	fastSessionMaxInputItems = 30,
+	deferFastSessionInputTrimming = false,
+	allowBackgroundResponses = false,
 ): Promise<RequestBody> {
 	const useNamedParams =
 		typeof codexInstructions === "undefined" &&
@@ -863,6 +903,8 @@ export async function transformRequestBody(
 	let resolvedFastSession: boolean;
 	let resolvedFastSessionStrategy: FastSessionStrategy;
 	let resolvedFastSessionMaxInputItems: number;
+	let resolvedDeferFastSessionInputTrimming: boolean;
+	let resolvedAllowBackgroundResponses: boolean;
 
 	if (useNamedParams) {
 		const namedParams = bodyOrParams as TransformRequestBodyParams;
@@ -873,6 +915,10 @@ export async function transformRequestBody(
 		resolvedFastSession = namedParams.fastSession ?? false;
 		resolvedFastSessionStrategy = namedParams.fastSessionStrategy ?? "hybrid";
 		resolvedFastSessionMaxInputItems = namedParams.fastSessionMaxInputItems ?? 30;
+		resolvedDeferFastSessionInputTrimming =
+			namedParams.deferFastSessionInputTrimming ?? false;
+		resolvedAllowBackgroundResponses =
+			namedParams.allowBackgroundResponses ?? false;
 	} else {
 		body = bodyOrParams as RequestBody;
 		resolvedCodexInstructions = codexInstructions;
@@ -881,6 +927,8 @@ export async function transformRequestBody(
 		resolvedFastSession = fastSession;
 		resolvedFastSessionStrategy = fastSessionStrategy;
 		resolvedFastSessionMaxInputItems = fastSessionMaxInputItems;
+		resolvedDeferFastSessionInputTrimming = deferFastSessionInputTrimming;
+		resolvedAllowBackgroundResponses = allowBackgroundResponses;
 	}
 
 	if (!body || typeof body !== "object") {
@@ -915,21 +963,27 @@ export async function transformRequestBody(
 	const reasoningModel = shouldUseNormalizedReasoningModel
 		? normalizedModel
 		: lookupModel;
+	const backgroundModeRequested = assertBackgroundModeCompatibility(
+		body,
+		resolvedAllowBackgroundResponses,
+	);
+	const fastSessionInputTrimPlan = resolveFastSessionInputTrimPlan(
+		body,
+		resolvedFastSession,
+		resolvedFastSessionStrategy,
+		resolvedFastSessionMaxInputItems,
+	);
 	const shouldApplyFastSessionTuning =
-		resolvedFastSession &&
-		(resolvedFastSessionStrategy === "always" ||
-			!isComplexFastSessionRequest(body, resolvedFastSessionMaxInputItems));
-	const latestUserText = getLatestUserText(body.input);
-	const isTrivialTurn = isTrivialLatestPrompt(latestUserText ?? "");
+		!backgroundModeRequested && fastSessionInputTrimPlan.shouldApply;
+	const isTrivialTurn = fastSessionInputTrimPlan.isTrivialTurn;
 	const shouldDisableToolsForTrivialTurn =
 		shouldApplyFastSessionTuning &&
 		isTrivialTurn;
-	const shouldPreferLatestUserOnly =
-		shouldApplyFastSessionTuning && isTrivialTurn;
 
 	// Codex required fields
-	// ChatGPT backend REQUIRES store=false (confirmed via testing)
-	body.store = false;
+	// ChatGPT backend normally requires store=false (confirmed via testing).
+	// Background mode is an explicit opt-in compatibility path that preserves stateful storage.
+	body.store = backgroundModeRequested ? true : false;
 	// Always set stream=true for API - response handling detects original intent
 	body.stream = true;
 
@@ -944,6 +998,10 @@ export async function transformRequestBody(
 	if (body.tools) {
 		body.tools = cleanupToolDefinitions(body.tools);
 		body.tools = sanitizePlanOnlyTools(body.tools, collaborationMode);
+		body.tools = sanitizeModelIncompatibleTools(body.tools, body.model);
+		if (Array.isArray(body.tools) && body.tools.length === 0) {
+			body.tools = undefined;
+		}
 	}
 
 	body.instructions = shouldApplyFastSessionTuning
@@ -957,10 +1015,11 @@ export async function transformRequestBody(
 	if (body.input && Array.isArray(body.input)) {
 		let inputItems: InputItem[] = body.input;
 
-			if (shouldApplyFastSessionTuning) {
+			if (shouldApplyFastSessionTuning && !resolvedDeferFastSessionInputTrimming) {
 				inputItems =
 						trimInputForFastSession(inputItems, resolvedFastSessionMaxInputItems, {
-							preferLatestUserOnly: shouldPreferLatestUserOnly,
+							preferLatestUserOnly:
+								fastSessionInputTrimPlan.trim?.preferLatestUserOnly ?? false,
 						}) ?? inputItems;
 			}
 
@@ -975,15 +1034,17 @@ export async function transformRequestBody(
 			);
 		}
 
-		inputItems = filterInput(inputItems) ?? inputItems;
+		inputItems = filterInput(inputItems, {
+			stripIds: !backgroundModeRequested,
+		}) ?? inputItems;
 		body.input = inputItems;
 
-		// istanbul ignore next -- filterInput always removes IDs; this is defensive debug code
+		// istanbul ignore next -- filterInput always removes IDs in stateless mode; this is defensive debug code
 		const remainingIds = (body.input || [])
 			.filter((item) => item.id)
 			.map((item) => item.id);
-		// istanbul ignore if -- filterInput always removes IDs; defensive debug warning
-		if (remainingIds.length > 0) {
+		// istanbul ignore if -- filterInput always removes IDs in stateless mode; background mode intentionally preserves them
+		if (remainingIds.length > 0 && !backgroundModeRequested) {
 			logWarn(
 				`WARNING: ${remainingIds.length} IDs still present after filtering:`,
 				remainingIds,
@@ -1023,10 +1084,16 @@ export async function transformRequestBody(
 
 	// Configure text verbosity (support user config)
 	// Default: "medium" (matches Codex CLI default for all GPT-5 models)
+	// Preserve any structured-output `text.format` contract from the host.
 	body.text = {
 		...body.text,
 		verbosity: resolveTextVerbosity(modelConfig, body),
 	};
+
+	const promptCacheRetention = resolvePromptCacheRetention(modelConfig, body);
+	if (promptCacheRetention !== undefined) {
+		body.prompt_cache_retention = promptCacheRetention;
+	}
 
 	if (shouldApplyFastSessionTuning) {
 		// In fast-session mode, prioritize speed by clamping to minimum reasoning + verbosity.
@@ -1048,7 +1115,11 @@ export async function transformRequestBody(
 	// Add include for encrypted reasoning content
 	// Default: ["reasoning.encrypted_content"] (required for stateless operation with store=false)
 	// This allows reasoning context to persist across turns without server-side storage
-	body.include = resolveInclude(modelConfig, body);
+	body.include = backgroundModeRequested
+		? body.include ??
+			body.providerOptions?.openai?.include ??
+			modelConfig.include
+		: resolveInclude(modelConfig, body);
 
 	// Remove unsupported parameters
 	body.max_output_tokens = undefined;

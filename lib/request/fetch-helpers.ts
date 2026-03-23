@@ -8,8 +8,17 @@ import { ProxyAgent } from "undici";
 import { queuedRefresh } from "../refresh-queue.js";
 import { logRequest, logError, logWarn } from "../logger.js";
 import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
-import { transformRequestBody, normalizeModel } from "./request-transformer.js";
-import { convertSseToJson, ensureContentType } from "./response-handler.js";
+import {
+	transformRequestBody,
+	normalizeModel,
+	resolveFastSessionInputTrimPlan,
+	type FastSessionInputTrimPlan,
+} from "./request-transformer.js";
+import {
+	attachResponseIdCapture,
+	convertSseToJson,
+	ensureContentType,
+} from "./response-handler.js";
 import type { UserConfig, RequestBody } from "../types.js";
 import { registerCleanup } from "../shutdown.js";
 import { CodexAuthError } from "../errors.js";
@@ -93,6 +102,12 @@ export interface ResolveUnsupportedCodexFallbackOptions {
 	fallbackOnUnsupportedCodexModel: boolean;
 	fallbackToGpt52OnUnsupportedGpt53: boolean;
 	customChain?: Record<string, string[]>;
+}
+
+export interface TransformRequestForCodexResult {
+	body: RequestBody;
+	updatedInit: RequestInit;
+	deferredFastSessionInputTrim?: FastSessionInputTrimPlan["trim"];
 }
 
 function canonicalizeModelName(model: string | undefined): string | undefined {
@@ -647,8 +662,10 @@ export async function transformRequestForCodex(
 		fastSession?: boolean;
 		fastSessionStrategy?: "hybrid" | "always";
 		fastSessionMaxInputItems?: number;
+		deferFastSessionInputTrimming?: boolean;
+		allowBackgroundResponses?: boolean;
 	},
-): Promise<{ body: RequestBody; updatedInit: RequestInit } | undefined> {
+): Promise<TransformRequestForCodexResult | undefined> {
 	const hasParsedBody =
 		parsedBody !== undefined &&
 		parsedBody !== null &&
@@ -666,6 +683,12 @@ export async function transformRequestForCodex(
 			body = JSON.parse(init.body) as RequestBody;
 		}
 		const originalModel = body.model;
+		const fastSessionInputTrimPlan = resolveFastSessionInputTrimPlan(
+			body,
+			options?.fastSession ?? false,
+			options?.fastSessionStrategy ?? "hybrid",
+			options?.fastSessionMaxInputItems ?? 30,
+		);
 
 		// Normalize model first to determine which instructions to fetch
 		// This ensures we get the correct model-specific prompt
@@ -696,6 +719,8 @@ export async function transformRequestForCodex(
 			options?.fastSession ?? false,
 			options?.fastSessionStrategy ?? "hybrid",
 			options?.fastSessionMaxInputItems ?? 30,
+			options?.deferFastSessionInputTrimming ?? false,
+			options?.allowBackgroundResponses ?? false,
 		);
 
 		// Log transformed request
@@ -713,11 +738,22 @@ export async function transformRequestForCodex(
 			body: transformedBody as unknown as Record<string, unknown>,
 		});
 
-			return {
+	return {
 				body: transformedBody,
 				updatedInit: { ...(init ?? {}), body: JSON.stringify(transformedBody) },
+				deferredFastSessionInputTrim:
+					options?.deferFastSessionInputTrimming === true &&
+					transformedBody.background !== true
+						? fastSessionInputTrimPlan.trim
+						: undefined,
 			};
 	} catch (e) {
+		if (
+			e instanceof Error &&
+			e.message.startsWith("Responses background mode")
+		) {
+			throw e;
+		}
 		logError(`${ERROR_MESSAGES.REQUEST_PARSE_ERROR}`, e);
 		return undefined;
 	}
@@ -841,7 +877,10 @@ export async function handleErrorResponse(
 export async function handleSuccessResponse(
     response: Response,
     isStreaming: boolean,
-    options?: { streamStallTimeoutMs?: number },
+    options?: {
+		onResponseId?: (responseId: string) => void;
+		streamStallTimeoutMs?: number;
+	},
 ): Promise<Response> {
     // Check for deprecation headers (RFC 8594)
     const deprecation = response.headers.get("Deprecation");
@@ -858,11 +897,7 @@ export async function handleSuccessResponse(
 	}
 
 	// For streaming requests (streamText), return stream as-is
-	return new Response(response.body, {
-		status: response.status,
-		statusText: response.statusText,
-		headers: responseHeaders,
-	});
+	return attachResponseIdCapture(response, responseHeaders, options?.onResponseId);
 }
 
 async function safeReadBody(response: Response): Promise<string> {
