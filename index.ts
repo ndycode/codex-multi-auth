@@ -213,6 +213,7 @@ import {
 import { runBrowserOAuthFlow } from "./lib/runtime/browser-oauth-flow.js";
 import { buildLoginMenuAccounts } from "./lib/runtime/login-menu-accounts.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
+import { applyRuntimePreemptiveQuotaSettings } from "./lib/runtime/preemptive-quota.js";
 import {
 	ensureLiveAccountSyncState,
 	ensureRefreshGuardianState,
@@ -557,19 +558,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			next.refreshGuardianCleanupRegistered;
 	};
 
-	const applyPreemptiveQuotaSettings = (
-		pluginConfig: ReturnType<typeof loadPluginConfig>,
-	): void => {
-		preemptiveQuotaScheduler.configure({
-			enabled: getPreemptiveQuotaEnabled(pluginConfig),
-			remainingPercentThresholdPrimary:
-				getPreemptiveQuotaRemainingPercent5h(pluginConfig),
-			remainingPercentThresholdSecondary:
-				getPreemptiveQuotaRemainingPercent7d(pluginConfig),
-			maxDeferralMs: getPreemptiveQuotaMaxDeferralMs(pluginConfig),
-		});
-	};
-
 	// Event handler for session recovery and account selection
 	const eventHandler = async (input: {
 		event: { type: string; properties?: unknown };
@@ -655,7 +643,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					sessionAffinityConfigKey = next.sessionAffinityConfigKey;
 				}
 				ensureRefreshGuardian(pluginConfig);
-				applyPreemptiveQuotaSettings(pluginConfig);
+				applyRuntimePreemptiveQuotaSettings(pluginConfig, {
+					configure: (options) => preemptiveQuotaScheduler.configure(options),
+					getPreemptiveQuotaEnabled,
+					getPreemptiveQuotaRemainingPercent5h,
+					getPreemptiveQuotaRemainingPercent7d,
+					getPreemptiveQuotaMaxDeferralMs,
+				});
 
 				// Only handle OAuth auth type, skip API key auth
 				if (auth.type !== "oauth") {
