@@ -1442,7 +1442,7 @@ describe("storage", () => {
 			}
 		});
 
-		it.each(["EBUSY", "EPERM"] as const)(
+		it.each(["EBUSY", "EPERM", "EAGAIN"] as const)(
 			"rethrows %s when export cannot read the current storage file",
 			async (code) => {
 				const lockedStoragePath = join(testWorkDir, `accounts-${code}.json`);
@@ -1491,7 +1491,7 @@ describe("storage", () => {
 			},
 		);
 
-		it.each(["EBUSY", "EPERM"] as const)(
+		it.each(["EBUSY", "EPERM", "EAGAIN"] as const)(
 			"does not write an export file when %s happens while reading another storage path during a transaction",
 			async (code) => {
 				const transactionStoragePath = join(
