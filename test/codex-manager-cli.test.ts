@@ -19,6 +19,7 @@ const loadQuotaCacheMock = vi.fn();
 const saveQuotaCacheMock = vi.fn();
 const loadPluginConfigMock = vi.fn();
 const savePluginConfigMock = vi.fn();
+const getPluginConfigExplainReportMock = vi.fn();
 const selectMock = vi.fn();
 const confirmMock = vi.fn(async () => true);
 const planOcChatgptSyncMock = vi.fn();
@@ -201,6 +202,7 @@ vi.mock("../lib/config.js", async () => {
 		...(actual as Record<string, unknown>),
 		loadPluginConfig: loadPluginConfigMock,
 		savePluginConfig: savePluginConfigMock,
+		getPluginConfigExplainReport: getPluginConfigExplainReportMock,
 	};
 });
 
@@ -700,6 +702,19 @@ describe("codex manager cli commands", () => {
 		});
 		loadPluginConfigMock.mockReturnValue({});
 		savePluginConfigMock.mockResolvedValue(undefined);
+		getPluginConfigExplainReportMock.mockReturnValue({
+			configPath: "/mock/settings.json",
+			storageKind: "unified",
+			entries: [
+				{
+					key: "codexMode",
+					value: true,
+					defaultValue: true,
+					source: "default",
+					envNames: ["CODEX_MODE"],
+				},
+			],
+		});
 		selectMock.mockResolvedValue(undefined);
 		getNamedBackupsMock.mockResolvedValue([]);
 		restoreTTYDescriptors();
@@ -747,6 +762,106 @@ describe("codex manager cli commands", () => {
 			"Storage: /mock/openai-codex-accounts.json",
 		);
 		expect(setStoragePathMock).toHaveBeenCalledWith(null);
+	});
+
+	it("prints config explain output in json mode", async () => {
+		getPluginConfigExplainReportMock.mockReturnValueOnce({
+			configPath: "/mock/settings.json",
+			storageKind: "unified",
+			entries: [
+				{
+					key: "retryAllAccountsMaxRetries",
+					value: "Infinity",
+					defaultValue: "Infinity",
+					source: "default",
+					envNames: [],
+				},
+			],
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"config",
+			"explain",
+			"--json",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining('"storageKind"'),
+		);
+		expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"entries"'));
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining('"key": "retryAllAccountsMaxRetries"'),
+		);
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining('"value": "Infinity"'),
+		);
+	});
+
+	it("prints config explain output in text mode", async () => {
+		getPluginConfigExplainReportMock.mockReturnValueOnce({
+			configPath: "/mock/settings.json",
+			storageKind: "unified",
+			entries: [
+				{ key: "codexMode", value: true, defaultValue: true, source: "default", envNames: ["CODEX_MODE"] },
+			],
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "config", "explain"]);
+
+		expect(exitCode).toBe(0);
+		expect(logSpy).toHaveBeenCalledWith("Config storage: unified");
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining("codexMode = true (default)"),
+		);
+	});
+
+	it("errors for unknown config explain args", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "config", "explain", "--bogus"]);
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith("Unknown option: --bogus");
+	});
+
+	it("returns an error when config explain report loading throws", async () => {
+		getPluginConfigExplainReportMock.mockImplementationOnce(() => {
+			throw new Error("busy");
+		});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "config", "explain"]);
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith("Failed to read config: busy");
+	});
+
+	it("errors when auth config is missing a subcommand", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "config"]);
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith("Unknown config command: (missing)");
+	});
+
+	it("errors for unknown config subcommands", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "config", "unknown"]);
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith("Unknown config command: unknown");
 	});
 
 	it("prints populated account status for auth status", async () => {
