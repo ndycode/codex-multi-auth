@@ -1441,10 +1441,13 @@ async function loadAccountsInternal(
 	}
 }
 
-async function loadAccountsForExport(options?: {
-	persistMigrations?: boolean;
-}): Promise<AccountStorageV3 | null> {
-	const persistMigrations = options?.persistMigrations ?? true;
+async function loadAccountsForExport(
+	mode: "locked" | "unlocked" = "locked",
+): Promise<AccountStorageV3 | null> {
+	// Export reuses this helper from both paths in `exportAccounts()`. Only the
+	// locked path may persist migrations; unlocked reads must remain side-effect
+	// free while another storage transaction holds the mutex for a different file.
+	const persistMigrations = mode === "locked";
 	const path = getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	const migratedLegacyStorage = await migrateLegacyProjectStorageIfNeeded(
@@ -1855,9 +1858,9 @@ export async function exportAccounts(
 		force,
 		currentStoragePath,
 		transactionState: getTransactionSnapshotState(),
-		readCurrentStorageUnlocked: () =>
-			loadAccountsForExport({ persistMigrations: false }),
-		readCurrentStorage: () => withStorageLock(() => loadAccountsForExport()),
+		readCurrentStorageUnlocked: () => loadAccountsForExport("unlocked"),
+		readCurrentStorage: () =>
+			withStorageLock(() => loadAccountsForExport("locked")),
 		exportAccountsToFile,
 		beforeCommit,
 		logInfo: (message, details) => {
