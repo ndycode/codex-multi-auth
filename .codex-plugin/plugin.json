@@ -1,0 +1,6 @@
+{
+  "name": "codex-multi-auth",
+  "version": "1.2.1",
+  "description": "Install and operate codex-multi-auth for the official @openai/codex CLI with multi-account OAuth rotation, switching, health checks, and recovery tools.",
+  "skills": "./skills/"
+}
