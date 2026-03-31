@@ -133,9 +133,11 @@ export class RefreshGuardian {
 						if (result.tokenResult?.type === "success") {
 							applyRefreshResult(account, result.tokenResult);
 							manager.clearAuthFailures(account);
+							manager.recordSuccess(account, "codex");
 							this.stats.refreshed += 1;
 						} else {
 							manager.markAccountCoolingDown(account, this.bufferMs, "network-error");
+							manager.recordFailure(account, "codex");
 							this.stats.failed += 1;
 							this.stats.networkFailed += 1;
 						}
@@ -143,6 +145,11 @@ export class RefreshGuardian {
 					case "failed": {
 						const cooldownReason = this.classifyFailureReason(result.tokenResult);
 						manager.markAccountCoolingDown(account, this.bufferMs, cooldownReason);
+						if (cooldownReason === "rate-limit") {
+							manager.recordRateLimit(account, "codex");
+						} else {
+							manager.recordFailure(account, "codex");
+						}
 						this.stats.failed += 1;
 						if (cooldownReason === "rate-limit") this.stats.rateLimited += 1;
 						else if (cooldownReason === "auth-failure") this.stats.authFailed += 1;
@@ -154,6 +161,7 @@ export class RefreshGuardian {
 						break;
 					case "no_refresh_token":
 						manager.markAccountCoolingDown(account, this.bufferMs, "auth-failure");
+						manager.recordFailure(account, "codex");
 						manager.setAccountEnabled(account.index, false);
 						this.stats.noRefreshToken += 1;
 						this.stats.failed += 1;

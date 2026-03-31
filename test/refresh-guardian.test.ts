@@ -28,6 +28,9 @@ function createManagerMock(accounts: ManagedAccount[]): AccountManager {
         accounts.find((account) => account.index === index) ?? null,
     ),
     clearAuthFailures: vi.fn(),
+    recordSuccess: vi.fn(),
+    recordFailure: vi.fn(),
+    recordRateLimit: vi.fn(),
     markAccountCoolingDown: vi.fn(),
     setAccountEnabled: vi.fn(),
     saveToDiskDebounced: vi.fn(),
@@ -160,8 +163,14 @@ describe("refresh-guardian", () => {
       manager.clearAuthFailures as ReturnType<typeof vi.fn>,
     ).toHaveBeenCalledWith(accountA);
     expect(
+      manager.recordSuccess as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(accountA, "codex");
+    expect(
       manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
     ).toHaveBeenCalledWith(accountB, 60_000, "auth-failure");
+    expect(
+      manager.recordFailure as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(accountB, "codex");
     expect(
       manager.saveToDiskDebounced as ReturnType<typeof vi.fn>,
     ).toHaveBeenCalledTimes(1);
@@ -353,6 +362,18 @@ describe("refresh-guardian", () => {
     expect(
       manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
     ).toHaveBeenNthCalledWith(4, accountE, 60_000, "auth-failure");
+    expect(
+      manager.recordFailure as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(accountB, "codex");
+    expect(
+      manager.recordRateLimit as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(accountC, "codex");
+    expect(
+      manager.recordFailure as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(accountD, "codex");
+    expect(
+      manager.recordFailure as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(accountE, "codex");
 
     const stats = guardian.getStats();
     expect(stats.runs).toBe(1);
@@ -396,6 +417,9 @@ describe("refresh-guardian", () => {
           liveSnapshot.find((account) => account.index === index) ?? null,
       ),
       clearAuthFailures: vi.fn(),
+      recordSuccess: vi.fn(),
+      recordFailure: vi.fn(),
+      recordRateLimit: vi.fn(),
       markAccountCoolingDown: vi.fn(),
       setAccountEnabled: vi.fn(),
       saveToDiskDebounced: vi.fn(),
@@ -513,6 +537,21 @@ describe("refresh-guardian", () => {
       manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
     ).toHaveBeenNthCalledWith(5, accountE, 60_000, "network-error");
     expect(
+      manager.recordFailure as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(1, accountA, "codex");
+    expect(
+      manager.recordFailure as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(2, accountB, "codex");
+    expect(
+      manager.recordFailure as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(3, accountC, "codex");
+    expect(
+      manager.recordFailure as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(4, accountD, "codex");
+    expect(
+      manager.recordFailure as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(5, accountE, "codex");
+    expect(
       manager.saveToDiskDebounced as ReturnType<typeof vi.fn>,
     ).toHaveBeenCalledTimes(1);
 
@@ -561,6 +600,9 @@ describe("refresh-guardian", () => {
         (index: number) => liveAfterRemoval[index] ?? null,
       ),
       clearAuthFailures: vi.fn(),
+      recordSuccess: vi.fn(),
+      recordFailure: vi.fn(),
+      recordRateLimit: vi.fn(),
       markAccountCoolingDown: vi.fn(),
       setAccountEnabled: vi.fn(),
       saveToDiskDebounced: vi.fn(),
@@ -614,6 +656,12 @@ describe("refresh-guardian", () => {
       expect.objectContaining({ refreshToken: originalB.refreshToken }),
       60_000,
       "rate-limit",
+    );
+    expect(
+      manager.recordRateLimit as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ refreshToken: originalB.refreshToken }),
+      "codex",
     );
   });
 });
