@@ -1,4 +1,5 @@
 import { getCircuitBreaker, type CircuitState } from "./circuit-breaker.js";
+import { getAccountIdentityKey } from "./storage/identity.js";
 
 export interface AccountHealth {
 	index: number;
@@ -36,7 +37,7 @@ export function getAccountHealth(
 	now = Date.now(),
 ): PluginHealth {
 	const accountHealths: AccountHealth[] = accounts.map((acc) => {
-		const circuitKey = `account:${acc.accountId ?? acc.index}`;
+		const circuitKey = getAccountIdentityKey(acc) ?? `index:${acc.index}`;
 		const circuit = getCircuitBreaker(circuitKey);
 
 		return {

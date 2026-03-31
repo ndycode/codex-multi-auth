@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { getAccountHealth, formatHealthReport } from "../lib/health.js";
 import { clearCircuitBreakers, getCircuitBreaker } from "../lib/circuit-breaker.js";
+import { getAccountIdentityKey } from "../lib/storage/identity.js";
 
 describe("Health check", () => {
 	beforeEach(() => {
@@ -68,7 +69,7 @@ describe("Health check", () => {
 		const accounts = [
 			{ index: 0, email: "a@test.com", accountId: "acc1", health: 100 },
 		];
-		const circuit = getCircuitBreaker("account:acc1");
+		const circuit = getCircuitBreaker(getAccountIdentityKey(accounts[0]!)!);
 		circuit.recordFailure();
 		circuit.recordFailure();
 		circuit.recordFailure();
@@ -109,7 +110,7 @@ describe("Health check", () => {
 		const accounts = [
 			{ index: 0, email: "a@test.com", accountId: "acc1", health: 100 },
 		];
-		const circuit = getCircuitBreaker("account:acc1");
+		const circuit = getCircuitBreaker(getAccountIdentityKey(accounts[0]!)!);
 		circuit.recordFailure();
 		circuit.recordFailure();
 		circuit.recordFailure();

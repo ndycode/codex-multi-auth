@@ -1945,7 +1945,9 @@ describe("AccountManager", () => {
       expect(score).toBe(100);
     });
 
-    it("recordSuccess closes the circuit breaker for the account", () => {
+    it("recordSuccess closes the circuit breaker after a half-open retry succeeds", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(0));
       const now = Date.now();
       const stored = {
         version: 3 as const,
@@ -1969,8 +1971,11 @@ describe("AccountManager", () => {
       manager.recordFailure(account, "codex");
       expect(breaker.getState()).toBe("open");
 
+      vi.advanceTimersByTime(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1);
+      expect(manager.consumeToken(account, "codex")).toBe(true);
       manager.recordSuccess(account, "codex");
       expect(breaker.getState()).toBe("closed");
+      vi.useRealTimers();
     });
 
     it("recordRateLimit updates health and drains token bucket", () => {
