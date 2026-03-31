@@ -1945,6 +1945,34 @@ describe("AccountManager", () => {
       expect(score).toBe(100);
     });
 
+    it("recordSuccess closes the circuit breaker for the account", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            email: "breaker@example.com",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+      const breaker = getCircuitBreaker(getAccountIdentityKey(account)!);
+
+      manager.recordFailure(account, "codex");
+      manager.recordFailure(account, "codex");
+      manager.recordFailure(account, "codex");
+      expect(breaker.getState()).toBe("open");
+
+      manager.recordSuccess(account, "codex");
+      expect(breaker.getState()).toBe("closed");
+    });
+
     it("recordRateLimit updates health and drains token bucket", () => {
       const now = Date.now();
       const stored = {
