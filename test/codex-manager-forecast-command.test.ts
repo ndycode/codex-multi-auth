@@ -36,6 +36,7 @@ function createDeps(
 	return {
 		setStoragePath: vi.fn(),
 		loadAccounts: vi.fn(async () => createStorage()),
+		saveAccounts: vi.fn(async () => undefined),
 		resolveActiveIndex: vi.fn(() => 0),
 		loadQuotaCache: vi.fn(async () => ({ byAccountId: {}, byEmail: {} })),
 		saveQuotaCache: vi.fn(async () => undefined),
@@ -137,6 +138,45 @@ describe("runForecastCommand", () => {
 		expect(result).toBe(0);
 		expect(deps.logInfo).toHaveBeenCalledWith(
 			expect.stringContaining('"command": "forecast"'),
+		);
+	});
+
+	it("persists refreshed probe tokens before forecasting live quota", async () => {
+		const storage = createStorage();
+		const deps = createDeps({
+			loadAccounts: vi.fn(async () => storage),
+			hasUsableAccessToken: vi.fn(() => false),
+			queuedRefresh: vi.fn(async () => ({
+				type: "success",
+				access: "access-forecast-updated",
+				refresh: "refresh-forecast-updated",
+				expires: 999_999,
+				idToken: "id-token-forecast-updated",
+			})),
+			extractAccountId: vi.fn(() => "account-id-updated"),
+		});
+
+		const result = await runForecastCommand(["--json", "--live"], deps);
+
+		expect(result).toBe(0);
+		expect(deps.saveAccounts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: [
+					expect.objectContaining({
+						refreshToken: "refresh-forecast-updated",
+						accessToken: "access-forecast-updated",
+						expiresAt: 999_999,
+						accountId: "account-id-updated",
+						accountIdSource: "token",
+					}),
+				],
+			}),
+		);
+		expect(deps.fetchCodexQuotaSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "account-id-updated",
+				accessToken: "access-forecast-updated",
+			}),
 		);
 	});
 

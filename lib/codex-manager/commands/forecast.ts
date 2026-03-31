@@ -1,4 +1,5 @@
 import type { DashboardDisplaySettings } from "../../dashboard-settings.js";
+import { extractAccountEmail, sanitizeEmail } from "../../accounts.js";
 import {
 	buildForecastExplanation,
 	type ForecastAccountResult,
@@ -29,6 +30,7 @@ type QuotaEmailFallbackState = ReadonlyMap<
 export interface ForecastCommandDeps {
 	setStoragePath: (path: string | null) => void;
 	loadAccounts: () => Promise<AccountStorageV3 | null>;
+	saveAccounts: (storage: AccountStorageV3) => Promise<void>;
 	loadDashboardDisplaySettings?: () => Promise<DashboardDisplaySettings>;
 	resolveActiveIndex: (storage: AccountStorageV3, family?: "codex") => number;
 	loadQuotaCache: () => Promise<QuotaCacheData | null>;
@@ -266,6 +268,7 @@ export async function runForecastCommand(
 	const refreshFailures = new Map<number, TokenFailure>();
 	const liveQuotaByIndex = new Map<number, CodexQuotaSnapshot>();
 	const probeErrors: string[] = [];
+	let storageChanged = false;
 
 	for (let i = 0; i < storage.accounts.length; i += 1) {
 		const account = storage.accounts[i];
@@ -287,9 +290,34 @@ export async function runForecastCommand(
 				});
 				continue;
 			}
+			const refreshedEmail = sanitizeEmail(
+				extractAccountEmail(refreshResult.access, refreshResult.idToken),
+			);
+			const refreshedAccountId = deps.extractAccountId(refreshResult.access);
+			const previousRefreshToken = account.refreshToken;
+			const previousAccessToken = account.accessToken;
+			const previousExpiresAt = account.expiresAt;
+			const previousEmail = account.email;
+			const previousAccountId = account.accountId;
+			const previousAccountIdSource = account.accountIdSource;
+			account.refreshToken = refreshResult.refresh;
+			account.accessToken = refreshResult.access;
+			account.expiresAt = refreshResult.expires;
+			if (refreshedEmail) account.email = refreshedEmail;
+			if (refreshedAccountId) {
+				account.accountId = refreshedAccountId;
+				account.accountIdSource = "token";
+			}
+			storageChanged =
+				storageChanged ||
+				previousRefreshToken !== account.refreshToken ||
+				previousAccessToken !== account.accessToken ||
+				previousExpiresAt !== account.expiresAt ||
+				previousEmail !== account.email ||
+				previousAccountId !== account.accountId ||
+				previousAccountIdSource !== account.accountIdSource;
 			probeAccessToken = refreshResult.access;
-			probeAccountId =
-				account.accountId ?? deps.extractAccountId(refreshResult.access);
+			probeAccountId = account.accountId ?? refreshedAccountId;
 		}
 
 		if (!probeAccessToken || !probeAccountId) {
@@ -326,6 +354,10 @@ export async function runForecastCommand(
 			);
 			probeErrors.push(`${deps.formatAccountLabel(account, i)}: ${message}`);
 		}
+	}
+
+	if (options.live && storageChanged) {
+		await deps.saveAccounts(storage);
 	}
 
 	const forecastInputs = storage.accounts.map((account, index) => ({

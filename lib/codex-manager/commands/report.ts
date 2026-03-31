@@ -1,6 +1,11 @@
 import { promises as fs } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { extractAccountId, formatAccountLabel } from "../../accounts.js";
+import {
+	extractAccountEmail,
+	extractAccountId,
+	formatAccountLabel,
+	sanitizeEmail,
+} from "../../accounts.js";
 import {
 	evaluateForecastAccounts,
 	type ForecastAccountResult,
@@ -47,6 +52,7 @@ export interface ReportCommandDeps {
 	setStoragePath: (path: string | null) => void;
 	getStoragePath: () => string;
 	loadAccounts: () => Promise<AccountStorageV3 | null>;
+	saveAccounts: (storage: AccountStorageV3) => Promise<void>;
 	resolveActiveIndex: (storage: AccountStorageV3, family?: "codex") => number;
 	queuedRefresh: (refreshToken: string) => Promise<TokenResult>;
 	fetchCodexQuotaSnapshot: (input: {
@@ -275,6 +281,7 @@ export async function runReportCommand(
 	const refreshFailures = new Map<number, TokenFailure>();
 	const liveQuotaByIndex = new Map<number, CodexQuotaSnapshot>();
 	const probeErrors: string[] = [];
+	let storageChanged = false;
 
 	if (storage && options.live) {
 		for (let i = 0; i < storage.accounts.length; i += 1) {
@@ -293,8 +300,35 @@ export async function runReportCommand(
 				continue;
 			}
 
-			const accountId =
+			const refreshedEmail = sanitizeEmail(
+				extractAccountEmail(refreshResult.access, refreshResult.idToken),
+			);
+			const refreshedAccountId =
 				account.accountId ?? extractAccountId(refreshResult.access);
+			const previousRefreshToken = account.refreshToken;
+			const previousAccessToken = account.accessToken;
+			const previousExpiresAt = account.expiresAt;
+			const previousEmail = account.email;
+			const previousAccountId = account.accountId;
+			const previousAccountIdSource = account.accountIdSource;
+			account.refreshToken = refreshResult.refresh;
+			account.accessToken = refreshResult.access;
+			account.expiresAt = refreshResult.expires;
+			if (refreshedEmail) account.email = refreshedEmail;
+			if (refreshedAccountId) {
+				account.accountId = refreshedAccountId;
+				account.accountIdSource = "token";
+			}
+			storageChanged =
+				storageChanged ||
+				previousRefreshToken !== account.refreshToken ||
+				previousAccessToken !== account.accessToken ||
+				previousExpiresAt !== account.expiresAt ||
+				previousEmail !== account.email ||
+				previousAccountId !== account.accountId ||
+				previousAccountIdSource !== account.accountIdSource;
+
+			const accountId = account.accountId ?? refreshedAccountId;
 			if (!accountId) {
 				probeErrors.push(
 					`${formatAccountLabel(account, i)}: missing accountId for live probe`,
@@ -317,6 +351,10 @@ export async function runReportCommand(
 				probeErrors.push(`${formatAccountLabel(account, i)}: ${message}`);
 			}
 		}
+	}
+
+	if (storage && options.live && storageChanged) {
+		await deps.saveAccounts(storage);
 	}
 
 	const forecastResults = storage

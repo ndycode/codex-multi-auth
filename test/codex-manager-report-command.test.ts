@@ -33,6 +33,7 @@ function createDeps(
 		setStoragePath: vi.fn(),
 		getStoragePath: vi.fn(() => "/mock/openai-codex-accounts.json"),
 		loadAccounts: vi.fn(async () => createStorage()),
+		saveAccounts: vi.fn(async () => undefined),
 		resolveActiveIndex: vi.fn(() => 0),
 		queuedRefresh: vi.fn(async () => ({
 			type: "success",
@@ -189,6 +190,54 @@ describe("runReportCommand", () => {
 			"token expired",
 		);
 		expect(jsonOutput.forecast.accounts[3]?.liveQuota?.planType).toBe("pro");
+	});
+
+	it("persists refreshed probe tokens before report live probes", async () => {
+		const storage = createStorage([
+			{
+				email: "one@example.com",
+				accountId: "acct-report",
+				refreshToken: "refresh-token-1",
+				accessToken: "access-token-1",
+				expiresAt: 10,
+				addedAt: 1,
+				lastUsed: 1,
+				enabled: true,
+			},
+		]);
+		const deps = createDeps({
+			loadAccounts: vi.fn(async () => storage),
+			queuedRefresh: vi.fn(async () => ({
+				type: "success",
+				access: "access-token-updated",
+				refresh: "refresh-token-updated",
+				expires: 500,
+				idToken: "id-token-updated",
+			})),
+		});
+
+		const result = await runReportCommand(["--live", "--json"], deps);
+
+		expect(result).toBe(0);
+		expect(deps.saveAccounts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: [
+					expect.objectContaining({
+						refreshToken: "refresh-token-updated",
+						accessToken: "access-token-updated",
+						expiresAt: 500,
+						accountId: "acct-report",
+						accountIdSource: "token",
+					}),
+				],
+			}),
+		);
+		expect(deps.fetchCodexQuotaSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "acct-report",
+				accessToken: "access-token-updated",
+			}),
+		);
 	});
 
 	it("prints a human-readable report and announces the output path", async () => {
