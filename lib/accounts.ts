@@ -496,25 +496,6 @@ export class AccountManager {
 		const count = this.accounts.length;
 		if (count === 0) return null;
 
-		const currentIndex = this.currentAccountIndexByFamily[family];
-		if (currentIndex >= 0 && currentIndex < count) {
-			const currentAccount = this.accounts[currentIndex];
-			if (currentAccount) {
-				if (currentAccount.enabled === false) {
-					// Fall through to hybrid selection.
-				} else {
-				clearExpiredRateLimits(currentAccount);
-				if (
-					!isRateLimitedForFamily(currentAccount, family, model) &&
-					!this.isAccountCoolingDown(currentAccount)
-				) {
-					currentAccount.lastUsed = nowMs();
-					return currentAccount;
-				}
-				}
-			}
-		}
-
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
 		const tokenTracker = getTokenTracker();

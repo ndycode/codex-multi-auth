@@ -614,7 +614,7 @@ describe("AccountManager", () => {
     expect(gpt51Second?.refreshToken).toBe("token-2");
   });
 
-  it("hybrid selection prefers active index when available", () => {
+  it("hybrid selection does not stick to the active index when another account scores better", () => {
     const now = Date.now();
     const stored = {
       version: 3 as const,
@@ -628,10 +628,11 @@ describe("AccountManager", () => {
 
     const manager = new AccountManager(undefined, stored as any);
     
-    // Even though token-1 has better freshness score, token-2 is active and available
+    // token-1 has a materially better freshness score, so hybrid scoring should
+    // beat the current-account sticky preference.
     const selected = manager.getCurrentOrNextForFamilyHybrid("codex");
-    expect(selected?.refreshToken).toBe("token-2");
-    expect(selected?.index).toBe(1);
+    expect(selected?.refreshToken).toBe("token-1");
+    expect(selected?.index).toBe(0);
   });
 
   describe("removeAccount", () => {
@@ -2060,7 +2061,7 @@ describe("AccountManager", () => {
       expect(selected?.index).toBe(1);
     });
 
-    it("updates cursor and family index after hybrid selection", () => {
+    it("re-scores on the next call instead of sticking to the prior hybrid winner", () => {
       const now = Date.now();
       const stored = {
         version: 3 as const,
@@ -2082,7 +2083,8 @@ describe("AccountManager", () => {
       expect(selected).not.toBeNull();
       
       const secondCall = manager.getCurrentOrNextForFamilyHybrid("codex");
-      expect(secondCall?.index).toBe(selected?.index);
+      expect(secondCall?.index).toBe(1);
+      expect(secondCall?.index).not.toBe(selected?.index);
     });
 
     it("falls back to least-recently-used when all accounts are rate-limited", () => {
