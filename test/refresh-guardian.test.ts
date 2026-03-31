@@ -242,6 +242,9 @@ describe("refresh-guardian", () => {
           [liveB, liveA].find((account) => account.index === index) ?? null,
       ),
       clearAuthFailures: vi.fn(),
+      recordSuccess: vi.fn(),
+      recordFailure: vi.fn(),
+      recordRateLimit: vi.fn(),
       markAccountCoolingDown: vi.fn(),
       saveToDiskDebounced: vi.fn(),
     } as unknown as AccountManager;
@@ -279,6 +282,9 @@ describe("refresh-guardian", () => {
     expect(
       manager.clearAuthFailures as ReturnType<typeof vi.fn>,
     ).toHaveBeenCalledWith(liveB);
+    expect(
+      manager.recordSuccess as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(liveB, "codex");
   });
 
   it("classifies failure reasons and handles no-op branches", async () => {
