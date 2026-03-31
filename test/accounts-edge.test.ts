@@ -154,12 +154,14 @@ describe("accounts edge branches", () => {
           email: "match@example.com",
           accessToken: "refreshed-access",
           expiresAt: now + 300_000,
+          refreshToken: "refreshed-refresh",
           accountId: "account-from-cache",
         },
         {
           email: "expired@example.com",
           accessToken: "expired-access",
           expiresAt: now - 1,
+          refreshToken: "expired-refresh-updated",
           accountId: "expired-id",
         },
         {
@@ -180,12 +182,15 @@ describe("accounts edge branches", () => {
     const snapshot = manager.getAccountsSnapshot();
     const updated = snapshot[0];
     expect(updated?.access).toBe("refreshed-access");
+    expect(updated?.refreshToken).toBe("refreshed-refresh");
     expect(updated?.accountId).toBe("account-from-cache");
     expect(updated?.accountIdSource).toBe("token");
 
     const expired = snapshot[1];
     expect(expired?.access).toBe("existing-access");
-    expect(expired?.accountId).toBeUndefined();
+    expect(expired?.refreshToken).toBe("expired-refresh-updated");
+    expect(expired?.accountId).toBe("expired-id");
+    expect(expired?.accountIdSource).toBe("token");
   });
 
   it("returns early when Codex CLI state has no usable cache entries", async () => {
