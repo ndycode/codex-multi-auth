@@ -1903,6 +1903,70 @@ describe("AccountManager", () => {
       expect(score).toBe(100);
     });
 
+    it("recordSuccess clears stale auth failure state and persists the healed account", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            addedAt: now,
+            lastUsed: now,
+            consecutiveAuthFailures: 2,
+            coolingDownUntil: now - 1000,
+            cooldownReason: "network-error" as const,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+      account.consecutiveAuthFailures = 2;
+      const saveSpy = vi
+        .spyOn(manager, "saveToDiskDebounced")
+        .mockImplementation(() => {});
+
+      manager.recordSuccess(account, "codex", "gpt-5.1");
+
+      expect(account.consecutiveAuthFailures).toBe(0);
+      expect(account.coolingDownUntil).toBeUndefined();
+      expect(account.cooldownReason).toBeUndefined();
+      expect(saveSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("recordSuccess does not clear an active cooldown from a newer concurrent failure", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            addedAt: now,
+            lastUsed: now,
+            consecutiveAuthFailures: 2,
+            coolingDownUntil: now + 60_000,
+            cooldownReason: "auth-failure" as const,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+      account.consecutiveAuthFailures = 2;
+      const saveSpy = vi
+        .spyOn(manager, "saveToDiskDebounced")
+        .mockImplementation(() => {});
+
+      manager.recordSuccess(account, "codex", "gpt-5.1");
+
+      expect(account.consecutiveAuthFailures).toBe(2);
+      expect(account.coolingDownUntil).toBe(now + 60_000);
+      expect(account.cooldownReason).toBe("auth-failure");
+      expect(saveSpy).not.toHaveBeenCalled();
+    });
+
     it("recordRateLimit updates health and drains token bucket", () => {
       const now = Date.now();
       const stored = {
