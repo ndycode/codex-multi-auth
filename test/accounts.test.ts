@@ -406,6 +406,62 @@ describe("AccountManager", () => {
     expect(account?.rateLimitResetTimes?.codex).toBeUndefined();
   });
 
+  it("prefers accounts with fresh access tokens in availability checks", () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        {
+          refreshToken: "token-stale",
+          accessToken: "access-stale",
+          expiresAt: now + 60_000,
+          addedAt: now,
+          lastUsed: now,
+        },
+        {
+          refreshToken: "token-fresh",
+          accessToken: "access-fresh",
+          expiresAt: now + 10 * 60_000,
+          addedAt: now,
+          lastUsed: now,
+        },
+      ],
+    };
+    const manager = new AccountManager(undefined, stored);
+
+    expect(manager.isAccountAvailableForFamily(0, "codex")).toBe(false);
+    expect(manager.isAccountAvailableForFamily(1, "codex")).toBe(true);
+  });
+
+  it("keeps stale accounts available when the whole pool is stale", () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        {
+          refreshToken: "token-stale-1",
+          accessToken: "access-stale-1",
+          expiresAt: now + 60_000,
+          addedAt: now,
+          lastUsed: now,
+        },
+        {
+          refreshToken: "token-stale-2",
+          accessToken: "access-stale-2",
+          expiresAt: now + 120_000,
+          addedAt: now,
+          lastUsed: now,
+        },
+      ],
+    };
+    const manager = new AccountManager(undefined, stored);
+
+    expect(manager.isAccountAvailableForFamily(0, "codex")).toBe(true);
+    expect(manager.isAccountAvailableForFamily(1, "codex")).toBe(true);
+  });
+
   it("rotates when the active account is rate-limited", () => {
     const now = Date.now();
     const stored = {
@@ -612,6 +668,36 @@ describe("AccountManager", () => {
     expect(gpt51First?.refreshToken).toBe("token-1");
     expect(codexSecond?.refreshToken).toBe("token-2");
     expect(gpt51Second?.refreshToken).toBe("token-2");
+  });
+
+  it("skips a stale active account when a fresher account is available", () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      activeIndexByFamily: { codex: 0 },
+      accounts: [
+        {
+          refreshToken: "token-stale",
+          accessToken: "access-stale",
+          expiresAt: now + 60_000,
+          addedAt: now,
+          lastUsed: now,
+        },
+        {
+          refreshToken: "token-fresh",
+          accessToken: "access-fresh",
+          expiresAt: now + 10 * 60_000,
+          addedAt: now,
+          lastUsed: now - 5_000,
+        },
+      ],
+    };
+
+    const manager = new AccountManager(undefined, stored as never);
+    const selected = manager.getCurrentOrNextForFamily("codex");
+
+    expect(selected?.refreshToken).toBe("token-fresh");
   });
 
   it("hybrid selection prefers active index when available", () => {
@@ -2083,6 +2169,37 @@ describe("AccountManager", () => {
       
       const secondCall = manager.getCurrentOrNextForFamilyHybrid("codex");
       expect(secondCall?.index).toBe(selected?.index);
+    });
+
+    it("prefers a fresh alternate account over a stale current account", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        activeIndexByFamily: { codex: 0 },
+        accounts: [
+          {
+            refreshToken: "token-stale",
+            accessToken: "access-stale",
+            expiresAt: now + 60_000,
+            addedAt: now,
+            lastUsed: now,
+          },
+          {
+            refreshToken: "token-fresh",
+            accessToken: "access-fresh",
+            expiresAt: now + 10 * 60_000,
+            addedAt: now,
+            lastUsed: now - 5_000,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored as never);
+      const selected = manager.getCurrentOrNextForFamilyHybrid("codex");
+
+      expect(selected?.refreshToken).toBe("token-fresh");
+      expect(selected?.index).toBe(1);
     });
 
     it("falls back to least-recently-used when all accounts are rate-limited", () => {

@@ -74,6 +74,7 @@ import {
 } from "./accounts/rate-limits.js";
 
 const log = createLogger("accounts");
+const ACCOUNT_SELECTION_FRESH_WINDOW_MS = 5 * 60_000;
 
 function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
 	return Object.fromEntries(
@@ -381,12 +382,45 @@ export class AccountManager {
 		return account ?? null;
 	}
 
+	private hasFreshAccessToken(account: ManagedAccount): boolean {
+		if (!account.access) return false;
+		if (typeof account.expires !== "number" || !Number.isFinite(account.expires)) {
+			return false;
+		}
+		return account.expires > nowMs() + ACCOUNT_SELECTION_FRESH_WINDOW_MS;
+	}
+
+	private isAccountSelectableForFamily(
+		account: ManagedAccount,
+		family: ModelFamily,
+		model?: string | null,
+		requireFresh = false,
+	): boolean {
+		if (account.enabled === false) return false;
+		clearExpiredRateLimits(account);
+		if (isRateLimitedForFamily(account, family, model) || this.isAccountCoolingDown(account)) {
+			return false;
+		}
+		return !requireFresh || this.hasFreshAccessToken(account);
+	}
+
+	private hasFreshAvailableAccountForFamily(
+		family: ModelFamily,
+		model?: string | null,
+	): boolean {
+		return this.accounts.some(
+			(account) =>
+				Boolean(account) &&
+				this.isAccountSelectableForFamily(account, family, model) &&
+				this.hasFreshAccessToken(account),
+		);
+	}
+
 	isAccountAvailableForFamily(index: number, family: ModelFamily, model?: string | null): boolean {
 		const account = this.getAccountByIndex(index);
 		if (!account) return false;
-		if (account.enabled === false) return false;
-		clearExpiredRateLimits(account);
-		return !isRateLimitedForFamily(account, family, model) && !this.isAccountCoolingDown(account);
+		const requireFresh = this.hasFreshAvailableAccountForFamily(family, model);
+		return this.isAccountSelectableForFamily(account, family, model, requireFresh);
 	}
 
 	setActiveIndex(index: number): ManagedAccount | null {
@@ -446,15 +480,13 @@ export class AccountManager {
 		if (count === 0) return null;
 
 		const cursor = this.cursorByFamily[family];
+		const requireFresh = this.hasFreshAvailableAccountForFamily(family, model);
 		
 		for (let i = 0; i < count; i++) {
 			const idx = (cursor + i) % count;
 			const account = this.accounts[idx];
 			if (!account) continue;
-			if (account.enabled === false) continue;
-			
-			clearExpiredRateLimits(account);
-			if (isRateLimitedForFamily(account, family, model) || this.isAccountCoolingDown(account)) {
+			if (!this.isAccountSelectableForFamily(account, family, model, requireFresh)) {
 				continue;
 			}
 			
@@ -472,15 +504,13 @@ export class AccountManager {
 		if (count === 0) return null;
 
 		const cursor = this.cursorByFamily[family];
+		const requireFresh = this.hasFreshAvailableAccountForFamily(family, model);
 		
 		for (let i = 0; i < count; i++) {
 			const idx = (cursor + i) % count;
 			const account = this.accounts[idx];
 			if (!account) continue;
-			if (account.enabled === false) continue;
-			
-			clearExpiredRateLimits(account);
-			if (isRateLimitedForFamily(account, family, model) || this.isAccountCoolingDown(account)) {
+			if (!this.isAccountSelectableForFamily(account, family, model, requireFresh)) {
 				continue;
 			}
 			
@@ -495,6 +525,7 @@ export class AccountManager {
 	getCurrentOrNextForFamilyHybrid(family: ModelFamily, model?: string | null, options?: HybridSelectionOptions): ManagedAccount | null {
 		const count = this.accounts.length;
 		if (count === 0) return null;
+		const requireFresh = this.hasFreshAvailableAccountForFamily(family, model);
 
 		const currentIndex = this.currentAccountIndexByFamily[family];
 		if (currentIndex >= 0 && currentIndex < count) {
@@ -503,10 +534,13 @@ export class AccountManager {
 				if (currentAccount.enabled === false) {
 					// Fall through to hybrid selection.
 				} else {
-				clearExpiredRateLimits(currentAccount);
 				if (
-					!isRateLimitedForFamily(currentAccount, family, model) &&
-					!this.isAccountCoolingDown(currentAccount)
+					this.isAccountSelectableForFamily(
+						currentAccount,
+						family,
+						model,
+						requireFresh,
+					)
 				) {
 					currentAccount.lastUsed = nowMs();
 					return currentAccount;
@@ -522,13 +556,14 @@ export class AccountManager {
 		const accountsWithMetrics: AccountWithMetrics[] = this.accounts
 			.map((account): AccountWithMetrics | null => {
 				if (!account) return null;
-				if (account.enabled === false) return null;
-				clearExpiredRateLimits(account);
-				const isAvailable =
-					!isRateLimitedForFamily(account, family, model) && !this.isAccountCoolingDown(account);
 				return {
 					index: account.index,
-					isAvailable,
+					isAvailable: this.isAccountSelectableForFamily(
+						account,
+						family,
+						model,
+						requireFresh,
+					),
 					lastUsed: account.lastUsed,
 				};
 			})
