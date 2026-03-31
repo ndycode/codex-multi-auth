@@ -11,6 +11,7 @@ import {
   getAccountIdCandidates,
 } from "../lib/accounts.js";
 import { getHealthTracker, getTokenTracker, resetTrackers } from "../lib/rotation.js";
+import { getAccountIdentityKey } from "../lib/storage/identity.js";
 import type { OAuthAuthDetails } from "../lib/types.js";
 
 vi.mock("../lib/storage.js", async (importOriginal) => {
@@ -1876,10 +1877,11 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
+      const trackerKey = getAccountIdentityKey(account)!;
 
       manager.recordSuccess(account, "codex", "gpt-5.1");
       
-      const score = healthTracker.getScore(account.index, "codex:gpt-5.1");
+      const score = healthTracker.getScore(trackerKey, "codex:gpt-5.1");
       expect(score).toBe(100);
     });
 
@@ -1896,10 +1898,11 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
+      const trackerKey = getAccountIdentityKey(account)!;
 
       manager.recordSuccess(account, "codex", null);
       
-      const score = healthTracker.getScore(account.index, "codex");
+      const score = healthTracker.getScore(trackerKey, "codex");
       expect(score).toBe(100);
     });
 
@@ -1917,11 +1920,12 @@ describe("AccountManager", () => {
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
       const tokenTracker = getTokenTracker();
+      const trackerKey = getAccountIdentityKey(account)!;
 
       manager.recordRateLimit(account, "codex", "gpt-5.1");
       
-      const score = healthTracker.getScore(account.index, "codex:gpt-5.1");
-      const tokens = tokenTracker.getTokens(account.index, "codex:gpt-5.1");
+      const score = healthTracker.getScore(trackerKey, "codex:gpt-5.1");
+      const tokens = tokenTracker.getTokens(trackerKey, "codex:gpt-5.1");
       expect(score).toBeLessThan(100);
       expect(tokens).toBeLessThan(50);
     });
@@ -1939,10 +1943,11 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
+      const trackerKey = getAccountIdentityKey(account)!;
 
       manager.recordRateLimit(account, "gpt-5.2");
       
-      const score = healthTracker.getScore(account.index, "gpt-5.2");
+      const score = healthTracker.getScore(trackerKey, "gpt-5.2");
       expect(score).toBeLessThan(100);
     });
 
@@ -1959,10 +1964,11 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
+      const trackerKey = getAccountIdentityKey(account)!;
 
       manager.recordFailure(account, "codex", "gpt-5.2");
       
-      const score = healthTracker.getScore(account.index, "codex:gpt-5.2");
+      const score = healthTracker.getScore(trackerKey, "codex:gpt-5.2");
       expect(score).toBeLessThan(100);
     });
 
@@ -1979,10 +1985,11 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
+      const trackerKey = getAccountIdentityKey(account)!;
 
       manager.recordFailure(account, "gpt-5.1", null);
       
-      const score = healthTracker.getScore(account.index, "gpt-5.1");
+      const score = healthTracker.getScore(trackerKey, "gpt-5.1");
       expect(score).toBeLessThan(100);
     });
 
@@ -1999,10 +2006,11 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const tokenTracker = getTokenTracker();
+      const trackerKey = getAccountIdentityKey(account)!;
 
-      const initialTokens = tokenTracker.getTokens(account.index, "codex:gpt-5.1");
+      const initialTokens = tokenTracker.getTokens(trackerKey, "codex:gpt-5.1");
       const result = manager.consumeToken(account, "codex", "gpt-5.1");
-      const afterTokens = tokenTracker.getTokens(account.index, "codex:gpt-5.1");
+      const afterTokens = tokenTracker.getTokens(trackerKey, "codex:gpt-5.1");
 
       expect(result).toBe(true);
       expect(afterTokens).toBeLessThan(initialTokens);
@@ -2024,6 +2032,47 @@ describe("AccountManager", () => {
       const result = manager.consumeToken(account, "codex");
 
       expect(result).toBe(true);
+    });
+
+    it("preserves tracker state when account indexes shift", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 1,
+        activeIndexByFamily: { codex: 1 },
+        accounts: [
+          {
+            refreshToken: "token-1",
+            email: "first@example.com",
+            addedAt: now,
+            lastUsed: now,
+          },
+          {
+            refreshToken: "token-2",
+            email: "second@example.com",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored as never);
+      const trackedAccount = manager.getAccountByIndex(1)!;
+      const trackerKey = getAccountIdentityKey(trackedAccount)!;
+      const healthTracker = getHealthTracker();
+      const tokenTracker = getTokenTracker();
+
+      manager.recordFailure(trackedAccount, "codex", "gpt-5.1");
+      expect(manager.consumeToken(trackedAccount, "codex", "gpt-5.1")).toBe(true);
+
+      expect(manager.removeAccountByIndex(0)).toBe(true);
+
+      const remainingAccount = manager.getAccountByIndex(0)!;
+      expect(remainingAccount.email).toBe("second@example.com");
+      expect(remainingAccount.index).toBe(0);
+      expect(getAccountIdentityKey(remainingAccount)).toBe(trackerKey);
+      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeLessThan(100);
+      expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
     });
   });
 

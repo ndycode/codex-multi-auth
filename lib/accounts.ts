@@ -24,6 +24,7 @@ import {
 } from "./codex-cli/state.js";
 import { syncAccountStorageFromCodexCli } from "./codex-cli/sync.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
+import { getAccountIdentityKey } from "./storage/identity.js";
 
 export {
 	extractAccountId,
@@ -74,6 +75,10 @@ import {
 } from "./accounts/rate-limits.js";
 
 const log = createLogger("accounts");
+
+function getRuntimeTrackerKey(account: ManagedAccount): string | number {
+	return getAccountIdentityKey(account) ?? `index:${account.index}`;
+}
 
 function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
 	return Object.fromEntries(
@@ -528,6 +533,7 @@ export class AccountManager {
 					!isRateLimitedForFamily(account, family, model) && !this.isAccountCoolingDown(account);
 				return {
 					index: account.index,
+					trackerKey: getRuntimeTrackerKey(account),
 					isAvailable,
 					lastUsed: account.lastUsed,
 				};
@@ -549,27 +555,28 @@ export class AccountManager {
 	recordSuccess(account: ManagedAccount, family: ModelFamily, model?: string | null): void {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
-		healthTracker.recordSuccess(account.index, quotaKey);
+		healthTracker.recordSuccess(getRuntimeTrackerKey(account), quotaKey);
 	}
 
 	recordRateLimit(account: ManagedAccount, family: ModelFamily, model?: string | null): void {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
 		const tokenTracker = getTokenTracker();
-		healthTracker.recordRateLimit(account.index, quotaKey);
-		tokenTracker.drain(account.index, quotaKey);
+		const trackerKey = getRuntimeTrackerKey(account);
+		healthTracker.recordRateLimit(trackerKey, quotaKey);
+		tokenTracker.drain(trackerKey, quotaKey);
 	}
 
 	recordFailure(account: ManagedAccount, family: ModelFamily, model?: string | null): void {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
-		healthTracker.recordFailure(account.index, quotaKey);
+		healthTracker.recordFailure(getRuntimeTrackerKey(account), quotaKey);
 	}
 
 	consumeToken(account: ManagedAccount, family: ModelFamily, model?: string | null): boolean {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const tokenTracker = getTokenTracker();
-		return tokenTracker.tryConsume(account.index, quotaKey);
+		return tokenTracker.tryConsume(getRuntimeTrackerKey(account), quotaKey);
 	}
 
 	/**
@@ -580,7 +587,7 @@ export class AccountManager {
 	refundToken(account: ManagedAccount, family: ModelFamily, model?: string | null): boolean {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const tokenTracker = getTokenTracker();
-		return tokenTracker.refundToken(account.index, quotaKey);
+		return tokenTracker.refundToken(getRuntimeTrackerKey(account), quotaKey);
 	}
 
 	markSwitched(account: ManagedAccount, reason: "rate-limit" | "initial" | "rotation", family: ModelFamily): void {
