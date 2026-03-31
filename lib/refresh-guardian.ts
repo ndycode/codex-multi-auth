@@ -1,6 +1,6 @@
 import { createLogger } from "./logger.js";
 import { applyRefreshResult, refreshExpiringAccounts } from "./proactive-refresh.js";
-import type { AccountManager } from "./accounts.js";
+import { sanitizeEmail, type AccountManager, type ManagedAccount } from "./accounts.js";
 import type { CooldownReason } from "./storage.js";
 import type { TokenResult } from "./types.js";
 
@@ -24,6 +24,30 @@ export interface RefreshGuardianStats {
 }
 
 const DEFAULT_INTERVAL_MS = 60_000;
+
+function resolveLiveAccountIndex(
+	liveAccounts: ManagedAccount[],
+	sourceAccount: ManagedAccount,
+): number {
+	if (sourceAccount.accountId) {
+		const byAccountId = liveAccounts.findIndex(
+			(candidate) => candidate.accountId === sourceAccount.accountId,
+		);
+		if (byAccountId >= 0) return byAccountId;
+	}
+
+	const sourceEmail = sanitizeEmail(sourceAccount.email);
+	if (sourceEmail) {
+		const byEmail = liveAccounts.findIndex(
+			(candidate) => sanitizeEmail(candidate.email) === sourceEmail,
+		);
+		if (byEmail >= 0) return byEmail;
+	}
+
+	return liveAccounts.findIndex(
+		(candidate) => candidate.refreshToken === sourceAccount.refreshToken,
+	);
+}
 
 export class RefreshGuardian {
 	private readonly getAccountManager: () => AccountManager | null;
@@ -122,9 +146,7 @@ export class RefreshGuardian {
 				const sourceAccount = snapshotByIndex.get(accountIndex);
 				if (!sourceAccount) continue;
 				const liveAccounts = manager.getAccountsSnapshot();
-				const resolvedIndex = liveAccounts.findIndex(
-					(candidate) => candidate.refreshToken === sourceAccount.refreshToken,
-				);
+				const resolvedIndex = resolveLiveAccountIndex(liveAccounts, sourceAccount);
 				const account = resolvedIndex >= 0 ? manager.getAccountByIndex(resolvedIndex) : null;
 				if (!account) continue;
 

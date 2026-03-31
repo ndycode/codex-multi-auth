@@ -12,6 +12,8 @@ vi.mock("../lib/proactive-refresh.js", () => ({
 function createManagedAccount(index: number): ManagedAccount {
   return {
     index,
+    accountId: `acct-${index}`,
+    email: `user${index}@example.com`,
     refreshToken: `refresh-${index}`,
     addedAt: Date.now() - 10_000,
     lastUsed: Date.now() - 5_000,
@@ -270,6 +272,131 @@ describe("refresh-guardian", () => {
     expect(
       manager.clearAuthFailures as ReturnType<typeof vi.fn>,
     ).toHaveBeenCalledWith(liveB);
+  });
+
+  it("resolves refreshed account by accountId after refresh token rotation", async () => {
+    const originalA = createManagedAccount(0);
+    const originalB = createManagedAccount(1);
+    const liveA = {
+      ...originalA,
+      index: 1,
+      refreshToken: "refresh-0-rotated",
+    };
+    const liveB = { ...originalB, index: 0 };
+    const snapshots = [
+      [originalA, originalB],
+      [liveB, liveA],
+    ];
+    let readCount = 0;
+    const manager = {
+      getAccountsSnapshot: vi.fn(
+        () => snapshots[Math.min(readCount++, snapshots.length - 1)],
+      ),
+      getAccountByIndex: vi.fn(
+        (index: number) =>
+          [liveB, liveA].find((account) => account.index === index) ?? null,
+      ),
+      clearAuthFailures: vi.fn(),
+      markAccountCoolingDown: vi.fn(),
+      setAccountEnabled: vi.fn(),
+      saveToDiskDebounced: vi.fn(),
+    } as unknown as AccountManager;
+    const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
+    const guardian = new RefreshGuardian(() => manager, {
+      bufferMs: 60_000,
+      intervalMs: 5_000,
+    });
+
+    refreshExpiringAccountsMock.mockResolvedValue(
+      new Map([
+        [
+          0,
+          {
+            refreshed: true,
+            reason: "success",
+            tokenResult: {
+              type: "success",
+              access: "access-account-id",
+              refresh: "refresh-account-id",
+              expires: Date.now() + 3_600_000,
+            },
+          },
+        ],
+      ]),
+    );
+
+    await guardian.tick();
+
+    expect(applyRefreshResultMock).toHaveBeenCalledWith(
+      liveA,
+      expect.objectContaining({ type: "success" }),
+    );
+    expect(
+      manager.clearAuthFailures as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(liveA);
+  });
+
+  it("falls back to normalized email when accountId is unavailable", async () => {
+    const originalA = { ...createManagedAccount(0), accountId: undefined, email: " User0@Example.com " };
+    const originalB = createManagedAccount(1);
+    const liveA = {
+      ...originalA,
+      index: 1,
+      refreshToken: "refresh-0-rotated",
+      email: "user0@example.com",
+    };
+    const liveB = { ...originalB, index: 0 };
+    const snapshots = [
+      [originalA, originalB],
+      [liveB, liveA],
+    ];
+    let readCount = 0;
+    const manager = {
+      getAccountsSnapshot: vi.fn(
+        () => snapshots[Math.min(readCount++, snapshots.length - 1)],
+      ),
+      getAccountByIndex: vi.fn(
+        (index: number) =>
+          [liveB, liveA].find((account) => account.index === index) ?? null,
+      ),
+      clearAuthFailures: vi.fn(),
+      markAccountCoolingDown: vi.fn(),
+      setAccountEnabled: vi.fn(),
+      saveToDiskDebounced: vi.fn(),
+    } as unknown as AccountManager;
+    const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
+    const guardian = new RefreshGuardian(() => manager, {
+      bufferMs: 60_000,
+      intervalMs: 5_000,
+    });
+
+    refreshExpiringAccountsMock.mockResolvedValue(
+      new Map([
+        [
+          0,
+          {
+            refreshed: true,
+            reason: "success",
+            tokenResult: {
+              type: "success",
+              access: "access-email",
+              refresh: "refresh-email",
+              expires: Date.now() + 3_600_000,
+            },
+          },
+        ],
+      ]),
+    );
+
+    await guardian.tick();
+
+    expect(applyRefreshResultMock).toHaveBeenCalledWith(
+      liveA,
+      expect.objectContaining({ type: "success" }),
+    );
+    expect(
+      manager.clearAuthFailures as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(liveA);
   });
 
   it("classifies failure reasons and handles no-op branches", async () => {
