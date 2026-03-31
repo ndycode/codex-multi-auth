@@ -603,9 +603,14 @@ export class AccountManager {
 		const resetAt = nowMs() + retryMs;
 
 		const baseKey = getQuotaKey(family);
-		account.rateLimitResetTimes[baseKey] = resetAt;
+		if (!model || reason === "quota" || reason === "unknown") {
+			account.rateLimitResetTimes[baseKey] = resetAt;
+		}
 
-		if (model) {
+		if (
+			model &&
+			(reason === "tokens" || reason === "concurrent" || reason === "unknown")
+		) {
 			const modelKey = getQuotaKey(family, model);
 			account.rateLimitResetTimes[modelKey] = resetAt;
 		}

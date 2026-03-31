@@ -762,7 +762,7 @@ describe("AccountManager", () => {
       expect(account.rateLimitResetTimes["codex"]).toBeDefined();
     });
 
-    it("marks both base and model-specific keys", () => {
+    it("marks only the model-specific key for token limits", () => {
       const now = Date.now();
       const stored = {
         version: 3 as const,
@@ -776,6 +776,60 @@ describe("AccountManager", () => {
       const account = manager.getCurrentAccount()!;
       manager.markRateLimitedWithReason(account, 60000, "codex", "tokens", "gpt-5.2");
       
+      expect(account.rateLimitResetTimes["codex"]).toBeUndefined();
+      expect(account.rateLimitResetTimes["codex:gpt-5.2"]).toBeDefined();
+    });
+
+    it("marks only the base key for family-wide quota limits", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+      manager.markRateLimitedWithReason(account, 60000, "codex", "quota", "gpt-5.2");
+
+      expect(account.rateLimitResetTimes["codex"]).toBeDefined();
+      expect(account.rateLimitResetTimes["codex:gpt-5.2"]).toBeUndefined();
+    });
+
+    it("marks only the model-specific key for concurrency limits", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+      manager.markRateLimitedWithReason(account, 60000, "codex", "concurrent", "gpt-5.2");
+
+      expect(account.rateLimitResetTimes["codex"]).toBeUndefined();
+      expect(account.rateLimitResetTimes["codex:gpt-5.2"]).toBeDefined();
+    });
+
+    it("keeps both keys for unknown model-specific rate limits", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+      manager.markRateLimitedWithReason(account, 60000, "codex", "unknown", "gpt-5.2");
+
       expect(account.rateLimitResetTimes["codex"]).toBeDefined();
       expect(account.rateLimitResetTimes["codex:gpt-5.2"]).toBeDefined();
     });
