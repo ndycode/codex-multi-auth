@@ -24,6 +24,8 @@ import {
 } from "./codex-cli/state.js";
 import { syncAccountStorageFromCodexCli } from "./codex-cli/sync.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
+import { getAccountIdentityKey } from "./storage/identity.js";
+import { getCircuitBreaker } from "./circuit-breaker.js";
 
 export {
 	extractAccountId,
@@ -74,6 +76,10 @@ import {
 } from "./accounts/rate-limits.js";
 
 const log = createLogger("accounts");
+
+function getAccountCircuitKey(account: ManagedAccount): string {
+	return getAccountIdentityKey(account) ?? `index:${account.index}`;
+}
 
 function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
 	return Object.fromEntries(
@@ -386,7 +392,11 @@ export class AccountManager {
 		if (!account) return false;
 		if (account.enabled === false) return false;
 		clearExpiredRateLimits(account);
-		return !isRateLimitedForFamily(account, family, model) && !this.isAccountCoolingDown(account);
+		return (
+			!isRateLimitedForFamily(account, family, model) &&
+			!this.isAccountCoolingDown(account) &&
+			this.isCircuitAvailable(account)
+		);
 	}
 
 	setActiveIndex(index: number): ManagedAccount | null {
@@ -454,7 +464,11 @@ export class AccountManager {
 			if (account.enabled === false) continue;
 			
 			clearExpiredRateLimits(account);
-			if (isRateLimitedForFamily(account, family, model) || this.isAccountCoolingDown(account)) {
+			if (
+				isRateLimitedForFamily(account, family, model) ||
+				this.isAccountCoolingDown(account) ||
+				!this.isCircuitAvailable(account)
+			) {
 				continue;
 			}
 			
@@ -480,7 +494,11 @@ export class AccountManager {
 			if (account.enabled === false) continue;
 			
 			clearExpiredRateLimits(account);
-			if (isRateLimitedForFamily(account, family, model) || this.isAccountCoolingDown(account)) {
+			if (
+				isRateLimitedForFamily(account, family, model) ||
+				this.isAccountCoolingDown(account) ||
+				!this.isCircuitAvailable(account)
+			) {
 				continue;
 			}
 			
@@ -506,7 +524,8 @@ export class AccountManager {
 				clearExpiredRateLimits(currentAccount);
 				if (
 					!isRateLimitedForFamily(currentAccount, family, model) &&
-					!this.isAccountCoolingDown(currentAccount)
+					!this.isAccountCoolingDown(currentAccount) &&
+					this.isCircuitAvailable(currentAccount)
 				) {
 					currentAccount.lastUsed = nowMs();
 					return currentAccount;
@@ -525,7 +544,9 @@ export class AccountManager {
 				if (account.enabled === false) return null;
 				clearExpiredRateLimits(account);
 				const isAvailable =
-					!isRateLimitedForFamily(account, family, model) && !this.isAccountCoolingDown(account);
+					!isRateLimitedForFamily(account, family, model) &&
+					!this.isAccountCoolingDown(account) &&
+					this.isCircuitAvailable(account);
 				return {
 					index: account.index,
 					isAvailable,
@@ -550,6 +571,7 @@ export class AccountManager {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
 		healthTracker.recordSuccess(account.index, quotaKey);
+		getCircuitBreaker(getAccountCircuitKey(account)).recordSuccess();
 	}
 
 	recordRateLimit(account: ManagedAccount, family: ModelFamily, model?: string | null): void {
@@ -564,12 +586,23 @@ export class AccountManager {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
 		healthTracker.recordFailure(account.index, quotaKey);
+		getCircuitBreaker(getAccountCircuitKey(account)).recordFailure();
 	}
 
 	consumeToken(account: ManagedAccount, family: ModelFamily, model?: string | null): boolean {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const tokenTracker = getTokenTracker();
-		return tokenTracker.tryConsume(account.index, quotaKey);
+		if (!tokenTracker.tryConsume(account.index, quotaKey)) {
+			return false;
+		}
+
+		try {
+			getCircuitBreaker(getAccountCircuitKey(account)).canExecute();
+			return true;
+		} catch {
+			tokenTracker.refundToken(account.index, quotaKey);
+			return false;
+		}
 	}
 
 	/**
@@ -633,6 +666,10 @@ export class AccountManager {
 		delete account.cooldownReason;
 	}
 
+	private isCircuitAvailable(account: ManagedAccount): boolean {
+		return getCircuitBreaker(getAccountCircuitKey(account)).isAvailable();
+	}
+
 	incrementAuthFailures(account: ManagedAccount): number {
 		account.consecutiveAuthFailures = (account.consecutiveAuthFailures ?? 0) + 1;
 		return account.consecutiveAuthFailures;
@@ -688,7 +725,11 @@ export class AccountManager {
 		const enabledAccounts = this.accounts.filter((account) => account.enabled !== false);
 		const available = enabledAccounts.filter((account) => {
 			clearExpiredRateLimits(account);
-			return !isRateLimitedForFamily(account, family, model) && !this.isAccountCoolingDown(account);
+			return (
+				!isRateLimitedForFamily(account, family, model) &&
+				!this.isAccountCoolingDown(account) &&
+				this.isCircuitAvailable(account)
+			);
 		});
 		if (available.length > 0) return 0;
 		if (enabledAccounts.length === 0) return 0;
@@ -712,6 +753,12 @@ export class AccountManager {
 
 			if (typeof account.coolingDownUntil === "number") {
 				waitTimes.push(Math.max(0, account.coolingDownUntil - now));
+			}
+
+			const breaker = getCircuitBreaker(getAccountCircuitKey(account));
+			const breakerWait = breaker.getTimeUntilReset();
+			if (breakerWait > 0) {
+				waitTimes.push(breakerWait);
 			}
 		}
 

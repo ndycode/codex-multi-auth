@@ -54,6 +54,18 @@ export class CircuitBreaker {
 		return true;
 	}
 
+	isAvailable(now = Date.now()): boolean {
+		if (this.state === "open") {
+			return now - this.lastStateChange >= this.config.resetTimeoutMs;
+		}
+
+		if (this.state === "half-open") {
+			return this.halfOpenAttempts < this.config.halfOpenMaxAttempts;
+		}
+
+		return true;
+	}
+
 	recordSuccess(): void {
 		const now = Date.now();
 		if (this.state === "half-open") {

@@ -233,4 +233,27 @@ describe("Circuit breaker", () => {
     vi.setSystemTime(new Date(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1000));
     expect(breaker.getTimeUntilReset()).toBe(0);
   });
+
+  it("isAvailable is false while open and true after reset timeout", () => {
+    const breaker = new CircuitBreaker();
+    breaker.recordFailure();
+    breaker.recordFailure();
+    breaker.recordFailure();
+
+    expect(breaker.isAvailable()).toBe(false);
+    vi.setSystemTime(new Date(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1));
+    expect(breaker.isAvailable()).toBe(true);
+  });
+
+  it("isAvailable becomes false when half-open attempts are exhausted", () => {
+    const breaker = new CircuitBreaker();
+    breaker.recordFailure();
+    breaker.recordFailure();
+    breaker.recordFailure();
+
+    vi.setSystemTime(new Date(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1));
+    expect(breaker.isAvailable()).toBe(true);
+    breaker.canExecute();
+    expect(breaker.isAvailable()).toBe(false);
+  });
 });

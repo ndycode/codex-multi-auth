@@ -11,6 +11,12 @@ import {
   getAccountIdCandidates,
 } from "../lib/accounts.js";
 import { getHealthTracker, getTokenTracker, resetTrackers } from "../lib/rotation.js";
+import {
+  clearCircuitBreakers,
+  DEFAULT_CIRCUIT_BREAKER_CONFIG,
+  getCircuitBreaker,
+} from "../lib/circuit-breaker.js";
+import { getAccountIdentityKey } from "../lib/storage/identity.js";
 import type { OAuthAuthDetails } from "../lib/types.js";
 
 vi.mock("../lib/storage.js", async (importOriginal) => {
@@ -877,6 +883,17 @@ describe("AccountManager", () => {
   });
 
   describe("getMinWaitTimeForFamily", () => {
+    beforeEach(() => {
+      clearCircuitBreakers();
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(0));
+    });
+
+    afterEach(() => {
+      clearCircuitBreakers();
+      vi.useRealTimers();
+    });
+
     it("returns 0 when accounts are available", () => {
       const now = Date.now();
       const stored = {
@@ -937,6 +954,28 @@ describe("AccountManager", () => {
       const waitTime = manager.getMinWaitTimeForFamily("codex", "gpt-5.2");
       expect(waitTime).toBeGreaterThan(0);
       expect(waitTime).toBeLessThanOrEqual(45000);
+    });
+
+    it("considers circuit-breaker reset time when all accounts are open", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+
+      manager.recordFailure(account, "codex");
+      manager.recordFailure(account, "codex");
+      manager.recordFailure(account, "codex");
+
+      expect(manager.getMinWaitTimeForFamily("codex")).toBe(
+        DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs,
+      );
     });
   });
 
@@ -1857,10 +1896,12 @@ describe("AccountManager", () => {
   describe("health and token tracking methods", () => {
     beforeEach(() => {
       resetTrackers();
+      clearCircuitBreakers();
     });
 
     afterEach(() => {
       resetTrackers();
+      clearCircuitBreakers();
     });
 
     it("recordSuccess updates health tracker with model-specific quotaKey", () => {
@@ -1881,6 +1922,7 @@ describe("AccountManager", () => {
       
       const score = healthTracker.getScore(account.index, "codex:gpt-5.1");
       expect(score).toBe(100);
+      expect(getCircuitBreaker(getAccountIdentityKey(account)!).getState()).toBe("closed");
     });
 
     it("recordSuccess updates health tracker with family-only quotaKey when model is null", () => {
@@ -1966,6 +2008,32 @@ describe("AccountManager", () => {
       expect(score).toBeLessThan(100);
     });
 
+    it("recordFailure opens the circuit breaker after repeated failures", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            email: "breaker@example.com",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+      const breaker = getCircuitBreaker(getAccountIdentityKey(account)!);
+
+      manager.recordFailure(account, "codex");
+      manager.recordFailure(account, "codex");
+      manager.recordFailure(account, "codex");
+
+      expect(breaker.getState()).toBe("open");
+    });
+
     it("recordFailure uses family-only quotaKey when model is null", () => {
       const now = Date.now();
       const stored = {
@@ -2025,15 +2093,45 @@ describe("AccountManager", () => {
 
       expect(result).toBe(true);
     });
+
+    it("consumeToken returns false and refunds the token when the circuit is open", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            email: "breaker@example.com",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+      const tokenTracker = getTokenTracker();
+      const initialTokens = tokenTracker.getTokens(account.index, "codex");
+
+      manager.recordFailure(account, "codex");
+      manager.recordFailure(account, "codex");
+      manager.recordFailure(account, "codex");
+
+      expect(manager.consumeToken(account, "codex")).toBe(false);
+      expect(tokenTracker.getTokens(account.index, "codex")).toBe(initialTokens);
+    });
   });
 
   describe("hybrid selection fallback path", () => {
     beforeEach(() => {
       resetTrackers();
+      clearCircuitBreakers();
     });
 
     afterEach(() => {
       resetTrackers();
+      clearCircuitBreakers();
     });
 
     it("selects alternate account when current is rate-limited via selectHybridAccount", () => {
@@ -2104,6 +2202,41 @@ describe("AccountManager", () => {
       const selected = manager.getCurrentOrNextForFamilyHybrid("codex");
       expect(selected).not.toBeNull();
       expect(selected?.index).toBe(0);
+    });
+
+    it("skips accounts whose circuit breaker is open", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        activeIndexByFamily: { codex: 0 },
+        accounts: [
+          {
+            refreshToken: "token-1",
+            email: "first@example.com",
+            addedAt: now,
+            lastUsed: now,
+          },
+          {
+            refreshToken: "token-2",
+            email: "second@example.com",
+            addedAt: now,
+            lastUsed: now - 10000,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored as never);
+      const blocked = manager.getAccountByIndex(0)!;
+
+      manager.recordFailure(blocked, "codex");
+      manager.recordFailure(blocked, "codex");
+      manager.recordFailure(blocked, "codex");
+
+      const selected = manager.getCurrentOrNextForFamilyHybrid("codex");
+
+      expect(selected?.index).toBe(1);
+      expect(manager.isAccountAvailableForFamily(0, "codex")).toBe(false);
     });
   });
 });
