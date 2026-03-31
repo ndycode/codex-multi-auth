@@ -1,6 +1,7 @@
 import { createLogger } from "./logger.js";
 import { applyRefreshResult, refreshExpiringAccounts } from "./proactive-refresh.js";
 import type { AccountManager } from "./accounts.js";
+import { ACCOUNT_LIMITS } from "./constants.js";
 import type { CooldownReason } from "./storage.js";
 import type { TokenResult } from "./types.js";
 
@@ -24,6 +25,7 @@ export interface RefreshGuardianStats {
 }
 
 const DEFAULT_INTERVAL_MS = 60_000;
+const NETWORK_FAILURE_COOLDOWN_MS = 6_000;
 
 export class RefreshGuardian {
 	private readonly getAccountManager: () => AccountManager | null;
@@ -95,6 +97,15 @@ export class RefreshGuardian {
 		return "network-error";
 	}
 
+	private getNetworkFailureCooldownMs(): number {
+		return Math.min(this.bufferMs, NETWORK_FAILURE_COOLDOWN_MS);
+	}
+
+	private getAuthFailureCooldownMs(failureCount: number): number {
+		const streak = Math.max(1, Math.floor(failureCount));
+		return Math.min(this.bufferMs, ACCOUNT_LIMITS.AUTH_FAILURE_COOLDOWN_MS * streak);
+	}
+
 	async tick(): Promise<void> {
 		if (this.running) return;
 		const manager = this.getAccountManager();
@@ -135,14 +146,33 @@ export class RefreshGuardian {
 							manager.clearAuthFailures(account);
 							this.stats.refreshed += 1;
 						} else {
-							manager.markAccountCoolingDown(account, this.bufferMs, "network-error");
+							manager.markAccountCoolingDown(
+								account,
+								this.getNetworkFailureCooldownMs(),
+								"network-error",
+							);
 							this.stats.failed += 1;
 							this.stats.networkFailed += 1;
 						}
 						break;
 					case "failed": {
 						const cooldownReason = this.classifyFailureReason(result.tokenResult);
-						manager.markAccountCoolingDown(account, this.bufferMs, cooldownReason);
+						if (cooldownReason === "rate-limit") {
+							manager.markRateLimited(account, this.bufferMs, "codex");
+						} else if (cooldownReason === "auth-failure") {
+							const failureCount = manager.incrementAuthFailures(account);
+							manager.markAccountCoolingDown(
+								account,
+								this.getAuthFailureCooldownMs(failureCount),
+								cooldownReason,
+							);
+						} else {
+							manager.markAccountCoolingDown(
+								account,
+								this.getNetworkFailureCooldownMs(),
+								cooldownReason,
+							);
+						}
 						this.stats.failed += 1;
 						if (cooldownReason === "rate-limit") this.stats.rateLimited += 1;
 						else if (cooldownReason === "auth-failure") this.stats.authFailed += 1;
@@ -153,7 +183,11 @@ export class RefreshGuardian {
 						this.stats.notNeeded += 1;
 						break;
 					case "no_refresh_token":
-						manager.markAccountCoolingDown(account, this.bufferMs, "auth-failure");
+						manager.markAccountCoolingDown(
+							account,
+							ACCOUNT_LIMITS.AUTH_FAILURE_COOLDOWN_MS,
+							"auth-failure",
+						);
 						manager.setAccountEnabled(account.index, false);
 						this.stats.noRefreshToken += 1;
 						this.stats.failed += 1;
