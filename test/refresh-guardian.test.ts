@@ -20,7 +20,10 @@ function createManagedAccount(index: number): ManagedAccount {
   };
 }
 
-function createManagerMock(accounts: ManagedAccount[]): AccountManager {
+function createManagerMock(
+  accounts: ManagedAccount[],
+  overrides: Partial<AccountManager> = {},
+): AccountManager {
   return {
     getAccountsSnapshot: vi.fn(() => accounts),
     getAccountByIndex: vi.fn(
@@ -34,6 +37,7 @@ function createManagerMock(accounts: ManagedAccount[]): AccountManager {
     markAccountCoolingDown: vi.fn(),
     setAccountEnabled: vi.fn(),
     saveToDiskDebounced: vi.fn(),
+    ...overrides,
   } as unknown as AccountManager;
 }
 
@@ -233,7 +237,7 @@ describe("refresh-guardian", () => {
       [liveB, liveA],
     ];
     let readCount = 0;
-    const manager = {
+    const manager = createManagerMock([liveB, liveA], {
       getAccountsSnapshot: vi.fn(
         () => snapshots[Math.min(readCount++, snapshots.length - 1)],
       ),
@@ -241,13 +245,7 @@ describe("refresh-guardian", () => {
         (index: number) =>
           [liveB, liveA].find((account) => account.index === index) ?? null,
       ),
-      clearAuthFailures: vi.fn(),
-      recordSuccess: vi.fn(),
-      recordFailure: vi.fn(),
-      recordRateLimit: vi.fn(),
-      markAccountCoolingDown: vi.fn(),
-      saveToDiskDebounced: vi.fn(),
-    } as unknown as AccountManager;
+    });
     const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
     const guardian = new RefreshGuardian(() => manager, {
       bufferMs: 60_000,
@@ -410,7 +408,7 @@ describe("refresh-guardian", () => {
     const liveSnapshot = [accountA, accountB, accountC, accountD, accountE];
     let snapshotReads = 0;
 
-    const manager = {
+    const manager = createManagerMock(liveSnapshot, {
       getAccountsSnapshot: vi.fn(() => {
         if (snapshotReads === 0) {
           snapshotReads += 1;
@@ -422,14 +420,7 @@ describe("refresh-guardian", () => {
         (index: number) =>
           liveSnapshot.find((account) => account.index === index) ?? null,
       ),
-      clearAuthFailures: vi.fn(),
-      recordSuccess: vi.fn(),
-      recordFailure: vi.fn(),
-      recordRateLimit: vi.fn(),
-      markAccountCoolingDown: vi.fn(),
-      setAccountEnabled: vi.fn(),
-      saveToDiskDebounced: vi.fn(),
-    } as unknown as AccountManager;
+    });
     const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
     const guardian = new RefreshGuardian(() => manager, {
       bufferMs: 60_000,
@@ -596,7 +587,7 @@ describe("refresh-guardian", () => {
     const liveAfterRemoval = [{ ...originalB }];
     let snapshotReads = 0;
 
-    const manager = {
+    const manager = createManagerMock(liveAfterRemoval, {
       getAccountsSnapshot: vi.fn(() => {
         snapshotReads += 1;
         if (snapshotReads === 1) return [originalA, originalB];
@@ -605,14 +596,7 @@ describe("refresh-guardian", () => {
       getAccountByIndex: vi.fn(
         (index: number) => liveAfterRemoval[index] ?? null,
       ),
-      clearAuthFailures: vi.fn(),
-      recordSuccess: vi.fn(),
-      recordFailure: vi.fn(),
-      recordRateLimit: vi.fn(),
-      markAccountCoolingDown: vi.fn(),
-      setAccountEnabled: vi.fn(),
-      saveToDiskDebounced: vi.fn(),
-    } as unknown as AccountManager;
+    });
 
     const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
     const guardian = new RefreshGuardian(() => manager, {

@@ -1,10 +1,12 @@
 import { createLogger } from "./logger.js";
 import { applyRefreshResult, refreshExpiringAccounts } from "./proactive-refresh.js";
 import type { AccountManager } from "./accounts.js";
+import type { ModelFamily } from "./prompts/codex.js";
 import type { CooldownReason } from "./storage.js";
 import type { TokenResult } from "./types.js";
 
 const log = createLogger("refresh-guardian");
+const REFRESH_HEALTH_FAMILY: ModelFamily = "codex";
 
 export interface RefreshGuardianOptions {
 	intervalMs?: number;
@@ -133,11 +135,11 @@ export class RefreshGuardian {
 						if (result.tokenResult?.type === "success") {
 							applyRefreshResult(account, result.tokenResult);
 							manager.clearAuthFailures(account);
-							manager.recordSuccess(account, "codex");
+							manager.recordSuccess(account, REFRESH_HEALTH_FAMILY);
 							this.stats.refreshed += 1;
 						} else {
 							manager.markAccountCoolingDown(account, this.bufferMs, "network-error");
-							manager.recordFailure(account, "codex");
+							manager.recordFailure(account, REFRESH_HEALTH_FAMILY);
 							this.stats.failed += 1;
 							this.stats.networkFailed += 1;
 						}
@@ -146,9 +148,9 @@ export class RefreshGuardian {
 						const cooldownReason = this.classifyFailureReason(result.tokenResult);
 						manager.markAccountCoolingDown(account, this.bufferMs, cooldownReason);
 						if (cooldownReason === "rate-limit") {
-							manager.recordRateLimit(account, "codex");
+							manager.recordRateLimit(account, REFRESH_HEALTH_FAMILY);
 						} else {
-							manager.recordFailure(account, "codex");
+							manager.recordFailure(account, REFRESH_HEALTH_FAMILY);
 						}
 						this.stats.failed += 1;
 						if (cooldownReason === "rate-limit") this.stats.rateLimited += 1;
@@ -161,7 +163,7 @@ export class RefreshGuardian {
 						break;
 					case "no_refresh_token":
 						manager.markAccountCoolingDown(account, this.bufferMs, "auth-failure");
-						manager.recordFailure(account, "codex");
+						manager.recordFailure(account, REFRESH_HEALTH_FAMILY);
 						manager.setAccountEnabled(account.index, false);
 						this.stats.noRefreshToken += 1;
 						this.stats.failed += 1;
