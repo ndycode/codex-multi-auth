@@ -76,8 +76,16 @@ import {
 
 const log = createLogger("accounts");
 
-function getRuntimeTrackerKey(account: ManagedAccount): string | number {
-	return getRuntimeAccountIdentityKey(account) ?? account.index;
+export function getRuntimeTrackerKey(
+	account: ManagedAccount,
+): string | number {
+	if (account._runtimeTrackerKey !== undefined) {
+		return account._runtimeTrackerKey;
+	}
+
+	const trackerKey = getRuntimeAccountIdentityKey(account) ?? account.index;
+	account._runtimeTrackerKey = trackerKey;
+	return trackerKey;
 }
 
 function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
@@ -96,6 +104,7 @@ export interface Workspace {
 
 export interface ManagedAccount {
 	index: number;
+	_runtimeTrackerKey?: string | number;
 	accountId?: string;
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;
@@ -373,10 +382,14 @@ export class AccountManager {
 	}
 
 	getAccountsSnapshot(): ManagedAccount[] {
-		return this.accounts.map((account) => ({
-			...account,
-			rateLimitResetTimes: { ...account.rateLimitResetTimes },
-		}));
+		return this.accounts.map((account) => {
+			const trackerKey = getRuntimeTrackerKey(account);
+			return {
+				...account,
+				_runtimeTrackerKey: trackerKey,
+				rateLimitResetTimes: { ...account.rateLimitResetTimes },
+			};
+		});
 	}
 
 	getAccountByIndex(index: number): ManagedAccount | null {

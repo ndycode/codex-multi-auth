@@ -9,6 +9,7 @@ import {
   formatCooldown,
   shouldUpdateAccountIdFromToken,
   getAccountIdCandidates,
+  getRuntimeTrackerKey,
 } from "../lib/accounts.js";
 import { getHealthTracker, getTokenTracker, resetTrackers } from "../lib/rotation.js";
 import {
@@ -2062,6 +2063,52 @@ describe("AccountManager", () => {
       const rotatedAccount = manager.getCurrentAccount()!;
       expect(getRuntimeAccountIdentityKey(rotatedAccount)).toBe(trackerKey);
       expect(getAccountIdentityKey(rotatedAccount)).not.toBe(`${trackerKey}`);
+      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBe(degradedScore);
+      expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
+    });
+
+    it("keeps pinned runtime tracker state stable after updateFromAuth enriches identity", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+      const healthTracker = getHealthTracker();
+      const tokenTracker = getTokenTracker();
+      const trackerKey = getRuntimeTrackerKey(account);
+
+      manager.recordFailure(account, "codex", "gpt-5.1");
+      const degradedScore = healthTracker.getScore(trackerKey, "codex:gpt-5.1");
+      expect(manager.consumeToken(account, "codex", "gpt-5.1")).toBe(true);
+
+      const payload = Buffer.from(JSON.stringify({
+        email: "enriched@example.com",
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "account-enriched",
+        },
+        exp: Math.floor((now + 3600000) / 1000),
+      })).toString("base64url");
+      const accessToken = `header.${payload}.signature`;
+
+      manager.updateFromAuth(account, {
+        type: "oauth",
+        access: accessToken,
+        refresh: "token-1-rotated",
+        expires: now + 3600000,
+      });
+
+      expect(account.accountId).toBe("account-enriched");
+      expect(account.email).toBe("enriched@example.com");
+      expect(getRuntimeAccountIdentityKey(account)).toBe(
+        "account:account-enriched::email:enriched@example.com",
+      );
+      expect(getRuntimeTrackerKey(account)).toBe(trackerKey);
       expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBe(degradedScore);
       expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
     });

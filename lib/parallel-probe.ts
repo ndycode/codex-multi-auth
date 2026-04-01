@@ -1,4 +1,8 @@
-import type { ManagedAccount, AccountManager } from "./accounts.js";
+import {
+	getRuntimeTrackerKey,
+	type ManagedAccount,
+	type AccountManager,
+} from "./accounts.js";
 import type { ModelFamily } from "./prompts/codex.js";
 import { createLogger } from "./logger.js";
 import {
@@ -7,8 +11,6 @@ import {
 	type AccountWithMetrics,
 } from "./rotation.js";
 import { clearExpiredRateLimits, isRateLimitedForFamily } from "./accounts/rate-limits.js";
-import { getRuntimeAccountIdentityKey } from "./storage/identity.js";
-
 const log = createLogger("parallel-probe");
 
 export interface ProbeCandidate {
@@ -109,7 +111,7 @@ export function getTopCandidates(
 
 		accountsWithMetrics.push({
 			index: account.index,
-			trackerKey: getRuntimeAccountIdentityKey(account),
+			trackerKey: getRuntimeTrackerKey(account),
 			isAvailable,
 			lastUsed: account.lastUsed,
 			account,

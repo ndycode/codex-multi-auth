@@ -49,7 +49,7 @@ type TrackerKey = number | string;
 function normalizeTrackerKey(accountKey: TrackerKey, quotaKey?: string): string {
 	const normalizedKey =
 		typeof accountKey === "number" ? `${accountKey}` : accountKey;
-	return quotaKey ? `${normalizedKey}:${quotaKey}` : normalizedKey;
+	return JSON.stringify([normalizedKey, quotaKey ?? null]);
 }
 
 /**
