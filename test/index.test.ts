@@ -1653,6 +1653,159 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(secondBody?.previous_response_id).toBeUndefined();
 	});
 
+	it("drops stored previous_response_id before retrying another account after a rate-limit rotation", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const configModule = await import("../lib/config.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
+		const accounts = [
+			{
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-alpha",
+			},
+			{
+				index: 1,
+				accountId: "acc-2",
+				email: "beta@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-beta",
+			},
+		];
+
+		mockStorage.accounts = accounts.map((account) => ({
+			accountId: account.accountId,
+			email: account.email,
+			refreshToken: account.refreshToken,
+			accessToken: account.accessToken,
+		}));
+		mockStorage.activeIndex = 0;
+		mockStorage.activeIndexByFamily = { codex: 0, "gpt-5.4": 0, "codex-max": 0 };
+		const rateLimitedAccounts = new Set<number>();
+		let activeIndex = 0;
+		const rotatingManager = {
+			...buildRoutingManager(accounts),
+			getCurrentOrNextForFamilyHybrid: () => {
+				for (let offset = 0; offset < accounts.length; offset += 1) {
+					const index = (activeIndex + offset) % accounts.length;
+					if (!rateLimitedAccounts.has(index)) {
+						return accounts[index] ?? null;
+					}
+				}
+				return null;
+			},
+			getCurrentOrNextForFamily: () => {
+				for (let offset = 0; offset < accounts.length; offset += 1) {
+					const index = (activeIndex + offset) % accounts.length;
+					if (!rateLimitedAccounts.has(index)) {
+						return accounts[index] ?? null;
+					}
+				}
+				return null;
+			},
+			getActiveIndexForFamily: () => activeIndex,
+			isAccountAvailableForFamily: (index: number) =>
+				Boolean(accounts[index]) && !rateLimitedAccounts.has(index),
+			markRateLimitedWithReason: (account: { index: number }) => {
+				rateLimitedAccounts.add(account.index);
+			},
+			setActiveIndex: (index: number) => {
+				activeIndex = index;
+				return accounts[index] ?? null;
+			},
+		};
+
+		extractAccountIdMock.mockImplementation((accessToken: unknown) => {
+			if (accessToken === "access-alpha") return "acc-1";
+			if (accessToken === "access-beta") return "acc-2";
+			return "account-1";
+		});
+		vi.spyOn(AccountManager, "loadFromDisk").mockImplementation(
+			async () => rotatingManager as never,
+		);
+		vi.mocked(configModule.getSessionAffinity).mockReturnValue(true);
+		vi.mocked(configModule.getResponseContinuation).mockReturnValue(true);
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, accountId, accessToken) =>
+				new Headers({
+					"x-test-account-id": String(accountId),
+					"x-test-access-token": String(accessToken),
+				}),
+		);
+		vi.mocked(fetchHelpers.transformRequestForCodex).mockImplementation(
+			async (init, _url, _userConfig, _codexMode, body) => ({
+				updatedInit: {
+					...(init as RequestInit),
+					body: JSON.stringify(body ?? {}),
+				},
+				body: (body ?? { model: "gpt-5.4" }) as {
+					model: string;
+					prompt_cache_key?: string;
+					previous_response_id?: string;
+				},
+			}),
+		);
+		vi.mocked(fetchHelpers.handleSuccessResponse)
+			.mockImplementationOnce(async (response, _isStreaming, options) => {
+				options?.onResponseId?.("resp_prev_123");
+				return response;
+			})
+			.mockImplementation(async (response) => response);
+		vi.mocked(fetchHelpers.handleErrorResponse).mockResolvedValueOnce({
+			response: new Response("rate limited", { status: 429 }),
+			rateLimit: {
+				code: "rate_limit_exceeded",
+				retryAfterMs: 60_000,
+			},
+			errorBody: "rate limited",
+		} as never);
+		vi.mocked(rateLimitBackoffModule.getRateLimitBackoff).mockReturnValueOnce({
+			attempt: 1,
+			delayMs: 60_000,
+		});
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "seed" }), { status: 200 }),
+			)
+			.mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
+
+		const { sdk } = await setupPlugin();
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
+		});
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
+		});
+
+		const secondInit = vi.mocked(globalThis.fetch).mock.calls[1]?.[1] as RequestInit;
+		const thirdInit = vi.mocked(globalThis.fetch).mock.calls[2]?.[1] as RequestInit;
+		const secondBody = JSON.parse(String(secondInit.body)) as {
+			previous_response_id?: string;
+		};
+		const thirdBody = JSON.parse(String(thirdInit.body)) as {
+			previous_response_id?: string;
+		};
+		const secondHeaders = new Headers(secondInit.headers);
+		const thirdHeaders = new Headers(thirdInit.headers);
+
+		expect(response.status).toBe(200);
+		expect(secondBody.previous_response_id).toBe("resp_prev_123");
+		expect(secondHeaders.get("x-test-account-id")).toBe("acc-1");
+		expect(thirdBody.previous_response_id).toBeUndefined();
+		expect(thirdHeaders.get("x-test-account-id")).toBe("acc-2");
+		expect(thirdHeaders.get("x-test-access-token")).toBe("access-beta");
+		expect(mockStorage.activeIndex).toBe(1);
+		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(1);
+	});
+
 	it("preserves explicit previous_response_id over stored continuation state", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const configModule = await import("../lib/config.js");
@@ -4347,6 +4500,165 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			{ duration: 5000 },
 		);
 		expect(markToastShown).toHaveBeenCalledWith(0);
+	});
+
+	it("rotates to the next account after a long rate-limit without surfacing a rate-limit toast", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
+		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
+
+		const longDelayMs = 6 * 60 * 60_000;
+		const markToastShown = vi.fn();
+		const markRateLimitedWithReason = vi.fn();
+		const recordRateLimit = vi.fn();
+		const accounts = [
+			{
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-1",
+			},
+			{
+				index: 1,
+				accountId: "acc-2",
+				email: "beta@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-2",
+			},
+		];
+		let activeIndex = accounts[0]?.index ?? 0;
+		const rateLimitedAccounts = new Set<number>();
+		const manager = {
+			getAccountCount: () => accounts.length,
+			getCurrentOrNextForFamilyHybrid: () => {
+				for (let offset = 0; offset < accounts.length; offset += 1) {
+					const index = (activeIndex + offset) % accounts.length;
+					if (!rateLimitedAccounts.has(index)) {
+						return accounts[index] ?? null;
+					}
+				}
+				return null;
+			},
+			getCurrentOrNextForFamily: () => {
+				for (let offset = 0; offset < accounts.length; offset += 1) {
+					const index = (activeIndex + offset) % accounts.length;
+					if (!rateLimitedAccounts.has(index)) {
+						return accounts[index] ?? null;
+					}
+				}
+				return null;
+			},
+			getActiveIndexForFamily: () => activeIndex,
+			getCurrentWorkspace: () => null,
+			getAccountByIndex: (index: number) => accounts[index] ?? null,
+			getAccountsSnapshot: () => accounts,
+			isAccountAvailableForFamily: (index: number) =>
+				Boolean(accounts[index]) && !rateLimitedAccounts.has(index),
+			toAuthDetails: (account: (typeof accounts)[number]) => ({
+				type: "oauth" as const,
+				access: account.accessToken ?? `access-${account.accountId ?? account.index}`,
+				refresh: account.refreshToken,
+				expires: Date.now() + 60_000,
+			}),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: () => {},
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => 1,
+			saveToDisk: async () => {},
+			markAccountCoolingDown: () => {},
+			markRateLimited: () => {},
+			consumeToken: () => true,
+			refundToken: () => {},
+			syncCodexCliActiveSelectionForIndex: async (index: number) =>
+				syncCodexCliSelectionMock(index),
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => true,
+			markToastShown,
+			markRateLimitedWithReason: (account: { index: number }, ...rest: unknown[]) => {
+				rateLimitedAccounts.add(account.index);
+				markRateLimitedWithReason(account, ...rest);
+			},
+			recordRateLimit,
+			setActiveIndex: (index: number) => {
+				activeIndex = index;
+				return accounts[index] ?? null;
+			},
+		};
+
+		mockStorage.accounts = accounts.map((account) => ({
+			accountId: account.accountId,
+			email: account.email,
+			refreshToken: account.refreshToken,
+			accessToken: account.accessToken,
+		}));
+		mockStorage.activeIndex = 0;
+		mockStorage.activeIndexByFamily = { codex: 0, "gpt-5.1": 0, "codex-max": 0 };
+		vi.spyOn(AccountManager, "loadFromDisk").mockImplementation(
+			async () => manager as never,
+		);
+		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
+			response: new Response("rate limited", { status: 429 }),
+			rateLimit: {
+				retryAfterMs: longDelayMs,
+				code: "quota",
+			},
+			errorBody: "rate limited",
+		} as never);
+		vi.mocked(rateLimitBackoffModule.getRateLimitBackoff).mockReturnValueOnce({
+			attempt: 1,
+			delayMs: longDelayMs,
+		});
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
+		showRuntimeToastMock.mockClear();
+
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+		expect(markRateLimitedWithReason).toHaveBeenCalledWith(
+			expect.objectContaining({ index: 0 }),
+			longDelayMs,
+			"gpt-5.1",
+			expect.any(String),
+			"gpt-5.1",
+		);
+		expect(recordRateLimit).toHaveBeenCalledWith(
+			expect.objectContaining({ index: 0 }),
+			"gpt-5.1",
+			"gpt-5.1",
+		);
+		expect(mockStorage.activeIndex).toBe(1);
+		expect(mockStorage.activeIndexByFamily.codex).toBe(1);
+		expect(mockStorage.activeIndexByFamily["gpt-5.1"]).toBe(1);
+		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(1);
+		expect(showRuntimeToastMock).toHaveBeenCalledWith(
+			mockClient,
+			"Switching accounts to keep the session running.",
+			"warning",
+			{ duration: 5000 },
+		);
+		expect(
+			showRuntimeToastMock.mock.calls.some((call) =>
+				String(call[1] ?? "").includes("Rate limited"),
+			),
+		).toBe(false);
 	});
 
 	it("forwards persistence error toast arguments through manual OAuth flow", async () => {

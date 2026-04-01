@@ -941,6 +941,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										};
 									}
 								}
+								const forgetInFlightSession = () => {
+									sessionAffinityStore?.forgetSession(sessionAffinityKey);
+									if (
+										!transformedBody ||
+										typeof transformedBody !== "object" ||
+										!transformedBody.previous_response_id
+									) {
+										return;
+									}
+									const nextBody = { ...transformedBody };
+									delete nextBody.previous_response_id;
+									transformedBody = nextBody;
+									requestInit = {
+										...requestInit,
+										body: JSON.stringify(transformedBody),
+									};
+								};
 								const preferredSessionAccountIndex =
 									sessionAffinityStore?.getPreferredAccountIndex(
 										sessionAffinityKey,
@@ -1044,7 +1061,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													);
 												}
 											} else {
-												sessionAffinityStore?.forgetSession(sessionAffinityKey);
+												forgetInFlightSession();
 											}
 										}
 
@@ -1097,7 +1114,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												account.index,
 											);
 
-											sessionAffinityStore?.forgetSession(sessionAffinityKey);
+											forgetInFlightSession();
 
 											if (isRetryableRefreshError) {
 												runtimeMetrics.networkErrors++;
@@ -1386,9 +1403,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													);
 													runtimeMetrics.userAborts++;
 													runtimeMetrics.lastError = "request aborted by user";
-													sessionAffinityStore?.forgetSession(
-														sessionAffinityKey,
-													);
+													forgetInFlightSession();
 													throw fetchAbortReason instanceof Error
 														? fetchAbortReason
 														: new Error("Aborted by user");
@@ -1450,7 +1465,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													);
 													accountManager.saveToDiskDebounced();
 												}
-												sessionAffinityStore?.forgetSession(sessionAffinityKey);
+												forgetInFlightSession();
 												break;
 											} finally {
 												clearTimeout(fetchTimeoutId);
@@ -1550,9 +1565,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														entitlementAccountKey,
 														capabilityModelKey,
 													);
-													sessionAffinityStore?.forgetSession(
-														sessionAffinityKey,
-													);
+													forgetInFlightSession();
 													account.lastSwitchReason = "rotation";
 													runtimeMetrics.lastError = `Unsupported model on account ${account.index + 1}: ${blockedModel}`;
 													logWarn(
@@ -1805,9 +1818,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 														// Forget session affinity and continue the outer loop so another
 														// enabled account can service the request.
-														sessionAffinityStore?.forgetSession(
-															sessionAffinityKey,
-														);
+														forgetInFlightSession();
 														continue accountAttemptLoop;
 													}
 												}
@@ -1909,9 +1920,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														);
 														accountManager.saveToDiskDebounced();
 													}
-													sessionAffinityStore?.forgetSession(
-														sessionAffinityKey,
-													);
+													forgetInFlightSession();
 													break;
 												}
 
@@ -1962,9 +1971,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														model,
 													);
 													account.lastSwitchReason = "rate-limit";
-													sessionAffinityStore?.forgetSession(
-														sessionAffinityKey,
-													);
+													forgetInFlightSession();
 													runtimeMetrics.accountRotations++;
 													accountManager.saveToDiskDebounced();
 													logWarn(
@@ -1979,7 +1986,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														)
 													) {
 														await showRuntimeToast(client, 
-															`Rate limited. Switching accounts (retry in ${waitLabel}).`,
+															"Switching accounts to keep the session running.",
 															"warning",
 															{ duration: toastDurationMs },
 														);
@@ -2395,9 +2402,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																}
 																continue;
 															}
-															sessionAffinityStore?.forgetSession(
-																sessionAffinityKey,
-															);
+															forgetInFlightSession();
 															await sleep(
 																addJitter(emptyResponseRetryDelayMs, 0.2),
 															);
