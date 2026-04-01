@@ -206,10 +206,28 @@ describe("runReportCommand", () => {
 				enabled: true,
 			},
 		]);
+		const concurrentStorage = createStorage([
+			{
+				email: "one@example.com",
+				accountId: "acct-report",
+				accountIdSource: "org",
+				refreshToken: "refresh-token-1",
+				accessToken: "access-token-1",
+				expiresAt: 10,
+				currentWorkspaceIndex: 5,
+				addedAt: 1,
+				lastUsed: 1,
+				enabled: true,
+			},
+		]);
 		const callLog: string[] = [];
 		let persistedStorage: AccountStorageV3 | null = null;
+		let loadCount = 0;
 		const deps = createDeps({
-			loadAccounts: vi.fn(async () => storage),
+			loadAccounts: vi.fn(async () => {
+				loadCount += 1;
+				return loadCount === 1 ? storage : structuredClone(concurrentStorage);
+			}),
 			saveAccounts: vi.fn(async (nextStorage) => {
 				callLog.push(`save-${callLog.filter((entry) => entry.startsWith("save-")).length + 1}`);
 				if (callLog.length === 1) {
@@ -234,6 +252,7 @@ describe("runReportCommand", () => {
 				expect(persistedStorage?.accounts[0]?.accessToken).toBe(
 					"access-token-updated",
 				);
+				expect(persistedStorage?.accounts[0]?.currentWorkspaceIndex).toBe(5);
 				expect(input.accessToken).toBe(
 					persistedStorage?.accounts[0]?.accessToken,
 				);
@@ -250,20 +269,22 @@ describe("runReportCommand", () => {
 
 		expect(result).toBe(0);
 		expect(callLog).toEqual(["save-1", "save-2", "fetch"]);
+		expect(deps.loadAccounts).toHaveBeenCalledTimes(2);
 		expect(deps.saveAccounts).toHaveBeenCalledTimes(2);
 		expect(deps.saveAccounts).toHaveBeenCalledWith(
 			expect.objectContaining({
 				accounts: [
 					expect.objectContaining({
-					refreshToken: "refresh-token-updated",
-					accessToken: "access-token-updated",
-					expiresAt: 500,
-					accountId: "acct-report",
-					accountIdSource: "org",
-				}),
-			],
-		}),
-	);
+						refreshToken: "refresh-token-updated",
+						accessToken: "access-token-updated",
+						expiresAt: 500,
+						accountId: "acct-report",
+						accountIdSource: "org",
+						currentWorkspaceIndex: 5,
+					}),
+				],
+			}),
+		);
 		expect(deps.fetchCodexQuotaSnapshot).toHaveBeenCalledWith(
 			expect.objectContaining({
 				accountId: "acct-report",

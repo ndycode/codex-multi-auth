@@ -143,10 +143,21 @@ describe("runForecastCommand", () => {
 
 	it("persists refreshed probe tokens before forecasting live quota", async () => {
 		const storage = createStorage();
+		const concurrentStorage = createStorage();
+		concurrentStorage.accounts[0] = {
+			...concurrentStorage.accounts[0],
+			currentWorkspaceIndex: 7,
+		};
 		const callLog: string[] = [];
 		let persistedStorage: AccountStorageV3 | null = null;
+		let loadCount = 0;
 		const deps = createDeps({
-			loadAccounts: vi.fn(async () => storage),
+			loadAccounts: vi.fn(async () => {
+				loadCount += 1;
+				return loadCount === 1
+					? storage
+					: structuredClone(concurrentStorage);
+			}),
 			saveAccounts: vi.fn(async (nextStorage) => {
 				callLog.push(`save-${callLog.filter((entry) => entry.startsWith("save-")).length + 1}`);
 				if (callLog.length === 1) {
@@ -173,6 +184,7 @@ describe("runForecastCommand", () => {
 				expect(persistedStorage?.accounts[0]?.accessToken).toBe(
 					"access-forecast-updated",
 				);
+				expect(persistedStorage?.accounts[0]?.currentWorkspaceIndex).toBe(7);
 				expect(input.accessToken).toBe(
 					persistedStorage?.accounts[0]?.accessToken,
 				);
@@ -189,6 +201,7 @@ describe("runForecastCommand", () => {
 
 		expect(result).toBe(0);
 		expect(callLog).toEqual(["save-1", "save-2", "fetch"]);
+		expect(deps.loadAccounts).toHaveBeenCalledTimes(2);
 		expect(deps.saveAccounts).toHaveBeenCalledTimes(2);
 		expect(deps.saveAccounts).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -199,6 +212,7 @@ describe("runForecastCommand", () => {
 						expiresAt: 999_999,
 						accountId: "account-id-updated",
 						accountIdSource: "token",
+						currentWorkspaceIndex: 7,
 					}),
 				],
 			}),

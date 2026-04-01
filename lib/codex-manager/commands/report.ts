@@ -22,7 +22,11 @@ import {
 	getModelProfile,
 	resolveNormalizedModel,
 } from "../../request/helpers/model-map.js";
-import type { AccountStorageV3 } from "../../storage.js";
+import {
+	findMatchingAccountIndex,
+	type AccountMetadataV3,
+	type AccountStorageV3,
+} from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 import { sleep } from "../../utils.js";
 
@@ -268,6 +272,57 @@ async function saveAccountsWithRetry(
 	}
 }
 
+type AccountIdentityMatch = Pick<AccountMetadataV3, "accountId" | "email" | "refreshToken">;
+type RefreshedAccountPatch = Pick<
+	AccountMetadataV3,
+	"refreshToken" | "accessToken" | "expiresAt"
+> & {
+	email?: AccountMetadataV3["email"];
+	accountId?: AccountMetadataV3["accountId"];
+	accountIdSource?: AccountMetadataV3["accountIdSource"];
+};
+
+function applyRefreshedAccountPatch(
+	account: AccountMetadataV3,
+	patch: RefreshedAccountPatch,
+): void {
+	account.refreshToken = patch.refreshToken;
+	account.accessToken = patch.accessToken;
+	account.expiresAt = patch.expiresAt;
+	if (patch.email) account.email = patch.email;
+	if (patch.accountId) {
+		account.accountId = patch.accountId;
+		account.accountIdSource = patch.accountIdSource;
+	}
+}
+
+async function persistRefreshedAccountPatch(
+	storage: AccountStorageV3,
+	accountMatch: AccountIdentityMatch,
+	patch: RefreshedAccountPatch,
+	loadAccounts: ReportCommandDeps["loadAccounts"],
+	saveAccounts: ReportCommandDeps["saveAccounts"],
+): Promise<void> {
+	const latestStorage = (await loadAccounts()) ?? storage;
+	const nextStorage = structuredClone(latestStorage);
+	const targetIndex =
+		findMatchingAccountIndex(nextStorage.accounts, accountMatch, {
+			allowUniqueAccountIdFallbackWithoutEmail: true,
+		}) ??
+		findMatchingAccountIndex(nextStorage.accounts, patch, {
+			allowUniqueAccountIdFallbackWithoutEmail: true,
+		});
+	if (targetIndex === undefined) {
+		throw new Error("Unable to resolve refreshed account for persistence");
+	}
+	const targetAccount = nextStorage.accounts[targetIndex];
+	if (!targetAccount) {
+		throw new Error("Unable to resolve refreshed account for persistence");
+	}
+	applyRefreshedAccountPatch(targetAccount, patch);
+	await saveAccountsWithRetry(nextStorage, saveAccounts);
+}
+
 export async function runReportCommand(
 	args: string[],
 	deps: ReportCommandDeps,
@@ -326,25 +381,39 @@ export async function runReportCommand(
 			const previousExpiresAt = account.expiresAt;
 			const previousEmail = account.email;
 			const previousAccountId = account.accountId;
-			const previousAccountIdSource = account.accountIdSource;
-			account.refreshToken = refreshResult.refresh;
-			account.accessToken = refreshResult.access;
-			account.expiresAt = refreshResult.expires;
-			if (refreshedEmail) account.email = refreshedEmail;
-			if (tokenDerivedAccountId) {
-				account.accountId = tokenDerivedAccountId;
-				account.accountIdSource = "token";
+			const refreshPatch: RefreshedAccountPatch = {
+				refreshToken: refreshResult.refresh,
+				accessToken: refreshResult.access,
+				expiresAt: refreshResult.expires,
+			};
+			if (refreshedEmail) {
+				refreshPatch.email = refreshedEmail;
 			}
-			const refreshedStorageChanged =
-				previousRefreshToken !== account.refreshToken ||
-				previousAccessToken !== account.accessToken ||
-				previousExpiresAt !== account.expiresAt ||
+			if (tokenDerivedAccountId) {
+				refreshPatch.accountId = tokenDerivedAccountId;
+				refreshPatch.accountIdSource = "token";
+			}
+			const accountMatch: AccountIdentityMatch = {
+				refreshToken: previousRefreshToken,
+				email: previousEmail,
+				accountId: previousAccountId,
+			};
+			applyRefreshedAccountPatch(account, refreshPatch);
+			if (
+				previousRefreshToken !== refreshPatch.refreshToken ||
+				previousAccessToken !== refreshPatch.accessToken ||
+				previousExpiresAt !== refreshPatch.expiresAt ||
 				previousEmail !== account.email ||
-				previousAccountId !== account.accountId ||
-				previousAccountIdSource !== account.accountIdSource;
-			if (refreshedStorageChanged) {
+				previousAccountId !== account.accountId
+			) {
 				try {
-					await saveAccountsWithRetry(storage, deps.saveAccounts);
+					await persistRefreshedAccountPatch(
+						storage,
+						accountMatch,
+						refreshPatch,
+						deps.loadAccounts,
+						deps.saveAccounts,
+					);
 				} catch (error) {
 					const message = deps.normalizeFailureDetail(
 						error instanceof Error ? error.message : String(error),
