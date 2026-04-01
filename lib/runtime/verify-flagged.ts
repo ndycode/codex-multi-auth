@@ -43,6 +43,14 @@ export async function verifyRuntimeFlaggedAccounts(deps: {
 		results: Array<TokenSuccessWithAccount<SuccessfulAccountTokens>>,
 		replaceAll?: boolean,
 	) => Promise<void>;
+	persistAccountsAndFlagged?: (
+		results: Array<TokenSuccessWithAccount<SuccessfulAccountTokens>>,
+		flaggedStorage: {
+			version: 1;
+			accounts: FlaggedAccountMetadataV1[];
+		},
+		replaceAll?: boolean,
+	) => Promise<void>;
 	invalidateAccountManagerCache: () => void;
 	saveFlaggedAccounts: (storage: {
 		version: 1;
@@ -78,7 +86,8 @@ export async function verifyRuntimeFlaggedAccounts(deps: {
 				const refreshToken =
 					typeof cached.refreshToken === "string" && cached.refreshToken.trim()
 						? cached.refreshToken.trim()
-						: flagged.refreshToken;
+						: undefined;
+				if (refreshToken) {
 				const resolved = deps.resolveTokenSuccessAccount({
 					type: "success",
 					access: cached.accessToken,
@@ -98,6 +107,7 @@ export async function verifyRuntimeFlaggedAccounts(deps: {
 					`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: RESTORED (Codex CLI cache)`,
 				);
 				continue;
+				}
 			}
 
 			const refreshResult = await deps.queuedRefresh(flagged.refreshToken);
@@ -134,15 +144,20 @@ export async function verifyRuntimeFlaggedAccounts(deps: {
 		}
 	}
 
-	if (state.restored.length > 0) {
-		await deps.persistAccounts(state.restored, false);
-		deps.invalidateAccountManagerCache();
-	}
-
-	await deps.saveFlaggedAccounts({
-		version: 1,
+	const nextFlaggedStorage = {
+		version: 1 as const,
 		accounts: state.remaining,
-	});
+	};
+	if (state.restored.length > 0 && deps.persistAccountsAndFlagged) {
+		await deps.persistAccountsAndFlagged(state.restored, nextFlaggedStorage, false);
+		deps.invalidateAccountManagerCache();
+	} else {
+		if (state.restored.length > 0) {
+			await deps.persistAccounts(state.restored, false);
+			deps.invalidateAccountManagerCache();
+		}
+		await deps.saveFlaggedAccounts(nextFlaggedStorage);
+	}
 
 	deps.showLine("");
 	deps.showLine(

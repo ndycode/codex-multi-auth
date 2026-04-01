@@ -94,6 +94,53 @@ describe("verifyRuntimeFlaggedAccounts", () => {
 		);
 	});
 
+	it("falls back to a real refresh when cached access has no refresh token", async () => {
+		const now = 10_000;
+		const queuedRefresh = vi.fn(async () => ({
+			type: "success" as const,
+			access: "new-access",
+			refresh: "new-refresh",
+			expires: now + 60_000,
+		}));
+		const persistAccounts = vi.fn(async () => {});
+
+		await verifyRuntimeFlaggedAccounts({
+			loadFlaggedAccounts: async () => ({
+				version: 1,
+				accounts: [
+					{
+						email: "refresh@example.com",
+						refreshToken: "flagged-refresh",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			}),
+			lookupCodexCliTokensByEmail: async () => ({
+				accessToken: "cached-access",
+				expiresAt: now + 60_000,
+			}),
+			queuedRefresh,
+			resolveTokenSuccessAccount: (tokens) => ({ ...tokens }) as never,
+			persistAccounts,
+			invalidateAccountManagerCache: vi.fn(),
+			saveFlaggedAccounts: vi.fn(async () => {}),
+			now: () => now,
+			showLine: vi.fn(),
+		});
+
+		expect(queuedRefresh).toHaveBeenCalledWith("flagged-refresh");
+		expect(persistAccounts).toHaveBeenCalledWith(
+			[
+				expect.objectContaining({
+					access: "new-access",
+					refresh: "new-refresh",
+				}),
+			],
+			false,
+		);
+	});
+
 	it("restores accounts after a successful refresh when cache misses", async () => {
 		const now = 10_000;
 		const persistAccounts = vi.fn(async () => {});
@@ -243,6 +290,59 @@ describe("verifyRuntimeFlaggedAccounts", () => {
 		});
 
 		expect(calls).toEqual(["persistAccounts", "saveFlaggedAccounts"]);
+	});
+
+	it("uses combined persistence when restored accounts and flagged cleanup must commit together", async () => {
+		const now = 10_000;
+		const persistAccountsAndFlagged = vi.fn(async () => {});
+		const persistAccounts = vi.fn(async () => {});
+		const saveFlaggedAccounts = vi.fn(async () => {});
+
+		await verifyRuntimeFlaggedAccounts({
+			loadFlaggedAccounts: async () => ({
+				version: 1,
+				accounts: [
+					{
+						email: "refresh@example.com",
+						refreshToken: "refresh-token",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			}),
+			lookupCodexCliTokensByEmail: async () => {
+				throw new Error("busy");
+			},
+			queuedRefresh: async () => ({
+				type: "success" as const,
+				access: "new-access",
+				refresh: "new-refresh",
+				expires: now + 60_000,
+			}),
+			resolveTokenSuccessAccount: (tokens) => ({ ...tokens }) as never,
+			persistAccounts,
+			persistAccountsAndFlagged,
+			invalidateAccountManagerCache: vi.fn(),
+			saveFlaggedAccounts,
+			now: () => now,
+			showLine: vi.fn(),
+		});
+
+		expect(persistAccountsAndFlagged).toHaveBeenCalledWith(
+			[
+				expect.objectContaining({
+					access: "new-access",
+					refresh: "new-refresh",
+				}),
+			],
+			{
+				version: 1,
+				accounts: [],
+			},
+			false,
+		);
+		expect(persistAccounts).not.toHaveBeenCalled();
+		expect(saveFlaggedAccounts).not.toHaveBeenCalled();
 	});
 
 	it("leaves flagged state untouched when persistAccounts throws EBUSY", async () => {

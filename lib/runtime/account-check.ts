@@ -65,6 +65,13 @@ export async function runRuntimeAccountCheck(
 			version: 1;
 			accounts: FlaggedAccountMetadataV1[];
 		}) => Promise<void>;
+		persistAccountAndFlaggedStorage?: (
+			accountStorage: AccountStorageV3,
+			flaggedStorage: {
+				version: 1;
+				accounts: FlaggedAccountMetadataV1[];
+			},
+		) => Promise<void>;
 		now?: () => number;
 		showLine: (message: string) => void;
 	},
@@ -145,14 +152,6 @@ export async function runRuntimeAccountCheck(
 				) {
 					accessToken = cached.accessToken;
 					authDetail = "OK (Codex CLI cache)";
-
-					if (
-						cached.refreshToken &&
-						cached.refreshToken !== account.refreshToken
-					) {
-						account.refreshToken = cached.refreshToken;
-						state.storageChanged = true;
-					}
 					if (
 						cached.accessToken &&
 						cached.accessToken !== account.accessToken
@@ -318,12 +317,23 @@ export async function runRuntimeAccountCheck(
 		state.storageChanged = true;
 	}
 
-	if (state.flaggedChanged) {
-		await deps.saveFlaggedAccounts(state.flaggedStorage);
-	}
-	if (state.storageChanged) {
-		await deps.saveAccounts(workingStorage);
+	const persistAccountAndFlaggedStorage =
+		deps.persistAccountAndFlaggedStorage;
+	const canPersistTogether =
+		state.flaggedChanged &&
+		state.storageChanged &&
+		typeof persistAccountAndFlaggedStorage === "function";
+	if (canPersistTogether) {
+		await persistAccountAndFlaggedStorage(workingStorage, state.flaggedStorage);
 		deps.invalidateAccountManagerCache();
+	} else {
+		if (state.flaggedChanged) {
+		await deps.saveFlaggedAccounts(state.flaggedStorage);
+		}
+		if (state.storageChanged) {
+			await deps.saveAccounts(workingStorage);
+			deps.invalidateAccountManagerCache();
+		}
 	}
 
 	deps.showLine("");

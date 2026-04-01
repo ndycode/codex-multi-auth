@@ -207,12 +207,60 @@ describe("runRuntimeAccountCheck", () => {
 		const saved = saveAccounts.mock.calls[0]?.[0];
 		expect(saved.accounts[0]).toMatchObject({
 			email: "fresh@example.com",
-			refreshToken: "fresh-refresh",
+			refreshToken: "stale-refresh",
 			accessToken: "cached-access",
 			expiresAt: 70_000,
 			accountId: "new-account",
 			accountIdSource: "token",
 		});
+	});
+
+	it("uses combined persistence when flagging an invalid account removes it from active storage", async () => {
+		const persistAccountAndFlaggedStorage = vi.fn(async () => {});
+		const saveAccounts = vi.fn(async () => {});
+		const saveFlaggedAccounts = vi.fn(async () => {});
+
+		await runRuntimeAccountCheck(true, {
+			hydrateEmails: async (storage) => storage,
+			loadAccounts: async () => ({
+				version: 3,
+				accounts: [{ email: "one@example.com", refreshToken: "refresh-1", accessToken: undefined, addedAt: 1, lastUsed: 1 }],
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+			}),
+			createEmptyStorage: () => ({ version: 3, accounts: [], activeIndex: 0, activeIndexByFamily: {} }),
+			loadFlaggedAccounts: async () => ({ version: 1, accounts: [] }),
+			createAccountCheckWorkingState: (flaggedStorage) => ({ flaggedStorage, removeFromActive: new Set(), storageChanged: false, flaggedChanged: false, ok: 0, errors: 0, disabled: 0 }),
+			lookupCodexCliTokensByEmail: async () => null,
+			extractAccountId: () => undefined,
+			shouldUpdateAccountIdFromToken: () => false,
+			sanitizeEmail: (email) => email,
+			extractAccountEmail: () => undefined,
+			queuedRefresh: async () => ({ type: "failed", reason: "invalid_grant", message: "refresh failed" }),
+			isRuntimeFlaggableFailure: () => true,
+			fetchCodexQuotaSnapshot: async () => { throw new Error("should not probe quota in deep mode"); },
+			resolveRequestAccountId: () => undefined,
+			formatCodexQuotaLine: () => "quota",
+			clampRuntimeActiveIndices: vi.fn(),
+			MODEL_FAMILIES: ["codex"],
+			saveAccounts,
+			invalidateAccountManagerCache: vi.fn(),
+			saveFlaggedAccounts,
+			persistAccountAndFlaggedStorage,
+			showLine: vi.fn(),
+		});
+
+		expect(persistAccountAndFlaggedStorage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: [],
+			}),
+			expect.objectContaining({
+				version: 1,
+				accounts: [expect.objectContaining({ refreshToken: "refresh-1" })],
+			}),
+		);
+		expect(saveAccounts).not.toHaveBeenCalled();
+		expect(saveFlaggedAccounts).not.toHaveBeenCalled();
 	});
 
 	it("treats cache lookup failures as a cache miss and still refreshes", async () => {
