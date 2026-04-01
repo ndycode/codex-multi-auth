@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	probeAccountsInParallel,
 	createProbeCandidates,
@@ -6,6 +6,8 @@ import {
 	type ProbeCandidate,
 } from "../lib/parallel-probe.js";
 import type { ManagedAccount } from "../lib/accounts.js";
+import { getHealthTracker, resetTrackers } from "../lib/rotation.js";
+import { getRuntimeAccountIdentityKey } from "../lib/storage/identity.js";
 
 function createMockAccount(index: number, overrides: Partial<ManagedAccount> = {}): ManagedAccount {
 	return {
@@ -19,6 +21,14 @@ function createMockAccount(index: number, overrides: Partial<ManagedAccount> = {
 }
 
 describe("parallel-probe", () => {
+	beforeEach(() => {
+		resetTrackers();
+	});
+
+	afterEach(() => {
+		resetTrackers();
+	});
+
 	describe("createProbeCandidates", () => {
 		it("creates candidates with abort controllers", () => {
 			const accounts = [createMockAccount(0), createMockAccount(1)];
@@ -259,6 +269,37 @@ describe("parallel-probe", () => {
 
 			expect(candidates).toHaveLength(2);
 			expect(candidates[0].index).toBe(1);
+		});
+
+		it("uses runtime tracker keys when ranking candidates", () => {
+			const now = Date.now();
+			const penalizedAccount = createMockAccount(0, {
+				email: "first@example.com",
+				lastUsed: now,
+			});
+			const healthyAccount = createMockAccount(1, {
+				email: "second@example.com",
+				lastUsed: now,
+			});
+			const trackerKey = getRuntimeAccountIdentityKey(penalizedAccount)!;
+			getHealthTracker().recordFailure(trackerKey, "codex");
+
+			const mockManager = {
+				getAccountsSnapshot: vi
+					.fn()
+					.mockReturnValue([penalizedAccount, healthyAccount]),
+			};
+
+			const candidates = getTopCandidates(
+				mockManager as unknown as Parameters<typeof getTopCandidates>[0],
+				"codex",
+				null,
+				2,
+			);
+
+			expect(candidates).toHaveLength(2);
+			expect(candidates[0]?.email).toBe("second@example.com");
+			expect(candidates[1]?.email).toBe("first@example.com");
 		});
 
 		it("supports named-parameter options form", () => {

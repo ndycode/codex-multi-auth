@@ -24,7 +24,7 @@ import {
 } from "./codex-cli/state.js";
 import { syncAccountStorageFromCodexCli } from "./codex-cli/sync.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
-import { getAccountIdentityKey } from "./storage/identity.js";
+import { getRuntimeAccountIdentityKey } from "./storage/identity.js";
 
 export {
 	extractAccountId,
@@ -77,7 +77,7 @@ import {
 const log = createLogger("accounts");
 
 function getRuntimeTrackerKey(account: ManagedAccount): string | number {
-	return getAccountIdentityKey(account) ?? `index:${account.index}`;
+	return getRuntimeAccountIdentityKey(account) ?? account.index;
 }
 
 function initFamilyState(defaultValue: number): Record<ModelFamily, number> {

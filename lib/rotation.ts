@@ -46,6 +46,12 @@ interface HealthEntry {
 
 type TrackerKey = number | string;
 
+function normalizeTrackerKey(accountKey: TrackerKey, quotaKey?: string): string {
+	const normalizedKey =
+		typeof accountKey === "number" ? `${accountKey}` : accountKey;
+	return quotaKey ? `${normalizedKey}:${quotaKey}` : normalizedKey;
+}
+
 /**
  * Tracks health scores for accounts to prioritize healthy accounts.
  * Accounts with higher health scores are preferred for selection.
@@ -59,9 +65,7 @@ export class HealthScoreTracker {
   }
 
   private getKey(accountKey: TrackerKey, quotaKey?: string): string {
-    const normalizedKey =
-      typeof accountKey === "number" ? `${accountKey}` : accountKey;
-    return quotaKey ? `${normalizedKey}:${quotaKey}` : normalizedKey;
+    return normalizeTrackerKey(accountKey, quotaKey);
   }
 
   private applyPassiveRecovery(entry: HealthEntry): number {
@@ -167,9 +171,7 @@ export class TokenBucketTracker {
   }
 
   private getKey(accountKey: TrackerKey, quotaKey?: string): string {
-    const normalizedKey =
-      typeof accountKey === "number" ? `${accountKey}` : accountKey;
-    return quotaKey ? `${normalizedKey}:${quotaKey}` : normalizedKey;
+    return normalizeTrackerKey(accountKey, quotaKey);
   }
 
   private refillTokens(entry: TokenBucketEntry): number {

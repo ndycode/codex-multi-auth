@@ -11,7 +11,10 @@ import {
   getAccountIdCandidates,
 } from "../lib/accounts.js";
 import { getHealthTracker, getTokenTracker, resetTrackers } from "../lib/rotation.js";
-import { getAccountIdentityKey } from "../lib/storage/identity.js";
+import {
+  getAccountIdentityKey,
+  getRuntimeAccountIdentityKey,
+} from "../lib/storage/identity.js";
 import type { OAuthAuthDetails } from "../lib/types.js";
 
 vi.mock("../lib/storage.js", async (importOriginal) => {
@@ -1877,7 +1880,7 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
-      const trackerKey = getAccountIdentityKey(account)!;
+      const trackerKey = getRuntimeAccountIdentityKey(account)!;
 
       manager.recordSuccess(account, "codex", "gpt-5.1");
       
@@ -1898,7 +1901,7 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
-      const trackerKey = getAccountIdentityKey(account)!;
+      const trackerKey = getRuntimeAccountIdentityKey(account)!;
 
       manager.recordSuccess(account, "codex", null);
       
@@ -1920,7 +1923,7 @@ describe("AccountManager", () => {
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
       const tokenTracker = getTokenTracker();
-      const trackerKey = getAccountIdentityKey(account)!;
+      const trackerKey = getRuntimeAccountIdentityKey(account)!;
 
       manager.recordRateLimit(account, "codex", "gpt-5.1");
       
@@ -1943,7 +1946,7 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
-      const trackerKey = getAccountIdentityKey(account)!;
+      const trackerKey = getRuntimeAccountIdentityKey(account)!;
 
       manager.recordRateLimit(account, "gpt-5.2");
       
@@ -1964,7 +1967,7 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
-      const trackerKey = getAccountIdentityKey(account)!;
+      const trackerKey = getRuntimeAccountIdentityKey(account)!;
 
       manager.recordFailure(account, "codex", "gpt-5.2");
       
@@ -1985,7 +1988,7 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
-      const trackerKey = getAccountIdentityKey(account)!;
+      const trackerKey = getRuntimeAccountIdentityKey(account)!;
 
       manager.recordFailure(account, "gpt-5.1", null);
       
@@ -2006,7 +2009,7 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const tokenTracker = getTokenTracker();
-      const trackerKey = getAccountIdentityKey(account)!;
+      const trackerKey = getRuntimeAccountIdentityKey(account)!;
 
       const initialTokens = tokenTracker.getTokens(trackerKey, "codex:gpt-5.1");
       const result = manager.consumeToken(account, "codex", "gpt-5.1");
@@ -2032,6 +2035,35 @@ describe("AccountManager", () => {
       const result = manager.consumeToken(account, "codex");
 
       expect(result).toBe(true);
+    });
+
+    it("keeps refresh-only tracker state stable when the refresh token rotates", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+      const healthTracker = getHealthTracker();
+      const tokenTracker = getTokenTracker();
+      const trackerKey = getRuntimeAccountIdentityKey(account)!;
+
+      manager.recordFailure(account, "codex", "gpt-5.1");
+      const degradedScore = healthTracker.getScore(trackerKey, "codex:gpt-5.1");
+      expect(manager.consumeToken(account, "codex", "gpt-5.1")).toBe(true);
+
+      account.refreshToken = "token-1-rotated";
+
+      const rotatedAccount = manager.getCurrentAccount()!;
+      expect(getRuntimeAccountIdentityKey(rotatedAccount)).toBe(trackerKey);
+      expect(getAccountIdentityKey(rotatedAccount)).not.toBe(`${trackerKey}`);
+      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBe(degradedScore);
+      expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
     });
 
     it("preserves tracker state when account indexes shift", () => {
