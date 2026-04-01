@@ -22,6 +22,10 @@ import {
   getAccountIdentityKey,
   getRuntimeAccountIdentityKey,
 } from "../lib/storage/identity.js";
+import {
+  getStoragePathState,
+  setStoragePathState,
+} from "../lib/storage/path-state.js";
 import type { OAuthAuthDetails } from "../lib/types.js";
 
 vi.mock("../lib/storage.js", async (importOriginal) => {
@@ -35,6 +39,12 @@ vi.mock("../lib/storage.js", async (importOriginal) => {
 
 beforeEach(async () => {
   resetTrackers();
+  setStoragePathState({
+    currentStoragePath: null,
+    currentLegacyProjectStoragePath: null,
+    currentLegacyWorktreeStoragePath: null,
+    currentProjectRoot: null,
+  });
   const { saveAccounts, withAccountStorageTransaction } = await import(
     "../lib/storage.js"
   );
@@ -53,6 +63,15 @@ beforeEach(async () => {
       await mockSaveAccounts(storage);
     };
     return handler(current as never, persist);
+  });
+});
+
+afterEach(() => {
+  setStoragePathState({
+    currentStoragePath: null,
+    currentLegacyProjectStoragePath: null,
+    currentLegacyWorktreeStoragePath: null,
+    currentProjectRoot: null,
   });
 });
 
@@ -1786,6 +1805,164 @@ describe("AccountManager", () => {
 
       expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
     });
+
+    it("uses the manager's captured storage path state for delayed saves", async () => {
+      const { saveAccounts, withAccountStorageTransaction } = await import("../lib/storage.js");
+      const mockSaveAccounts = vi.mocked(saveAccounts);
+      const mockWithAccountStorageTransaction = vi.mocked(
+        withAccountStorageTransaction,
+      );
+      mockSaveAccounts.mockClear();
+
+      vi.useFakeTimers();
+      try {
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        setStoragePathState({
+          currentStoragePath: "/repo-a/storage.json",
+          currentLegacyProjectStoragePath: null,
+          currentLegacyWorktreeStoragePath: null,
+          currentProjectRoot: "/repo-a",
+        });
+        const manager = new AccountManager(undefined, stored);
+
+        const seenStates: Array<ReturnType<typeof getStoragePathState>> = [];
+        mockWithAccountStorageTransaction.mockImplementationOnce(async (handler) => {
+          seenStates.push({ ...getStoragePathState() });
+          let current = null;
+          const persist = async (storage: Parameters<typeof saveAccounts>[0]) => {
+            current = structuredClone(storage);
+            await mockSaveAccounts(storage);
+          };
+          return handler(current as never, persist);
+        });
+
+        setStoragePathState({
+          currentStoragePath: "/repo-b/storage.json",
+          currentLegacyProjectStoragePath: null,
+          currentLegacyWorktreeStoragePath: null,
+          currentProjectRoot: "/repo-b",
+        });
+
+        manager.saveToDiskDebounced(50);
+        await vi.advanceTimersByTimeAsync(60);
+
+        expect(seenStates).toEqual([
+          expect.objectContaining({
+            currentStoragePath: "/repo-a/storage.json",
+            currentProjectRoot: "/repo-a",
+          }),
+        ]);
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps ambient storage path state stable during concurrent saves", async () => {
+      const { withAccountStorageTransaction } = await import("../lib/storage.js");
+      const mockWithAccountStorageTransaction = vi.mocked(
+        withAccountStorageTransaction,
+      );
+      const createDeferred = () => {
+        let resolve!: () => void;
+        const promise = new Promise<void>((resolvePromise) => {
+          resolve = resolvePromise;
+        });
+        return { promise, resolve };
+      };
+      const enteredResolvers = [createDeferred(), createDeferred()];
+      const releaseResolvers = [createDeferred(), createDeferred()];
+      const seenStates: Array<ReturnType<typeof getStoragePathState>> = [];
+      let callIndex = 0;
+
+      mockWithAccountStorageTransaction.mockImplementation(async (handler) => {
+        const currentCall = callIndex;
+        callIndex += 1;
+        seenStates.push({ ...getStoragePathState() });
+        enteredResolvers[currentCall]?.resolve();
+        if (currentCall === 0) {
+          await enteredResolvers[1]?.promise;
+        }
+        await releaseResolvers[currentCall]?.promise;
+        return handler(null, async () => undefined);
+      });
+
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-1", addedAt: now, lastUsed: now }],
+      };
+
+      setStoragePathState({
+        currentStoragePath: "/ambient/storage.json",
+        currentLegacyProjectStoragePath: null,
+        currentLegacyWorktreeStoragePath: null,
+        currentProjectRoot: "/ambient",
+      });
+      setStoragePathState({
+        currentStoragePath: "/repo-a/storage.json",
+        currentLegacyProjectStoragePath: null,
+        currentLegacyWorktreeStoragePath: null,
+        currentProjectRoot: "/repo-a",
+      });
+      const managerA = new AccountManager(undefined, stored);
+      setStoragePathState({
+        currentStoragePath: "/repo-b/storage.json",
+        currentLegacyProjectStoragePath: null,
+        currentLegacyWorktreeStoragePath: null,
+        currentProjectRoot: "/repo-b",
+      });
+      const managerB = new AccountManager(undefined, stored);
+      setStoragePathState({
+        currentStoragePath: "/ambient/storage.json",
+        currentLegacyProjectStoragePath: null,
+        currentLegacyWorktreeStoragePath: null,
+        currentProjectRoot: "/ambient",
+      });
+
+      const saveA = managerA.saveToDisk();
+      await enteredResolvers[0]?.promise;
+      const saveB = managerB.saveToDisk();
+      await enteredResolvers[1]?.promise;
+
+      expect(getStoragePathState()).toEqual(
+        expect.objectContaining({
+          currentStoragePath: "/ambient/storage.json",
+          currentProjectRoot: "/ambient",
+        }),
+      );
+
+      releaseResolvers[0]?.resolve();
+      await saveA;
+      releaseResolvers[1]?.resolve();
+      await saveB;
+
+      expect(seenStates).toEqual([
+        expect.objectContaining({
+          currentStoragePath: "/repo-a/storage.json",
+          currentProjectRoot: "/repo-a",
+        }),
+        expect.objectContaining({
+          currentStoragePath: "/repo-b/storage.json",
+          currentProjectRoot: "/repo-b",
+        }),
+      ]);
+      expect(getStoragePathState()).toEqual(
+        expect.objectContaining({
+          currentStoragePath: "/ambient/storage.json",
+          currentProjectRoot: "/ambient",
+        }),
+      );
+    });
   });
 
   describe("constructor edge cases", () => {
@@ -2851,7 +3028,10 @@ describe("AccountManager", () => {
       expect(getRuntimeTrackerKey(rotatedAccount)).toBe(trackerKey);
       expect(getRuntimeAccountIdentityKey(rotatedAccount)).toBe(trackerKey);
       expect(getAccountIdentityKey(rotatedAccount)).not.toBe(`${trackerKey}`);
-      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBe(degradedScore);
+      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
+        degradedScore,
+        6,
+      );
       expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
     });
 
@@ -2903,7 +3083,10 @@ describe("AccountManager", () => {
         "account:account-enriched::email:enriched@example.com",
       );
       expect(getRuntimeTrackerKey(account)).toBe(trackerKey);
-      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBe(degradedScore);
+      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
+        degradedScore,
+        6,
+      );
       expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
     });
 

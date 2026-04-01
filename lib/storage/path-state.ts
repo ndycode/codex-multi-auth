@@ -28,3 +28,10 @@ export function setStoragePathState(state: StoragePathState): void {
 	currentStorageState = state;
 	storagePathStateContext.enterWith(state);
 }
+
+export async function runWithStoragePathState<T>(
+	state: StoragePathState,
+	fn: () => T | Promise<T>,
+): Promise<T> {
+	return await storagePathStateContext.run(state, fn);
+}

@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { getCodexMultiAuthDir } from "../runtime-paths.js";
+import { getStoragePathState } from "./path-state.js";
 
 const PROJECT_MARKERS = [".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", ".codex"];
 const PROJECTS_DIR = "projects";
@@ -345,11 +346,11 @@ export function resolvePath(filePath: string): string {
 	}
 
 	const home = homedir();
-	const cwd = process.cwd();
+	const projectRoot = getStoragePathState().currentProjectRoot ?? process.cwd();
 	const tmp = tmpdir();
 	if (
 		!isWithinDirectory(home, resolved) &&
-		!isWithinDirectory(cwd, resolved) &&
+		!isWithinDirectory(projectRoot, resolved) &&
 		!isWithinDirectory(tmp, resolved)
 	) {
 		throw new Error(`Access denied: path must be within home directory, project directory, or temp directory`);
