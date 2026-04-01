@@ -188,7 +188,7 @@ describe("accounts edge branches", () => {
 
     const expired = snapshot[1];
     expect(expired?.access).toBe("existing-access");
-    expect(expired?.refreshToken).toBe("expired-refresh-updated");
+    expect(expired?.refreshToken).toBe("refresh-2");
     expect(expired?.accountId).toBe("expired-id");
     expect(expired?.accountIdSource).toBe("token");
   });
