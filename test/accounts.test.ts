@@ -1004,6 +1004,70 @@ describe("AccountManager", () => {
 
       expect(manager.getMinWaitTimeForFamily("codex")).toBe(60_000);
     });
+
+    it("returns a conservative wait when the only account has an exhausted half-open probe slot", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            email: "breaker@example.com",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+
+      manager.recordFailure(account, "codex");
+      manager.recordFailure(account, "codex");
+      manager.recordFailure(account, "codex");
+
+      vi.advanceTimersByTime(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1);
+
+      expect(manager.consumeToken(account, "codex")).toBe(true);
+      expect(manager.getMinWaitTimeForFamily("codex")).toBe(
+        DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs,
+      );
+    });
+
+    it("still prefers the soonest recovering account when another breaker is half-open and exhausted", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            email: "breaker@example.com",
+            addedAt: now,
+            lastUsed: now,
+          },
+          {
+            refreshToken: "token-2",
+            addedAt: now,
+            lastUsed: now,
+            rateLimitResetTimes: { codex: now + 40_000 },
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const breakerAccount = manager.getAccountByIndex(0)!;
+
+      manager.recordFailure(breakerAccount, "codex");
+      manager.recordFailure(breakerAccount, "codex");
+      manager.recordFailure(breakerAccount, "codex");
+
+      vi.advanceTimersByTime(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1);
+
+      expect(manager.consumeToken(breakerAccount, "codex")).toBe(true);
+      expect(manager.getMinWaitTimeForFamily("codex")).toBe(9_999);
+    });
   });
 
   describe("updateFromAuth", () => {

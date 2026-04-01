@@ -112,6 +112,23 @@ export class CircuitBreaker {
 		return Math.max(0, this.config.resetTimeoutMs - elapsed);
 	}
 
+	getTimeUntilAvailable(): number {
+		if (this.state === "open") {
+			return this.getTimeUntilReset();
+		}
+
+		if (
+			this.state === "half-open" &&
+			this.halfOpenAttempts >= this.config.halfOpenMaxAttempts
+		) {
+			// The probe slot is already in use, so return a conservative delay instead
+			// of reporting the circuit as immediately available.
+			return this.config.resetTimeoutMs;
+		}
+
+		return 0;
+	}
+
 	private pruneFailures(now: number): void {
 		const cutoff = now - this.config.failureWindowMs;
 		this.failures = this.failures.filter((timestamp) => timestamp >= cutoff);

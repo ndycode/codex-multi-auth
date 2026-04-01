@@ -757,7 +757,7 @@ export class AccountManager {
 			}
 
 			const breaker = getCircuitBreaker(getAccountCircuitKey(account));
-			const breakerWait = breaker.getTimeUntilReset();
+			const breakerWait = breaker.getTimeUntilAvailable();
 			if (breakerWait > 0) {
 				perAccountWaitTimes.push(breakerWait);
 			}
