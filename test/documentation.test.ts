@@ -9,40 +9,65 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { UI_COPY } from "../lib/ui/copy.js";
 
 const projectRoot = resolve(process.cwd());
 
-const userDocs = [
-	"docs/index.md",
-	"docs/README.md",
-	"docs/getting-started.md",
-	"docs/faq.md",
-	"docs/architecture.md",
-	"docs/features.md",
-	"docs/configuration.md",
-	"docs/troubleshooting.md",
-	"docs/privacy.md",
-	"docs/upgrade.md",
-	"docs/reference/commands.md",
-	"docs/reference/public-api.md",
-	"docs/reference/error-contracts.md",
-	"docs/reference/settings.md",
-	"docs/reference/storage-paths.md",
-	"docs/releases/v1.1.10.md",
-	"docs/releases/v0.1.9.md",
-	"docs/releases/v0.1.8.md",
-	"docs/releases/v0.1.7.md",
-	"docs/releases/v0.1.6.md",
-	"docs/releases/v0.1.5.md",
-	"docs/releases/v0.1.4.md",
-	"docs/releases/v0.1.3.md",
-	"docs/releases/v0.1.1.md",
-	"docs/releases/v0.1.0.md",
-	"docs/releases/v0.1.0-beta.0.md",
-	"docs/releases/legacy-pre-0.1-history.md",
-];
+function readPackageVersion(): string {
+	const packagePath = join(projectRoot, "package.json");
+	let parsed: { version?: unknown };
+	try {
+		parsed = JSON.parse(readFileSync(packagePath, "utf-8")) as {
+			version?: unknown;
+		};
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(`Failed to read ${packagePath}: ${message}`);
+	}
+	if (typeof parsed.version !== "string" || parsed.version.trim().length === 0) {
+		throw new Error("package.json must define a non-empty version string");
+	}
+	return parsed.version.trim();
+}
+
+let packageVersion = "";
+let currentStableReleaseDoc = "";
+// These stay manual so the docs portal keeps an intentional short stable-history window.
+const previousStableReleaseDoc = "docs/releases/v1.2.1.md";
+const earlierStableReleaseDoc = "docs/releases/v1.2.0.md";
+
+function getUserDocs(): string[] {
+	return [
+		"docs/index.md",
+		"docs/README.md",
+		"docs/getting-started.md",
+		"docs/faq.md",
+		"docs/architecture.md",
+		"docs/features.md",
+		"docs/configuration.md",
+		"docs/troubleshooting.md",
+		"docs/privacy.md",
+		"docs/upgrade.md",
+		"docs/reference/commands.md",
+		"docs/reference/public-api.md",
+		"docs/reference/error-contracts.md",
+		"docs/reference/settings.md",
+		"docs/reference/storage-paths.md",
+		currentStableReleaseDoc,
+		previousStableReleaseDoc,
+		earlierStableReleaseDoc,
+		"docs/releases/v0.1.7.md",
+		"docs/releases/v0.1.6.md",
+		"docs/releases/v0.1.5.md",
+		"docs/releases/v0.1.4.md",
+		"docs/releases/v0.1.3.md",
+		"docs/releases/v0.1.1.md",
+		"docs/releases/v0.1.0.md",
+		"docs/releases/v0.1.0-beta.0.md",
+		"docs/releases/legacy-pre-0.1-history.md",
+	];
+}
 
 const scopedLegacyAllowedFiles = new Set([
 	"README.md",
@@ -64,6 +89,11 @@ const maintainerRunbooks = [
 	"docs/development/RUNBOOK_ADD_CONFIG_FIELD.md",
 	"docs/development/RUNBOOK_CHANGE_ROUTING_POLICY.md",
 ];
+
+beforeAll(() => {
+	packageVersion = readPackageVersion();
+	currentStableReleaseDoc = `docs/releases/v${packageVersion}.md`;
+});
 
 function read(filePath: string): string {
 	return readFileSync(join(projectRoot, filePath), "utf-8");
@@ -110,9 +140,9 @@ function compareSemverDescending(left: string, right: string): number {
 	return 0;
 }
 
-describe("Documentation Integrity", () => {
+	describe("Documentation Integrity", () => {
 	it("has all required user docs and release notes", () => {
-		for (const docPath of userDocs) {
+		for (const docPath of getUserDocs()) {
 			const fullPath = join(projectRoot, docPath);
 			expect(existsSync(fullPath), `${docPath} should exist`).toBe(true);
 			expect(
@@ -122,10 +152,14 @@ describe("Documentation Integrity", () => {
 		}
 	});
 
-	it("docs portal links to stable, beta, and archived release history", () => {
+	it("docs portal and root README link to stable, beta, and archived release history", () => {
 		const portal = read("docs/README.md");
+		const readme = read("README.md");
 		expect(portal).toContain("reference/public-api.md");
 		expect(portal).toContain("reference/error-contracts.md");
+		expect(portal).toContain(`releases/v${packageVersion}.md`);
+		expect(portal).toContain(previousStableReleaseDoc.replace("docs/", ""));
+		expect(portal).toContain(earlierStableReleaseDoc.replace("docs/", ""));
 		expect(portal).toContain("releases/v0.1.7.md");
 		expect(portal).toContain("releases/v0.1.6.md");
 		expect(portal).toContain("releases/v0.1.5.md");
@@ -134,6 +168,9 @@ describe("Documentation Integrity", () => {
 		expect(portal).toContain(
 			"| [Daily Use release notes](#daily-use) | Stable, previous, and archived release notes |",
 		);
+		expect(readme).toContain(currentStableReleaseDoc);
+		expect(readme).toContain(previousStableReleaseDoc);
+		expect(readme).toContain(earlierStableReleaseDoc);
 
 		const beta = read("docs/releases/v0.1.0-beta.0.md");
 		expect(beta).toContain("Archived");
@@ -158,7 +195,7 @@ describe("Documentation Integrity", () => {
 	});
 
 	it("uses scoped package only in explicit legacy migration notes", () => {
-		const files = ["README.md", ...userDocs];
+		const files = ["README.md", ...getUserDocs()];
 
 		for (const filePath of files) {
 			const content = read(filePath);
@@ -176,7 +213,7 @@ describe("Documentation Integrity", () => {
 
 	it("does not include opencode wording in user docs", () => {
 		const allowedOpencodeFiles = new Set(["docs/reference/storage-paths.md"]);
-		for (const filePath of userDocs) {
+		for (const filePath of getUserDocs()) {
 			const content = read(filePath).toLowerCase();
 			const hasLegacyHostWord = content.includes("opencode");
 			if (hasLegacyHostWord) {
@@ -189,7 +226,7 @@ describe("Documentation Integrity", () => {
 	});
 
 	it("keeps compatibility command aliases scoped to reference, troubleshooting, or migration docs", () => {
-		const files = ["README.md", ...userDocs];
+		const files = ["README.md", ...getUserDocs()];
 		const aliasPattern = /\bcodex (multi auth|multi-auth|multiauth)\b/i;
 
 		for (const filePath of files) {
