@@ -799,6 +799,7 @@ describe("OpenAIOAuthPlugin", () => {
 					},
 				],
 			};
+			let loadFlaggedCallCount = 0;
 
 			vi.mocked(cliModule.promptLoginMode)
 				.mockResolvedValueOnce({ mode: "verify-flagged" } as never)
@@ -809,10 +810,12 @@ describe("OpenAIOAuthPlugin", () => {
 				refresh: "restored-refresh",
 				expires: now + 60_000,
 			});
-			vi.mocked(storageModule.loadFlaggedAccounts)
-				.mockResolvedValueOnce(flaggedStorage)
-				.mockResolvedValueOnce(flaggedStorage)
-				.mockResolvedValueOnce({ version: 1, accounts: [] });
+			vi.mocked(storageModule.loadFlaggedAccounts).mockImplementation(async () => {
+				loadFlaggedCallCount += 1;
+				return loadFlaggedCallCount <= 2
+					? flaggedStorage
+					: { version: 1, accounts: [] };
+			});
 			withAccountAndFlaggedStorageTransactionMock.mockImplementationOnce(
 				async (handler) =>
 					handler(
