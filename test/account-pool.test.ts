@@ -53,7 +53,68 @@ describe("account pool helper", () => {
 		});
 	});
 
-	it("preserves lastUsed when updating an existing account", async () => {
+	it("advances lastUsed when updating an existing account by default", async () => {
+		const persist = vi.fn(async () => undefined);
+		const originalLastUsed = 456;
+		const nowSpy = vi.spyOn(Date, "now").mockReturnValue(789);
+
+		try {
+			await persistAccountPoolResults({
+				results: [
+					{
+						type: "success",
+						access: "access-token-next",
+						refresh: "refresh-token",
+						expires: 999,
+					},
+				],
+				replaceAll: false,
+				modelFamilies: ["codex"],
+				withAccountStorageTransaction: async (handler) =>
+					handler(
+						{
+							version: 3,
+							activeIndex: 0,
+							activeIndexByFamily: { codex: 0 },
+							accounts: [
+								{
+									accountId: "acct_1",
+									email: "user@example.com",
+									refreshToken: "refresh-token",
+									accessToken: "access-token-old",
+									expiresAt: 123,
+									addedAt: 111,
+									lastUsed: originalLastUsed,
+									enabled: true,
+								},
+							],
+						},
+						persist,
+					),
+				findMatchingAccountIndex: () => 0,
+				extractAccountId: () => "acct_1",
+				extractAccountEmail: () => "user@example.com",
+				sanitizeEmail: (email) => email,
+			});
+		} finally {
+			nowSpy.mockRestore();
+		}
+
+		expect(persist).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: [
+					expect.objectContaining({
+						refreshToken: "refresh-token",
+						accessToken: "access-token-next",
+						expiresAt: 999,
+						lastUsed: 789,
+					}),
+				],
+			}),
+		);
+	});
+
+	it("preserves lastUsed for report-style updates when requested", async () => {
 		const persist = vi.fn(async () => undefined);
 		const originalLastUsed = 456;
 
@@ -67,6 +128,7 @@ describe("account pool helper", () => {
 				},
 			],
 			replaceAll: false,
+			preserveLastUsedOnUpdate: true,
 			modelFamilies: ["codex"],
 			withAccountStorageTransaction: async (handler) =>
 				handler(

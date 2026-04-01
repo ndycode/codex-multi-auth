@@ -224,6 +224,40 @@ describe("runReportCommand", () => {
 		});
 	});
 
+	it("records probe error when usable token exists but account id is missing", async () => {
+		const deps = createDeps({
+			hasUsableAccessToken: vi.fn(() => true),
+			loadAccounts: vi.fn(async () =>
+				createStorage([
+					{
+						email: "missing-id@example.com",
+						refreshToken: "refresh-token-1",
+						accessToken: "not-a-jwt",
+						expiresAt: 5_000,
+						addedAt: 1,
+						lastUsed: 1,
+						enabled: true,
+					},
+				]),
+			),
+		});
+
+		const result = await runReportCommand(["--live", "--json"], deps);
+
+		expect(result).toBe(0);
+		expect(deps.queuedRefresh).not.toHaveBeenCalled();
+		expect(deps.saveAccounts).not.toHaveBeenCalled();
+		expect(deps.fetchCodexQuotaSnapshot).not.toHaveBeenCalled();
+		const jsonOutput = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ?? "{}",
+		) as { forecast: { probeErrors: string[] } };
+		expect(jsonOutput.forecast.probeErrors).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining("missing accountId for live probe"),
+			]),
+		);
+	});
+
 	it("persists refreshed probe tokens before report live probes", async () => {
 		const storage = createStorage([
 			{
