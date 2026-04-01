@@ -154,6 +154,14 @@ export class SessionAffinityStore {
 		return removed;
 	}
 
+	clear(): number {
+		const removed = this.entries.size;
+		if (removed === 0) return 0;
+		this.entries.clear();
+		log.debug("Cleared all session affinity entries", { removed });
+		return removed;
+	}
+
 	reindexAfterRemoval(removedIndex: number): number {
 		if (!Number.isFinite(removedIndex) || removedIndex < 0) return 0;
 		let shifted = 0;

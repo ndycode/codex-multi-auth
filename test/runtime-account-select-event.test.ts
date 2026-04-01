@@ -5,9 +5,7 @@ describe("handleAccountSelectEvent", () => {
 	it("ignores account-select events without properties", async () => {
 		const loadAccounts = vi.fn();
 		const saveAccounts = vi.fn();
-		const cachedAccountManager = {
-			syncCodexCliActiveSelectionForIndex: vi.fn(),
-		};
+		const syncSelectedAccount = vi.fn();
 		const showToast = vi.fn(async () => {});
 
 		const handled = await handleAccountSelectEvent({
@@ -16,16 +14,16 @@ describe("handleAccountSelectEvent", () => {
 			loadAccounts,
 			saveAccounts,
 			modelFamilies: ["codex"],
-			getCachedAccountManager: () => cachedAccountManager,
+			syncSelectedAccount,
+			shouldReloadAccountManager: () => false,
 			reloadAccountManagerFromDisk: vi.fn(async () => null),
-			setLastCodexCliActiveSyncIndex: vi.fn(),
 			showToast,
 		});
 
 		expect(handled).toBe(true);
 		expect(loadAccounts).not.toHaveBeenCalled();
 		expect(saveAccounts).not.toHaveBeenCalled();
-		expect(cachedAccountManager.syncCodexCliActiveSelectionForIndex).not.toHaveBeenCalled();
+		expect(syncSelectedAccount).not.toHaveBeenCalled();
 		expect(showToast).not.toHaveBeenCalled();
 	});
 });

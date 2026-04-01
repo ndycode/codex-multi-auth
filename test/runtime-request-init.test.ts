@@ -183,9 +183,9 @@ describe("runtime account select event helper", () => {
 				loadAccounts,
 				saveAccounts: vi.fn(),
 				modelFamilies: [],
-				getCachedAccountManager: () => null,
+				syncSelectedAccount: vi.fn(async () => true),
+				shouldReloadAccountManager: () => false,
 				reloadAccountManagerFromDisk: vi.fn(),
-				setLastCodexCliActiveSyncIndex: vi.fn(),
 				showToast: vi.fn(),
 			}),
 		).resolves.toBe(false);
@@ -205,9 +205,9 @@ describe("runtime account select event helper", () => {
 				loadAccounts,
 				saveAccounts: vi.fn(),
 				modelFamilies: [],
-				getCachedAccountManager: () => null,
+				syncSelectedAccount: vi.fn(async () => true),
+				shouldReloadAccountManager: () => false,
 				reloadAccountManagerFromDisk: vi.fn(),
-				setLastCodexCliActiveSyncIndex: vi.fn(),
 				showToast: vi.fn(),
 			}),
 		).resolves.toBe(true);
@@ -228,9 +228,9 @@ describe("runtime account select event helper", () => {
 				loadAccounts: vi.fn().mockResolvedValue(structuredClone(storage)),
 				saveAccounts,
 				modelFamilies: ["gpt-5"],
-				getCachedAccountManager: () => null,
+				syncSelectedAccount: vi.fn(async () => true),
+				shouldReloadAccountManager: () => false,
 				reloadAccountManagerFromDisk: vi.fn(),
-				setLastCodexCliActiveSyncIndex: vi.fn(),
 				showToast,
 			}),
 		).resolves.toBe(true);
@@ -240,7 +240,7 @@ describe("runtime account select event helper", () => {
 
 	it("updates storage and reports handled events for matching providers", async () => {
 		const saveAccounts = vi.fn();
-		const setLastCodexCliActiveSyncIndex = vi.fn();
+		const syncSelectedAccount = vi.fn(async () => true);
 		const showToast = vi.fn();
 
 		await expect(
@@ -253,14 +253,17 @@ describe("runtime account select event helper", () => {
 				loadAccounts: vi.fn().mockResolvedValue(structuredClone(storage)),
 				saveAccounts,
 				modelFamilies: ["gpt-5"],
-				getCachedAccountManager: () => null,
+				syncSelectedAccount,
+				shouldReloadAccountManager: () => false,
 				reloadAccountManagerFromDisk: vi.fn(),
-				setLastCodexCliActiveSyncIndex,
 				showToast,
 			}),
 		).resolves.toBe(true);
 		expect(saveAccounts).toHaveBeenCalledTimes(1);
-		expect(setLastCodexCliActiveSyncIndex).toHaveBeenCalledWith(0);
+		expect(syncSelectedAccount).toHaveBeenCalledWith(
+			0,
+			expect.objectContaining({ refreshToken: "refresh-1" }),
+		);
 		expect(showToast).toHaveBeenCalledWith("Switched to account 1", "info");
 	});
 });

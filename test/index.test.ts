@@ -337,6 +337,7 @@ const withAccountStorageTransactionMock = vi.fn(
 const withAccountAndFlaggedStorageTransactionMock = vi.fn();
 
 const syncCodexCliSelectionMock = vi.fn(async (_index: number) => {});
+const setCodexCliActiveSelectionMock = vi.fn(async () => {});
 
 vi.mock("../lib/storage.js", async () => {
 	const actual = await vi.importActual("../lib/storage.js");
@@ -367,6 +368,10 @@ vi.mock("../lib/storage.js", async () => {
 	};
 });
 
+vi.mock("../lib/codex-cli/writer.js", () => ({
+	setCodexCliActiveSelection: setCodexCliActiveSelectionMock,
+}));
+
 const extractAccountEmailMock = vi.fn(() => "user@example.com");
 const extractAccountIdMock = vi.fn(() => "account-1");
 const getAccountIdCandidatesMock = vi.fn(() => [{ accountId: "acc-1", source: "token", label: "Test" }]);
@@ -377,6 +382,7 @@ const selectBestAccountCandidateMock = vi.fn(
 vi.mock("../lib/accounts.js", async () => {
 	const tokenUtils = await vi.importActual("../lib/auth/token-utils.js");
 	class MockAccountManager {
+		private activeIndex = 0;
 		private accounts = [
 			{
 				index: 0,
@@ -400,6 +406,10 @@ vi.mock("../lib/accounts.js", async () => {
 
 		getCurrentOrNextForFamilyHybrid() {
 			return this.accounts[0] ?? null;
+		}
+
+		getActiveIndexForFamily() {
+			return this.activeIndex;
 		}
 
 		getCurrentWorkspace(account: Record<string, unknown>) {
@@ -454,10 +464,6 @@ vi.mock("../lib/accounts.js", async () => {
 
 		markToastShown() {}
 
-		getCurrentWorkspace() {
-			return null;
-		}
-
 		disableCurrentWorkspace() {
 			return false;
 		}
@@ -471,6 +477,7 @@ vi.mock("../lib/accounts.js", async () => {
 		}
 
 		setActiveIndex(index: number) {
+			this.activeIndex = index;
 			return this.accounts[index] ?? null;
 		}
 
@@ -1000,11 +1007,14 @@ describe("OpenAIOAuthPlugin", () => {
 
 		it("switches to valid account", async () => {
 			mockStorage.accounts = [
-				{ refreshToken: "r1", email: "user1@example.com" },
-				{ refreshToken: "r2", email: "user2@example.com" },
+				{ refreshToken: "r1", email: "user1@example.com", accessToken: "access-1" },
+				{ refreshToken: "r2", email: "user2@example.com", accessToken: "access-2" },
 			];
 			const result = await plugin.tool["codex-switch"].execute({ index: 2 });
 			expect(result).toContain("Switched to account");
+			expect(mockStorage.activeIndex).toBe(1);
+			expect(mockStorage.activeIndexByFamily.codex).toBe(1);
+			expect(mockStorage.activeIndexByFamily["gpt-5.1"]).toBe(1);
 		});
 
 		it("reloads account manager from disk when cached manager exists", async () => {
@@ -1028,6 +1038,38 @@ describe("OpenAIOAuthPlugin", () => {
 
 			await plugin.tool["codex-switch"].execute({ index: 2 });
 			expect(loadFromDiskSpy).toHaveBeenCalledTimes(1);
+			expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(1);
+			expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+		});
+
+		it("syncs Codex CLI auth even without a warm account manager", async () => {
+			mockStorage.accounts = [
+				{
+					accountId: "acc-1",
+					refreshToken: "refresh-1",
+					accessToken: "access-1",
+					expiresAt: 123,
+					email: "user1@example.com",
+				},
+				{
+					accountId: "acc-2",
+					refreshToken: "refresh-2",
+					accessToken: "access-2",
+					expiresAt: 456,
+					email: "user2@example.com",
+				},
+			];
+
+			const result = await plugin.tool["codex-switch"].execute({ index: 2 });
+
+			expect(result).toContain("Switched to account");
+			expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith({
+				accountId: "acc-2",
+				email: "user2@example.com",
+				accessToken: "access-2",
+				refreshToken: "refresh-2",
+				expiresAt: 456,
+			});
 		});
 	});
 
@@ -1372,10 +1414,12 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		}>,
 	) => {
 		let selection = 0;
+		let activeIndex = accounts[0]?.index ?? 0;
 		return {
 			getAccountCount: () => accounts.length,
 			getCurrentOrNextForFamilyHybrid: () => accounts[selection++] ?? null,
 			getCurrentOrNextForFamily: () => accounts[selection++] ?? null,
+			getActiveIndexForFamily: () => activeIndex,
 			getCurrentWorkspace: (account: {
 				workspaces?: Array<{ id: string; name?: string; enabled?: boolean }>;
 				currentWorkspaceIndex?: number;
@@ -1418,7 +1462,10 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			getMinWaitTimeForFamily: () => 0,
 			shouldShowAccountToast: () => false,
 			markToastShown: () => {},
-			setActiveIndex: (index: number) => accounts[index] ?? null,
+			setActiveIndex: (index: number) => {
+				activeIndex = index;
+				return accounts[index] ?? null;
+			},
 		};
 	};
 
@@ -1531,6 +1578,79 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(firstBody?.previous_response_id).toBeUndefined();
 		expect(secondBody?.previous_response_id).toBe("resp_prev_123");
 		expect(secondBody?.prompt_cache_key).toBe("ses_contract:normalized");
+	});
+
+	it("clears stored previous_response_id after switching accounts", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const configModule = await import("../lib/config.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const stableAccount = {
+			index: 0,
+			accountId: "acc-1",
+			email: "user@example.com",
+			refreshToken: "refresh-1",
+		};
+
+		mockStorage.accounts = [
+			{
+				accountId: "acc-1",
+				email: "user@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-1",
+			},
+			{
+				accountId: "acc-2",
+				email: "user2@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-2",
+			},
+		];
+		vi.spyOn(AccountManager, "loadFromDisk").mockImplementation(
+			async () => buildStableRoutingManager(stableAccount) as never,
+		);
+		vi.mocked(configModule.getSessionAffinity).mockReturnValue(true);
+		vi.mocked(configModule.getResponseContinuation).mockReturnValue(true);
+		vi.mocked(fetchHelpers.transformRequestForCodex).mockImplementation(
+			async (init, _url, _userConfig, _codexMode, body) => ({
+				updatedInit: {
+					...(init as RequestInit),
+					body: JSON.stringify(body ?? {}),
+				},
+				body: (body ?? { model: "gpt-5.4" }) as {
+					model: string;
+					prompt_cache_key?: string;
+					previous_response_id?: string;
+				},
+			}),
+		);
+		vi.mocked(fetchHelpers.handleSuccessResponse)
+			.mockImplementationOnce(async (response, _isStreaming, options) => {
+				options?.onResponseId?.("resp_prev_123");
+				return response;
+			})
+			.mockImplementation(async (response) => response);
+
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { plugin, sdk } = await setupPlugin();
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
+		});
+		await plugin.tool["codex-switch"].execute({ index: 2 });
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
+		});
+
+		const secondInit = vi.mocked(globalThis.fetch).mock.calls[1]?.[1] as RequestInit;
+		const secondBody = JSON.parse(String(secondInit.body)) as {
+			previous_response_id?: string;
+		};
+
+		expect(secondBody?.previous_response_id).toBeUndefined();
 	});
 
 	it("preserves explicit previous_response_id over stored continuation state", async () => {
@@ -1755,6 +1875,58 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(thirdBody.previous_response_id).toBe("resp_first_123");
 		expect(thirdHeaders.get("x-test-account-id")).toBe("acc-1");
 		expect(thirdHeaders.get("x-test-access-token")).toBe("access-alpha");
+	});
+
+	it("persists automatic active-account changes after a successful rotation", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const accounts = [
+			{
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-alpha",
+			},
+			{
+				index: 1,
+				accountId: "acc-2",
+				email: "beta@example.com",
+				refreshToken: "refresh-2",
+				accessToken: "access-beta",
+			},
+		];
+		const rotatingManager = {
+			...buildRoutingManager(accounts),
+			getCurrentOrNextForFamilyHybrid: () => accounts[1] ?? null,
+			getCurrentOrNextForFamily: () => accounts[1] ?? null,
+			getActiveIndexForFamily: () => 0,
+		};
+
+		mockStorage.accounts = accounts.map((account) => ({
+			accountId: account.accountId,
+			email: account.email,
+			refreshToken: account.refreshToken,
+			accessToken: account.accessToken,
+		}));
+		mockStorage.activeIndex = 0;
+		mockStorage.activeIndexByFamily = { codex: 0, "gpt-5.1": 0, "codex-max": 0 };
+		vi.spyOn(AccountManager, "loadFromDisk").mockImplementation(
+			async () => rotatingManager as never,
+		);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { sdk } = await setupPlugin();
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(mockStorage.activeIndex).toBe(1);
+		expect(mockStorage.activeIndexByFamily.codex).toBe(1);
+		expect(mockStorage.activeIndexByFamily["gpt-5.1"]).toBe(1);
+		expect(syncCodexCliSelectionMock).toHaveBeenCalledWith(1);
 	});
 	it("compacts fast-session input before sending the upstream request when compaction succeeds", async () => {
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
@@ -2902,7 +3074,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				getMinWaitTimeForFamily: () => 0,
 				shouldShowAccountToast: () => false,
 				markToastShown: () => {},
-				getCurrentWorkspace: () => null,
+				getActiveIndexForFamily: () => 0,
 				disableCurrentWorkspace: () => false,
 				rotateToNextWorkspace: () => null,
 				hasEnabledWorkspaces: () => true,
@@ -4135,6 +4307,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			getMinWaitTimeForFamily: () => 0,
 			shouldShowAccountToast: () => true,
 			markToastShown,
+			getActiveIndexForFamily: () => 0,
 			setActiveIndex: () => null,
 		};
 		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);

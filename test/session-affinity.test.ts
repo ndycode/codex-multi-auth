@@ -104,6 +104,18 @@ describe("SessionAffinityStore", () => {
 		expect(store.getPreferredAccountIndex("s1", 2_000)).toBe(0);
 	});
 
+	it("clears all stored affinity and continuation entries", () => {
+		const store = new SessionAffinityStore({ ttlMs: 60_000, maxEntries: 10 });
+		store.remember("s1", 0, 1_000);
+		store.remember("s2", 1, 1_500);
+		store.updateLastResponseId("s1", "resp_123", 2_000);
+
+		expect(store.clear()).toBe(2);
+		expect(store.size()).toBe(0);
+		expect(store.getPreferredAccountIndex("s1", 2_500)).toBeNull();
+		expect(store.getLastResponseId("s1", 2_500)).toBeNull();
+	});
+
 	it("prunes expired sessions and keeps non-expired entries", () => {
 		const store = new SessionAffinityStore({ ttlMs: 1_000, maxEntries: 10 });
 		store.remember("s1", 0, 1_000);

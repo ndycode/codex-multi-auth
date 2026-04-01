@@ -215,6 +215,7 @@ import {
 import { applyAccountStorageScopeEntry } from "./lib/runtime/account-storage-scope-entry.js";
 import { runBrowserOAuthFlow } from "./lib/runtime/browser-oauth-flow.js";
 import { handleRuntimeEvent } from "./lib/runtime/event-handler.js";
+import { selectRuntimeAccountIndex } from "./lib/runtime/account-select-event.js";
 import { hydrateRuntimeEmails } from "./lib/runtime/hydrate-emails.js";
 import { buildLoginMenuAccounts } from "./lib/runtime/login-menu-accounts.js";
 import { ensureLiveAccountSyncEntry } from "./lib/runtime/live-sync-entry.js";
@@ -238,6 +239,7 @@ import {
 import { verifyRuntimeFlaggedAccounts } from "./lib/runtime/verify-flagged.js";
 import { SessionAffinityStore } from "./lib/session-affinity.js";
 import { registerCleanup } from "./lib/shutdown.js";
+import { setCodexCliActiveSelection } from "./lib/codex-cli/writer.js";
 import {
 	type AccountStorageV3,
 	clearAccounts,
@@ -545,6 +547,47 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		sessionAffinityConfigKey = next.sessionAffinityConfigKey;
 	};
 
+	const selectActiveRuntimeAccount = async (params: {
+		index: number;
+		showToast?: (
+			message: string,
+			variant?: "info" | "success" | "warning" | "error",
+		) => Promise<void>;
+		onReloadedManager?: (manager: AccountManager) => void;
+	}) =>
+		selectRuntimeAccountIndex({
+			index: params.index,
+			loadAccounts,
+			saveAccounts,
+			modelFamilies: MODEL_FAMILIES,
+			syncSelectedAccount: async (index, account) => {
+				if (cachedAccountManager) {
+					await cachedAccountManager.syncCodexCliActiveSelectionForIndex(index);
+					lastCodexCliActiveSyncIndex = index;
+					return true;
+				}
+				await setCodexCliActiveSelection({
+					accountId: account.accountId,
+					email: account.email,
+					accessToken: account.accessToken,
+					refreshToken: account.refreshToken,
+					expiresAt: account.expiresAt,
+				});
+				lastCodexCliActiveSyncIndex = index;
+				return true;
+			},
+			shouldReloadAccountManager: () => cachedAccountManager !== null,
+			reloadAccountManagerFromDisk: async () => {
+				const reloaded = await reloadAccountManagerFromDisk();
+				params.onReloadedManager?.(reloaded);
+				return reloaded;
+			},
+			showToast: params.showToast,
+			onSelectionChanged: () => {
+				sessionAffinityStore?.clear();
+			},
+		});
+
 	const applyPreemptiveQuotaSettings = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,
 	): void =>
@@ -566,17 +609,29 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			modelFamilies: MODEL_FAMILIES,
 			loadAccounts,
 			saveAccounts,
-			hasCachedAccountManager: () => !!cachedAccountManager,
-			syncCodexCliActiveSelectionForIndex: async (index) => {
-				if (!cachedAccountManager) return;
-				await cachedAccountManager.syncCodexCliActiveSelectionForIndex(index);
-			},
-			setLastCodexCliActiveSyncIndex: (index) => {
+			syncSelectedAccount: async (index, account) => {
+				if (cachedAccountManager) {
+					await cachedAccountManager.syncCodexCliActiveSelectionForIndex(index);
+					lastCodexCliActiveSyncIndex = index;
+					return true;
+				}
+				await setCodexCliActiveSelection({
+					accountId: account.accountId,
+					email: account.email,
+					accessToken: account.accessToken,
+					refreshToken: account.refreshToken,
+					expiresAt: account.expiresAt,
+				});
 				lastCodexCliActiveSyncIndex = index;
+				return true;
 			},
+			shouldReloadAccountManager: () => !!cachedAccountManager,
 			reloadAccountManagerFromDisk: () => reloadAccountManagerFromDisk(),
 			showToast: (message, variant) =>
 				showRuntimeToast(client, message, variant),
+			onSelectionChanged: () => {
+				sessionAffinityStore?.clear();
+			},
 			logDebug,
 			pluginName: PLUGIN_NAME,
 		});
@@ -958,6 +1013,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												model ?? modelFamily,
 											);
 									}
+									const traversalStartActiveIndex =
+										accountManager.getActiveIndexForFamily(modelFamily);
 
 									accountAttemptLoop: while (
 										attempted.size < Math.max(1, accountCount)
@@ -2246,21 +2303,36 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												);
 											}
 											let storedResponseIdForSuccess = false;
+											let pendingResponseIdForSuccess: string | null = null;
+											let continuationWriteReady =
+												!responseContinuationEnabled ||
+												successAccountForResponse.index ===
+													traversalStartActiveIndex;
+											const storeSuccessResponseId = (responseId: string) => {
+												if (!responseContinuationEnabled) return;
+												pendingResponseIdForSuccess = responseId;
+												if (
+													!continuationWriteReady ||
+													storedResponseIdForSuccess
+												) {
+													return;
+												}
+												sessionAffinityStore?.remember(
+													sessionAffinityKey,
+													successAccountForResponse.index,
+												);
+												sessionAffinityStore?.updateLastResponseId(
+													sessionAffinityKey,
+													responseId,
+												);
+												storedResponseIdForSuccess = true;
+											};
 											const successResponse = await handleSuccessResponse(
 												responseForSuccess,
 												isStreaming,
 												{
 													onResponseId: (responseId) => {
-														if (!responseContinuationEnabled) return;
-														sessionAffinityStore?.remember(
-															sessionAffinityKey,
-															successAccountForResponse.index,
-														);
-														sessionAffinityStore?.updateLastResponseId(
-															sessionAffinityKey,
-															responseId,
-														);
-														storedResponseIdForSuccess = true;
+														storeSuccessResponseId(responseId);
 													},
 													streamStallTimeoutMs,
 												},
@@ -2337,6 +2409,34 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													}
 												} catch {
 													// Intentionally empty: non-JSON response bodies should be returned as-is
+												}
+											}
+
+											if (
+												successAccountForResponse.index !==
+												traversalStartActiveIndex
+											) {
+												await selectActiveRuntimeAccount({
+													index: successAccountForResponse.index,
+													onReloadedManager: (reloaded) => {
+														accountManager = reloaded;
+														const reloadedAccount =
+															reloaded.getAccountByIndex(
+																successAccountForResponse.index,
+															);
+														if (reloadedAccount) {
+															successAccountForResponse = reloadedAccount;
+														}
+													},
+												});
+												continuationWriteReady = true;
+												if (
+													pendingResponseIdForSuccess &&
+													!storedResponseIdForSuccess
+												) {
+													storeSuccessResponseId(
+														pendingResponseIdForSuccess,
+													);
 												}
 											}
 
@@ -3213,20 +3313,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						return `Invalid account number: ${index}\n\nValid range: 1-${storage.accounts.length}`;
 					}
 
-					const now = Date.now();
 					const account = storage.accounts[targetIndex];
-					if (account) {
-						account.lastUsed = now;
-						account.lastSwitchReason = "rotation";
-					}
-
-					storage.activeIndex = targetIndex;
-					storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-					for (const family of MODEL_FAMILIES) {
-						storage.activeIndexByFamily[family] = targetIndex;
-					}
 					try {
-						await saveAccounts(storage);
+						await selectActiveRuntimeAccount({ index: targetIndex });
 					} catch (saveError) {
 						logWarn("Failed to save account switch", {
 							error: String(saveError),
@@ -3248,12 +3337,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							].join("\n");
 						}
 						return `Switched to ${formatAccountLabel(account, targetIndex)} but failed to persist. Changes may be lost on restart.`;
-					}
-
-					if (cachedAccountManager) {
-						await reloadRuntimeAccountManager<AccountManager>(
-							makeReloadAccountManagerDeps(),
-						);
 					}
 
 					const label = formatAccountLabel(account, targetIndex);

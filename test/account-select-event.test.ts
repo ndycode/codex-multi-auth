@@ -34,9 +34,9 @@ describe("handleAccountSelectEvent", () => {
 			loadAccounts,
 			saveAccounts: vi.fn(),
 			modelFamilies: ["codex"],
-			getCachedAccountManager: () => null,
+			syncSelectedAccount: vi.fn(),
+			shouldReloadAccountManager: () => false,
 			reloadAccountManagerFromDisk: vi.fn(),
-			setLastCodexCliActiveSyncIndex: vi.fn(),
 			showToast: vi.fn(),
 		});
 
@@ -58,9 +58,9 @@ describe("handleAccountSelectEvent", () => {
 			loadAccounts,
 			saveAccounts,
 			modelFamilies: ["codex"],
-			getCachedAccountManager: () => null,
+			syncSelectedAccount: vi.fn(),
+			shouldReloadAccountManager: () => false,
 			reloadAccountManagerFromDisk: vi.fn(),
-			setLastCodexCliActiveSyncIndex: vi.fn(),
 			showToast: vi.fn(),
 		});
 
@@ -69,18 +69,13 @@ describe("handleAccountSelectEvent", () => {
 		expect(saveAccounts).not.toHaveBeenCalled();
 	});
 
-	it("uses the latest cached account manager after save", async () => {
+	it("syncs the selected account and reloads the manager after save", async () => {
 		const loadAccounts = vi.fn(async () => createStorage());
-		let manager:
-			| { syncCodexCliActiveSelectionForIndex(index: number): Promise<void> }
-			| null = null;
-		const syncCodexCliActiveSelectionForIndex = vi.fn(async () => {});
+		const syncSelectedAccount = vi.fn(async () => true);
 		const reloadAccountManagerFromDisk = vi.fn(async () => {});
-		const setLastCodexCliActiveSyncIndex = vi.fn();
 		const showToast = vi.fn(async () => {});
-		const saveAccounts = vi.fn(async () => {
-			manager = { syncCodexCliActiveSelectionForIndex };
-		});
+		const onSelectionChanged = vi.fn();
+		const saveAccounts = vi.fn(async () => {});
 
 		const handled = await handleAccountSelectEvent({
 			event: { type: "account.select", properties: { index: 1 } },
@@ -88,16 +83,71 @@ describe("handleAccountSelectEvent", () => {
 			loadAccounts,
 			saveAccounts,
 			modelFamilies: ["codex"],
-			getCachedAccountManager: () => manager,
+			syncSelectedAccount,
+			shouldReloadAccountManager: () => true,
 			reloadAccountManagerFromDisk,
-			setLastCodexCliActiveSyncIndex,
 			showToast,
+			onSelectionChanged,
 		});
 
 		expect(handled).toBe(true);
-		expect(syncCodexCliActiveSelectionForIndex).toHaveBeenCalledWith(1);
-		expect(setLastCodexCliActiveSyncIndex).toHaveBeenCalledWith(1);
+		expect(syncSelectedAccount).toHaveBeenCalledWith(
+			1,
+			expect.objectContaining({ email: "one@example.com" }),
+		);
 		expect(reloadAccountManagerFromDisk).toHaveBeenCalledTimes(1);
+		expect(onSelectionChanged).toHaveBeenCalledWith(
+			expect.objectContaining({ previousIndex: 0, nextIndex: 1 }),
+		);
+	});
+
+	it("re-enables disabled selected accounts before persisting", async () => {
+		const storage = createStorage();
+		storage.accounts[1] = {
+			...storage.accounts[1],
+			enabled: false,
+		};
+		const saveAccounts = vi.fn(async () => {});
+
+		await handleAccountSelectEvent({
+			event: { type: "account.select", properties: { index: 1 } },
+			providerId: "openai",
+			loadAccounts: vi.fn(async () => storage),
+			saveAccounts,
+			modelFamilies: ["codex"],
+			syncSelectedAccount: vi.fn(async () => true),
+			shouldReloadAccountManager: () => false,
+			reloadAccountManagerFromDisk: vi.fn(async () => {}),
+			showToast: vi.fn(async () => {}),
+		});
+
+		expect(saveAccounts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				activeIndex: 1,
+				accounts: expect.arrayContaining([
+					expect.objectContaining({ email: "one@example.com", enabled: true }),
+				]),
+			}),
+		);
+	});
+
+	it("does not clear selection state when re-selecting the active index", async () => {
+		const onSelectionChanged = vi.fn();
+
+		await handleAccountSelectEvent({
+			event: { type: "account.select", properties: { index: 0 } },
+			providerId: "openai",
+			loadAccounts: vi.fn(async () => createStorage()),
+			saveAccounts: vi.fn(async () => {}),
+			modelFamilies: ["codex"],
+			syncSelectedAccount: vi.fn(async () => true),
+			shouldReloadAccountManager: () => false,
+			reloadAccountManagerFromDisk: vi.fn(async () => {}),
+			showToast: vi.fn(async () => {}),
+			onSelectionChanged,
+		});
+
+		expect(onSelectionChanged).not.toHaveBeenCalled();
 	});
 
 	it("serializes concurrent account.select writes", async () => {
@@ -118,9 +168,9 @@ describe("handleAccountSelectEvent", () => {
 			loadAccounts,
 			saveAccounts,
 			modelFamilies: ["codex"] as const,
-			getCachedAccountManager: () => null,
+			syncSelectedAccount: vi.fn(async () => true),
+			shouldReloadAccountManager: () => false,
 			reloadAccountManagerFromDisk: vi.fn(async () => {}),
-			setLastCodexCliActiveSyncIndex: vi.fn(),
 			showToast: vi.fn(async () => {}),
 		};
 

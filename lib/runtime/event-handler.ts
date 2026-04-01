@@ -2,11 +2,17 @@ import type { ModelFamily } from "../prompts/codex.js";
 import type { AccountStorageV3 } from "../storage.js";
 import { handleAccountSelectEvent } from "./account-select-event.js";
 
+type RuntimeSelectableAccount = AccountStorageV3["accounts"][number];
+type RuntimeSelectionChangedPayload = {
+	previousIndex: number;
+	nextIndex: number;
+	account: RuntimeSelectableAccount;
+};
+
 export function createRuntimeEventHandler<
-	TLoadedStorage,
-	TSavedStorage,
+	TLoadedStorage extends AccountStorageV3 | null,
+	TSavedStorage extends AccountStorageV3,
 	TModelFamily extends string,
-	TManager,
 >(deps: {
 	handleAccountSelectEvent: (input: {
 		event: { type: string; properties?: unknown };
@@ -14,25 +20,37 @@ export function createRuntimeEventHandler<
 		loadAccounts: () => Promise<TLoadedStorage>;
 		saveAccounts: (storage: TSavedStorage) => Promise<void>;
 		modelFamilies: readonly TModelFamily[];
-		cachedAccountManager: TManager;
-		reloadAccountManagerFromDisk: () => Promise<void>;
-		setLastCodexCliActiveSyncIndex: (index: number) => void;
-		showToast: (
+		syncSelectedAccount?: (
+			index: number,
+			account: RuntimeSelectableAccount,
+		) => Promise<boolean | void>;
+		shouldReloadAccountManager?: () => boolean;
+		reloadAccountManagerFromDisk?: () => Promise<void>;
+		showToast?: (
 			message: string,
 			variant?: "info" | "success" | "warning" | "error",
 		) => Promise<void>;
+		onSelectionChanged?: (
+			payload: RuntimeSelectionChangedPayload,
+		) => Promise<void> | void;
 	}) => Promise<boolean>;
 	providerId: string;
 	loadAccounts: () => Promise<TLoadedStorage>;
 	saveAccounts: (storage: TSavedStorage) => Promise<void>;
 	modelFamilies: readonly TModelFamily[];
-	getCachedAccountManager: () => TManager;
-	reloadAccountManagerFromDisk: () => Promise<void>;
-	setLastCodexCliActiveSyncIndex: (index: number) => void;
-	showToast: (
+	syncSelectedAccount?: (
+		index: number,
+		account: RuntimeSelectableAccount,
+	) => Promise<boolean | void>;
+	shouldReloadAccountManager?: () => boolean;
+	reloadAccountManagerFromDisk?: () => Promise<void>;
+	showToast?: (
 		message: string,
 		variant?: "info" | "success" | "warning" | "error",
 	) => Promise<void>;
+	onSelectionChanged?: (
+		payload: RuntimeSelectionChangedPayload,
+	) => Promise<void> | void;
 	logDebug: (message: string) => void;
 	pluginName: string;
 }) {
@@ -44,10 +62,11 @@ export function createRuntimeEventHandler<
 				loadAccounts: deps.loadAccounts,
 				saveAccounts: deps.saveAccounts,
 				modelFamilies: deps.modelFamilies,
-				cachedAccountManager: deps.getCachedAccountManager(),
+				syncSelectedAccount: deps.syncSelectedAccount,
+				shouldReloadAccountManager: deps.shouldReloadAccountManager,
 				reloadAccountManagerFromDisk: deps.reloadAccountManagerFromDisk,
-				setLastCodexCliActiveSyncIndex: deps.setLastCodexCliActiveSyncIndex,
 				showToast: deps.showToast,
+				onSelectionChanged: deps.onSelectionChanged,
 			});
 			if (handled) return;
 		} catch (error) {
@@ -64,14 +83,19 @@ export async function handleRuntimeEvent(params: {
 	modelFamilies: readonly ModelFamily[];
 	loadAccounts: () => Promise<AccountStorageV3 | null>;
 	saveAccounts: (storage: AccountStorageV3) => Promise<void>;
-	hasCachedAccountManager: () => boolean;
-	syncCodexCliActiveSelectionForIndex: (index: number) => Promise<void>;
-	setLastCodexCliActiveSyncIndex: (index: number) => void;
-	reloadAccountManagerFromDisk: () => Promise<unknown>;
-	showToast: (
+	syncSelectedAccount?: (
+		index: number,
+		account: RuntimeSelectableAccount,
+	) => Promise<boolean | void>;
+	shouldReloadAccountManager?: () => boolean;
+	reloadAccountManagerFromDisk?: () => Promise<unknown>;
+	showToast?: (
 		message: string,
 		variant?: "info" | "success" | "warning" | "error",
 	) => Promise<void>;
+	onSelectionChanged?: (
+		payload: RuntimeSelectionChangedPayload,
+	) => Promise<void> | void;
 	logDebug: (message: string) => void;
 	pluginName: string;
 }): Promise<void> {
@@ -82,16 +106,11 @@ export async function handleRuntimeEvent(params: {
 			loadAccounts: params.loadAccounts,
 			saveAccounts: params.saveAccounts,
 			modelFamilies: params.modelFamilies,
-			getCachedAccountManager: () =>
-				params.hasCachedAccountManager()
-					? {
-							syncCodexCliActiveSelectionForIndex:
-								params.syncCodexCliActiveSelectionForIndex,
-						}
-					: null,
+			syncSelectedAccount: params.syncSelectedAccount,
+			shouldReloadAccountManager: params.shouldReloadAccountManager,
 			reloadAccountManagerFromDisk: params.reloadAccountManagerFromDisk,
-			setLastCodexCliActiveSyncIndex: params.setLastCodexCliActiveSyncIndex,
 			showToast: params.showToast,
+			onSelectionChanged: params.onSelectionChanged,
 		});
 	} catch (error) {
 		params.logDebug(

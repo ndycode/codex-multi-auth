@@ -121,6 +121,10 @@ vi.mock("../lib/accounts.js", async () => {
 			return this.getCurrentOrNextForFamily();
 		}
 
+		getActiveIndexForFamily() {
+			return accountManagerState.accounts[0]?.index ?? 0;
+		}
+
 		getAccountByIndex(index: number) {
 			return (
 				accountManagerState.accounts.find(
