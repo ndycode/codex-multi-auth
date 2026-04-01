@@ -328,7 +328,7 @@ export async function runRuntimeAccountCheck(
 		deps.invalidateAccountManagerCache();
 	} else {
 		if (state.flaggedChanged) {
-		await deps.saveFlaggedAccounts(state.flaggedStorage);
+			await deps.saveFlaggedAccounts(state.flaggedStorage);
 		}
 		if (state.storageChanged) {
 			await deps.saveAccounts(workingStorage);

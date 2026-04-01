@@ -345,6 +345,52 @@ describe("verifyRuntimeFlaggedAccounts", () => {
 		expect(saveFlaggedAccounts).not.toHaveBeenCalled();
 	});
 
+	it("propagates EBUSY from persistAccountsAndFlagged without partial writes", async () => {
+		const now = 10_000;
+		const persistAccountsAndFlagged = vi.fn(async () => {
+			const error = new Error("busy") as Error & { code?: string };
+			error.code = "EBUSY";
+			throw error;
+		});
+		const persistAccounts = vi.fn(async () => {});
+		const saveFlaggedAccounts = vi.fn(async () => {});
+
+		await expect(
+			verifyRuntimeFlaggedAccounts({
+				loadFlaggedAccounts: async () => ({
+					version: 1,
+					accounts: [
+						{
+							email: "refresh@example.com",
+							refreshToken: "refresh-token",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				lookupCodexCliTokensByEmail: async () => {
+					throw new Error("busy");
+				},
+				queuedRefresh: async () => ({
+					type: "success" as const,
+					access: "new-access",
+					refresh: "new-refresh",
+					expires: now + 60_000,
+				}),
+				resolveTokenSuccessAccount: (tokens) => ({ ...tokens }) as never,
+				persistAccounts,
+				persistAccountsAndFlagged,
+				invalidateAccountManagerCache: vi.fn(),
+				saveFlaggedAccounts,
+				now: () => now,
+				showLine: vi.fn(),
+			}),
+		).rejects.toThrow("busy");
+
+		expect(persistAccounts).not.toHaveBeenCalled();
+		expect(saveFlaggedAccounts).not.toHaveBeenCalled();
+	});
+
 	it("leaves flagged state untouched when persistAccounts throws EBUSY", async () => {
 		const now = 10_000;
 		const saveFlaggedAccounts = vi.fn(async () => {});
