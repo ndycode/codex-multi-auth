@@ -779,7 +779,7 @@ export class AccountManager {
 		account.refreshToken = auth.refresh;
 		account.access = auth.access;
 		account.expires = auth.expires;
-		const tokenAccountId = extractAccountId(auth.access);
+		const tokenAccountId = extractAccountId(auth.access)?.trim() || undefined;
 		if (
 			tokenAccountId &&
 			(shouldUpdateAccountIdFromToken(account.accountIdSource, account.accountId))
@@ -836,6 +836,8 @@ export class AccountManager {
 		const nextEmail = sanitizeEmail(extractAccountEmail(auth.access));
 		try {
 			return await withAccountStorageTransaction(async (_current, persist) => {
+				// Snapshot the live in-memory pool under the storage lock so refresh
+				// persistence merges against the latest account state.
 				const nextStorage = structuredClone(
 					this.buildStorageSnapshot(),
 				) as AccountStorageV3;
