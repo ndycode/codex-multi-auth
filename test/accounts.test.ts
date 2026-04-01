@@ -1903,7 +1903,11 @@ describe("AccountManager", () => {
       expect(score).toBe(100);
     });
 
-    it("recordSuccess clears stale auth failure state and persists the healed account", () => {
+    it("recordSuccess clears stale auth failure state and persists the healed account", async () => {
+      const { saveAccounts } = await import("../lib/storage.js");
+      const mockSaveAccounts = vi.mocked(saveAccounts);
+      mockSaveAccounts.mockClear();
+
       const now = Date.now();
       const stored = {
         version: 3 as const,
@@ -1923,19 +1927,58 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       account.consecutiveAuthFailures = 2;
-      const saveSpy = vi
-        .spyOn(manager, "saveToDiskDebounced")
-        .mockImplementation(() => {});
 
       manager.recordSuccess(account, "codex", "gpt-5.1");
+      await manager.flushPendingSave();
 
       expect(account.consecutiveAuthFailures).toBe(0);
       expect(account.coolingDownUntil).toBeUndefined();
       expect(account.cooldownReason).toBeUndefined();
-      expect(saveSpy).toHaveBeenCalledTimes(1);
+      expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+      const persisted = mockSaveAccounts.mock.calls[0]?.[0];
+      expect(persisted?.accounts[0]?.consecutiveAuthFailures ?? 0).toBe(0);
+      expect(persisted?.accounts[0]?.coolingDownUntil).toBeUndefined();
+      expect(persisted?.accounts[0]?.cooldownReason).toBeUndefined();
     });
 
-    it("recordSuccess does not clear an active cooldown from a newer concurrent failure", () => {
+    it("recordSuccess clears stale cooldown metadata when only the reason remains", async () => {
+      const { saveAccounts } = await import("../lib/storage.js");
+      const mockSaveAccounts = vi.mocked(saveAccounts);
+      mockSaveAccounts.mockClear();
+
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            addedAt: now,
+            lastUsed: now,
+            cooldownReason: "network-error" as const,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+
+      manager.recordSuccess(account, "codex", "gpt-5.1");
+      await manager.flushPendingSave();
+
+      expect(account.coolingDownUntil).toBeUndefined();
+      expect(account.cooldownReason).toBeUndefined();
+      expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+      const persisted = mockSaveAccounts.mock.calls[0]?.[0];
+      expect(persisted?.accounts[0]?.coolingDownUntil).toBeUndefined();
+      expect(persisted?.accounts[0]?.cooldownReason).toBeUndefined();
+    });
+
+    it("recordSuccess does not clear an active cooldown from a newer concurrent failure", async () => {
+      const { saveAccounts } = await import("../lib/storage.js");
+      const mockSaveAccounts = vi.mocked(saveAccounts);
+      mockSaveAccounts.mockClear();
+
       const now = Date.now();
       const stored = {
         version: 3 as const,
@@ -1955,16 +1998,14 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       account.consecutiveAuthFailures = 2;
-      const saveSpy = vi
-        .spyOn(manager, "saveToDiskDebounced")
-        .mockImplementation(() => {});
 
       manager.recordSuccess(account, "codex", "gpt-5.1");
+      await manager.flushPendingSave();
 
       expect(account.consecutiveAuthFailures).toBe(2);
       expect(account.coolingDownUntil).toBe(now + 60_000);
       expect(account.cooldownReason).toBe("auth-failure");
-      expect(saveSpy).not.toHaveBeenCalled();
+      expect(mockSaveAccounts).not.toHaveBeenCalled();
     });
 
     it("recordRateLimit updates health and drains token bucket", () => {

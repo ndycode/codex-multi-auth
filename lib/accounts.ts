@@ -557,6 +557,7 @@ export class AccountManager {
 		let healed = false;
 
 		if (!isCoolingDown && hadCooldownMetadata) {
+			this.clearAccountCooldown(account);
 			healed = true;
 		}
 
