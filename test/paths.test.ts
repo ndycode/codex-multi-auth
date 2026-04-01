@@ -23,6 +23,7 @@ import {
 	findProjectRoot,
 	resolvePath,
 } from "../lib/storage/paths.js";
+import { setStoragePathState } from "../lib/storage/path-state.js";
 
 const mockedExistsSync = vi.mocked(existsSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
@@ -53,12 +54,24 @@ describe("Storage Paths Module", () => {
 		vi.clearAllMocks();
 		mockedRealpathSync.mockImplementation((value) => String(value));
 		mockedRealpathSyncNative.mockImplementation((value) => String(value));
+		setStoragePathState({
+			currentStoragePath: null,
+			currentLegacyProjectStoragePath: null,
+			currentLegacyWorktreeStoragePath: null,
+			currentProjectRoot: null,
+		});
 	});
 
 	afterEach(() => {
 		vi.resetAllMocks();
 		if (_origCODEX_HOME !== undefined) process.env.CODEX_HOME = _origCODEX_HOME; else delete process.env.CODEX_HOME;
 		if (_origCODEX_MULTI_AUTH_DIR !== undefined) process.env.CODEX_MULTI_AUTH_DIR = _origCODEX_MULTI_AUTH_DIR; else delete process.env.CODEX_MULTI_AUTH_DIR;
+		setStoragePathState({
+			currentStoragePath: null,
+			currentLegacyProjectStoragePath: null,
+			currentLegacyWorktreeStoragePath: null,
+			currentProjectRoot: null,
+		});
 	});
 
 	describe("getConfigDir", () => {
@@ -783,6 +796,31 @@ describe("Storage Paths Module", () => {
 		it("should accept paths within temp directory", () => {
 			const tempPath = path.join(tmpdir(), "test-file.json");
 			expect(() => resolvePath(tempPath)).not.toThrow();
+		});
+
+		it("accepts paths within the storage state's project root even when cwd differs", () => {
+			const cwd = process.cwd();
+			const parent = path.dirname(cwd);
+			const projectRoot = path.join(parent, `${path.basename(cwd)}-storage-root`);
+			const projectPath = path.join(projectRoot, "subdir", "file.txt");
+			const home = homedir();
+			const tmp = tmpdir();
+			if (
+				projectPath.startsWith(home) ||
+				projectPath.startsWith(tmp) ||
+				projectPath.startsWith(cwd)
+			) {
+				return;
+			}
+
+			setStoragePathState({
+				currentStoragePath: path.join(projectRoot, "openai-codex-accounts.json"),
+				currentLegacyProjectStoragePath: null,
+				currentLegacyWorktreeStoragePath: null,
+				currentProjectRoot: projectRoot,
+			});
+
+			expect(() => resolvePath(projectPath)).not.toThrow();
 		});
 
 		it("should throw for paths outside allowed directories", () => {

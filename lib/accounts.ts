@@ -32,6 +32,11 @@ import {
 	getRuntimeAccountIdentityKey,
 } from "./storage/identity.js";
 import { getCircuitBreaker } from "./circuit-breaker.js";
+import {
+	getStoragePathState,
+	runWithStoragePathState,
+	type StoragePathState,
+} from "./storage/path-state.js";
 
 export {
 	extractAccountId,
@@ -261,6 +266,7 @@ export class AccountManager {
 	private lastToastTime = 0;
 	private saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private pendingSave: Promise<void> | null = null;
+	private readonly storagePathState: StoragePathState;
 
 	static async loadFromDisk(authFallback?: OAuthAuthDetails): Promise<AccountManager> {
 		const stored = await loadAccounts();
@@ -347,6 +353,7 @@ export class AccountManager {
 	}
 
 	constructor(authFallback?: OAuthAuthDetails, stored?: AccountStorageV3 | null) {
+		this.storagePathState = { ...getStoragePathState() };
 		const fallbackAccountId = extractAccountId(authFallback?.access)?.trim() || undefined;
 		const fallbackAccountEmail = sanitizeEmail(extractAccountEmail(authFallback?.access));
 
@@ -1143,8 +1150,10 @@ export class AccountManager {
 	}
 
 	async saveToDisk(): Promise<void> {
-		await withAccountStorageTransaction(async (_current, persist) => {
-			await persist(this.buildStorageSnapshot());
+		await runWithStoragePathState(this.storagePathState, async () => {
+			await withAccountStorageTransaction(async (_current, persist) => {
+				await persist(this.buildStorageSnapshot());
+			});
 		});
 	}
 
