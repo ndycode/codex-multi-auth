@@ -1,6 +1,7 @@
 import { createLogger } from "./logger.js";
 import { refreshExpiringAccounts } from "./proactive-refresh.js";
 import type { AccountManager } from "./accounts.js";
+import { CodexAuthError } from "./errors.js";
 import type { CooldownReason } from "./storage.js";
 import type { TokenResult } from "./types.js";
 
@@ -148,12 +149,19 @@ export class RefreshGuardian {
 						sourceIndex: sourceAccount.index,
 						error: error instanceof Error ? error.message : String(error),
 					});
-					const account = manager.getAccountByIdentity(sourceAccount, refreshedAuth);
+					const account =
+						manager.getAccountByIdentity(sourceAccount, refreshedAuth) ??
+						manager.getAccountByIdentity(sourceAccount);
+					const cooldownReason: CooldownReason =
+						error instanceof CodexAuthError && !error.retryable
+							? "auth-failure"
+							: "network-error";
 					if (account) {
-						manager.markAccountCoolingDown(account, this.bufferMs, "network-error");
+						manager.markAccountCoolingDown(account, this.bufferMs, cooldownReason);
 					}
 					this.stats.failed += 1;
-					this.stats.networkFailed += 1;
+					if (cooldownReason === "auth-failure") this.stats.authFailed += 1;
+					else this.stats.networkFailed += 1;
 					return !!account;
 				}
 				this.stats.refreshed += 1;

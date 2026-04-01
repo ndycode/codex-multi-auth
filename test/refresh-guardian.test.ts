@@ -1,11 +1,13 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import type { AccountManager, ManagedAccount, OAuthAuthDetails } from "../lib/accounts.js";
+import type { AccountManager, ManagedAccount } from "../lib/accounts.js";
 import {
   extractAccountEmail,
   extractAccountId,
   sanitizeEmail,
 } from "../lib/auth/token-utils.js";
+import { CodexAuthError } from "../lib/errors.js";
 import { findMatchingAccountIndex } from "../lib/storage.js";
+import type { OAuthAuthDetails } from "../lib/types.js";
 
 const refreshExpiringAccountsMock = vi.fn();
 const applyRefreshResultMock = vi.fn();
@@ -871,5 +873,49 @@ describe("refresh-guardian", () => {
     expect(stats.failed).toBe(2);
     expect(stats.networkFailed).toBe(1);
     expect(stats.rateLimited).toBe(1);
+  });
+
+  it("treats non-retryable commit failures as auth cooldowns", async () => {
+    const accountA = createManagedAccount(0);
+    const manager = createManagerMock([accountA]);
+    const commitRefreshedAuthMock = manager
+      .commitRefreshedAuth as ReturnType<typeof vi.fn>;
+    commitRefreshedAuthMock.mockRejectedValueOnce(
+      new CodexAuthError("refresh persistence failed", { retryable: false }),
+    );
+
+    const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
+    const guardian = new RefreshGuardian(() => manager, {
+      bufferMs: 60_000,
+      intervalMs: 5_000,
+    });
+
+    refreshExpiringAccountsMock.mockResolvedValue(
+      new Map([
+        [
+          0,
+          {
+            refreshed: true,
+            reason: "success",
+            tokenResult: {
+              type: "success",
+              access: "access-0",
+              refresh: "refresh-0-new",
+              expires: Date.now() + 3_600_000,
+            },
+          },
+        ],
+      ]),
+    );
+
+    await guardian.tick();
+
+    expect(
+      manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(accountA, 60_000, "auth-failure");
+    const stats = guardian.getStats();
+    expect(stats.failed).toBe(1);
+    expect(stats.authFailed).toBe(1);
+    expect(stats.networkFailed).toBe(0);
   });
 });
