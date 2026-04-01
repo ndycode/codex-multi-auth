@@ -10,6 +10,7 @@ const getNamedBackupsMock = vi.fn();
 const restoreAccountsFromBackupMock = vi.fn();
 const queuedRefreshMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
+const isCodexCliSyncEnabledMock = vi.fn(() => false);
 const loadCodexCliStateMock = vi.fn();
 const promptAddAnotherAccountMock = vi.fn();
 const promptLoginModeMock = vi.fn();
@@ -177,6 +178,7 @@ vi.mock("../lib/codex-cli/writer.js", () => ({
 vi.mock("../lib/codex-cli/state.js", () => ({
 	getCodexCliAuthPath: vi.fn(() => "/mock/.codex/auth.json"),
 	getCodexCliConfigPath: vi.fn(() => "/mock/.codex/config.toml"),
+	isCodexCliSyncEnabled: isCodexCliSyncEnabledMock,
 	loadCodexCliState: loadCodexCliStateMock,
 }));
 
@@ -870,18 +872,31 @@ describe("codex manager cli commands", () => {
 	});
 
 	it("prints empty account status for auth list", async () => {
+		const previousPerProjectAccountsEnv =
+			process.env.CODEX_AUTH_PER_PROJECT_ACCOUNTS;
+		process.env.CODEX_AUTH_PER_PROJECT_ACCOUNTS = "1";
 		loadAccountsMock.mockResolvedValueOnce(null);
+		loadPluginConfigMock.mockReturnValue({ perProjectAccounts: true });
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
-		const exitCode = await runCodexMultiAuthCli(["auth", "list"]);
+			const exitCode = await runCodexMultiAuthCli(["auth", "list"]);
 
-		expect(exitCode).toBe(0);
-		expect(logSpy).toHaveBeenCalledWith("No accounts configured.");
-		expect(logSpy).toHaveBeenCalledWith(
-			"Storage: /mock/openai-codex-accounts.json",
-		);
-		expect(setStoragePathMock).toHaveBeenCalledWith(null);
+			expect(exitCode).toBe(0);
+			expect(logSpy).toHaveBeenCalledWith("No accounts configured.");
+			expect(logSpy).toHaveBeenCalledWith(
+				"Storage: /mock/openai-codex-accounts.json",
+			);
+			expect(setStoragePathMock).toHaveBeenCalledWith(process.cwd());
+		} finally {
+			if (previousPerProjectAccountsEnv === undefined) {
+				delete process.env.CODEX_AUTH_PER_PROJECT_ACCOUNTS;
+			} else {
+				process.env.CODEX_AUTH_PER_PROJECT_ACCOUNTS =
+					previousPerProjectAccountsEnv;
+			}
+		}
 	});
 
 	it("prints config explain output in json mode", async () => {
@@ -1211,6 +1226,9 @@ describe("codex manager cli commands", () => {
 	});
 
 	it("prints populated account status for auth status", async () => {
+		const previousPerProjectAccountsEnv =
+			process.env.CODEX_AUTH_PER_PROJECT_ACCOUNTS;
+		process.env.CODEX_AUTH_PER_PROJECT_ACCOUNTS = "1";
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({
 			version: 3,
@@ -1234,25 +1252,35 @@ describe("codex manager cli commands", () => {
 				},
 			],
 		});
+		loadPluginConfigMock.mockReturnValue({ perProjectAccounts: true });
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		try {
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
-		const exitCode = await runCodexMultiAuthCli(["auth", "status"]);
+			const exitCode = await runCodexMultiAuthCli(["auth", "status"]);
 
-		expect(exitCode).toBe(0);
-		expect(setStoragePathMock).toHaveBeenCalledWith(null);
-		expect(logSpy).toHaveBeenCalledWith("Accounts (2)");
-		expect(logSpy).toHaveBeenCalledWith(
-			"Storage: /mock/openai-codex-accounts.json",
-		);
-		expect(logSpy).toHaveBeenCalledWith(
-			expect.stringContaining("1. Account 1 (active@example.com) [current]"),
-		);
-		expect(logSpy).toHaveBeenCalledWith(
-			expect.stringContaining(
-				"2. Account 2 (disabled@example.com) [disabled, rate-limited]",
-			),
-		);
+			expect(exitCode).toBe(0);
+			expect(setStoragePathMock).toHaveBeenCalledWith(process.cwd());
+			expect(logSpy).toHaveBeenCalledWith("Accounts (2)");
+			expect(logSpy).toHaveBeenCalledWith(
+				"Storage: /mock/openai-codex-accounts.json",
+			);
+			expect(logSpy).toHaveBeenCalledWith(
+				expect.stringContaining("1. Account 1 (active@example.com) [current]"),
+			);
+			expect(logSpy).toHaveBeenCalledWith(
+				expect.stringContaining(
+					"2. Account 2 (disabled@example.com) [disabled, rate-limited]",
+				),
+			);
+		} finally {
+			if (previousPerProjectAccountsEnv === undefined) {
+				delete process.env.CODEX_AUTH_PER_PROJECT_ACCOUNTS;
+			} else {
+				process.env.CODEX_AUTH_PER_PROJECT_ACCOUNTS =
+					previousPerProjectAccountsEnv;
+			}
+		}
 	});
 
 	it("runs forecast in json mode", async () => {

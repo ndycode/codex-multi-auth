@@ -20,7 +20,6 @@ import {
 	getStoragePath,
 	loadAccounts,
 	loadFlaggedAccounts,
-	setStoragePath,
 	withAccountStorageTransaction,
 	withAccountAndFlaggedStorageTransaction,
 	withFlaggedStorageTransaction,
@@ -38,6 +37,7 @@ import { setCodexCliActiveSelection } from "../codex-cli/writer.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import { resolveNormalizedModel } from "../request/helpers/model-map.js";
 import type { AccountIdSource, TokenFailure, TokenResult } from "../types.js";
+import { applyManagerAccountStorageScope } from "./account-storage-scope.js";
 
 type TokenSuccess = Extract<TokenResult, { type: "success" }>;
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
@@ -807,7 +807,7 @@ export async function runVerifyFlagged(
 	}
 	const options = parsedArgs.options;
 
-	setStoragePath(null);
+	applyManagerAccountStorageScope();
 	const flaggedStorage = await loadFlaggedAccounts();
 	if (flaggedStorage.accounts.length === 0) {
 		if (options.json) {
@@ -1198,7 +1198,7 @@ export async function runFix(
 	const workingQuotaCache = quotaCache ? deps.cloneQuotaCacheData(quotaCache) : null;
 	let quotaCacheChanged = false;
 
-	setStoragePath(null);
+	applyManagerAccountStorageScope();
 	const storage = await loadAccounts();
 	if (!storage || storage.accounts.length === 0) {
 		if (options.json) {
@@ -1631,7 +1631,7 @@ export async function runDoctor(
 	}
 	const options = parsedArgs.options;
 
-	setStoragePath(null);
+	applyManagerAccountStorageScope();
 	const storagePath = getStoragePath();
 	const storageFileExists = existsSync(storagePath);
 	const checks: DoctorCheck[] = [];

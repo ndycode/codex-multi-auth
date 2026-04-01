@@ -11,6 +11,7 @@ type PersistAndSyncSelectedAccount = (params: {
 }) => Promise<{ synced: boolean; wasDisabled: boolean }>;
 
 export interface SwitchCommandDeps {
+	applyStorageScope?: () => void;
 	setStoragePath: (path: string | null) => void;
 	loadAccounts: () => Promise<LoadedStorage>;
 	persistAndSyncSelectedAccount: PersistAndSyncSelectedAccount;
@@ -23,7 +24,11 @@ export async function runSwitchCommand(
 	args: string[],
 	deps: SwitchCommandDeps,
 ): Promise<number> {
-	deps.setStoragePath(null);
+	if (deps.applyStorageScope) {
+		deps.applyStorageScope();
+	} else {
+		deps.setStoragePath(null);
+	}
 	const indexArg = args[0];
 	if (!indexArg) {
 		(deps.logError ?? console.error)(

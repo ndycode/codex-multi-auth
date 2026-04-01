@@ -18,12 +18,12 @@ import { queuedRefresh } from "../refresh-queue.js";
 import {
 	getStoragePath,
 	loadAccounts,
-	setStoragePath,
 	type AccountMetadataV3,
 	type AccountStorageV3,
 } from "../storage.js";
 import type { TokenFailure } from "../types.js";
 import type { ModelFamily } from "../prompts/codex.js";
+import { applyManagerAccountStorageScope } from "./account-storage-scope.js";
 
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
 
@@ -286,7 +286,7 @@ export async function runForecast(
 	const workingQuotaCache = quotaCache ? deps.cloneQuotaCacheData(quotaCache) : null;
 	let quotaCacheChanged = false;
 
-	setStoragePath(null);
+	applyManagerAccountStorageScope();
 	const storage = await loadAccounts();
 	if (!storage || storage.accounts.length === 0) {
 		console.log("No accounts configured.");
@@ -485,7 +485,7 @@ export async function runReport(
 	}
 	const options = parsedArgs.options;
 
-	setStoragePath(null);
+	applyManagerAccountStorageScope();
 	const storagePath = getStoragePath();
 	const storage = await loadAccounts();
 	const now = Date.now();

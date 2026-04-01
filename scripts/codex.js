@@ -45,21 +45,67 @@ async function loadRunCodexMultiAuthCli() {
 	}
 }
 
-async function autoSyncManagerActiveSelectionIfEnabled() {
+function shouldRunStartupAccountPreflight(args) {
+	const first = (args[0] ?? "").trim().toLowerCase();
+	if (args.length === 0) return true;
+	return !["--help", "-h", "help", "--version", "-v", "version"].includes(
+		first,
+	);
+}
+
+function resolveStartupProbeModel(args) {
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i];
+		if (arg === "-m" || arg === "--model") {
+			const next = args[i + 1];
+			if (typeof next === "string" && next.trim().length > 0) {
+				return next.trim();
+			}
+			continue;
+		}
+		if (typeof arg === "string" && arg.startsWith("--model=")) {
+			const value = arg.slice("--model=".length).trim();
+			if (value.length > 0) return value;
+		}
+	}
+	return undefined;
+}
+
+async function autoSyncManagerActiveSelectionIfEnabled(rawArgs = []) {
 	const enabled = (process.env.CODEX_MULTI_AUTH_AUTO_SYNC_ON_STARTUP ?? "1").trim() !== "0";
 	if (!enabled) return;
 
+	let mod;
 	try {
-		const mod = await import("../dist/lib/codex-manager.js");
-		if (typeof mod.autoSyncActiveAccountToCodex !== "function") {
-			return;
-		}
-		await mod.autoSyncActiveAccountToCodex();
+		mod = await import("../dist/lib/codex-manager.js");
 	} catch (error) {
 		if (error && typeof error === "object" && "code" in error && error.code === "ERR_MODULE_NOT_FOUND") {
 			// Non-auth command path should keep forwarding even if dist is missing.
 			return;
 		}
+		// Best effort only: never block official Codex startup on sync failure.
+		return;
+	}
+
+	if (
+		shouldRunStartupAccountPreflight(rawArgs) &&
+		typeof mod.autoRotateManagerActiveSelectionIfNeeded === "function"
+	) {
+		try {
+			await mod.autoRotateManagerActiveSelectionIfNeeded({
+				model: resolveStartupProbeModel(rawArgs),
+			});
+		} catch {
+			// Best effort only: never block official Codex startup on preflight failure.
+		}
+	}
+
+	try {
+		if (typeof mod.autoSyncActiveAccountToCodex !== "function") {
+			return;
+		}
+		await mod.autoSyncActiveAccountToCodex();
+	} catch {
 		// Best effort only: never block official Codex startup on sync failure.
 	}
 }
@@ -534,7 +580,7 @@ async function main() {
 		return 1;
 	}
 
-	await autoSyncManagerActiveSelectionIfEnabled();
+	await autoSyncManagerActiveSelectionIfEnabled(rawArgs);
 	const forwardArgs = buildForwardArgs(rawArgs);
 	return forwardToRealCodex(realCodexBin, forwardArgs);
 }

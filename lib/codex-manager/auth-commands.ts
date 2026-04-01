@@ -26,7 +26,6 @@ import {
 	loadFlaggedAccounts,
 	restoreAccountsFromBackup,
 	saveAccounts,
-	setStoragePath,
 	StorageError,
 	type AccountMetadataV3,
 	type AccountStorageV3,
@@ -38,6 +37,7 @@ import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import { RefreshLeaseCoordinator } from "../refresh-lease.js";
 import { UI_COPY } from "../ui/copy.js";
 import { confirm } from "../ui/confirm.js";
+import { applyManagerAccountStorageScope } from "./account-storage-scope.js";
 import {
 	applyUiThemeFromDashboardSettings,
 	configureUnifiedSettings,
@@ -283,7 +283,7 @@ export async function runSwitch(
 	args: string[],
 	helpers: AuthCommandHelpers,
 ): Promise<number> {
-	setStoragePath(null);
+	applyManagerAccountStorageScope();
 	const indexArg = args[0];
 	if (!indexArg) {
 		console.error("Missing index. Usage: codex auth switch <index>");
@@ -352,7 +352,7 @@ export async function runBest(
 		return 1;
 	}
 
-	setStoragePath(null);
+	applyManagerAccountStorageScope();
 	const execute = async (): Promise<number> => {
 		const storage = await loadAccounts();
 		if (!storage || storage.accounts.length === 0) {
@@ -593,7 +593,7 @@ export async function runAuthLogin(
 	}
 
 	const loginOptions = parsedArgs.options;
-	setStoragePath(null);
+	applyManagerAccountStorageScope();
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
 	let menuQuotaRefreshStatus: string | undefined;
 	loginFlow:

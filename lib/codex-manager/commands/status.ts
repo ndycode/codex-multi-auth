@@ -9,6 +9,7 @@ import type { AccountStorageV3 } from "../../storage.js";
 type LoadedStorage = AccountStorageV3 | null;
 
 export interface StatusCommandDeps {
+	applyStorageScope?: () => void;
 	setStoragePath: (path: string | null) => void;
 	getStoragePath: () => string | null;
 	loadAccounts: () => Promise<LoadedStorage>;
@@ -28,7 +29,11 @@ export interface StatusCommandDeps {
 export async function runStatusCommand(
 	deps: StatusCommandDeps,
 ): Promise<number> {
-	deps.setStoragePath(null);
+	if (deps.applyStorageScope) {
+		deps.applyStorageScope();
+	} else {
+		deps.setStoragePath(null);
+	}
 	const storage = await deps.loadAccounts();
 	const path = deps.getStoragePath();
 	const logInfo = deps.logInfo ?? console.log;

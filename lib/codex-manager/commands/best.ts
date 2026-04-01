@@ -16,6 +16,7 @@ type ParsedArgsResult<T> =
 	| { ok: false; message: string };
 
 export interface BestCommandDeps {
+	applyStorageScope?: () => void;
 	setStoragePath: (path: string | null) => void;
 	loadAccounts: () => Promise<AccountStorageV3 | null>;
 	saveAccounts: (storage: AccountStorageV3) => Promise<void>;
@@ -109,7 +110,11 @@ export async function runBestCommand(
 		return 1;
 	}
 
-	deps.setStoragePath(null);
+	if (deps.applyStorageScope) {
+		deps.applyStorageScope();
+	} else {
+		deps.setStoragePath(null);
+	}
 	const storage = await deps.loadAccounts();
 	if (!storage || storage.accounts.length === 0) {
 		if (options.json) {

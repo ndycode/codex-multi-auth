@@ -34,6 +34,8 @@ import {
 	type BestCliOptions,
 	runBestCommand,
 } from "./codex-manager/commands/best.js";
+import { applyManagerAccountStorageScope } from "./codex-manager/account-storage-scope.js";
+import { runStartupAccountPreflight } from "./codex-manager/startup-preflight.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
 import { runConfigExplainCommand } from "./codex-manager/commands/config-explain.js";
 import { runDebugBundleCommand } from "./codex-manager/commands/debug-bundle.js";
@@ -2000,7 +2002,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 	const quotaCache = liveProbe ? await loadQuotaCache() : null;
 	const workingQuotaCache = quotaCache ? cloneQuotaCacheData(quotaCache) : null;
 	let quotaCacheChanged = false;
-	setStoragePath(null);
+	applyManagerAccountStorageScope();
 	const storage = await loadAccounts();
 	if (!storage || storage.accounts.length === 0) {
 		console.log("No accounts configured.");
@@ -2587,7 +2589,7 @@ async function runAuthLogin(args: string[]): Promise<number> {
 	}
 
 	const loginOptions = parsedArgs.options;
-	setStoragePath(null);
+	applyManagerAccountStorageScope();
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
 	let menuQuotaRefreshStatus: string | undefined;
 	loginFlow: while (true) {
@@ -3033,6 +3035,7 @@ async function persistAndSyncSelectedAccount({
 
 async function runBest(args: string[]): Promise<number> {
 	return runBestCommand(args, {
+		applyStorageScope: applyManagerAccountStorageScope,
 		setStoragePath,
 		loadAccounts,
 		saveAccounts,
@@ -3054,8 +3057,63 @@ async function runBest(args: string[]): Promise<number> {
 	});
 }
 
+export async function autoRotateManagerActiveSelectionIfNeeded(params?: {
+	model?: string;
+}): Promise<boolean> {
+	const result = await runStartupAccountPreflight(params?.model, {
+		applyStorageScope: applyManagerAccountStorageScope,
+		loadAccounts,
+		saveAccounts,
+		resolveActiveIndex,
+		hasUsableAccessToken,
+		queuedRefresh,
+		normalizeFailureDetail,
+		extractAccountId,
+		extractAccountEmail,
+		sanitizeEmail,
+		applyTokenAccountIdentity,
+		fetchCodexQuotaSnapshot,
+		selectBestAccount: async ({ model, currentIndex }) => {
+			const exitCode = await runBestCommand(["--live", "--model", model], {
+				applyStorageScope: applyManagerAccountStorageScope,
+				setStoragePath,
+				loadAccounts,
+				saveAccounts,
+				parseBestArgs,
+				printBestUsage,
+				resolveActiveIndex,
+				hasUsableAccessToken,
+				queuedRefresh,
+				normalizeFailureDetail,
+				extractAccountId,
+				extractAccountEmail,
+				sanitizeEmail,
+				formatAccountLabel,
+				fetchCodexQuotaSnapshot,
+				evaluateForecastAccounts,
+				recommendForecastAccount,
+				persistAndSyncSelectedAccount,
+				setCodexCliActiveSelection,
+				logInfo: () => undefined,
+				logWarn: () => undefined,
+				logError: () => undefined,
+			});
+			applyManagerAccountStorageScope();
+			const nextStorage = await loadAccounts();
+			const nextIndex = nextStorage
+				? resolveActiveIndex(nextStorage, "codex")
+				: null;
+			return {
+				ok: exitCode === 0,
+				switched: typeof nextIndex === "number" && nextIndex !== currentIndex,
+			};
+		},
+	});
+	return result.switched;
+}
+
 export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
-	setStoragePath(null);
+	applyManagerAccountStorageScope();
 	const storage = await loadAccounts();
 	if (!storage || storage.accounts.length === 0) {
 		return false;
@@ -3183,11 +3241,14 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		printUsage();
 		return 0;
 	}
+
+	applyManagerAccountStorageScope();
 	if (command === "login") {
 		return runAuthLogin(rest);
 	}
 	if (command === "list" || command === "status") {
 		return runStatusCommand({
+			applyStorageScope: applyManagerAccountStorageScope,
 			setStoragePath,
 			getStoragePath,
 			loadAccounts,
@@ -3197,6 +3258,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 	if (command === "switch") {
 		return runSwitchCommand(rest, {
+			applyStorageScope: applyManagerAccountStorageScope,
 			setStoragePath,
 			loadAccounts,
 			persistAndSyncSelectedAccount,
@@ -3219,6 +3281,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 	if (command === "report") {
 		return runReportCommand(rest, {
+			applyStorageScope: applyManagerAccountStorageScope,
 			setStoragePath,
 			getStoragePath,
 			loadAccounts,

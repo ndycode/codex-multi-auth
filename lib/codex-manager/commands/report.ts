@@ -53,6 +53,7 @@ interface ModelInspection {
 const RETRYABLE_WRITE_CODES = new Set(["EBUSY", "EPERM"]);
 
 export interface ReportCommandDeps {
+	applyStorageScope?: () => void;
 	setStoragePath: (path: string | null) => void;
 	getStoragePath: () => string;
 	loadAccounts: () => Promise<AccountStorageV3 | null>;
@@ -351,7 +352,11 @@ export async function runReportCommand(
 	const requestedModel = options.model?.trim() || "gpt-5-codex";
 	const modelInspection = inspectRequestedModel(requestedModel);
 
-	deps.setStoragePath(null);
+	if (deps.applyStorageScope) {
+		deps.applyStorageScope();
+	} else {
+		deps.setStoragePath(null);
+	}
 	const storagePath = deps.getStoragePath();
 	const storage = await deps.loadAccounts();
 	const now = deps.getNow?.() ?? Date.now();

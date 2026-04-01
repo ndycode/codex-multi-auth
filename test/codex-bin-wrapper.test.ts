@@ -80,6 +80,15 @@ function createCustomFakeCodexBin(rootDir: string, lines: string[]): string {
 	return fakeBin;
 }
 
+function writeFixtureCodexManagerModule(
+	fixtureRoot: string,
+	lines: string[],
+): void {
+	const distLibDir = join(fixtureRoot, "dist", "lib");
+	mkdirSync(distLibDir, { recursive: true });
+	writeFileSync(join(distLibDir, "codex-manager.js"), lines.join("\n"), "utf8");
+}
+
 function runWrapper(
 	fixtureRoot: string,
 	args: string[],
@@ -204,6 +213,69 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("FORWARDED:--version");
+	});
+
+	it("runs startup preflight before sync and forwarding for execution commands", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const logPath = join(fixtureRoot, "startup-order.log");
+		writeFixtureCodexManagerModule(fixtureRoot, [
+			'import { appendFileSync } from "node:fs";',
+			`const logPath = ${JSON.stringify(logPath)};`,
+			"export async function autoRotateManagerActiveSelectionIfNeeded(options) {",
+			'  appendFileSync(logPath, `preflight:${options?.model ?? ""}\\n`);',
+			"}",
+			"export async function autoSyncActiveAccountToCodex() {",
+			'  appendFileSync(logPath, "sync\\n");',
+			"  return true;",
+			"}",
+		]);
+
+		const result = runWrapper(fixtureRoot, ["exec", "-m", "gpt-5.3-codex", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec -m gpt-5.3-codex status -c cli_auth_credentials_store="file"',
+		);
+		expect(result.stdout).not.toContain("preflight:");
+		expect(readFileSync(logPath, "utf8").trim().split(/\r?\n/)).toEqual([
+			"preflight:gpt-5.3-codex",
+			"sync",
+		]);
+	});
+
+	it("continues with sync and forwarding when startup preflight throws", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const logPath = join(fixtureRoot, "startup-order.log");
+		writeFixtureCodexManagerModule(fixtureRoot, [
+			'import { appendFileSync } from "node:fs";',
+			`const logPath = ${JSON.stringify(logPath)};`,
+			"export async function autoRotateManagerActiveSelectionIfNeeded() {",
+			'  appendFileSync(logPath, "preflight\\n");',
+			'  throw new Error("startup-preflight-failed");',
+			"}",
+			"export async function autoSyncActiveAccountToCodex() {",
+			'  appendFileSync(logPath, "sync\\n");',
+			"  return true;",
+			"}",
+		]);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status -c cli_auth_credentials_store="file"',
+		);
+		expect(combinedOutput(result)).not.toContain("startup-preflight-failed");
+		expect(readFileSync(logPath, "utf8").trim().split(/\r?\n/)).toEqual([
+			"preflight",
+			"sync",
+		]);
 	});
 
 	it("injects file auth store forwarding for wrapped real cli invocations by default", () => {
