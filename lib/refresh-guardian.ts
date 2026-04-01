@@ -26,6 +26,80 @@ export interface RefreshGuardianStats {
 
 const DEFAULT_INTERVAL_MS = 60_000;
 
+function findMatchingLiveAccountIndexes(
+	liveAccounts: ManagedAccount[],
+	predicate: (candidate: ManagedAccount) => boolean,
+): number[] {
+	const matches: number[] = [];
+	for (const [index, candidate] of liveAccounts.entries()) {
+		if (predicate(candidate)) {
+			matches.push(index);
+		}
+	}
+	return matches;
+}
+
+function resolveLiveAccountIndex(
+	liveAccounts: ManagedAccount[],
+	sourceAccount: ManagedAccount,
+): number {
+	if (sourceAccount.accountId) {
+		const accountIdMatches = findMatchingLiveAccountIndexes(
+			liveAccounts,
+			(candidate) => candidate.accountId === sourceAccount.accountId,
+		);
+		const resolvedIndex = accountIdMatches[0];
+		if (resolvedIndex !== undefined) {
+			log.debug("Resolved refreshed account by accountId", {
+				sourceIndex: sourceAccount.index,
+				resolvedIndex,
+				matchCount: accountIdMatches.length,
+			});
+			if (accountIdMatches.length > 1) {
+				log.warn("Duplicate live accountId matches during refresh reconciliation", {
+					sourceIndex: sourceAccount.index,
+					resolvedIndex,
+					matchCount: accountIdMatches.length,
+				});
+			}
+			return resolvedIndex;
+		}
+	}
+
+	const sourceEmail = sanitizeEmail(sourceAccount.email);
+	if (sourceEmail) {
+		const emailMatches = findMatchingLiveAccountIndexes(
+			liveAccounts,
+			(candidate) => sanitizeEmail(candidate.email) === sourceEmail,
+		);
+		const resolvedIndex = emailMatches[0];
+		if (resolvedIndex !== undefined) {
+			log.debug("Resolved refreshed account by email", {
+				sourceIndex: sourceAccount.index,
+				resolvedIndex,
+				matchCount: emailMatches.length,
+			});
+			if (emailMatches.length > 1) {
+				log.warn("Duplicate live email matches during refresh reconciliation", {
+					sourceIndex: sourceAccount.index,
+					resolvedIndex,
+					matchCount: emailMatches.length,
+				});
+			}
+			return resolvedIndex;
+		}
+	}
+
+	const byToken = liveAccounts.findIndex(
+		(candidate) => candidate.refreshToken === sourceAccount.refreshToken,
+	);
+	log.debug("Resolved refreshed account by refresh token fallback", {
+		sourceIndex: sourceAccount.index,
+		resolvedIndex: byToken,
+	});
+	return byToken;
+}
+
 export class RefreshGuardian {
 	private readonly getAccountManager: () => AccountManager | null;
 	private readonly intervalMs: number;
