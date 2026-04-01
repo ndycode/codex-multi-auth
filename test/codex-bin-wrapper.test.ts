@@ -341,6 +341,38 @@ describe("codex bin wrapper", () => {
 		expect(combinedOutput(result)).toContain("EPERM: locked auth store");
 	});
 
+	it("suppresses known upstream auth transport stderr noise on successful execution", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'process.stdout.write("FORWARDED\\n");',
+			'process.stderr.write(\'2026-04-01T21:43:08.668972Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(TokenRefreshFailed("Failed to parse server response"))\\n\');',
+			"process.exit(0);",
+		]);
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED");
+		expect(result.stderr).toBe("");
+	});
+
+	it("keeps known upstream auth transport stderr noise when execution fails", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'process.stderr.write(\'2026-04-01T21:43:08.668972Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(TokenRefreshFailed("Failed to parse server response"))\\n\');',
+			"process.exit(17);",
+		]);
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(17);
+		expect(result.stderr).toContain("TokenRefreshFailed");
+	});
+
 	it.skipIf(process.platform !== "win32")(
 		"installs Windows codex shell guards to survive shim takeover",
 		() => {

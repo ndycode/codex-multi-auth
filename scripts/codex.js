@@ -168,11 +168,67 @@ function resolveRealCodexBin() {
 	return null;
 }
 
+const BENIGN_SUCCESS_STDERR_PATTERNS = [
+	/rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth\(TokenRefreshFailed\("Failed to parse server response"\)\)$/,
+];
+
+function createSuccessStderrFilter(output) {
+	let pending = "";
+	const suppressedLines = [];
+
+	const shouldSuppressLine = (line) => {
+		const normalizedLine = line.replace(/\r?\n$/, "");
+		return BENIGN_SUCCESS_STDERR_PATTERNS.some((pattern) =>
+			pattern.test(normalizedLine),
+		);
+	};
+
+	const handleLine = (line) => {
+		if (shouldSuppressLine(line)) {
+			suppressedLines.push(line);
+			return;
+		}
+		output.write(line);
+	};
+
+	return {
+		push(chunk) {
+			pending += chunk;
+			while (true) {
+				const newlineIndex = pending.indexOf("\n");
+				if (newlineIndex === -1) break;
+				const line = pending.slice(0, newlineIndex + 1);
+				pending = pending.slice(newlineIndex + 1);
+				handleLine(line);
+			}
+		},
+		flush(exitCode, signal) {
+			if (pending.length > 0) {
+				handleLine(pending);
+				pending = "";
+			}
+			if (exitCode === 0 && !signal) {
+				suppressedLines.length = 0;
+				return;
+			}
+			for (const line of suppressedLines) {
+				output.write(line);
+			}
+			suppressedLines.length = 0;
+		},
+	};
+}
+
 function forwardToRealCodex(codexBin, args) {
 	return new Promise((resolve) => {
 		const child = spawn(process.execPath, [codexBin, ...args], {
-			stdio: "inherit",
+			stdio: ["inherit", "inherit", "pipe"],
 			env: process.env,
+		});
+		const stderrFilter = createSuccessStderrFilter(process.stderr);
+		child.stderr?.setEncoding("utf8");
+		child.stderr?.on("data", (chunk) => {
+			stderrFilter.push(chunk);
 		});
 
 		child.once("error", (error) => {
@@ -181,6 +237,7 @@ function forwardToRealCodex(codexBin, args) {
 		});
 
 		child.once("exit", (code, signal) => {
+			stderrFilter.flush(code, signal);
 			if (signal) {
 				const signalNumber = signal === "SIGINT" ? 130 : 1;
 				resolve(signalNumber);
