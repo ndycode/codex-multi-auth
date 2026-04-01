@@ -161,12 +161,14 @@ describe("accounts edge branches", () => {
           email: "match@example.com",
           accessToken: "refreshed-access",
           expiresAt: now + 300_000,
+          refreshToken: "refreshed-refresh",
           accountId: "account-from-cache",
         },
         {
           email: "expired@example.com",
           accessToken: "expired-access",
           expiresAt: now - 1,
+          refreshToken: "expired-refresh-updated",
           accountId: "expired-id",
         },
         {
@@ -187,12 +189,94 @@ describe("accounts edge branches", () => {
     const snapshot = manager.getAccountsSnapshot();
     const updated = snapshot[0];
     expect(updated?.access).toBe("refreshed-access");
+    expect(updated?.refreshToken).toBe("refresh-1");
     expect(updated?.accountId).toBe("account-from-cache");
     expect(updated?.accountIdSource).toBe("token");
 
     const expired = snapshot[1];
     expect(expired?.access).toBe("existing-access");
-    expect(expired?.accountId).toBeUndefined();
+    expect(expired?.refreshToken).toBe("refresh-2");
+    expect(expired?.accountId).toBe("expired-id");
+    expect(expired?.accountIdSource).toBe("token");
+  });
+
+  it("does not overwrite a local refresh token with a stale usable CLI cache token", async () => {
+    const now = Date.now();
+    const stored = buildStored([
+      buildStoredAccount({
+        refreshToken: "local-refresh-new",
+        email: "match@example.com",
+        accessToken: "local-access",
+        expiresAt: now + 120_000,
+      }),
+    ]);
+
+    const { AccountManager } = await importAccountsModule();
+    const manager = new AccountManager(undefined, stored as never);
+
+    mockLoadCodexCliState.mockResolvedValue({
+      sourceUpdatedAtMs: now - 60_000,
+      accounts: [
+        {
+          email: "match@example.com",
+          accessToken: "cached-access-old",
+          expiresAt: now + 300_000,
+          refreshToken: "cached-refresh-old",
+        },
+      ],
+    });
+
+    const hydrate = getPrivate<() => Promise<void>>(
+      manager as object,
+      "hydrateFromCodexCli",
+    );
+    await hydrate.call(manager);
+
+    const snapshot = manager.getAccountsSnapshot();
+    expect(snapshot[0]?.refreshToken).toBe("local-refresh-new");
+    expect(snapshot[0]?.access).toBe("local-access");
+    expect(mockSaveAccounts).not.toHaveBeenCalled();
+  });
+
+  it("hydrates a missing local refresh token from an expired CLI cache entry", async () => {
+    const now = Date.now();
+    const stored = buildStored([
+      buildStoredAccount({
+        refreshToken: "local-refresh-placeholder",
+        email: "expired@example.com",
+        accessToken: "local-access",
+        expiresAt: now + 120_000,
+      }),
+    ]);
+
+    const { AccountManager } = await importAccountsModule();
+    const manager = new AccountManager(undefined, stored as never);
+    const account = manager.getAccountByIndex(0)!;
+    account.refreshToken = "";
+
+    mockLoadCodexCliState.mockResolvedValue({
+      sourceUpdatedAtMs: now - 60_000,
+      accounts: [
+        {
+          email: "expired@example.com",
+          accessToken: "cached-access-old",
+          expiresAt: now - 1,
+          refreshToken: "cached-refresh-restored",
+          accountId: "expired-account-id",
+        },
+      ],
+    });
+
+    const hydrate = getPrivate<() => Promise<void>>(
+      manager as object,
+      "hydrateFromCodexCli",
+    );
+    await hydrate.call(manager);
+
+    const snapshot = manager.getAccountsSnapshot();
+    expect(snapshot[0]?.refreshToken).toBe("cached-refresh-restored");
+    expect(snapshot[0]?.access).toBe("local-access");
+    expect(snapshot[0]?.accountId).toBe("expired-account-id");
   });
 
   it("returns early when Codex CLI state has no usable cache entries", async () => {
