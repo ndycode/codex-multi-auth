@@ -659,6 +659,25 @@ export class AccountManager {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
 		healthTracker.recordSuccess(account.index, quotaKey);
+		const hadCooldownMetadata =
+			account.coolingDownUntil !== undefined || account.cooldownReason !== undefined;
+		const hadAuthFailures = (account.consecutiveAuthFailures ?? 0) > 0;
+		const isCoolingDown = this.isAccountCoolingDown(account);
+		let healed = false;
+
+		if (!isCoolingDown && hadCooldownMetadata) {
+			this.clearAccountCooldown(account);
+			healed = true;
+		}
+
+		if (!isCoolingDown && hadAuthFailures) {
+			this.clearAuthFailures(account);
+			healed = true;
+		}
+
+		if (healed) {
+			this.saveToDiskDebounced();
+		}
 	}
 
 	recordRateLimit(account: ManagedAccount, family: ModelFamily, model?: string | null): void {
