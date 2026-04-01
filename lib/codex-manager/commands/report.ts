@@ -303,8 +303,8 @@ export async function runReportCommand(
 			const refreshedEmail = sanitizeEmail(
 				extractAccountEmail(refreshResult.access, refreshResult.idToken),
 			);
-			const refreshedAccountId =
-				account.accountId ?? extractAccountId(refreshResult.access);
+			const tokenDerivedAccountId = extractAccountId(refreshResult.access);
+			const refreshedAccountId = account.accountId ?? tokenDerivedAccountId;
 			const previousRefreshToken = account.refreshToken;
 			const previousAccessToken = account.accessToken;
 			const previousExpiresAt = account.expiresAt;
@@ -315,8 +315,8 @@ export async function runReportCommand(
 			account.accessToken = refreshResult.access;
 			account.expiresAt = refreshResult.expires;
 			if (refreshedEmail) account.email = refreshedEmail;
-			if (refreshedAccountId) {
-				account.accountId = refreshedAccountId;
+			if (tokenDerivedAccountId) {
+				account.accountId = tokenDerivedAccountId;
 				account.accountIdSource = "token";
 			}
 			storageChanged =

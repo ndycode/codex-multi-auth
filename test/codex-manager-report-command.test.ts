@@ -197,6 +197,7 @@ describe("runReportCommand", () => {
 			{
 				email: "one@example.com",
 				accountId: "acct-report",
+				accountIdSource: "org",
 				refreshToken: "refresh-token-1",
 				accessToken: "access-token-1",
 				expiresAt: 10,
@@ -223,15 +224,15 @@ describe("runReportCommand", () => {
 			expect.objectContaining({
 				accounts: [
 					expect.objectContaining({
-						refreshToken: "refresh-token-updated",
-						accessToken: "access-token-updated",
-						expiresAt: 500,
-						accountId: "acct-report",
-						accountIdSource: "token",
-					}),
-				],
-			}),
-		);
+					refreshToken: "refresh-token-updated",
+					accessToken: "access-token-updated",
+					expiresAt: 500,
+					accountId: "acct-report",
+					accountIdSource: "org",
+				}),
+			],
+		}),
+	);
 		expect(deps.fetchCodexQuotaSnapshot).toHaveBeenCalledWith(
 			expect.objectContaining({
 				accountId: "acct-report",
