@@ -140,7 +140,7 @@ describe("AccountManager loadFromDisk", () => {
     expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
   });
 
-  it("skips expired Codex CLI cache entries and does not persist", async () => {
+  it("skips expired access hydration but backfills missing account identity", async () => {
     const now = Date.now();
     mockLoadAccounts.mockResolvedValue({
       version: 3 as const,
@@ -170,8 +170,9 @@ describe("AccountManager loadFromDisk", () => {
     const account = manager.getCurrentAccount();
 
     expect(account?.access).toBeUndefined();
-    expect(account?.accountId).toBeUndefined();
-    expect(mockSaveAccounts).not.toHaveBeenCalled();
+    expect(account?.accountId).toBe("acct-expired");
+    expect(account?.accountIdSource).toBe("token");
+    expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
   });
 
   it("syncCodexCliActiveSelectionForIndex ignores invalid indices and syncs a valid one", async () => {

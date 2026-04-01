@@ -285,17 +285,21 @@ export class AccountManager {
 			const cached = cache.get(email);
 			if (!cached) continue;
 
-			if (typeof cached.expiresAt === "number" && cached.expiresAt <= now) {
-				continue;
-			}
+			const cachedAccessUsable =
+				typeof cached.expiresAt !== "number" || cached.expiresAt > now;
 
 			const missingOrExpired =
 				!account.access || account.expires === undefined || account.expires <= now;
-			if (missingOrExpired) {
+			if (missingOrExpired && cachedAccessUsable) {
 				account.access = cached.accessToken;
 				if (typeof cached.expiresAt === "number") {
 					account.expires = cached.expiresAt;
 				}
+				changed = true;
+			}
+
+			if (cached.refreshToken && !account.refreshToken) {
+				account.refreshToken = cached.refreshToken;
 				changed = true;
 			}
 
