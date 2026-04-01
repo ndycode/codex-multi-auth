@@ -188,11 +188,7 @@ export class AccountManager {
 				changed = true;
 			}
 
-			if (
-				cachedAccessUsable &&
-				cached.refreshToken &&
-				!account.refreshToken
-			) {
+			if (cached.refreshToken && !account.refreshToken) {
 				account.refreshToken = cached.refreshToken;
 				changed = true;
 			}
