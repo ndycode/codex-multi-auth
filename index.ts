@@ -177,6 +177,7 @@ import {
 import { applyFastSessionDefaults } from "./lib/request/request-transformer.js";
 import { applyResponseCompaction } from "./lib/request/response-compaction.js";
 import { isEmptyResponse } from "./lib/request/response-handler.js";
+import { CodexAuthError } from "./lib/errors.js";
 import {
 	parseRetryAfterHintMs,
 	sanitizeResponseHeadersForLog,
@@ -997,9 +998,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													accountAuth,
 													client,
 												)) as OAuthAuthDetails;
-												accountManager.updateFromAuth(account, accountAuth);
-												accountManager.clearAuthFailures(account);
-												accountManager.saveToDiskDebounced();
+												await accountManager.commitRefreshedAuth(
+													account,
+													accountAuth,
+												);
 											}
 										} catch (err) {
 											logDebug(
@@ -1010,18 +1012,48 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											runtimeMetrics.accountRotations++;
 											runtimeMetrics.lastError =
 												(err as Error)?.message ?? String(err);
-											const failures =
-												accountManager.incrementAuthFailures(account);
+											const isRetryableRefreshError =
+												err instanceof CodexAuthError && err.retryable;
 											const accountLabel = formatAccountLabel(
 												account,
 												account.index,
 											);
 
+											sessionAffinityStore?.forgetSession(sessionAffinityKey);
+
+											if (isRetryableRefreshError) {
+												runtimeMetrics.networkErrors++;
+												const retryableRefreshPolicy = evaluateFailurePolicy(
+													{ kind: "network", failoverMode },
+													{ networkCooldownMs: networkErrorCooldownMs },
+												);
+												if (retryableRefreshPolicy.recordFailure) {
+													accountManager.recordFailure(
+														account,
+														modelFamily,
+														model,
+													);
+												}
+												if (
+													typeof retryableRefreshPolicy.cooldownMs === "number" &&
+													retryableRefreshPolicy.cooldownReason
+												) {
+													accountManager.markAccountCoolingDown(
+														account,
+														retryableRefreshPolicy.cooldownMs,
+														retryableRefreshPolicy.cooldownReason,
+													);
+													accountManager.saveToDiskDebounced();
+												}
+												continue;
+											}
+
+											const failures =
+												accountManager.incrementAuthFailures(account);
 											const authFailurePolicy = evaluateFailurePolicy({
 												kind: "auth-refresh",
 												consecutiveAuthFailures: failures,
 											});
-											sessionAffinityStore?.forgetSession(sessionAffinityKey);
 
 											if (authFailurePolicy.removeAccount) {
 												const removedIndex = account.index;
@@ -1945,14 +1977,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																		fallbackAuth,
 																		client,
 																	)) as OAuthAuthDetails;
-																	accountManager.updateFromAuth(
+																	await accountManager.commitRefreshedAuth(
 																		fallbackAccount,
 																		fallbackAuth,
 																	);
-																	accountManager.clearAuthFailures(
-																		fallbackAccount,
-																	);
-																	accountManager.saveToDiskDebounced();
 																}
 															} catch (refreshError) {
 																logWarn(

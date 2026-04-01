@@ -1,12 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountManager } from "../lib/accounts.js";
 
+const {
+  mockLoadAccounts,
+  mockSaveAccounts,
+  mockWithAccountStorageTransaction,
+} = vi.hoisted(() => ({
+  mockLoadAccounts: vi.fn(),
+  mockSaveAccounts: vi.fn(),
+  mockWithAccountStorageTransaction: vi.fn(),
+}));
+
 vi.mock("../lib/storage.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/storage.js")>();
   return {
     ...actual,
-    loadAccounts: vi.fn(),
-    saveAccounts: vi.fn().mockResolvedValue(undefined),
+    loadAccounts: mockLoadAccounts,
+    saveAccounts: mockSaveAccounts,
+    withAccountStorageTransaction: mockWithAccountStorageTransaction,
   };
 });
 
@@ -22,7 +33,6 @@ vi.mock("../lib/codex-cli/writer.js", () => ({
   setCodexCliActiveSelection: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { loadAccounts, saveAccounts } from "../lib/storage.js";
 import { syncAccountStorageFromCodexCli } from "../lib/codex-cli/sync.js";
 import { loadCodexCliState } from "../lib/codex-cli/state.js";
 import { setCodexCliActiveSelection } from "../lib/codex-cli/writer.js";
@@ -30,8 +40,13 @@ import { setCodexCliActiveSelection } from "../lib/codex-cli/writer.js";
 describe("AccountManager loadFromDisk", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(loadAccounts).mockResolvedValue(null);
-    vi.mocked(saveAccounts).mockResolvedValue(undefined);
+    mockLoadAccounts.mockResolvedValue(null);
+    mockSaveAccounts.mockResolvedValue(undefined);
+    mockWithAccountStorageTransaction.mockImplementation(async (handler) =>
+      handler(null, async (storage) => {
+        await mockSaveAccounts(storage);
+      }),
+    );
     vi.mocked(syncAccountStorageFromCodexCli).mockResolvedValue({
       changed: false,
       storage: null,
@@ -56,7 +71,7 @@ describe("AccountManager loadFromDisk", () => {
       ],
     };
 
-    vi.mocked(loadAccounts).mockResolvedValue(stored);
+    mockLoadAccounts.mockResolvedValue(stored);
     vi.mocked(syncAccountStorageFromCodexCli).mockResolvedValue({
       changed: true,
       storage: synced,
@@ -64,7 +79,7 @@ describe("AccountManager loadFromDisk", () => {
 
     const manager = await AccountManager.loadFromDisk();
 
-    expect(saveAccounts).toHaveBeenCalledWith(synced);
+    expect(mockSaveAccounts).toHaveBeenCalledWith(synced);
     expect(manager.getAccountCount()).toBe(2);
     expect(manager.getCurrentAccount()?.refreshToken).toBe("stored-refresh");
   });
@@ -81,7 +96,7 @@ describe("AccountManager loadFromDisk", () => {
       changed: true,
       storage: synced,
     });
-    vi.mocked(saveAccounts).mockRejectedValueOnce(new Error("forced persist failure"));
+    mockSaveAccounts.mockRejectedValueOnce(new Error("forced persist failure"));
 
     const manager = await AccountManager.loadFromDisk();
 
@@ -91,7 +106,7 @@ describe("AccountManager loadFromDisk", () => {
 
   it("hydrates missing access/accountId fields from Codex CLI token cache", async () => {
     const now = Date.now();
-    vi.mocked(loadAccounts).mockResolvedValue({
+    mockLoadAccounts.mockResolvedValue({
       version: 3 as const,
       activeIndex: 0,
       accounts: [
@@ -122,12 +137,12 @@ describe("AccountManager loadFromDisk", () => {
     expect(account?.expires).toBe(now + 120_000);
     expect(account?.accountId).toBe("acct-123");
     expect(account?.accountIdSource).toBe("token");
-    expect(saveAccounts).toHaveBeenCalledTimes(1);
+    expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
   });
 
   it("skips expired Codex CLI cache entries and does not persist", async () => {
     const now = Date.now();
-    vi.mocked(loadAccounts).mockResolvedValue({
+    mockLoadAccounts.mockResolvedValue({
       version: 3 as const,
       activeIndex: 0,
       accounts: [
@@ -156,7 +171,7 @@ describe("AccountManager loadFromDisk", () => {
 
     expect(account?.access).toBeUndefined();
     expect(account?.accountId).toBeUndefined();
-    expect(saveAccounts).not.toHaveBeenCalled();
+    expect(mockSaveAccounts).not.toHaveBeenCalled();
   });
 
   it("syncCodexCliActiveSelectionForIndex ignores invalid indices and syncs a valid one", async () => {

@@ -39,7 +39,10 @@ describe("proactive-refresh", () => {
 
 	describe("shouldRefreshProactively", () => {
 		it("returns false when no expiry is set", () => {
-			const account = createMockAccount({ expires: undefined });
+			const account = createMockAccount({
+				access: "test-access",
+				expires: undefined,
+			});
 			expect(shouldRefreshProactively(account)).toBe(false);
 		});
 
@@ -47,6 +50,14 @@ describe("proactive-refresh", () => {
 			const account = createMockAccount({
 				access: undefined,
 				expires: Date.now() + 600000,
+			});
+			expect(shouldRefreshProactively(account)).toBe(true);
+		});
+
+		it("returns true when access token is missing even if expiry is undefined", () => {
+			const account = createMockAccount({
+				access: undefined,
+				expires: undefined,
 			});
 			expect(shouldRefreshProactively(account)).toBe(true);
 		});
@@ -360,6 +371,47 @@ describe("proactive-refresh", () => {
 			expect(results.get(0)?.reason).toBe("success");
 			expect(results.get(1)?.reason).toBe("failed");
 		});
+
+		it("invokes onResult for each refreshed account", async () => {
+			const accounts = [
+				createMockAccount({
+					index: 0,
+					access: "access-0",
+					expires: Date.now() + 60_000,
+					refreshToken: "refresh-0",
+				}),
+				createMockAccount({
+					index: 1,
+					access: "access-1",
+					expires: Date.now() + 10 * 60 * 1000,
+					refreshToken: "refresh-1",
+				}),
+			];
+			const onResult = vi.fn();
+
+			vi.mocked(refreshQueue.queuedRefresh).mockResolvedValue({
+				type: "success" as const,
+				access: "new-access",
+				refresh: "new-refresh",
+				expires: Date.now() + 3_600_000,
+			});
+
+			const results = await refreshExpiringAccounts(
+				accounts,
+				DEFAULT_PROACTIVE_BUFFER_MS,
+				onResult,
+			);
+
+			expect(results.size).toBe(1);
+			expect(onResult).toHaveBeenCalledTimes(1);
+			expect(onResult).toHaveBeenCalledWith(
+				accounts[0],
+				expect.objectContaining({
+					refreshed: true,
+					reason: "success",
+				}),
+			);
+		});
 	});
 
 	describe("applyRefreshResult", () => {
@@ -398,6 +450,36 @@ describe("proactive-refresh", () => {
 			});
 
 			expect(account.refreshToken).toBe("same-refresh");
+		});
+
+		it("updates account identity fields from refreshed access tokens", () => {
+			const account = createMockAccount({
+				access: "old-access",
+				expires: Date.now(),
+				refreshToken: "old-refresh",
+				accountId: "old-account-id",
+				accountIdSource: "token",
+				email: "old@example.com",
+			});
+			const payload = Buffer.from(
+				JSON.stringify({
+					email: "new@example.com",
+					"https://api.openai.com/auth": {
+						chatgpt_account_id: "new-account-id",
+					},
+				}),
+			).toString("base64url");
+
+			applyRefreshResult(account, {
+				type: "success",
+				access: `header.${payload}.signature`,
+				refresh: "new-refresh",
+				expires: Date.now() + 3_600_000,
+			});
+
+			expect(account.accountId).toBe("new-account-id");
+			expect(account.accountIdSource).toBe("token");
+			expect(account.email).toBe("new@example.com");
 		});
 	});
 

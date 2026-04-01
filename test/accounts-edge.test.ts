@@ -3,6 +3,7 @@ import type { OAuthAuthDetails } from "../lib/types.js";
 
 const mockLoadAccounts = vi.fn();
 const mockSaveAccounts = vi.fn();
+const mockWithAccountStorageTransaction = vi.fn();
 const mockLoadCodexCliState = vi.fn();
 const mockSyncAccountStorageFromCodexCli = vi.fn();
 const mockSetCodexCliActiveSelection = vi.fn();
@@ -14,6 +15,7 @@ vi.mock("../lib/storage.js", async (importOriginal) => {
     ...actual,
     loadAccounts: mockLoadAccounts,
     saveAccounts: mockSaveAccounts,
+    withAccountStorageTransaction: mockWithAccountStorageTransaction,
   };
 });
 
@@ -81,6 +83,11 @@ describe("accounts edge branches", () => {
     vi.clearAllMocks();
     mockLoadAccounts.mockResolvedValue(null);
     mockSaveAccounts.mockResolvedValue(undefined);
+    mockWithAccountStorageTransaction.mockImplementation(async (handler) =>
+      handler(null, async (storage) => {
+        await mockSaveAccounts(storage);
+      }),
+    );
     mockLoadCodexCliState.mockResolvedValue(null);
     mockSyncAccountStorageFromCodexCli.mockImplementation(async (storage) => ({
       storage,

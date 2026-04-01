@@ -14,6 +14,12 @@ import { queuedRefresh } from "./refresh-queue.js";
 import { createLogger } from "./logger.js";
 import type { ManagedAccount } from "./accounts.js";
 import type { TokenResult } from "./types.js";
+import {
+	extractAccountEmail,
+	extractAccountId,
+	sanitizeEmail,
+	shouldUpdateAccountIdFromToken,
+} from "./auth/token-utils.js";
 
 const log = createLogger("proactive-refresh");
 
@@ -43,14 +49,14 @@ export function shouldRefreshProactively(
 	account: ManagedAccount,
 	bufferMs: number = DEFAULT_PROACTIVE_BUFFER_MS,
 ): boolean {
-	// No expiry set - can't determine if refresh is needed
-	if (account.expires === undefined) {
-		return false;
-	}
-
 	// No access token - definitely needs refresh
 	if (!account.access) {
 		return true;
+	}
+
+	// No expiry set - can't determine if refresh is needed
+	if (account.expires === undefined) {
+		return false;
 	}
 
 	// Clamp buffer to minimum
@@ -135,6 +141,10 @@ export async function proactiveRefreshAccount(
 export async function refreshExpiringAccounts(
 	accounts: ManagedAccount[],
 	bufferMs: number = DEFAULT_PROACTIVE_BUFFER_MS,
+	onResult?: (
+		account: ManagedAccount,
+		result: ProactiveRefreshResult,
+	) => Promise<void> | void,
 ): Promise<Map<number, ProactiveRefreshResult>> {
 	const results = new Map<number, ProactiveRefreshResult>();
 	const accountsToRefresh = accounts.filter((a) =>
@@ -151,6 +161,7 @@ export async function refreshExpiringAccounts(
 	// Refresh in parallel for efficiency
 	const refreshPromises = accountsToRefresh.map(async (account) => {
 		const result = await proactiveRefreshAccount(account, bufferMs);
+		await onResult?.(account, result);
 		return { index: account.index, result };
 	});
 
@@ -194,4 +205,13 @@ export function applyRefreshResult(
 	if (result.refresh !== account.refreshToken) {
 		account.refreshToken = result.refresh;
 	}
+	const tokenAccountId = extractAccountId(result.access)?.trim() || undefined;
+	if (
+		tokenAccountId &&
+		shouldUpdateAccountIdFromToken(account.accountIdSource, account.accountId)
+	) {
+		account.accountId = tokenAccountId;
+		account.accountIdSource = "token";
+	}
+	account.email = sanitizeEmail(extractAccountEmail(result.access)) ?? account.email;
 }
