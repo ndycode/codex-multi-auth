@@ -8,6 +8,18 @@ function readWorkflow(name: string): string {
 	return readFileSync(join(projectRoot, ".github", "workflows", name), "utf-8");
 }
 
+function extractJobBlock(workflow: string, jobName: string): string {
+	const start = workflow.indexOf(`  ${jobName}:`);
+	if (start === -1) {
+		throw new Error(`Missing workflow job: ${jobName}`);
+	}
+	const nextMatch = workflow
+		.slice(start + 1)
+		.match(/\n  [a-z0-9][a-z0-9-]*:\n/);
+	const end = nextMatch ? start + 1 + nextMatch.index + 1 : workflow.length;
+	return workflow.slice(start, end);
+}
+
 describe("CI workflow parity", () => {
 	it("keeps push CI aligned with the PR release harness checks", () => {
 		const ci = readWorkflow("ci.yml");
@@ -24,13 +36,25 @@ describe("CI workflow parity", () => {
 		}
 	});
 
-	it("keeps Windows script typecheck coverage in push and PR CI", () => {
+	it("keeps push CI using the same stale-run cancellation as PR CI", () => {
 		const ci = readWorkflow("ci.yml");
 		const prCi = readWorkflow("pr-ci.yml");
 
-		expect(ci).toContain("runs-on: windows-latest");
-		expect(ci).toContain("npm run typecheck:scripts");
-		expect(prCi).toContain("runs-on: windows-latest");
-		expect(prCi).toContain("npm run typecheck:scripts");
+		expect(prCi).toContain("concurrency:");
+		expect(prCi).toContain("cancel-in-progress: true");
+		expect(ci).toContain("concurrency:");
+		expect(ci).toContain("cancel-in-progress: true");
+	});
+
+	it("keeps Windows script typecheck coverage in push and PR CI", () => {
+		const ci = readWorkflow("ci.yml");
+		const prCi = readWorkflow("pr-ci.yml");
+		const ciWindowsJob = extractJobBlock(ci, "scripts-windows");
+		const prWindowsJob = extractJobBlock(prCi, "scripts-windows");
+
+		expect(ciWindowsJob).toContain("runs-on: windows-latest");
+		expect(ciWindowsJob).toContain("npm run typecheck:scripts");
+		expect(prWindowsJob).toContain("runs-on: windows-latest");
+		expect(prWindowsJob).toContain("npm run typecheck:scripts");
 	});
 });
