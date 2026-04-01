@@ -136,6 +136,22 @@ describe('Fetch Helpers Module', () => {
 			expect(error.retryable).toBe(false);
 		});
 
+		it('treats missing refresh tokens as terminal auth errors', async () => {
+			const auth: Auth = { type: 'oauth', access: 'old', refresh: '', expires: 0 };
+			const client = { auth: { set: vi.fn() } } as any;
+			vi.spyOn(refreshQueueModule, 'queuedRefresh').mockResolvedValue({
+				type: 'failed',
+				reason: 'missing_refresh',
+				message: 'missing refresh token',
+			} as any);
+
+			const error = await refreshAndUpdateToken(auth, client).catch(
+				(err) => err as CodexAuthError,
+			);
+			expect(error).toBeInstanceOf(CodexAuthError);
+			expect(error.retryable).toBe(false);
+		});
+
 		it('updates stored auth on success', async () => {
 			const auth: Auth = { type: 'oauth', access: 'old', refresh: 'oldr', expires: 0 };
 			const client = { auth: { set: vi.fn() } } as any;

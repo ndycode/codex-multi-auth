@@ -1,5 +1,5 @@
 import { createLogger } from "./logger.js";
-import { applyRefreshResult, refreshExpiringAccounts } from "./proactive-refresh.js";
+import { refreshExpiringAccounts } from "./proactive-refresh.js";
 import type { AccountManager } from "./accounts.js";
 import type { CooldownReason } from "./storage.js";
 import type { TokenResult } from "./types.js";
@@ -123,12 +123,21 @@ export class RefreshGuardian {
 					expires: result.tokenResult.expires,
 					multiAccount: true,
 				};
-				const account = manager.getAccountByIdentity(sourceAccount, refreshedAuth);
-				if (account) {
-					applyRefreshResult(account, result.tokenResult);
-					manager.clearAuthFailures(account);
+				try {
+					await manager.commitRefreshedAuth(sourceAccount, refreshedAuth);
+				} catch (error) {
+					log.warn("Refresh guardian commit failed", {
+						sourceIndex: sourceAccount.index,
+						error: error instanceof Error ? error.message : String(error),
+					});
+					const account = manager.getAccountByIdentity(sourceAccount, refreshedAuth);
+					if (account) {
+						manager.markAccountCoolingDown(account, this.bufferMs, "network-error");
+					}
+					this.stats.failed += 1;
+					this.stats.networkFailed += 1;
+					return !!account;
 				}
-				await manager.commitRefreshedAuth(sourceAccount, refreshedAuth);
 				this.stats.refreshed += 1;
 				return false;
 			}

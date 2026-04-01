@@ -19,6 +19,8 @@ import {
 	type HybridSelectionOptions,
 } from "./rotation.js";
 import { nowMs } from "./utils.js";
+import { ERROR_MESSAGES } from "./constants.js";
+import { CodexAuthError } from "./errors.js";
 import {
 	loadCodexCliState,
 	type CodexCliTokenCacheEntry,
@@ -801,66 +803,70 @@ export class AccountManager {
 	): Promise<ManagedAccount | null> {
 		const nextAccountId = extractAccountId(auth.access)?.trim() || undefined;
 		const nextEmail = sanitizeEmail(extractAccountEmail(auth.access));
+		try {
+			return await withAccountStorageTransaction(async (current, persist) => {
+				const nextStorage = structuredClone(
+					current ?? this.buildStorageSnapshot(),
+				) as AccountStorageV3;
+				const storageIndex = findAccountIndexByIdentity(
+					nextStorage.accounts,
+					source,
+					auth,
+				);
+				if (storageIndex === undefined) {
+					log.warn("Unable to resolve refreshed account for persistence", {
+						sourceIndex: source.index,
+					});
+					return null;
+				}
 
-		await withAccountStorageTransaction(async (current, persist) => {
-			const nextStorage = structuredClone(
-				current ?? this.buildStorageSnapshot(),
-			) as AccountStorageV3;
-			const storageIndex = findAccountIndexByIdentity(
-				nextStorage.accounts,
-				source,
-				auth,
-			);
-			if (storageIndex === undefined) {
-				log.warn("Unable to resolve refreshed account for persistence", {
-					sourceIndex: source.index,
-					email: source.email,
-				});
-				return;
-			}
+				const storedAccount = nextStorage.accounts[storageIndex];
+				if (!storedAccount) {
+					return null;
+				}
 
-			const storedAccount = nextStorage.accounts[storageIndex];
-			if (!storedAccount) {
-				return;
-			}
+				storedAccount.refreshToken = auth.refresh;
+				storedAccount.accessToken = auth.access;
+				storedAccount.expiresAt = auth.expires;
+				if (
+					nextAccountId &&
+					shouldUpdateAccountIdFromToken(
+						storedAccount.accountIdSource,
+						storedAccount.accountId,
+					)
+				) {
+					storedAccount.accountId = nextAccountId;
+					storedAccount.accountIdSource = "token";
+				}
+				if (nextEmail) {
+					storedAccount.email = nextEmail;
+				}
+				storedAccount.enabled = undefined;
+				delete storedAccount.coolingDownUntil;
+				delete storedAccount.cooldownReason;
 
-			storedAccount.refreshToken = auth.refresh;
-			storedAccount.accessToken = auth.access;
-			storedAccount.expiresAt = auth.expires;
-			if (
-				nextAccountId &&
-				shouldUpdateAccountIdFromToken(
-					storedAccount.accountIdSource,
-					storedAccount.accountId,
-				)
-			) {
-				storedAccount.accountId = nextAccountId;
-				storedAccount.accountIdSource = "token";
-			}
-			if (nextEmail) {
-				storedAccount.email = nextEmail;
-			}
-			storedAccount.enabled = undefined;
-			delete storedAccount.coolingDownUntil;
-			delete storedAccount.cooldownReason;
+				await persist(nextStorage);
 
-			await persist(nextStorage);
-		});
+				const liveAccount = this.getAccountByIdentity(source, auth);
+				if (!liveAccount) {
+					log.warn("Unable to resolve refreshed live account after persistence", {
+						sourceIndex: source.index,
+					});
+					return null;
+				}
 
-		const liveAccount = this.getAccountByIdentity(source, auth);
-		if (!liveAccount) {
-			log.warn("Unable to resolve refreshed live account after persistence", {
-				sourceIndex: source.index,
-				email: source.email,
+				this.updateFromAuth(liveAccount, auth);
+				liveAccount.enabled = true;
+				this.clearAccountCooldown(liveAccount);
+				this.clearAuthFailures(liveAccount);
+				return liveAccount;
 			});
-			return null;
+		} catch (error) {
+			throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, {
+				retryable: true,
+				cause: error,
+			});
 		}
-
-		this.updateFromAuth(liveAccount, auth);
-		liveAccount.enabled = true;
-		this.clearAccountCooldown(liveAccount);
-		this.clearAuthFailures(liveAccount);
-		return liveAccount;
 	}
 
 	toAuthDetails(account: ManagedAccount): Auth {
@@ -973,7 +979,9 @@ export class AccountManager {
 	}
 
 	async saveToDisk(): Promise<void> {
-		await saveAccounts(this.buildStorageSnapshot());
+		await withAccountStorageTransaction(async (_current, persist) => {
+			await persist(this.buildStorageSnapshot());
+		});
 	}
 
 	saveToDiskDebounced(delayMs = 500): void {

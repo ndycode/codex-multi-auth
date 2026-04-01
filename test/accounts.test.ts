@@ -11,6 +11,7 @@ import {
   getAccountIdCandidates,
 } from "../lib/accounts.js";
 import { getHealthTracker, getTokenTracker, resetTrackers } from "../lib/rotation.js";
+import { CodexAuthError } from "../lib/errors.js";
 import type { OAuthAuthDetails } from "../lib/types.js";
 
 vi.mock("../lib/storage.js", async (importOriginal) => {
@@ -20,6 +21,29 @@ vi.mock("../lib/storage.js", async (importOriginal) => {
     saveAccounts: vi.fn().mockResolvedValue(undefined),
     withAccountStorageTransaction: vi.fn(),
   };
+});
+
+beforeEach(async () => {
+  resetTrackers();
+  const { saveAccounts, withAccountStorageTransaction } = await import(
+    "../lib/storage.js"
+  );
+  const mockSaveAccounts = vi.mocked(saveAccounts);
+  const mockWithAccountStorageTransaction = vi.mocked(
+    withAccountStorageTransaction,
+  );
+
+  mockSaveAccounts.mockReset();
+  mockSaveAccounts.mockResolvedValue(undefined);
+  mockWithAccountStorageTransaction.mockReset();
+  mockWithAccountStorageTransaction.mockImplementation(async (handler) => {
+    let current = null;
+    const persist = async (storage: Parameters<typeof saveAccounts>[0]) => {
+      current = structuredClone(storage);
+      await mockSaveAccounts(storage);
+    };
+    return handler(current as never, persist);
+  });
 });
 
 describe("parseRateLimitReason", () => {
@@ -1133,6 +1157,144 @@ describe("AccountManager", () => {
       expect(account.coolingDownUntil).toBeUndefined();
       expect(account.cooldownReason).toBeUndefined();
       expect(account.consecutiveAuthFailures).toBe(0);
+    });
+
+    it("propagates storage write failure as retryable CodexAuthError", async () => {
+      const { withAccountStorageTransaction } = await import("../lib/storage.js");
+      const mockWithAccountStorageTransaction = vi.mocked(
+        withAccountStorageTransaction,
+      );
+      mockWithAccountStorageTransaction.mockRejectedValueOnce(
+        Object.assign(new Error("EBUSY"), { code: "EBUSY" }),
+      );
+
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "old-refresh",
+            accessToken: "old-access",
+            expiresAt: now,
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+      const manager = new AccountManager(undefined, stored as any);
+      const account = manager.getAccountByIndex(0)!;
+      const refreshedAuth: OAuthAuthDetails = {
+        type: "oauth",
+        access: "header.payload.signature",
+        refresh: "new-refresh",
+        expires: now + 3_600_000,
+      };
+
+      const error = await manager.commitRefreshedAuth(account, refreshedAuth).catch(
+        (err) => err as CodexAuthError,
+      );
+
+      expect(error).toBeInstanceOf(CodexAuthError);
+      expect(error.retryable).toBe(true);
+      expect(account.refreshToken).toBe("old-refresh");
+    });
+
+    it("prevents debounced saves from writing stale auth during refresh persistence", async () => {
+      vi.useFakeTimers();
+      try {
+        const { saveAccounts, withAccountStorageTransaction } = await import(
+          "../lib/storage.js"
+        );
+        const mockSaveAccounts = vi.mocked(saveAccounts);
+        const mockWithAccountStorageTransaction = vi.mocked(
+          withAccountStorageTransaction,
+        );
+
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "old-refresh",
+              accessToken: "old-access",
+              expiresAt: now,
+              addedAt: now,
+              lastUsed: now,
+            },
+          ],
+        };
+        const manager = new AccountManager(undefined, stored as any);
+        const account = manager.getAccountByIndex(0)!;
+        const refreshedAuth: OAuthAuthDetails = {
+          type: "oauth",
+          access: "new-access",
+          refresh: "new-refresh",
+          expires: now + 3_600_000,
+        };
+
+        let storageState = structuredClone(stored) as typeof stored;
+        let lock = Promise.resolve();
+        let releasePersist!: () => void;
+        const persistBlocked = new Promise<void>((resolve) => {
+          releasePersist = resolve;
+        });
+        let notifyPersistStarted!: () => void;
+        const persistStarted = new Promise<void>((resolve) => {
+          notifyPersistStarted = resolve;
+        });
+
+        mockWithAccountStorageTransaction.mockImplementation((handler) => {
+          const run = async () => {
+            const current = structuredClone(storageState) as typeof storageState;
+            const persist = async (
+              nextStorage: Parameters<typeof saveAccounts>[0],
+            ) => {
+              if (
+                nextStorage.accounts[0]?.refreshToken === "new-refresh" &&
+                nextStorage.accounts[0]?.accessToken === "new-access"
+              ) {
+                notifyPersistStarted();
+                await persistBlocked;
+              }
+              storageState = structuredClone(nextStorage) as typeof storageState;
+              await mockSaveAccounts(nextStorage);
+            };
+            return handler(current as never, persist);
+          };
+
+          const result = lock.then(run, run);
+          lock = result.then(
+            () => undefined,
+            () => undefined,
+          );
+          return result;
+        });
+
+        const commitPromise = manager.commitRefreshedAuth(account, refreshedAuth);
+        await persistStarted;
+
+        manager.saveToDiskDebounced(0);
+        await vi.advanceTimersByTimeAsync(0);
+
+        releasePersist();
+        await commitPromise;
+        await manager.flushPendingSave();
+
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+        expect(mockSaveAccounts.mock.calls[0]?.[0]?.accounts[0]?.refreshToken).toBe(
+          "new-refresh",
+        );
+        expect(mockSaveAccounts.mock.calls[1]?.[0]?.accounts[0]?.refreshToken).toBe(
+          "new-refresh",
+        );
+        expect(mockSaveAccounts.mock.calls[1]?.[0]?.accounts[0]?.accessToken).toBe(
+          "new-access",
+        );
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

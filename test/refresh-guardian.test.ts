@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import type { AccountManager, ManagedAccount } from "../lib/accounts.js";
+import type { AccountManager, ManagedAccount, OAuthAuthDetails } from "../lib/accounts.js";
 
 const refreshExpiringAccountsMock = vi.fn();
 const applyRefreshResultMock = vi.fn();
@@ -218,14 +218,10 @@ describe("refresh-guardian", () => {
     await guardian.tick();
 
     expect(refreshExpiringAccountsMock).toHaveBeenCalledTimes(1);
-    expect(applyRefreshResultMock).toHaveBeenCalledTimes(1);
-    expect(applyRefreshResultMock).toHaveBeenCalledWith(
-      accountA,
-      expect.objectContaining({ type: "success" }),
-    );
+    expect(applyRefreshResultMock).not.toHaveBeenCalled();
     expect(
       manager.clearAuthFailures as ReturnType<typeof vi.fn>,
-    ).toHaveBeenCalledWith(accountA);
+    ).not.toHaveBeenCalled();
     expect(
       manager.commitRefreshedAuth as ReturnType<typeof vi.fn>,
     ).toHaveBeenCalledWith(
@@ -346,14 +342,17 @@ describe("refresh-guardian", () => {
 
     await guardian.tick();
 
-    expect(applyRefreshResultMock).toHaveBeenCalledTimes(1);
-    expect(applyRefreshResultMock).toHaveBeenCalledWith(
-      liveB,
-      expect.objectContaining({ type: "success" }),
-    );
+    expect(applyRefreshResultMock).not.toHaveBeenCalled();
     expect(
-      manager.clearAuthFailures as ReturnType<typeof vi.fn>,
-    ).toHaveBeenCalledWith(liveB);
+      manager.commitRefreshedAuth as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(
+      originalB,
+      expect.objectContaining({
+        type: "oauth",
+        access: "access-shifted",
+        refresh: "refresh-shifted",
+      }),
+    );
   });
 
   it("classifies failure reasons and handles no-op branches", async () => {
@@ -702,10 +701,7 @@ describe("refresh-guardian", () => {
     );
 
     await expect(guardian.tick()).resolves.toBeUndefined();
-    expect(applyRefreshResultMock).not.toHaveBeenCalledWith(
-      expect.objectContaining({ refreshToken: originalA.refreshToken }),
-      expect.anything(),
-    );
+    expect(applyRefreshResultMock).not.toHaveBeenCalled();
     expect(
       manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
     ).toHaveBeenCalledWith(
@@ -713,5 +709,79 @@ describe("refresh-guardian", () => {
       60_000,
       "rate-limit",
     );
+  });
+
+  it("treats commit failures as retryable network cooldowns and continues the batch", async () => {
+    const accountA = createManagedAccount(0);
+    const accountB = createManagedAccount(1);
+    const manager = createManagerMock([accountA, accountB]);
+    const commitRefreshedAuthMock = manager
+      .commitRefreshedAuth as ReturnType<typeof vi.fn>;
+    commitRefreshedAuthMock.mockImplementation(
+      async (candidate: Partial<ManagedAccount>, auth?: OAuthAuthDetails) => {
+        if (candidate.refreshToken === accountA.refreshToken) {
+          throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+        }
+        return manager.getAccountByIdentity(candidate, auth);
+      },
+    );
+
+    const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
+    const guardian = new RefreshGuardian(() => manager, {
+      bufferMs: 60_000,
+      intervalMs: 5_000,
+    });
+
+    refreshExpiringAccountsMock.mockResolvedValue(
+      new Map([
+        [
+          0,
+          {
+            refreshed: true,
+            reason: "success",
+            tokenResult: {
+              type: "success",
+              access: "access-0",
+              refresh: "refresh-0-new",
+              expires: Date.now() + 3_600_000,
+            },
+          },
+        ],
+        [
+          1,
+          {
+            refreshed: true,
+            reason: "failed",
+            tokenResult: {
+              type: "failed",
+              reason: "http_error",
+              statusCode: 429,
+              message: "rate limited",
+            },
+          },
+        ],
+      ]),
+    );
+
+    await guardian.tick();
+
+    expect(applyRefreshResultMock).not.toHaveBeenCalled();
+    expect(commitRefreshedAuthMock).toHaveBeenCalledTimes(1);
+    expect(
+      manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(1, accountA, 60_000, "network-error");
+    expect(
+      manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(2, accountB, 60_000, "rate-limit");
+    expect(
+      manager.saveToDiskDebounced as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledTimes(1);
+
+    const stats = guardian.getStats();
+    expect(stats.runs).toBe(1);
+    expect(stats.refreshed).toBe(0);
+    expect(stats.failed).toBe(2);
+    expect(stats.networkFailed).toBe(1);
+    expect(stats.rateLimited).toBe(1);
   });
 });

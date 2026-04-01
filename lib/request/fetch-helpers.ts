@@ -435,8 +435,9 @@ function isRetryableRefreshFailure(
 		case "network_error":
 		case "unknown":
 		case "invalid_response":
-		case "missing_refresh":
 			return true;
+		case "missing_refresh":
+			return false;
 		case "http_error":
 			return !(
 				result.statusCode === HTTP_STATUS.BAD_REQUEST ||
