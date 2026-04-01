@@ -1865,6 +1865,104 @@ describe("AccountManager", () => {
         vi.useRealTimers();
       }
     });
+
+    it("keeps ambient storage path state stable during concurrent saves", async () => {
+      const { withAccountStorageTransaction } = await import("../lib/storage.js");
+      const mockWithAccountStorageTransaction = vi.mocked(
+        withAccountStorageTransaction,
+      );
+      const createDeferred = () => {
+        let resolve!: () => void;
+        const promise = new Promise<void>((resolvePromise) => {
+          resolve = resolvePromise;
+        });
+        return { promise, resolve };
+      };
+      const enteredResolvers = [createDeferred(), createDeferred()];
+      const releaseResolvers = [createDeferred(), createDeferred()];
+      const seenStates: Array<ReturnType<typeof getStoragePathState>> = [];
+      let callIndex = 0;
+
+      mockWithAccountStorageTransaction.mockImplementation(async (handler) => {
+        const currentCall = callIndex;
+        callIndex += 1;
+        seenStates.push({ ...getStoragePathState() });
+        enteredResolvers[currentCall]?.resolve();
+        if (currentCall === 0) {
+          await enteredResolvers[1]?.promise;
+        }
+        await releaseResolvers[currentCall]?.promise;
+        return handler(null, async () => undefined);
+      });
+
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-1", addedAt: now, lastUsed: now }],
+      };
+
+      setStoragePathState({
+        currentStoragePath: "/ambient/storage.json",
+        currentLegacyProjectStoragePath: null,
+        currentLegacyWorktreeStoragePath: null,
+        currentProjectRoot: "/ambient",
+      });
+      setStoragePathState({
+        currentStoragePath: "/repo-a/storage.json",
+        currentLegacyProjectStoragePath: null,
+        currentLegacyWorktreeStoragePath: null,
+        currentProjectRoot: "/repo-a",
+      });
+      const managerA = new AccountManager(undefined, stored);
+      setStoragePathState({
+        currentStoragePath: "/repo-b/storage.json",
+        currentLegacyProjectStoragePath: null,
+        currentLegacyWorktreeStoragePath: null,
+        currentProjectRoot: "/repo-b",
+      });
+      const managerB = new AccountManager(undefined, stored);
+      setStoragePathState({
+        currentStoragePath: "/ambient/storage.json",
+        currentLegacyProjectStoragePath: null,
+        currentLegacyWorktreeStoragePath: null,
+        currentProjectRoot: "/ambient",
+      });
+
+      const saveA = managerA.saveToDisk();
+      await enteredResolvers[0]?.promise;
+      const saveB = managerB.saveToDisk();
+      await enteredResolvers[1]?.promise;
+
+      expect(getStoragePathState()).toEqual(
+        expect.objectContaining({
+          currentStoragePath: "/ambient/storage.json",
+          currentProjectRoot: "/ambient",
+        }),
+      );
+
+      releaseResolvers[0]?.resolve();
+      await saveA;
+      releaseResolvers[1]?.resolve();
+      await saveB;
+
+      expect(seenStates).toEqual([
+        expect.objectContaining({
+          currentStoragePath: "/repo-a/storage.json",
+          currentProjectRoot: "/repo-a",
+        }),
+        expect.objectContaining({
+          currentStoragePath: "/repo-b/storage.json",
+          currentProjectRoot: "/repo-b",
+        }),
+      ]);
+      expect(getStoragePathState()).toEqual(
+        expect.objectContaining({
+          currentStoragePath: "/ambient/storage.json",
+          currentProjectRoot: "/ambient",
+        }),
+      );
+    });
   });
 
   describe("constructor edge cases", () => {

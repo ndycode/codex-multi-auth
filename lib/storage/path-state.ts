@@ -33,11 +33,5 @@ export async function runWithStoragePathState<T>(
 	state: StoragePathState,
 	fn: () => T | Promise<T>,
 ): Promise<T> {
-	const previousState = currentStorageState;
-	currentStorageState = state;
-	try {
-		return await storagePathStateContext.run(state, fn);
-	} finally {
-		currentStorageState = previousState;
-	}
+	return await storagePathStateContext.run(state, fn);
 }
