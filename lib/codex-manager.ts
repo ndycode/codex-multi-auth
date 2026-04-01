@@ -3224,6 +3224,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			loadAccounts,
 			saveAccounts,
 			resolveActiveIndex,
+			hasUsableAccessToken,
 			queuedRefresh,
 			fetchCodexQuotaSnapshot,
 			formatRateLimitEntry,
