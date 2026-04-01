@@ -76,9 +76,14 @@ import {
 } from "./accounts/rate-limits.js";
 
 const log = createLogger("accounts");
+let nextRuntimeCircuitKeyId = 0;
 
 function getAccountCircuitKey(account: ManagedAccount): string {
-	return getAccountIdentityKey(account) ?? `index:${account.index}`;
+	if (!account.circuitKeyId) {
+		account.circuitKeyId =
+			getAccountIdentityKey(account) ?? `circuit:${nextRuntimeCircuitKeyId++}`;
+	}
+	return account.circuitKeyId;
 }
 
 function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
@@ -97,6 +102,7 @@ export interface Workspace {
 
 export interface ManagedAccount {
 	index: number;
+	circuitKeyId?: string;
 	accountId?: string;
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;

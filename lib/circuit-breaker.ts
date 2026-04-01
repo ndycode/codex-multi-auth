@@ -121,9 +121,8 @@ export class CircuitBreaker {
 			this.state === "half-open" &&
 			this.halfOpenAttempts >= this.config.halfOpenMaxAttempts
 		) {
-			// The probe slot is already in use, so return a conservative delay instead
-			// of reporting the circuit as immediately available.
-			return this.config.resetTimeoutMs;
+			const elapsed = Date.now() - this.lastStateChange;
+			return Math.max(0, this.config.resetTimeoutMs - elapsed);
 		}
 
 		return 0;

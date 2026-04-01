@@ -714,6 +714,35 @@ describe("AccountManager", () => {
       expect(manager.getAccountCount()).toBe(0);
       expect(manager.getCurrentAccount()).toBe(null);
     });
+
+    it("preserves circuit breaker state when an account shifts index after removal", () => {
+      clearCircuitBreakers();
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          { refreshToken: "token-2", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const first = manager.getAccountByIndex(0)!;
+      const second = manager.getAccountByIndex(1)!;
+
+      manager.recordFailure(second, "codex");
+      manager.recordFailure(second, "codex");
+      manager.recordFailure(second, "codex");
+      expect(manager.consumeToken(second, "codex")).toBe(false);
+
+      expect(manager.removeAccount(first)).toBe(true);
+
+      const shifted = manager.getAccountByIndex(0)!;
+      expect(shifted.refreshToken).toBe("token-2");
+      expect(manager.consumeToken(shifted, "codex")).toBe(false);
+      clearCircuitBreakers();
+    });
   });
 
   describe("hasRefreshToken", () => {
@@ -884,12 +913,14 @@ describe("AccountManager", () => {
 
   describe("getMinWaitTimeForFamily", () => {
     beforeEach(() => {
+      resetTrackers();
       clearCircuitBreakers();
       vi.useFakeTimers();
       vi.setSystemTime(new Date(0));
     });
 
     afterEach(() => {
+      resetTrackers();
       clearCircuitBreakers();
       vi.useRealTimers();
     });
@@ -2039,34 +2070,37 @@ describe("AccountManager", () => {
     it("recordSuccess closes the circuit breaker after a half-open retry succeeds", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(0));
-      const now = Date.now();
-      const stored = {
-        version: 3 as const,
-        activeIndex: 0,
-        accounts: [
-          {
-            refreshToken: "token-1",
-            email: "breaker@example.com",
-            addedAt: now,
-            lastUsed: now,
-          },
-        ],
-      };
+      try {
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "token-1",
+              email: "breaker@example.com",
+              addedAt: now,
+              lastUsed: now,
+            },
+          ],
+        };
 
-      const manager = new AccountManager(undefined, stored);
-      const account = manager.getCurrentAccount()!;
-      const breaker = getCircuitBreaker(getAccountIdentityKey(account)!);
+        const manager = new AccountManager(undefined, stored);
+        const account = manager.getCurrentAccount()!;
+        const breaker = getCircuitBreaker(getAccountIdentityKey(account)!);
 
-      manager.recordFailure(account, "codex");
-      manager.recordFailure(account, "codex");
-      manager.recordFailure(account, "codex");
-      expect(breaker.getState()).toBe("open");
+        manager.recordFailure(account, "codex");
+        manager.recordFailure(account, "codex");
+        manager.recordFailure(account, "codex");
+        expect(breaker.getState()).toBe("open");
 
-      vi.advanceTimersByTime(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1);
-      expect(manager.consumeToken(account, "codex")).toBe(true);
-      manager.recordSuccess(account, "codex");
-      expect(breaker.getState()).toBe("closed");
-      vi.useRealTimers();
+        vi.advanceTimersByTime(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1);
+        expect(manager.consumeToken(account, "codex")).toBe(true);
+        manager.recordSuccess(account, "codex");
+        expect(breaker.getState()).toBe("closed");
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("recordRateLimit updates health and drains token bucket", () => {

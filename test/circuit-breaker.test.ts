@@ -234,7 +234,7 @@ describe("Circuit breaker", () => {
     expect(breaker.getTimeUntilReset()).toBe(0);
   });
 
-  it("getTimeUntilAvailable returns reset timeout while a half-open probe slot is exhausted", () => {
+  it("getTimeUntilAvailable returns remaining wait while a half-open probe slot is exhausted", () => {
     const breaker = new CircuitBreaker();
     breaker.recordFailure();
     breaker.recordFailure();
@@ -242,9 +242,14 @@ describe("Circuit breaker", () => {
 
     vi.setSystemTime(new Date(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1));
     expect(breaker.canExecute()).toBe(true);
+    vi.setSystemTime(
+      new Date(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1001),
+    );
 
     expect(breaker.getState()).toBe("half-open");
-    expect(breaker.getTimeUntilAvailable()).toBe(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs);
+    expect(breaker.getTimeUntilAvailable()).toBe(
+      DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs - 1000,
+    );
   });
 
   it("getTimeUntilAvailable stays at 0 when half-open still has probe capacity", () => {
