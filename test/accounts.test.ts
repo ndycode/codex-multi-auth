@@ -1229,6 +1229,59 @@ describe("AccountManager", () => {
       await manager.commitRefreshedAuth(accountA, refreshedAuth);
     });
 
+    it("keeps trimmed token accountId identical in memory and persisted storage", async () => {
+      const { withAccountStorageTransaction } = await import("../lib/storage.js");
+      const mockWithAccountStorageTransaction = vi.mocked(
+        withAccountStorageTransaction,
+      );
+      const now = Date.now();
+      const payload = Buffer.from(
+        JSON.stringify({
+          "https://api.openai.com/auth": {
+            chatgpt_account_id: "  matching-account-id  ",
+          },
+        }),
+      ).toString("base64url");
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "old-refresh",
+            accessToken: "old-access",
+            expiresAt: now,
+            addedAt: now,
+            lastUsed: now,
+            accountId: "matching-account-id",
+            accountIdSource: "token" as const,
+          },
+        ],
+      };
+      const manager = new AccountManager(undefined, stored as any);
+      const account = manager.getAccountByIndex(0)!;
+      const refreshedAuth: OAuthAuthDetails = {
+        type: "oauth",
+        access: `header.${payload}.signature`,
+        refresh: "new-refresh",
+        expires: now + 3_600_000,
+      };
+
+      mockWithAccountStorageTransaction.mockImplementationOnce(async (handler) => {
+        const persist = vi.fn().mockResolvedValue(undefined);
+        const result = await handler(stored as any, persist);
+
+        expect(persist).toHaveBeenCalledTimes(1);
+        const persistedStorage = persist.mock.calls[0]?.[0];
+        expect(persistedStorage?.accounts[0]?.accountId).toBe("matching-account-id");
+
+        return result;
+      });
+
+      await manager.commitRefreshedAuth(account, refreshedAuth);
+
+      expect(account.accountId).toBe("matching-account-id");
+    });
+
     it("propagates storage write failure as retryable CodexAuthError", async () => {
       const { withAccountStorageTransaction } = await import("../lib/storage.js");
       const mockWithAccountStorageTransaction = vi.mocked(
