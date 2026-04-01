@@ -638,6 +638,149 @@ describe("refresh-guardian", () => {
     ).toHaveBeenCalledTimes(2);
   });
 
+  it("resets auth failure streaks after network and rate-limit outcomes", async () => {
+    const accountA = createManagedAccount(0);
+    const accountB = createManagedAccount(1);
+    const manager = createManagerMock([accountA, accountB]);
+    const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
+    const guardian = new RefreshGuardian(() => manager, {
+      bufferMs: 60_000,
+      intervalMs: 5_000,
+    });
+
+    refreshExpiringAccountsMock
+      .mockResolvedValueOnce(
+        new Map([
+          [
+            0,
+            {
+              refreshed: true,
+              reason: "failed",
+              tokenResult: {
+                type: "failed",
+                reason: "http_error",
+                statusCode: 401,
+                message: "expired-a",
+              },
+            },
+          ],
+          [
+            1,
+            {
+              refreshed: true,
+              reason: "failed",
+              tokenResult: {
+                type: "failed",
+                reason: "http_error",
+                statusCode: 401,
+                message: "expired-b",
+              },
+            },
+          ],
+        ]),
+      )
+      .mockResolvedValueOnce(
+        new Map([
+          [
+            0,
+            {
+              refreshed: true,
+              reason: "failed",
+              tokenResult: {
+                type: "failed",
+                reason: "network_error",
+                message: "timeout-a",
+              },
+            },
+          ],
+          [
+            1,
+            {
+              refreshed: true,
+              reason: "failed",
+              tokenResult: {
+                type: "failed",
+                reason: "http_error",
+                statusCode: 429,
+                message: "rate-limit-b",
+              },
+            },
+          ],
+        ]),
+      )
+      .mockResolvedValueOnce(
+        new Map([
+          [
+            0,
+            {
+              refreshed: true,
+              reason: "failed",
+              tokenResult: {
+                type: "failed",
+                reason: "http_error",
+                statusCode: 401,
+                message: "expired-a-again",
+              },
+            },
+          ],
+          [
+            1,
+            {
+              refreshed: true,
+              reason: "failed",
+              tokenResult: {
+                type: "failed",
+                reason: "http_error",
+                statusCode: 401,
+                message: "expired-b-again",
+              },
+            },
+          ],
+        ]),
+      );
+
+    await guardian.tick();
+    await guardian.tick();
+    await guardian.tick();
+
+    expect(
+      manager.clearAuthFailures as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(1, accountA);
+    expect(
+      manager.clearAuthFailures as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(2, accountB);
+    expect(
+      manager.incrementAuthFailures as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(1, accountA);
+    expect(
+      manager.incrementAuthFailures as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(2, accountB);
+    expect(
+      manager.incrementAuthFailures as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(3, accountA);
+    expect(
+      manager.incrementAuthFailures as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(4, accountB);
+    expect(
+      manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(1, accountA, 30_000, "auth-failure");
+    expect(
+      manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(2, accountB, 30_000, "auth-failure");
+    expect(
+      manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(3, accountA, 6_000, "network-error");
+    expect(
+      manager.markRateLimited as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(accountB, 60_000, "codex");
+    expect(
+      manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(4, accountA, 30_000, "auth-failure");
+    expect(
+      manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(5, accountB, 30_000, "auth-failure");
+  });
+
   it("handles account removal during tick without throwing", async () => {
     const originalA = createManagedAccount(0);
     const originalB = createManagedAccount(1);

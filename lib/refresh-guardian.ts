@@ -146,6 +146,7 @@ export class RefreshGuardian {
 							manager.clearAuthFailures(account);
 							this.stats.refreshed += 1;
 						} else {
+							manager.clearAuthFailures(account);
 							manager.markAccountCoolingDown(
 								account,
 								this.getNetworkFailureCooldownMs(),
@@ -158,6 +159,7 @@ export class RefreshGuardian {
 					case "failed": {
 						const cooldownReason = this.classifyFailureReason(result.tokenResult);
 						if (cooldownReason === "rate-limit") {
+							manager.clearAuthFailures(account);
 							manager.markRateLimited(account, this.bufferMs, "codex");
 						} else if (cooldownReason === "auth-failure") {
 							const failureCount = manager.incrementAuthFailures(account);
@@ -167,6 +169,7 @@ export class RefreshGuardian {
 								cooldownReason,
 							);
 						} else {
+							manager.clearAuthFailures(account);
 							manager.markAccountCoolingDown(
 								account,
 								this.getNetworkFailureCooldownMs(),
