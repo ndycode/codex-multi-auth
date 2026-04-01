@@ -216,7 +216,7 @@ describe("refresh-guardian", () => {
     expect(tickSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("resolves refreshed account using stable refresh token when indices shift", async () => {
+  it("resolves refreshed account by accountId when indices shift", async () => {
     const originalA = createManagedAccount(0);
     const originalB = createManagedAccount(1);
     const liveB = { ...originalB, index: 0 };
@@ -336,8 +336,73 @@ describe("refresh-guardian", () => {
     ).toHaveBeenCalledWith(liveA);
   });
 
-  it("falls back to normalized email when accountId is unavailable", async () => {
-    const originalA = { ...createManagedAccount(0), accountId: undefined, email: " User0@Example.com " };
+  it("falls back to refreshToken when accountId is unavailable and email is invalid", async () => {
+    const originalA = {
+      ...createManagedAccount(0),
+      accountId: undefined,
+      email: "invalid-no-at",
+    };
+    const originalB = createManagedAccount(1);
+    const liveA = {
+      ...originalA,
+      index: 1,
+    };
+    const liveB = { ...originalB, index: 0 };
+    const snapshots = [
+      [originalA, originalB],
+      [liveB, liveA],
+    ];
+    let readCount = 0;
+    const manager = {
+      getAccountsSnapshot: vi.fn(
+        () => snapshots[Math.min(readCount++, snapshots.length - 1)],
+      ),
+      getAccountByIndex: vi.fn(
+        (index: number) =>
+          [liveB, liveA].find((account) => account.index === index) ?? null,
+      ),
+      clearAuthFailures: vi.fn(),
+      markAccountCoolingDown: vi.fn(),
+      setAccountEnabled: vi.fn(),
+      saveToDiskDebounced: vi.fn(),
+    } as unknown as AccountManager;
+    const { RefreshGuardian } = await import("../lib/refresh-guardian.js");
+    const guardian = new RefreshGuardian(() => manager, {
+      bufferMs: 60_000,
+      intervalMs: 5_000,
+    });
+
+    refreshExpiringAccountsMock.mockResolvedValue(
+      new Map([
+        [
+          0,
+          {
+            refreshed: true,
+            reason: "success",
+            tokenResult: {
+              type: "success",
+              access: "access-token",
+              refresh: "refresh-token",
+              expires: Date.now() + 3_600_000,
+            },
+          },
+        ],
+      ]),
+    );
+
+    await guardian.tick();
+
+    expect(applyRefreshResultMock).toHaveBeenCalledWith(
+      liveA,
+      expect.objectContaining({ type: "success" }),
+    );
+    expect(
+      manager.clearAuthFailures as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(liveA);
+  });
+
+  it("treats empty string accountId the same as undefined by using normalized email", async () => {
+    const originalA = { ...createManagedAccount(0), accountId: "", email: " User0@Example.com " };
     const originalB = createManagedAccount(1);
     const liveA = {
       ...originalA,
@@ -642,6 +707,9 @@ describe("refresh-guardian", () => {
     expect(
       manager.saveToDiskDebounced as ReturnType<typeof vi.fn>,
     ).toHaveBeenCalledTimes(1);
+    expect(
+      manager.getAccountsSnapshot as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledTimes(2);
 
     const stats = guardian.getStats();
     expect(stats.runs).toBe(1);

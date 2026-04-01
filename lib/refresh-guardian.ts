@@ -25,28 +25,78 @@ export interface RefreshGuardianStats {
 
 const DEFAULT_INTERVAL_MS = 60_000;
 
+function findMatchingLiveAccountIndexes(
+	liveAccounts: ManagedAccount[],
+	predicate: (candidate: ManagedAccount) => boolean,
+): number[] {
+	const matches: number[] = [];
+	for (const [index, candidate] of liveAccounts.entries()) {
+		if (predicate(candidate)) {
+			matches.push(index);
+		}
+	}
+	return matches;
+}
+
 function resolveLiveAccountIndex(
 	liveAccounts: ManagedAccount[],
 	sourceAccount: ManagedAccount,
 ): number {
 	if (sourceAccount.accountId) {
-		const byAccountId = liveAccounts.findIndex(
+		const accountIdMatches = findMatchingLiveAccountIndexes(
+			liveAccounts,
 			(candidate) => candidate.accountId === sourceAccount.accountId,
 		);
-		if (byAccountId >= 0) return byAccountId;
+		const resolvedIndex = accountIdMatches[0];
+		if (resolvedIndex !== undefined) {
+			log.debug("Resolved refreshed account by accountId", {
+				sourceIndex: sourceAccount.index,
+				resolvedIndex,
+				matchCount: accountIdMatches.length,
+			});
+			if (accountIdMatches.length > 1) {
+				log.warn("Duplicate live accountId matches during refresh reconciliation", {
+					sourceIndex: sourceAccount.index,
+					resolvedIndex,
+					matchCount: accountIdMatches.length,
+				});
+			}
+			return resolvedIndex;
+		}
 	}
 
 	const sourceEmail = sanitizeEmail(sourceAccount.email);
 	if (sourceEmail) {
-		const byEmail = liveAccounts.findIndex(
+		const emailMatches = findMatchingLiveAccountIndexes(
+			liveAccounts,
 			(candidate) => sanitizeEmail(candidate.email) === sourceEmail,
 		);
-		if (byEmail >= 0) return byEmail;
+		const resolvedIndex = emailMatches[0];
+		if (resolvedIndex !== undefined) {
+			log.debug("Resolved refreshed account by email", {
+				sourceIndex: sourceAccount.index,
+				resolvedIndex,
+				matchCount: emailMatches.length,
+			});
+			if (emailMatches.length > 1) {
+				log.warn("Duplicate live email matches during refresh reconciliation", {
+					sourceIndex: sourceAccount.index,
+					resolvedIndex,
+					matchCount: emailMatches.length,
+				});
+			}
+			return resolvedIndex;
+		}
 	}
 
-	return liveAccounts.findIndex(
+	const byToken = liveAccounts.findIndex(
 		(candidate) => candidate.refreshToken === sourceAccount.refreshToken,
 	);
+	log.debug("Resolved refreshed account by refresh token fallback", {
+		sourceIndex: sourceAccount.index,
+		resolvedIndex: byToken,
+	});
+	return byToken;
 }
 
 export class RefreshGuardian {
@@ -141,11 +191,11 @@ export class RefreshGuardian {
 			for (const candidate of snapshot) {
 				snapshotByIndex.set(candidate.index, candidate);
 			}
+			const liveAccounts = manager.getAccountsSnapshot();
 
 			for (const [accountIndex, result] of refreshResults.entries()) {
 				const sourceAccount = snapshotByIndex.get(accountIndex);
 				if (!sourceAccount) continue;
-				const liveAccounts = manager.getAccountsSnapshot();
 				const resolvedIndex = resolveLiveAccountIndex(liveAccounts, sourceAccount);
 				const account = resolvedIndex >= 0 ? manager.getAccountByIndex(resolvedIndex) : null;
 				if (!account) continue;
