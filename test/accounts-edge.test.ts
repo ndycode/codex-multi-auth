@@ -196,8 +196,8 @@ describe("accounts edge branches", () => {
     const expired = snapshot[1];
     expect(expired?.access).toBe("existing-access");
     expect(expired?.refreshToken).toBe("refresh-2");
-    expect(expired?.accountId).toBe("expired-id");
-    expect(expired?.accountIdSource).toBe("token");
+    expect(expired?.accountId).toBeUndefined();
+    expect(expired?.accountIdSource).toBeUndefined();
   });
 
   it("does not overwrite a local refresh token with a stale usable CLI cache token", async () => {
@@ -238,7 +238,7 @@ describe("accounts edge branches", () => {
     expect(mockSaveAccounts).not.toHaveBeenCalled();
   });
 
-  it("hydrates a missing local refresh token from an expired CLI cache entry", async () => {
+  it("does not hydrate from an expired CLI cache entry", async () => {
     const now = Date.now();
     const stored = buildStored([
       buildStoredAccount({
@@ -274,9 +274,10 @@ describe("accounts edge branches", () => {
     await hydrate.call(manager);
 
     const snapshot = manager.getAccountsSnapshot();
-    expect(snapshot[0]?.refreshToken).toBe("cached-refresh-restored");
+    expect(snapshot[0]?.refreshToken).toBe("");
     expect(snapshot[0]?.access).toBe("local-access");
-    expect(snapshot[0]?.accountId).toBe("expired-account-id");
+    expect(snapshot[0]?.accountId).toBeUndefined();
+    expect(mockSaveAccounts).not.toHaveBeenCalled();
   });
 
   it("returns early when Codex CLI state has no usable cache entries", async () => {

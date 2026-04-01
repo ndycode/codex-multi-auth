@@ -1,11 +1,17 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	probeAccountsInParallel,
 	createProbeCandidates,
 	getTopCandidates,
 	type ProbeCandidate,
 } from "../lib/parallel-probe.js";
-import type { ManagedAccount } from "../lib/accounts.js";
+import {
+	AccountManager,
+	getRuntimeTrackerKey,
+	type ManagedAccount,
+} from "../lib/accounts.js";
+import { getHealthTracker, resetTrackers } from "../lib/rotation.js";
+import { getRuntimeAccountIdentityKey } from "../lib/storage/identity.js";
 
 function createMockAccount(index: number, overrides: Partial<ManagedAccount> = {}): ManagedAccount {
 	return {
@@ -19,6 +25,14 @@ function createMockAccount(index: number, overrides: Partial<ManagedAccount> = {
 }
 
 describe("parallel-probe", () => {
+	beforeEach(() => {
+		resetTrackers();
+	});
+
+	afterEach(() => {
+		resetTrackers();
+	});
+
 	describe("createProbeCandidates", () => {
 		it("creates candidates with abort controllers", () => {
 			const accounts = [createMockAccount(0), createMockAccount(1)];
@@ -259,6 +273,122 @@ describe("parallel-probe", () => {
 
 			expect(candidates).toHaveLength(2);
 			expect(candidates[0].index).toBe(1);
+		});
+
+		it("uses runtime tracker keys when ranking candidates", () => {
+			const now = Date.now();
+			const penalizedAccount = createMockAccount(0, {
+				email: "first@example.com",
+				lastUsed: now,
+			});
+			const healthyAccount = createMockAccount(1, {
+				email: "second@example.com",
+				lastUsed: now,
+			});
+			const trackerKey = getRuntimeAccountIdentityKey(penalizedAccount)!;
+			getHealthTracker().recordFailure(trackerKey, "codex");
+
+			const mockManager = {
+				getAccountsSnapshot: vi
+					.fn()
+					.mockReturnValue([penalizedAccount, healthyAccount]),
+			};
+
+			const candidates = getTopCandidates(
+				mockManager as unknown as Parameters<typeof getTopCandidates>[0],
+				"codex",
+				null,
+				2,
+			);
+
+			expect(candidates).toHaveLength(2);
+			expect(candidates[0]?.email).toBe("second@example.com");
+			expect(candidates[1]?.email).toBe("first@example.com");
+		});
+
+		it("reuses pinned tracker keys after accounts gain identity fields", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{ refreshToken: "token-1", addedAt: now, lastUsed: now },
+					{
+						refreshToken: "token-2",
+						email: "healthy@example.com",
+						addedAt: now,
+						lastUsed: now,
+					},
+				],
+			};
+
+			const manager = new AccountManager(undefined, stored);
+			const account = manager.getAccountByIndex(0)!;
+			const pinnedTrackerKey = getRuntimeTrackerKey(account);
+			getHealthTracker().recordFailure(pinnedTrackerKey, "codex");
+
+			const payload = Buffer.from(JSON.stringify({
+				email: "enriched@example.com",
+				"https://api.openai.com/auth": {
+					chatgpt_account_id: "account-enriched",
+				},
+				exp: Math.floor((now + 3600000) / 1000),
+			})).toString("base64url");
+			const accessToken = `header.${payload}.signature`;
+
+			manager.updateFromAuth(account, {
+				type: "oauth",
+				access: accessToken,
+				refresh: "token-1-rotated",
+				expires: now + 3600000,
+			});
+
+			const candidates = getTopCandidates(manager, "codex", null, 2);
+			const enrichedCandidate = candidates.find(
+				(candidate) => candidate.refreshToken === "token-1-rotated",
+			);
+
+			expect(candidates).toHaveLength(2);
+			expect(candidates[0]?.email).toBe("healthy@example.com");
+			expect(enrichedCandidate?._runtimeTrackerKey).toBe(pinnedTrackerKey);
+		});
+
+		it("does not alias tracker state when tracker and quota keys contain delimiters", () => {
+			const now = Date.now();
+			const collidingWriter = createMockAccount(0, {
+				accountId: "one",
+				lastUsed: now,
+			});
+			const shouldStayHealthy = createMockAccount(1, {
+				accountId: "one:codex",
+				lastUsed: now,
+			});
+			const healthyPeer = createMockAccount(2, {
+				accountId: "peer",
+				lastUsed: now,
+			});
+
+			getHealthTracker().recordFailure(
+				getRuntimeTrackerKey(collidingWriter),
+				"codex:gpt-5.1:three",
+			);
+
+			const mockManager = {
+				getAccountsSnapshot: vi
+					.fn()
+					.mockReturnValue([shouldStayHealthy, healthyPeer]),
+			};
+
+			const candidates = getTopCandidates(
+				mockManager as unknown as Parameters<typeof getTopCandidates>[0],
+				"gpt-5.1",
+				"three",
+				2,
+			);
+
+			expect(candidates).toHaveLength(2);
+			expect(candidates[0]?.accountId).toBe("one:codex");
+			expect(candidates[1]?.accountId).toBe("peer");
 		});
 
 		it("supports named-parameter options form", () => {

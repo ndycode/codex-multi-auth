@@ -376,6 +376,29 @@ describe("selectHybridAccount", () => {
 		expect(result?.index).toBe(1);
 	});
 
+	it("uses trackerKey when runtime state is keyed by stable identity", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{
+				index: 0,
+				trackerKey: "email:first@example.com",
+				isAvailable: true,
+				lastUsed: now,
+			},
+			{
+				index: 1,
+				trackerKey: "email:second@example.com",
+				isAvailable: true,
+				lastUsed: now,
+			},
+		];
+
+		healthTracker.recordFailure("email:first@example.com");
+
+		const result = selectHybridAccount(accounts, healthTracker, tokenTracker);
+		expect(result?.index).toBe(1);
+	});
+
 	it("pidOffsetEnabled false does not change selection", () => {
 		const accounts: AccountWithMetrics[] = [
 			{ index: 0, isAvailable: true, lastUsed: Date.now() },

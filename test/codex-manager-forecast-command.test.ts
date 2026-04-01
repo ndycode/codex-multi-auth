@@ -36,6 +36,7 @@ function createDeps(
 	return {
 		setStoragePath: vi.fn(),
 		loadAccounts: vi.fn(async () => createStorage()),
+		saveAccounts: vi.fn(async () => undefined),
 		resolveActiveIndex: vi.fn(() => 0),
 		loadQuotaCache: vi.fn(async () => ({ byAccountId: {}, byEmail: {} })),
 		saveQuotaCache: vi.fn(async () => undefined),
@@ -137,6 +138,92 @@ describe("runForecastCommand", () => {
 		expect(result).toBe(0);
 		expect(deps.logInfo).toHaveBeenCalledWith(
 			expect.stringContaining('"command": "forecast"'),
+		);
+	});
+
+	it("persists refreshed probe tokens before forecasting live quota", async () => {
+		const storage = createStorage();
+		const concurrentStorage = createStorage();
+		concurrentStorage.accounts[0] = {
+			...concurrentStorage.accounts[0],
+			currentWorkspaceIndex: 7,
+		};
+		const callLog: string[] = [];
+		let persistedStorage: AccountStorageV3 | null = null;
+		let loadCount = 0;
+		const deps = createDeps({
+			loadAccounts: vi.fn(async () => {
+				loadCount += 1;
+				return loadCount === 1
+					? storage
+					: structuredClone(concurrentStorage);
+			}),
+			saveAccounts: vi.fn(async (nextStorage) => {
+				callLog.push(
+					`save-${callLog.filter((entry) => entry.startsWith("save-")).length + 1}`,
+				);
+				if (callLog.length === 1) {
+					throw Object.assign(new Error("EBUSY write in progress"), {
+						code: "EBUSY",
+					});
+				}
+				persistedStorage = structuredClone(nextStorage);
+			}),
+			hasUsableAccessToken: vi.fn(() => false),
+			queuedRefresh: vi.fn(async () => ({
+				type: "success",
+				access: "access-forecast-updated",
+				refresh: "refresh-forecast-updated",
+				expires: 999_999,
+				idToken: "id-token-forecast-updated",
+			})),
+			extractAccountId: vi.fn(() => "account-id-updated"),
+			fetchCodexQuotaSnapshot: vi.fn(async (input) => {
+				callLog.push("fetch");
+				expect(persistedStorage?.accounts[0]?.refreshToken).toBe(
+					"refresh-forecast-updated",
+				);
+				expect(persistedStorage?.accounts[0]?.accessToken).toBe(
+					"access-forecast-updated",
+				);
+				expect(persistedStorage?.accounts[0]?.currentWorkspaceIndex).toBe(7);
+				expect(input.accessToken).toBe(
+					persistedStorage?.accounts[0]?.accessToken,
+				);
+				return {
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {},
+					secondary: {},
+				};
+			}),
+		});
+
+		const result = await runForecastCommand(["--json", "--live"], deps);
+
+		expect(result).toBe(0);
+		expect(callLog).toEqual(["save-1", "save-2", "fetch"]);
+		expect(deps.loadAccounts).toHaveBeenCalledTimes(2);
+		expect(deps.saveAccounts).toHaveBeenCalledTimes(2);
+		expect(deps.saveAccounts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: [
+					expect.objectContaining({
+						refreshToken: "refresh-forecast-updated",
+						accessToken: "access-forecast-updated",
+						expiresAt: 999_999,
+						accountId: "account-id-updated",
+						accountIdSource: "token",
+						currentWorkspaceIndex: 7,
+					}),
+				],
+			}),
+		);
+		expect(deps.fetchCodexQuotaSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "account-id-updated",
+				accessToken: "access-forecast-updated",
+			}),
 		);
 	});
 

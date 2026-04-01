@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import { setStoragePathState } from "../lib/storage/path-state.js";
 import { getIntentionalResetMarkerPath } from "../lib/storage/backup-paths.js";
+import { getRuntimeAccountIdentityKey } from "../lib/storage/identity.js";
 import {
 	buildNamedBackupPath,
 	clearAccounts,
@@ -151,6 +152,16 @@ describe("storage", () => {
 
 			expect(identityKey).toBe(`refresh:${expectedHash}`);
 			expect(identityKey).not.toContain(refreshToken.trim());
+		});
+
+		it("uses numeric index as the runtime key for refresh-only accounts", () => {
+			expect(
+				getRuntimeAccountIdentityKey({
+					accountId: " ",
+					email: " ",
+					index: 7,
+				}),
+			).toBe(7);
 		});
 	});
 	describe("deduplication", () => {

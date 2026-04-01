@@ -1,4 +1,8 @@
-import type { ManagedAccount, AccountManager } from "./accounts.js";
+import {
+	getRuntimeTrackerKey,
+	type ManagedAccount,
+	type AccountManager,
+} from "./accounts.js";
 import type { ModelFamily } from "./prompts/codex.js";
 import { createLogger } from "./logger.js";
 import {
@@ -108,6 +112,7 @@ export function getTopCandidates(
 
 		accountsWithMetrics.push({
 			index: account.index,
+			trackerKey: getRuntimeTrackerKey(account),
 			isAvailable,
 			lastUsed: account.lastUsed,
 			account,
@@ -119,8 +124,9 @@ export function getTopCandidates(
 
 	const now = Date.now();
 	const scored = available.map((a) => {
-		const health = healthTracker.getScore(a.index, quotaKey);
-		const tokens = tokenTracker.getTokens(a.index, quotaKey);
+		const trackerKey = a.trackerKey ?? a.index;
+		const health = healthTracker.getScore(trackerKey, quotaKey);
+		const tokens = tokenTracker.getTokens(trackerKey, quotaKey);
 		const hoursSinceUsed = (now - a.lastUsed) / (1000 * 60 * 60);
 		const score = health * 2 + tokens * 5 + hoursSinceUsed * 2.0;
 		return { ...a, score };

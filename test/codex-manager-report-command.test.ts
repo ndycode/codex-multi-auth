@@ -33,6 +33,7 @@ function createDeps(
 		setStoragePath: vi.fn(),
 		getStoragePath: vi.fn(() => "/mock/openai-codex-accounts.json"),
 		loadAccounts: vi.fn(async () => createStorage()),
+		saveAccounts: vi.fn(async () => undefined),
 		resolveActiveIndex: vi.fn(() => 0),
 		queuedRefresh: vi.fn(async () => ({
 			type: "success",
@@ -189,6 +190,109 @@ describe("runReportCommand", () => {
 			"token expired",
 		);
 		expect(jsonOutput.forecast.accounts[3]?.liveQuota?.planType).toBe("pro");
+	});
+
+	it("persists refreshed probe tokens before report live probes", async () => {
+		const storage = createStorage([
+			{
+				email: "one@example.com",
+				accountId: "acct-report",
+				accountIdSource: "org",
+				refreshToken: "refresh-token-1",
+				accessToken: "access-token-1",
+				expiresAt: 10,
+				addedAt: 1,
+				lastUsed: 1,
+				enabled: true,
+			},
+		]);
+		const concurrentStorage = createStorage([
+			{
+				email: "one@example.com",
+				accountId: "acct-report",
+				accountIdSource: "org",
+				refreshToken: "refresh-token-1",
+				accessToken: "access-token-1",
+				expiresAt: 10,
+				currentWorkspaceIndex: 5,
+				addedAt: 1,
+				lastUsed: 1,
+				enabled: true,
+			},
+		]);
+		const callLog: string[] = [];
+		let persistedStorage: AccountStorageV3 | null = null;
+		let loadCount = 0;
+		const deps = createDeps({
+			loadAccounts: vi.fn(async () => {
+				loadCount += 1;
+				return loadCount === 1 ? storage : structuredClone(concurrentStorage);
+			}),
+			saveAccounts: vi.fn(async (nextStorage) => {
+				callLog.push(
+					`save-${callLog.filter((entry) => entry.startsWith("save-")).length + 1}`,
+				);
+				if (callLog.length === 1) {
+					throw Object.assign(new Error("EPERM write blocked"), {
+						code: "EPERM",
+					});
+				}
+				persistedStorage = structuredClone(nextStorage);
+			}),
+			queuedRefresh: vi.fn(async () => ({
+				type: "success",
+				access: "access-token-updated",
+				refresh: "refresh-token-updated",
+				expires: 500,
+				idToken: "id-token-updated",
+			})),
+			fetchCodexQuotaSnapshot: vi.fn(async (input) => {
+				callLog.push("fetch");
+				expect(persistedStorage?.accounts[0]?.refreshToken).toBe(
+					"refresh-token-updated",
+				);
+				expect(persistedStorage?.accounts[0]?.accessToken).toBe(
+					"access-token-updated",
+				);
+				expect(persistedStorage?.accounts[0]?.currentWorkspaceIndex).toBe(5);
+				expect(input.accessToken).toBe(
+					persistedStorage?.accounts[0]?.accessToken,
+				);
+				return {
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {},
+					secondary: {},
+				};
+			}),
+		});
+
+		const result = await runReportCommand(["--live", "--json"], deps);
+
+		expect(result).toBe(0);
+		expect(callLog).toEqual(["save-1", "save-2", "fetch"]);
+		expect(deps.loadAccounts).toHaveBeenCalledTimes(2);
+		expect(deps.saveAccounts).toHaveBeenCalledTimes(2);
+		expect(deps.saveAccounts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: [
+					expect.objectContaining({
+						refreshToken: "refresh-token-updated",
+						accessToken: "access-token-updated",
+						expiresAt: 500,
+						accountId: "acct-report",
+						accountIdSource: "org",
+						currentWorkspaceIndex: 5,
+					}),
+				],
+			}),
+		);
+		expect(deps.fetchCodexQuotaSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "acct-report",
+				accessToken: "access-token-updated",
+			}),
+		);
 	});
 
 	it("prints a human-readable report and announces the output path", async () => {

@@ -2325,6 +2325,7 @@ async function runForecast(args: string[]): Promise<number> {
 	return runForecastCommand(args, {
 		setStoragePath,
 		loadAccounts,
+		saveAccounts,
 		loadDashboardDisplaySettings,
 		resolveActiveIndex,
 		loadQuotaCache,
@@ -3221,6 +3222,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			setStoragePath,
 			getStoragePath,
 			loadAccounts,
+			saveAccounts,
 			resolveActiveIndex,
 			queuedRefresh,
 			fetchCodexQuotaSnapshot,

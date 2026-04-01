@@ -1,4 +1,5 @@
 import { getCircuitBreaker, type CircuitState } from "./circuit-breaker.js";
+import { getAccountIdentityKey } from "./storage/identity.js";
 
 export interface AccountHealth {
 	index: number;
@@ -27,6 +28,7 @@ export function getAccountHealth(
 		index: number;
 		email?: string;
 		accountId?: string;
+		refreshToken?: string;
 		health: number;
 		rateLimitedUntil?: number;
 		cooldownUntil?: number;
@@ -36,7 +38,7 @@ export function getAccountHealth(
 	now = Date.now(),
 ): PluginHealth {
 	const accountHealths: AccountHealth[] = accounts.map((acc) => {
-		const circuitKey = `account:${acc.accountId ?? acc.index}`;
+		const circuitKey = getAccountIdentityKey(acc) ?? `account:${acc.index}`;
 		const circuit = getCircuitBreaker(circuitKey);
 
 		return {
@@ -53,7 +55,11 @@ export function getAccountHealth(
 	});
 
 	const healthyCount = accountHealths.filter(
-		(a) => !a.isRateLimited && !a.isCoolingDown && a.health >= 50,
+		(a) =>
+			!a.isRateLimited &&
+			!a.isCoolingDown &&
+			a.health >= 50 &&
+			a.circuitState === "closed",
 	).length;
 
 	const rateLimitedCount = accountHealths.filter((a) => a.isRateLimited).length;

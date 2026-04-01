@@ -3,10 +3,12 @@ import { refreshExpiringAccounts } from "./proactive-refresh.js";
 import type { AccountManager } from "./accounts.js";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { CodexAuthError } from "./errors.js";
+import type { ModelFamily } from "./prompts/codex.js";
 import type { CooldownReason } from "./storage.js";
 import type { TokenResult } from "./types.js";
 
 const log = createLogger("refresh-guardian");
+const REFRESH_HEALTH_FAMILY: ModelFamily = "codex";
 
 export interface RefreshGuardianOptions {
 	intervalMs?: number;
@@ -128,6 +130,7 @@ export class RefreshGuardian {
 						this.getNetworkFailureCooldownMs(),
 						"network-error",
 					);
+					manager.recordFailure(account, REFRESH_HEALTH_FAMILY);
 					this.stats.failed += 1;
 					this.stats.networkFailed += 1;
 					return true;
@@ -156,11 +159,13 @@ export class RefreshGuardian {
 								this.getNetworkFailureCooldownMs(),
 								"network-error",
 							);
+							manager.recordFailure(account, REFRESH_HEALTH_FAMILY);
 						}
 						this.stats.failed += 1;
 						this.stats.networkFailed += 1;
 						return !!account;
 					}
+					manager.recordSuccess(committedAccount, REFRESH_HEALTH_FAMILY);
 				} catch (error) {
 					log.warn("Refresh guardian commit failed", {
 						sourceIndex: sourceAccount.index,
@@ -189,6 +194,7 @@ export class RefreshGuardian {
 								cooldownReason,
 							);
 						}
+						manager.recordFailure(account, REFRESH_HEALTH_FAMILY);
 					}
 					this.stats.failed += 1;
 					if (cooldownReason === "auth-failure") this.stats.authFailed += 1;
@@ -205,6 +211,7 @@ export class RefreshGuardian {
 				if (cooldownReason === "rate-limit") {
 					manager.clearAuthFailures(account);
 					manager.markRateLimited(account, this.bufferMs, "codex");
+					manager.recordRateLimit(account, REFRESH_HEALTH_FAMILY);
 				} else if (cooldownReason === "auth-failure") {
 					const failureCount = manager.incrementAuthFailures(account);
 					manager.markAccountCoolingDown(
@@ -212,6 +219,7 @@ export class RefreshGuardian {
 						this.getAuthFailureCooldownMs(failureCount),
 						cooldownReason,
 					);
+					manager.recordFailure(account, REFRESH_HEALTH_FAMILY);
 				} else {
 					manager.clearAuthFailures(account);
 					manager.markAccountCoolingDown(
@@ -219,6 +227,7 @@ export class RefreshGuardian {
 						this.getNetworkFailureCooldownMs(),
 						cooldownReason,
 					);
+					manager.recordFailure(account, REFRESH_HEALTH_FAMILY);
 				}
 				this.stats.failed += 1;
 				if (cooldownReason === "rate-limit") this.stats.rateLimited += 1;
@@ -238,6 +247,7 @@ export class RefreshGuardian {
 					this.getAuthFailureCooldownMs(failureCount),
 					"auth-failure",
 				);
+				manager.recordFailure(account, REFRESH_HEALTH_FAMILY);
 				manager.setAccountEnabled(account.index, false);
 				this.stats.noRefreshToken += 1;
 				this.stats.failed += 1;

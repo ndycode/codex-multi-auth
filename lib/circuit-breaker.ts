@@ -45,10 +45,29 @@ export class CircuitBreaker {
 
 		if (this.state === "half-open") {
 			if (this.halfOpenAttempts >= this.config.halfOpenMaxAttempts) {
-				throw new CircuitOpenError("Circuit is half-open");
+				if (this.hasHalfOpenProbeWaitElapsed(now)) {
+					this.resetHalfOpenProbeWindow(now);
+				} else {
+					throw new CircuitOpenError("Circuit is half-open");
+				}
 			}
 			this.halfOpenAttempts += 1;
 			return true;
+		}
+
+		return true;
+	}
+
+	isAvailable(now = Date.now()): boolean {
+		if (this.state === "open") {
+			return now - this.lastStateChange >= this.config.resetTimeoutMs;
+		}
+
+		if (this.state === "half-open") {
+			return (
+				this.halfOpenAttempts < this.config.halfOpenMaxAttempts ||
+				this.hasHalfOpenProbeWaitElapsed(now)
+			);
 		}
 
 		return true;
@@ -100,6 +119,21 @@ export class CircuitBreaker {
 		return Math.max(0, this.config.resetTimeoutMs - elapsed);
 	}
 
+	getTimeUntilAvailable(now = Date.now()): number {
+		if (this.state === "open") {
+			return Math.max(0, this.config.resetTimeoutMs - (now - this.lastStateChange));
+		}
+
+		if (
+			this.state === "half-open" &&
+			this.halfOpenAttempts >= this.config.halfOpenMaxAttempts
+		) {
+			return Math.max(0, this.config.resetTimeoutMs - (now - this.lastStateChange));
+		}
+
+		return 0;
+	}
+
 	private pruneFailures(now: number): void {
 		const cutoff = now - this.config.failureWindowMs;
 		this.failures = this.failures.filter((timestamp) => timestamp >= cutoff);
@@ -113,6 +147,15 @@ export class CircuitBreaker {
 
 	private transitionToHalfOpen(now: number): void {
 		this.state = "half-open";
+		this.lastStateChange = now;
+		this.halfOpenAttempts = 0;
+	}
+
+	private hasHalfOpenProbeWaitElapsed(now: number): boolean {
+		return now - this.lastStateChange >= this.config.resetTimeoutMs;
+	}
+
+	private resetHalfOpenProbeWindow(now: number): void {
 		this.lastStateChange = now;
 		this.halfOpenAttempts = 0;
 	}

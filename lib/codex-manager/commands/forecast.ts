@@ -1,4 +1,5 @@
 import type { DashboardDisplaySettings } from "../../dashboard-settings.js";
+import { extractAccountEmail, sanitizeEmail } from "../../accounts.js";
 import {
 	buildForecastExplanation,
 	type ForecastAccountResult,
@@ -6,8 +7,13 @@ import {
 import type { QuotaCacheData } from "../../quota-cache.js";
 import type { CodexQuotaSnapshot } from "../../quota-probe.js";
 import { resolveNormalizedModel } from "../../request/helpers/model-map.js";
-import type { AccountMetadataV3, AccountStorageV3 } from "../../storage.js";
+import {
+	findMatchingAccountIndex,
+	type AccountMetadataV3,
+	type AccountStorageV3,
+} from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
+import { sleep } from "../../utils.js";
 
 interface ForecastCliOptions {
 	live: boolean;
@@ -26,9 +32,12 @@ type QuotaEmailFallbackState = ReadonlyMap<
 	{ matchingCount: number; distinctAccountIds: Set<string> }
 >;
 
+const RETRYABLE_STORAGE_WRITE_CODES = new Set(["EBUSY", "EPERM"]);
+
 export interface ForecastCommandDeps {
 	setStoragePath: (path: string | null) => void;
 	loadAccounts: () => Promise<AccountStorageV3 | null>;
+	saveAccounts: (storage: AccountStorageV3) => Promise<void>;
 	loadDashboardDisplaySettings?: () => Promise<DashboardDisplaySettings>;
 	resolveActiveIndex: (storage: AccountStorageV3, family?: "codex") => number;
 	loadQuotaCache: () => Promise<QuotaCacheData | null>;
@@ -101,6 +110,82 @@ export interface ForecastCommandDeps {
 	logInfo?: (message: string) => void;
 	logError?: (message: string) => void;
 	getNow?: () => number;
+}
+
+function isRetryableStorageWriteError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && RETRYABLE_STORAGE_WRITE_CODES.has(code);
+}
+
+async function saveAccountsWithRetry(
+	storage: AccountStorageV3,
+	saveAccounts: ForecastCommandDeps["saveAccounts"],
+): Promise<void> {
+	for (let attempt = 0; ; attempt += 1) {
+		try {
+			await saveAccounts(storage);
+			return;
+		} catch (error) {
+			if (!isRetryableStorageWriteError(error) || attempt >= 3) {
+				throw error;
+			}
+			await sleep(10 * 2 ** attempt);
+		}
+	}
+}
+
+type AccountIdentityMatch = Pick<
+	AccountMetadataV3,
+	"accountId" | "email" | "refreshToken"
+>;
+type RefreshedAccountPatch = Pick<
+	AccountMetadataV3,
+	"refreshToken" | "accessToken" | "expiresAt"
+> & {
+	email?: AccountMetadataV3["email"];
+	accountId?: AccountMetadataV3["accountId"];
+	accountIdSource?: AccountMetadataV3["accountIdSource"];
+};
+
+function applyRefreshedAccountPatch(
+	account: AccountMetadataV3,
+	patch: RefreshedAccountPatch,
+): void {
+	account.refreshToken = patch.refreshToken;
+	account.accessToken = patch.accessToken;
+	account.expiresAt = patch.expiresAt;
+	if (patch.email) account.email = patch.email;
+	if (patch.accountId) {
+		account.accountId = patch.accountId;
+		account.accountIdSource = patch.accountIdSource;
+	}
+}
+
+async function persistRefreshedAccountPatch(
+	storage: AccountStorageV3,
+	accountMatch: AccountIdentityMatch,
+	patch: RefreshedAccountPatch,
+	loadAccounts: ForecastCommandDeps["loadAccounts"],
+	saveAccounts: ForecastCommandDeps["saveAccounts"],
+): Promise<void> {
+	const latestStorage = (await loadAccounts()) ?? storage;
+	const nextStorage = structuredClone(latestStorage);
+	const targetIndex =
+		findMatchingAccountIndex(nextStorage.accounts, accountMatch, {
+			allowUniqueAccountIdFallbackWithoutEmail: true,
+		}) ??
+		findMatchingAccountIndex(nextStorage.accounts, patch, {
+			allowUniqueAccountIdFallbackWithoutEmail: true,
+		});
+	if (targetIndex === undefined) {
+		throw new Error("Unable to resolve refreshed account for persistence");
+	}
+	const targetAccount = nextStorage.accounts[targetIndex];
+	if (!targetAccount) {
+		throw new Error("Unable to resolve refreshed account for persistence");
+	}
+	applyRefreshedAccountPatch(targetAccount, patch);
+	await saveAccountsWithRetry(nextStorage, saveAccounts);
 }
 
 function joinStyledSegments(
@@ -287,9 +372,59 @@ export async function runForecastCommand(
 				});
 				continue;
 			}
+			const refreshedEmail = sanitizeEmail(
+				extractAccountEmail(refreshResult.access, refreshResult.idToken),
+			);
+			const refreshedAccountId = deps.extractAccountId(refreshResult.access);
+			const previousRefreshToken = account.refreshToken;
+			const previousAccessToken = account.accessToken;
+			const previousExpiresAt = account.expiresAt;
+			const previousEmail = account.email;
+			const previousAccountId = account.accountId;
+			const refreshPatch: RefreshedAccountPatch = {
+				refreshToken: refreshResult.refresh,
+				accessToken: refreshResult.access,
+				expiresAt: refreshResult.expires,
+			};
+			if (refreshedEmail) {
+				refreshPatch.email = refreshedEmail;
+			}
+			if (refreshedAccountId) {
+				refreshPatch.accountId = refreshedAccountId;
+				refreshPatch.accountIdSource = "token";
+			}
+			const accountMatch: AccountIdentityMatch = {
+				refreshToken: previousRefreshToken,
+				email: previousEmail,
+				accountId: previousAccountId,
+			};
+			applyRefreshedAccountPatch(account, refreshPatch);
 			probeAccessToken = refreshResult.access;
-			probeAccountId =
-				account.accountId ?? deps.extractAccountId(refreshResult.access);
+			probeAccountId = account.accountId ?? refreshedAccountId;
+			if (
+				previousRefreshToken !== refreshPatch.refreshToken ||
+				previousAccessToken !== refreshPatch.accessToken ||
+				previousExpiresAt !== refreshPatch.expiresAt ||
+				previousEmail !== account.email ||
+				previousAccountId !== account.accountId
+			) {
+				try {
+					await persistRefreshedAccountPatch(
+						storage,
+						accountMatch,
+						refreshPatch,
+						deps.loadAccounts,
+						deps.saveAccounts,
+					);
+				} catch (error) {
+					const message = deps.normalizeFailureDetail(
+						error instanceof Error ? error.message : String(error),
+						undefined,
+					);
+					probeErrors.push(`${deps.formatAccountLabel(account, i)}: ${message}`);
+					continue;
+				}
+			}
 		}
 
 		if (!probeAccessToken || !probeAccountId) {
