@@ -54,7 +54,11 @@ export function getAccountHealth(
 	});
 
 	const healthyCount = accountHealths.filter(
-		(a) => !a.isRateLimited && !a.isCoolingDown && a.health >= 50,
+		(a) =>
+			!a.isRateLimited &&
+			!a.isCoolingDown &&
+			a.circuitState === "closed" &&
+			a.health >= 50,
 	).length;
 
 	const rateLimitedCount = accountHealths.filter((a) => a.isRateLimited).length;

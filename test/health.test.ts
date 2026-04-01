@@ -78,6 +78,21 @@ describe("Health check", () => {
 		expect(health.accounts[0].circuitState).toBe("open");
 	});
 
+	it("does not count circuit-open accounts as healthy", () => {
+		const accounts = [
+			{ index: 0, email: "a@test.com", accountId: "acc1", health: 100 },
+			{ index: 1, email: "b@test.com", accountId: "acc2", health: 100 },
+		];
+		const circuit = getCircuitBreaker(getAccountIdentityKey(accounts[0]!)!);
+		circuit.recordFailure();
+		circuit.recordFailure();
+		circuit.recordFailure();
+
+		const health = getAccountHealth(accounts);
+		expect(health.status).toBe("degraded");
+		expect(health.healthyAccountCount).toBe(1);
+	});
+
 	it("formats health report correctly", () => {
 		const now = Date.now();
 		const accounts = [

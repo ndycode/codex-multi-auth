@@ -977,6 +977,33 @@ describe("AccountManager", () => {
         DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs,
       );
     });
+
+    it("uses the largest blocking delay for each account before taking the pool minimum", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            email: "breaker@example.com",
+            addedAt: now,
+            lastUsed: now,
+            coolingDownUntil: now + 45_000,
+            rateLimitResetTimes: { codex: now + 60_000 },
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+
+      manager.recordFailure(account, "codex");
+      manager.recordFailure(account, "codex");
+      manager.recordFailure(account, "codex");
+
+      expect(manager.getMinWaitTimeForFamily("codex")).toBe(60_000);
+    });
   });
 
   describe("updateFromAuth", () => {
@@ -2153,6 +2180,44 @@ describe("AccountManager", () => {
 
       expect(manager.consumeToken(account, "codex")).toBe(false);
       expect(tokenTracker.getTokens(account.index, "codex")).toBe(initialTokens);
+    });
+
+    it("consumeToken returns false and refunds when the half-open slot is exhausted", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(0));
+
+      try {
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "token-1",
+              email: "breaker@example.com",
+              addedAt: now,
+              lastUsed: now,
+            },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+        const account = manager.getCurrentAccount()!;
+        const tokenTracker = getTokenTracker();
+        const initialTokens = tokenTracker.getTokens(account.index, "codex");
+
+        manager.recordFailure(account, "codex");
+        manager.recordFailure(account, "codex");
+        manager.recordFailure(account, "codex");
+
+        vi.advanceTimersByTime(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1);
+
+        expect(manager.consumeToken(account, "codex")).toBe(true);
+        expect(manager.consumeToken(account, "codex")).toBe(false);
+        expect(tokenTracker.getTokens(account.index, "codex")).toBe(initialTokens - 1);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
