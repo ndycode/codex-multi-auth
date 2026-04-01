@@ -1937,6 +1937,13 @@ async function loadAccountsForExport(): Promise<AccountStorageV3 | null> {
 		return createEmptyStorageWithMetadata(false, "intentional-reset");
 	}
 	if (!existsSync(path)) {
+		if (migratedLegacyStorage) {
+			return migratedLegacyStorage;
+		}
+		const recoveredFromWal = await loadAccountsFromJournal(path);
+		if (recoveredFromWal) {
+			return recoveredFromWal;
+		}
 		return createEmptyStorageWithMetadata(true, "missing-storage");
 	}
 
@@ -1969,6 +1976,10 @@ async function loadAccountsForExport(): Promise<AccountStorageV3 | null> {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (existsSync(resetMarkerPath)) {
 			return createEmptyStorageWithMetadata(false, "intentional-reset");
+		}
+		const recoveredFromWal = await loadAccountsFromJournal(path);
+		if (recoveredFromWal) {
+			return recoveredFromWal;
 		}
 		if (code === "ENOENT") {
 			return migratedLegacyStorage;

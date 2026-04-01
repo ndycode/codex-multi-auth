@@ -26,7 +26,7 @@ Public documentation for `codex-multi-auth`.
 | [troubleshooting.md](troubleshooting.md) | Recovery playbooks for install, login, switching, and stale state |
 | [privacy.md](privacy.md) | Data handling and local storage behavior |
 | [upgrade.md](upgrade.md) | Migration from legacy package and path history |
-| [releases/v1.1.10.md](releases/v1.1.10.md) | Stable release notes |
+| [releases/v1.1.10.md](releases/v1.1.10.md) | Current stable release notes |
 | [releases/v0.1.9.md](releases/v0.1.9.md) | Previous stable release notes |
 | [releases/v0.1.8.md](releases/v0.1.8.md) | Earlier stable release notes |
 | [releases/v0.1.7.md](releases/v0.1.7.md) | Archived stable release notes |

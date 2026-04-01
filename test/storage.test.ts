@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -949,7 +950,6 @@ describe("storage", () => {
 		});
 
 		it("should fail export when no accounts exist", async () => {
-			const { exportAccounts } = await import("../lib/storage.js");
 			setStoragePathDirect(testStoragePath);
 			await expect(exportAccounts(exportPath)).rejects.toThrow(
 				/No accounts to export/,
@@ -957,7 +957,6 @@ describe("storage", () => {
 		});
 
 		it("should fail export when only backup storage exists", async () => {
-			const { exportAccounts } = await import("../lib/storage.js");
 			const backupPath = `${testStoragePath}.bak`;
 			await fs.writeFile(
 				backupPath,
@@ -980,6 +979,140 @@ describe("storage", () => {
 			await expect(exportAccounts(exportPath)).rejects.toThrow(
 				/No accounts to export/,
 			);
+			expect(existsSync(exportPath)).toBe(false);
+		});
+
+		it("should export from WAL recovery when primary storage is missing", async () => {
+			const walPath = `${testStoragePath}.wal`;
+			const storage = {
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "wal-only",
+						refreshToken: "wal-refresh",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			};
+			const content = JSON.stringify(storage, null, 2);
+			const checksum = createHash("sha256").update(content).digest("hex");
+			await fs.writeFile(
+				walPath,
+				JSON.stringify({
+					version: 1,
+					createdAt: 1,
+					path: testStoragePath,
+					checksum,
+					content,
+				}),
+				"utf-8",
+			);
+
+			await exportAccounts(exportPath);
+
+			const exported = JSON.parse(await fs.readFile(exportPath, "utf-8")) as {
+				accounts: Array<{ accountId: string; refreshToken: string }>;
+			};
+			expect(exported.accounts).toEqual([
+				expect.objectContaining({
+					accountId: "wal-only",
+					refreshToken: "wal-refresh",
+				}),
+			]);
+		});
+
+		it("should export from migrated legacy project storage when primary storage is missing", async () => {
+			const fakeHome = join(testWorkDir, "legacy-home");
+			const projectDir = join(testWorkDir, "legacy-project");
+			const legacyProjectConfigDir = join(projectDir, ".codex");
+			const legacyStoragePath = join(
+				legacyProjectConfigDir,
+				"openai-codex-accounts.json",
+			);
+			const originalHome = process.env.HOME;
+			const originalUserProfile = process.env.USERPROFILE;
+			try {
+				await fs.mkdir(fakeHome, { recursive: true });
+				await fs.mkdir(join(projectDir, ".git"), { recursive: true });
+				await fs.mkdir(legacyProjectConfigDir, { recursive: true });
+				process.env.HOME = fakeHome;
+				process.env.USERPROFILE = fakeHome;
+				setStoragePath(projectDir);
+				await fs.writeFile(
+					legacyStoragePath,
+					JSON.stringify({
+						version: 3,
+						activeIndex: 0,
+						accounts: [
+							{
+								accountId: "legacy-only",
+								refreshToken: "legacy-refresh",
+								addedAt: 1,
+								lastUsed: 1,
+							},
+						],
+					}),
+					"utf-8",
+				);
+
+				await exportAccounts(exportPath);
+
+				const exported = JSON.parse(await fs.readFile(exportPath, "utf-8")) as {
+					accounts: Array<{ accountId: string; refreshToken: string }>;
+				};
+				expect(exported.accounts).toEqual([
+					expect.objectContaining({
+						accountId: "legacy-only",
+						refreshToken: "legacy-refresh",
+					}),
+				]);
+				expect(existsSync(legacyStoragePath)).toBe(false);
+				expect(existsSync(getStoragePath())).toBe(true);
+			} finally {
+				if (originalHome === undefined) delete process.env.HOME;
+				else process.env.HOME = originalHome;
+				if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+				else process.env.USERPROFILE = originalUserProfile;
+				setStoragePathDirect(testStoragePath);
+			}
+		});
+
+		it("should fail export from backup-only storage on a different path during an active transaction", async () => {
+			const alternateStoragePath = join(
+				testWorkDir,
+				`accounts-alt-${Math.random().toString(36).slice(2)}.json`,
+			);
+			const alternateBackupPath = `${alternateStoragePath}.bak`;
+			await fs.writeFile(
+				alternateBackupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "backup-only",
+							refreshToken: "backup-refresh",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			await withAccountStorageTransaction(async () => {
+				setStoragePathDirect(alternateStoragePath);
+				try {
+					await expect(exportAccounts(exportPath)).rejects.toThrow(
+						/No accounts to export/,
+					);
+				} finally {
+					setStoragePathDirect(testStoragePath);
+				}
+			});
+
 			expect(existsSync(exportPath)).toBe(false);
 		});
 
