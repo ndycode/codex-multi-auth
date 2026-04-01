@@ -15,9 +15,16 @@ import { UI_COPY } from "../lib/ui/copy.js";
 const projectRoot = resolve(process.cwd());
 
 function readPackageVersion(): string {
-	const parsed = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8")) as {
-		version?: unknown;
-	};
+	const packagePath = join(projectRoot, "package.json");
+	let parsed: { version?: unknown };
+	try {
+		parsed = JSON.parse(readFileSync(packagePath, "utf-8")) as {
+			version?: unknown;
+		};
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(`Failed to read ${packagePath}: ${message}`);
+	}
 	if (typeof parsed.version !== "string" || parsed.version.trim().length === 0) {
 		throw new Error("package.json must define a non-empty version string");
 	}
@@ -26,6 +33,9 @@ function readPackageVersion(): string {
 
 const packageVersion = readPackageVersion();
 const currentStableReleaseDoc = `docs/releases/v${packageVersion}.md`;
+// These stay manual so the docs portal keeps an intentional short stable-history window.
+const previousStableReleaseDoc = "docs/releases/v1.2.1.md";
+const earlierStableReleaseDoc = "docs/releases/v1.2.0.md";
 
 const userDocs = [
 	"docs/index.md",
@@ -44,8 +54,8 @@ const userDocs = [
 	"docs/reference/settings.md",
 	"docs/reference/storage-paths.md",
 	currentStableReleaseDoc,
-	"docs/releases/v1.2.1.md",
-	"docs/releases/v1.2.0.md",
+	previousStableReleaseDoc,
+	earlierStableReleaseDoc,
 	"docs/releases/v0.1.7.md",
 	"docs/releases/v0.1.6.md",
 	"docs/releases/v0.1.5.md",
@@ -141,8 +151,8 @@ describe("Documentation Integrity", () => {
 		expect(portal).toContain("reference/public-api.md");
 		expect(portal).toContain("reference/error-contracts.md");
 		expect(portal).toContain(`releases/v${packageVersion}.md`);
-		expect(portal).toContain("releases/v1.2.1.md");
-		expect(portal).toContain("releases/v1.2.0.md");
+		expect(portal).toContain(previousStableReleaseDoc.replace("docs/", ""));
+		expect(portal).toContain(earlierStableReleaseDoc.replace("docs/", ""));
 		expect(portal).toContain("releases/v0.1.7.md");
 		expect(portal).toContain("releases/v0.1.6.md");
 		expect(portal).toContain("releases/v0.1.5.md");
@@ -152,8 +162,8 @@ describe("Documentation Integrity", () => {
 			"| [Daily Use release notes](#daily-use) | Stable, previous, and archived release notes |",
 		);
 		expect(readme).toContain(currentStableReleaseDoc);
-		expect(readme).toContain("docs/releases/v1.2.1.md");
-		expect(readme).toContain("docs/releases/v1.2.0.md");
+		expect(readme).toContain(previousStableReleaseDoc);
+		expect(readme).toContain(earlierStableReleaseDoc);
 
 		const beta = read("docs/releases/v0.1.0-beta.0.md");
 		expect(beta).toContain("Archived");
