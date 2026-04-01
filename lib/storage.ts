@@ -1936,6 +1936,9 @@ async function loadAccountsForExport(): Promise<AccountStorageV3 | null> {
 	if (existsSync(resetMarkerPath)) {
 		return createEmptyStorageWithMetadata(false, "intentional-reset");
 	}
+	if (!existsSync(path)) {
+		return createEmptyStorageWithMetadata(true, "missing-storage");
+	}
 
 	try {
 		const { normalized, storedVersion, schemaErrors } =

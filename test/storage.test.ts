@@ -956,6 +956,33 @@ describe("storage", () => {
 			);
 		});
 
+		it("should fail export when only backup storage exists", async () => {
+			const { exportAccounts } = await import("../lib/storage.js");
+			const backupPath = `${testStoragePath}.bak`;
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "backup-only",
+							refreshToken: "backup-refresh",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf-8",
+			);
+
+			setStoragePathDirect(testStoragePath);
+			await expect(exportAccounts(exportPath)).rejects.toThrow(
+				/No accounts to export/,
+			);
+			expect(existsSync(exportPath)).toBe(false);
+		});
+
 		it("should fail import when file does not exist", async () => {
 			const { importAccounts } = await import("../lib/storage.js");
 			const nonexistentPath = join(testWorkDir, "nonexistent-file.json");
