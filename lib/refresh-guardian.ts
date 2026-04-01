@@ -205,7 +205,6 @@ export class RefreshGuardian {
 			}
 
 			let requiresSave = false;
-			const processed = new Set<number>();
 			const refreshResults = await refreshExpiringAccounts(
 				eligibleSnapshot,
 				this.bufferMs,
@@ -218,34 +217,12 @@ export class RefreshGuardian {
 					if (saveNeeded) {
 						requiresSave = true;
 					}
-					processed.add(sourceAccount.index);
 				},
 			);
 			if (refreshResults.size === 0) {
 				this.stats.runs += 1;
 				this.stats.lastRunAt = Date.now();
 				return;
-			}
-
-			const snapshotByIndex = new Map<number, (typeof snapshot)[number]>();
-			for (const candidate of eligibleSnapshot) {
-				snapshotByIndex.set(candidate.index, candidate);
-			}
-
-			for (const [accountIndex, result] of refreshResults.entries()) {
-				if (processed.has(accountIndex)) {
-					continue;
-				}
-				const sourceAccount = snapshotByIndex.get(accountIndex);
-				if (!sourceAccount) continue;
-				const saveNeeded = await this.applyRefreshOutcome(
-					manager,
-					sourceAccount,
-					result,
-				);
-				if (saveNeeded) {
-					requiresSave = true;
-				}
 			}
 
 			if (requiresSave) {

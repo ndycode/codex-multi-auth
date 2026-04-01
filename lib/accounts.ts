@@ -19,7 +19,7 @@ import {
 	type HybridSelectionOptions,
 } from "./rotation.js";
 import { nowMs } from "./utils.js";
-import { ERROR_MESSAGES } from "./constants.js";
+import { ERROR_MESSAGES, HTTP_STATUS } from "./constants.js";
 import { CodexAuthError } from "./errors.js";
 import {
 	loadCodexCliState,
@@ -157,6 +157,37 @@ function findAccountIndexByIdentity<
 		}
 	}
 	return undefined;
+}
+
+const RETRYABLE_AUTH_PERSISTENCE_CODES = new Set(["EAGAIN", "EBUSY", "EPERM"]);
+
+function isRetryableAuthPersistenceError(error: unknown): boolean {
+	if (!error || typeof error !== "object") {
+		return false;
+	}
+
+	const candidate = error as {
+		code?: unknown;
+		status?: unknown;
+		cause?: unknown;
+	};
+	const code =
+		typeof candidate.code === "string"
+			? candidate.code.toUpperCase()
+			: undefined;
+	if (code && RETRYABLE_AUTH_PERSISTENCE_CODES.has(code)) {
+		return true;
+	}
+
+	if (candidate.status === HTTP_STATUS.TOO_MANY_REQUESTS) {
+		return true;
+	}
+
+	if (candidate.cause && candidate.cause !== error) {
+		return isRetryableAuthPersistenceError(candidate.cause);
+	}
+
+	return false;
 }
 
 export interface Workspace {
@@ -845,25 +876,68 @@ export class AccountManager {
 				delete storedAccount.coolingDownUntil;
 				delete storedAccount.cooldownReason;
 
-				await persist(nextStorage);
-
 				const liveAccount = this.getAccountByIdentity(source, auth);
-				if (!liveAccount) {
-					log.warn("Unable to resolve refreshed live account after persistence", {
-						sourceIndex: source.index,
-					});
-					return null;
+				if (liveAccount) {
+					const previousLiveAccountState = {
+						access: liveAccount.access,
+						refreshToken: liveAccount.refreshToken,
+						expires: liveAccount.expires,
+						accountId: liveAccount.accountId,
+						accountIdSource: liveAccount.accountIdSource,
+						email: liveAccount.email,
+						enabled: liveAccount.enabled,
+						coolingDownUntil: liveAccount.coolingDownUntil,
+						cooldownReason: liveAccount.cooldownReason,
+						consecutiveAuthFailures: liveAccount.consecutiveAuthFailures,
+					};
+
+					this.updateFromAuth(liveAccount, auth);
+					liveAccount.enabled = true;
+					this.clearAccountCooldown(liveAccount);
+					this.clearAuthFailures(liveAccount);
+
+					try {
+						await persist(nextStorage);
+					} catch (error) {
+						liveAccount.access = previousLiveAccountState.access;
+						liveAccount.refreshToken = previousLiveAccountState.refreshToken;
+						liveAccount.expires = previousLiveAccountState.expires;
+						liveAccount.accountId = previousLiveAccountState.accountId;
+						liveAccount.accountIdSource =
+							previousLiveAccountState.accountIdSource;
+						liveAccount.email = previousLiveAccountState.email;
+						liveAccount.enabled = previousLiveAccountState.enabled;
+						liveAccount.consecutiveAuthFailures =
+							previousLiveAccountState.consecutiveAuthFailures;
+						if (
+							previousLiveAccountState.coolingDownUntil === undefined
+						) {
+							delete liveAccount.coolingDownUntil;
+						} else {
+							liveAccount.coolingDownUntil =
+								previousLiveAccountState.coolingDownUntil;
+						}
+						if (previousLiveAccountState.cooldownReason === undefined) {
+							delete liveAccount.cooldownReason;
+						} else {
+							liveAccount.cooldownReason =
+								previousLiveAccountState.cooldownReason;
+						}
+						throw error;
+					}
+
+					return liveAccount;
 				}
 
-				this.updateFromAuth(liveAccount, auth);
-				liveAccount.enabled = true;
-				this.clearAccountCooldown(liveAccount);
-				this.clearAuthFailures(liveAccount);
-				return liveAccount;
+				await persist(nextStorage);
+				log.warn("Unable to resolve refreshed live account after persistence", {
+					sourceIndex: source.index,
+				});
+				return null;
 			});
 		} catch (error) {
 			throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, {
-				retryable: true,
+				retryable: isRetryableAuthPersistenceError(error),
 				cause: error,
 			});
 		}

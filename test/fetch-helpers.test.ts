@@ -183,7 +183,9 @@ describe('Fetch Helpers Module', () => {
 			const auth: Auth = { type: 'oauth', access: 'old', refresh: 'oldr', expires: 0 };
 			const client = {
 				auth: {
-					set: vi.fn().mockRejectedValue(new Error('persist failed')),
+					set: vi.fn().mockRejectedValue(
+						Object.assign(new Error('persist failed'), { code: 'EBUSY' }),
+					),
 				},
 			} as any;
 			vi.spyOn(refreshQueueModule, 'queuedRefresh').mockResolvedValue({
@@ -198,6 +200,29 @@ describe('Fetch Helpers Module', () => {
 			);
 			expect(error).toBeInstanceOf(CodexAuthError);
 			expect(error.retryable).toBe(true);
+		});
+
+		it('throws terminal auth errors when auth persistence fails permanently', async () => {
+			const auth: Auth = { type: 'oauth', access: 'old', refresh: 'oldr', expires: 0 };
+			const client = {
+				auth: {
+					set: vi.fn().mockRejectedValue(
+						Object.assign(new Error('persist failed'), { code: 'EACCES' }),
+					),
+				},
+			} as any;
+			vi.spyOn(refreshQueueModule, 'queuedRefresh').mockResolvedValue({
+				type: 'success',
+				access: 'new',
+				refresh: 'newr',
+				expires: 123,
+			} as any);
+
+			const error = await refreshAndUpdateToken(auth, client).catch(
+				(err) => err as CodexAuthError,
+			);
+			expect(error).toBeInstanceOf(CodexAuthError);
+			expect(error.retryable).toBe(false);
 		});
 	});
 

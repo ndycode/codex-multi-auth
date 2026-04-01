@@ -1270,6 +1270,47 @@ describe("AccountManager", () => {
       expect(account.refreshToken).toBe("old-refresh");
     });
 
+    it("propagates non-transient storage write failure as terminal CodexAuthError", async () => {
+      const { withAccountStorageTransaction } = await import("../lib/storage.js");
+      const mockWithAccountStorageTransaction = vi.mocked(
+        withAccountStorageTransaction,
+      );
+      mockWithAccountStorageTransaction.mockRejectedValueOnce(
+        Object.assign(new Error("EACCES"), { code: "EACCES" }),
+      );
+
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "old-refresh",
+            accessToken: "old-access",
+            expiresAt: now,
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+      const manager = new AccountManager(undefined, stored as any);
+      const account = manager.getAccountByIndex(0)!;
+      const refreshedAuth: OAuthAuthDetails = {
+        type: "oauth",
+        access: "header.payload.signature",
+        refresh: "new-refresh",
+        expires: now + 3_600_000,
+      };
+
+      const error = await manager.commitRefreshedAuth(account, refreshedAuth).catch(
+        (err) => err as CodexAuthError,
+      );
+
+      expect(error).toBeInstanceOf(CodexAuthError);
+      expect(error.retryable).toBe(false);
+      expect(account.refreshToken).toBe("old-refresh");
+    });
+
     it("prevents debounced saves from writing stale auth during refresh persistence", async () => {
       vi.useFakeTimers();
       try {

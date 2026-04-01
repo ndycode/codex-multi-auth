@@ -449,6 +449,35 @@ function isRetryableRefreshFailure(
 	}
 }
 
+function isRetryableAuthSetterError(error: unknown): boolean {
+	if (!error || typeof error !== "object") {
+		return false;
+	}
+
+	const candidate = error as {
+		code?: unknown;
+		status?: unknown;
+		cause?: unknown;
+	};
+	const code =
+		typeof candidate.code === "string"
+			? candidate.code.toUpperCase()
+			: undefined;
+	if (code === "EAGAIN" || code === "EBUSY" || code === "EPERM") {
+		return true;
+	}
+
+	if (candidate.status === HTTP_STATUS.TOO_MANY_REQUESTS) {
+		return true;
+	}
+
+	if (candidate.cause && candidate.cause !== error) {
+		return isRetryableAuthSetterError(candidate.cause);
+	}
+
+	return false;
+}
+
 /**
  * Refreshes the OAuth token and updates stored credentials
  * @param currentAuth - Current auth state
@@ -492,7 +521,7 @@ export async function refreshAndUpdateToken(
 		});
 	} catch (error) {
 		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, {
-			retryable: true,
+			retryable: isRetryableAuthSetterError(error),
 			cause: error,
 		});
 	}
