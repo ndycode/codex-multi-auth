@@ -233,4 +233,74 @@ describe("Circuit breaker", () => {
     vi.setSystemTime(new Date(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1000));
     expect(breaker.getTimeUntilReset()).toBe(0);
   });
+
+  it("getTimeUntilAvailable returns remaining wait while a half-open probe slot is exhausted", () => {
+    const breaker = new CircuitBreaker();
+    breaker.recordFailure();
+    breaker.recordFailure();
+    breaker.recordFailure();
+
+    vi.setSystemTime(new Date(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1));
+    expect(breaker.canExecute()).toBe(true);
+    vi.setSystemTime(
+      new Date(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1001),
+    );
+
+    expect(breaker.getState()).toBe("half-open");
+    expect(breaker.getTimeUntilAvailable()).toBe(
+      DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs - 1000,
+    );
+  });
+
+  it("getTimeUntilAvailable stays at 0 when half-open still has probe capacity", () => {
+    const breaker = new CircuitBreaker({ halfOpenMaxAttempts: 2 });
+    breaker.recordFailure();
+    breaker.recordFailure();
+    breaker.recordFailure();
+
+    vi.setSystemTime(new Date(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1));
+    expect(breaker.canExecute()).toBe(true);
+
+    expect(breaker.getState()).toBe("half-open");
+    expect(breaker.getTimeUntilAvailable()).toBe(0);
+  });
+
+  it("isAvailable is false while open and true after reset timeout", () => {
+    const breaker = new CircuitBreaker();
+    breaker.recordFailure();
+    breaker.recordFailure();
+    breaker.recordFailure();
+
+    expect(breaker.isAvailable()).toBe(false);
+    vi.setSystemTime(new Date(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1));
+    expect(breaker.isAvailable()).toBe(true);
+  });
+
+  it("isAvailable becomes false when half-open attempts are exhausted", () => {
+    const breaker = new CircuitBreaker();
+    breaker.recordFailure();
+    breaker.recordFailure();
+    breaker.recordFailure();
+
+    vi.setSystemTime(new Date(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1));
+    expect(breaker.isAvailable()).toBe(true);
+    breaker.canExecute();
+    expect(breaker.isAvailable()).toBe(false);
+  });
+
+  it("allows a new half-open probe after the exhausted wait window elapses", () => {
+    const breaker = new CircuitBreaker();
+    breaker.recordFailure();
+    breaker.recordFailure();
+    breaker.recordFailure();
+
+    vi.setSystemTime(new Date(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1));
+    expect(breaker.canExecute()).toBe(true);
+
+    vi.advanceTimersByTime(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs);
+
+    expect(breaker.isAvailable()).toBe(true);
+    expect(breaker.getTimeUntilAvailable()).toBe(0);
+    expect(breaker.canExecute()).toBe(true);
+  });
 });

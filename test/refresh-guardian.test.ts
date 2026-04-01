@@ -135,6 +135,9 @@ function createManagerMock(accounts: ManagedAccount[]): AccountManager {
         account.rateLimitResetTimes.codex = Date.now() + retryAfterMs;
       },
     ),
+    recordSuccess: vi.fn(),
+    recordFailure: vi.fn(),
+    recordRateLimit: vi.fn(),
     setAccountEnabled: vi.fn((index: number, enabled: boolean) => {
       const account = accounts.find((candidate) => candidate.index === index);
       if (account) {
@@ -304,11 +307,17 @@ describe("refresh-guardian", () => {
       }),
     );
     expect(
+      manager.recordSuccess as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(accountA, "codex");
+    expect(
       manager.incrementAuthFailures as ReturnType<typeof vi.fn>,
     ).toHaveBeenCalledWith(accountB);
     expect(
       manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
     ).toHaveBeenCalledWith(accountB, 30_000, "auth-failure");
+    expect(
+      manager.recordFailure as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(accountB, "codex");
     expect(
       manager.saveToDiskDebounced as ReturnType<typeof vi.fn>,
     ).toHaveBeenCalledTimes(1);
@@ -445,21 +454,32 @@ describe("refresh-guardian", () => {
       refreshToken: "refresh-0-rotated",
     };
     const liveB = { ...originalB, index: 0 };
+    const liveAccounts = [liveB, liveA];
     const snapshots = [
       [originalA, originalB],
-      [liveB, liveA],
+      liveAccounts,
     ];
     let readCount = 0;
     const manager = {
       getAccountsSnapshot: vi.fn(
         () => snapshots[Math.min(readCount++, snapshots.length - 1)],
       ),
+      isAccountCoolingDown: vi.fn(() => false),
       getAccountByIndex: vi.fn(
         (index: number) =>
-          [liveB, liveA].find((account) => account.index === index) ?? null,
+          liveAccounts.find((account) => account.index === index) ?? null,
+      ),
+      getAccountByIdentity: vi.fn((candidate: Partial<ManagedAccount>, auth?: OAuthAuthDetails) =>
+        findAccountByIdentity(liveAccounts, candidate, auth),
+      ),
+      commitRefreshedAuth: vi.fn(async (candidate: Partial<ManagedAccount>, auth?: OAuthAuthDetails) =>
+        findAccountByIdentity(liveAccounts, candidate, auth),
       ),
       clearAuthFailures: vi.fn(),
       markAccountCoolingDown: vi.fn(),
+      recordSuccess: vi.fn(),
+      recordFailure: vi.fn(),
+      recordRateLimit: vi.fn(),
       setAccountEnabled: vi.fn(),
       saveToDiskDebounced: vi.fn(),
     } as unknown as AccountManager;
@@ -489,13 +509,18 @@ describe("refresh-guardian", () => {
 
     await guardian.tick();
 
-    expect(applyRefreshResultMock).toHaveBeenCalledWith(
-      liveA,
-      expect.objectContaining({ type: "success" }),
+    expect(
+      manager.commitRefreshedAuth as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(
+      originalA,
+      expect.objectContaining({
+        type: "oauth",
+        refresh: "refresh-account-id",
+      }),
     );
     expect(
-      manager.clearAuthFailures as ReturnType<typeof vi.fn>,
-    ).toHaveBeenCalledWith(liveA);
+      manager.recordSuccess as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(liveA, "codex");
   });
 
   it("falls back to refreshToken when accountId is unavailable and email is invalid", async () => {
@@ -510,21 +535,32 @@ describe("refresh-guardian", () => {
       index: 1,
     };
     const liveB = { ...originalB, index: 0 };
+    const liveAccounts = [liveB, liveA];
     const snapshots = [
       [originalA, originalB],
-      [liveB, liveA],
+      liveAccounts,
     ];
     let readCount = 0;
     const manager = {
       getAccountsSnapshot: vi.fn(
         () => snapshots[Math.min(readCount++, snapshots.length - 1)],
       ),
+      isAccountCoolingDown: vi.fn(() => false),
       getAccountByIndex: vi.fn(
         (index: number) =>
-          [liveB, liveA].find((account) => account.index === index) ?? null,
+          liveAccounts.find((account) => account.index === index) ?? null,
+      ),
+      getAccountByIdentity: vi.fn((candidate: Partial<ManagedAccount>, auth?: OAuthAuthDetails) =>
+        findAccountByIdentity(liveAccounts, candidate, auth),
+      ),
+      commitRefreshedAuth: vi.fn(async (candidate: Partial<ManagedAccount>, auth?: OAuthAuthDetails) =>
+        findAccountByIdentity(liveAccounts, candidate, auth),
       ),
       clearAuthFailures: vi.fn(),
       markAccountCoolingDown: vi.fn(),
+      recordSuccess: vi.fn(),
+      recordFailure: vi.fn(),
+      recordRateLimit: vi.fn(),
       setAccountEnabled: vi.fn(),
       saveToDiskDebounced: vi.fn(),
     } as unknown as AccountManager;
@@ -554,13 +590,18 @@ describe("refresh-guardian", () => {
 
     await guardian.tick();
 
-    expect(applyRefreshResultMock).toHaveBeenCalledWith(
-      liveA,
-      expect.objectContaining({ type: "success" }),
+    expect(
+      manager.commitRefreshedAuth as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(
+      originalA,
+      expect.objectContaining({
+        type: "oauth",
+        refresh: "refresh-token",
+      }),
     );
     expect(
-      manager.clearAuthFailures as ReturnType<typeof vi.fn>,
-    ).toHaveBeenCalledWith(liveA);
+      manager.recordSuccess as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(liveA, "codex");
   });
 
   it("treats empty string accountId the same as undefined by using normalized email", async () => {
@@ -573,21 +614,32 @@ describe("refresh-guardian", () => {
       email: "user0@example.com",
     };
     const liveB = { ...originalB, index: 0 };
+    const liveAccounts = [liveB, liveA];
     const snapshots = [
       [originalA, originalB],
-      [liveB, liveA],
+      liveAccounts,
     ];
     let readCount = 0;
     const manager = {
       getAccountsSnapshot: vi.fn(
         () => snapshots[Math.min(readCount++, snapshots.length - 1)],
       ),
+      isAccountCoolingDown: vi.fn(() => false),
       getAccountByIndex: vi.fn(
         (index: number) =>
-          [liveB, liveA].find((account) => account.index === index) ?? null,
+          liveAccounts.find((account) => account.index === index) ?? null,
+      ),
+      getAccountByIdentity: vi.fn((candidate: Partial<ManagedAccount>, auth?: OAuthAuthDetails) =>
+        findAccountByIdentity(liveAccounts, candidate, auth),
+      ),
+      commitRefreshedAuth: vi.fn(async (candidate: Partial<ManagedAccount>, auth?: OAuthAuthDetails) =>
+        findAccountByIdentity(liveAccounts, candidate, auth),
       ),
       clearAuthFailures: vi.fn(),
       markAccountCoolingDown: vi.fn(),
+      recordSuccess: vi.fn(),
+      recordFailure: vi.fn(),
+      recordRateLimit: vi.fn(),
       setAccountEnabled: vi.fn(),
       saveToDiskDebounced: vi.fn(),
     } as unknown as AccountManager;
@@ -617,13 +669,18 @@ describe("refresh-guardian", () => {
 
     await guardian.tick();
 
-    expect(applyRefreshResultMock).toHaveBeenCalledWith(
-      liveA,
-      expect.objectContaining({ type: "success" }),
+    expect(
+      manager.commitRefreshedAuth as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(
+      originalA,
+      expect.objectContaining({
+        type: "oauth",
+        refresh: "refresh-email",
+      }),
     );
     expect(
-      manager.clearAuthFailures as ReturnType<typeof vi.fn>,
-    ).toHaveBeenCalledWith(liveA);
+      manager.recordSuccess as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(liveA, "codex");
   });
 
   it("classifies failure reasons and handles no-op branches", async () => {
@@ -709,7 +766,10 @@ describe("refresh-guardian", () => {
     ).toHaveBeenCalledWith(accountC, 60_000, "codex");
     expect(
       manager.incrementAuthFailures as ReturnType<typeof vi.fn>,
-    ).toHaveBeenNthCalledWith(1, accountE);
+    ).toHaveBeenNthCalledWith(1, accountB);
+    expect(
+      manager.incrementAuthFailures as ReturnType<typeof vi.fn>,
+    ).toHaveBeenNthCalledWith(2, accountE);
 
     const stats = guardian.getStats();
     expect(stats.runs).toBe(1);
@@ -768,6 +828,9 @@ describe("refresh-guardian", () => {
       }),
       markAccountCoolingDown: vi.fn(),
       markRateLimited: vi.fn(),
+      recordSuccess: vi.fn(),
+      recordFailure: vi.fn(),
+      recordRateLimit: vi.fn(),
       setAccountEnabled: vi.fn(),
       saveToDiskDebounced: vi.fn(),
     } as unknown as AccountManager;
@@ -894,7 +957,7 @@ describe("refresh-guardian", () => {
     ).toHaveBeenCalledTimes(1);
     expect(
       manager.getAccountsSnapshot as ReturnType<typeof vi.fn>,
-    ).toHaveBeenCalledTimes(2);
+    ).toHaveBeenCalledTimes(1);
 
     const stats = guardian.getStats();
     expect(stats.runs).toBe(1);
@@ -1069,7 +1132,9 @@ describe("refresh-guardian", () => {
       );
 
     await guardian.tick();
+    await vi.advanceTimersByTimeAsync(30_001);
     await guardian.tick();
+    await vi.advanceTimersByTimeAsync(60_001);
     await guardian.tick();
 
     expect(
@@ -1141,6 +1206,9 @@ describe("refresh-guardian", () => {
       }),
       markAccountCoolingDown: vi.fn(),
       markRateLimited: vi.fn(),
+      recordSuccess: vi.fn(),
+      recordFailure: vi.fn(),
+      recordRateLimit: vi.fn(),
       setAccountEnabled: vi.fn(),
       saveToDiskDebounced: vi.fn(),
     } as unknown as AccountManager;
@@ -1191,6 +1259,12 @@ describe("refresh-guardian", () => {
       60_000,
       "codex",
     );
+    expect(
+      manager.recordRateLimit as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ refreshToken: originalB.refreshToken }),
+      "codex",
+    );
   });
 
   it("treats null commit results as retryable network cooldowns", async () => {
@@ -1230,7 +1304,7 @@ describe("refresh-guardian", () => {
     expect(commitRefreshedAuthMock).toHaveBeenCalledTimes(1);
     expect(
       manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
-    ).toHaveBeenCalledWith(accountA, 60_000, "network-error");
+    ).toHaveBeenCalledWith(accountA, 6_000, "network-error");
 
     const stats = guardian.getStats();
     expect(stats.runs).toBe(1);
@@ -1297,10 +1371,10 @@ describe("refresh-guardian", () => {
     expect(commitRefreshedAuthMock).toHaveBeenCalledTimes(1);
     expect(
       manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
-    ).toHaveBeenNthCalledWith(1, accountA, 60_000, "network-error");
+    ).toHaveBeenNthCalledWith(1, accountA, 6_000, "network-error");
     expect(
-      manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
-    ).toHaveBeenNthCalledWith(2, accountB, 60_000, "rate-limit");
+      manager.markRateLimited as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledWith(accountB, 60_000, "codex");
     expect(
       manager.saveToDiskDebounced as ReturnType<typeof vi.fn>,
     ).toHaveBeenCalledTimes(1);
@@ -1350,7 +1424,7 @@ describe("refresh-guardian", () => {
 
     expect(
       manager.markAccountCoolingDown as ReturnType<typeof vi.fn>,
-    ).toHaveBeenCalledWith(accountA, 60_000, "auth-failure");
+    ).toHaveBeenCalledWith(accountA, 30_000, "auth-failure");
     const stats = guardian.getStats();
     expect(stats.failed).toBe(1);
     expect(stats.authFailed).toBe(1);

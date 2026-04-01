@@ -9,9 +9,19 @@ import {
   formatCooldown,
   shouldUpdateAccountIdFromToken,
   getAccountIdCandidates,
+  getRuntimeTrackerKey,
 } from "../lib/accounts.js";
 import { getHealthTracker, getTokenTracker, resetTrackers } from "../lib/rotation.js";
 import { CodexAuthError } from "../lib/errors.js";
+import {
+  clearCircuitBreakers,
+  DEFAULT_CIRCUIT_BREAKER_CONFIG,
+  getCircuitBreaker,
+} from "../lib/circuit-breaker.js";
+import {
+  getAccountIdentityKey,
+  getRuntimeAccountIdentityKey,
+} from "../lib/storage/identity.js";
 import type { OAuthAuthDetails } from "../lib/types.js";
 
 vi.mock("../lib/storage.js", async (importOriginal) => {
@@ -431,7 +441,7 @@ describe("AccountManager", () => {
     expect(account?.rateLimitResetTimes?.codex).toBeUndefined();
   });
 
-  it("prefers accounts with fresh access tokens in availability checks", () => {
+  it("does not block available accounts just because another token expires later", () => {
     const now = Date.now();
     const stored = {
       version: 3 as const,
@@ -455,7 +465,7 @@ describe("AccountManager", () => {
     };
     const manager = new AccountManager(undefined, stored);
 
-    expect(manager.isAccountAvailableForFamily(0, "codex")).toBe(false);
+    expect(manager.isAccountAvailableForFamily(0, "codex")).toBe(true);
     expect(manager.isAccountAvailableForFamily(1, "codex")).toBe(true);
   });
 
@@ -695,7 +705,7 @@ describe("AccountManager", () => {
     expect(gpt51Second?.refreshToken).toBe("token-2");
   });
 
-  it("skips a stale active account when a fresher account is available", () => {
+  it("keeps cursor ordering even when another access token lives longer", () => {
     const now = Date.now();
     const stored = {
       version: 3 as const,
@@ -722,10 +732,10 @@ describe("AccountManager", () => {
     const manager = new AccountManager(undefined, stored as never);
     const selected = manager.getCurrentOrNextForFamily("codex");
 
-    expect(selected?.refreshToken).toBe("token-fresh");
+    expect(selected?.refreshToken).toBe("token-stale");
   });
 
-  it("hybrid selection prefers active index when available", () => {
+  it("hybrid selection prefers the healthier candidate over the active index", () => {
     const now = Date.now();
     const stored = {
       version: 3 as const,
@@ -739,10 +749,9 @@ describe("AccountManager", () => {
 
     const manager = new AccountManager(undefined, stored as any);
     
-    // Even though token-1 has better freshness score, token-2 is active and available
     const selected = manager.getCurrentOrNextForFamilyHybrid("codex");
-    expect(selected?.refreshToken).toBe("token-2");
-    expect(selected?.index).toBe(1);
+    expect(selected?.refreshToken).toBe("token-1");
+    expect(selected?.index).toBe(0);
   });
 
   describe("removeAccount", () => {
@@ -873,7 +882,7 @@ describe("AccountManager", () => {
       expect(account.rateLimitResetTimes["codex"]).toBeDefined();
     });
 
-    it("marks both base and model-specific keys", () => {
+    it("scopes token rate limits to the model-specific key", () => {
       const now = Date.now();
       const stored = {
         version: 3 as const,
@@ -887,7 +896,7 @@ describe("AccountManager", () => {
       const account = manager.getCurrentAccount()!;
       manager.markRateLimitedWithReason(account, 60000, "codex", "tokens", "gpt-5.2");
       
-      expect(account.rateLimitResetTimes["codex"]).toBeDefined();
+      expect(account.rateLimitResetTimes["codex"]).toBeUndefined();
       expect(account.rateLimitResetTimes["codex:gpt-5.2"]).toBeDefined();
     });
   });
@@ -2356,10 +2365,12 @@ describe("AccountManager", () => {
   describe("health and token tracking methods", () => {
     beforeEach(() => {
       resetTrackers();
+      clearCircuitBreakers();
     });
 
     afterEach(() => {
       resetTrackers();
+      clearCircuitBreakers();
     });
 
     it("recordSuccess updates health tracker with model-specific quotaKey", () => {
@@ -2375,10 +2386,11 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
+      const trackerKey = getRuntimeAccountIdentityKey(account)!;
 
       manager.recordSuccess(account, "codex", "gpt-5.1");
       
-      const score = healthTracker.getScore(account.index, "codex:gpt-5.1");
+      const score = healthTracker.getScore(trackerKey, "codex:gpt-5.1");
       expect(score).toBe(100);
     });
 
@@ -2395,11 +2407,49 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
+      const trackerKey = getRuntimeAccountIdentityKey(account)!;
 
       manager.recordSuccess(account, "codex", null);
       
-      const score = healthTracker.getScore(account.index, "codex");
+      const score = healthTracker.getScore(trackerKey, "codex");
       expect(score).toBe(100);
+    });
+
+    it("recordSuccess closes the circuit breaker after a half-open retry succeeds", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(0));
+
+      try {
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "token-1",
+              email: "breaker@example.com",
+              addedAt: now,
+              lastUsed: now,
+            },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+        const account = manager.getCurrentAccount()!;
+        const breaker = getCircuitBreaker(getAccountIdentityKey(account)!);
+
+        manager.recordFailure(account, "codex");
+        manager.recordFailure(account, "codex");
+        manager.recordFailure(account, "codex");
+        expect(breaker.getState()).toBe("open");
+
+        vi.advanceTimersByTime(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1);
+        expect(manager.consumeToken(account, "codex")).toBe(true);
+        manager.recordSuccess(account, "codex");
+        expect(breaker.getState()).toBe("closed");
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("recordSuccess clears stale auth failure state and persists the healed account", async () => {
@@ -2521,11 +2571,12 @@ describe("AccountManager", () => {
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
       const tokenTracker = getTokenTracker();
+      const trackerKey = getRuntimeAccountIdentityKey(account)!;
 
       manager.recordRateLimit(account, "codex", "gpt-5.1");
       
-      const score = healthTracker.getScore(account.index, "codex:gpt-5.1");
-      const tokens = tokenTracker.getTokens(account.index, "codex:gpt-5.1");
+      const score = healthTracker.getScore(trackerKey, "codex:gpt-5.1");
+      const tokens = tokenTracker.getTokens(trackerKey, "codex:gpt-5.1");
       expect(score).toBeLessThan(100);
       expect(tokens).toBeLessThan(50);
     });
@@ -2543,11 +2594,58 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
+      const trackerKey = getRuntimeAccountIdentityKey(account)!;
 
       manager.recordRateLimit(account, "gpt-5.2");
       
-      const score = healthTracker.getScore(account.index, "gpt-5.2");
+      const score = healthTracker.getScore(trackerKey, "gpt-5.2");
       expect(score).toBeLessThan(100);
+    });
+
+    it("scopes quota rate limits to the family bucket only", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-1", addedAt: now, lastUsed: now }],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+
+      manager.markRateLimitedWithReason(
+        account,
+        60_000,
+        "codex",
+        "quota",
+        "gpt-5.1",
+      );
+
+      expect(account.rateLimitResetTimes.codex).toBeTypeOf("number");
+      expect(account.rateLimitResetTimes["codex:gpt-5.1"]).toBeUndefined();
+    });
+
+    it("scopes token rate limits to the model bucket", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [{ refreshToken: "token-1", addedAt: now, lastUsed: now }],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+
+      manager.markRateLimitedWithReason(
+        account,
+        60_000,
+        "codex",
+        "tokens",
+        "gpt-5.1",
+      );
+
+      expect(account.rateLimitResetTimes.codex).toBeUndefined();
+      expect(account.rateLimitResetTimes["codex:gpt-5.1"]).toBeTypeOf("number");
     });
 
     it("recordFailure updates health tracker", () => {
@@ -2563,11 +2661,38 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
+      const trackerKey = getRuntimeAccountIdentityKey(account)!;
 
       manager.recordFailure(account, "codex", "gpt-5.2");
       
-      const score = healthTracker.getScore(account.index, "codex:gpt-5.2");
+      const score = healthTracker.getScore(trackerKey, "codex:gpt-5.2");
       expect(score).toBeLessThan(100);
+    });
+
+    it("recordFailure opens the circuit breaker after repeated failures", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            email: "breaker@example.com",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+      const breaker = getCircuitBreaker(getAccountIdentityKey(account)!);
+
+      manager.recordFailure(account, "codex");
+      manager.recordFailure(account, "codex");
+      manager.recordFailure(account, "codex");
+
+      expect(breaker.getState()).toBe("open");
     });
 
     it("recordFailure uses family-only quotaKey when model is null", () => {
@@ -2583,10 +2708,11 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const healthTracker = getHealthTracker();
+      const trackerKey = getRuntimeAccountIdentityKey(account)!;
 
       manager.recordFailure(account, "gpt-5.1", null);
       
-      const score = healthTracker.getScore(account.index, "gpt-5.1");
+      const score = healthTracker.getScore(trackerKey, "gpt-5.1");
       expect(score).toBeLessThan(100);
     });
 
@@ -2603,10 +2729,11 @@ describe("AccountManager", () => {
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
       const tokenTracker = getTokenTracker();
+      const trackerKey = getRuntimeAccountIdentityKey(account)!;
 
-      const initialTokens = tokenTracker.getTokens(account.index, "codex:gpt-5.1");
+      const initialTokens = tokenTracker.getTokens(trackerKey, "codex:gpt-5.1");
       const result = manager.consumeToken(account, "codex", "gpt-5.1");
-      const afterTokens = tokenTracker.getTokens(account.index, "codex:gpt-5.1");
+      const afterTokens = tokenTracker.getTokens(trackerKey, "codex:gpt-5.1");
 
       expect(result).toBe(true);
       expect(afterTokens).toBeLessThan(initialTokens);
@@ -2629,15 +2756,208 @@ describe("AccountManager", () => {
 
       expect(result).toBe(true);
     });
+
+    it("consumeToken returns false and refunds the token when the circuit is open", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            email: "breaker@example.com",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+      const tokenTracker = getTokenTracker();
+      const trackerKey = getRuntimeTrackerKey(account);
+      const initialTokens = tokenTracker.getTokens(trackerKey, "codex");
+
+      manager.recordFailure(account, "codex");
+      manager.recordFailure(account, "codex");
+      manager.recordFailure(account, "codex");
+
+      expect(manager.consumeToken(account, "codex")).toBe(false);
+      expect(tokenTracker.getTokens(trackerKey, "codex")).toBe(initialTokens);
+    });
+
+    it("consumeToken returns false and refunds when the half-open slot is exhausted", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(0));
+
+      try {
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "token-1",
+              email: "breaker@example.com",
+              addedAt: now,
+              lastUsed: now,
+            },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+        const account = manager.getCurrentAccount()!;
+        const tokenTracker = getTokenTracker();
+        const trackerKey = getRuntimeTrackerKey(account);
+        const initialTokens = tokenTracker.getTokens(trackerKey, "codex");
+
+        manager.recordFailure(account, "codex");
+        manager.recordFailure(account, "codex");
+        manager.recordFailure(account, "codex");
+
+        vi.advanceTimersByTime(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1);
+
+        expect(manager.consumeToken(account, "codex")).toBe(true);
+        expect(manager.consumeToken(account, "codex")).toBe(false);
+        expect(tokenTracker.getTokens(trackerKey, "codex")).toBe(initialTokens - 1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps refresh-only tracker state stable when the refresh token rotates", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+      const healthTracker = getHealthTracker();
+      const tokenTracker = getTokenTracker();
+      const trackerKey = getRuntimeTrackerKey(account);
+
+      manager.recordFailure(account, "codex", "gpt-5.1");
+      const degradedScore = healthTracker.getScore(trackerKey, "codex:gpt-5.1");
+      expect(manager.consumeToken(account, "codex", "gpt-5.1")).toBe(true);
+
+      account.refreshToken = "token-1-rotated";
+
+      const rotatedAccount = manager.getCurrentAccount()!;
+      expect(getRuntimeTrackerKey(rotatedAccount)).toBe(trackerKey);
+      expect(getRuntimeAccountIdentityKey(rotatedAccount)).toBe(trackerKey);
+      expect(getAccountIdentityKey(rotatedAccount)).not.toBe(`${trackerKey}`);
+      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBe(degradedScore);
+      expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
+    });
+
+    it("keeps pinned runtime tracker state stable after updateFromAuth enriches identity", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          {
+            refreshToken: "token-2",
+            email: "healthy@example.com",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getAccountByIndex(0)!;
+      const healthTracker = getHealthTracker();
+      const tokenTracker = getTokenTracker();
+      const trackerKey = getRuntimeTrackerKey(account);
+
+      manager.recordFailure(account, "codex", "gpt-5.1");
+      const degradedScore = healthTracker.getScore(trackerKey, "codex:gpt-5.1");
+      expect(manager.consumeToken(account, "codex", "gpt-5.1")).toBe(true);
+
+      const payload = Buffer.from(JSON.stringify({
+        email: "enriched@example.com",
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "account-enriched",
+        },
+        exp: Math.floor((now + 3600000) / 1000),
+      })).toString("base64url");
+      const accessToken = `header.${payload}.signature`;
+
+      manager.updateFromAuth(account, {
+        type: "oauth",
+        access: accessToken,
+        refresh: "token-1-rotated",
+        expires: now + 3600000,
+      });
+
+      expect(account.accountId).toBe("account-enriched");
+      expect(account.email).toBe("enriched@example.com");
+      expect(getRuntimeAccountIdentityKey(account)).toBe(
+        "account:account-enriched::email:enriched@example.com",
+      );
+      expect(getRuntimeTrackerKey(account)).toBe(trackerKey);
+      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBe(degradedScore);
+      expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
+    });
+
+    it("preserves tracker state when account indexes shift", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 1,
+        activeIndexByFamily: { codex: 1 },
+        accounts: [
+          {
+            refreshToken: "token-1",
+            email: "first@example.com",
+            addedAt: now,
+            lastUsed: now,
+          },
+          {
+            refreshToken: "token-2",
+            email: "second@example.com",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored as never);
+      const trackedAccount = manager.getAccountByIndex(1)!;
+      const trackerKey = getAccountIdentityKey(trackedAccount)!;
+      const healthTracker = getHealthTracker();
+      const tokenTracker = getTokenTracker();
+
+      manager.recordFailure(trackedAccount, "codex", "gpt-5.1");
+      expect(manager.consumeToken(trackedAccount, "codex", "gpt-5.1")).toBe(true);
+
+      expect(manager.removeAccountByIndex(0)).toBe(true);
+
+      const remainingAccount = manager.getAccountByIndex(0)!;
+      expect(remainingAccount.email).toBe("second@example.com");
+      expect(remainingAccount.index).toBe(0);
+      expect(getAccountIdentityKey(remainingAccount)).toBe(trackerKey);
+      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeLessThan(100);
+      expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
+    });
   });
 
   describe("hybrid selection fallback path", () => {
     beforeEach(() => {
       resetTrackers();
+      clearCircuitBreakers();
     });
 
     afterEach(() => {
       resetTrackers();
+      clearCircuitBreakers();
     });
 
     it("selects alternate account when current is rate-limited via selectHybridAccount", () => {
@@ -2664,7 +2984,7 @@ describe("AccountManager", () => {
       expect(selected?.index).toBe(1);
     });
 
-    it("updates cursor and family index after hybrid selection", () => {
+    it("re-scores on the next call instead of sticking to the prior hybrid winner", () => {
       const now = Date.now();
       const stored = {
         version: 3 as const,
@@ -2686,10 +3006,11 @@ describe("AccountManager", () => {
       expect(selected).not.toBeNull();
       
       const secondCall = manager.getCurrentOrNextForFamilyHybrid("codex");
-      expect(secondCall?.index).toBe(selected?.index);
+      expect(secondCall?.index).toBe(1);
+      expect(secondCall?.index).not.toBe(selected?.index);
     });
 
-    it("prefers a fresh alternate account over a stale current account", () => {
+    it("skips accounts whose circuit breaker is open", () => {
       const now = Date.now();
       const stored = {
         version: 3 as const,
@@ -2697,27 +3018,32 @@ describe("AccountManager", () => {
         activeIndexByFamily: { codex: 0 },
         accounts: [
           {
-            refreshToken: "token-stale",
-            accessToken: "access-stale",
-            expiresAt: now + 60_000,
+            refreshToken: "token-1",
+            email: "first@example.com",
             addedAt: now,
             lastUsed: now,
           },
           {
-            refreshToken: "token-fresh",
-            accessToken: "access-fresh",
-            expiresAt: now + 10 * 60_000,
+            refreshToken: "token-2",
+            email: "second@example.com",
             addedAt: now,
-            lastUsed: now - 5_000,
+            lastUsed: now - 10_000,
           },
         ],
       };
 
       const manager = new AccountManager(undefined, stored as never);
+      const blocked = manager.getAccountByIndex(0)!;
+
+      manager.recordFailure(blocked, "codex");
+      manager.recordFailure(blocked, "codex");
+      manager.recordFailure(blocked, "codex");
+
       const selected = manager.getCurrentOrNextForFamilyHybrid("codex");
 
-      expect(selected?.refreshToken).toBe("token-fresh");
+      expect(selected?.refreshToken).toBe("token-2");
       expect(selected?.index).toBe(1);
+      expect(manager.isAccountAvailableForFamily(0, "codex")).toBe(false);
     });
 
     it("falls back to least-recently-used when all accounts are rate-limited", () => {

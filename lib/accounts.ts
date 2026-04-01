@@ -27,6 +27,11 @@ import {
 } from "./codex-cli/state.js";
 import { syncAccountStorageFromCodexCli } from "./codex-cli/sync.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
+import {
+	getAccountIdentityKey,
+	getRuntimeAccountIdentityKey,
+} from "./storage/identity.js";
+import { getCircuitBreaker } from "./circuit-breaker.js";
 
 export {
 	extractAccountId,
@@ -77,7 +82,27 @@ import {
 } from "./accounts/rate-limits.js";
 
 const log = createLogger("accounts");
-const ACCOUNT_SELECTION_FRESH_WINDOW_MS = 5 * 60_000;
+let nextRuntimeCircuitKeyId = 0;
+
+function getAccountCircuitKey(account: ManagedAccount): string {
+	if (!account.circuitKeyId) {
+		account.circuitKeyId =
+			getAccountIdentityKey(account) ?? `circuit:${nextRuntimeCircuitKeyId++}`;
+	}
+	return account.circuitKeyId;
+}
+
+export function getRuntimeTrackerKey(
+	account: ManagedAccount,
+): string | number {
+	if (account._runtimeTrackerKey !== undefined) {
+		return account._runtimeTrackerKey;
+	}
+
+	const trackerKey = getRuntimeAccountIdentityKey(account) ?? account.index;
+	account._runtimeTrackerKey = trackerKey;
+	return trackerKey;
+}
 
 function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
 	return Object.fromEntries(
@@ -201,6 +226,8 @@ export interface Workspace {
 
 export interface ManagedAccount {
 	index: number;
+	_runtimeTrackerKey?: string | number;
+	circuitKeyId?: string;
 	accountId?: string;
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;
@@ -285,21 +312,17 @@ export class AccountManager {
 			const cached = cache.get(email);
 			if (!cached) continue;
 
-			const cachedAccessUsable =
-				typeof cached.expiresAt !== "number" || cached.expiresAt > now;
+			if (typeof cached.expiresAt === "number" && cached.expiresAt <= now) {
+				continue;
+			}
 
 			const missingOrExpired =
 				!account.access || account.expires === undefined || account.expires <= now;
-			if (missingOrExpired && cachedAccessUsable) {
+			if (missingOrExpired) {
 				account.access = cached.accessToken;
 				if (typeof cached.expiresAt === "number") {
 					account.expires = cached.expiresAt;
 				}
-				changed = true;
-			}
-
-			if (cached.refreshToken && !account.refreshToken) {
-				account.refreshToken = cached.refreshToken;
 				changed = true;
 			}
 
@@ -482,10 +505,16 @@ export class AccountManager {
 	}
 
 	getAccountsSnapshot(): ManagedAccount[] {
-		return this.accounts.map((account) => ({
-			...account,
-			rateLimitResetTimes: { ...account.rateLimitResetTimes },
-		}));
+		return this.accounts.map((account) => {
+			const trackerKey = getRuntimeTrackerKey(account);
+			const circuitKeyId = getAccountCircuitKey(account);
+			return {
+				...account,
+				_runtimeTrackerKey: trackerKey,
+				circuitKeyId,
+				rateLimitResetTimes: { ...account.rateLimitResetTimes },
+			};
+		});
 	}
 
 	getAccountByIndex(index: number): ManagedAccount | null {
@@ -495,45 +524,16 @@ export class AccountManager {
 		return account ?? null;
 	}
 
-	private hasFreshAccessToken(account: ManagedAccount): boolean {
-		if (!account.access) return false;
-		if (typeof account.expires !== "number" || !Number.isFinite(account.expires)) {
-			return false;
-		}
-		return account.expires > nowMs() + ACCOUNT_SELECTION_FRESH_WINDOW_MS;
-	}
-
-	private isAccountSelectableForFamily(
-		account: ManagedAccount,
-		family: ModelFamily,
-		model?: string | null,
-		requireFresh = false,
-	): boolean {
-		if (account.enabled === false) return false;
-		clearExpiredRateLimits(account);
-		if (isRateLimitedForFamily(account, family, model) || this.isAccountCoolingDown(account)) {
-			return false;
-		}
-		return !requireFresh || this.hasFreshAccessToken(account);
-	}
-
-	private hasFreshAvailableAccountForFamily(
-		family: ModelFamily,
-		model?: string | null,
-	): boolean {
-		return this.accounts.some(
-			(account) =>
-				Boolean(account) &&
-				this.isAccountSelectableForFamily(account, family, model) &&
-				this.hasFreshAccessToken(account),
-		);
-	}
-
 	isAccountAvailableForFamily(index: number, family: ModelFamily, model?: string | null): boolean {
 		const account = this.getAccountByIndex(index);
 		if (!account) return false;
-		const requireFresh = this.hasFreshAvailableAccountForFamily(family, model);
-		return this.isAccountSelectableForFamily(account, family, model, requireFresh);
+		if (account.enabled === false) return false;
+		clearExpiredRateLimits(account);
+		return (
+			!isRateLimitedForFamily(account, family, model) &&
+			!this.isAccountCoolingDown(account) &&
+			this.isCircuitAvailable(account)
+		);
 	}
 
 	setActiveIndex(index: number): ManagedAccount | null {
@@ -593,13 +593,19 @@ export class AccountManager {
 		if (count === 0) return null;
 
 		const cursor = this.cursorByFamily[family];
-		const requireFresh = this.hasFreshAvailableAccountForFamily(family, model);
 		
 		for (let i = 0; i < count; i++) {
 			const idx = (cursor + i) % count;
 			const account = this.accounts[idx];
 			if (!account) continue;
-			if (!this.isAccountSelectableForFamily(account, family, model, requireFresh)) {
+			if (account.enabled === false) continue;
+
+			clearExpiredRateLimits(account);
+			if (
+				isRateLimitedForFamily(account, family, model) ||
+				this.isAccountCoolingDown(account) ||
+				!this.isCircuitAvailable(account)
+			) {
 				continue;
 			}
 			
@@ -617,13 +623,19 @@ export class AccountManager {
 		if (count === 0) return null;
 
 		const cursor = this.cursorByFamily[family];
-		const requireFresh = this.hasFreshAvailableAccountForFamily(family, model);
 		
 		for (let i = 0; i < count; i++) {
 			const idx = (cursor + i) % count;
 			const account = this.accounts[idx];
 			if (!account) continue;
-			if (!this.isAccountSelectableForFamily(account, family, model, requireFresh)) {
+			if (account.enabled === false) continue;
+
+			clearExpiredRateLimits(account);
+			if (
+				isRateLimitedForFamily(account, family, model) ||
+				this.isAccountCoolingDown(account) ||
+				!this.isCircuitAvailable(account)
+			) {
 				continue;
 			}
 			
@@ -638,29 +650,6 @@ export class AccountManager {
 	getCurrentOrNextForFamilyHybrid(family: ModelFamily, model?: string | null, options?: HybridSelectionOptions): ManagedAccount | null {
 		const count = this.accounts.length;
 		if (count === 0) return null;
-		const requireFresh = this.hasFreshAvailableAccountForFamily(family, model);
-
-		const currentIndex = this.currentAccountIndexByFamily[family];
-		if (currentIndex >= 0 && currentIndex < count) {
-			const currentAccount = this.accounts[currentIndex];
-			if (currentAccount) {
-				if (currentAccount.enabled === false) {
-					// Fall through to hybrid selection.
-				} else {
-				if (
-					this.isAccountSelectableForFamily(
-						currentAccount,
-						family,
-						model,
-						requireFresh,
-					)
-				) {
-					currentAccount.lastUsed = nowMs();
-					return currentAccount;
-				}
-				}
-			}
-		}
 
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
@@ -669,14 +658,16 @@ export class AccountManager {
 		const accountsWithMetrics: AccountWithMetrics[] = this.accounts
 			.map((account): AccountWithMetrics | null => {
 				if (!account) return null;
+				if (account.enabled === false) return null;
+				clearExpiredRateLimits(account);
+				const isAvailable =
+					!isRateLimitedForFamily(account, family, model) &&
+					!this.isAccountCoolingDown(account) &&
+					this.isCircuitAvailable(account);
 				return {
 					index: account.index,
-					isAvailable: this.isAccountSelectableForFamily(
-						account,
-						family,
-						model,
-						requireFresh,
-					),
+					trackerKey: getRuntimeTrackerKey(account),
+					isAvailable,
 					lastUsed: account.lastUsed,
 				};
 			})
@@ -697,7 +688,7 @@ export class AccountManager {
 	recordSuccess(account: ManagedAccount, family: ModelFamily, model?: string | null): void {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
-		healthTracker.recordSuccess(account.index, quotaKey);
+		healthTracker.recordSuccess(getRuntimeTrackerKey(account), quotaKey);
 		const hadCooldownMetadata =
 			account.coolingDownUntil !== undefined || account.cooldownReason !== undefined;
 		const hadAuthFailures = (account.consecutiveAuthFailures ?? 0) > 0;
@@ -717,26 +708,40 @@ export class AccountManager {
 		if (healed) {
 			this.saveToDiskDebounced();
 		}
+		getCircuitBreaker(getAccountCircuitKey(account)).recordSuccess();
 	}
 
 	recordRateLimit(account: ManagedAccount, family: ModelFamily, model?: string | null): void {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
 		const tokenTracker = getTokenTracker();
-		healthTracker.recordRateLimit(account.index, quotaKey);
-		tokenTracker.drain(account.index, quotaKey);
+		const trackerKey = getRuntimeTrackerKey(account);
+		healthTracker.recordRateLimit(trackerKey, quotaKey);
+		tokenTracker.drain(trackerKey, quotaKey);
 	}
 
 	recordFailure(account: ManagedAccount, family: ModelFamily, model?: string | null): void {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
-		healthTracker.recordFailure(account.index, quotaKey);
+		healthTracker.recordFailure(getRuntimeTrackerKey(account), quotaKey);
+		getCircuitBreaker(getAccountCircuitKey(account)).recordFailure();
 	}
 
 	consumeToken(account: ManagedAccount, family: ModelFamily, model?: string | null): boolean {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const tokenTracker = getTokenTracker();
-		return tokenTracker.tryConsume(account.index, quotaKey);
+		const trackerKey = getRuntimeTrackerKey(account);
+		if (!tokenTracker.tryConsume(trackerKey, quotaKey)) {
+			return false;
+		}
+
+		try {
+			getCircuitBreaker(getAccountCircuitKey(account)).canExecute();
+			return true;
+		} catch {
+			tokenTracker.refundToken(trackerKey, quotaKey);
+			return false;
+		}
 	}
 
 	/**
@@ -747,7 +752,7 @@ export class AccountManager {
 	refundToken(account: ManagedAccount, family: ModelFamily, model?: string | null): boolean {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const tokenTracker = getTokenTracker();
-		return tokenTracker.refundToken(account.index, quotaKey);
+		return tokenTracker.refundToken(getRuntimeTrackerKey(account), quotaKey);
 	}
 
 	markSwitched(account: ManagedAccount, reason: "rate-limit" | "initial" | "rotation", family: ModelFamily): void {
@@ -770,9 +775,14 @@ export class AccountManager {
 		const resetAt = nowMs() + retryMs;
 
 		const baseKey = getQuotaKey(family);
-		account.rateLimitResetTimes[baseKey] = resetAt;
+		if (!model || reason === "quota" || reason === "unknown") {
+			account.rateLimitResetTimes[baseKey] = resetAt;
+		}
 
-		if (model) {
+		if (
+			model &&
+			(reason === "tokens" || reason === "concurrent" || reason === "unknown")
+		) {
 			const modelKey = getQuotaKey(family, model);
 			account.rateLimitResetTimes[modelKey] = resetAt;
 		}
@@ -798,6 +808,10 @@ export class AccountManager {
 	clearAccountCooldown(account: ManagedAccount): void {
 		delete account.coolingDownUntil;
 		delete account.cooldownReason;
+	}
+
+	private isCircuitAvailable(account: ManagedAccount): boolean {
+		return getCircuitBreaker(getAccountCircuitKey(account)).isAvailable();
 	}
 
 	incrementAuthFailures(account: ManagedAccount): number {
@@ -1021,7 +1035,11 @@ export class AccountManager {
 		const enabledAccounts = this.accounts.filter((account) => account.enabled !== false);
 		const available = enabledAccounts.filter((account) => {
 			clearExpiredRateLimits(account);
-			return !isRateLimitedForFamily(account, family, model) && !this.isAccountCoolingDown(account);
+			return (
+				!isRateLimitedForFamily(account, family, model) &&
+				!this.isAccountCoolingDown(account) &&
+				this.isCircuitAvailable(account)
+			);
 		});
 		if (available.length > 0) return 0;
 		if (enabledAccounts.length === 0) return 0;
@@ -1031,20 +1049,32 @@ export class AccountManager {
 		const modelKey = model ? getQuotaKey(family, model) : null;
 
 		for (const account of enabledAccounts) {
+			const perAccountWaitTimes: number[] = [];
 			const baseResetAt = account.rateLimitResetTimes[baseKey];
 			if (typeof baseResetAt === "number") {
-				waitTimes.push(Math.max(0, baseResetAt - now));
+				perAccountWaitTimes.push(Math.max(0, baseResetAt - now));
 			}
 
 			if (modelKey) {
 				const modelResetAt = account.rateLimitResetTimes[modelKey];
 				if (typeof modelResetAt === "number") {
-					waitTimes.push(Math.max(0, modelResetAt - now));
+					perAccountWaitTimes.push(Math.max(0, modelResetAt - now));
 				}
 			}
 
 			if (typeof account.coolingDownUntil === "number") {
-				waitTimes.push(Math.max(0, account.coolingDownUntil - now));
+				perAccountWaitTimes.push(Math.max(0, account.coolingDownUntil - now));
+			}
+
+			const breakerWait = getCircuitBreaker(
+				getAccountCircuitKey(account),
+			).getTimeUntilAvailable();
+			if (breakerWait > 0) {
+				perAccountWaitTimes.push(breakerWait);
+			}
+
+			if (perAccountWaitTimes.length > 0) {
+				waitTimes.push(Math.max(...perAccountWaitTimes));
 			}
 		}
 

@@ -1,6 +1,11 @@
 import { promises as fs } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { extractAccountId, formatAccountLabel } from "../../accounts.js";
+import {
+	extractAccountEmail,
+	extractAccountId,
+	formatAccountLabel,
+	sanitizeEmail,
+} from "../../accounts.js";
 import {
 	evaluateForecastAccounts,
 	type ForecastAccountResult,
@@ -17,7 +22,11 @@ import {
 	getModelProfile,
 	resolveNormalizedModel,
 } from "../../request/helpers/model-map.js";
-import type { AccountStorageV3 } from "../../storage.js";
+import {
+	findMatchingAccountIndex,
+	type AccountMetadataV3,
+	type AccountStorageV3,
+} from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 import { sleep } from "../../utils.js";
 
@@ -47,6 +56,7 @@ export interface ReportCommandDeps {
 	setStoragePath: (path: string | null) => void;
 	getStoragePath: () => string;
 	loadAccounts: () => Promise<AccountStorageV3 | null>;
+	saveAccounts: (storage: AccountStorageV3) => Promise<void>;
 	resolveActiveIndex: (storage: AccountStorageV3, family?: "codex") => number;
 	queuedRefresh: (refreshToken: string) => Promise<TokenResult>;
 	fetchCodexQuotaSnapshot: (input: {
@@ -245,6 +255,77 @@ async function defaultWriteFile(path: string, contents: string): Promise<void> {
 	}
 }
 
+async function saveAccountsWithRetry(
+	storage: AccountStorageV3,
+	saveAccounts: ReportCommandDeps["saveAccounts"],
+): Promise<void> {
+	for (let attempt = 0; ; attempt += 1) {
+		try {
+			await saveAccounts(storage);
+			return;
+		} catch (error) {
+			if (!isRetryableWriteError(error) || attempt >= 3) {
+				throw error;
+			}
+			await sleep(10 * 2 ** attempt);
+		}
+	}
+}
+
+type AccountIdentityMatch = Pick<
+	AccountMetadataV3,
+	"accountId" | "email" | "refreshToken"
+>;
+type RefreshedAccountPatch = Pick<
+	AccountMetadataV3,
+	"refreshToken" | "accessToken" | "expiresAt"
+> & {
+	email?: AccountMetadataV3["email"];
+	accountId?: AccountMetadataV3["accountId"];
+	accountIdSource?: AccountMetadataV3["accountIdSource"];
+};
+
+function applyRefreshedAccountPatch(
+	account: AccountMetadataV3,
+	patch: RefreshedAccountPatch,
+): void {
+	account.refreshToken = patch.refreshToken;
+	account.accessToken = patch.accessToken;
+	account.expiresAt = patch.expiresAt;
+	if (patch.email) account.email = patch.email;
+	if (patch.accountId) {
+		account.accountId = patch.accountId;
+		account.accountIdSource = patch.accountIdSource;
+	}
+}
+
+async function persistRefreshedAccountPatch(
+	storage: AccountStorageV3,
+	accountMatch: AccountIdentityMatch,
+	patch: RefreshedAccountPatch,
+	loadAccounts: ReportCommandDeps["loadAccounts"],
+	saveAccounts: ReportCommandDeps["saveAccounts"],
+): Promise<void> {
+	const latestStorage = (await loadAccounts()) ?? storage;
+	const nextStorage = structuredClone(latestStorage);
+	const targetIndex =
+		findMatchingAccountIndex(nextStorage.accounts, accountMatch, {
+			allowUniqueAccountIdFallbackWithoutEmail: true,
+		}) ??
+		findMatchingAccountIndex(nextStorage.accounts, patch, {
+			allowUniqueAccountIdFallbackWithoutEmail: true,
+		});
+	if (targetIndex === undefined) {
+		throw new Error("Unable to resolve refreshed account for persistence");
+	}
+	const targetAccount = nextStorage.accounts[targetIndex];
+	if (!targetAccount) {
+		throw new Error("Unable to resolve refreshed account for persistence");
+	}
+	applyRefreshedAccountPatch(targetAccount, patch);
+	await saveAccountsWithRetry(nextStorage, saveAccounts);
+}
+
 export async function runReportCommand(
 	args: string[],
 	deps: ReportCommandDeps,
@@ -293,8 +374,60 @@ export async function runReportCommand(
 				continue;
 			}
 
-			const accountId =
-				account.accountId ?? extractAccountId(refreshResult.access);
+			const refreshedEmail = sanitizeEmail(
+				extractAccountEmail(refreshResult.access, refreshResult.idToken),
+			);
+			const tokenDerivedAccountId = extractAccountId(refreshResult.access);
+			const refreshedAccountId = account.accountId ?? tokenDerivedAccountId;
+			const previousRefreshToken = account.refreshToken;
+			const previousAccessToken = account.accessToken;
+			const previousExpiresAt = account.expiresAt;
+			const previousEmail = account.email;
+			const previousAccountId = account.accountId;
+			const refreshPatch: RefreshedAccountPatch = {
+				refreshToken: refreshResult.refresh,
+				accessToken: refreshResult.access,
+				expiresAt: refreshResult.expires,
+			};
+			if (refreshedEmail) {
+				refreshPatch.email = refreshedEmail;
+			}
+			if (tokenDerivedAccountId) {
+				refreshPatch.accountId = tokenDerivedAccountId;
+				refreshPatch.accountIdSource = "token";
+			}
+			const accountMatch: AccountIdentityMatch = {
+				refreshToken: previousRefreshToken,
+				email: previousEmail,
+				accountId: previousAccountId,
+			};
+			applyRefreshedAccountPatch(account, refreshPatch);
+			if (
+				previousRefreshToken !== refreshPatch.refreshToken ||
+				previousAccessToken !== refreshPatch.accessToken ||
+				previousExpiresAt !== refreshPatch.expiresAt ||
+				previousEmail !== account.email ||
+				previousAccountId !== account.accountId
+			) {
+				try {
+					await persistRefreshedAccountPatch(
+						storage,
+						accountMatch,
+						refreshPatch,
+						deps.loadAccounts,
+						deps.saveAccounts,
+					);
+				} catch (error) {
+					const message = deps.normalizeFailureDetail(
+						error instanceof Error ? error.message : String(error),
+						undefined,
+					);
+					probeErrors.push(`${formatAccountLabel(account, i)}: ${message}`);
+					continue;
+				}
+			}
+
+			const accountId = account.accountId ?? refreshedAccountId;
 			if (!accountId) {
 				probeErrors.push(
 					`${formatAccountLabel(account, i)}: missing accountId for live probe`,

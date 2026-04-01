@@ -6,6 +6,12 @@ type AccountLike = {
 	refreshToken?: string;
 };
 
+type RuntimeAccountLike = {
+	accountId?: string;
+	email?: string;
+	index?: number;
+};
+
 export type AccountIdentityRef = {
 	accountId?: string;
 	emailKey?: string;
@@ -52,19 +58,39 @@ export function toAccountIdentityRef(
 	};
 }
 
-export function getAccountIdentityKey(
-	account: Pick<AccountLike, "accountId" | "email" | "refreshToken">,
+function getIdentityKeyFromRef(
+	ref: AccountIdentityRef,
+	options: { allowRefreshFallback: boolean },
 ): string | undefined {
-	const ref = toAccountIdentityRef(account);
 	if (ref.accountId && ref.emailKey) {
 		return `account:${ref.accountId}::email:${ref.emailKey}`;
 	}
 	if (ref.accountId) return `account:${ref.accountId}`;
 	if (ref.emailKey) return `email:${ref.emailKey}`;
-	if (ref.refreshToken) {
+	if (options.allowRefreshFallback && ref.refreshToken) {
 		// Legacy refresh-only identity keys embedded raw tokens. Hashing preserves
 		// deterministic fallback matching without exposing token material in logs.
 		return `refresh:${hashRefreshTokenKey(ref.refreshToken)}`;
 	}
 	return undefined;
+}
+
+export function getAccountIdentityKey(
+	account: Pick<AccountLike, "accountId" | "email" | "refreshToken">,
+): string | undefined {
+	const ref = toAccountIdentityRef(account);
+	return getIdentityKeyFromRef(ref, { allowRefreshFallback: true });
+}
+
+export function getRuntimeAccountIdentityKey(
+	account: Pick<RuntimeAccountLike, "accountId" | "email" | "index">,
+): string | number | undefined {
+	const ref = toAccountIdentityRef({
+		accountId: account.accountId,
+		email: account.email,
+	});
+	return (
+		getIdentityKeyFromRef(ref, { allowRefreshFallback: false }) ??
+		(typeof account.index === "number" ? account.index : undefined)
+	);
 }
