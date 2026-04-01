@@ -206,8 +206,19 @@ describe("runReportCommand", () => {
 				enabled: true,
 			},
 		]);
+		const callLog: string[] = [];
+		let persistedStorage: AccountStorageV3 | null = null;
 		const deps = createDeps({
 			loadAccounts: vi.fn(async () => storage),
+			saveAccounts: vi.fn(async (nextStorage) => {
+				callLog.push(`save-${callLog.filter((entry) => entry.startsWith("save-")).length + 1}`);
+				if (callLog.length === 1) {
+					throw Object.assign(new Error("EPERM write blocked"), {
+						code: "EPERM",
+					});
+				}
+				persistedStorage = structuredClone(nextStorage);
+			}),
 			queuedRefresh: vi.fn(async () => ({
 				type: "success",
 				access: "access-token-updated",
@@ -215,11 +226,31 @@ describe("runReportCommand", () => {
 				expires: 500,
 				idToken: "id-token-updated",
 			})),
+			fetchCodexQuotaSnapshot: vi.fn(async (input) => {
+				callLog.push("fetch");
+				expect(persistedStorage?.accounts[0]?.refreshToken).toBe(
+					"refresh-token-updated",
+				);
+				expect(persistedStorage?.accounts[0]?.accessToken).toBe(
+					"access-token-updated",
+				);
+				expect(input.accessToken).toBe(
+					persistedStorage?.accounts[0]?.accessToken,
+				);
+				return {
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {},
+					secondary: {},
+				};
+			}),
 		});
 
 		const result = await runReportCommand(["--live", "--json"], deps);
 
 		expect(result).toBe(0);
+		expect(callLog).toEqual(["save-1", "save-2", "fetch"]);
+		expect(deps.saveAccounts).toHaveBeenCalledTimes(2);
 		expect(deps.saveAccounts).toHaveBeenCalledWith(
 			expect.objectContaining({
 				accounts: [

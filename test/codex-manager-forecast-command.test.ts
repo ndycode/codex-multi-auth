@@ -143,8 +143,19 @@ describe("runForecastCommand", () => {
 
 	it("persists refreshed probe tokens before forecasting live quota", async () => {
 		const storage = createStorage();
+		const callLog: string[] = [];
+		let persistedStorage: AccountStorageV3 | null = null;
 		const deps = createDeps({
 			loadAccounts: vi.fn(async () => storage),
+			saveAccounts: vi.fn(async (nextStorage) => {
+				callLog.push(`save-${callLog.filter((entry) => entry.startsWith("save-")).length + 1}`);
+				if (callLog.length === 1) {
+					throw Object.assign(new Error("EBUSY write in progress"), {
+						code: "EBUSY",
+					});
+				}
+				persistedStorage = structuredClone(nextStorage);
+			}),
 			hasUsableAccessToken: vi.fn(() => false),
 			queuedRefresh: vi.fn(async () => ({
 				type: "success",
@@ -154,11 +165,31 @@ describe("runForecastCommand", () => {
 				idToken: "id-token-forecast-updated",
 			})),
 			extractAccountId: vi.fn(() => "account-id-updated"),
+			fetchCodexQuotaSnapshot: vi.fn(async (input) => {
+				callLog.push("fetch");
+				expect(persistedStorage?.accounts[0]?.refreshToken).toBe(
+					"refresh-forecast-updated",
+				);
+				expect(persistedStorage?.accounts[0]?.accessToken).toBe(
+					"access-forecast-updated",
+				);
+				expect(input.accessToken).toBe(
+					persistedStorage?.accounts[0]?.accessToken,
+				);
+				return {
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {},
+					secondary: {},
+				};
+			}),
 		});
 
 		const result = await runForecastCommand(["--json", "--live"], deps);
 
 		expect(result).toBe(0);
+		expect(callLog).toEqual(["save-1", "save-2", "fetch"]);
+		expect(deps.saveAccounts).toHaveBeenCalledTimes(2);
 		expect(deps.saveAccounts).toHaveBeenCalledWith(
 			expect.objectContaining({
 				accounts: [

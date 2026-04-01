@@ -9,6 +9,7 @@ import type { CodexQuotaSnapshot } from "../../quota-probe.js";
 import { resolveNormalizedModel } from "../../request/helpers/model-map.js";
 import type { AccountMetadataV3, AccountStorageV3 } from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
+import { sleep } from "../../utils.js";
 
 interface ForecastCliOptions {
 	live: boolean;
@@ -26,6 +27,8 @@ type QuotaEmailFallbackState = ReadonlyMap<
 	string,
 	{ matchingCount: number; distinctAccountIds: Set<string> }
 >;
+
+const RETRYABLE_STORAGE_WRITE_CODES = new Set(["EBUSY", "EPERM"]);
 
 export interface ForecastCommandDeps {
 	setStoragePath: (path: string | null) => void;
@@ -103,6 +106,28 @@ export interface ForecastCommandDeps {
 	logInfo?: (message: string) => void;
 	logError?: (message: string) => void;
 	getNow?: () => number;
+}
+
+function isRetryableStorageWriteError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && RETRYABLE_STORAGE_WRITE_CODES.has(code);
+}
+
+async function saveAccountsWithRetry(
+	storage: AccountStorageV3,
+	saveAccounts: ForecastCommandDeps["saveAccounts"],
+): Promise<void> {
+	for (let attempt = 0; ; attempt += 1) {
+		try {
+			await saveAccounts(storage);
+			return;
+		} catch (error) {
+			if (!isRetryableStorageWriteError(error) || attempt >= 3) {
+				throw error;
+			}
+			await sleep(10 * 2 ** attempt);
+		}
+	}
 }
 
 function joinStyledSegments(
@@ -268,7 +293,6 @@ export async function runForecastCommand(
 	const refreshFailures = new Map<number, TokenFailure>();
 	const liveQuotaByIndex = new Map<number, CodexQuotaSnapshot>();
 	const probeErrors: string[] = [];
-	let storageChanged = false;
 
 	for (let i = 0; i < storage.accounts.length; i += 1) {
 		const account = storage.accounts[i];
@@ -308,8 +332,7 @@ export async function runForecastCommand(
 				account.accountId = refreshedAccountId;
 				account.accountIdSource = "token";
 			}
-			storageChanged =
-				storageChanged ||
+			const refreshedStorageChanged =
 				previousRefreshToken !== account.refreshToken ||
 				previousAccessToken !== account.accessToken ||
 				previousExpiresAt !== account.expiresAt ||
@@ -318,6 +341,18 @@ export async function runForecastCommand(
 				previousAccountIdSource !== account.accountIdSource;
 			probeAccessToken = refreshResult.access;
 			probeAccountId = account.accountId ?? refreshedAccountId;
+			if (refreshedStorageChanged) {
+				try {
+					await saveAccountsWithRetry(storage, deps.saveAccounts);
+				} catch (error) {
+					const message = deps.normalizeFailureDetail(
+						error instanceof Error ? error.message : String(error),
+						undefined,
+					);
+					probeErrors.push(`${deps.formatAccountLabel(account, i)}: ${message}`);
+					continue;
+				}
+			}
 		}
 
 		if (!probeAccessToken || !probeAccountId) {
@@ -354,10 +389,6 @@ export async function runForecastCommand(
 			);
 			probeErrors.push(`${deps.formatAccountLabel(account, i)}: ${message}`);
 		}
-	}
-
-	if (options.live && storageChanged) {
-		await deps.saveAccounts(storage);
 	}
 
 	const forecastInputs = storage.accounts.map((account, index) => ({

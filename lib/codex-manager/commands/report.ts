@@ -251,6 +251,23 @@ async function defaultWriteFile(path: string, contents: string): Promise<void> {
 	}
 }
 
+async function saveAccountsWithRetry(
+	storage: AccountStorageV3,
+	saveAccounts: ReportCommandDeps["saveAccounts"],
+): Promise<void> {
+	for (let attempt = 0; ; attempt += 1) {
+		try {
+			await saveAccounts(storage);
+			return;
+		} catch (error) {
+			if (!isRetryableWriteError(error) || attempt >= 3) {
+				throw error;
+			}
+			await sleep(10 * 2 ** attempt);
+		}
+	}
+}
+
 export async function runReportCommand(
 	args: string[],
 	deps: ReportCommandDeps,
@@ -281,7 +298,6 @@ export async function runReportCommand(
 	const refreshFailures = new Map<number, TokenFailure>();
 	const liveQuotaByIndex = new Map<number, CodexQuotaSnapshot>();
 	const probeErrors: string[] = [];
-	let storageChanged = false;
 
 	if (storage && options.live) {
 		for (let i = 0; i < storage.accounts.length; i += 1) {
@@ -319,14 +335,25 @@ export async function runReportCommand(
 				account.accountId = tokenDerivedAccountId;
 				account.accountIdSource = "token";
 			}
-			storageChanged =
-				storageChanged ||
+			const refreshedStorageChanged =
 				previousRefreshToken !== account.refreshToken ||
 				previousAccessToken !== account.accessToken ||
 				previousExpiresAt !== account.expiresAt ||
 				previousEmail !== account.email ||
 				previousAccountId !== account.accountId ||
 				previousAccountIdSource !== account.accountIdSource;
+			if (refreshedStorageChanged) {
+				try {
+					await saveAccountsWithRetry(storage, deps.saveAccounts);
+				} catch (error) {
+					const message = deps.normalizeFailureDetail(
+						error instanceof Error ? error.message : String(error),
+						undefined,
+					);
+					probeErrors.push(`${formatAccountLabel(account, i)}: ${message}`);
+					continue;
+				}
+			}
 
 			const accountId = account.accountId ?? refreshedAccountId;
 			if (!accountId) {
@@ -351,10 +378,6 @@ export async function runReportCommand(
 				probeErrors.push(`${formatAccountLabel(account, i)}: ${message}`);
 			}
 		}
-	}
-
-	if (storage && options.live && storageChanged) {
-		await deps.saveAccounts(storage);
 	}
 
 	const forecastResults = storage
