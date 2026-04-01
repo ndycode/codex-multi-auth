@@ -23,4 +23,14 @@ describe("CI workflow parity", () => {
 			expect(ci).toContain(command);
 		}
 	});
+
+	it("keeps Windows script typecheck coverage in push and PR CI", () => {
+		const ci = readWorkflow("ci.yml");
+		const prCi = readWorkflow("pr-ci.yml");
+
+		expect(ci).toContain("runs-on: windows-latest");
+		expect(ci).toContain("npm run typecheck:scripts");
+		expect(prCi).toContain("runs-on: windows-latest");
+		expect(prCi).toContain("npm run typecheck:scripts");
+	});
 });
