@@ -45,7 +45,11 @@ export class CircuitBreaker {
 
 		if (this.state === "half-open") {
 			if (this.halfOpenAttempts >= this.config.halfOpenMaxAttempts) {
-				throw new CircuitOpenError("Circuit is half-open");
+				if (this.hasHalfOpenProbeWaitElapsed(now)) {
+					this.resetHalfOpenProbeWindow(now);
+				} else {
+					throw new CircuitOpenError("Circuit is half-open");
+				}
 			}
 			this.halfOpenAttempts += 1;
 			return true;
@@ -60,7 +64,10 @@ export class CircuitBreaker {
 		}
 
 		if (this.state === "half-open") {
-			return this.halfOpenAttempts < this.config.halfOpenMaxAttempts;
+			return (
+				this.halfOpenAttempts < this.config.halfOpenMaxAttempts ||
+				this.hasHalfOpenProbeWaitElapsed(now)
+			);
 		}
 
 		return true;
@@ -141,6 +148,15 @@ export class CircuitBreaker {
 
 	private transitionToHalfOpen(now: number): void {
 		this.state = "half-open";
+		this.lastStateChange = now;
+		this.halfOpenAttempts = 0;
+	}
+
+	private hasHalfOpenProbeWaitElapsed(now: number): boolean {
+		return now - this.lastStateChange >= this.config.resetTimeoutMs;
+	}
+
+	private resetHalfOpenProbeWindow(now: number): void {
 		this.lastStateChange = now;
 		this.halfOpenAttempts = 0;
 	}

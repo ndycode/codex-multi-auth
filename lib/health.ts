@@ -28,6 +28,7 @@ export function getAccountHealth(
 		index: number;
 		email?: string;
 		accountId?: string;
+		refreshToken?: string;
 		health: number;
 		rateLimitedUntil?: number;
 		cooldownUntil?: number;

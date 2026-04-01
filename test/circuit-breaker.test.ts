@@ -287,4 +287,20 @@ describe("Circuit breaker", () => {
     breaker.canExecute();
     expect(breaker.isAvailable()).toBe(false);
   });
+
+  it("allows a new half-open probe after the exhausted wait window elapses", () => {
+    const breaker = new CircuitBreaker();
+    breaker.recordFailure();
+    breaker.recordFailure();
+    breaker.recordFailure();
+
+    vi.setSystemTime(new Date(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1));
+    expect(breaker.canExecute()).toBe(true);
+
+    vi.advanceTimersByTime(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs);
+
+    expect(breaker.isAvailable()).toBe(true);
+    expect(breaker.getTimeUntilAvailable()).toBe(0);
+    expect(breaker.canExecute()).toBe(true);
+  });
 });
