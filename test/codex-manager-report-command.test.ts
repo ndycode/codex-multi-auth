@@ -35,6 +35,7 @@ function createDeps(
 		loadAccounts: vi.fn(async () => createStorage()),
 		saveAccounts: vi.fn(async () => undefined),
 		resolveActiveIndex: vi.fn(() => 0),
+		hasUsableAccessToken: vi.fn(() => false),
 		queuedRefresh: vi.fn(async () => ({
 			type: "success",
 			access: "access-token-1",
@@ -190,6 +191,37 @@ describe("runReportCommand", () => {
 			"token expired",
 		);
 		expect(jsonOutput.forecast.accounts[3]?.liveQuota?.planType).toBe("pro");
+	});
+
+	it("reuses usable access tokens for live probes without forcing refresh", async () => {
+		const deps = createDeps({
+			hasUsableAccessToken: vi.fn(() => true),
+			loadAccounts: vi.fn(async () =>
+				createStorage([
+					{
+						email: "one@example.com",
+						accountId: "acct-live",
+						refreshToken: "refresh-token-1",
+						accessToken: "access-token-1",
+						expiresAt: 5_000,
+						addedAt: 1,
+						lastUsed: 1,
+						enabled: true,
+					},
+				]),
+			),
+		});
+
+		const result = await runReportCommand(["--live", "--json"], deps);
+
+		expect(result).toBe(0);
+		expect(deps.queuedRefresh).not.toHaveBeenCalled();
+		expect(deps.saveAccounts).not.toHaveBeenCalled();
+		expect(deps.fetchCodexQuotaSnapshot).toHaveBeenCalledWith({
+			accountId: "acct-live",
+			accessToken: "access-token-1",
+			model: "gpt-5-codex",
+		});
 	});
 
 	it("persists refreshed probe tokens before report live probes", async () => {

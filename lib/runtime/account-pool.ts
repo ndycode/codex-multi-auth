@@ -161,7 +161,7 @@ export async function persistAccountPoolResults(params: {
 				refreshToken: result.refresh,
 				accessToken: result.access,
 				expiresAt: result.expires,
-				lastUsed: now,
+				lastUsed: existing.lastUsed ?? now,
 				workspaces: mergedWorkspaces,
 				currentWorkspaceIndex: nextCurrentWorkspaceIndex,
 			};

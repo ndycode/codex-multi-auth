@@ -52,4 +52,60 @@ describe("account pool helper", () => {
 			activeIndexByFamily: { codex: 0 },
 		});
 	});
+
+	it("preserves lastUsed when updating an existing account", async () => {
+		const persist = vi.fn(async () => undefined);
+		const originalLastUsed = 456;
+
+		await persistAccountPoolResults({
+			results: [
+				{
+					type: "success",
+					access: "access-token-next",
+					refresh: "refresh-token",
+					expires: 999,
+				},
+			],
+			replaceAll: false,
+			modelFamilies: ["codex"],
+			withAccountStorageTransaction: async (handler) =>
+				handler(
+					{
+						version: 3,
+						activeIndex: 0,
+						activeIndexByFamily: { codex: 0 },
+						accounts: [
+							{
+								accountId: "acct_1",
+								email: "user@example.com",
+								refreshToken: "refresh-token",
+								accessToken: "access-token-old",
+								expiresAt: 123,
+								addedAt: 111,
+								lastUsed: originalLastUsed,
+								enabled: true,
+							},
+						],
+					},
+					persist,
+				),
+			findMatchingAccountIndex: () => 0,
+			extractAccountId: () => "acct_1",
+			extractAccountEmail: () => "user@example.com",
+			sanitizeEmail: (email) => email,
+		});
+
+		expect(persist).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: [
+					expect.objectContaining({
+						refreshToken: "refresh-token",
+						accessToken: "access-token-next",
+						expiresAt: 999,
+						lastUsed: originalLastUsed,
+					}),
+				],
+			}),
+		);
+	});
 });
