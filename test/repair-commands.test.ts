@@ -38,6 +38,7 @@ const withFlaggedStorageTransactionMock = vi.fn();
 const getCodexCliAuthPathMock = vi.fn(() => "/mock/auth.json");
 const getCodexCliConfigPathMock = vi.fn(() => "/mock/config.toml");
 const loadCodexCliStateMock = vi.fn();
+const isCodexCliSyncEnabledMock = vi.fn(() => true);
 const setCodexCliActiveSelectionMock = vi.fn();
 
 vi.mock("node:fs", () => ({
@@ -92,6 +93,7 @@ vi.mock("../lib/storage.js", async () => {
 vi.mock("../lib/codex-cli/state.js", () => ({
 	getCodexCliAuthPath: getCodexCliAuthPathMock,
 	getCodexCliConfigPath: getCodexCliConfigPathMock,
+	isCodexCliSyncEnabled: isCodexCliSyncEnabledMock,
 	loadCodexCliState: loadCodexCliStateMock,
 }));
 
@@ -136,6 +138,7 @@ describe("repair-commands direct deps coverage", () => {
 		existsSyncMock.mockReturnValue(false);
 		loadQuotaCacheMock.mockResolvedValue(null);
 		loadCodexCliStateMock.mockResolvedValue(null);
+		isCodexCliSyncEnabledMock.mockReturnValue(true);
 		extractAccountEmailMock.mockReturnValue(undefined);
 		extractAccountIdMock.mockReturnValue(undefined);
 	});

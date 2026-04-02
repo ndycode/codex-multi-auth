@@ -8,6 +8,10 @@ const mockLoadCodexCliState = vi.fn();
 const mockSyncAccountStorageFromCodexCli = vi.fn();
 const mockSetCodexCliActiveSelection = vi.fn();
 const mockSelectHybridAccount = vi.fn();
+const mockLogDebug = vi.fn();
+const mockLogWarn = vi.fn();
+const mockLogInfo = vi.fn();
+const mockLogError = vi.fn();
 
 vi.mock("../lib/storage.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/storage.js")>();
@@ -34,6 +38,15 @@ vi.mock("../lib/codex-cli/sync.js", () => ({
 
 vi.mock("../lib/codex-cli/writer.js", () => ({
   setCodexCliActiveSelection: mockSetCodexCliActiveSelection,
+}));
+
+vi.mock("../lib/logger.js", () => ({
+  createLogger: () => ({
+    debug: mockLogDebug,
+    warn: mockLogWarn,
+    info: mockLogInfo,
+    error: mockLogError,
+  }),
 }));
 
 vi.mock("../lib/rotation.js", async (importOriginal) => {
@@ -73,6 +86,11 @@ function getPrivate<T>(target: object, key: string): T {
   return Reflect.get(target, key) as T;
 }
 
+async function flushSelectionSyncQueue(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 async function importAccountsModule() {
   vi.resetModules();
   return import("../lib/accounts.js");
@@ -94,6 +112,10 @@ describe("accounts edge branches", () => {
       changed: false,
     }));
     mockSetCodexCliActiveSelection.mockResolvedValue(undefined);
+    mockLogDebug.mockReset();
+    mockLogWarn.mockReset();
+    mockLogInfo.mockReset();
+    mockLogError.mockReset();
     mockSelectHybridAccount.mockImplementation(
       (accounts: { index: number; isAvailable: boolean }[]) => {
         const available = accounts.find((candidate) => candidate.isAvailable);
@@ -342,6 +364,192 @@ describe("accounts edge branches", () => {
 
     await manager.syncCodexCliActiveSelectionForIndex(0);
     expect(mockSetCodexCliActiveSelection).toHaveBeenCalledTimes(1);
+  });
+
+  it("eagerly syncs Codex CLI selection when automatic family selection changes account", async () => {
+    const previousLauncherActive = process.env.CODEX_MULTI_AUTH_LAUNCHER_ACTIVE;
+    process.env.CODEX_MULTI_AUTH_LAUNCHER_ACTIVE = "1";
+
+    try {
+      const now = Date.now();
+      const stored = buildStored([
+        buildStoredAccount({
+          refreshToken: "refresh-1",
+          accessToken: "access-1",
+          accountId: "acct-1",
+          email: "one@example.com",
+          addedAt: now - 10_000,
+          lastUsed: now - 5_000,
+        }),
+        buildStoredAccount({
+          refreshToken: "refresh-2",
+          accessToken: "access-2",
+          accountId: "acct-2",
+          email: "two@example.com",
+          addedAt: now - 9_000,
+          lastUsed: now - 4_000,
+        }),
+      ]);
+
+      const { AccountManager } = await importAccountsModule();
+      const manager = new AccountManager(undefined, stored as never);
+      const currentByFamily = getPrivate<Record<string, number>>(
+        manager as object,
+        "currentAccountIndexByFamily",
+      );
+      const cursorByFamily = getPrivate<Record<string, number>>(
+        manager as object,
+        "cursorByFamily",
+      );
+
+      currentByFamily.codex = 1;
+      cursorByFamily.codex = 0;
+
+      const selected = manager.getCurrentOrNextForFamily("codex");
+      await flushSelectionSyncQueue();
+
+      expect(selected?.index).toBe(0);
+      expect(mockSetCodexCliActiveSelection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accountId: "acct-1",
+          email: "one@example.com",
+          refreshToken: "refresh-1",
+        }),
+      );
+    } finally {
+      if (previousLauncherActive === undefined) {
+        delete process.env.CODEX_MULTI_AUTH_LAUNCHER_ACTIVE;
+      } else {
+        process.env.CODEX_MULTI_AUTH_LAUNCHER_ACTIVE = previousLauncherActive;
+      }
+    }
+  });
+
+  it("eagerly syncs Codex CLI selection for hybrid rotation and markSwitched", async () => {
+    const previousLauncherActive = process.env.CODEX_MULTI_AUTH_LAUNCHER_ACTIVE;
+    process.env.CODEX_MULTI_AUTH_LAUNCHER_ACTIVE = "1";
+
+    try {
+      const now = Date.now();
+      const stored = buildStored([
+        buildStoredAccount({
+          refreshToken: "refresh-1",
+          accessToken: "access-1",
+          accountId: "acct-1",
+          email: "one@example.com",
+          addedAt: now - 10_000,
+          lastUsed: now - 5_000,
+        }),
+        buildStoredAccount({
+          refreshToken: "refresh-2",
+          accessToken: "access-2",
+          accountId: "acct-2",
+          email: "two@example.com",
+          addedAt: now - 9_000,
+          lastUsed: now - 4_000,
+        }),
+      ]);
+
+      const { AccountManager } = await importAccountsModule();
+      const manager = new AccountManager(undefined, stored as never);
+      const currentByFamily = getPrivate<Record<string, number>>(
+        manager as object,
+        "currentAccountIndexByFamily",
+      );
+
+      currentByFamily.codex = 1;
+      mockSelectHybridAccount.mockReturnValueOnce({ index: 0 });
+
+      const selected = manager.getCurrentOrNextForFamilyHybrid("codex");
+      await flushSelectionSyncQueue();
+
+      expect(selected?.index).toBe(0);
+      expect(mockSetCodexCliActiveSelection).toHaveBeenCalledTimes(1);
+
+      mockSetCodexCliActiveSelection.mockClear();
+      const nextAccount = manager.getAccountByIndex(1);
+      expect(nextAccount).not.toBeNull();
+      manager.markSwitched(nextAccount!, "rotation", "codex");
+      await flushSelectionSyncQueue();
+
+      expect(mockSetCodexCliActiveSelection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accountId: "acct-2",
+          email: "two@example.com",
+          refreshToken: "refresh-2",
+        }),
+      );
+    } finally {
+      if (previousLauncherActive === undefined) {
+        delete process.env.CODEX_MULTI_AUTH_LAUNCHER_ACTIVE;
+      } else {
+        process.env.CODEX_MULTI_AUTH_LAUNCHER_ACTIVE = previousLauncherActive;
+      }
+    }
+  });
+
+  it("logs and swallows Codex CLI active-selection sync failures", async () => {
+    const previousLauncherActive = process.env.CODEX_MULTI_AUTH_LAUNCHER_ACTIVE;
+    process.env.CODEX_MULTI_AUTH_LAUNCHER_ACTIVE = "1";
+
+    try {
+      mockSetCodexCliActiveSelection.mockRejectedValueOnce(
+        new Error("writer unavailable"),
+      );
+
+      const now = Date.now();
+      const stored = buildStored([
+        buildStoredAccount({
+          refreshToken: "refresh-1",
+          accessToken: "access-1",
+          accountId: "acct-1",
+          email: "one@example.com",
+          addedAt: now - 10_000,
+          lastUsed: now - 5_000,
+        }),
+        buildStoredAccount({
+          refreshToken: "refresh-2",
+          accessToken: "access-2",
+          accountId: "acct-2",
+          email: "two@example.com",
+          addedAt: now - 9_000,
+          lastUsed: now - 4_000,
+        }),
+      ]);
+
+      const { AccountManager } = await importAccountsModule();
+      const manager = new AccountManager(undefined, stored as never);
+      const currentByFamily = getPrivate<Record<string, number>>(
+        manager as object,
+        "currentAccountIndexByFamily",
+      );
+      const cursorByFamily = getPrivate<Record<string, number>>(
+        manager as object,
+        "cursorByFamily",
+      );
+
+      currentByFamily.codex = 1;
+      cursorByFamily.codex = 0;
+
+      const selected = manager.getCurrentOrNextForFamily("codex");
+      await flushSelectionSyncQueue();
+
+      expect(selected?.index).toBe(0);
+      expect(mockSetCodexCliActiveSelection).toHaveBeenCalledTimes(1);
+      expect(mockLogDebug).toHaveBeenCalledWith(
+        "Failed to sync Codex CLI active selection",
+        expect.objectContaining({
+          error: "writer unavailable",
+          index: 0,
+        }),
+      );
+    } finally {
+      if (previousLauncherActive === undefined) {
+        delete process.env.CODEX_MULTI_AUTH_LAUNCHER_ACTIVE;
+      } else {
+        process.env.CODEX_MULTI_AUTH_LAUNCHER_ACTIVE = previousLauncherActive;
+      }
+    }
   });
 
   it("covers sparse and disabled account branches in family selectors", async () => {

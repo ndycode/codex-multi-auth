@@ -549,6 +549,7 @@ export class AccountManager {
 		const account = this.accounts[index];
 		if (!account) return null;
 		if (account.enabled === false) return null;
+		const previousIndex = this.getActiveIndex();
 
 		for (const family of MODEL_FAMILIES) {
 			this.currentAccountIndexByFamily[family] = index;
@@ -557,7 +558,9 @@ export class AccountManager {
 
 		account.lastUsed = nowMs();
 		account.lastSwitchReason = "rotation";
-		void this.syncCodexCliActiveSelectionForIndex(account.index);
+		if (previousIndex !== account.index) {
+			this.queueCodexCliActiveSelectionForIndex(account.index);
+		}
 		return account;
 	}
 
@@ -572,6 +575,18 @@ export class AccountManager {
 			accessToken: account.access,
 			refreshToken: account.refreshToken,
 			expiresAt: account.expires,
+		});
+	}
+
+	private queueCodexCliActiveSelectionForIndex(index: number): void {
+		const launcherActive =
+			(process.env.CODEX_MULTI_AUTH_LAUNCHER_ACTIVE ?? "").trim() === "1";
+		if (!launcherActive) return;
+		void this.syncCodexCliActiveSelectionForIndex(index).catch((error) => {
+			log.debug("Failed to sync Codex CLI active selection", {
+				error: error instanceof Error ? error.message : String(error),
+				index,
+			});
 		});
 	}
 
@@ -600,6 +615,7 @@ export class AccountManager {
 		if (count === 0) return null;
 
 		const cursor = this.cursorByFamily[family];
+		const previousIndex = this.currentAccountIndexByFamily[family];
 		
 		for (let i = 0; i < count; i++) {
 			const idx = (cursor + i) % count;
@@ -619,6 +635,9 @@ export class AccountManager {
 			this.cursorByFamily[family] = (idx + 1) % count;
 			this.currentAccountIndexByFamily[family] = idx;
 			account.lastUsed = nowMs();
+			if (previousIndex !== idx) {
+				this.queueCodexCliActiveSelectionForIndex(idx);
+			}
 			return account;
 		}
 
@@ -657,6 +676,7 @@ export class AccountManager {
 	getCurrentOrNextForFamilyHybrid(family: ModelFamily, model?: string | null, options?: HybridSelectionOptions): ManagedAccount | null {
 		const count = this.accounts.length;
 		if (count === 0) return null;
+		const previousIndex = this.currentAccountIndexByFamily[family];
 
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
@@ -689,6 +709,9 @@ export class AccountManager {
 		this.currentAccountIndexByFamily[family] = account.index;
 		this.cursorByFamily[family] = (account.index + 1) % count;
 		account.lastUsed = nowMs();
+		if (previousIndex !== account.index) {
+			this.queueCodexCliActiveSelectionForIndex(account.index);
+		}
 		return account;
 	}
 
@@ -763,8 +786,12 @@ export class AccountManager {
 	}
 
 	markSwitched(account: ManagedAccount, reason: "rate-limit" | "initial" | "rotation", family: ModelFamily): void {
+		const previousIndex = this.currentAccountIndexByFamily[family];
 		account.lastSwitchReason = reason;
 		this.currentAccountIndexByFamily[family] = account.index;
+		if (previousIndex !== account.index) {
+			this.queueCodexCliActiveSelectionForIndex(account.index);
+		}
 	}
 
 	markRateLimited(account: ManagedAccount, retryAfterMs: number, family: ModelFamily, model?: string | null): void {

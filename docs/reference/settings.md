@@ -197,10 +197,18 @@ Maintainer/debug-focused overrides include:
 
 - `CODEX_MULTI_AUTH_SYNC_CODEX_CLI`
 - `CODEX_MULTI_AUTH_REAL_CODEX_BIN`
+- `CODEX_MULTI_AUTH_RUNTIME_ROOT`
+- `CODEX_MULTI_AUTH_PREFER_BUNDLED_RUNTIME`
 - `CODEX_MULTI_AUTH_BYPASS`
 - `CODEX_CLI_ACCOUNTS_PATH`
 - `CODEX_CLI_AUTH_PATH`
 - refresh lease controls (`CODEX_AUTH_REFRESH_LEASE*`)
+
+Bundled runtime notes:
+
+- `CODEX_MULTI_AUTH_RUNTIME_ROOT` points the launcher at a staged patched Codex runtime tree.
+- `CODEX_MULTI_AUTH_PREFER_BUNDLED_RUNTIME=0` forces a fallback to the stock `@openai/codex` install.
+- Without the patched runtime, auth-file updates still persist correctly, but an already-open Codex TUI session will not hot-reload to the new account.
 
 Full inventory: [../development/CONFIG_FIELDS.md](../development/CONFIG_FIELDS.md)
 

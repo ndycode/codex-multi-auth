@@ -77,10 +77,18 @@ Use these only when debugging, controlled benchmarking, or maintainer workflows.
 
 - `CODEX_MULTI_AUTH_SYNC_CODEX_CLI`
 - `CODEX_MULTI_AUTH_REAL_CODEX_BIN`
+- `CODEX_MULTI_AUTH_RUNTIME_ROOT`
+- `CODEX_MULTI_AUTH_PREFER_BUNDLED_RUNTIME`
 - `CODEX_MULTI_AUTH_BYPASS`
 - `CODEX_CLI_ACCOUNTS_PATH`
 - `CODEX_CLI_AUTH_PATH`
 - refresh lease tuning variables (`CODEX_AUTH_REFRESH_LEASE*`)
+
+Maintainer note:
+
+- `npm run runtime:bundle` builds a patched Codex runtime and stages it under `~/.codex/multi-auth/runtime/<target-triple>`.
+- The launcher prefers `CODEX_MULTI_AUTH_RUNTIME_ROOT`, then the staged runtime cache, then the stock `@openai/codex` install.
+- True in-session account hot-reload during an open Codex TUI requires that patched runtime. The stock official CLI still needs a restart to pick up auth-file changes.
 
 Full inventory: [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md)
 

@@ -3,10 +3,147 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import { basename, delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.js";
+
+const PLATFORM_PACKAGE_BY_TARGET = {
+	"x86_64-unknown-linux-musl": "@openai/codex-linux-x64",
+	"aarch64-unknown-linux-musl": "@openai/codex-linux-arm64",
+	"x86_64-apple-darwin": "@openai/codex-darwin-x64",
+	"aarch64-apple-darwin": "@openai/codex-darwin-arm64",
+	"x86_64-pc-windows-msvc": "@openai/codex-win32-x64",
+	"aarch64-pc-windows-msvc": "@openai/codex-win32-arm64",
+};
+
+function getTargetTriple() {
+	switch (process.platform) {
+		case "linux":
+		case "android":
+			switch (process.arch) {
+				case "x64":
+					return "x86_64-unknown-linux-musl";
+				case "arm64":
+					return "aarch64-unknown-linux-musl";
+				default:
+					return null;
+			}
+		case "darwin":
+			switch (process.arch) {
+				case "x64":
+					return "x86_64-apple-darwin";
+				case "arm64":
+					return "aarch64-apple-darwin";
+				default:
+					return null;
+			}
+		case "win32":
+			switch (process.arch) {
+				case "x64":
+					return "x86_64-pc-windows-msvc";
+				case "arm64":
+					return "aarch64-pc-windows-msvc";
+				default:
+					return null;
+			}
+		default:
+			return null;
+	}
+}
+
+function getUpdatedPath(newDirs, existingPathValue = process.env.PATH ?? "") {
+	const existingEntries = existingPathValue
+		.split(delimiter)
+		.map((entry) => entry.trim())
+		.filter((entry) => entry.length > 0);
+	const uniqueEntries = [];
+	const seen = new Set();
+	for (const entry of [...newDirs, ...existingEntries]) {
+		const key = process.platform === "win32" ? entry.toLowerCase() : entry;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		uniqueEntries.push(entry);
+	}
+	return uniqueEntries.join(delimiter);
+}
+
+function isNodeScriptPath(candidate) {
+	return /\.m?js$/i.test(candidate);
+}
+
+function buildLaunchTarget(binPath, options = {}) {
+	const {
+		pathDirs = [],
+		source = "stock",
+	} = options;
+	const env = { ...process.env };
+	if (pathDirs.length > 0) {
+		env.PATH = getUpdatedPath(pathDirs, env.PATH ?? process.env.PATH ?? "");
+	}
+	env.CODEX_MULTI_AUTH_RUNTIME_SOURCE = source;
+
+	if (isNodeScriptPath(binPath)) {
+		return {
+			command: process.execPath,
+			argsPrefix: [binPath],
+			env,
+			source,
+		};
+	}
+
+	return {
+		command: binPath,
+		argsPrefix: [],
+		env,
+		source,
+	};
+}
+
+function resolveBundledRuntimeTarget() {
+	const preferBundledRuntime =
+		(process.env.CODEX_MULTI_AUTH_PREFER_BUNDLED_RUNTIME ?? "1").trim() !== "0";
+	if (!preferBundledRuntime) return null;
+
+	const targetTriple = getTargetTriple();
+	if (!targetTriple) return null;
+
+	const scriptDir = dirname(fileURLToPath(import.meta.url));
+	const packageRoot = join(scriptDir, "..");
+	const runtimeRoots = [];
+	const runtimeRootOverride = (process.env.CODEX_MULTI_AUTH_RUNTIME_ROOT ?? "").trim();
+	if (runtimeRootOverride.length > 0) {
+		runtimeRoots.push(resolvePath(runtimeRootOverride));
+	}
+
+	runtimeRoots.push(join(homedir(), ".codex", "multi-auth", "runtime"));
+	runtimeRoots.push(join(packageRoot, "vendor", "codex-runtime"));
+
+	for (const runtimeRoot of runtimeRoots) {
+		const archRoot = join(runtimeRoot, targetTriple);
+		const codexDir = join(archRoot, "codex");
+		const binaryCandidates = [
+			join(codexDir, process.platform === "win32" ? "codex.exe" : "codex"),
+			join(codexDir, "codex.js"),
+		];
+		const binPath = binaryCandidates.find((candidate) => existsSync(candidate));
+		if (!binPath) {
+			continue;
+		}
+
+		const pathDir = join(archRoot, "path");
+		const pathDirs = existsSync(pathDir) ? [pathDir] : [];
+		const target = buildLaunchTarget(binPath, {
+			pathDirs,
+			source: "bundled",
+		});
+		target.env.CODEX_MULTI_AUTH_RUNTIME_ROOT = runtimeRoot;
+		return target;
+	}
+
+	return null;
+}
 
 function hydrateCliVersionEnv() {
 	try {
@@ -113,17 +250,26 @@ async function autoSyncManagerActiveSelectionIfEnabled(rawArgs = []) {
 function resolveRealCodexBin() {
 	const override = (process.env.CODEX_MULTI_AUTH_REAL_CODEX_BIN ?? "").trim();
 	if (override.length > 0) {
-		if (existsSync(override)) return override;
+		if (existsSync(override)) {
+			return buildLaunchTarget(override, { source: "override" });
+		}
 		console.error(
 			`CODEX_MULTI_AUTH_REAL_CODEX_BIN is set but missing: ${override}`,
 		);
 		return null;
 	}
 
+	const bundledTarget = resolveBundledRuntimeTarget();
+	if (bundledTarget) {
+		return bundledTarget;
+	}
+
 	try {
 		const require = createRequire(import.meta.url);
 		const resolved = require.resolve("@openai/codex/bin/codex.js");
-		if (existsSync(resolved)) return resolved;
+		if (existsSync(resolved)) {
+			return buildLaunchTarget(resolved, { source: "stock" });
+		}
 	} catch {
 		// Fall through to sibling lookup.
 	}
@@ -145,7 +291,9 @@ function resolveRealCodexBin() {
 
 	for (const root of searchRoots) {
 		const candidate = join(root, "@openai", "codex", "bin", "codex.js");
-		if (existsSync(candidate)) return candidate;
+		if (existsSync(candidate)) {
+			return buildLaunchTarget(candidate, { source: "stock" });
+		}
 	}
 
 	const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -158,7 +306,9 @@ function resolveRealCodexBin() {
 			const globalRoot = rootResult.stdout.trim();
 			if (globalRoot.length > 0) {
 				const globalBin = join(globalRoot, "@openai", "codex", "bin", "codex.js");
-				if (existsSync(globalBin)) return globalBin;
+				if (existsSync(globalBin)) {
+					return buildLaunchTarget(globalBin, { source: "stock" });
+				}
 			}
 		}
 	} catch {
@@ -219,11 +369,37 @@ function createSuccessStderrFilter(output) {
 	};
 }
 
+function maybeLogRuntimeDebug(target) {
+	if ((process.env.CODEX_MULTI_AUTH_DEBUG_RUNTIME ?? "").trim() !== "1") {
+		return;
+	}
+
+	const command = target?.command ?? "<missing>";
+	const argsPrefix = Array.isArray(target?.argsPrefix)
+		? target.argsPrefix.join(" ")
+		: "";
+	console.error(
+		[
+			`codex-multi-auth runtime source: ${target?.source ?? "<none>"}`,
+			`codex-multi-auth runtime command: ${command}`,
+			target?.env?.CODEX_MULTI_AUTH_RUNTIME_ROOT
+				? `codex-multi-auth runtime root: ${target.env.CODEX_MULTI_AUTH_RUNTIME_ROOT}`
+				: null,
+			argsPrefix.length > 0
+				? `codex-multi-auth runtime argsPrefix: ${argsPrefix}`
+				: null,
+		]
+			.filter(Boolean)
+			.join("\n"),
+	);
+}
+
 function forwardToRealCodex(codexBin, args) {
 	return new Promise((resolve) => {
-		const child = spawn(process.execPath, [codexBin, ...args], {
+		maybeLogRuntimeDebug(codexBin);
+		const child = spawn(codexBin.command, [...codexBin.argsPrefix, ...args], {
 			stdio: ["inherit", "inherit", "pipe"],
-			env: process.env,
+			env: codexBin.env,
 		});
 		const stderrFilter = createSuccessStderrFilter(process.stderr);
 		child.stderr?.setEncoding("utf8");
@@ -604,6 +780,7 @@ function ensureWindowsShellShimGuards() {
 async function main() {
 	hydrateCliVersionEnv();
 	ensureWindowsShellShimGuards();
+	process.env.CODEX_MULTI_AUTH_LAUNCHER_ACTIVE = "1";
 
 	const rawArgs = process.argv.slice(2);
 	const normalizedArgs = normalizeAuthAlias(rawArgs);
@@ -629,9 +806,10 @@ async function main() {
 	if (!realCodexBin) {
 		console.error(
 			[
-				"Could not locate the official Codex CLI binary (@openai/codex).",
+				"Could not locate a Codex runtime to launch.",
+				"Either bundle a patched runtime with: npm run runtime:bundle",
 				"Install it globally: npm install -g @openai/codex",
-				"Or set CODEX_MULTI_AUTH_REAL_CODEX_BIN to a full bin/codex.js path.",
+				"Or set CODEX_MULTI_AUTH_REAL_CODEX_BIN to a full codex binary or bin/codex.js path.",
 			].join("\n"),
 		);
 		return 1;

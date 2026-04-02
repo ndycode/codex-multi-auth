@@ -71,6 +71,7 @@
 	},
 	"scripts": {
 		"build": "tsc && node scripts/copy-oauth-success.js",
+		"runtime:bundle": "node scripts/bundle-codex-runtime.mjs",
 		"typecheck": "tsc --noEmit",
 		"typecheck:scripts": "tsc -p tsconfig.scripts.json",
 		"lint": "npm run lint:ts && npm run lint:scripts",

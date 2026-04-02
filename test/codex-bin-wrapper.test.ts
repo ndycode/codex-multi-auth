@@ -80,6 +80,45 @@ function createCustomFakeCodexBin(rootDir: string, lines: string[]): string {
 	return fakeBin;
 }
 
+function getFixtureTargetTriple(): string {
+	if (process.platform === "win32") {
+		return process.arch === "arm64"
+			? "aarch64-pc-windows-msvc"
+			: "x86_64-pc-windows-msvc";
+	}
+	if (process.platform === "darwin") {
+		return process.arch === "arm64"
+			? "aarch64-apple-darwin"
+			: "x86_64-apple-darwin";
+	}
+	return process.arch === "arm64"
+		? "aarch64-unknown-linux-musl"
+		: "x86_64-unknown-linux-musl";
+}
+
+function createBundledRuntimeFixture(
+	runtimeRoot: string,
+	lines: string[],
+): string {
+	const runtimeDir = join(
+		runtimeRoot,
+		getFixtureTargetTriple(),
+		"codex",
+	);
+	mkdirSync(runtimeDir, { recursive: true });
+	const bundledBin = join(runtimeDir, "codex.js");
+	writeFileSync(bundledBin, lines.join("\n"), "utf8");
+	return bundledBin;
+}
+
+function createFakeOfficialCodexPackage(rootDir: string, lines: string[]): string {
+	const binDir = join(rootDir, "node_modules", "@openai", "codex", "bin");
+	mkdirSync(binDir, { recursive: true });
+	const officialBin = join(binDir, "codex.js");
+	writeFileSync(officialBin, lines.join("\n"), "utf8");
+	return officialBin;
+}
+
 function writeFixtureCodexManagerModule(
 	fixtureRoot: string,
 	lines: string[],
@@ -213,6 +252,54 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("FORWARDED:--version");
+	});
+
+	it("prefers the bundled hot-reload runtime when present", () => {
+		const fixtureRoot = createWrapperFixture();
+		const runtimeRoot = join(fixtureRoot, "runtime-cache");
+		createBundledRuntimeFixture(runtimeRoot, [
+			"#!/usr/bin/env node",
+			'console.log(`BUNDLED:${process.argv.slice(2).join(" ")}`);',
+			"process.exit(0);",
+		]);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+			CODEX_MULTI_AUTH_RUNTIME_ROOT: runtimeRoot,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'BUNDLED:exec status -c cli_auth_credentials_store="file"',
+		);
+	});
+
+	it("falls back to the stock runtime when bundled preference is disabled", () => {
+		const fixtureRoot = createWrapperFixture();
+		const runtimeRoot = join(fixtureRoot, "runtime-cache");
+		createBundledRuntimeFixture(runtimeRoot, [
+			"#!/usr/bin/env node",
+			'console.log(`BUNDLED:${process.argv.slice(2).join(" ")}`);',
+			"process.exit(0);",
+		]);
+		createFakeOfficialCodexPackage(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'console.log(`STOCK:${process.argv.slice(2).join(" ")}`);',
+			"process.exit(0);",
+		]);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+			CODEX_MULTI_AUTH_RUNTIME_ROOT: runtimeRoot,
+			CODEX_MULTI_AUTH_PREFER_BUNDLED_RUNTIME: "0",
+			npm_config_prefix: fixtureRoot,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'STOCK:exec status -c cli_auth_credentials_store="file"',
+		);
+		expect(result.stdout).not.toContain("BUNDLED:");
 	});
 
 	it("runs startup preflight before sync and forwarding for execution commands", () => {
@@ -693,7 +780,8 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain(
 			`CODEX_MULTI_AUTH_REAL_CODEX_BIN is set but missing: ${missingOverride}`,
 		);
-		expect(output).toContain("Could not locate the official Codex CLI binary");
+		expect(output).toContain("Could not locate a Codex runtime to launch.");
+		expect(output).toContain("npm run runtime:bundle");
 		expect(output).toContain(
 			"Install it globally: npm install -g @openai/codex",
 		);

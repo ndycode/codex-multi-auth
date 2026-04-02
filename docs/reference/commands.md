@@ -83,7 +83,9 @@ Compatibility aliases are supported:
 - `CODEX_AUTH_NO_BROWSER=1` suppresses browser launch for automation/headless sessions. False-like values such as `0` and `false` do not disable browser launch by themselves.
 - In non-TTY/manual shells, pass the full redirect URL on stdin, for example: `echo "http://127.0.0.1:1455/auth/callback?code=..." | codex auth login --manual`.
 - `codex auth forecast --explain` now keeps the explain breakdown visible in text mode even when dashboard settings hide recommendation summary lines. Pair it with `--json` for machine-readable reasoning snapshots.
-- No new npm scripts or storage migration steps were introduced for this auth-flow update.
+- `npm run runtime:bundle` builds and stages the patched Codex runtime used for live in-session auth reload and automatic hot account handoff.
+- The launcher prefers `CODEX_MULTI_AUTH_RUNTIME_ROOT`, then `~/.codex/multi-auth/runtime/<target-triple>`, then the stock `@openai/codex` install.
+- Automatic account rotation before startup still works with the stock CLI, but true in-session `/status` handoff without restarting requires the patched bundled runtime.
 
 ---
 
