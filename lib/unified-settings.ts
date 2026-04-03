@@ -71,6 +71,22 @@ async function readSettingsRecordAsyncFromPath(
 	return parseSettingsRecord(await fs.readFile(filePath, "utf8"));
 }
 
+function readSettingsBackupSync(): JsonRecord | null {
+	try {
+		return readSettingsRecordSyncFromPath(UNIFIED_SETTINGS_BACKUP_PATH);
+	} catch {
+		return null;
+	}
+}
+
+async function readSettingsBackupAsync(): Promise<JsonRecord | null> {
+	try {
+		return await readSettingsRecordAsyncFromPath(UNIFIED_SETTINGS_BACKUP_PATH);
+	} catch {
+		return null;
+	}
+}
+
 function trySnapshotUnifiedSettingsBackupSync(): void {
 	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
 		return;
@@ -122,16 +138,14 @@ function readSettingsRecordSync(): JsonRecord | null {
 			return primaryRecord;
 		}
 	} catch (error) {
-		const backupRecord = readSettingsRecordSyncFromPath(
-			UNIFIED_SETTINGS_BACKUP_PATH,
-		);
+		const backupRecord = readSettingsBackupSync();
 		if (backupRecord) {
 			return backupRecord;
 		}
 		throw error;
 	}
 
-	return readSettingsRecordSyncFromPath(UNIFIED_SETTINGS_BACKUP_PATH);
+	return readSettingsBackupSync();
 }
 
 /**
@@ -150,16 +164,14 @@ async function readSettingsRecordAsync(): Promise<JsonRecord | null> {
 			return primaryRecord;
 		}
 	} catch (error) {
-		const backupRecord = await readSettingsRecordAsyncFromPath(
-			UNIFIED_SETTINGS_BACKUP_PATH,
-		);
+		const backupRecord = await readSettingsBackupAsync();
 		if (backupRecord) {
 			return backupRecord;
 		}
 		throw error;
 	}
 
-	return readSettingsRecordAsyncFromPath(UNIFIED_SETTINGS_BACKUP_PATH);
+	return readSettingsBackupAsync();
 }
 
 /**

@@ -71,6 +71,20 @@ describe("unified settings", () => {
 		expect(await loadUnifiedDashboardSettings()).toBeNull();
 	});
 
+	it("returns null sections when both primary and backup settings files are invalid", async () => {
+		const {
+			getUnifiedSettingsPath,
+			loadUnifiedPluginConfigSync,
+			loadUnifiedDashboardSettings,
+		} = await import("../lib/unified-settings.js");
+
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+		await fs.writeFile(`${getUnifiedSettingsPath()}.bak`, "{ invalid backup", "utf8");
+
+		expect(loadUnifiedPluginConfigSync()).toBeNull();
+		expect(await loadUnifiedDashboardSettings()).toBeNull();
+	});
+
 	it("recovers plugin config from backup when primary settings file is invalid", async () => {
 		const {
 			getUnifiedSettingsPath,
