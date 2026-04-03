@@ -292,7 +292,7 @@ describe("flagged account storage", () => {
 		unlinkSpy.mockRestore();
 	});
 
-	it("does not recover flagged backups when the primary file exists but read fails", async () => {
+	it("recovers flagged backups when the primary file exists but read fails", async () => {
 		await saveFlaggedAccounts({
 			version: 1,
 			accounts: [
@@ -334,7 +334,8 @@ describe("flagged account storage", () => {
 			});
 
 		const flagged = await loadFlaggedAccounts();
-		expect(flagged.accounts).toHaveLength(0);
+		expect(flagged.accounts).toHaveLength(1);
+		expect(flagged.accounts[0]?.refreshToken).toBe("primary-flagged");
 		expect(existsSync(flaggedPath)).toBe(true);
 
 		readSpy.mockRestore();
