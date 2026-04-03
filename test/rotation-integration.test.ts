@@ -293,6 +293,15 @@ describe("Multi-Account Rotation Integration", () => {
 
 				const saves = Array.from({ length: 10 }, () => manager.saveToDisk());
 				await Promise.all(saves);
+
+				const parsed = JSON.parse(
+					await fs.readFile(testStoragePath, "utf8"),
+				) as AccountStorageV3;
+				expect(parsed.version).toBe(3);
+				expect(parsed.accounts).toHaveLength(3);
+				expect(parsed.accounts.map((account) => account.email)).toEqual(
+					TEST_ACCOUNTS.slice(0, 3).map((account) => account.email),
+				);
 			}, 15_000);
 		});
 

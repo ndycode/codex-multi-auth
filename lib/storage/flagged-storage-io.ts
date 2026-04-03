@@ -2,11 +2,35 @@ import { existsSync, promises as fs } from "node:fs";
 import { dirname } from "node:path";
 import type { FlaggedAccountStorageV1 } from "../storage.js";
 
+const RETRYABLE_UNLINK_CODES = new Set(["EBUSY", "EAGAIN", "EPERM"]);
+
 /**
  * Return the ordered backup paths consulted for flagged-account recovery.
  */
 function getFlaggedBackupPaths(path: string): string[] {
 	return [`${path}.bak`, `${path}.bak.1`, `${path}.bak.2`];
+}
+
+async function unlinkWithRetry(candidatePath: string): Promise<void> {
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await fs.unlink(candidatePath);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				return;
+			}
+			if (
+				!code ||
+				!RETRYABLE_UNLINK_CODES.has(code) ||
+				attempt >= 4
+			) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
+		}
+	}
 }
 
 export async function loadFlaggedAccountsState(params: {
@@ -191,7 +215,7 @@ export async function clearFlaggedAccountsOnDisk(params: {
 		...params.backupPaths,
 	]) {
 		try {
-			await fs.unlink(candidate);
+			await unlinkWithRetry(candidate);
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code !== "ENOENT") {
@@ -208,7 +232,7 @@ export async function clearFlaggedAccountsOnDisk(params: {
 	}
 	if (!keepResetMarker) {
 		try {
-			await fs.unlink(params.markerPath);
+			await unlinkWithRetry(params.markerPath);
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code !== "ENOENT") {

@@ -41,6 +41,13 @@ const UNSUPPORTED_CODEX_POLICIES = new Set(["strict", "fallback"]);
 const emittedConfigWarnings = new Set<string>();
 const configSaveQueues = new Map<string, Promise<void>>();
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+const RETRYABLE_CONFIG_READ_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
+
+type ConfigReadState =
+	| { status: "missing" }
+	| { status: "ok"; record: Record<string, unknown> }
+	| { status: "invalid"; errorMessage: string }
+	| { status: "unreadable"; errorMessage: string };
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
@@ -456,6 +463,53 @@ function readConfigRecordFromPath(
 	}
 }
 
+async function readConfigRecordForSave(
+	configPath: string,
+): Promise<ConfigReadState> {
+	if (!existsSync(configPath)) {
+		return { status: "missing" };
+	}
+
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			const fileContent = await fs.readFile(configPath, "utf-8");
+			const normalizedFileContent = stripUtf8Bom(fileContent);
+			const parsed = JSON.parse(normalizedFileContent) as unknown;
+			if (!isRecord(parsed)) {
+				const errorMessage = `Config at ${configPath} must contain a JSON object at the root.`;
+				logConfigWarnOnce(errorMessage);
+				return { status: "invalid", errorMessage };
+			}
+			return { status: "ok", record: parsed };
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "ENOENT") {
+				return { status: "missing" };
+			}
+			if (
+				typeof code === "string" &&
+				RETRYABLE_CONFIG_READ_CODES.has(code) &&
+				attempt < 4
+			) {
+				await sleep(10 * 2 ** attempt);
+				continue;
+			}
+			const errorMessage = `Failed to read config from ${configPath}: ${
+				error instanceof Error ? error.message : String(error)
+			}`;
+			logConfigWarnOnce(errorMessage);
+			if (typeof code === "string" && RETRYABLE_CONFIG_READ_CODES.has(code)) {
+				return { status: "unreadable", errorMessage };
+			}
+			return { status: "invalid", errorMessage };
+		}
+	}
+
+	const errorMessage = `Failed to read config from ${configPath}.`;
+	logConfigWarnOnce(errorMessage);
+	return { status: "unreadable", errorMessage };
+}
+
 function resolveStoredPluginConfigRecord(): {
 	configPath: string | null;
 	storageKind: ConfigExplainStorageKind;
@@ -507,10 +561,17 @@ function resolveStoredPluginConfigRecord(): {
  */
 function sanitizePluginConfigForSave(
 	config: Partial<PluginConfig>,
-): Record<string, unknown> {
+	): { sanitized: Record<string, unknown>; droppedKeys: string[] } {
 	const normalized = sanitizePluginConfigRecord(config as Record<string, unknown>);
 	const entries = Object.entries((normalized ?? {}) as Record<string, unknown>);
 	const sanitized: Record<string, unknown> = {};
+	const inputRecord = isRecord(config) ? config : {};
+	const droppedKeys = PLUGIN_CONFIG_KEYS.filter((key) => {
+		if (!(key in inputRecord) || inputRecord[key] === undefined) {
+			return false;
+		}
+		return !(key in (normalized ?? {}));
+	});
 	for (const [key, value] of entries) {
 		if (value === undefined) continue;
 		if (typeof value === "number" && !Number.isFinite(value)) continue;
@@ -520,7 +581,7 @@ function sanitizePluginConfigForSave(
 		}
 		sanitized[key] = value;
 	}
-	return sanitized;
+	return { sanitized, droppedKeys };
 }
 
 /**
@@ -539,14 +600,27 @@ function sanitizePluginConfigForSave(
 export async function savePluginConfig(
 	configPatch: Partial<PluginConfig>,
 ): Promise<void> {
-	const sanitizedPatch = sanitizePluginConfigForSave(configPatch);
+	const { sanitized: sanitizedPatch, droppedKeys } =
+		sanitizePluginConfigForSave(configPatch);
+	if (droppedKeys.length > 0) {
+		logConfigWarnOnce(
+			`Ignoring invalid plugin config field(s): ${droppedKeys.join(", ")}.`,
+		);
+	}
 	const envPath = (process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim();
 
 	if (envPath.length > 0) {
 		await withConfigSaveLock(envPath, async () => {
-			const existingConfig = sanitizeStoredPluginConfigRecord(
-				readConfigRecordFromPath(envPath),
-			);
+			const envConfigState = await readConfigRecordForSave(envPath);
+			if (envConfigState.status === "unreadable") {
+				throw new Error(
+					`Aborting config save because ${envPath} is unreadable.`,
+				);
+			}
+			const existingConfig =
+				envConfigState.status === "ok"
+					? sanitizeStoredPluginConfigRecord(envConfigState.record)
+					: null;
 			const merged = {
 				...(existingConfig ?? {}),
 				...sanitizedPatch,
@@ -558,14 +632,34 @@ export async function savePluginConfig(
 
 	const unifiedPath = getUnifiedSettingsPath();
 	await withConfigSaveLock(unifiedPath, async () => {
-		const unifiedConfigRecord = loadUnifiedPluginConfigSync();
-		const unifiedConfig = sanitizeStoredPluginConfigRecord(
-			unifiedConfigRecord,
-		);
-		const legacyPath = unifiedConfigRecord ? null : resolvePluginConfigPath();
-		const legacyConfig = legacyPath
-			? sanitizeStoredPluginConfigRecord(readConfigRecordFromPath(legacyPath))
+		const unifiedConfigState = await readConfigRecordForSave(unifiedPath);
+		if (unifiedConfigState.status === "unreadable") {
+			throw new Error(
+				`Aborting config save because ${unifiedPath} is unreadable.`,
+			);
+		}
+		const unifiedConfigRecord =
+			unifiedConfigState.status === "ok"
+				? unifiedConfigState.record.pluginConfig
+				: loadUnifiedPluginConfigSync();
+		const unifiedConfig = sanitizeStoredPluginConfigRecord(unifiedConfigRecord);
+		const legacyPath =
+			unifiedConfigState.status === "missing" ||
+			(unifiedConfigState.status === "ok" && !unifiedConfig)
+				? resolvePluginConfigPath()
+				: null;
+		const legacyConfigState = legacyPath
+			? await readConfigRecordForSave(legacyPath)
 			: null;
+		if (legacyConfigState?.status === "unreadable") {
+			throw new Error(
+				`Aborting config save because ${legacyPath} is unreadable.`,
+			);
+		}
+		const legacyConfig =
+			legacyConfigState?.status === "ok"
+				? sanitizeStoredPluginConfigRecord(legacyConfigState.record)
+				: null;
 		const merged = {
 			...(unifiedConfig ??
 				legacyConfig ??

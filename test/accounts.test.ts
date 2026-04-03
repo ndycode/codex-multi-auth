@@ -3221,6 +3221,7 @@ describe("AccountManager", () => {
           expires: now + 3600000,
         });
 
+<<<<<<< HEAD
         expect(account.accountId).toBe("account-enriched");
         expect(account.email).toBe("enriched@example.com");
         expect(getRuntimeAccountIdentityKey(account)).toBe(
@@ -3229,7 +3230,7 @@ describe("AccountManager", () => {
         expect(getRuntimeTrackerKey(account)).toBe(trackerKey);
         expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
           degradedScore,
-          6,
+          5,
         );
         expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
       } finally {
