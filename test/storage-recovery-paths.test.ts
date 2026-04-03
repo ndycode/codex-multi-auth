@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
 import {
 	loadAccounts,
+	loadFlaggedAccounts,
 	getBackupMetadata,
 	saveAccounts,
 	setStorageBackupEnabled,
@@ -107,6 +108,55 @@ describe("storage recovery paths", () => {
 			accounts?: Array<{ accountId?: string }>;
 		};
 		expect(persisted.accounts?.[0]?.accountId).toBe("from-backup");
+	});
+
+	it("recovers flagged accounts from backup file when primary storage is missing", async () => {
+		const flaggedPath = join(workDir, "openai-codex-flagged-accounts.json");
+		await fs.writeFile(
+			`${flaggedPath}.bak`,
+			JSON.stringify({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "flagged-refresh",
+						email: "flagged@example.com",
+						addedAt: 7,
+						lastUsed: 7,
+						flaggedAt: 7,
+					},
+				],
+			}),
+			"utf-8",
+		);
+
+		const recovered = await loadFlaggedAccounts();
+		expect(recovered.accounts).toHaveLength(1);
+		expect(recovered.accounts[0]?.email).toBe("flagged@example.com");
+	});
+
+	it("recovers flagged accounts from backup file when primary storage is unreadable", async () => {
+		const flaggedPath = join(workDir, "openai-codex-flagged-accounts.json");
+		await fs.writeFile(flaggedPath, "{broken-primary", "utf-8");
+		await fs.writeFile(
+			`${flaggedPath}.bak`,
+			JSON.stringify({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "flagged-refresh-2",
+						email: "flagged2@example.com",
+						addedAt: 8,
+						lastUsed: 8,
+						flaggedAt: 8,
+					},
+				],
+			}),
+			"utf-8",
+		);
+
+		const recovered = await loadFlaggedAccounts();
+		expect(recovered.accounts).toHaveLength(1);
+		expect(recovered.accounts[0]?.email).toBe("flagged2@example.com");
 	});
 
 	it("falls back to historical backup snapshots when the latest backup is unreadable", async () => {

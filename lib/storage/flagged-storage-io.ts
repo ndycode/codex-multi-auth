@@ -2,6 +2,10 @@ import { existsSync, promises as fs } from "node:fs";
 import { dirname } from "node:path";
 import type { FlaggedAccountStorageV1 } from "../storage.js";
 
+function getFlaggedBackupPaths(path: string): string[] {
+	return [`${path}.bak`, `${path}.bak.1`, `${path}.bak.2`];
+}
+
 export async function loadFlaggedAccountsState(params: {
 	path: string;
 	legacyPath: string;
@@ -12,6 +16,34 @@ export async function loadFlaggedAccountsState(params: {
 	logInfo: (message: string, details: Record<string, unknown>) => void;
 }): Promise<FlaggedAccountStorageV1> {
 	const empty: FlaggedAccountStorageV1 = { version: 1, accounts: [] };
+	if (existsSync(params.resetMarkerPath)) {
+		return empty;
+	}
+	const loadFlaggedBackup = async (): Promise<FlaggedAccountStorageV1 | null> => {
+		for (const backupPath of getFlaggedBackupPaths(params.path)) {
+			if (!existsSync(backupPath)) {
+				continue;
+			}
+			try {
+				const backupContent = await fs.readFile(backupPath, "utf-8");
+				const backupData = JSON.parse(backupContent) as unknown;
+				const recovered = params.normalizeFlaggedStorage(backupData);
+				params.logInfo("Recovered flagged account storage from backup", {
+					from: backupPath,
+					to: params.path,
+					accounts: recovered.accounts.length,
+				});
+				return recovered;
+			} catch (backupError) {
+				params.logError("Failed to recover flagged account storage from backup", {
+					from: backupPath,
+					to: params.path,
+					error: String(backupError),
+				});
+			}
+		}
+		return null;
+	};
 
 	try {
 		const content = await fs.readFile(params.path, "utf-8");
@@ -28,8 +60,13 @@ export async function loadFlaggedAccountsState(params: {
 				path: params.path,
 				error: String(error),
 			});
-			return empty;
+			return (await loadFlaggedBackup()) ?? empty;
 		}
+	}
+
+	const recoveredBackup = await loadFlaggedBackup();
+	if (recoveredBackup) {
+		return recoveredBackup;
 	}
 
 	if (!existsSync(params.legacyPath)) {
@@ -129,6 +166,7 @@ export async function clearFlaggedAccountsOnDisk(params: {
 	backupPaths: string[];
 	logError: (message: string, details: Record<string, unknown>) => void;
 }): Promise<void> {
+	let keepResetMarker = false;
 	try {
 		await fs.writeFile(params.markerPath, "reset", {
 			encoding: "utf-8",
@@ -145,7 +183,6 @@ export async function clearFlaggedAccountsOnDisk(params: {
 	for (const candidate of [
 		params.path,
 		...params.backupPaths,
-		params.markerPath,
 	]) {
 		try {
 			await fs.unlink(candidate);
@@ -159,6 +196,21 @@ export async function clearFlaggedAccountsOnDisk(params: {
 				if (candidate === params.path) {
 					throw error;
 				}
+				keepResetMarker = true;
+			}
+		}
+	}
+	if (!keepResetMarker) {
+		try {
+			await fs.unlink(params.markerPath);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") {
+				params.logError("Failed to clear flagged account storage", {
+					path: params.markerPath,
+					error: String(error),
+				});
+				throw error;
 			}
 		}
 	}
