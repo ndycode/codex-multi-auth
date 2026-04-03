@@ -21,7 +21,11 @@ const UNIFIED_SETTINGS_BACKUP_PATH = `${UNIFIED_SETTINGS_PATH}.bak`;
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 const TRANSIENT_READ_FS_CODES = new Set(["EBUSY", "EAGAIN"]);
 let settingsWriteQueue: Promise<void> = Promise.resolve();
-let backupDerivedReadPending = false;
+
+type SettingsReadResult = {
+	record: JsonRecord | null;
+	usedBackup: boolean;
+};
 
 function isRetryableFsError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -137,8 +141,10 @@ function shouldFallbackToSettingsBackup(
  * When the current in-memory state was recovered from backup, snapshotting is
  * skipped so a corrupt primary cannot overwrite the only known-good backup.
  */
-function trySnapshotUnifiedSettingsBackupSync(): void {
-	if (backupDerivedReadPending) {
+function trySnapshotUnifiedSettingsBackupSync(options?: {
+	skipBecauseBackupRead?: boolean;
+}): void {
+	if (options?.skipBecauseBackupRead) {
 		return;
 	}
 	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
@@ -160,8 +166,10 @@ function trySnapshotUnifiedSettingsBackupSync(): void {
 /**
  * Async variant of `trySnapshotUnifiedSettingsBackupSync`.
  */
-async function trySnapshotUnifiedSettingsBackupAsync(): Promise<void> {
-	if (backupDerivedReadPending) {
+async function trySnapshotUnifiedSettingsBackupAsync(options?: {
+	skipBecauseBackupRead?: boolean;
+}): Promise<void> {
+	if (options?.skipBecauseBackupRead) {
 		return;
 	}
 	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
@@ -190,12 +198,12 @@ async function trySnapshotUnifiedSettingsBackupAsync(): Promise<void> {
  * - Windows: file locking on Windows may cause reads to fail; in those cases this function returns `null`.
  * - Sensitive data: this function performs no token or secret redaction; any sensitive values present in the file are returned as-is and callers are responsible for redaction before logging or external exposure.
  */
-function readSettingsRecordSync(): JsonRecord | null {
+function readSettingsRecordSyncInternal(): SettingsReadResult {
 	const primaryExists = existsSync(UNIFIED_SETTINGS_PATH);
 	try {
 		const primaryRecord = readSettingsRecordSyncFromPath(UNIFIED_SETTINGS_PATH);
 		if (primaryRecord) {
-			return primaryRecord;
+			return { record: primaryRecord, usedBackup: false };
 		}
 	} catch (error) {
 		if (!shouldFallbackToSettingsBackup(primaryExists, error)) {
@@ -203,13 +211,16 @@ function readSettingsRecordSync(): JsonRecord | null {
 		}
 		const backupRecord = readSettingsBackupSync();
 		if (backupRecord) {
-			backupDerivedReadPending = true;
-			return backupRecord;
+			return { record: backupRecord, usedBackup: true };
 		}
 		throw error;
 	}
 
-	return null;
+	return { record: null, usedBackup: false };
+}
+
+function readSettingsRecordSync(): JsonRecord | null {
+	return readSettingsRecordSyncInternal().record;
 }
 
 /**
@@ -219,14 +230,14 @@ function readSettingsRecordSync(): JsonRecord | null {
  *
  * @returns The parsed settings record as an object clone, or `null` if unavailable or invalid.
  */
-async function readSettingsRecordAsync(): Promise<JsonRecord | null> {
+async function readSettingsRecordAsyncInternal(): Promise<SettingsReadResult> {
 	const primaryExists = existsSync(UNIFIED_SETTINGS_PATH);
 	try {
 		const primaryRecord = await readSettingsRecordAsyncFromPath(
 			UNIFIED_SETTINGS_PATH,
 		);
 		if (primaryRecord) {
-			return primaryRecord;
+			return { record: primaryRecord, usedBackup: false };
 		}
 	} catch (error) {
 		if (!shouldFallbackToSettingsBackup(primaryExists, error)) {
@@ -234,13 +245,16 @@ async function readSettingsRecordAsync(): Promise<JsonRecord | null> {
 		}
 		const backupRecord = await readSettingsBackupAsync();
 		if (backupRecord) {
-			backupDerivedReadPending = true;
-			return backupRecord;
+			return { record: backupRecord, usedBackup: true };
 		}
 		throw error;
 	}
 
-	return null;
+	return { record: null, usedBackup: false };
+}
+
+async function readSettingsRecordAsync(): Promise<JsonRecord | null> {
+	return (await readSettingsRecordAsyncInternal()).record;
 }
 
 /**
@@ -275,12 +289,17 @@ function normalizeForWrite(record: JsonRecord): JsonRecord {
  *
  * @param record - The settings object to persist; it will be normalized to include the unified settings version.
  */
-function writeSettingsRecordSync(record: JsonRecord): void {
+function writeSettingsRecordSync(
+	record: JsonRecord,
+	options?: { skipBackupSnapshot?: boolean },
+): void {
 	mkdirSync(getCodexMultiAuthDir(), { recursive: true });
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
 	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.tmp`;
-	trySnapshotUnifiedSettingsBackupSync();
+	trySnapshotUnifiedSettingsBackupSync({
+		skipBecauseBackupRead: options?.skipBackupSnapshot,
+	});
 	writeFileSync(tempPath, data, "utf8");
 	let moved = false;
 	try {
@@ -288,7 +307,6 @@ function writeSettingsRecordSync(record: JsonRecord): void {
 			try {
 				renameSync(tempPath, UNIFIED_SETTINGS_PATH);
 				moved = true;
-				backupDerivedReadPending = false;
 				return;
 			} catch (error) {
 				if (!isRetryableFsError(error) || attempt >= 4) {
@@ -328,12 +346,17 @@ function writeSettingsRecordSync(record: JsonRecord): void {
  *
  * @param record - The settings object to persist; it will be normalized (version set)
  */
-async function writeSettingsRecordAsync(record: JsonRecord): Promise<void> {
+async function writeSettingsRecordAsync(
+	record: JsonRecord,
+	options?: { skipBackupSnapshot?: boolean },
+): Promise<void> {
 	await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
 	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-	await trySnapshotUnifiedSettingsBackupAsync();
+	await trySnapshotUnifiedSettingsBackupAsync({
+		skipBecauseBackupRead: options?.skipBackupSnapshot,
+	});
 	await fs.writeFile(tempPath, data, "utf8");
 	let moved = false;
 	try {
@@ -341,7 +364,6 @@ async function writeSettingsRecordAsync(record: JsonRecord): Promise<void> {
 			try {
 				await fs.rename(tempPath, UNIFIED_SETTINGS_PATH);
 				moved = true;
-				backupDerivedReadPending = false;
 				return;
 			} catch (error) {
 				if (!isRetryableFsError(error) || attempt >= 4) {
@@ -413,9 +435,12 @@ export function loadUnifiedPluginConfigSync(): JsonRecord | null {
  * @param pluginConfig - Key/value map representing plugin configuration to persist
  */
 export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
-	const record = readSettingsRecordSync() ?? {};
-	record.pluginConfig = { ...pluginConfig };
-	writeSettingsRecordSync(record);
+	const { record, usedBackup } = readSettingsRecordSyncInternal();
+	const nextRecord = record ?? {};
+	nextRecord.pluginConfig = { ...pluginConfig };
+	writeSettingsRecordSync(nextRecord, {
+		skipBackupSnapshot: usedBackup,
+	});
 }
 
 /**
@@ -430,9 +455,12 @@ export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
  */
 export async function saveUnifiedPluginConfig(pluginConfig: JsonRecord): Promise<void> {
 	await enqueueSettingsWrite(async () => {
-		const record = await readSettingsRecordAsync() ?? {};
-		record.pluginConfig = { ...pluginConfig };
-		await writeSettingsRecordAsync(record);
+		const { record, usedBackup } = await readSettingsRecordAsyncInternal();
+		const nextRecord = record ?? {};
+		nextRecord.pluginConfig = { ...pluginConfig };
+		await writeSettingsRecordAsync(nextRecord, {
+			skipBackupSnapshot: usedBackup,
+		});
 	});
 }
 
@@ -473,8 +501,11 @@ export async function saveUnifiedDashboardSettings(
 	dashboardDisplaySettings: JsonRecord,
 ): Promise<void> {
 	await enqueueSettingsWrite(async () => {
-		const record = await readSettingsRecordAsync() ?? {};
-		record.dashboardDisplaySettings = { ...dashboardDisplaySettings };
-		await writeSettingsRecordAsync(record);
+		const { record, usedBackup } = await readSettingsRecordAsyncInternal();
+		const nextRecord = record ?? {};
+		nextRecord.dashboardDisplaySettings = { ...dashboardDisplaySettings };
+		await writeSettingsRecordAsync(nextRecord, {
+			skipBackupSnapshot: usedBackup,
+		});
 	});
 }

@@ -645,7 +645,7 @@ function resolveBooleanSetting(
 		envValue === undefined
 	) {
 		logConfigWarnOnce(
-			`Ignoring invalid boolean env ${envName}=${JSON.stringify(rawEnvValue)}. Expected 0/1, true/false, or yes/no.`,
+			`Ignoring invalid boolean env ${envName}. Expected 0/1, true/false, or yes/no.`,
 		);
 	}
 	if (envValue !== undefined) return envValue;
@@ -677,7 +677,7 @@ function resolveNumberSetting(
 		envValue === undefined
 	) {
 		logConfigWarnOnce(
-			`Ignoring invalid numeric env ${envName}=${JSON.stringify(rawEnvValue)}. Expected a finite number.`,
+			`Ignoring invalid numeric env ${envName}. Expected a finite number.`,
 		);
 	}
 	const candidate = envValue ?? configValue ?? defaultValue;
