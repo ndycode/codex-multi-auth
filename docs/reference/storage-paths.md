@@ -21,6 +21,7 @@ Override root:
 | File | Default path |
 | --- | --- |
 | Unified settings | `~/.codex/multi-auth/settings.json` |
+| Unified settings backup | `~/.codex/multi-auth/settings.json.bak` |
 | Accounts | `~/.codex/multi-auth/openai-codex-accounts.json` |
 | Accounts backup | `~/.codex/multi-auth/openai-codex-accounts.json.bak` |
 | Accounts WAL | `~/.codex/multi-auth/openai-codex-accounts.json.wal` |
@@ -48,6 +49,8 @@ Compatibility note:
 Backup metadata:
 
 - `getBackupMetadata()` reports deterministic snapshot lists for the canonical account pool (primary, WAL, `.bak`, `.bak.1`, `.bak.2`, and discovered manual backups) and flagged-account state (primary, `.bak`, `.bak.1`, `.bak.2`, and discovered manual backups). Cache-like artifacts and `.reset-intent` markers are excluded from recovery candidates.
+- `settings.json.bak` stores the last valid unified settings snapshot before each write and is used as a recovery fallback when `settings.json` is unreadable.
+- Flagged-account backup recovery is suppressed whenever the flagged reset marker is still present, so partial clears cannot revive previously cleared flagged entries.
 
 ---
 
