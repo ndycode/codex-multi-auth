@@ -663,11 +663,11 @@ describe('Plugin Configuration', () => {
 
 		it('should ignore invalid env values and fall back to config/default', () => {
 			process.env.CODEX_MODE = 'maybe';
-			const config: PluginConfig = { codexMode: true };
+			const config: PluginConfig = { codexMode: false };
 
 			const result = getCodexMode(config);
 
-			expect(result).toBe(true);
+			expect(result).toBe(false);
 		});
 
 		it('should use config codexMode=true when explicitly set', () => {
@@ -1036,6 +1036,7 @@ describe('Plugin Configuration', () => {
 			process.env.CODEX_AUTH_FETCH_TIMEOUT_MS = '';
 			expect(getFetchTimeoutMs({ fetchTimeoutMs: 90000 })).toBe(90000);
 			delete process.env.CODEX_AUTH_FETCH_TIMEOUT_MS;
+			expect(getFetchTimeoutMs({})).toBe(60000);
 		});
 
 		it('should read stream stall timeout from env', () => {

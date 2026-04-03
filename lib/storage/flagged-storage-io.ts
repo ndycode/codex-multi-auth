@@ -2,6 +2,9 @@ import { existsSync, promises as fs } from "node:fs";
 import { dirname } from "node:path";
 import type { FlaggedAccountStorageV1 } from "../storage.js";
 
+/**
+ * Return the ordered backup paths consulted for flagged-account recovery.
+ */
 function getFlaggedBackupPaths(path: string): string[] {
 	return [`${path}.bak`, `${path}.bak.1`, `${path}.bak.2`];
 }
@@ -28,6 +31,9 @@ export async function loadFlaggedAccountsState(params: {
 				const backupContent = await fs.readFile(backupPath, "utf-8");
 				const backupData = JSON.parse(backupContent) as unknown;
 				const recovered = params.normalizeFlaggedStorage(backupData);
+				if (existsSync(params.resetMarkerPath)) {
+					return empty;
+				}
 				params.logInfo("Recovered flagged account storage from backup", {
 					from: backupPath,
 					to: params.path,

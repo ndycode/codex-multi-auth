@@ -320,11 +320,18 @@ function sanitizePluginConfigRecord(
 	return sanitized as Partial<PluginConfig>;
 }
 
+/**
+ * Sanitize a stored plugin-config record while preserving unknown keys.
+ *
+ * Known plugin-config keys are schema-validated before they are merged back
+ * into runtime state. Unknown keys are kept so legacy and forward-compatible
+ * settings survive env-path saves.
+ */
 function sanitizeStoredPluginConfigRecord(
 	data: unknown,
-): Record<string, unknown> {
+): Record<string, unknown> | null {
 	if (!isRecord(data)) {
-		return {};
+		return null;
 	}
 
 	const sanitized: Record<string, unknown> = {};
@@ -551,10 +558,11 @@ export async function savePluginConfig(
 
 	const unifiedPath = getUnifiedSettingsPath();
 	await withConfigSaveLock(unifiedPath, async () => {
+		const unifiedConfigRecord = loadUnifiedPluginConfigSync();
 		const unifiedConfig = sanitizeStoredPluginConfigRecord(
-			loadUnifiedPluginConfigSync(),
+			unifiedConfigRecord,
 		);
-		const legacyPath = unifiedConfig ? null : resolvePluginConfigPath();
+		const legacyPath = unifiedConfigRecord ? null : resolvePluginConfigPath();
 		const legacyConfig = legacyPath
 			? sanitizeStoredPluginConfigRecord(readConfigRecordFromPath(legacyPath))
 			: null;
@@ -631,7 +639,11 @@ function resolveBooleanSetting(
 ): boolean {
 	const rawEnvValue = process.env[envName];
 	const envValue = parseBooleanEnv(rawEnvValue);
-	if (rawEnvValue !== undefined && envValue === undefined) {
+	if (
+		rawEnvValue !== undefined &&
+		rawEnvValue.trim().length > 0 &&
+		envValue === undefined
+	) {
 		logConfigWarnOnce(
 			`Ignoring invalid boolean env ${envName}=${JSON.stringify(rawEnvValue)}. Expected 0/1, true/false, or yes/no.`,
 		);
@@ -659,7 +671,11 @@ function resolveNumberSetting(
 ): number {
 	const rawEnvValue = process.env[envName];
 	const envValue = parseNumberEnv(rawEnvValue);
-	if (rawEnvValue !== undefined && envValue === undefined) {
+	if (
+		rawEnvValue !== undefined &&
+		rawEnvValue.trim().length > 0 &&
+		envValue === undefined
+	) {
 		logConfigWarnOnce(
 			`Ignoring invalid numeric env ${envName}=${JSON.stringify(rawEnvValue)}. Expected a finite number.`,
 		);
