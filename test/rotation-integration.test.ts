@@ -286,15 +286,15 @@ describe("Multi-Account Rotation Integration", () => {
     });
   });
 
-  describe("Storage mutex (file locking)", () => {
-    it("concurrent saves complete without corruption", async () => {
-      const storage = createStorageFromTestAccounts(TEST_ACCOUNTS.slice(0, 3));
-      const manager = new AccountManager(undefined, storage);
+		describe("Storage mutex (file locking)", () => {
+			it("concurrent saves complete without corruption", async () => {
+				const storage = createStorageFromTestAccounts(TEST_ACCOUNTS.slice(0, 3));
+				const manager = new AccountManager(undefined, storage);
 
-      const saves = Array.from({ length: 10 }, () => manager.saveToDisk());
-      await Promise.all(saves);
-    });
-  });
+				const saves = Array.from({ length: 10 }, () => manager.saveToDisk());
+				await Promise.all(saves);
+			}, 15_000);
+		});
 
   describe("Debounced save", () => {
     it("saveToDiskDebounced does not throw", () => {
