@@ -1,4 +1,5 @@
 import {
+	copyFileSync,
 	existsSync,
 	mkdirSync,
 	renameSync,
@@ -16,6 +17,7 @@ type JsonRecord = Record<string, unknown>;
 export const UNIFIED_SETTINGS_VERSION = 1 as const;
 
 const UNIFIED_SETTINGS_PATH = join(getCodexMultiAuthDir(), "settings.json");
+const UNIFIED_SETTINGS_BACKUP_PATH = `${UNIFIED_SETTINGS_PATH}.bak`;
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 let settingsWriteQueue: Promise<void> = Promise.resolve();
 
@@ -45,6 +47,64 @@ function cloneRecord(value: unknown): JsonRecord | null {
 	return { ...value };
 }
 
+function parseSettingsRecord(content: string): JsonRecord {
+	const parsed = cloneRecord(JSON.parse(content));
+	if (!parsed) {
+		throw new Error("Unified settings must contain a JSON object at the root.");
+	}
+	return parsed;
+}
+
+function readSettingsRecordSyncFromPath(filePath: string): JsonRecord | null {
+	if (!existsSync(filePath)) {
+		return null;
+	}
+	return parseSettingsRecord(readFileSync(filePath, "utf8"));
+}
+
+async function readSettingsRecordAsyncFromPath(
+	filePath: string,
+): Promise<JsonRecord | null> {
+	if (!existsSync(filePath)) {
+		return null;
+	}
+	return parseSettingsRecord(await fs.readFile(filePath, "utf8"));
+}
+
+function trySnapshotUnifiedSettingsBackupSync(): void {
+	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
+		return;
+	}
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			copyFileSync(UNIFIED_SETTINGS_PATH, UNIFIED_SETTINGS_BACKUP_PATH);
+			return;
+		} catch (error) {
+			if (!isRetryableFsError(error) || attempt >= 4) {
+				return;
+			}
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * 2 ** attempt);
+		}
+	}
+}
+
+async function trySnapshotUnifiedSettingsBackupAsync(): Promise<void> {
+	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
+		return;
+	}
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await fs.copyFile(UNIFIED_SETTINGS_PATH, UNIFIED_SETTINGS_BACKUP_PATH);
+			return;
+		} catch (error) {
+			if (!isRetryableFsError(error) || attempt >= 4) {
+				return;
+			}
+			await sleep(10 * 2 ** attempt);
+		}
+	}
+}
+
 /**
  * Reads and parses the unified settings JSON file from disk.
  *
@@ -56,16 +116,22 @@ function cloneRecord(value: unknown): JsonRecord | null {
  * - Sensitive data: this function performs no token or secret redaction; any sensitive values present in the file are returned as-is and callers are responsible for redaction before logging or external exposure.
  */
 function readSettingsRecordSync(): JsonRecord | null {
-	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
-		return null;
+	try {
+		const primaryRecord = readSettingsRecordSyncFromPath(UNIFIED_SETTINGS_PATH);
+		if (primaryRecord) {
+			return primaryRecord;
+		}
+	} catch (error) {
+		const backupRecord = readSettingsRecordSyncFromPath(
+			UNIFIED_SETTINGS_BACKUP_PATH,
+		);
+		if (backupRecord) {
+			return backupRecord;
+		}
+		throw error;
 	}
 
-	const raw = readFileSync(UNIFIED_SETTINGS_PATH, "utf8");
-	const parsed = cloneRecord(JSON.parse(raw));
-	if (!parsed) {
-		throw new Error("Unified settings must contain a JSON object at the root.");
-	}
-	return parsed;
+	return readSettingsRecordSyncFromPath(UNIFIED_SETTINGS_BACKUP_PATH);
 }
 
 /**
@@ -76,16 +142,24 @@ function readSettingsRecordSync(): JsonRecord | null {
  * @returns The parsed settings record as an object clone, or `null` if unavailable or invalid.
  */
 async function readSettingsRecordAsync(): Promise<JsonRecord | null> {
-	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
-		return null;
+	try {
+		const primaryRecord = await readSettingsRecordAsyncFromPath(
+			UNIFIED_SETTINGS_PATH,
+		);
+		if (primaryRecord) {
+			return primaryRecord;
+		}
+	} catch (error) {
+		const backupRecord = await readSettingsRecordAsyncFromPath(
+			UNIFIED_SETTINGS_BACKUP_PATH,
+		);
+		if (backupRecord) {
+			return backupRecord;
+		}
+		throw error;
 	}
 
-	const raw = await fs.readFile(UNIFIED_SETTINGS_PATH, "utf8");
-	const parsed = cloneRecord(JSON.parse(raw));
-	if (!parsed) {
-		throw new Error("Unified settings must contain a JSON object at the root.");
-	}
-	return parsed;
+	return readSettingsRecordAsyncFromPath(UNIFIED_SETTINGS_BACKUP_PATH);
 }
 
 /**
@@ -125,6 +199,7 @@ function writeSettingsRecordSync(record: JsonRecord): void {
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
 	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.tmp`;
+	trySnapshotUnifiedSettingsBackupSync();
 	writeFileSync(tempPath, data, "utf8");
 	let moved = false;
 	try {
@@ -176,6 +251,7 @@ async function writeSettingsRecordAsync(record: JsonRecord): Promise<void> {
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
 	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+	await trySnapshotUnifiedSettingsBackupAsync();
 	await fs.writeFile(tempPath, data, "utf8");
 	let moved = false;
 	try {

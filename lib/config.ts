@@ -199,6 +199,11 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 };
 
+const PLUGIN_CONFIG_FIELD_SCHEMAS = PluginConfigSchema.shape;
+const PLUGIN_CONFIG_KEYS = Object.keys(DEFAULT_PLUGIN_CONFIG) as Array<
+	keyof PluginConfig
+>;
+
 /**
  * Return a shallow copy of the default plugin configuration.
  *
@@ -238,6 +243,10 @@ export function loadPluginConfig(): PluginConfig {
 			sourceKind = "file";
 		}
 
+		const normalizedUserConfig = sanitizePluginConfigRecord(userConfig, {
+			warnOnInvalid: true,
+		});
+
 		const hasFallbackEnvOverride =
 			process.env.CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL !== undefined ||
 			process.env.CODEX_AUTH_FALLBACK_GPT53_TO_GPT52 !== undefined;
@@ -255,16 +264,9 @@ export function loadPluginConfig(): PluginConfig {
 			}
 		}
 
-		const schemaErrors = getValidationErrors(PluginConfigSchema, userConfig);
-		if (schemaErrors.length > 0) {
-			logConfigWarnOnce(
-				`Plugin config validation warnings: ${schemaErrors.slice(0, 3).join(", ")}`,
-			);
-		}
-
 		if (
 			sourceKind === "file" &&
-			isRecord(userConfig) &&
+			normalizedUserConfig !== null &&
 			(process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim().length === 0
 		) {
 			logConfigWarnOnce(
@@ -274,7 +276,7 @@ export function loadPluginConfig(): PluginConfig {
 
 		return {
 			...DEFAULT_PLUGIN_CONFIG,
-			...(userConfig as Partial<PluginConfig>),
+			...(normalizedUserConfig ?? {}),
 		};
 	} catch (error) {
 		const configPath = resolvePluginConfigPath() ?? CONFIG_PATH;
@@ -283,6 +285,62 @@ export function loadPluginConfig(): PluginConfig {
 		);
 		return { ...DEFAULT_PLUGIN_CONFIG };
 	}
+}
+
+function sanitizePluginConfigRecord(
+	data: unknown,
+	options?: { warnOnInvalid?: boolean },
+): Partial<PluginConfig> | null {
+	if (!isRecord(data)) {
+		return null;
+	}
+
+	if (options?.warnOnInvalid) {
+		const schemaErrors = getValidationErrors(PluginConfigSchema, data);
+		if (schemaErrors.length > 0) {
+			logConfigWarnOnce(
+				`Plugin config validation warnings: ${schemaErrors.slice(0, 3).join(", ")}`,
+			);
+		}
+	}
+
+	const sanitized: Record<string, unknown> = {};
+	for (const key of PLUGIN_CONFIG_KEYS) {
+		const value = data[key];
+		if (value === undefined) {
+			continue;
+		}
+		const schema = PLUGIN_CONFIG_FIELD_SCHEMAS[key];
+		const result = schema.safeParse(value);
+		if (result.success) {
+			sanitized[String(key)] = result.data;
+		}
+	}
+
+	return sanitized as Partial<PluginConfig>;
+}
+
+function sanitizeStoredPluginConfigRecord(
+	data: unknown,
+): Record<string, unknown> {
+	if (!isRecord(data)) {
+		return {};
+	}
+
+	const sanitized: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(data)) {
+		if (!PLUGIN_CONFIG_KEYS.includes(key as keyof PluginConfig)) {
+			sanitized[key] = value;
+			continue;
+		}
+		const schema = PLUGIN_CONFIG_FIELD_SCHEMAS[key as keyof PluginConfig];
+		const result = schema.safeParse(value);
+		if (result.success) {
+			sanitized[key] = result.data;
+		}
+	}
+
+	return sanitized;
 }
 
 /**
@@ -443,7 +501,8 @@ function resolveStoredPluginConfigRecord(): {
 function sanitizePluginConfigForSave(
 	config: Partial<PluginConfig>,
 ): Record<string, unknown> {
-	const entries = Object.entries(config as Record<string, unknown>);
+	const normalized = sanitizePluginConfigRecord(config as Record<string, unknown>);
+	const entries = Object.entries((normalized ?? {}) as Record<string, unknown>);
 	const sanitized: Record<string, unknown> = {};
 	for (const [key, value] of entries) {
 		if (value === undefined) continue;
@@ -478,8 +537,11 @@ export async function savePluginConfig(
 
 	if (envPath.length > 0) {
 		await withConfigSaveLock(envPath, async () => {
+			const existingConfig = sanitizeStoredPluginConfigRecord(
+				readConfigRecordFromPath(envPath),
+			);
 			const merged = {
-				...(readConfigRecordFromPath(envPath) ?? {}),
+				...(existingConfig ?? {}),
 				...sanitizedPatch,
 			};
 			await writeJsonFileAtomicWithRetry(envPath, merged);
@@ -489,11 +551,16 @@ export async function savePluginConfig(
 
 	const unifiedPath = getUnifiedSettingsPath();
 	await withConfigSaveLock(unifiedPath, async () => {
-		const unifiedConfig = loadUnifiedPluginConfigSync();
+		const unifiedConfig = sanitizeStoredPluginConfigRecord(
+			loadUnifiedPluginConfigSync(),
+		);
 		const legacyPath = unifiedConfig ? null : resolvePluginConfigPath();
+		const legacyConfig = legacyPath
+			? sanitizeStoredPluginConfigRecord(readConfigRecordFromPath(legacyPath))
+			: null;
 		const merged = {
 			...(unifiedConfig ??
-				(legacyPath ? readConfigRecordFromPath(legacyPath) : null) ??
+				legacyConfig ??
 				{}),
 			...sanitizedPatch,
 		};
@@ -510,12 +577,30 @@ export async function savePluginConfig(
  */
 function parseBooleanEnv(value: string | undefined): boolean | undefined {
 	if (value === undefined) return undefined;
-	return value === "1";
+	const normalized = value.trim().toLowerCase();
+	if (normalized.length === 0) return undefined;
+	if (
+		normalized === "1" ||
+		normalized === "true" ||
+		normalized === "yes"
+	) {
+		return true;
+	}
+	if (
+		normalized === "0" ||
+		normalized === "false" ||
+		normalized === "no"
+	) {
+		return false;
+	}
+	return undefined;
 }
 
 function parseNumberEnv(value: string | undefined): number | undefined {
 	if (value === undefined) return undefined;
-	const parsed = Number(value);
+	const trimmed = value.trim();
+	if (trimmed.length === 0) return undefined;
+	const parsed = Number(trimmed);
 	if (!Number.isFinite(parsed)) return undefined;
 	return parsed;
 }
@@ -544,7 +629,13 @@ function resolveBooleanSetting(
 	configValue: boolean | undefined,
 	defaultValue: boolean,
 ): boolean {
-	const envValue = parseBooleanEnv(process.env[envName]);
+	const rawEnvValue = process.env[envName];
+	const envValue = parseBooleanEnv(rawEnvValue);
+	if (rawEnvValue !== undefined && envValue === undefined) {
+		logConfigWarnOnce(
+			`Ignoring invalid boolean env ${envName}=${JSON.stringify(rawEnvValue)}. Expected 0/1, true/false, or yes/no.`,
+		);
+	}
 	if (envValue !== undefined) return envValue;
 	return configValue ?? defaultValue;
 }
@@ -566,7 +657,13 @@ function resolveNumberSetting(
 	defaultValue: number,
 	options?: { min?: number; max?: number },
 ): number {
-	const envValue = parseNumberEnv(process.env[envName]);
+	const rawEnvValue = process.env[envName];
+	const envValue = parseNumberEnv(rawEnvValue);
+	if (rawEnvValue !== undefined && envValue === undefined) {
+		logConfigWarnOnce(
+			`Ignoring invalid numeric env ${envName}=${JSON.stringify(rawEnvValue)}. Expected a finite number.`,
+		);
+	}
 	const candidate = envValue ?? configValue ?? defaultValue;
 	const min = options?.min ?? Number.NEGATIVE_INFINITY;
 	const max = options?.max ?? Number.POSITIVE_INFINITY;

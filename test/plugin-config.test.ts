@@ -661,13 +661,13 @@ describe('Plugin Configuration', () => {
 			expect(result).toBe(false);
 		});
 
-		it('should handle env var with any value other than "1" as false', () => {
-			process.env.CODEX_MODE = 'false';
+		it('should ignore invalid env values and fall back to config/default', () => {
+			process.env.CODEX_MODE = 'maybe';
 			const config: PluginConfig = { codexMode: true };
 
 			const result = getCodexMode(config);
 
-			expect(result).toBe(false);
+			expect(result).toBe(true);
 		});
 
 		it('should use config codexMode=true when explicitly set', () => {
@@ -990,6 +990,23 @@ describe('Plugin Configuration', () => {
 				expect.stringContaining('Plugin config validation warnings')
 			);
 		});
+
+		it('drops invalid persisted values while keeping valid config keys', () => {
+			mockExistsSync.mockReturnValue(true);
+			mockReadFileSync.mockReturnValue(JSON.stringify({
+				codexMode: 'not-a-boolean',
+				fetchTimeoutMs: 'oops',
+				streamStallTimeoutMs: 30000,
+				backgroundResponses: true,
+			}));
+
+			const config = loadPluginConfig();
+
+			expect(config.codexMode).toBe(true);
+			expect(config.fetchTimeoutMs).toBe(60_000);
+			expect(config.streamStallTimeoutMs).toBe(30000);
+			expect(config.backgroundResponses).toBe(true);
+		});
 	});
 
 	describe('resolveNumberSetting without min option', () => {
@@ -1013,6 +1030,12 @@ describe('Plugin Configuration', () => {
 		it('should read fetch timeout from config', () => {
 			const config: PluginConfig = { fetchTimeoutMs: 120000 };
 			expect(getFetchTimeoutMs(config)).toBe(120000);
+		});
+
+		it('should ignore empty numeric env values and fall back to config/default', () => {
+			process.env.CODEX_AUTH_FETCH_TIMEOUT_MS = '';
+			expect(getFetchTimeoutMs({ fetchTimeoutMs: 90000 })).toBe(90000);
+			delete process.env.CODEX_AUTH_FETCH_TIMEOUT_MS;
 		});
 
 		it('should read stream stall timeout from env', () => {

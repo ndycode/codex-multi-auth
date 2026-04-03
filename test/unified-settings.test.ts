@@ -71,6 +71,46 @@ describe("unified settings", () => {
 		expect(await loadUnifiedDashboardSettings()).toBeNull();
 	});
 
+	it("recovers plugin config from backup when primary settings file is invalid", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedPluginConfig,
+			loadUnifiedPluginConfigSync,
+		} = await import("../lib/unified-settings.js");
+
+		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 });
+		await saveUnifiedPluginConfig({ codexMode: false, fetchTimeoutMs: 90_000 });
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+
+		expect(loadUnifiedPluginConfigSync()).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+	});
+
+	it("recovers dashboard settings from backup when primary settings file is invalid", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedDashboardSettings,
+			loadUnifiedDashboardSettings,
+		} = await import("../lib/unified-settings.js");
+
+		await saveUnifiedDashboardSettings({
+			menuShowLastUsed: true,
+			uiThemePreset: "green",
+		});
+		await saveUnifiedDashboardSettings({
+			menuShowLastUsed: false,
+			uiThemePreset: "blue",
+		});
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+
+		expect(await loadUnifiedDashboardSettings()).toEqual({
+			menuShowLastUsed: true,
+			uiThemePreset: "green",
+		});
+	});
+
 	it("returns null when dashboard settings file is missing", async () => {
 		const { loadUnifiedDashboardSettings } = await import(
 			"../lib/unified-settings.js"
@@ -379,7 +419,7 @@ describe("unified settings", () => {
 		});
 	});
 
-	it("refuses overwriting settings sections when a read fails", async () => {
+	it("preserves settings sections when a primary read fails and backup recovery is available", async () => {
 		const {
 			saveUnifiedPluginConfig,
 			saveUnifiedDashboardSettings,
@@ -400,12 +440,10 @@ describe("unified settings", () => {
 		});
 
 		try {
-			await expect(
-				saveUnifiedDashboardSettings({
-					menuShowLastUsed: true,
-					uiThemePreset: "yellow",
-				}),
-			).rejects.toThrow();
+			await saveUnifiedDashboardSettings({
+				menuShowLastUsed: true,
+				uiThemePreset: "yellow",
+			});
 		} finally {
 			readSpy.mockRestore();
 		}
@@ -420,8 +458,8 @@ describe("unified settings", () => {
 			fetchTimeoutMs: 70_000,
 		});
 		expect(parsed.dashboardDisplaySettings).toEqual({
-			menuShowLastUsed: false,
-			uiThemePreset: "blue",
+			menuShowLastUsed: true,
+			uiThemePreset: "yellow",
 		});
 	});
 });
