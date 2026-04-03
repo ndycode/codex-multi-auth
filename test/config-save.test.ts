@@ -126,20 +126,139 @@ describe("plugin config save paths", () => {
 
   it("writes through unified settings when env path is unset", async () => {
     delete process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
+    const unifiedPath = join(tempDir, "settings.json");
+    await fs.writeFile(
+      unifiedPath,
+      JSON.stringify({
+        version: 1,
+        pluginConfig: {
+          preserved: 1,
+          codexMode: true,
+        },
+      }),
+      "utf8",
+    );
 
-    const { savePluginConfig, loadPluginConfig } =
-      await import("../lib/config.js");
-    await savePluginConfig({
-      codexMode: false,
-      parallelProbing: true,
-      parallelProbingMaxConcurrency: 7,
+    const logWarnMock = vi.fn();
+    vi.doMock("../lib/logger.js", async () => {
+      const actual =
+        await vi.importActual<typeof import("../lib/logger.js")>(
+          "../lib/logger.js",
+        );
+      return {
+        ...actual,
+        logWarn: logWarnMock,
+      };
     });
 
-		const loaded = loadPluginConfig();
-		expect(loaded.codexMode).toBe(false);
-		expect(loaded.parallelProbing).toBe(true);
-		expect(loaded.parallelProbingMaxConcurrency).toBe(2);
+    try {
+      const { savePluginConfig, loadPluginConfig } =
+        await import("../lib/config.js");
+      await savePluginConfig({
+        codexMode: false,
+        parallelProbing: true,
+        parallelProbingMaxConcurrency: 7,
+      });
+
+			const loaded = loadPluginConfig();
+			expect(loaded.codexMode).toBe(false);
+			expect(loaded.parallelProbing).toBe(true);
+			expect(loaded.parallelProbingMaxConcurrency).toBe(2);
+
+      const parsed = JSON.parse(await fs.readFile(unifiedPath, "utf8")) as {
+        pluginConfig?: Record<string, unknown>;
+      };
+      expect(parsed.pluginConfig).toEqual({
+        preserved: 1,
+        codexMode: false,
+        parallelProbing: true,
+      });
+      expect(logWarnMock).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "Ignoring invalid plugin config field(s): parallelProbingMaxConcurrency.",
+        ),
+      );
+    } finally {
+      vi.doUnmock("../lib/logger.js");
+    }
 	});
+
+  it("does not overwrite an unreadable env-path config file", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ codexMode: true, preserved: 1 }),
+      "utf8",
+    );
+
+    const originalReadFile = fs.readFile.bind(fs);
+    const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+      const [targetPath] = args;
+      if (targetPath === configPath) {
+        const error = new Error("busy") as NodeJS.ErrnoException;
+        error.code = "EBUSY";
+        throw error;
+      }
+      return originalReadFile(...args);
+    });
+
+    try {
+      const { savePluginConfig } = await import("../lib/config.js");
+      await expect(savePluginConfig({ codexMode: false })).rejects.toThrow(
+        "unreadable",
+      );
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed).toEqual({ codexMode: true, preserved: 1 });
+  });
+
+  it("does not overwrite an unreadable unified settings file", async () => {
+    delete process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
+    const unifiedPath = join(tempDir, "settings.json");
+    await fs.writeFile(
+      unifiedPath,
+      JSON.stringify({
+        version: 1,
+        pluginConfig: { codexMode: true, preserved: 1 },
+        dashboardDisplaySettings: { uiThemePreset: "green" },
+      }),
+      "utf8",
+    );
+
+    const originalReadFile = fs.readFile.bind(fs);
+    const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+      const [targetPath] = args;
+      if (targetPath === unifiedPath) {
+        const error = new Error("busy") as NodeJS.ErrnoException;
+        error.code = "EBUSY";
+        throw error;
+      }
+      return originalReadFile(...args);
+    });
+
+    try {
+      const { savePluginConfig } = await import("../lib/config.js");
+      await expect(savePluginConfig({ codexMode: false })).rejects.toThrow(
+        "unreadable",
+      );
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    const parsed = JSON.parse(await fs.readFile(unifiedPath, "utf8")) as {
+      pluginConfig?: Record<string, unknown>;
+      dashboardDisplaySettings?: Record<string, unknown>;
+    };
+    expect(parsed.pluginConfig).toEqual({ codexMode: true, preserved: 1 });
+    expect(parsed.dashboardDisplaySettings).toEqual({ uiThemePreset: "green" });
+  });
 
   it("resolves parallel probing settings and clamps concurrency", async () => {
     const { getParallelProbing, getParallelProbingMaxConcurrency } =
@@ -185,6 +304,63 @@ describe("plugin config save paths", () => {
         getParallelProbingMaxConcurrency({ parallelProbingMaxConcurrency: 4 }),
       ).toBe(4);
       expect(logWarnMock).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../lib/logger.js");
+    }
+  });
+
+  it("does not warn for blank boolean env overrides", async () => {
+    process.env.CODEX_AUTH_PARALLEL_PROBING = "";
+    vi.resetModules();
+    const logWarnMock = vi.fn();
+
+    vi.doMock("../lib/logger.js", async () => {
+      const actual =
+        await vi.importActual<typeof import("../lib/logger.js")>(
+          "../lib/logger.js",
+        );
+      return {
+        ...actual,
+        logWarn: logWarnMock,
+      };
+    });
+
+    try {
+      const { getParallelProbing } = await import("../lib/config.js");
+      expect(getParallelProbing({ parallelProbing: false })).toBe(false);
+      expect(logWarnMock).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../lib/logger.js");
+    }
+  });
+
+  it("redacts raw values from invalid boolean env override warnings", async () => {
+    process.env.CODEX_AUTH_PARALLEL_PROBING = "secret-bool";
+    vi.resetModules();
+    const logWarnMock = vi.fn();
+
+    vi.doMock("../lib/logger.js", async () => {
+      const actual =
+        await vi.importActual<typeof import("../lib/logger.js")>(
+          "../lib/logger.js",
+        );
+      return {
+        ...actual,
+        logWarn: logWarnMock,
+      };
+    });
+
+    try {
+      const { getParallelProbing } = await import("../lib/config.js");
+      expect(getParallelProbing({ parallelProbing: false })).toBe(false);
+      expect(logWarnMock).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "Ignoring invalid boolean env CODEX_AUTH_PARALLEL_PROBING.",
+        ),
+      );
+      expect(logWarnMock).not.toHaveBeenCalledWith(
+        expect.stringContaining("secret-bool"),
+      );
     } finally {
       vi.doUnmock("../lib/logger.js");
     }
