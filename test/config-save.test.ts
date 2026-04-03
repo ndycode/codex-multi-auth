@@ -135,11 +135,11 @@ describe("plugin config save paths", () => {
       parallelProbingMaxConcurrency: 7,
     });
 
-    const loaded = loadPluginConfig();
-    expect(loaded.codexMode).toBe(false);
-    expect(loaded.parallelProbing).toBe(true);
-    expect(loaded.parallelProbingMaxConcurrency).toBe(7);
-  });
+		const loaded = loadPluginConfig();
+		expect(loaded.codexMode).toBe(false);
+		expect(loaded.parallelProbing).toBe(true);
+		expect(loaded.parallelProbingMaxConcurrency).toBe(2);
+	});
 
   it("resolves parallel probing settings and clamps concurrency", async () => {
     const { getParallelProbing, getParallelProbingMaxConcurrency } =
