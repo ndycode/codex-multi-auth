@@ -161,6 +161,35 @@ describe("plugin config save paths", () => {
     ).toBe(1);
   });
 
+  it("does not warn for blank numeric env overrides", async () => {
+    process.env.CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY = "";
+    vi.resetModules();
+    const logWarnMock = vi.fn();
+
+    vi.doMock("../lib/logger.js", async () => {
+      const actual =
+        await vi.importActual<typeof import("../lib/logger.js")>(
+          "../lib/logger.js",
+        );
+      return {
+        ...actual,
+        logWarn: logWarnMock,
+      };
+    });
+
+    try {
+      const { getParallelProbingMaxConcurrency } = await import(
+        "../lib/config.js"
+      );
+      expect(
+        getParallelProbingMaxConcurrency({ parallelProbingMaxConcurrency: 4 }),
+      ).toBe(4);
+      expect(logWarnMock).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../lib/logger.js");
+    }
+  });
+
   it("normalizes fallback chain and drops invalid entries", async () => {
     const { getUnsupportedCodexFallbackChain } =
       await import("../lib/config.js");

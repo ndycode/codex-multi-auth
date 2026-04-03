@@ -19,7 +19,9 @@ export const UNIFIED_SETTINGS_VERSION = 1 as const;
 const UNIFIED_SETTINGS_PATH = join(getCodexMultiAuthDir(), "settings.json");
 const UNIFIED_SETTINGS_BACKUP_PATH = `${UNIFIED_SETTINGS_PATH}.bak`;
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+const TRANSIENT_READ_FS_CODES = new Set(["EBUSY", "EAGAIN"]);
 let settingsWriteQueue: Promise<void> = Promise.resolve();
+let backupDerivedReadPending = false;
 
 function isRetryableFsError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -55,6 +57,12 @@ function parseSettingsRecord(content: string): JsonRecord {
 	return parsed;
 }
 
+/**
+ * Read a unified-settings record from a specific path.
+ *
+ * Returns `null` when the file is absent and throws when the file exists but
+ * cannot be parsed into the expected object shape.
+ */
 function readSettingsRecordSyncFromPath(filePath: string): JsonRecord | null {
 	if (!existsSync(filePath)) {
 		return null;
@@ -62,6 +70,9 @@ function readSettingsRecordSyncFromPath(filePath: string): JsonRecord | null {
 	return parseSettingsRecord(readFileSync(filePath, "utf8"));
 }
 
+/**
+ * Async variant of `readSettingsRecordSyncFromPath`.
+ */
 async function readSettingsRecordAsyncFromPath(
 	filePath: string,
 ): Promise<JsonRecord | null> {
@@ -71,6 +82,12 @@ async function readSettingsRecordAsyncFromPath(
 	return parseSettingsRecord(await fs.readFile(filePath, "utf8"));
 }
 
+/**
+ * Best-effort backup reader for sync callers.
+ *
+ * Backup corruption is treated as an unavailable backup so callers can keep
+ * their legacy null-on-unavailable behavior.
+ */
 function readSettingsBackupSync(): JsonRecord | null {
 	try {
 		return readSettingsRecordSyncFromPath(UNIFIED_SETTINGS_BACKUP_PATH);
@@ -79,6 +96,9 @@ function readSettingsBackupSync(): JsonRecord | null {
 	}
 }
 
+/**
+ * Best-effort backup reader for async callers.
+ */
 async function readSettingsBackupAsync(): Promise<JsonRecord | null> {
 	try {
 		return await readSettingsRecordAsyncFromPath(UNIFIED_SETTINGS_BACKUP_PATH);
@@ -87,7 +107,40 @@ async function readSettingsBackupAsync(): Promise<JsonRecord | null> {
 	}
 }
 
+/**
+ * Decide whether a primary settings read should fall back to the backup file.
+ *
+ * Missing primaries stay missing so callers do not merge stale backup state.
+ * Corrupt or unreadable primaries may fall back, while transient lock errors
+ * are rethrown so callers can retry.
+ */
+function shouldFallbackToSettingsBackup(
+	primaryExists: boolean,
+	error: unknown,
+): boolean {
+	if (!primaryExists) {
+		return false;
+	}
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	if (code === "ENOENT") {
+		return false;
+	}
+	if (typeof code === "string" && TRANSIENT_READ_FS_CODES.has(code)) {
+		return false;
+	}
+	return true;
+}
+
+/**
+ * Snapshot the primary settings file into `settings.json.bak` for sync writes.
+ *
+ * When the current in-memory state was recovered from backup, snapshotting is
+ * skipped so a corrupt primary cannot overwrite the only known-good backup.
+ */
 function trySnapshotUnifiedSettingsBackupSync(): void {
+	if (backupDerivedReadPending) {
+		return;
+	}
 	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
 		return;
 	}
@@ -104,7 +157,13 @@ function trySnapshotUnifiedSettingsBackupSync(): void {
 	}
 }
 
+/**
+ * Async variant of `trySnapshotUnifiedSettingsBackupSync`.
+ */
 async function trySnapshotUnifiedSettingsBackupAsync(): Promise<void> {
+	if (backupDerivedReadPending) {
+		return;
+	}
 	if (!existsSync(UNIFIED_SETTINGS_PATH)) {
 		return;
 	}
@@ -132,20 +191,25 @@ async function trySnapshotUnifiedSettingsBackupAsync(): Promise<void> {
  * - Sensitive data: this function performs no token or secret redaction; any sensitive values present in the file are returned as-is and callers are responsible for redaction before logging or external exposure.
  */
 function readSettingsRecordSync(): JsonRecord | null {
+	const primaryExists = existsSync(UNIFIED_SETTINGS_PATH);
 	try {
 		const primaryRecord = readSettingsRecordSyncFromPath(UNIFIED_SETTINGS_PATH);
 		if (primaryRecord) {
 			return primaryRecord;
 		}
 	} catch (error) {
+		if (!shouldFallbackToSettingsBackup(primaryExists, error)) {
+			throw error;
+		}
 		const backupRecord = readSettingsBackupSync();
 		if (backupRecord) {
+			backupDerivedReadPending = true;
 			return backupRecord;
 		}
 		throw error;
 	}
 
-	return readSettingsBackupSync();
+	return null;
 }
 
 /**
@@ -156,6 +220,7 @@ function readSettingsRecordSync(): JsonRecord | null {
  * @returns The parsed settings record as an object clone, or `null` if unavailable or invalid.
  */
 async function readSettingsRecordAsync(): Promise<JsonRecord | null> {
+	const primaryExists = existsSync(UNIFIED_SETTINGS_PATH);
 	try {
 		const primaryRecord = await readSettingsRecordAsyncFromPath(
 			UNIFIED_SETTINGS_PATH,
@@ -164,14 +229,18 @@ async function readSettingsRecordAsync(): Promise<JsonRecord | null> {
 			return primaryRecord;
 		}
 	} catch (error) {
+		if (!shouldFallbackToSettingsBackup(primaryExists, error)) {
+			throw error;
+		}
 		const backupRecord = await readSettingsBackupAsync();
 		if (backupRecord) {
+			backupDerivedReadPending = true;
 			return backupRecord;
 		}
 		throw error;
 	}
 
-	return readSettingsBackupAsync();
+	return null;
 }
 
 /**
@@ -219,6 +288,7 @@ function writeSettingsRecordSync(record: JsonRecord): void {
 			try {
 				renameSync(tempPath, UNIFIED_SETTINGS_PATH);
 				moved = true;
+				backupDerivedReadPending = false;
 				return;
 			} catch (error) {
 				if (!isRetryableFsError(error) || attempt >= 4) {
@@ -271,6 +341,7 @@ async function writeSettingsRecordAsync(record: JsonRecord): Promise<void> {
 			try {
 				await fs.rename(tempPath, UNIFIED_SETTINGS_PATH);
 				moved = true;
+				backupDerivedReadPending = false;
 				return;
 			} catch (error) {
 				if (!isRetryableFsError(error) || attempt >= 4) {

@@ -341,6 +341,43 @@ describe("flagged account storage", () => {
 		readSpy.mockRestore();
 	});
 
+	it("honors the reset marker even when it appears during backup recovery", async () => {
+		const backupPath = `${getFlaggedAccountsPath()}.bak`;
+		const resetMarkerPath = `${getFlaggedAccountsPath()}.reset-intent`;
+		await fs.writeFile(
+			backupPath,
+			JSON.stringify({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "backup-race",
+						flaggedAt: 1,
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			}),
+			"utf8",
+		);
+
+		const originalReadFile = fs.readFile.bind(fs);
+		const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+			const [targetPath] = args;
+			const result = await originalReadFile(...args);
+			if (targetPath === backupPath) {
+				await fs.writeFile(resetMarkerPath, "reset", "utf8");
+			}
+			return result;
+		});
+
+		try {
+			const flagged = await loadFlaggedAccounts();
+			expect(flagged.accounts).toHaveLength(0);
+		} finally {
+			readSpy.mockRestore();
+		}
+	});
+
 	it("clears discovered flagged backup artifacts so manual snapshots cannot revive after clear", async () => {
 		await saveFlaggedAccounts({
 			version: 1,

@@ -52,6 +52,12 @@ Backup metadata:
 - `settings.json.bak` stores the last valid unified settings snapshot before each write and is used as a recovery fallback when `settings.json` is unreadable.
 - Flagged-account backup recovery is suppressed whenever the flagged reset marker is still present, so partial clears cannot revive previously cleared flagged entries.
 
+Upgrade note:
+
+- Restore workflows now distinguish between unreadable state and intentionally cleared state. `settings.json.bak` is only used when `settings.json` exists but cannot be read, while flagged-account backups stay suppressed whenever the reset marker survives a partial clear.
+- Operators validating a restore or clear flow should use `codex auth verify-flagged`, `codex auth fix --dry-run`, and `codex auth doctor --fix` to confirm what will be recovered, what stays cleared, and whether manual repair is still needed.
+- Maintainers validating the on-disk upgrade behavior can run `npm run build` plus `npm test -- --run test/unified-settings.test.ts test/storage-recovery-paths.test.ts test/storage-flagged.test.ts` before shipping backup or restore changes.
+
 ---
 
 ## Project-Scoped Account Paths

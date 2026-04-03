@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -157,6 +157,45 @@ describe("storage recovery paths", () => {
 		const recovered = await loadFlaggedAccounts();
 		expect(recovered.accounts).toHaveLength(1);
 		expect(recovered.accounts[0]?.email).toBe("flagged2@example.com");
+	});
+
+	it("suppresses flagged backup recovery when the reset marker appears mid-read", async () => {
+		const flaggedPath = join(workDir, "openai-codex-flagged-accounts.json");
+		const backupPath = `${flaggedPath}.bak`;
+		const resetMarkerPath = `${flaggedPath}.reset-intent`;
+		await fs.writeFile(
+			backupPath,
+			JSON.stringify({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "flagged-race-refresh",
+						email: "race@example.com",
+						addedAt: 9,
+						lastUsed: 9,
+						flaggedAt: 9,
+					},
+				],
+			}),
+			"utf-8",
+		);
+
+		const originalReadFile = fs.readFile.bind(fs);
+		const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+			const [targetPath] = args;
+			const result = await originalReadFile(...args);
+			if (targetPath === backupPath) {
+				await fs.writeFile(resetMarkerPath, "reset", "utf-8");
+			}
+			return result;
+		});
+
+		try {
+			const recovered = await loadFlaggedAccounts();
+			expect(recovered.accounts).toHaveLength(0);
+		} finally {
+			readSpy.mockRestore();
+		}
 	});
 
 	it("falls back to historical backup snapshots when the latest backup is unreadable", async () => {
