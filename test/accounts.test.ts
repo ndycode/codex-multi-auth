@@ -3037,6 +3037,8 @@ describe("AccountManager", () => {
 
     it("keeps pinned runtime tracker state stable after updateFromAuth enriches identity", () => {
       const now = Date.now();
+      vi.useFakeTimers();
+      vi.setSystemTime(now);
       const stored = {
         version: 3 as const,
         activeIndex: 0,
@@ -3077,17 +3079,21 @@ describe("AccountManager", () => {
         expires: now + 3600000,
       });
 
-      expect(account.accountId).toBe("account-enriched");
-      expect(account.email).toBe("enriched@example.com");
-		expect(getRuntimeAccountIdentityKey(account)).toBe(
-			"account:account-enriched::email:enriched@example.com",
-		);
-		expect(getRuntimeTrackerKey(account)).toBe(trackerKey);
-		expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
-			degradedScore,
-			5,
-		);
-		expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
+      try {
+        expect(account.accountId).toBe("account-enriched");
+        expect(account.email).toBe("enriched@example.com");
+        expect(getRuntimeAccountIdentityKey(account)).toBe(
+          "account:account-enriched::email:enriched@example.com",
+        );
+        expect(getRuntimeTrackerKey(account)).toBe(trackerKey);
+        expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
+          degradedScore,
+          6,
+        );
+        expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
+      } finally {
+        vi.useRealTimers();
+      }
 	});
 
     it("preserves tracker state when account indexes shift", () => {
