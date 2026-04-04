@@ -68,7 +68,11 @@ const CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN =
 	/model is not supported when using codex with a chatgpt account/i;
 const NORMALIZED_UNSUPPORTED_MODEL_PATTERN =
 	/the model ['"]([^'"]+)['"] is not currently available for this chatgpt account/i;
-const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
+const MAX_RATE_LIMIT_DELAY_MS = 7 * 24 * 60 * 60 * 1000;
+const RETRY_AFTER_DURATION_PATTERN =
+	/\b(?:try|retry)\s+again\s+in\s+(\d+)\s*(second|minute|hour|day)s?\b/i;
+const RETRY_AFTER_CLOCK_TIME_PATTERN =
+	/\b(?:try|retry)\s+again\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i;
 const CREATE_CODEX_HEADERS_PARAM_KEYS = new Set(["init", "accountId", "accessToken", "opts"]);
 const DEFAULT_PROXY_PORTS: Record<string, number> = {
 	"http:": 80,
@@ -1026,7 +1030,7 @@ function extractRateLimitInfoFromBody(
         if (!isRateLimit) return undefined;
 
         const retryAfterMs =
-                parseRetryAfterMs(response, parsed) ?? 60000;
+                parseRetryAfterMs(response, bodyText, parsed) ?? 60000;
 
         return { retryAfterMs, code: parsed?.code };
 }
@@ -1199,6 +1203,7 @@ function ensureJsonErrorResponse(response: Response, payload: ErrorPayload): Res
 
 function parseRetryAfterMs(
 	response: Response,
+	bodyText: string,
 	parsedBody?: { resetsAt?: number; retryAfterMs?: number; retryAfterSeconds?: number },
 ): number | null {
 	if (parsedBody?.retryAfterMs !== undefined) {
@@ -1255,25 +1260,87 @@ function parseRetryAfterMs(
                 if (delta > 0) resetCandidates.push(delta);
         }
 
-        if (resetCandidates.length > 0) {
-                return Math.min(...resetCandidates);
-        }
+	if (resetCandidates.length > 0) {
+		return Math.min(...resetCandidates);
+	}
+
+	const naturalLanguageRetryAfterMs = parseRetryAfterTextMs(bodyText, now);
+	if (naturalLanguageRetryAfterMs !== null) {
+		return naturalLanguageRetryAfterMs;
+	}
 
         return null;
 }
 
-function normalizeRetryAfterMs(value: number): number | null {
+function parseRetryAfterTextMs(bodyText: string, now: number): number | null {
+	if (!bodyText) return null;
+
+	const durationMatch = bodyText.match(RETRY_AFTER_DURATION_PATTERN);
+	if (durationMatch) {
+		const amount = Number.parseInt(durationMatch[1] ?? "", 10);
+		const unit = (durationMatch[2] ?? "").toLowerCase();
+		if (Number.isFinite(amount) && amount > 0) {
+			const multiplier =
+				unit === "second"
+					? 1000
+					: unit === "minute"
+						? 60_000
+						: unit === "hour"
+							? 60 * 60_000
+							: unit === "day"
+								? 24 * 60 * 60_000
+								: 0;
+			if (multiplier > 0) {
+				return clampRateLimitDelayMs(amount * multiplier);
+			}
+		}
+	}
+
+	const clockTimeMatch = bodyText.match(RETRY_AFTER_CLOCK_TIME_PATTERN);
+	if (!clockTimeMatch) return null;
+
+	const hour12 = Number.parseInt(clockTimeMatch[1] ?? "", 10);
+	const minute = Number.parseInt(clockTimeMatch[2] ?? "0", 10);
+	const meridiem = (clockTimeMatch[3] ?? "").toLowerCase();
+	if (
+		!Number.isFinite(hour12) ||
+		hour12 < 1 ||
+		hour12 > 12 ||
+		!Number.isFinite(minute) ||
+		minute < 0 ||
+		minute > 59 ||
+		(meridiem !== "am" && meridiem !== "pm")
+	) {
+		return null;
+	}
+
+	const target = new Date(now);
+	let hour24 = hour12 % 12;
+	if (meridiem === "pm") {
+		hour24 += 12;
+	}
+	target.setHours(hour24, minute, 0, 0);
+	if (target.getTime() <= now) {
+		target.setDate(target.getDate() + 1);
+	}
+
+	return clampRateLimitDelayMs(target.getTime() - now);
+}
+
+function clampRateLimitDelayMs(value: number): number | null {
 	if (!Number.isFinite(value)) return null;
-	const ms = Math.floor(value);
-	if (ms <= 0) return null;
-	return Math.min(ms, MAX_RETRY_DELAY_MS);
+	const normalized = Math.floor(value);
+	if (normalized <= 0) return null;
+	return Math.min(normalized, MAX_RATE_LIMIT_DELAY_MS);
+}
+
+function normalizeRetryAfterMs(value: number): number | null {
+	return clampRateLimitDelayMs(value);
 }
 
 function normalizeRetryAfterSeconds(value: number): number | null {
 	if (!Number.isFinite(value)) return null;
-	const ms = Math.floor(value * 1000);
-	if (ms <= 0) return null;
-	return Math.min(ms, MAX_RETRY_DELAY_MS);
+	return clampRateLimitDelayMs(value * 1000);
 }
 
 function toNumber(value: unknown): number | undefined {

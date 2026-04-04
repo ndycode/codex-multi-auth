@@ -1865,11 +1865,19 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														quotaKey,
 														rateLimit.retryAfterMs,
 													);
+													const cooldownMs = Math.max(
+														delayMs,
+														rateLimit.retryAfterMs,
+													);
 													preemptiveQuotaScheduler.markRateLimited(
 														quotaScheduleKey,
-														delayMs,
+														cooldownMs,
 													);
-													const waitLabel = formatWaitTime(delayMs);
+													const waitLabel = formatWaitTime(
+														delayMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS
+															? delayMs
+															: cooldownMs,
+													);
 
 													if (delayMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS) {
 														if (
@@ -1894,7 +1902,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 													accountManager.markRateLimitedWithReason(
 														account,
-														delayMs,
+														cooldownMs,
 														modelFamily,
 														parseRateLimitReason(rateLimit.code),
 														model,
@@ -2142,16 +2150,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																	);
 																}
 																if (!fallbackResponse.ok) {
-																	try {
-																		await fallbackResponse.body?.cancel();
-																	} catch {
-																		// Best effort cleanup before trying next fallback account.
-																	}
-																	if (fallbackResponse.status === 429) {
+																	const { response: handledFallbackResponse, rateLimit: fallbackRateLimit } =
+																		await handleErrorResponse(fallbackResponse);
+																	if (
+																		fallbackRateLimit ||
+																		handledFallbackResponse.status === 429
+																	) {
 																		const retryAfterMs =
-																			parseRetryAfterHintMs(
-																				fallbackResponse.headers,
-																			) ?? 60_000;
+																			fallbackRateLimit?.retryAfterMs ?? 60_000;
 																		accountManager.markRateLimitedWithReason(
 																			fallbackAccount,
 																			retryAfterMs,

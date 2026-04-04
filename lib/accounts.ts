@@ -783,7 +783,8 @@ export class AccountManager {
 
 		const baseKey = getQuotaKey(family);
 		if (!model || reason === "quota" || reason === "unknown") {
-			account.rateLimitResetTimes[baseKey] = resetAt;
+			const currentResetAt = account.rateLimitResetTimes[baseKey] ?? 0;
+			account.rateLimitResetTimes[baseKey] = Math.max(currentResetAt, resetAt);
 		}
 
 		if (
@@ -791,7 +792,8 @@ export class AccountManager {
 			(reason === "tokens" || reason === "concurrent" || reason === "unknown")
 		) {
 			const modelKey = getQuotaKey(family, model);
-			account.rateLimitResetTimes[modelKey] = resetAt;
+			const currentResetAt = account.rateLimitResetTimes[modelKey] ?? 0;
+			account.rateLimitResetTimes[modelKey] = Math.max(currentResetAt, resetAt);
 		}
 
 		account.lastRateLimitReason = reason;
