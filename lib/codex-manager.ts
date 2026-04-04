@@ -2578,6 +2578,7 @@ async function runAuthLogin(args: string[]): Promise<number> {
 	setStoragePath(null);
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
 	let menuQuotaRefreshStatus: string | undefined;
+	let skipNextMenuQuotaAutoRefresh = false;
 	loginFlow: while (true) {
 		let existingStorage = await loadAccounts();
 		if (existingStorage && existingStorage.accounts.length > 0) {
@@ -2595,7 +2596,16 @@ async function runAuthLogin(args: string[]): Promise<number> {
 				const showFetchStatus = displaySettings.menuShowFetchStatus ?? true;
 				const quotaTtlMs =
 					displaySettings.menuQuotaTtlMs ?? DEFAULT_MENU_QUOTA_REFRESH_TTL_MS;
-				if (shouldAutoFetchLimits && !pendingMenuQuotaRefresh) {
+				const shouldSkipAutoFetchThisPass =
+					!pendingMenuQuotaRefresh && skipNextMenuQuotaAutoRefresh;
+				if (shouldSkipAutoFetchThisPass) {
+					skipNextMenuQuotaAutoRefresh = false;
+				}
+				if (
+					shouldAutoFetchLimits
+					&& !pendingMenuQuotaRefresh
+					&& !shouldSkipAutoFetchThisPass
+				) {
 					const staleCount = countMenuQuotaRefreshTargets(
 						currentStorage,
 						quotaCache,
@@ -2614,7 +2624,10 @@ async function runAuthLogin(args: string[]): Promise<number> {
 								menuQuotaRefreshStatus = `${UI_COPY.mainMenu.loadingLimits} [${current}/${total}]`;
 							},
 						)
-							.then(() => undefined)
+							.then(() => {
+								skipNextMenuQuotaAutoRefresh = true;
+								return undefined;
+							})
 							.catch(() => undefined)
 							.finally(() => {
 								menuQuotaRefreshStatus = undefined;
@@ -2639,6 +2652,7 @@ async function runAuthLogin(args: string[]): Promise<number> {
 					return 0;
 				}
 				if (menuResult.mode === "check") {
+					skipNextMenuQuotaAutoRefresh = false;
 					await runActionPanel(
 						"Quick Check",
 						"Checking local session + live status",
@@ -2650,6 +2664,7 @@ async function runAuthLogin(args: string[]): Promise<number> {
 					continue;
 				}
 				if (menuResult.mode === "deep-check") {
+					skipNextMenuQuotaAutoRefresh = false;
 					await runActionPanel(
 						"Deep Check",
 						"Refreshing and testing all accounts",
@@ -2661,6 +2676,7 @@ async function runAuthLogin(args: string[]): Promise<number> {
 					continue;
 				}
 				if (menuResult.mode === "forecast") {
+					skipNextMenuQuotaAutoRefresh = false;
 					await runActionPanel(
 						"Best Account",
 						"Comparing accounts",
@@ -2672,6 +2688,7 @@ async function runAuthLogin(args: string[]): Promise<number> {
 					continue;
 				}
 				if (menuResult.mode === "fix") {
+					skipNextMenuQuotaAutoRefresh = false;
 					await runActionPanel(
 						"Auto-Fix",
 						"Checking and fixing common issues",
@@ -2683,10 +2700,12 @@ async function runAuthLogin(args: string[]): Promise<number> {
 					continue;
 				}
 				if (menuResult.mode === "settings") {
+					skipNextMenuQuotaAutoRefresh = false;
 					await configureUnifiedSettings(displaySettings);
 					continue;
 				}
 				if (menuResult.mode === "verify-flagged") {
+					skipNextMenuQuotaAutoRefresh = false;
 					await runActionPanel(
 						"Problem Account Check",
 						"Checking problem accounts",
@@ -2698,6 +2717,7 @@ async function runAuthLogin(args: string[]): Promise<number> {
 					continue;
 				}
 				if (menuResult.mode === "fresh" && menuResult.deleteAll) {
+					skipNextMenuQuotaAutoRefresh = false;
 					await runActionPanel(
 						"Reset Accounts",
 						"Deleting all saved accounts",
