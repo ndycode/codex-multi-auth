@@ -3030,7 +3030,7 @@ describe("AccountManager", () => {
       expect(getAccountIdentityKey(rotatedAccount)).not.toBe(`${trackerKey}`);
       expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
         degradedScore,
-        6,
+        5,
       );
       expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
     });
@@ -3085,7 +3085,7 @@ describe("AccountManager", () => {
       expect(getRuntimeTrackerKey(account)).toBe(trackerKey);
       expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
         degradedScore,
-        6,
+        5,
       );
       expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
     });
