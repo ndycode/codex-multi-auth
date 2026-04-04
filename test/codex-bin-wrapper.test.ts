@@ -890,6 +890,7 @@ describe("codex bin wrapper", () => {
 			},
 			stdio: ["ignore", "pipe", "ignore"],
 		});
+		expect(spawnCalls[0]?.options).not.toHaveProperty("windowsHide");
 	});
 
 	it("handles concurrent wrapper invocations without module-load regressions", async () => {
