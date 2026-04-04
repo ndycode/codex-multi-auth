@@ -1865,13 +1865,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														quotaKey,
 														rateLimit.retryAfterMs,
 													);
+													const cooldownMs = Math.max(
+														delayMs,
+														rateLimit.retryAfterMs,
+													);
 													preemptiveQuotaScheduler.markRateLimited(
 														quotaScheduleKey,
-														delayMs,
+														cooldownMs,
 													);
-													const waitLabel = formatWaitTime(delayMs);
+													const waitLabel = formatWaitTime(cooldownMs);
 
-													if (delayMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS) {
+													if (cooldownMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS) {
 														if (
 															accountManager.shouldShowAccountToast(
 																account.index,
@@ -1887,14 +1891,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														}
 
 														await sleep(
-															addJitter(Math.max(MIN_BACKOFF_MS, delayMs), 0.2),
+															addJitter(Math.max(MIN_BACKOFF_MS, cooldownMs), 0.2),
 														);
 														continue;
 													}
 
 													accountManager.markRateLimitedWithReason(
 														account,
-														delayMs,
+														cooldownMs,
 														modelFamily,
 														parseRateLimitReason(rateLimit.code),
 														model,
@@ -2142,19 +2146,29 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																	);
 																}
 																if (!fallbackResponse.ok) {
-																	try {
-																		await fallbackResponse.body?.cancel();
-																	} catch {
-																		// Best effort cleanup before trying next fallback account.
-																	}
-																	if (fallbackResponse.status === 429) {
+																	const { response: handledFallbackResponse, rateLimit: fallbackRateLimit } =
+																		await handleErrorResponse(fallbackResponse);
+																	if (handledFallbackResponse.status === 429) {
 																		const retryAfterMs =
-																			parseRetryAfterHintMs(
-																				fallbackResponse.headers,
-																			) ?? 60_000;
+																			fallbackRateLimit?.retryAfterMs ?? 60_000;
+																		const fallbackQuotaKey =
+																			model ? `${modelFamily}:${model}` : modelFamily;
+																		const { delayMs } = getRateLimitBackoff(
+																			fallbackAccount.index,
+																			fallbackQuotaKey,
+																			retryAfterMs,
+																		);
+																		const cooldownMs = Math.max(
+																			delayMs,
+																			retryAfterMs,
+																		);
+																		preemptiveQuotaScheduler.markRateLimited(
+																			`${fallbackEntitlementAccountKey}:${model ?? modelFamily}`,
+																			cooldownMs,
+																		);
 																		accountManager.markRateLimitedWithReason(
 																			fallbackAccount,
-																			retryAfterMs,
+																			cooldownMs,
 																			modelFamily,
 																			"quota",
 																			model,
