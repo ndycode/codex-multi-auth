@@ -79,6 +79,10 @@ import {
 	resolveNormalizedModel,
 } from "./request/helpers/model-map.js";
 import {
+	formatRateLimitEntry as formatAccountRateLimitEntry,
+	resolveActiveIndex,
+} from "./runtime/account-status.js";
+import {
 	loadQuotaCache,
 	type QuotaCacheData,
 	type QuotaCacheEntry,
@@ -439,50 +443,12 @@ const IMPLEMENTED_FEATURES: ImplementedFeature[] = [
 	{ id: 41, name: "Auto-switch to best account command" },
 ];
 
-function resolveActiveIndex(
-	storage: AccountStorageV3,
-	family: ModelFamily = "codex",
-): number {
-	const total = storage.accounts.length;
-	if (total === 0) return 0;
-	const rawCandidate =
-		storage.activeIndexByFamily?.[family] ?? storage.activeIndex;
-	const raw = Number.isFinite(rawCandidate) ? rawCandidate : 0;
-	return Math.max(0, Math.min(raw, total - 1));
-}
-
-function getRateLimitResetTimeForFamily(
-	account: { rateLimitResetTimes?: Record<string, number | undefined> },
-	now: number,
-	family: ModelFamily,
-): number | null {
-	const times = account.rateLimitResetTimes;
-	if (!times) return null;
-
-	let minReset: number | null = null;
-	const prefix = `${family}:`;
-	for (const [key, value] of Object.entries(times)) {
-		if (typeof value !== "number") continue;
-		if (value <= now) continue;
-		if (key !== family && !key.startsWith(prefix)) continue;
-		if (minReset === null || value < minReset) {
-			minReset = value;
-		}
-	}
-
-	return minReset;
-}
-
 function formatRateLimitEntry(
 	account: { rateLimitResetTimes?: Record<string, number | undefined> },
 	now: number,
 	family: ModelFamily = "codex",
 ): string | null {
-	const resetAt = getRateLimitResetTimeForFamily(account, now, family);
-	if (typeof resetAt !== "number") return null;
-	const remaining = resetAt - now;
-	if (remaining <= 0) return null;
-	return `resets in ${formatWaitTime(remaining)}`;
+	return formatAccountRateLimitEntry(account, now, formatWaitTime, family);
 }
 
 function normalizeQuotaEmail(email: string | undefined): string | null {
@@ -950,7 +916,12 @@ function mapAccountStatus(
 	) {
 		return "cooldown";
 	}
-	const rateLimit = formatRateLimitEntry(account, now, "codex");
+	const rateLimit = formatAccountRateLimitEntry(
+		account,
+		now,
+		formatWaitTime,
+		"codex",
+	);
 	if (rateLimit) return "rate-limited";
 	if (index === activeIndex) return "active";
 	return "ok";
@@ -983,6 +954,13 @@ function readQuotaLeftPercent(
 	return parseLeftPercentFromQuotaSummary(account.quotaSummary, windowLabel);
 }
 
+function readQuotaFloorPercent(account: ExistingAccountInfo): number {
+	return Math.min(
+		readQuotaLeftPercent(account, "5h"),
+		readQuotaLeftPercent(account, "7d"),
+	);
+}
+
 function accountStatusSortBucket(
 	status: ExistingAccountInfo["status"],
 ): number {
@@ -1004,10 +982,25 @@ function accountStatusSortBucket(
 	}
 }
 
+function accountReadinessSortBucket(account: ExistingAccountInfo): number {
+	const statusBucket = accountStatusSortBucket(account.status);
+	if (statusBucket >= 2) return statusBucket;
+	return account.quotaRateLimited ? 2 : statusBucket;
+}
+
 function compareReadyFirstAccounts(
 	left: ExistingAccountInfo,
 	right: ExistingAccountInfo,
 ): number {
+	const bucketDelta =
+		accountReadinessSortBucket(left) -
+		accountReadinessSortBucket(right);
+	if (bucketDelta !== 0) return bucketDelta;
+
+	const leftFloor = readQuotaFloorPercent(left);
+	const rightFloor = readQuotaFloorPercent(right);
+	if (leftFloor !== rightFloor) return rightFloor - leftFloor;
+
 	const left5h = readQuotaLeftPercent(left, "5h");
 	const right5h = readQuotaLeftPercent(right, "5h");
 	if (left5h !== right5h) return right5h - left5h;
@@ -1015,11 +1008,6 @@ function compareReadyFirstAccounts(
 	const left7d = readQuotaLeftPercent(left, "7d");
 	const right7d = readQuotaLeftPercent(right, "7d");
 	if (left7d !== right7d) return right7d - left7d;
-
-	const bucketDelta =
-		accountStatusSortBucket(left.status) -
-		accountStatusSortBucket(right.status);
-	if (bucketDelta !== 0) return bucketDelta;
 
 	const leftLastUsed = left.lastUsed ?? 0;
 	const rightLastUsed = right.lastUsed ?? 0;
