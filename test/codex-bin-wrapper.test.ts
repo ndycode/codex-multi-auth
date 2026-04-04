@@ -763,6 +763,46 @@ describe("codex bin wrapper", () => {
 		expect(spawnCalls[0]?.args).toEqual(["/d", "/s", "/c", "npm root -g"]);
 	});
 
+	it("derives cmd.exe from uppercase SYSTEMROOT when ComSpec is unavailable", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeGlobalRoot = join(
+			fixtureRoot,
+			"fake-global-node_modules-systemroot-uppercase",
+		);
+		const fakeGlobalBin = createFakeGlobalCodexInstall(fakeGlobalRoot);
+		const spawnCalls: Array<{
+			args: string[];
+			command: string;
+			options: Record<string, unknown>;
+		}> = [];
+		const resolvedBin = resolveRealCodexBin({
+			argv: ["node", join(fixtureRoot, "scripts", "codex.js")],
+			env: {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+				PREFIX: "",
+				SYSTEMROOT: "C:\\Windows\\",
+				npm_config_prefix: "",
+			},
+			existsSyncImpl: (candidatePath) => candidatePath === fakeGlobalBin,
+			moduleUrl: pathToFileURL(join(fixtureRoot, "scripts", "codex.js")).href,
+			platform: "win32",
+			resolvePackageBin: () => null,
+			spawnSyncImpl: (command, args, options) => {
+				spawnCalls.push({
+					args,
+					command,
+					options: options as Record<string, unknown>,
+				});
+				return createSpawnSyncSuccess(`${fakeGlobalRoot}\r\n`);
+			},
+		});
+
+		expect(resolvedBin).toBe(fakeGlobalBin);
+		expect(spawnCalls).toHaveLength(1);
+		expect(spawnCalls[0]?.command).toBe("C:\\Windows\\System32\\cmd.exe");
+		expect(spawnCalls[0]?.args).toEqual(["/d", "/s", "/c", "npm root -g"]);
+	});
+
 	it("falls back to bare cmd.exe when no Windows shell env vars are set", () => {
 		const fixtureRoot = createWrapperFixture();
 		const spawnCalls: Array<{
