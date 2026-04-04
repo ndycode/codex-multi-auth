@@ -86,6 +86,35 @@ function createCustomFakeCodexBin(rootDir: string, lines: string[]): string {
 	return fakeBin;
 }
 
+function injectShadowCleanupBusyFailures(
+	fixtureRoot: string,
+	failuresBeforeSuccess = 2,
+): void {
+	const wrapperPath = join(fixtureRoot, "scripts", "codex.js");
+	const originalSource = readFileSync(wrapperPath, "utf8");
+	const instrumentedSource = originalSource
+		.replace(
+			'const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];',
+			[
+				'const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];',
+				`globalThis.__cleanupBusyFailuresRemaining = ${failuresBeforeSuccess};`,
+			].join("\n"),
+		)
+		.replace(
+			"rmSync(targetPath, { recursive: true, force: true });",
+			[
+				"if (globalThis.__cleanupBusyFailuresRemaining > 0) {",
+				"\tglobalThis.__cleanupBusyFailuresRemaining -= 1;",
+				'\tconst error = new Error("simulated busy cleanup");',
+				'\terror.code = "EBUSY";',
+				"\tthrow error;",
+				"}",
+				"rmSync(targetPath, { recursive: true, force: true });",
+			].join("\n"),
+		);
+	writeFileSync(wrapperPath, instrumentedSource, "utf8");
+}
+
 function createFakeGlobalCodexInstall(rootDir: string): string {
 	const fakeBin = join(rootDir, "@openai", "codex", "bin", "codex.js");
 	mkdirSync(dirname(fakeBin), { recursive: true });
@@ -359,6 +388,7 @@ describe("codex bin wrapper", () => {
 
 	it("cleans up compatibility shadow homes when staging fails", () => {
 		const fixtureRoot = createWrapperFixture();
+		injectShadowCleanupBusyFailures(fixtureRoot);
 		const fakeBin = createFakeCodexBin(fixtureRoot);
 		const originalHome = join(fixtureRoot, "codex-home");
 		const controlledTmp = join(fixtureRoot, "tmp");

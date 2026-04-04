@@ -18,6 +18,38 @@ import { fileURLToPath } from "node:url";
 import { resolveRealCodexBin as resolveRealCodexBinFromEnvironment } from "./codex-bin-resolver.js";
 import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.js";
 
+const RETRYABLE_SHADOW_HOME_CLEANUP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];
+
+function isRetryableShadowHomeCleanupError(error) {
+	const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+	return typeof code === "string" && RETRYABLE_SHADOW_HOME_CLEANUP_CODES.has(code);
+}
+
+function sleepSync(ms) {
+	if (!Number.isFinite(ms) || ms <= 0) {
+		return;
+	}
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function removeDirectoryWithRetry(targetPath) {
+	for (let attempt = 0; attempt <= SHADOW_HOME_CLEANUP_BACKOFF_MS.length; attempt += 1) {
+		try {
+			rmSync(targetPath, { recursive: true, force: true });
+			return;
+		} catch (error) {
+			if (
+				!isRetryableShadowHomeCleanupError(error) ||
+				attempt === SHADOW_HOME_CLEANUP_BACKOFF_MS.length
+			) {
+				throw error;
+			}
+			sleepSync(SHADOW_HOME_CLEANUP_BACKOFF_MS[attempt]);
+		}
+	}
+}
+
 function hydrateCliVersionEnv() {
 	try {
 		const require = createRequire(import.meta.url);
@@ -473,7 +505,7 @@ function createCompatibilityCodexHome(rawArgs, baseEnv = process.env) {
 	const shadowCodexHome = mkdtempSync(join(tmpdir(), "codex-multi-auth-home-"));
 	const cleanup = () => {
 		try {
-			rmSync(shadowCodexHome, { recursive: true, force: true });
+			removeDirectoryWithRetry(shadowCodexHome);
 		} catch {
 			// Best-effort cleanup only.
 		}
