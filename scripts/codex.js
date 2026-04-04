@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { resolveRealCodexBin as resolveRealCodexBinFromEnvironment } from "./codex-bin-resolver.js";
 import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.js";
 
 function hydrateCliVersionEnv() {
@@ -74,52 +75,7 @@ function resolveRealCodexBin() {
 		return null;
 	}
 
-	try {
-		const require = createRequire(import.meta.url);
-		const resolved = require.resolve("@openai/codex/bin/codex.js");
-		if (existsSync(resolved)) return resolved;
-	} catch {
-		// Fall through to sibling lookup.
-	}
-
-	const searchRoots = [];
-	const scriptDir = dirname(fileURLToPath(import.meta.url));
-	searchRoots.push(join(scriptDir, "..", ".."));
-
-	const invokedScript = process.argv[1];
-	if (typeof invokedScript === "string" && invokedScript.length > 0) {
-		searchRoots.push(join(dirname(invokedScript), "..", ".."));
-	}
-
-	const npmPrefix = (process.env.npm_config_prefix ?? process.env.PREFIX ?? "").trim();
-	if (npmPrefix.length > 0) {
-		searchRoots.push(join(npmPrefix, "node_modules"));
-		searchRoots.push(join(npmPrefix, "lib", "node_modules"));
-	}
-
-	for (const root of searchRoots) {
-		const candidate = join(root, "@openai", "codex", "bin", "codex.js");
-		if (existsSync(candidate)) return candidate;
-	}
-
-	const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-	try {
-		const rootResult = spawnSync(npmCmd, ["root", "-g"], {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
-		});
-		if (rootResult.status === 0) {
-			const globalRoot = rootResult.stdout.trim();
-			if (globalRoot.length > 0) {
-				const globalBin = join(globalRoot, "@openai", "codex", "bin", "codex.js");
-				if (existsSync(globalBin)) return globalBin;
-			}
-		}
-	} catch {
-		// Ignore and fall through to null.
-	}
-
-	return null;
+	return resolveRealCodexBinFromEnvironment({ moduleUrl: import.meta.url });
 }
 
 function forwardToRealCodex(codexBin, args) {
