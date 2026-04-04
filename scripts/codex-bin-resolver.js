@@ -75,12 +75,14 @@ export function resolveRealCodexBin(options = {}) {
 						encoding: "utf8",
 						env,
 						stdio: ["ignore", "pipe", "ignore"],
+						timeout: 5000,
 						windowsHide: true,
 					})
 				: spawnSyncImpl("npm", ["root", "-g"], {
 						encoding: "utf8",
 						env,
 						stdio: ["ignore", "pipe", "ignore"],
+						timeout: 5000,
 					});
 		if (rootResult.status === 0) {
 			const globalRoot = rootResult.stdout.trim();

@@ -347,9 +347,13 @@ describe("codex bin wrapper", () => {
 			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
 			'const authPath = path.join(process.env.CODEX_HOME ?? "", "auth.json");',
 			'console.log(`AUTH_EXISTS:${fs.existsSync(authPath)}`);',
-			'if (fs.existsSync(authPath)) console.log(`AUTH_JSON:${fs.readFileSync(authPath, "utf8").trim()}`);',
+			'if (fs.existsSync(authPath)) {',
+			'  console.log(`AUTH_JSON:${fs.readFileSync(authPath, "utf8").trim()}`);',
+			'  console.log(`AUTH_MODE:${(fs.statSync(authPath).mode & 0o777).toString(8)}`);',
+			'}',
 			'console.log("CONFIG_START");',
 			'console.log(fs.readFileSync(configPath, "utf8").trim());',
+			'console.log(`CONFIG_MODE:${(fs.statSync(configPath).mode & 0o777).toString(8)}`);',
 			'console.log("CONFIG_END");',
 			"process.exit(0);",
 		]);
@@ -382,8 +386,14 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("CODEX_MULTI_AUTH_DIR_JSON:null");
 		expect(output).toContain("AUTH_EXISTS:true");
 		expect(output).toContain("AUTH_JSON:{}");
+		expect(output).toContain("AUTH_MODE:");
 		expect(output).toContain('model_reasoning_effort = "high"');
+		expect(output).toContain("CONFIG_MODE:");
 		expect(output).not.toContain('model_reasoning_effort = "xhigh"');
+		if (process.platform !== "win32") {
+			expect(output).toContain("AUTH_MODE:600");
+			expect(output).toContain("CONFIG_MODE:600");
+		}
 	});
 
 	it("cleans up compatibility shadow homes when staging fails", () => {
@@ -410,6 +420,7 @@ describe("codex bin wrapper", () => {
 				CODEX_HOME: originalHome,
 				TMP: controlledTmp,
 				TEMP: controlledTmp,
+				TMPDIR: controlledTmp,
 			},
 		);
 
@@ -935,6 +946,7 @@ describe("codex bin wrapper", () => {
 				npm_config_prefix: "",
 			},
 			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 5000,
 			windowsHide: true,
 		});
 	});
@@ -983,6 +995,7 @@ describe("codex bin wrapper", () => {
 				npm_config_prefix: "",
 			},
 			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 5000,
 			windowsHide: true,
 		});
 	});
@@ -1022,6 +1035,9 @@ describe("codex bin wrapper", () => {
 		expect(spawnCalls).toHaveLength(1);
 		expect(spawnCalls[0]?.command).toBe("C:\\Windows\\System32\\cmd.exe");
 		expect(spawnCalls[0]?.args).toEqual(["/d", "/s", "/c", "npm root -g"]);
+		expect(spawnCalls[0]?.options).toMatchObject({
+			timeout: 5000,
+		});
 	});
 
 	it("derives cmd.exe from uppercase SYSTEMROOT when ComSpec is unavailable", () => {
@@ -1062,6 +1078,9 @@ describe("codex bin wrapper", () => {
 		expect(spawnCalls).toHaveLength(1);
 		expect(spawnCalls[0]?.command).toBe("C:\\Windows\\System32\\cmd.exe");
 		expect(spawnCalls[0]?.args).toEqual(["/d", "/s", "/c", "npm root -g"]);
+		expect(spawnCalls[0]?.options).toMatchObject({
+			timeout: 5000,
+		});
 	});
 
 	it("falls back to bare cmd.exe when no Windows shell env vars are set", () => {
@@ -1104,6 +1123,7 @@ describe("codex bin wrapper", () => {
 				npm_config_prefix: "",
 			},
 			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 5000,
 			windowsHide: true,
 		});
 	});
@@ -1150,6 +1170,7 @@ describe("codex bin wrapper", () => {
 				npm_config_prefix: "",
 			},
 			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 5000,
 		});
 		expect(spawnCalls[0]?.options).not.toHaveProperty("windowsHide");
 	});

@@ -2,6 +2,7 @@
 
 import { spawn } from "node:child_process";
 import {
+	chmodSync,
 	copyFileSync,
 	existsSync,
 	mkdirSync,
@@ -510,12 +511,23 @@ function createCompatibilityCodexHome(rawArgs, baseEnv = process.env) {
 			// Best-effort cleanup only.
 		}
 	};
+	const tightenShadowHomePermissions = (path) => {
+		try {
+			chmodSync(path, 0o600);
+		} catch {
+			// Best-effort only; permission semantics vary by platform.
+		}
+	};
 	try {
-		writeFileSync(join(shadowCodexHome, "config.toml"), compatConfig, "utf8");
+		const compatConfigPath = join(shadowCodexHome, "config.toml");
+		writeFileSync(compatConfigPath, compatConfig, "utf8");
+		tightenShadowHomePermissions(compatConfigPath);
 		for (const name of ["auth.json", "accounts.json", ".codex-global-state.json"]) {
 			const sourcePath = join(originalCodexHome, name);
 			if (existsSync(sourcePath)) {
-				copyFileSync(sourcePath, join(shadowCodexHome, name));
+				const destinationPath = join(shadowCodexHome, name);
+				copyFileSync(sourcePath, destinationPath);
+				tightenShadowHomePermissions(destinationPath);
 			}
 		}
 	} catch (error) {
