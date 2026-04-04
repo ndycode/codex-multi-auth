@@ -1,0 +1,5 @@
+{
+  "name": "fixture-bad-plugin",
+  "version": "1.0.0",
+  "description": "Fixture plugin used to validate failing scanner behavior.",
+}

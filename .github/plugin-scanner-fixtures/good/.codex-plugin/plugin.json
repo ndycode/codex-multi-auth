@@ -1,0 +1,11 @@
+{
+  "name": "fixture-good-plugin",
+  "version": "1.0.0",
+  "description": "Fixture plugin used to validate the Codex plugin scanner workflow.",
+  "author": "ndycode",
+  "homepage": "https://example.com/fixture-good-plugin",
+  "repository": "https://example.com/fixture-good-plugin.git",
+  "license": "MIT",
+  "keywords": ["fixture", "codex", "plugin"],
+  "skills": "./skills/"
+}
