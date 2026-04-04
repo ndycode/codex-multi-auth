@@ -3074,35 +3074,41 @@ describe("AccountManager", () => {
 
     it("keeps refresh-only tracker state stable when the refresh token rotates", () => {
       const now = Date.now();
-      const stored = {
-        version: 3 as const,
-        activeIndex: 0,
-        accounts: [
-          { refreshToken: "token-1", addedAt: now, lastUsed: now },
-        ],
-      };
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(now);
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          ],
+        };
 
-      const manager = new AccountManager(undefined, stored);
-      const account = manager.getCurrentAccount()!;
-      const healthTracker = getHealthTracker();
-      const tokenTracker = getTokenTracker();
-      const trackerKey = getRuntimeTrackerKey(account);
+        const manager = new AccountManager(undefined, stored);
+        const account = manager.getCurrentAccount()!;
+        const healthTracker = getHealthTracker();
+        const tokenTracker = getTokenTracker();
+        const trackerKey = getRuntimeTrackerKey(account);
 
-      manager.recordFailure(account, "codex", "gpt-5.1");
-      const degradedScore = healthTracker.getScore(trackerKey, "codex:gpt-5.1");
-      expect(manager.consumeToken(account, "codex", "gpt-5.1")).toBe(true);
+        manager.recordFailure(account, "codex", "gpt-5.1");
+        const degradedScore = healthTracker.getScore(trackerKey, "codex:gpt-5.1");
+        expect(manager.consumeToken(account, "codex", "gpt-5.1")).toBe(true);
 
-      account.refreshToken = "token-1-rotated";
+        account.refreshToken = "token-1-rotated";
 
-      const rotatedAccount = manager.getCurrentAccount()!;
-      expect(getRuntimeTrackerKey(rotatedAccount)).toBe(trackerKey);
-      expect(getRuntimeAccountIdentityKey(rotatedAccount)).toBe(trackerKey);
-      expect(getAccountIdentityKey(rotatedAccount)).not.toBe(`${trackerKey}`);
-      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
-        degradedScore,
-        5,
-      );
-      expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
+        const rotatedAccount = manager.getCurrentAccount()!;
+        expect(getRuntimeTrackerKey(rotatedAccount)).toBe(trackerKey);
+        expect(getRuntimeAccountIdentityKey(rotatedAccount)).toBe(trackerKey);
+        expect(getAccountIdentityKey(rotatedAccount)).not.toBe(`${trackerKey}`);
+        expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
+          degradedScore,
+          6,
+        );
+        expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("keeps pinned runtime tracker state stable after updateFromAuth enriches identity", () => {
