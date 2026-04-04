@@ -14,6 +14,18 @@ function defaultResolvePackageBin(moduleUrl) {
 	}
 }
 
+function resolveWindowsCmdPath(env) {
+	const comSpec = (env.ComSpec ?? env.COMSPEC ?? "").trim();
+	if (comSpec.length > 0) return comSpec;
+
+	const systemRoot = (env.SystemRoot ?? env.SYSTEMROOT ?? "").trim();
+	if (systemRoot.length > 0) {
+		return `${systemRoot.replace(/[\\/]+$/, "")}\\System32\\cmd.exe`;
+	}
+
+	return "cmd.exe";
+}
+
 export function resolveRealCodexBin(options = {}) {
 	const {
 		env = process.env,
@@ -59,7 +71,7 @@ export function resolveRealCodexBin(options = {}) {
 	try {
 		const rootResult =
 			platform === "win32"
-				? spawnSyncImpl(env.ComSpec || "cmd.exe", ["/d", "/s", "/c", "npm root -g"], {
+				? spawnSyncImpl(resolveWindowsCmdPath(env), ["/d", "/s", "/c", "npm root -g"], {
 						encoding: "utf8",
 						env,
 						stdio: ["ignore", "pipe", "ignore"],
