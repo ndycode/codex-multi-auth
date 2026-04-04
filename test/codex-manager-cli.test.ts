@@ -7048,6 +7048,272 @@ describe("codex manager cli commands", () => {
 		]);
 	});
 
+	it("treats missing quota windows as the lowest ready-first floor", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "partial-window@example.com",
+					accountId: "acc_partial_window",
+					refreshToken: "refresh-partial-window",
+					accessToken: "access-partial-window",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "balanced-window@example.com",
+					accountId: "acc_balanced_window",
+					refreshToken: "refresh-balanced-window",
+					accessToken: "access-balanced-window",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
+			menuAutoFetchLimits: false,
+			menuSortEnabled: true,
+			menuSortMode: "ready-first",
+			menuSortPinCurrent: false,
+			menuSortQuickSwitchVisibleRow: true,
+		});
+		loadQuotaCacheMock.mockResolvedValue({
+			byAccountId: {},
+			byEmail: {
+				"partial-window@example.com": {
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 10,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {},
+				},
+				"balanced-window@example.com": {
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 20,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 20,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+			},
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		const firstCallAccounts = promptLoginModeMock.mock.calls[0]?.[0] as Array<{
+			email?: string;
+			quota5hLeftPercent?: number;
+			quota7dLeftPercent?: number;
+			quotaSummary?: string;
+		}>;
+		expect(firstCallAccounts.map((account) => account.email)).toEqual([
+			"balanced-window@example.com",
+			"partial-window@example.com",
+		]);
+		expect(firstCallAccounts.map((account) => account.quota5hLeftPercent)).toEqual([
+			80, 90,
+		]);
+		expect(firstCallAccounts.map((account) => account.quota7dLeftPercent)).toEqual([
+			80,
+			undefined,
+		]);
+		expect(firstCallAccounts[1]?.quotaSummary).toBe("5h 90%");
+	});
+
+	it("re-sorts ready-first rows after async menu quota refresh changes which row is degraded", async () => {
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "becomes-degraded@example.com",
+					accountId: "acc_becomes_degraded",
+					refreshToken: "refresh-becomes-degraded",
+					accessToken: "access-becomes-degraded",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "becomes-healthy@example.com",
+					accountId: "acc_becomes_healthy",
+					refreshToken: "refresh-becomes-healthy",
+					accessToken: "access-becomes-healthy",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () => structuredClone(storageState));
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+
+		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
+			menuAutoFetchLimits: true,
+			menuQuotaTtlMs: 1,
+			menuShowFetchStatus: true,
+			menuSortEnabled: true,
+			menuSortMode: "ready-first",
+			menuSortPinCurrent: false,
+			menuSortQuickSwitchVisibleRow: true,
+		});
+
+		let quotaCacheState = {
+			byAccountId: {},
+			byEmail: {
+				"becomes-degraded@example.com": {
+					updatedAt: now - 10_000,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 10,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 10,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+				"becomes-healthy@example.com": {
+					updatedAt: now - 10_000,
+					status: 429,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 0,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 0,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+			},
+		};
+		loadQuotaCacheMock.mockImplementation(async () => structuredClone(quotaCacheState));
+
+		const releaseFirstRefresh = createDeferred<void>();
+		const refreshSaved = createDeferred<void>();
+		saveQuotaCacheMock.mockImplementation(async (nextCache) => {
+			quotaCacheState = structuredClone(nextCache);
+			refreshSaved.resolve();
+		});
+		fetchCodexQuotaSnapshotMock
+			.mockImplementationOnce(async () => {
+				await releaseFirstRefresh.promise;
+				return {
+					status: 429,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 0,
+						windowMinutes: 300,
+						resetAtMs: now + 3_000,
+					},
+					secondary: {
+						usedPercent: 0,
+						windowMinutes: 10080,
+						resetAtMs: now + 4_000,
+					},
+				};
+			})
+			.mockResolvedValueOnce({
+				status: 200,
+				model: "gpt-5-codex",
+				primary: {
+					usedPercent: 20,
+					windowMinutes: 300,
+					resetAtMs: now + 5_000,
+				},
+				secondary: {
+					usedPercent: 20,
+					windowMinutes: 10080,
+					resetAtMs: now + 6_000,
+				},
+			});
+
+		let promptCallCount = 0;
+		promptLoginModeMock
+			.mockImplementationOnce(async (accounts, options) => {
+				promptCallCount += 1;
+				expect(promptCallCount).toBe(1);
+				expect(accounts.map((account: { email?: string }) => account.email)).toEqual([
+					"becomes-degraded@example.com",
+					"becomes-healthy@example.com",
+				]);
+				expect(
+					accounts.map(
+						(account: { quotaRateLimited?: boolean }) => account.quotaRateLimited,
+					),
+				).toEqual([false, true]);
+				expect(typeof options?.statusMessage?.()).toBe("string");
+
+				releaseFirstRefresh.resolve();
+				await refreshSaved.promise;
+				return { mode: "manage", deleteAccountIndex: 99 };
+			})
+			.mockImplementationOnce(async (accounts) => {
+				promptCallCount += 1;
+				expect(promptCallCount).toBe(2);
+				expect(accounts.map((account: { email?: string }) => account.email)).toEqual([
+					"becomes-healthy@example.com",
+					"becomes-degraded@example.com",
+				]);
+				expect(
+					accounts.map(
+						(account: { quotaRateLimited?: boolean }) => account.quotaRateLimited,
+					),
+				).toEqual([false, true]);
+				return { mode: "cancel" };
+			});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(2);
+		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("prefers email-scoped quota cache entries for shared workspace accounts", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({
