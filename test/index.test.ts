@@ -454,10 +454,6 @@ vi.mock("../lib/accounts.js", async () => {
 
 		markToastShown() {}
 
-		getCurrentWorkspace() {
-			return null;
-		}
-
 		disableCurrentWorkspace() {
 			return false;
 		}
@@ -2902,7 +2898,6 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				getMinWaitTimeForFamily: () => 0,
 				shouldShowAccountToast: () => false,
 				markToastShown: () => {},
-				getCurrentWorkspace: () => null,
 				disableCurrentWorkspace: () => false,
 				rotateToNextWorkspace: () => null,
 				hasEnabledWorkspaces: () => true,
