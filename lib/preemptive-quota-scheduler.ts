@@ -212,14 +212,20 @@ export class PreemptiveQuotaScheduler {
 	markRateLimited(key: string, retryAfterMs: number, now = Date.now()): void {
 		if (!key) return;
 		const waitMs = Number.isFinite(retryAfterMs) ? Math.max(0, Math.floor(retryAfterMs)) : 0;
+		const existing = this.snapshots.get(key);
+		const existingResetAtMs = Math.max(
+			existing?.primary.resetAtMs ?? 0,
+			existing?.secondary.resetAtMs ?? 0,
+		);
+		const nextResetAtMs = Math.max(existingResetAtMs, now + waitMs);
 		this.snapshots.set(key, {
 			status: 429,
 			primary: {
 				usedPercent: 100,
-				resetAtMs: now + waitMs,
+				resetAtMs: nextResetAtMs,
 			},
 			secondary: {},
-			updatedAt: now,
+			updatedAt: Math.max(existing?.updatedAt ?? 0, now),
 		});
 	}
 

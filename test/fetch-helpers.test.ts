@@ -990,6 +990,17 @@ describe('createEntitlementErrorResponse', () => {
 			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
 		});
 
+		it('does not treat non-429 rate-limit text as a cooldown signal', async () => {
+			const response = new Response('rate_limit_exceeded - upstream overloaded', {
+				status: 500,
+			});
+
+			const { response: result, rateLimit } = await handleErrorResponse(response);
+
+			expect(result.status).toBe(500);
+			expect(rateLimit).toBeUndefined();
+		});
+
 		it('handles 429 with entitlement error code (should not be rate limit)', async () => {
 			const body = { error: { code: 'usage_not_included', message: 'Not included' } };
 			const response = new Response(JSON.stringify(body), { status: 429 });
@@ -1084,6 +1095,27 @@ describe('createEntitlementErrorResponse', () => {
 			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
 		});
 
+		it('prefers the longest reset hint across reset-after-seconds and date-form reset-at headers', async () => {
+			vi.useFakeTimers();
+			try {
+				vi.setSystemTime(new Date('2026-04-05T00:00:00.000Z'));
+				const headers = new Headers({
+					'x-codex-primary-reset-after-seconds': '60',
+					'x-codex-secondary-reset-at': new Date('2026-04-05T01:30:00.000Z').toUTCString(),
+				});
+				const response = new Response(
+					JSON.stringify({ error: { message: 'rate limited' } }),
+					{ status: 429, headers },
+				);
+
+				const { rateLimit } = await handleErrorResponse(response);
+
+				expect(rateLimit?.retryAfterMs).toBe(90 * 60 * 1000);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
 		it('keeps retry_after_ms values in milliseconds', async () => {
 			const body = { error: { message: 'rate limited', retry_after_ms: 5 } };
 			const response = new Response(JSON.stringify(body), { status: 429 });
@@ -1112,14 +1144,84 @@ describe('createEntitlementErrorResponse', () => {
 			expect(rateLimit?.retryAfterMs).toBe(2500);
 		});
 
-	it('caps retryAfterMs at 5 minutes', async () => {
-		const body = { error: { message: 'rate limited', retry_after_ms: 600000 } };
+		it('parses natural-language retry times from usage-limit messages', async () => {
+			vi.useFakeTimers();
+			try {
+				vi.setSystemTime(new Date(2026, 2, 22, 4, 0, 0, 0));
+				const response = new Response(
+					"You've hit your usage limit. To get more access now, send a request to your admin or try again at 6:26 AM.",
+					{ status: 429 },
+				);
+
+				const { rateLimit } = await handleErrorResponse(response);
+
+				expect(rateLimit?.retryAfterMs).toBe((2 * 60 + 26) * 60 * 1000);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('parses natural-language retry durations from usage-limit messages', async () => {
+			vi.useFakeTimers();
+			try {
+				vi.setSystemTime(new Date('2026-04-05T00:00:00.000Z'));
+				const response = new Response(
+					"You've hit your usage limit. Please try again in 2 hours.",
+					{ status: 429 },
+				);
+
+				const { rateLimit } = await handleErrorResponse(response);
+
+				expect(rateLimit?.retryAfterMs).toBe(2 * 60 * 60 * 1000);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+	it('caps retryAfterMs at 7 days', async () => {
+		const body = { error: { message: 'rate limited', retry_after_ms: 10 * 24 * 60 * 60 * 1000 } };
 		const response = new Response(JSON.stringify(body), { status: 429 });
 		
 		const { rateLimit } = await handleErrorResponse(response);
 		
-		expect(rateLimit?.retryAfterMs).toBe(300000);
+		expect(rateLimit?.retryAfterMs).toBe(7 * 24 * 60 * 60 * 1000);
 	});
+
+		it('caps retry-after-ms header values at 7 days', async () => {
+			const headers = new Headers({
+				'retry-after-ms': String(10 * 24 * 60 * 60 * 1000),
+			});
+			const response = new Response(
+				JSON.stringify({ error: { message: 'rate limited' } }),
+				{ status: 429, headers },
+			);
+
+			const { rateLimit } = await handleErrorResponse(response);
+
+			expect(rateLimit?.retryAfterMs).toBe(7 * 24 * 60 * 60 * 1000);
+		});
+
+		it('caps reset timestamp hints at 7 days', async () => {
+			vi.useFakeTimers();
+			try {
+				vi.setSystemTime(new Date('2026-04-05T00:00:00.000Z'));
+				const resetAtSeconds =
+					Math.floor(Date.now() / 1000) + 10 * 24 * 60 * 60;
+				const headers = new Headers({
+					'x-ratelimit-reset': String(resetAtSeconds),
+				});
+				const response = new Response(
+					JSON.stringify({ error: { message: 'rate limited' } }),
+					{ status: 429, headers },
+				);
+
+				const { rateLimit } = await handleErrorResponse(response);
+
+				expect(rateLimit?.retryAfterMs).toBe(7 * 24 * 60 * 60 * 1000);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
 
 	it('handles invalid retry-after header with default fallback', async () => {
 		const headers = new Headers({ 'retry-after': 'invalid' });
