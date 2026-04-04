@@ -4,6 +4,11 @@ import {
 	getRateLimitResetTimeForFamily,
 	resolveActiveIndex,
 } from "../lib/runtime/account-status.js";
+import {
+	formatRateLimitEntry as formatRateLimitEntryFromBarrel,
+	getRateLimitResetTimeForFamily as getRateLimitResetTimeForFamilyFromBarrel,
+	resolveActiveIndex as resolveActiveIndexFromBarrel,
+} from "../lib/runtime/account-state.js";
 
 describe("account status helpers", () => {
 	it("resolves active index using family overrides and clamps bounds", () => {
@@ -60,5 +65,39 @@ describe("account status helpers", () => {
 				() => "x",
 			),
 		).toBeNull();
+	});
+
+	it("re-exports account status helpers through the account-state barrel", () => {
+		expect(resolveActiveIndexFromBarrel).toBe(resolveActiveIndex);
+		expect(getRateLimitResetTimeForFamilyFromBarrel).toBe(
+			getRateLimitResetTimeForFamily,
+		);
+		expect(formatRateLimitEntryFromBarrel).toBe(formatRateLimitEntry);
+
+		expect(
+			resolveActiveIndexFromBarrel(
+				{
+					activeIndex: 4,
+					activeIndexByFamily: { codex: 1 },
+					accounts: [1, 2, 3],
+				},
+				"codex",
+			),
+		).toBe(1);
+		expect(
+			getRateLimitResetTimeForFamilyFromBarrel(
+				{ rateLimitResetTimes: { codex: 4_000 } },
+				1_000,
+				"codex",
+			),
+		).toBe(4_000);
+		expect(
+			formatRateLimitEntryFromBarrel(
+				{ rateLimitResetTimes: { codex: 5_000 } },
+				1_000,
+				(ms) => `${ms}ms`,
+				"codex",
+			),
+		).toBe("resets in 4000ms");
 	});
 });
