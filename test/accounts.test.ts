@@ -1866,6 +1866,71 @@ describe("AccountManager", () => {
       }
     });
 
+    it("uses the manager's captured Windows-style storage path state for delayed saves", async () => {
+      const { saveAccounts, withAccountStorageTransaction } = await import("../lib/storage.js");
+      const mockSaveAccounts = vi.mocked(saveAccounts);
+      const mockWithAccountStorageTransaction = vi.mocked(
+        withAccountStorageTransaction,
+      );
+      mockSaveAccounts.mockClear();
+
+      const repoAStoragePath = String.raw`C:\repo-a\storage.json`;
+      const repoARoot = String.raw`C:\repo-a`;
+      const repoBStoragePath = String.raw`C:\repo-b\storage.json`;
+      const repoBRoot = String.raw`C:\repo-b`;
+
+      vi.useFakeTimers();
+      try {
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        setStoragePathState({
+          currentStoragePath: repoAStoragePath,
+          currentLegacyProjectStoragePath: null,
+          currentLegacyWorktreeStoragePath: null,
+          currentProjectRoot: repoARoot,
+        });
+        const manager = new AccountManager(undefined, stored);
+
+        const seenStates: Array<ReturnType<typeof getStoragePathState>> = [];
+        mockWithAccountStorageTransaction.mockImplementationOnce(async (handler) => {
+          seenStates.push({ ...getStoragePathState() });
+          let current = null;
+          const persist = async (storage: Parameters<typeof saveAccounts>[0]) => {
+            current = structuredClone(storage);
+            await mockSaveAccounts(storage);
+          };
+          return handler(current as never, persist);
+        });
+
+        setStoragePathState({
+          currentStoragePath: repoBStoragePath,
+          currentLegacyProjectStoragePath: null,
+          currentLegacyWorktreeStoragePath: null,
+          currentProjectRoot: repoBRoot,
+        });
+
+        manager.saveToDiskDebounced(50);
+        await vi.advanceTimersByTimeAsync(60);
+
+        expect(seenStates).toEqual([
+          expect.objectContaining({
+            currentStoragePath: repoAStoragePath,
+            currentProjectRoot: repoARoot,
+          }),
+        ]);
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("keeps ambient storage path state stable during concurrent saves", async () => {
       const { withAccountStorageTransaction } = await import("../lib/storage.js");
       const mockWithAccountStorageTransaction = vi.mocked(
@@ -3003,91 +3068,103 @@ describe("AccountManager", () => {
     });
 
     it("keeps refresh-only tracker state stable when the refresh token rotates", () => {
-      const now = Date.now();
-      const stored = {
-        version: 3 as const,
-        activeIndex: 0,
-        accounts: [
-          { refreshToken: "token-1", addedAt: now, lastUsed: now },
-        ],
-      };
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+      try {
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          ],
+        };
 
-      const manager = new AccountManager(undefined, stored);
-      const account = manager.getCurrentAccount()!;
-      const healthTracker = getHealthTracker();
-      const tokenTracker = getTokenTracker();
-      const trackerKey = getRuntimeTrackerKey(account);
+        const manager = new AccountManager(undefined, stored);
+        const account = manager.getCurrentAccount()!;
+        const healthTracker = getHealthTracker();
+        const tokenTracker = getTokenTracker();
+        const trackerKey = getRuntimeTrackerKey(account);
 
-      manager.recordFailure(account, "codex", "gpt-5.1");
-      const degradedScore = healthTracker.getScore(trackerKey, "codex:gpt-5.1");
-      expect(manager.consumeToken(account, "codex", "gpt-5.1")).toBe(true);
+        manager.recordFailure(account, "codex", "gpt-5.1");
+        const degradedScore = healthTracker.getScore(trackerKey, "codex:gpt-5.1");
+        expect(manager.consumeToken(account, "codex", "gpt-5.1")).toBe(true);
 
-      account.refreshToken = "token-1-rotated";
+        account.refreshToken = "token-1-rotated";
 
-      const rotatedAccount = manager.getCurrentAccount()!;
-      expect(getRuntimeTrackerKey(rotatedAccount)).toBe(trackerKey);
-      expect(getRuntimeAccountIdentityKey(rotatedAccount)).toBe(trackerKey);
-      expect(getAccountIdentityKey(rotatedAccount)).not.toBe(`${trackerKey}`);
-      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
-        degradedScore,
-        5,
-      );
-      expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
+        const rotatedAccount = manager.getCurrentAccount()!;
+        expect(getRuntimeTrackerKey(rotatedAccount)).toBe(trackerKey);
+        expect(getRuntimeAccountIdentityKey(rotatedAccount)).toBe(trackerKey);
+        expect(getAccountIdentityKey(rotatedAccount)).not.toBe(`${trackerKey}`);
+        expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
+          degradedScore,
+          6,
+        );
+        expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("keeps pinned runtime tracker state stable after updateFromAuth enriches identity", () => {
-      const now = Date.now();
-      const stored = {
-        version: 3 as const,
-        activeIndex: 0,
-        accounts: [
-          { refreshToken: "token-1", addedAt: now, lastUsed: now },
-          {
-            refreshToken: "token-2",
-            email: "healthy@example.com",
-            addedAt: now,
-            lastUsed: now,
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+      try {
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+            {
+              refreshToken: "token-2",
+              email: "healthy@example.com",
+              addedAt: now,
+              lastUsed: now,
+            },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+        const account = manager.getAccountByIndex(0)!;
+        const healthTracker = getHealthTracker();
+        const tokenTracker = getTokenTracker();
+        const trackerKey = getRuntimeTrackerKey(account);
+
+        manager.recordFailure(account, "codex", "gpt-5.1");
+        const degradedScore = healthTracker.getScore(trackerKey, "codex:gpt-5.1");
+        expect(manager.consumeToken(account, "codex", "gpt-5.1")).toBe(true);
+
+        const payload = Buffer.from(JSON.stringify({
+          email: "enriched@example.com",
+          "https://api.openai.com/auth": {
+            chatgpt_account_id: "account-enriched",
           },
-        ],
-      };
+          exp: Math.floor((now + 3600000) / 1000),
+        })).toString("base64url");
+        const accessToken = `header.${payload}.signature`;
 
-      const manager = new AccountManager(undefined, stored);
-      const account = manager.getAccountByIndex(0)!;
-      const healthTracker = getHealthTracker();
-      const tokenTracker = getTokenTracker();
-      const trackerKey = getRuntimeTrackerKey(account);
+        manager.updateFromAuth(account, {
+          type: "oauth",
+          access: accessToken,
+          refresh: "token-1-rotated",
+          expires: now + 3600000,
+        });
 
-      manager.recordFailure(account, "codex", "gpt-5.1");
-      const degradedScore = healthTracker.getScore(trackerKey, "codex:gpt-5.1");
-      expect(manager.consumeToken(account, "codex", "gpt-5.1")).toBe(true);
-
-      const payload = Buffer.from(JSON.stringify({
-        email: "enriched@example.com",
-        "https://api.openai.com/auth": {
-          chatgpt_account_id: "account-enriched",
-        },
-        exp: Math.floor((now + 3600000) / 1000),
-      })).toString("base64url");
-      const accessToken = `header.${payload}.signature`;
-
-      manager.updateFromAuth(account, {
-        type: "oauth",
-        access: accessToken,
-        refresh: "token-1-rotated",
-        expires: now + 3600000,
-      });
-
-      expect(account.accountId).toBe("account-enriched");
-      expect(account.email).toBe("enriched@example.com");
-      expect(getRuntimeAccountIdentityKey(account)).toBe(
-        "account:account-enriched::email:enriched@example.com",
-      );
-      expect(getRuntimeTrackerKey(account)).toBe(trackerKey);
-      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
-        degradedScore,
-        5,
-      );
-      expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
+        expect(account.accountId).toBe("account-enriched");
+        expect(account.email).toBe("enriched@example.com");
+        expect(getRuntimeAccountIdentityKey(account)).toBe(
+          "account:account-enriched::email:enriched@example.com",
+        );
+        expect(getRuntimeTrackerKey(account)).toBe(trackerKey);
+        expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
+          degradedScore,
+          6,
+        );
+        expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("preserves tracker state when account indexes shift", () => {
