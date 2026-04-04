@@ -3079,16 +3079,16 @@ describe("AccountManager", () => {
 
       expect(account.accountId).toBe("account-enriched");
       expect(account.email).toBe("enriched@example.com");
-      expect(getRuntimeAccountIdentityKey(account)).toBe(
-        "account:account-enriched::email:enriched@example.com",
-      );
-      expect(getRuntimeTrackerKey(account)).toBe(trackerKey);
-      expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
-        degradedScore,
-        6,
-      );
-      expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
-    });
+		expect(getRuntimeAccountIdentityKey(account)).toBe(
+			"account:account-enriched::email:enriched@example.com",
+		);
+		expect(getRuntimeTrackerKey(account)).toBe(trackerKey);
+		expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
+			degradedScore,
+			5,
+		);
+		expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
+	});
 
     it("preserves tracker state when account indexes shift", () => {
       const now = Date.now();

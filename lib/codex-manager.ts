@@ -954,6 +954,13 @@ function readQuotaLeftPercent(
 	return parseLeftPercentFromQuotaSummary(account.quotaSummary, windowLabel);
 }
 
+function readQuotaFloorPercent(account: ExistingAccountInfo): number {
+	return Math.min(
+		readQuotaLeftPercent(account, "5h"),
+		readQuotaLeftPercent(account, "7d"),
+	);
+}
+
 function accountStatusSortBucket(
 	status: ExistingAccountInfo["status"],
 ): number {
@@ -989,6 +996,10 @@ function compareReadyFirstAccounts(
 		accountReadinessSortBucket(left) -
 		accountReadinessSortBucket(right);
 	if (bucketDelta !== 0) return bucketDelta;
+
+	const leftFloor = readQuotaFloorPercent(left);
+	const rightFloor = readQuotaFloorPercent(right);
+	if (leftFloor !== rightFloor) return rightFloor - leftFloor;
 
 	const left5h = readQuotaLeftPercent(left, "5h");
 	const right5h = readQuotaLeftPercent(right, "5h");

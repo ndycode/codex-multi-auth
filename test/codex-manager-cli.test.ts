@@ -6949,6 +6949,105 @@ describe("codex manager cli commands", () => {
 		expect(firstCallAccounts[2]?.quotaRateLimited).toBe(true);
 	});
 
+	it("keeps exhausted weekly quota below balanced ready accounts in ready-first sorting", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "weekly-empty@example.com",
+					accountId: "acc_weekly_empty",
+					refreshToken: "refresh-weekly-empty",
+					accessToken: "access-weekly-empty",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "balanced@example.com",
+					accountId: "acc_balanced",
+					refreshToken: "refresh-balanced",
+					accessToken: "access-balanced",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
+			menuAutoFetchLimits: false,
+			menuSortEnabled: true,
+			menuSortMode: "ready-first",
+			menuSortPinCurrent: false,
+			menuSortQuickSwitchVisibleRow: true,
+		});
+		loadQuotaCacheMock.mockResolvedValue({
+			byAccountId: {},
+			byEmail: {
+				"weekly-empty@example.com": {
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 0,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 100,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+				"balanced@example.com": {
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 20,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 20,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+			},
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		const firstCallAccounts = promptLoginModeMock.mock.calls[0]?.[0] as Array<{
+			email?: string;
+			quota5hLeftPercent?: number;
+			quota7dLeftPercent?: number;
+		}>;
+		expect(firstCallAccounts.map((account) => account.email)).toEqual([
+			"balanced@example.com",
+			"weekly-empty@example.com",
+		]);
+		expect(firstCallAccounts.map((account) => account.quota5hLeftPercent)).toEqual([
+			80, 100,
+		]);
+		expect(firstCallAccounts.map((account) => account.quota7dLeftPercent)).toEqual([
+			80, 0,
+		]);
+	});
+
 	it("prefers email-scoped quota cache entries for shared workspace accounts", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({
