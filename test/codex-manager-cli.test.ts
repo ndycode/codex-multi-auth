@@ -7146,6 +7146,100 @@ describe("codex manager cli commands", () => {
 		expect(firstCallAccounts[1]?.quotaSummary).toBe("5h 90%");
 	});
 
+	it("treats accounts with no quota windows as the lowest ready-first floor", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "missing-window@example.com",
+					accountId: "acc_missing_window",
+					refreshToken: "refresh-missing-window",
+					accessToken: "access-missing-window",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "full-window@example.com",
+					accountId: "acc_full_window",
+					refreshToken: "refresh-full-window",
+					accessToken: "access-full-window",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
+			menuAutoFetchLimits: false,
+			menuSortEnabled: true,
+			menuSortMode: "ready-first",
+			menuSortPinCurrent: false,
+			menuSortQuickSwitchVisibleRow: true,
+		});
+		loadQuotaCacheMock.mockResolvedValue({
+			byAccountId: {},
+			byEmail: {
+				"missing-window@example.com": {
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {},
+					secondary: {},
+				},
+				"full-window@example.com": {
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 20,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 20,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+			},
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		const firstCallAccounts = promptLoginModeMock.mock.calls[0]?.[0] as Array<{
+			email?: string;
+			quota5hLeftPercent?: number;
+			quota7dLeftPercent?: number;
+			quotaSummary?: string;
+		}>;
+		expect(firstCallAccounts.map((account) => account.email)).toEqual([
+			"full-window@example.com",
+			"missing-window@example.com",
+		]);
+		expect(firstCallAccounts.map((account) => account.quota5hLeftPercent)).toEqual([
+			80,
+			undefined,
+		]);
+		expect(firstCallAccounts.map((account) => account.quota7dLeftPercent)).toEqual([
+			80,
+			undefined,
+		]);
+	});
+
 	it("re-sorts ready-first rows after async menu quota refresh changes which row is degraded", async () => {
 		const now = Date.now();
 		let storageState = {

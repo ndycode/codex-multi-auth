@@ -916,12 +916,7 @@ function mapAccountStatus(
 	) {
 		return "cooldown";
 	}
-	const rateLimit = formatAccountRateLimitEntry(
-		account,
-		now,
-		formatWaitTime,
-		"codex",
-	);
+	const rateLimit = formatRateLimitEntry(account, now, "codex");
 	if (rateLimit) return "rate-limited";
 	if (index === activeIndex) return "active";
 	return "ok";

@@ -345,6 +345,54 @@ describe("codex bin wrapper", () => {
 		expect(output).not.toContain('model_reasoning_effort = "xhigh"');
 	});
 
+	it("rewrites unquoted config reasoning effort values for mini compatibility models", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
+			'console.log("CONFIG_START");',
+			'console.log(fs.readFileSync(configPath, "utf8").trim());',
+			'console.log("CONFIG_END");',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			[
+				"model_reasoning_effort = xhigh",
+				'profile = "legacy-full-access"',
+				"",
+				'[profiles."legacy-full-access"]',
+				"model_reasoning_effort = xhigh # keep comment",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.1-codex-mini"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		const output = combinedOutput(result);
+		expect(output).toContain(
+			'FORWARDED:exec status --model gpt-5.1-codex-mini -c cli_auth_credentials_store="file"',
+		);
+		expect(output).toContain("model_reasoning_effort = high");
+		expect(output).toContain("model_reasoning_effort = high # keep comment");
+		expect(output).not.toContain("model_reasoning_effort = xhigh");
+	});
+
 	it("downgrades explicit unsupported reasoning overrides before forwarding", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
@@ -372,6 +420,37 @@ describe("codex bin wrapper", () => {
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain(
 			'FORWARDED:exec status --model gpt-5.1 -c model_reasoning_effort="high" -c cli_auth_credentials_store="file"',
+		);
+		expect(result.stdout).not.toContain('model_reasoning_effort="xhigh"');
+	});
+
+	it("downgrades explicit unsupported reasoning overrides for codex mini variants", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(join(originalHome, "config.toml"), "", "utf8");
+
+		const result = runWrapper(
+			fixtureRoot,
+			[
+				"exec",
+				"status",
+				"--model",
+				"gpt-5.1-codex-mini",
+				"-c",
+				'model_reasoning_effort="xhigh"',
+			],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status --model gpt-5.1-codex-mini -c model_reasoning_effort="high" -c cli_auth_credentials_store="file"',
 		);
 		expect(result.stdout).not.toContain('model_reasoning_effort="xhigh"');
 	});

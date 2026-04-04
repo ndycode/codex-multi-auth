@@ -142,6 +142,9 @@ function hasCliAuthCredentialsStoreOverride(args) {
 	return false;
 }
 
+// IMPORTANT: Keep this mapping in sync with
+// `lib/request/helpers/model-map.ts` `MODEL_PROFILES`.
+// This wrapper runs before the TypeScript build, so it cannot import that source.
 const SUPPORTED_REASONING_EFFORTS_BY_MODEL = {
 	"gpt-5-codex": ["low", "medium", "high", "xhigh"],
 	"gpt-5.1-codex-max": ["medium", "high", "xhigh"],
@@ -180,21 +183,6 @@ function normalizeRequestedModel(model) {
 	if (normalized.length === 0) return "";
 
 	if (
-		normalized.includes("gpt-5.3-codex-spark") ||
-		normalized.includes("gpt 5.3 codex spark") ||
-		normalized.includes("gpt-5.3-codex") ||
-		normalized.includes("gpt 5.3 codex") ||
-		normalized.includes("gpt-5.2-codex") ||
-		normalized.includes("gpt 5.2 codex") ||
-		normalized.includes("gpt-5.1-codex") ||
-		normalized.includes("gpt 5.1 codex") ||
-		normalized.includes("gpt-5-codex") ||
-		normalized.includes("gpt 5 codex") ||
-		normalized === "codex"
-	) {
-		return "gpt-5-codex";
-	}
-	if (
 		normalized.includes("gpt-5.1-codex-max") ||
 		normalized.includes("gpt 5.1 codex max") ||
 		normalized.includes("codex-max")
@@ -209,6 +197,21 @@ function normalizeRequestedModel(model) {
 		normalized.includes("codex-mini-latest")
 	) {
 		return "gpt-5.1-codex-mini";
+	}
+	if (
+		normalized.includes("gpt-5.3-codex-spark") ||
+		normalized.includes("gpt 5.3 codex spark") ||
+		normalized.includes("gpt-5.3-codex") ||
+		normalized.includes("gpt 5.3 codex") ||
+		normalized.includes("gpt-5.2-codex") ||
+		normalized.includes("gpt 5.2 codex") ||
+		normalized.includes("gpt-5.1-codex") ||
+		normalized.includes("gpt 5.1 codex") ||
+		normalized.includes("gpt-5-codex") ||
+		normalized.includes("gpt 5 codex") ||
+		normalized === "codex"
+	) {
+		return "gpt-5-codex";
 	}
 	if (normalized.includes("gpt-5.4-pro") || normalized.includes("gpt 5.4 pro")) {
 		return "gpt-5.4-pro";
@@ -398,12 +401,20 @@ function rewriteConfigTomlReasoningEffort(rawConfig, requestedModel) {
 	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
 	let changed = false;
 	const nextLines = rawConfig.split(/\r?\n/).map((line) => {
-		const match = line.match(/^(\s*model_reasoning_effort\s*=\s*["'])([^"']+)(["'].*)$/);
-		if (!match) {
-			return line;
-		}
+		const quotedMatch = line.match(
+			/^(\s*model_reasoning_effort\s*=\s*)(["'])([^"']+)(\2.*)$/,
+		);
+		const bareMatch = quotedMatch
+			? null
+			: line.match(
+					/^(\s*model_reasoning_effort\s*=\s*)([^\s#]+)(\s*(?:#.*)?)$/,
+				);
+		if (!quotedMatch && !bareMatch) return line;
 
-		const [, prefix, currentEffort, suffix] = match;
+		const prefix = quotedMatch?.[1] ?? bareMatch?.[1] ?? "";
+		const openingQuote = quotedMatch?.[2] ?? "";
+		const currentEffort = quotedMatch?.[3] ?? bareMatch?.[2] ?? "";
+		const suffix = quotedMatch?.[4] ?? bareMatch?.[3] ?? "";
 		const coercedEffort = coerceReasoningEffortForModel(
 			requestedModel,
 			currentEffort,
@@ -413,7 +424,9 @@ function rewriteConfigTomlReasoningEffort(rawConfig, requestedModel) {
 		}
 
 		changed = true;
-		return `${prefix}${coercedEffort}${suffix}`;
+		return quotedMatch
+			? `${prefix}${openingQuote}${coercedEffort}${suffix}`
+			: `${prefix}${coercedEffort}${suffix}`;
 	});
 
 	if (!changed) {
