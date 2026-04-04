@@ -1095,6 +1095,27 @@ describe('createEntitlementErrorResponse', () => {
 			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
 		});
 
+		it('prefers the longest reset hint across reset-after-seconds and date-form reset-at headers', async () => {
+			vi.useFakeTimers();
+			try {
+				vi.setSystemTime(new Date('2026-04-05T00:00:00.000Z'));
+				const headers = new Headers({
+					'x-codex-primary-reset-after-seconds': '60',
+					'x-codex-secondary-reset-at': new Date('2026-04-05T01:30:00.000Z').toUTCString(),
+				});
+				const response = new Response(
+					JSON.stringify({ error: { message: 'rate limited' } }),
+					{ status: 429, headers },
+				);
+
+				const { rateLimit } = await handleErrorResponse(response);
+
+				expect(rateLimit?.retryAfterMs).toBe(90 * 60 * 1000);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
 		it('keeps retry_after_ms values in milliseconds', async () => {
 			const body = { error: { message: 'rate limited', retry_after_ms: 5 } };
 			const response = new Response(JSON.stringify(body), { status: 429 });

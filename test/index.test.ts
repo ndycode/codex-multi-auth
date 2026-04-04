@@ -4277,6 +4277,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 				rateLimitResetTimes: {} as Record<string, number>,
 				lastSwitchReason: undefined as string | undefined,
 			};
+			let observedBaseResetAt: number | undefined;
 			const markRateLimitedWithReason = vi.fn(
 				(
 					account: { rateLimitResetTimes: Record<string, number> },
@@ -4292,6 +4293,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 							account.rateLimitResetTimes[baseKey] ?? 0,
 							resetAt,
 						);
+						observedBaseResetAt = account.rateLimitResetTimes[baseKey];
 					}
 					if (
 						model &&
@@ -4343,11 +4345,18 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			};
 			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
 
-			let releaseSecondResponse!: () => void;
-			const secondResponseReached = new Promise<void>((resolve) => {
-				releaseSecondResponse = resolve;
-			});
 			let rateLimitCallCount = 0;
+			const waitForSecondRateLimitCall = async () => {
+				for (let spin = 0; spin < 200; spin += 1) {
+					if (rateLimitCallCount > 1) {
+						return;
+					}
+					await Promise.resolve();
+				}
+				throw new Error(
+					"second overlapping request never reached the rate-limit handler",
+				);
+			};
 			vi.mocked(fetchHelpersModule.handleErrorResponse).mockImplementation(
 				async () => {
 					const callIndex = rateLimitCallCount++;
@@ -4367,11 +4376,10 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 					};
 
 					if (callIndex === 0) {
-						await secondResponseReached;
+						await waitForSecondRateLimitCall();
 						return result as never;
 					}
 
-					releaseSecondResponse();
 					await Promise.resolve();
 					return result as never;
 				},
@@ -4407,7 +4415,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			]);
 
 			expect(markRateLimitedWithReason).toHaveBeenCalledTimes(2);
-			expect(requestAccount.rateLimitResetTimes["codex"]).toBe(
+			expect(observedBaseResetAt).toBe(
 				Date.parse("2026-04-05T01:30:00.000Z"),
 			);
 		} finally {

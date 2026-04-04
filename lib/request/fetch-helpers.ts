@@ -1194,6 +1194,21 @@ function ensureJsonErrorResponse(response: Response, payload: ErrorPayload): Res
 	});
 }
 
+function parseResetTimestampMs(rawValue: string): number | null {
+	const trimmed = rawValue.trim();
+	if (trimmed.length === 0) return null;
+
+	if (/^\d+$/.test(trimmed)) {
+		const parsed = Number.parseInt(trimmed, 10);
+		if (Number.isFinite(parsed) && parsed > 0) {
+			return parsed < 10_000_000_000 ? parsed * 1000 : parsed;
+		}
+	}
+
+	const parsedDate = Date.parse(trimmed);
+	return Number.isFinite(parsedDate) ? parsedDate : null;
+}
+
 function parseRetryAfterMs(
 	response: Response,
 	bodyText: string,
@@ -1227,23 +1242,34 @@ function parseRetryAfterMs(
 		}
 	}
 
+	const resetAfterSecondsHeaders = [
+		"x-codex-primary-reset-after-seconds",
+		"x-codex-secondary-reset-after-seconds",
+	];
+	const resetCandidates: number[] = [];
+	for (const header of resetAfterSecondsHeaders) {
+		const value = response.headers.get(header);
+		if (!value) continue;
+		const parsed = Number.parseInt(value, 10);
+		const normalized = normalizeRetryAfterSeconds(parsed);
+		if (normalized !== null) {
+			resetCandidates.push(normalized);
+		}
+	}
+
 	const resetAtHeaders = [
 		"x-codex-primary-reset-at",
 		"x-codex-secondary-reset-at",
 		"x-ratelimit-reset",
 	];
 	const now = Date.now();
-	const resetCandidates: number[] = [];
 	for (const header of resetAtHeaders) {
 		const value = response.headers.get(header);
 		if (!value) continue;
-		const parsed = Number.parseInt(value, 10);
-		if (!Number.isNaN(parsed) && parsed > 0) {
-			const timestamp =
-				parsed < 10_000_000_000 ? parsed * 1000 : parsed;
-			const delta = normalizeRetryAfterMs(timestamp - now);
-			if (delta !== null) resetCandidates.push(delta);
-		}
+		const timestamp = parseResetTimestampMs(value);
+		if (timestamp === null) continue;
+		const delta = normalizeRetryAfterMs(timestamp - now);
+		if (delta !== null) resetCandidates.push(delta);
 	}
 
 	if (parsedBody?.resetsAt) {
@@ -1256,7 +1282,7 @@ function parseRetryAfterMs(
 	}
 
 	if (resetCandidates.length > 0) {
-		return Math.min(...resetCandidates);
+		return Math.max(...resetCandidates);
 	}
 
 	const naturalLanguageRetryAfterMs = parseRetryAfterTextMs(bodyText, now);
@@ -1264,7 +1290,7 @@ function parseRetryAfterMs(
 		return naturalLanguageRetryAfterMs;
 	}
 
-        return null;
+	return null;
 }
 
 function parseRetryAfterTextMs(bodyText: string, now: number): number | null {

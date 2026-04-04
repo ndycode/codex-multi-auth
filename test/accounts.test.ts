@@ -936,11 +936,13 @@ describe("AccountManager", () => {
         const account = manager.getCurrentAccount()!;
         manager.markRateLimitedWithReason(account, 90 * 60_000, "codex", "quota");
 
-        const firstResetAt = account.rateLimitResetTimes["codex"];
+        const expectedResetAt = now.getTime() + 90 * 60_000;
+
+        vi.advanceTimersByTime(30 * 60_000);
 
         manager.markRateLimitedWithReason(account, 60_000, "codex", "quota");
 
-        expect(account.rateLimitResetTimes["codex"]).toBe(firstResetAt);
+        expect(account.rateLimitResetTimes["codex"]).toBe(expectedResetAt);
       } finally {
         vi.useRealTimers();
       }
@@ -969,7 +971,9 @@ describe("AccountManager", () => {
           "gpt-5.2",
         );
 
-        const firstResetAt = account.rateLimitResetTimes["codex:gpt-5.2"];
+        const expectedResetAt = now.getTime() + 90 * 60_000;
+
+        vi.advanceTimersByTime(30 * 60_000);
 
         manager.markRateLimitedWithReason(
           account,
@@ -979,7 +983,7 @@ describe("AccountManager", () => {
           "gpt-5.2",
         );
 
-        expect(account.rateLimitResetTimes["codex:gpt-5.2"]).toBe(firstResetAt);
+        expect(account.rateLimitResetTimes["codex:gpt-5.2"]).toBe(expectedResetAt);
       } finally {
         vi.useRealTimers();
       }

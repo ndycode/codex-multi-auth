@@ -999,6 +999,27 @@ describe("codex bin wrapper", () => {
 		expect(spawnCalls[0]?.options).not.toHaveProperty("windowsHide");
 	});
 
+	it("returns null when npm root lookup throws", () => {
+		const fixtureRoot = createWrapperFixture();
+		const resolvedBin = resolveRealCodexBin({
+			argv: ["node", join(fixtureRoot, "scripts", "codex.js")],
+			env: {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: "",
+				PREFIX: "",
+				npm_config_prefix: "",
+			},
+			existsSyncImpl: () => false,
+			moduleUrl: pathToFileURL(join(fixtureRoot, "scripts", "codex.js")).href,
+			platform: "linux",
+			resolvePackageBin: () => null,
+			spawnSyncImpl: () => {
+				throw new Error("ENOENT: npm not found");
+			},
+		});
+
+		expect(resolvedBin).toBeNull();
+	});
+
 	it("handles concurrent wrapper invocations without module-load regressions", async () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);

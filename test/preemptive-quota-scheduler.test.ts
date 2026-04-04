@@ -73,6 +73,12 @@ describe("preemptive quota scheduler", () => {
 	it("preserves the longest known rate-limit reset across overlapping updates", () => {
 		const scheduler = new PreemptiveQuotaScheduler();
 		scheduler.markRateLimited("acc:model", 30_000, 1_000);
+		scheduler.update("acc:model", {
+			status: 429,
+			primary: {},
+			secondary: { resetAtMs: 31_000 },
+			updatedAt: 1_000,
+		});
 		scheduler.markRateLimited("acc:model", 10_000, 5_000);
 
 		const decision = scheduler.getDeferral("acc:model", 6_000);
