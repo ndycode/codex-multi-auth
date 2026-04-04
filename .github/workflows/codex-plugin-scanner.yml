@@ -31,20 +31,30 @@ jobs:
           min_score: "70"
 
   scan-regression:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - fixture: good
+          - os: ubuntu-latest
+            fixture: good
             plugin_dir: ".github/plugin-scanner-fixtures/good"
             expect_outcome: success
-          - fixture: bad
+          - os: ubuntu-latest
+            fixture: bad
             plugin_dir: ".github/plugin-scanner-fixtures/bad"
             expect_outcome: failure
+          - os: windows-latest
+            fixture: good
+            plugin_dir: ".github/plugin-scanner-fixtures/good"
+            expect_outcome: success
+          - os: windows-latest
+            fixture: bad
+            plugin_dir: ".github/plugin-scanner-fixtures/bad"
+            expect_outcome: failure
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Codex plugin scanner regression
