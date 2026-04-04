@@ -1112,13 +1112,26 @@ describe('createEntitlementErrorResponse', () => {
 			expect(rateLimit?.retryAfterMs).toBe(2500);
 		});
 
-	it('caps retryAfterMs at 5 minutes', async () => {
-		const body = { error: { message: 'rate limited', retry_after_ms: 600000 } };
+		it('parses natural-language retry times from usage-limit messages', async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date(2026, 2, 22, 4, 0, 0, 0));
+			const response = new Response(
+				"You've hit your usage limit. To get more access now, send a request to your admin or try again at 6:26 AM.",
+				{ status: 429 },
+			);
+
+			const { rateLimit } = await handleErrorResponse(response);
+
+			expect(rateLimit?.retryAfterMs).toBe((2 * 60 + 26) * 60 * 1000);
+		});
+
+	it('caps retryAfterMs at 7 days', async () => {
+		const body = { error: { message: 'rate limited', retry_after_ms: 10 * 24 * 60 * 60 * 1000 } };
 		const response = new Response(JSON.stringify(body), { status: 429 });
 		
 		const { rateLimit } = await handleErrorResponse(response);
 		
-		expect(rateLimit?.retryAfterMs).toBe(300000);
+		expect(rateLimit?.retryAfterMs).toBe(7 * 24 * 60 * 60 * 1000);
 	});
 
 	it('handles invalid retry-after header with default fallback', async () => {
