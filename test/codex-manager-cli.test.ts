@@ -7310,6 +7310,8 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
+		expect(promptLoginModeMock).toHaveBeenCalledTimes(2);
+		expect(promptCallCount).toBe(2);
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(2);
 		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
 	});

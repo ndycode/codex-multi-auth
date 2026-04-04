@@ -3038,48 +3038,48 @@ describe("AccountManager", () => {
     it("keeps pinned runtime tracker state stable after updateFromAuth enriches identity", () => {
       const now = Date.now();
       vi.useFakeTimers();
-      vi.setSystemTime(now);
-      const stored = {
-        version: 3 as const,
-        activeIndex: 0,
-        accounts: [
-          { refreshToken: "token-1", addedAt: now, lastUsed: now },
-          {
-            refreshToken: "token-2",
-            email: "healthy@example.com",
-            addedAt: now,
-            lastUsed: now,
-          },
-        ],
-      };
-
-      const manager = new AccountManager(undefined, stored);
-      const account = manager.getAccountByIndex(0)!;
-      const healthTracker = getHealthTracker();
-      const tokenTracker = getTokenTracker();
-      const trackerKey = getRuntimeTrackerKey(account);
-
-      manager.recordFailure(account, "codex", "gpt-5.1");
-      const degradedScore = healthTracker.getScore(trackerKey, "codex:gpt-5.1");
-      expect(manager.consumeToken(account, "codex", "gpt-5.1")).toBe(true);
-
-      const payload = Buffer.from(JSON.stringify({
-        email: "enriched@example.com",
-        "https://api.openai.com/auth": {
-          chatgpt_account_id: "account-enriched",
-        },
-        exp: Math.floor((now + 3600000) / 1000),
-      })).toString("base64url");
-      const accessToken = `header.${payload}.signature`;
-
-      manager.updateFromAuth(account, {
-        type: "oauth",
-        access: accessToken,
-        refresh: "token-1-rotated",
-        expires: now + 3600000,
-      });
-
       try {
+        vi.setSystemTime(now);
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+            {
+              refreshToken: "token-2",
+              email: "healthy@example.com",
+              addedAt: now,
+              lastUsed: now,
+            },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+        const account = manager.getAccountByIndex(0)!;
+        const healthTracker = getHealthTracker();
+        const tokenTracker = getTokenTracker();
+        const trackerKey = getRuntimeTrackerKey(account);
+
+        manager.recordFailure(account, "codex", "gpt-5.1");
+        const degradedScore = healthTracker.getScore(trackerKey, "codex:gpt-5.1");
+        expect(manager.consumeToken(account, "codex", "gpt-5.1")).toBe(true);
+
+        const payload = Buffer.from(JSON.stringify({
+          email: "enriched@example.com",
+          "https://api.openai.com/auth": {
+            chatgpt_account_id: "account-enriched",
+          },
+          exp: Math.floor((now + 3600000) / 1000),
+        })).toString("base64url");
+        const accessToken = `header.${payload}.signature`;
+
+        manager.updateFromAuth(account, {
+          type: "oauth",
+          access: accessToken,
+          refresh: "token-1-rotated",
+          expires: now + 3600000,
+        });
+
         expect(account.accountId).toBe("account-enriched");
         expect(account.email).toBe("enriched@example.com");
         expect(getRuntimeAccountIdentityKey(account)).toBe(
