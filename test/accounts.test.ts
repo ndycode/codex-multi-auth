@@ -918,6 +918,33 @@ describe("AccountManager", () => {
       expect(account.rateLimitResetTimes["codex"]).toBeUndefined();
       expect(account.rateLimitResetTimes["codex:gpt-5.2"]).toBeDefined();
     });
+
+    it("does not shorten an existing reset when a later retry window is smaller", () => {
+      vi.useFakeTimers();
+      try {
+        const now = new Date("2026-04-05T00:00:00.000Z");
+        vi.setSystemTime(now);
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now.getTime(), lastUsed: now.getTime() },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+        const account = manager.getCurrentAccount()!;
+        manager.markRateLimitedWithReason(account, 90 * 60_000, "codex", "quota");
+
+        const firstResetAt = account.rateLimitResetTimes["codex"];
+
+        manager.markRateLimitedWithReason(account, 60_000, "codex", "quota");
+
+        expect(account.rateLimitResetTimes["codex"]).toBe(firstResetAt);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe("cooldown management", () => {

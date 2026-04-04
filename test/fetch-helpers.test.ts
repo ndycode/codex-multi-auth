@@ -1114,15 +1114,19 @@ describe('createEntitlementErrorResponse', () => {
 
 		it('parses natural-language retry times from usage-limit messages', async () => {
 			vi.useFakeTimers();
-			vi.setSystemTime(new Date(2026, 2, 22, 4, 0, 0, 0));
-			const response = new Response(
-				"You've hit your usage limit. To get more access now, send a request to your admin or try again at 6:26 AM.",
-				{ status: 429 },
-			);
+			try {
+				vi.setSystemTime(new Date(2026, 2, 22, 4, 0, 0, 0));
+				const response = new Response(
+					"You've hit your usage limit. To get more access now, send a request to your admin or try again at 6:26 AM.",
+					{ status: 429 },
+				);
 
-			const { rateLimit } = await handleErrorResponse(response);
+				const { rateLimit } = await handleErrorResponse(response);
 
-			expect(rateLimit?.retryAfterMs).toBe((2 * 60 + 26) * 60 * 1000);
+				expect(rateLimit?.retryAfterMs).toBe((2 * 60 + 26) * 60 * 1000);
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 
 	it('caps retryAfterMs at 7 days', async () => {

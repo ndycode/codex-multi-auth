@@ -4176,50 +4176,159 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		expect(markToastShown).toHaveBeenCalledWith(0);
 	});
 
-	it("persists the parsed rate-limit cooldown instead of the shorter retry backoff", async () => {
+	it("persists the longer parsed rate-limit cooldown across overlapping requests", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
 		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
-
-		const markRateLimitedWithReason = vi.spyOn(
-			AccountManager.prototype,
-			"markRateLimitedWithReason",
-		);
-		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
-			response: new Response("rate limited", { status: 429 }),
-			rateLimit: {
-				retryAfterMs: 90 * 60 * 1000,
-				code: "usage_limit_reached",
-			},
-			errorBody: "rate limited",
-		} as never);
-		vi.mocked(rateLimitBackoffModule.getRateLimitBackoff).mockReturnValueOnce({
-			attempt: 1,
-			delayMs: 60_000,
-		});
-		globalThis.fetch = vi
-			.fn()
-			.mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
-			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		const longCooldownMs = 90 * 60 * 1000;
+		const shortCooldownMs = 60_000;
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date("2026-04-05T00:00:00.000Z"));
+			const requestAccount = {
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+				rateLimitResetTimes: {} as Record<string, number>,
+				lastSwitchReason: undefined as string | undefined,
+			};
+			const markRateLimitedWithReason = vi.fn(
+				(
+					account: { rateLimitResetTimes: Record<string, number> },
+					retryAfterMs: number,
+					family: string,
+					reason: string,
+					model?: string | null,
+				) => {
+					const resetAt = Date.now() + retryAfterMs;
+					const baseKey = family;
+					if (!model || reason === "quota" || reason === "unknown") {
+						account.rateLimitResetTimes[baseKey] = Math.max(
+							account.rateLimitResetTimes[baseKey] ?? 0,
+							resetAt,
+						);
+					}
+					if (
+						model &&
+						(reason === "tokens" || reason === "concurrent" || reason === "unknown")
+					) {
+						const modelKey = `${family}:${model}`;
+						account.rateLimitResetTimes[modelKey] = Math.max(
+							account.rateLimitResetTimes[modelKey] ?? 0,
+							resetAt,
+						);
+					}
+				},
 			);
+			const manager = {
+				getAccountCount: () => 1,
+				getCurrentOrNextForFamilyHybrid: () => requestAccount,
+				getCurrentOrNextForFamily: () => requestAccount,
+				getCurrentWorkspace: () => null,
+				getAccountByIndex: () => null,
+				getAccountsSnapshot: () => [requestAccount],
+				isAccountAvailableForFamily: () => true,
+				toAuthDetails: () => ({
+					type: "oauth" as const,
+					access: "access-token",
+					refresh: "refresh-1",
+					expires: Date.now() + 60_000,
+				}),
+				hasRefreshToken: () => true,
+				saveToDiskDebounced: () => {},
+				updateFromAuth: () => {},
+				clearAuthFailures: () => {},
+				incrementAuthFailures: () => 1,
+				saveToDisk: async () => {},
+				markAccountCoolingDown: () => {},
+				markRateLimited: () => {},
+				markRateLimitedWithReason,
+				consumeToken: () => true,
+				refundToken: () => {},
+				syncCodexCliActiveSelectionForIndex: async () => {},
+				markSwitched: () => {},
+				removeAccount: () => {},
+				recordFailure: () => {},
+				recordSuccess: () => {},
+				recordRateLimit: () => {},
+				getMinWaitTimeForFamily: () => 0,
+				shouldShowAccountToast: () => false,
+				markToastShown: () => {},
+				setActiveIndex: () => null,
+			};
+			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
 
-		const mockClient = createMockClient();
-		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
-		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
-		await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
-			method: "POST",
-			body: JSON.stringify({ model: "gpt-5-codex" }),
-		});
+			let releaseSecondResponse!: () => void;
+			const secondResponseReached = new Promise<void>((resolve) => {
+				releaseSecondResponse = resolve;
+			});
+			let rateLimitCallCount = 0;
+			vi.mocked(fetchHelpersModule.handleErrorResponse).mockImplementation(
+				async () => {
+					const callIndex = rateLimitCallCount++;
+					const result = {
+						response: new Response("rate limited", { status: 429 }),
+						rateLimit:
+							callIndex === 0
+								? {
+										retryAfterMs: longCooldownMs,
+										code: "usage_limit_reached",
+									}
+								: {
+										retryAfterMs: shortCooldownMs,
+										code: "usage_limit_reached",
+									},
+						errorBody: "rate limited",
+					};
 
-		expect(markRateLimitedWithReason).toHaveBeenCalledWith(
-			expect.anything(),
-			90 * 60 * 1000,
-			"codex",
-			expect.any(String),
-			"gpt-5-codex",
-		);
+					if (callIndex === 0) {
+						await secondResponseReached;
+						return result as never;
+					}
+
+					releaseSecondResponse();
+					await Promise.resolve();
+					return result as never;
+				},
+			);
+			vi.mocked(rateLimitBackoffModule.getRateLimitBackoff).mockReturnValue({
+				attempt: 1,
+				delayMs: 60_000,
+			});
+
+			let upstreamCallCount = 0;
+			globalThis.fetch = vi.fn(async () => {
+				upstreamCallCount += 1;
+				if (upstreamCallCount <= 2) {
+					return new Response("rate limited", { status: 429 });
+				}
+				return new Response(JSON.stringify({ content: "ok" }), { status: 200 });
+			});
+
+			const mockClient = createMockClient();
+			const { OpenAIOAuthPlugin } = await import("../index.js");
+			const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+			const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
+
+			await Promise.all([
+				sdk.fetch!("https://api.openai.com/v1/chat/completions", {
+					method: "POST",
+					body: JSON.stringify({ model: "gpt-5-codex" }),
+				}),
+				sdk.fetch!("https://api.openai.com/v1/chat/completions", {
+					method: "POST",
+					body: JSON.stringify({ model: "gpt-5-codex" }),
+				}),
+			]);
+
+			expect(markRateLimitedWithReason).toHaveBeenCalledTimes(2);
+			expect(requestAccount.rateLimitResetTimes["codex"]).toBe(
+				Date.parse("2026-04-05T01:30:00.000Z"),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("forwards persistence error toast arguments through manual OAuth flow", async () => {

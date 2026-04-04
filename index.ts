@@ -2152,11 +2152,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																if (!fallbackResponse.ok) {
 																	const { response: handledFallbackResponse, rateLimit: fallbackRateLimit } =
 																		await handleErrorResponse(fallbackResponse);
-																	try {
-																		await fallbackResponse.body?.cancel();
-																	} catch {
-																		// Best effort cleanup before trying next fallback account.
-																	}
 																	if (
 																		fallbackRateLimit ||
 																		handledFallbackResponse.status === 429
