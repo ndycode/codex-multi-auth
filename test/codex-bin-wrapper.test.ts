@@ -300,6 +300,112 @@ describe("codex bin wrapper", () => {
 		expect(combinedOutput(result)).toContain("EPERM: locked auth store");
 	});
 
+	it("creates a compatibility CODEX_HOME shadow when the requested model cannot accept xhigh defaults", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			'console.log(`CODEX_HOME:${process.env.CODEX_HOME ?? ""}`);',
+			'console.log(`CODEX_MULTI_AUTH_DIR:${process.env.CODEX_MULTI_AUTH_DIR ?? ""}`);',
+			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
+			'console.log("CONFIG_START");',
+			'console.log(fs.readFileSync(configPath, "utf8").trim());',
+			'console.log("CONFIG_END");',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			[
+				'model_reasoning_effort = "xhigh"',
+				'profile = "legacy-full-access"',
+				"",
+				'[profiles."legacy-full-access"]',
+				'model_reasoning_effort = "xhigh"',
+				"",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status", "--model", "gpt-5.1"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+		});
+
+		expect(result.status).toBe(0);
+		const output = combinedOutput(result);
+		expect(output).toContain('FORWARDED:exec status --model gpt-5.1 -c cli_auth_credentials_store="file"');
+		expect(output).not.toContain(`CODEX_HOME:${originalHome}`);
+		expect(output).toContain("CODEX_MULTI_AUTH_DIR:");
+		expect(output).toContain('model_reasoning_effort = "high"');
+		expect(output).not.toContain('model_reasoning_effort = "xhigh"');
+	});
+
+	it("downgrades explicit unsupported reasoning overrides before forwarding", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(join(originalHome, "config.toml"), "", "utf8");
+
+		const result = runWrapper(
+			fixtureRoot,
+			[
+				"exec",
+				"status",
+				"--model",
+				"gpt-5.1",
+				"-c",
+				'model_reasoning_effort="xhigh"',
+			],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status --model gpt-5.1 -c model_reasoning_effort="high" -c cli_auth_credentials_store="file"',
+		);
+		expect(result.stdout).not.toContain('model_reasoning_effort="xhigh"');
+	});
+
+	it("preserves explicit xhigh overrides for models that support them", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(join(originalHome, "config.toml"), "", "utf8");
+
+		const result = runWrapper(
+			fixtureRoot,
+			[
+				"exec",
+				"status",
+				"--model",
+				"gpt-5.4",
+				"-c",
+				'model_reasoning_effort="xhigh"',
+			],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status --model gpt-5.4 -c model_reasoning_effort="xhigh" -c cli_auth_credentials_store="file"',
+		);
+	});
+
 	it.skipIf(process.platform !== "win32")(
 		"installs Windows codex shell guards to survive shim takeover",
 		() => {
