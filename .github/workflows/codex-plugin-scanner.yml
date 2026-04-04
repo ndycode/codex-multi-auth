@@ -22,3 +22,4 @@ jobs:
         uses: hashgraph-online/hol-codex-plugin-scanner-action@b45d6b583afe05819b24edc8e6418c9ad2e1f1d0 # v1
         with:
           plugin_dir: "."
+          min_score: "70"
