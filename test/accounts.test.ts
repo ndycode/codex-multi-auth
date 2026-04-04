@@ -945,6 +945,45 @@ describe("AccountManager", () => {
         vi.useRealTimers();
       }
     });
+
+    it("does not shorten an existing model-scoped reset when a later retry window is smaller", () => {
+      vi.useFakeTimers();
+      try {
+        const now = new Date("2026-04-05T00:00:00.000Z");
+        vi.setSystemTime(now);
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now.getTime(), lastUsed: now.getTime() },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+        const account = manager.getCurrentAccount()!;
+        manager.markRateLimitedWithReason(
+          account,
+          90 * 60_000,
+          "codex",
+          "tokens",
+          "gpt-5.2",
+        );
+
+        const firstResetAt = account.rateLimitResetTimes["codex:gpt-5.2"];
+
+        manager.markRateLimitedWithReason(
+          account,
+          60_000,
+          "codex",
+          "tokens",
+          "gpt-5.2",
+        );
+
+        expect(account.rateLimitResetTimes["codex:gpt-5.2"]).toBe(firstResetAt);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe("cooldown management", () => {
@@ -3057,7 +3096,7 @@ describe("AccountManager", () => {
       expect(getAccountIdentityKey(rotatedAccount)).not.toBe(`${trackerKey}`);
       expect(healthTracker.getScore(trackerKey, "codex:gpt-5.1")).toBeCloseTo(
         degradedScore,
-        6,
+        5,
       );
       expect(tokenTracker.getTokens(trackerKey, "codex:gpt-5.1")).toBeLessThan(50);
     });

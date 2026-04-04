@@ -1873,13 +1873,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														quotaScheduleKey,
 														cooldownMs,
 													);
-													const waitLabel = formatWaitTime(
-														delayMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS
-															? delayMs
-															: cooldownMs,
-													);
+													const waitLabel = formatWaitTime(cooldownMs);
 
-													if (delayMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS) {
+													if (cooldownMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS) {
 														if (
 															accountManager.shouldShowAccountToast(
 																account.index,
@@ -1895,7 +1891,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														}
 
 														await sleep(
-															addJitter(Math.max(MIN_BACKOFF_MS, delayMs), 0.2),
+															addJitter(Math.max(MIN_BACKOFF_MS, cooldownMs), 0.2),
 														);
 														continue;
 													}
@@ -2152,15 +2148,27 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																if (!fallbackResponse.ok) {
 																	const { response: handledFallbackResponse, rateLimit: fallbackRateLimit } =
 																		await handleErrorResponse(fallbackResponse);
-																	if (
-																		fallbackRateLimit ||
-																		handledFallbackResponse.status === 429
-																	) {
+																	if (handledFallbackResponse.status === 429) {
 																		const retryAfterMs =
 																			fallbackRateLimit?.retryAfterMs ?? 60_000;
+																		const fallbackQuotaKey =
+																			model ? `${modelFamily}:${model}` : modelFamily;
+																		const { delayMs } = getRateLimitBackoff(
+																			fallbackAccount.index,
+																			fallbackQuotaKey,
+																			retryAfterMs,
+																		);
+																		const cooldownMs = Math.max(
+																			delayMs,
+																			retryAfterMs,
+																		);
+																		preemptiveQuotaScheduler.markRateLimited(
+																			`${fallbackEntitlementAccountKey}:${model ?? modelFamily}`,
+																			cooldownMs,
+																		);
 																		accountManager.markRateLimitedWithReason(
 																			fallbackAccount,
-																			retryAfterMs,
+																			cooldownMs,
 																			modelFamily,
 																			"quota",
 																			model,

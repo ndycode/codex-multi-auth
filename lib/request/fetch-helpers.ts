@@ -1014,20 +1014,13 @@ function extractRateLimitInfoFromBody(
         const isStatusRateLimit =
                 response.status === HTTP_STATUS.TOO_MANY_REQUESTS;
         const parsed = parseRateLimitBody(bodyText);
-
-        const haystack = `${parsed?.code ?? ""} ${bodyText}`.toLowerCase();
         
         // Entitlement errors should not be treated as rate limits
         if (isEntitlementError(parsed?.code ?? "", bodyText)) {
                 return undefined;
         }
-        
-        const isRateLimit =
-                isStatusRateLimit ||
-                /usage_limit_reached|rate_limit_exceeded|rate_limit|usage limit/i.test(
-                        haystack,
-                );
-        if (!isRateLimit) return undefined;
+
+        if (!isStatusRateLimit) return undefined;
 
         const retryAfterMs =
                 parseRetryAfterMs(response, bodyText, parsed) ?? 60000;
@@ -1216,49 +1209,51 @@ function parseRetryAfterMs(
 		if (normalized !== null) return normalized;
 	}
 
-        const retryAfterMsHeader = response.headers.get("retry-after-ms");
-        if (retryAfterMsHeader) {
-                const parsed = Number.parseInt(retryAfterMsHeader, 10);
-                if (!Number.isNaN(parsed) && parsed > 0) {
-                        return parsed;
-                }
-        }
+	const retryAfterMsHeader = response.headers.get("retry-after-ms");
+	if (retryAfterMsHeader) {
+		const parsed = Number.parseInt(retryAfterMsHeader, 10);
+		const normalized = normalizeRetryAfterMs(parsed);
+		if (normalized !== null) {
+			return normalized;
+		}
+	}
 
-        const retryAfterHeader = response.headers.get("retry-after");
-        if (retryAfterHeader) {
-                const parsed = Number.parseInt(retryAfterHeader, 10);
-                if (!Number.isNaN(parsed) && parsed > 0) {
-                        return parsed * 1000;
-                }
-        }
+	const retryAfterHeader = response.headers.get("retry-after");
+	if (retryAfterHeader) {
+		const parsed = Number.parseInt(retryAfterHeader, 10);
+		const normalized = normalizeRetryAfterSeconds(parsed);
+		if (normalized !== null) {
+			return normalized;
+		}
+	}
 
-        const resetAtHeaders = [
-                "x-codex-primary-reset-at",
-                "x-codex-secondary-reset-at",
-                "x-ratelimit-reset",
-        ];
-        const now = Date.now();
-        const resetCandidates: number[] = [];
-        for (const header of resetAtHeaders) {
-                const value = response.headers.get(header);
-                if (!value) continue;
-                const parsed = Number.parseInt(value, 10);
-                if (!Number.isNaN(parsed) && parsed > 0) {
-                        const timestamp =
-                                parsed < 10_000_000_000 ? parsed * 1000 : parsed;
-                        const delta = timestamp - now;
-                        if (delta > 0) resetCandidates.push(delta);
-                }
-        }
+	const resetAtHeaders = [
+		"x-codex-primary-reset-at",
+		"x-codex-secondary-reset-at",
+		"x-ratelimit-reset",
+	];
+	const now = Date.now();
+	const resetCandidates: number[] = [];
+	for (const header of resetAtHeaders) {
+		const value = response.headers.get(header);
+		if (!value) continue;
+		const parsed = Number.parseInt(value, 10);
+		if (!Number.isNaN(parsed) && parsed > 0) {
+			const timestamp =
+				parsed < 10_000_000_000 ? parsed * 1000 : parsed;
+			const delta = normalizeRetryAfterMs(timestamp - now);
+			if (delta !== null) resetCandidates.push(delta);
+		}
+	}
 
-        if (parsedBody?.resetsAt) {
-                const timestamp =
-                        parsedBody.resetsAt < 10_000_000_000
-                                ? parsedBody.resetsAt * 1000
-                                : parsedBody.resetsAt;
-                const delta = timestamp - now;
-                if (delta > 0) resetCandidates.push(delta);
-        }
+	if (parsedBody?.resetsAt) {
+		const timestamp =
+			parsedBody.resetsAt < 10_000_000_000
+				? parsedBody.resetsAt * 1000
+				: parsedBody.resetsAt;
+		const delta = normalizeRetryAfterMs(timestamp - now);
+		if (delta !== null) resetCandidates.push(delta);
+	}
 
 	if (resetCandidates.length > 0) {
 		return Math.min(...resetCandidates);
