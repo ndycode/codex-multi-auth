@@ -1,5 +1,6 @@
 import { formatAccountLabel, formatWaitTime } from "./accounts.js";
 import type { CodexQuotaSnapshot } from "./quota-probe.js";
+import { getRateLimitResetTimeForFamily } from "./runtime/account-status.js";
 import type { AccountMetadataV3 } from "./storage.js";
 import type { TokenFailure } from "./types.js";
 
@@ -105,27 +106,6 @@ function getRiskLevel(score: number): ForecastRiskLevel {
 	if (score >= 75) return "high";
 	if (score >= 40) return "medium";
 	return "low";
-}
-
-function getRateLimitResetTimeForFamily(
-	account: AccountMetadataV3,
-	now: number,
-	family = "codex",
-): number | null {
-	const times = account.rateLimitResetTimes;
-	if (!times) return null;
-
-	let minReset: number | null = null;
-	const prefix = `${family}:`;
-	for (const [key, value] of Object.entries(times)) {
-		if (typeof value !== "number") continue;
-		if (value <= now) continue;
-		if (key !== family && !key.startsWith(prefix)) continue;
-		if (minReset === null || value < minReset) {
-			minReset = value;
-		}
-	}
-	return minReset;
 }
 
 function getLiveQuotaWaitMs(snapshot: CodexQuotaSnapshot, now: number): number {

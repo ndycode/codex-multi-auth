@@ -6772,6 +6772,183 @@ describe("codex manager cli commands", () => {
 		expect(firstCallAccounts[1]?.isCurrentAccount).toBe(true);
 	});
 
+	it("keeps ready accounts ahead of degraded limit rows in ready-first sorting", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 3,
+			activeIndexByFamily: { codex: 3 },
+			accounts: [
+				{
+					email: "cached-limit@example.com",
+					accountId: "acc_cached_limit",
+					refreshToken: "refresh-cached-limit",
+					accessToken: "access-cached-limit",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 5_000,
+					lastUsed: now - 5_000,
+					enabled: true,
+				},
+				{
+					email: "cooldown@example.com",
+					accountId: "acc_cooldown",
+					refreshToken: "refresh-cooldown",
+					accessToken: "access-cooldown",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 4_000,
+					lastUsed: now - 4_000,
+					enabled: true,
+					coolingDownUntil: now + 90_000,
+				},
+				{
+					email: "healthy-low@example.com",
+					accountId: "acc_healthy_low",
+					refreshToken: "refresh-healthy-low",
+					accessToken: "access-healthy-low",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 3_000,
+					lastUsed: now - 3_000,
+					enabled: true,
+				},
+				{
+					email: "healthy-high@example.com",
+					accountId: "acc_healthy_high",
+					refreshToken: "refresh-healthy-high",
+					accessToken: "access-healthy-high",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "rate-limited@example.com",
+					accountId: "acc_rate_limited",
+					refreshToken: "refresh-rate-limited",
+					accessToken: "access-rate-limited",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+					rateLimitResetTimes: { codex: now + 60_000 },
+				},
+			],
+		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
+			menuAutoFetchLimits: false,
+			menuSortEnabled: true,
+			menuSortMode: "ready-first",
+			menuSortPinCurrent: false,
+			menuSortQuickSwitchVisibleRow: true,
+		});
+		loadQuotaCacheMock.mockResolvedValue({
+			byAccountId: {},
+			byEmail: {
+				"cached-limit@example.com": {
+					updatedAt: now,
+					status: 429,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 0,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 0,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+				"cooldown@example.com": {
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 20,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 20,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+				"healthy-low@example.com": {
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 75,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 75,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+				"healthy-high@example.com": {
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 10,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 10,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+				"rate-limited@example.com": {
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5-codex",
+					primary: {
+						usedPercent: 5,
+						windowMinutes: 300,
+						resetAtMs: now + 1_000,
+					},
+					secondary: {
+						usedPercent: 5,
+						windowMinutes: 10080,
+						resetAtMs: now + 2_000,
+					},
+				},
+			},
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		const firstCallAccounts = promptLoginModeMock.mock.calls[0]?.[0] as Array<{
+			email?: string;
+			sourceIndex?: number;
+			quotaRateLimited?: boolean;
+		}>;
+		expect(firstCallAccounts.map((account) => account.email)).toEqual([
+			"healthy-high@example.com",
+			"healthy-low@example.com",
+			"cached-limit@example.com",
+			"rate-limited@example.com",
+			"cooldown@example.com",
+		]);
+		expect(firstCallAccounts.map((account) => account.sourceIndex)).toEqual([
+			3, 2, 0, 4, 1,
+		]);
+		expect(firstCallAccounts[2]?.quotaRateLimited).toBe(true);
+	});
+
 	it("prefers email-scoped quota cache entries for shared workspace accounts", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({
