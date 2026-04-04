@@ -436,12 +436,12 @@ function rewriteConfigTomlReasoningEffort(rawConfig, requestedModel) {
 	return ensureTrailingNewline(nextLines.join(lineEnding));
 }
 
-function resolveOriginalMultiAuthDir(env, originalCodexHome) {
+function resolveOriginalMultiAuthDir(env) {
 	const explicit = (env.CODEX_MULTI_AUTH_DIR ?? "").trim();
 	if (explicit.length > 0) {
 		return explicit;
 	}
-	return join(originalCodexHome, "multi-auth");
+	return undefined;
 }
 
 function createCompatibilityCodexHome(rawArgs, baseEnv = process.env) {
@@ -471,25 +471,6 @@ function createCompatibilityCodexHome(rawArgs, baseEnv = process.env) {
 	}
 
 	const shadowCodexHome = mkdtempSync(join(tmpdir(), "codex-multi-auth-home-"));
-	writeFileSync(join(shadowCodexHome, "config.toml"), compatConfig, "utf8");
-	for (const name of ["auth.json", "accounts.json", ".codex-global-state.json"]) {
-		const sourcePath = join(originalCodexHome, name);
-		if (existsSync(sourcePath)) {
-			copyFileSync(sourcePath, join(shadowCodexHome, name));
-		}
-	}
-
-	const forwardedEnv = {
-		...baseEnv,
-		CODEX_HOME: shadowCodexHome,
-	};
-	if (!(baseEnv.CODEX_MULTI_AUTH_DIR ?? "").trim()) {
-		forwardedEnv.CODEX_MULTI_AUTH_DIR = resolveOriginalMultiAuthDir(
-			baseEnv,
-			originalCodexHome,
-		);
-	}
-
 	const cleanup = () => {
 		try {
 			rmSync(shadowCodexHome, { recursive: true, force: true });
@@ -497,6 +478,27 @@ function createCompatibilityCodexHome(rawArgs, baseEnv = process.env) {
 			// Best-effort cleanup only.
 		}
 	};
+	try {
+		writeFileSync(join(shadowCodexHome, "config.toml"), compatConfig, "utf8");
+		for (const name of ["auth.json", "accounts.json", ".codex-global-state.json"]) {
+			const sourcePath = join(originalCodexHome, name);
+			if (existsSync(sourcePath)) {
+				copyFileSync(sourcePath, join(shadowCodexHome, name));
+			}
+		}
+	} catch (error) {
+		cleanup();
+		throw error;
+	}
+
+	const forwardedEnv = {
+		...baseEnv,
+		CODEX_HOME: shadowCodexHome,
+	};
+	const originalMultiAuthDir = resolveOriginalMultiAuthDir(baseEnv);
+	if (originalMultiAuthDir) {
+		forwardedEnv.CODEX_MULTI_AUTH_DIR = originalMultiAuthDir;
+	}
 
 	return {
 		args: nextArgs,

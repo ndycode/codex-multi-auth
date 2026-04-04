@@ -323,6 +323,39 @@ function createDeferred<T>(): {
 	return { promise, resolve, reject };
 }
 
+type ReadyFirstMenuSettings = {
+	showPerAccountRows: boolean;
+	showQuotaDetails: boolean;
+	showForecastReasons: boolean;
+	showRecommendations: boolean;
+	showLiveProbeNotes: boolean;
+	menuAutoFetchLimits: boolean;
+	menuSortEnabled: boolean;
+	menuSortMode: "ready-first";
+	menuSortPinCurrent: boolean;
+	menuSortQuickSwitchVisibleRow: boolean;
+	menuQuotaTtlMs?: number;
+	menuShowFetchStatus?: boolean;
+};
+
+function createReadyFirstMenuSettings(
+	overrides: Partial<ReadyFirstMenuSettings> = {},
+): ReadyFirstMenuSettings {
+	return {
+		showPerAccountRows: true,
+		showQuotaDetails: true,
+		showForecastReasons: true,
+		showRecommendations: true,
+		showLiveProbeNotes: true,
+		menuAutoFetchLimits: false,
+		menuSortEnabled: true,
+		menuSortMode: "ready-first",
+		menuSortPinCurrent: false,
+		menuSortQuickSwitchVisibleRow: true,
+		...overrides,
+	};
+}
+
 function cloneValue<T>(value: T): T {
 	return structuredClone(value);
 }
@@ -6833,18 +6866,9 @@ describe("codex manager cli commands", () => {
 				},
 			],
 		});
-		loadDashboardDisplaySettingsMock.mockResolvedValue({
-			showPerAccountRows: true,
-			showQuotaDetails: true,
-			showForecastReasons: true,
-			showRecommendations: true,
-			showLiveProbeNotes: true,
-			menuAutoFetchLimits: false,
-			menuSortEnabled: true,
-			menuSortMode: "ready-first",
-			menuSortPinCurrent: false,
-			menuSortQuickSwitchVisibleRow: true,
-		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue(
+			createReadyFirstMenuSettings(),
+		);
 		loadQuotaCacheMock.mockResolvedValue({
 			byAccountId: {},
 			byEmail: {
@@ -6978,18 +7002,9 @@ describe("codex manager cli commands", () => {
 				},
 			],
 		});
-		loadDashboardDisplaySettingsMock.mockResolvedValue({
-			showPerAccountRows: true,
-			showQuotaDetails: true,
-			showForecastReasons: true,
-			showRecommendations: true,
-			showLiveProbeNotes: true,
-			menuAutoFetchLimits: false,
-			menuSortEnabled: true,
-			menuSortMode: "ready-first",
-			menuSortPinCurrent: false,
-			menuSortQuickSwitchVisibleRow: true,
-		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue(
+			createReadyFirstMenuSettings(),
+		);
 		loadQuotaCacheMock.mockResolvedValue({
 			byAccountId: {},
 			byEmail: {
@@ -7077,18 +7092,9 @@ describe("codex manager cli commands", () => {
 				},
 			],
 		});
-		loadDashboardDisplaySettingsMock.mockResolvedValue({
-			showPerAccountRows: true,
-			showQuotaDetails: true,
-			showForecastReasons: true,
-			showRecommendations: true,
-			showLiveProbeNotes: true,
-			menuAutoFetchLimits: false,
-			menuSortEnabled: true,
-			menuSortMode: "ready-first",
-			menuSortPinCurrent: false,
-			menuSortQuickSwitchVisibleRow: true,
-		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue(
+			createReadyFirstMenuSettings(),
+		);
 		loadQuotaCacheMock.mockResolvedValue({
 			byAccountId: {},
 			byEmail: {
@@ -7175,18 +7181,9 @@ describe("codex manager cli commands", () => {
 				},
 			],
 		});
-		loadDashboardDisplaySettingsMock.mockResolvedValue({
-			showPerAccountRows: true,
-			showQuotaDetails: true,
-			showForecastReasons: true,
-			showRecommendations: true,
-			showLiveProbeNotes: true,
-			menuAutoFetchLimits: false,
-			menuSortEnabled: true,
-			menuSortMode: "ready-first",
-			menuSortPinCurrent: false,
-			menuSortQuickSwitchVisibleRow: true,
-		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue(
+			createReadyFirstMenuSettings(),
+		);
 		loadQuotaCacheMock.mockResolvedValue({
 			byAccountId: {},
 			byEmail: {
@@ -7274,20 +7271,13 @@ describe("codex manager cli commands", () => {
 			storageState = structuredClone(nextStorage);
 		});
 
-		loadDashboardDisplaySettingsMock.mockResolvedValue({
-			showPerAccountRows: true,
-			showQuotaDetails: true,
-			showForecastReasons: true,
-			showRecommendations: true,
-			showLiveProbeNotes: true,
-			menuAutoFetchLimits: true,
-			menuQuotaTtlMs: 1,
-			menuShowFetchStatus: true,
-			menuSortEnabled: true,
-			menuSortMode: "ready-first",
-			menuSortPinCurrent: false,
-			menuSortQuickSwitchVisibleRow: true,
-		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue(
+			createReadyFirstMenuSettings({
+				menuAutoFetchLimits: true,
+				menuQuotaTtlMs: 1,
+				menuShowFetchStatus: true,
+			}),
+		);
 
 		let quotaCacheState = {
 			byAccountId: {},
@@ -7327,10 +7317,8 @@ describe("codex manager cli commands", () => {
 		loadQuotaCacheMock.mockImplementation(async () => structuredClone(quotaCacheState));
 
 		const releaseFirstRefresh = createDeferred<void>();
-		const refreshSaved = createDeferred<void>();
 		saveQuotaCacheMock.mockImplementation(async (nextCache) => {
 			quotaCacheState = structuredClone(nextCache);
-			refreshSaved.resolve();
 		});
 		fetchCodexQuotaSnapshotMock
 			.mockImplementationOnce(async () => {
@@ -7382,7 +7370,9 @@ describe("codex manager cli commands", () => {
 				expect(typeof options?.statusMessage?.()).toBe("string");
 
 				releaseFirstRefresh.resolve();
-				await refreshSaved.promise;
+				await vi.waitFor(() => {
+					expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+				});
 				return { mode: "manage", deleteAccountIndex: 99 };
 			})
 			.mockImplementationOnce(async (accounts) => {

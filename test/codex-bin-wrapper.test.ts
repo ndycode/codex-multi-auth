@@ -3,6 +3,7 @@ import {
 	copyFileSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
@@ -111,6 +112,20 @@ function createSpawnSyncSuccess(stdout: string): SpawnSyncReturns<string> {
 	};
 }
 
+function buildWrapperEnv(extraEnv: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = {
+		...process.env,
+		CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE: "1",
+		...extraEnv,
+	};
+	for (const [key, value] of Object.entries(env)) {
+		if (value === undefined) {
+			delete env[key];
+		}
+	}
+	return env;
+}
+
 function runWrapper(
 	fixtureRoot: string,
 	args: string[],
@@ -121,10 +136,7 @@ function runWrapper(
 		[join(fixtureRoot, "scripts", "codex.js"), ...args],
 		{
 			encoding: "utf8",
-			env: {
-				...process.env,
-				...extraEnv,
-			},
+			env: buildWrapperEnv(extraEnv),
 		},
 	);
 }
@@ -136,10 +148,7 @@ function runWrapperScript(
 ): SpawnSyncReturns<string> {
 	return spawnSync(process.execPath, [scriptPath, ...args], {
 		encoding: "utf8",
-		env: {
-			...process.env,
-			...extraEnv,
-		},
+		env: buildWrapperEnv(extraEnv),
 	});
 }
 
@@ -160,10 +169,7 @@ function runWrapperAsync(
 			process.execPath,
 			[join(fixtureRoot, "scripts", "codex.js"), ...args],
 			{
-				env: {
-					...process.env,
-					...extraEnv,
-				},
+				env: buildWrapperEnv(extraEnv),
 				stdio: ["ignore", "pipe", "pipe"],
 			},
 		);
@@ -308,8 +314,11 @@ describe("codex bin wrapper", () => {
 			'const path = require("node:path");',
 			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
 			'console.log(`CODEX_HOME:${process.env.CODEX_HOME ?? ""}`);',
-			'console.log(`CODEX_MULTI_AUTH_DIR:${process.env.CODEX_MULTI_AUTH_DIR ?? ""}`);',
+			'console.log(`CODEX_MULTI_AUTH_DIR_JSON:${JSON.stringify(process.env.CODEX_MULTI_AUTH_DIR ?? null)}`);',
 			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
+			'const authPath = path.join(process.env.CODEX_HOME ?? "", "auth.json");',
+			'console.log(`AUTH_EXISTS:${fs.existsSync(authPath)}`);',
+			'if (fs.existsSync(authPath)) console.log(`AUTH_JSON:${fs.readFileSync(authPath, "utf8").trim()}`);',
 			'console.log("CONFIG_START");',
 			'console.log(fs.readFileSync(configPath, "utf8").trim());',
 			'console.log("CONFIG_END");',
@@ -334,15 +343,52 @@ describe("codex bin wrapper", () => {
 		const result = runWrapper(fixtureRoot, ["exec", "status", "--model", "gpt-5.1"], {
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_DIR: undefined,
 		});
 
 		expect(result.status).toBe(0);
 		const output = combinedOutput(result);
 		expect(output).toContain('FORWARDED:exec status --model gpt-5.1 -c cli_auth_credentials_store="file"');
 		expect(output).not.toContain(`CODEX_HOME:${originalHome}`);
-		expect(output).toContain("CODEX_MULTI_AUTH_DIR:");
+		expect(output).toContain("CODEX_MULTI_AUTH_DIR_JSON:null");
+		expect(output).toContain("AUTH_EXISTS:true");
+		expect(output).toContain("AUTH_JSON:{}");
 		expect(output).toContain('model_reasoning_effort = "high"');
 		expect(output).not.toContain('model_reasoning_effort = "xhigh"');
+	});
+
+	it("cleans up compatibility shadow homes when staging fails", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const controlledTmp = join(fixtureRoot, "tmp");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(controlledTmp, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		mkdirSync(join(originalHome, "accounts.json"), { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_reasoning_effort = "xhigh"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.1"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				TMP: controlledTmp,
+				TEMP: controlledTmp,
+			},
+		);
+
+		expect(result.status).toBe(1);
+		expect(
+			readdirSync(controlledTmp).filter((entry) =>
+				entry.startsWith("codex-multi-auth-home-"),
+			),
+		).toEqual([]);
 	});
 
 	it("rewrites unquoted config reasoning effort values for mini compatibility models", () => {
