@@ -28,6 +28,10 @@ let shadowHomeCleanupBusyFailuresRemaining = Number.parseInt(
 	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_CLEANUP_BUSY_FAILURES ?? "0",
 	10,
 );
+let shadowHomeCleanupPreflightReadBusyFailuresRemaining = Number.parseInt(
+	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_PREFLIGHT_READ_BUSY_FAILURES ?? "0",
+	10,
+);
 
 function isRetryableShadowHomeCleanupError(error) {
 	const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
@@ -233,11 +237,22 @@ function maybeThrowSimulatedShadowHomeBusyError() {
 	}
 }
 
+function maybeThrowSimulatedShadowHomePreflightReadBusyError() {
+	if (shadowHomeCleanupPreflightReadBusyFailuresRemaining > 0) {
+		shadowHomeCleanupPreflightReadBusyFailuresRemaining -= 1;
+		const error = new Error("simulated busy shadow-home preflight read");
+		error.code = "EBUSY";
+		throw error;
+	}
+}
+
 function ensureShadowHomeDestinationMatchesSnapshot(destinationPath, expectedState) {
 	if (!expectedState) {
 		return;
 	}
-	const currentState = captureShadowHomeState(destinationPath);
+	const currentState = captureShadowHomeState(destinationPath, {
+		rethrowRetryableReadErrors: true,
+	});
 	if (!shadowHomeStateMatches(currentState, expectedState)) {
 		const error = new Error("shadow-home destination changed during sync-back retry");
 		error.code = "EEXIST";
@@ -526,16 +541,22 @@ function ensureTrailingNewline(value) {
 	return value.endsWith("\n") ? value : `${value}\n`;
 }
 
-function captureShadowHomeState(filePath) {
+function captureShadowHomeState(filePath, options = {}) {
 	try {
 		if (!existsSync(filePath)) {
 			return { exists: false, content: null };
+		}
+		if (options.rethrowRetryableReadErrors) {
+			maybeThrowSimulatedShadowHomePreflightReadBusyError();
 		}
 		return {
 			exists: true,
 			content: readFileSync(filePath, "utf8"),
 		};
-	} catch {
+	} catch (error) {
+		if (options.rethrowRetryableReadErrors && isRetryableShadowHomeCleanupError(error)) {
+			throw error;
+		}
 		return { exists: true, content: null, unreadable: true };
 	}
 }

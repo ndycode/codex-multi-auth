@@ -426,6 +426,32 @@ describe("unified settings", () => {
 		});
 	});
 
+	it("overwrites invalid primary settings with sync plugin saves when no usable backup exists", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedPluginConfigSync,
+			loadUnifiedPluginConfigSync,
+		} = await import("../lib/unified-settings.js");
+
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+
+		saveUnifiedPluginConfigSync({ codexMode: true, fetchTimeoutMs: 45_000 });
+
+		expect(loadUnifiedPluginConfigSync()).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+		const parsed = JSON.parse(
+			await fs.readFile(getUnifiedSettingsPath(), "utf8"),
+		) as {
+			pluginConfig?: Record<string, unknown>;
+		};
+		expect(parsed.pluginConfig).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+	});
+
 	it("returns null for missing pluginConfig section", async () => {
 		const { getUnifiedSettingsPath, loadUnifiedPluginConfigSync } =
 			await import("../lib/unified-settings.js");

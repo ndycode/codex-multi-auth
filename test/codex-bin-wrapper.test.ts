@@ -94,6 +94,16 @@ function injectShadowCleanupBusyFailures(
 	};
 }
 
+function injectShadowPreflightReadBusyFailures(
+	failuresBeforeSuccess = 2,
+): NodeJS.ProcessEnv {
+	return {
+		CODEX_MULTI_AUTH_TEST_SHADOW_PREFLIGHT_READ_BUSY_FAILURES: String(
+			failuresBeforeSuccess,
+		),
+	};
+}
+
 function createFakeGlobalCodexInstall(rootDir: string): string {
 	const fakeBin = join(rootDir, "@openai", "codex", "bin", "codex.js");
 	mkdirSync(dirname(fakeBin), { recursive: true });
@@ -598,6 +608,47 @@ describe("codex bin wrapper", () => {
 		expect(
 			readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim(),
 		).toBe('{"last":"external-during-retry"}');
+	});
+
+	it("retries preflight destination reads when the sync-back target is transiently locked", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const home = process.env.CODEX_HOME ?? "";',
+			'fs.writeFileSync(path.join(home, "auth.json"), \'{"token":"shadow"}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(home, "accounts.json"), \'{"accounts":["shadow"]}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(home, ".codex-global-state.json"), \'{"last":"shadow"}\\n\', "utf8");',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const controlledTmp = join(fixtureRoot, "tmp");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(controlledTmp, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
+		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.1"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				TMP: controlledTmp,
+				TEMP: controlledTmp,
+				TMPDIR: controlledTmp,
+				...injectShadowCleanupBusyFailures(1),
+				...injectShadowPreflightReadBusyFailures(2),
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe('{"token":"shadow"}');
+		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe('{"accounts":["shadow"]}');
+		expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"shadow"}');
 	});
 
 	it("rewrites unquoted config reasoning effort values for mini compatibility models", () => {
