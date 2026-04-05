@@ -53,10 +53,16 @@ function cloneRecord(value: unknown): JsonRecord | null {
 	return { ...value };
 }
 
+class InvalidSettingsRecordError extends Error {
+	override readonly name = "InvalidSettingsRecordError";
+}
+
 function parseSettingsRecord(content: string): JsonRecord {
 	const parsed = cloneRecord(JSON.parse(content));
 	if (!parsed) {
-		throw new Error("Unified settings must contain a JSON object at the root.");
+		throw new InvalidSettingsRecordError(
+			"Unified settings must contain a JSON object at the root.",
+		);
 	}
 	return parsed;
 }
@@ -98,24 +104,34 @@ async function readSettingsRecordAsyncFromPath(
  * Best-effort backup reader for sync callers.
  *
  * Backup corruption is treated as an unavailable backup so callers can keep
- * their legacy null-on-unavailable behavior.
+ * their legacy null-on-unavailable behavior, but unreadable or locked backups
+ * still surface so writers do not rebuild from `{}` over a transient failure.
  */
 function readSettingsBackupSync(): JsonRecord | null {
 	try {
 		return readSettingsRecordSyncFromPath(UNIFIED_SETTINGS_BACKUP_PATH);
-	} catch {
-		return null;
+	} catch (error) {
+		if (isInvalidSettingsRecordError(error)) {
+			return null;
+		}
+		throw error;
 	}
 }
 
 /**
  * Best-effort backup reader for async callers.
+ *
+ * Like the sync variant, only corrupt backups are collapsed to `null`.
+ * Unreadable or locked backups are rethrown so callers can fail closed.
  */
 async function readSettingsBackupAsync(): Promise<JsonRecord | null> {
 	try {
 		return await readSettingsRecordAsyncFromPath(UNIFIED_SETTINGS_BACKUP_PATH);
-	} catch {
-		return null;
+	} catch (error) {
+		if (isInvalidSettingsRecordError(error)) {
+			return null;
+		}
+		throw error;
 	}
 }
 
@@ -141,6 +157,13 @@ function shouldFallbackToSettingsBackup(
 		return false;
 	}
 	return true;
+}
+
+function isInvalidSettingsRecordError(error: unknown): boolean {
+	if (error instanceof SyntaxError) {
+		return true;
+	}
+	return error instanceof InvalidSettingsRecordError;
 }
 
 /**
@@ -221,6 +244,9 @@ function readSettingsRecordSyncInternal(): SettingsReadResult {
 		if (backupRecord) {
 			return { record: backupRecord, usedBackup: true };
 		}
+		if (isInvalidSettingsRecordError(error)) {
+			return { record: null, usedBackup: false };
+		}
 		throw error;
 	}
 
@@ -254,6 +280,9 @@ async function readSettingsRecordAsyncInternal(): Promise<SettingsReadResult> {
 		const backupRecord = await readSettingsBackupAsync();
 		if (backupRecord) {
 			return { record: backupRecord, usedBackup: true };
+		}
+		if (isInvalidSettingsRecordError(error)) {
+			return { record: null, usedBackup: false };
 		}
 		throw error;
 	}

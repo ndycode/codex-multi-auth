@@ -647,10 +647,7 @@ export async function savePluginConfig(
 				: loadUnifiedPluginConfigSync();
 		const unifiedConfig = sanitizeStoredPluginConfigRecord(unifiedConfigRecord);
 		const legacyPath =
-			unifiedConfigState.status === "missing" ||
-			(unifiedConfigState.status === "ok" && !unifiedConfig)
-				? resolvePluginConfigPath()
-				: null;
+			unifiedConfig === null ? resolvePluginConfigPath() : null;
 		const legacyConfigState = legacyPath
 			? await readConfigRecordForSave(legacyPath)
 			: null;

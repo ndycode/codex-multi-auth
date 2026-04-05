@@ -333,12 +333,70 @@ describe("flagged account storage", () => {
 				return originalReadFile(...args);
 			});
 
-	const flagged = await loadFlaggedAccounts();
-	expect(flagged.accounts).toHaveLength(1);
-	expect(flagged.accounts[0]?.refreshToken).toBe("primary-flagged");
-	expect(existsSync(flaggedPath)).toBe(true);
+		const flagged = await loadFlaggedAccounts();
+		expect(flagged.accounts).toHaveLength(1);
+		expect(flagged.accounts[0]?.refreshToken).toBe("primary-flagged");
+		expect(existsSync(flaggedPath)).toBe(true);
 
-	readSpy.mockRestore();
+		readSpy.mockRestore();
+	});
+
+	it("retries transient flagged primary read errors before falling back to backup", async () => {
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "older-flagged",
+					flaggedAt: 1,
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		await saveFlaggedAccounts({
+			version: 1,
+			accounts: [
+				{
+					refreshToken: "latest-flagged",
+					flaggedAt: 2,
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		});
+
+		const flaggedPath = getFlaggedAccountsPath();
+		const originalReadFile = fs.readFile.bind(fs);
+		let primaryReadAttempts = 0;
+		const readSpy = vi
+			.spyOn(fs, "readFile")
+			.mockImplementation(async (...args) => {
+				const [targetPath] = args;
+				if (targetPath === flaggedPath) {
+					primaryReadAttempts += 1;
+					if (primaryReadAttempts === 1) {
+						const error = new Error("EBUSY flagged read") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+				}
+				return originalReadFile(...args);
+			});
+
+		try {
+			const flagged = await loadFlaggedAccounts();
+			expect(flagged.accounts).toHaveLength(1);
+			expect(flagged.accounts[0]?.refreshToken).toBe("latest-flagged");
+			expect(primaryReadAttempts).toBe(2);
+			expect(
+				readSpy.mock.calls.some(
+					([targetPath]) => targetPath === `${flaggedPath}.bak`,
+				),
+			).toBe(false);
+		} finally {
+			readSpy.mockRestore();
+		}
 	});
 
 	it("skips invalid latest flagged backups and falls back to older valid snapshots", async () => {
@@ -657,5 +715,308 @@ describe("flagged storage extracted helpers", () => {
 			"Failed to inspect flagged snapshot",
 			expect.objectContaining({ path: "flagged.json" }),
 		);
+	});
+
+	it("does not log successful backup recovery when persisting the recovery fails", async () => {
+		const { loadFlaggedAccountsState } = await import(
+			"../lib/storage/flagged-storage-io.js"
+		);
+		const fixtureRoot = join(
+			tmpdir(),
+			`codex-flagged-io-${Math.random().toString(36).slice(2)}`,
+		);
+		const flaggedPath = join(fixtureRoot, "flagged.json");
+		const resetMarkerPath = `${flaggedPath}.reset`;
+		const logError = vi.fn();
+		const logInfo = vi.fn();
+
+		try {
+			await fs.mkdir(fixtureRoot, { recursive: true });
+			await fs.writeFile(
+				`${flaggedPath}.bak`,
+				JSON.stringify(
+					{
+						version: 1,
+						accounts: [
+							{
+								refreshToken: "backup-token",
+								flaggedAt: 1,
+								addedAt: 1,
+								lastUsed: 1,
+							},
+						],
+					},
+					null,
+					2,
+				),
+				"utf8",
+			);
+
+			await expect(
+				loadFlaggedAccountsState({
+					path: flaggedPath,
+					legacyPath: `${flaggedPath}.legacy`,
+					resetMarkerPath,
+					normalizeFlaggedStorage: (data) => data as never,
+					persistRecoveredBackup: vi.fn(async () => {
+						throw new Error("persist failed");
+					}),
+					saveFlaggedAccounts: vi.fn(async () => {}),
+					logError,
+					logInfo,
+				}),
+			).resolves.toEqual({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "backup-token",
+						flaggedAt: 1,
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			expect(logError).toHaveBeenCalledWith(
+				"Failed to persist recovered flagged account storage",
+				expect.objectContaining({ from: `${flaggedPath}.bak`, to: flaggedPath }),
+			);
+			expect(logInfo).not.toHaveBeenCalled();
+		} finally {
+			await removeWithRetry(fixtureRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("returns empty and does not log successful backup recovery when persist returns false", async () => {
+		const { loadFlaggedAccountsState } = await import(
+			"../lib/storage/flagged-storage-io.js"
+		);
+		const fixtureRoot = join(
+			tmpdir(),
+			`codex-flagged-io-${Math.random().toString(36).slice(2)}`,
+		);
+		const flaggedPath = join(fixtureRoot, "flagged.json");
+		const resetMarkerPath = `${flaggedPath}.reset`;
+		const logError = vi.fn();
+		const logInfo = vi.fn();
+		const persistRecoveredBackup = vi.fn(async () => false);
+
+		try {
+			await fs.mkdir(fixtureRoot, { recursive: true });
+			await fs.writeFile(
+				`${flaggedPath}.bak`,
+				JSON.stringify({
+					version: 1,
+					accounts: [
+						{
+							refreshToken: "backup-token",
+							flaggedAt: 1,
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf8",
+			);
+
+			await expect(
+				loadFlaggedAccountsState({
+					path: flaggedPath,
+					legacyPath: `${flaggedPath}.legacy`,
+					resetMarkerPath,
+					normalizeFlaggedStorage: (data) => data as never,
+					persistRecoveredBackup,
+					saveFlaggedAccounts: vi.fn(async () => {}),
+					logError,
+					logInfo,
+				}),
+			).resolves.toEqual({ version: 1, accounts: [] });
+			expect(persistRecoveredBackup).toHaveBeenCalledTimes(1);
+			expect(logInfo).not.toHaveBeenCalled();
+			expect(logError).not.toHaveBeenCalled();
+		} finally {
+			await removeWithRetry(fixtureRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("retries transient backup read locks before recovering flagged storage", async () => {
+		const { loadFlaggedAccountsState } = await import(
+			"../lib/storage/flagged-storage-io.js"
+		);
+		const fixtureRoot = join(
+			tmpdir(),
+			`codex-flagged-io-${Math.random().toString(36).slice(2)}`,
+		);
+		const flaggedPath = join(fixtureRoot, "flagged.json");
+		const backupPath = `${flaggedPath}.bak`;
+		const resetMarkerPath = `${flaggedPath}.reset`;
+		const originalReadFile = fs.readFile.bind(fs);
+		const logError = vi.fn();
+		const logInfo = vi.fn();
+		const persistRecoveredBackup = vi.fn(async () => true);
+		let backupReadAttempts = 0;
+		let readSpy: ReturnType<typeof vi.spyOn> | undefined;
+
+		try {
+			await fs.mkdir(fixtureRoot, { recursive: true });
+			await fs.writeFile(
+				backupPath,
+				JSON.stringify({
+					version: 1,
+					accounts: [
+						{
+							refreshToken: "backup-token",
+							flaggedAt: 1,
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				}),
+				"utf8",
+			);
+
+			readSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) => {
+					const [targetPath] = args;
+					if (targetPath === backupPath) {
+						backupReadAttempts += 1;
+						if (backupReadAttempts === 1) {
+							const error = new Error("EBUSY backup read") as NodeJS.ErrnoException;
+							error.code = "EBUSY";
+							throw error;
+						}
+					}
+					return originalReadFile(...args);
+				});
+
+			await expect(
+				loadFlaggedAccountsState({
+					path: flaggedPath,
+					legacyPath: `${flaggedPath}.legacy`,
+					resetMarkerPath,
+					normalizeFlaggedStorage: (data) => data as never,
+					persistRecoveredBackup,
+					saveFlaggedAccounts: vi.fn(async () => {}),
+					logError,
+					logInfo,
+				}),
+			).resolves.toEqual({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "backup-token",
+						flaggedAt: 1,
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			expect(backupReadAttempts).toBe(2);
+			expect(persistRecoveredBackup).toHaveBeenCalledTimes(1);
+			expect(logInfo).toHaveBeenCalledWith(
+				"Recovered flagged account storage from backup",
+				expect.objectContaining({ from: backupPath, to: flaggedPath, accounts: 1 }),
+			);
+			expect(logError).not.toHaveBeenCalled();
+		} finally {
+			readSpy?.mockRestore();
+			await removeWithRetry(fixtureRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("retries transient legacy read locks before migrating flagged storage", async () => {
+		const { loadFlaggedAccountsState } = await import(
+			"../lib/storage/flagged-storage-io.js"
+		);
+		const fixtureRoot = join(
+			tmpdir(),
+			`codex-flagged-io-${Math.random().toString(36).slice(2)}`,
+		);
+		const flaggedPath = join(fixtureRoot, "flagged.json");
+		const legacyPath = `${flaggedPath}.legacy`;
+		const resetMarkerPath = `${flaggedPath}.reset`;
+		const originalReadFile = fs.readFile.bind(fs);
+		const logError = vi.fn();
+		const logInfo = vi.fn();
+		const saveFlaggedAccounts = vi.fn(async () => {});
+		let legacyReadAttempts = 0;
+		let readSpy: ReturnType<typeof vi.spyOn> | undefined;
+
+		try {
+			await fs.mkdir(fixtureRoot, { recursive: true });
+			await fs.writeFile(
+				legacyPath,
+				JSON.stringify({
+					version: 1,
+					accounts: [
+						{
+							refreshToken: "legacy-token",
+							flaggedAt: 2,
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				}),
+				"utf8",
+			);
+
+			readSpy = vi
+				.spyOn(fs, "readFile")
+				.mockImplementation(async (...args) => {
+					const [targetPath] = args;
+					if (targetPath === legacyPath) {
+						legacyReadAttempts += 1;
+						if (legacyReadAttempts === 1) {
+							const error = new Error("EBUSY legacy read") as NodeJS.ErrnoException;
+							error.code = "EBUSY";
+							throw error;
+						}
+					}
+					return originalReadFile(...args);
+				});
+
+			await expect(
+				loadFlaggedAccountsState({
+					path: flaggedPath,
+					legacyPath,
+					resetMarkerPath,
+					normalizeFlaggedStorage: (data) => data as never,
+					persistRecoveredBackup: vi.fn(async () => true),
+					saveFlaggedAccounts,
+					logError,
+					logInfo,
+				}),
+			).resolves.toEqual({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "legacy-token",
+						flaggedAt: 2,
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+			expect(legacyReadAttempts).toBe(2);
+			expect(saveFlaggedAccounts).toHaveBeenCalledWith({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "legacy-token",
+						flaggedAt: 2,
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			});
+			expect(logInfo).toHaveBeenCalledWith(
+				"Migrated legacy flagged account storage",
+				expect.objectContaining({ from: legacyPath, to: flaggedPath, accounts: 1 }),
+			);
+			expect(logError).not.toHaveBeenCalled();
+		} finally {
+			readSpy?.mockRestore();
+			await removeWithRetry(fixtureRoot, { recursive: true, force: true });
+		}
 	});
 });

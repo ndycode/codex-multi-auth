@@ -296,6 +296,30 @@ describe("plugin config save paths", () => {
     expect(parsed.dashboardDisplaySettings).toEqual({ uiThemePreset: "green" });
   });
 
+  it("falls back to standalone config when unified settings are invalid", async () => {
+    delete process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
+    const unifiedPath = join(tempDir, "settings.json");
+    const standalonePath = join(tempDir, "config.json");
+    await fs.writeFile(unifiedPath, "{ invalid json", "utf8");
+    await fs.writeFile(
+      standalonePath,
+      JSON.stringify({ codexMode: true, preserved: 1 }),
+      "utf8",
+    );
+
+    const { savePluginConfig } = await import("../lib/config.js");
+    await savePluginConfig({ fastSession: true });
+
+    const parsed = JSON.parse(await fs.readFile(unifiedPath, "utf8")) as {
+      pluginConfig?: Record<string, unknown>;
+    };
+    expect(parsed.pluginConfig).toEqual({
+      codexMode: true,
+      preserved: 1,
+      fastSession: true,
+    });
+  });
+
   it("resolves parallel probing settings and clamps concurrency", async () => {
     const { getParallelProbing, getParallelProbingMaxConcurrency } =
       await import("../lib/config.js");

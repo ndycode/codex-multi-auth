@@ -2192,11 +2192,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																			modelFamily,
 																			model,
 																		);
+																		capabilityPolicyStore.recordFailure(
+																			fallbackEntitlementAccountKey,
+																			capabilityModelKey,
+																		);
 																	}
-																	capabilityPolicyStore.recordFailure(
-																		fallbackEntitlementAccountKey,
-																		capabilityModelKey,
-																	);
 																	continue;
 																}
 

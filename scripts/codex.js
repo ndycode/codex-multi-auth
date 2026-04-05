@@ -28,6 +28,12 @@ let shadowHomeCleanupBusyFailuresRemaining = Number.parseInt(
 	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_CLEANUP_BUSY_FAILURES ?? "0",
 	10,
 );
+let shadowHomeCleanupPreflightReadBusyFailuresRemaining = Number.parseInt(
+	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_PREFLIGHT_READ_BUSY_FAILURES ?? "0",
+	10,
+);
+const shadowHomeCleanupRetryMarkerDir =
+	(process.env.CODEX_MULTI_AUTH_TEST_SHADOW_RETRY_MARKER_DIR ?? "").trim();
 
 function isRetryableShadowHomeCleanupError(error) {
 	const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
@@ -44,12 +50,7 @@ function sleepSync(ms) {
 function removeDirectoryWithRetry(targetPath) {
 	for (let attempt = 0; attempt <= SHADOW_HOME_CLEANUP_BACKOFF_MS.length; attempt += 1) {
 		try {
-			if (shadowHomeCleanupBusyFailuresRemaining > 0) {
-				shadowHomeCleanupBusyFailuresRemaining -= 1;
-				const error = new Error("simulated busy cleanup");
-				error.code = "EBUSY";
-				throw error;
-			}
+			maybeThrowSimulatedShadowHomeBusyError();
 			rmSync(targetPath, { recursive: true, force: true });
 			return;
 		} catch (error) {
@@ -226,6 +227,80 @@ function addRequestedModelReasoningAliases(alias, normalizedModel) {
 	addRequestedModelAlias(alias, normalizedModel);
 	for (const effort of KNOWN_REASONING_EFFORTS) {
 		addRequestedModelAlias(`${alias}-${effort}`, normalizedModel);
+	}
+}
+
+function maybeThrowSimulatedShadowHomeBusyError() {
+	if (shadowHomeCleanupBusyFailuresRemaining > 0) {
+		shadowHomeCleanupBusyFailuresRemaining -= 1;
+		const error = new Error("simulated busy shadow-home operation");
+		error.code = "EBUSY";
+		throw error;
+	}
+}
+
+function maybeThrowSimulatedShadowHomePreflightReadBusyError() {
+	if (shadowHomeCleanupPreflightReadBusyFailuresRemaining > 0) {
+		shadowHomeCleanupPreflightReadBusyFailuresRemaining -= 1;
+		const error = new Error("simulated busy shadow-home preflight read");
+		error.code = "EBUSY";
+		throw error;
+	}
+}
+
+function writeShadowHomeCleanupRetryMarker(destinationPath, attempt) {
+	if (shadowHomeCleanupRetryMarkerDir.length === 0) {
+		return;
+	}
+	try {
+		mkdirSync(shadowHomeCleanupRetryMarkerDir, { recursive: true });
+		writeFileSync(
+			join(
+				shadowHomeCleanupRetryMarkerDir,
+				`${basename(destinationPath)}.retry-${attempt + 1}`,
+			),
+			`${attempt + 1}\n`,
+			"utf8",
+		);
+	} catch {
+		// Best-effort test hook only.
+	}
+}
+
+function ensureShadowHomeDestinationMatchesSnapshot(destinationPath, expectedState) {
+	if (!expectedState) {
+		return;
+	}
+	const currentState = captureShadowHomeState(destinationPath, {
+		rethrowRetryableReadErrors: true,
+	});
+	if (!shadowHomeStateMatches(currentState, expectedState)) {
+		const error = new Error("shadow-home destination changed during sync-back retry");
+		error.code = "EEXIST";
+		throw error;
+	}
+}
+
+function renameFileWithRetry(sourcePath, destinationPath, expectedDestinationState) {
+	for (let attempt = 0; attempt <= SHADOW_HOME_CLEANUP_BACKOFF_MS.length; attempt += 1) {
+		try {
+			ensureShadowHomeDestinationMatchesSnapshot(
+				destinationPath,
+				expectedDestinationState,
+			);
+			maybeThrowSimulatedShadowHomeBusyError();
+			renameSync(sourcePath, destinationPath);
+			return;
+		} catch (error) {
+			if (
+				!isRetryableShadowHomeCleanupError(error) ||
+				attempt === SHADOW_HOME_CLEANUP_BACKOFF_MS.length
+			) {
+				throw error;
+			}
+			writeShadowHomeCleanupRetryMarker(destinationPath, attempt);
+			sleepSync(SHADOW_HOME_CLEANUP_BACKOFF_MS[attempt]);
+		}
 	}
 }
 
@@ -488,16 +563,22 @@ function ensureTrailingNewline(value) {
 	return value.endsWith("\n") ? value : `${value}\n`;
 }
 
-function captureShadowHomeState(filePath) {
+function captureShadowHomeState(filePath, options = {}) {
 	try {
 		if (!existsSync(filePath)) {
 			return { exists: false, content: null };
+		}
+		if (options.rethrowRetryableReadErrors) {
+			maybeThrowSimulatedShadowHomePreflightReadBusyError();
 		}
 		return {
 			exists: true,
 			content: readFileSync(filePath, "utf8"),
 		};
-	} catch {
+	} catch (error) {
+		if (options.rethrowRetryableReadErrors && isRetryableShadowHomeCleanupError(error)) {
+			throw error;
+		}
 		return { exists: true, content: null, unreadable: true };
 	}
 }
@@ -510,7 +591,11 @@ function shadowHomeStateMatches(left, right) {
 	);
 }
 
-function syncShadowHomeStateFile(sourcePath, destinationPath) {
+function syncShadowHomeStateFile(
+	sourcePath,
+	destinationPath,
+	expectedDestinationState,
+) {
 	const tempPath = join(
 		dirname(destinationPath),
 		`.${basename(destinationPath)}.codex-multi-auth-sync-${process.pid}.tmp`,
@@ -518,7 +603,7 @@ function syncShadowHomeStateFile(sourcePath, destinationPath) {
 	try {
 		mkdirSync(dirname(destinationPath), { recursive: true });
 		copyFileSync(sourcePath, tempPath);
-		renameSync(tempPath, destinationPath);
+		renameFileWithRetry(tempPath, destinationPath, expectedDestinationState);
 	} catch (error) {
 		try {
 			rmSync(tempPath, { force: true });
@@ -640,7 +725,7 @@ function createCompatibilityCodexHome(
 				if (shadowHomeStateMatches(shadowState, originalSnapshot)) {
 					continue;
 				}
-				syncShadowHomeStateFile(shadowPath, originalPath);
+				syncShadowHomeStateFile(shadowPath, originalPath, originalSnapshot);
 				tightenShadowHomePermissions(originalPath);
 			} catch {
 				// Best-effort only; runtime auth refreshes should not fail cleanup.

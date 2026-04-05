@@ -146,6 +146,83 @@ describe("unified settings", () => {
 		});
 	});
 
+	it("rethrows sync backup read errors when the primary settings file is invalid", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedPluginConfig,
+		} = await import("../lib/unified-settings.js");
+
+		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 });
+		await saveUnifiedPluginConfig({ codexMode: false, fetchTimeoutMs: 90_000 });
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+
+		const backupPath = `${getUnifiedSettingsPath()}.bak`;
+		vi.resetModules();
+		vi.doMock("node:fs", async () => {
+			const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+			return {
+				...actual,
+				readFileSync: (...args: Parameters<typeof actual.readFileSync>) => {
+					const [filePath] = args;
+					if (String(filePath) === backupPath) {
+						const error = new Error("busy") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return actual.readFileSync(...args);
+				},
+			};
+		});
+
+		try {
+			const { saveUnifiedPluginConfigSync } = await import("../lib/unified-settings.js");
+			expect(() =>
+				saveUnifiedPluginConfigSync({
+					codexMode: true,
+					fetchTimeoutMs: 120_000,
+				}),
+			).toThrow(/busy/);
+		} finally {
+			vi.doUnmock("node:fs");
+			vi.resetModules();
+		}
+	});
+
+	it("rethrows async backup read errors when the primary settings file is invalid", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedPluginConfig,
+		} = await import("../lib/unified-settings.js");
+
+		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 });
+		await saveUnifiedPluginConfig({ codexMode: false, fetchTimeoutMs: 90_000 });
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+
+		const backupPath = `${getUnifiedSettingsPath()}.bak`;
+		const originalReadFile = fs.readFile;
+		const readSpy = vi.spyOn(fs, "readFile");
+		readSpy.mockImplementation((...args: Parameters<typeof fs.readFile>) => {
+			const [filePath] = args;
+			if (String(filePath) === backupPath) {
+				const error = new Error("denied") as NodeJS.ErrnoException;
+				error.code = "EPERM";
+				throw error;
+			}
+			return originalReadFile(...args);
+		});
+
+		try {
+			await expect(
+				saveUnifiedPluginConfig({
+					codexMode: true,
+					fetchTimeoutMs: 120_000,
+				}),
+			).rejects.toMatchObject({ code: "EPERM" });
+		} finally {
+			readSpy.mockRestore();
+		}
+	});
+
 	it("preserves the last good backup when a write fails after a backup-derived read", async () => {
 		const {
 			getUnifiedSettingsPath,
@@ -316,6 +393,63 @@ describe("unified settings", () => {
 		});
 		const fileContent = await fs.readFile(getUnifiedSettingsPath(), "utf8");
 		expect(fileContent).toContain('"version": 1');
+	});
+
+	it("overwrites invalid primary settings when saving without a usable backup", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedPluginConfig,
+			saveUnifiedDashboardSettings,
+		} = await import("../lib/unified-settings.js");
+
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+
+		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 });
+		await saveUnifiedDashboardSettings({
+			menuShowLastUsed: false,
+			uiThemePreset: "blue",
+		});
+
+		const parsed = JSON.parse(
+			await fs.readFile(getUnifiedSettingsPath(), "utf8"),
+		) as {
+			pluginConfig?: Record<string, unknown>;
+			dashboardDisplaySettings?: Record<string, unknown>;
+		};
+		expect(parsed.pluginConfig).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+		expect(parsed.dashboardDisplaySettings).toEqual({
+			menuShowLastUsed: false,
+			uiThemePreset: "blue",
+		});
+	});
+
+	it("overwrites invalid primary settings with sync plugin saves when no usable backup exists", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedPluginConfigSync,
+			loadUnifiedPluginConfigSync,
+		} = await import("../lib/unified-settings.js");
+
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+
+		saveUnifiedPluginConfigSync({ codexMode: true, fetchTimeoutMs: 45_000 });
+
+		expect(loadUnifiedPluginConfigSync()).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+		const parsed = JSON.parse(
+			await fs.readFile(getUnifiedSettingsPath(), "utf8"),
+		) as {
+			pluginConfig?: Record<string, unknown>;
+		};
+		expect(parsed.pluginConfig).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
 	});
 
 	it("returns null for missing pluginConfig section", async () => {

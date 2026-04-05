@@ -8,7 +8,7 @@ function isRetryableReadError(error: unknown): boolean {
 	return typeof code === "string" && RETRYABLE_READ_CODES.has(code);
 }
 
-async function readFileWithRetry(
+export async function readFileWithRetry(
 	path: string,
 	deps: {
 		readFile: typeof import("node:fs").promises.readFile;

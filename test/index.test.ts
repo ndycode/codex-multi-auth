@@ -4500,6 +4500,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 
 	it("uses the floored cooldown for stream failover 429s", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
+		const { CapabilityPolicyStore } = await import("../lib/capability-policy.js");
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
 		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
 		const streamFailoverModule = await import("../lib/request/stream-failover.js");
@@ -4519,7 +4520,12 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		};
 		const markRateLimitedWithReason = vi.fn();
 		const recordRateLimit = vi.fn();
+		const recordFailure = vi.fn();
 		const saveToDiskDebounced = vi.fn();
+		const capabilityFailureSpy = vi.spyOn(
+			CapabilityPolicyStore.prototype,
+			"recordFailure",
+		);
 		const pendingFailovers: Array<Promise<unknown>> = [];
 		const fallback429Response = new Response(
 			new ReadableStream({
@@ -4560,7 +4566,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			syncCodexCliActiveSelectionForIndex: async () => {},
 			markSwitched: () => {},
 			removeAccount: () => {},
-			recordFailure: () => {},
+			recordFailure,
 			recordSuccess: () => {},
 			recordRateLimit,
 			getMinWaitTimeForFamily: () => 0,
@@ -4631,8 +4637,145 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			"gpt-5.1",
 			"gpt-5.1",
 		);
+		expect(recordFailure).not.toHaveBeenCalled();
+		expect(capabilityFailureSpy).not.toHaveBeenCalled();
 		expect(saveToDiskDebounced).toHaveBeenCalledTimes(1);
 		expect(fallbackCancelSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("records capability failure once for non-429 stream failover fallback errors", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const { CapabilityPolicyStore } = await import("../lib/capability-policy.js");
+		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
+		const streamFailoverModule = await import("../lib/request/stream-failover.js");
+		const currentAccount = {
+			index: 0,
+			accountId: "acc-1",
+			email: "alpha@example.com",
+			refreshToken: "refresh-1",
+			accessToken: "access-alpha",
+		};
+		const fallbackAccount = {
+			index: 1,
+			accountId: "acc-2",
+			email: "beta@example.com",
+			refreshToken: "refresh-2",
+			accessToken: "access-beta",
+		};
+		const recordFailure = vi.fn();
+		const saveToDiskDebounced = vi.fn();
+		const capabilityFailureSpy = vi.spyOn(
+			CapabilityPolicyStore.prototype,
+			"recordFailure",
+		);
+		const pendingFailovers: Array<Promise<unknown>> = [];
+		const fallbackErrorResponse = new Response(
+			new ReadableStream({
+				start(controller) {
+					controller.enqueue(new TextEncoder().encode("server error"));
+					controller.close();
+				},
+			}),
+			{ status: 500 },
+		);
+		const manager = {
+			getAccountCount: () => 2,
+			getCurrentOrNextForFamilyHybrid: () => currentAccount,
+			getCurrentOrNextForFamily: () => currentAccount,
+			getCurrentWorkspace: () => null,
+			getAccountByIndex: (index: number) =>
+				index === fallbackAccount.index ? fallbackAccount : currentAccount,
+			getAccountsSnapshot: () => [currentAccount, fallbackAccount],
+			isAccountAvailableForFamily: (index: number) => index === fallbackAccount.index,
+			toAuthDetails: (account: typeof currentAccount | typeof fallbackAccount) => ({
+				type: "oauth" as const,
+				access: account.accessToken,
+				refresh: account.refreshToken,
+				expires: Date.now() + 60_000,
+			}),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced,
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => 1,
+			saveToDisk: async () => {},
+			markAccountCoolingDown: () => {},
+			markRateLimited: () => {},
+			markRateLimitedWithReason: () => {},
+			consumeToken: () => true,
+			refundToken: () => {},
+			syncCodexCliActiveSelectionForIndex: async () => {},
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure,
+			recordSuccess: () => {},
+			recordRateLimit: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => false,
+			markToastShown: () => {},
+			setActiveIndex: () => null,
+		};
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		vi.mocked(fetchHelpersModule.handleErrorResponse).mockImplementation(
+			async (response: Response) =>
+				({
+					response,
+					errorBody: "server error",
+				}) as never,
+		);
+		vi.mocked(fetchHelpersModule.transformRequestForCodex).mockImplementation(
+			async (init, _url, _userConfig, _codexMode, body) => ({
+				updatedInit: {
+					...(init as RequestInit),
+					body: JSON.stringify(body ?? {}),
+				},
+				body: (body ?? {
+					model: "gpt-5.1",
+					stream: true,
+				}) as {
+					model: string;
+					stream?: boolean;
+				},
+			}),
+		);
+		vi.spyOn(streamFailoverModule, "withStreamingFailover").mockImplementation(
+			(initialResponse, getFallbackResponse) => {
+				pendingFailovers.push(getFallbackResponse(1, 0));
+				return initialResponse;
+			},
+		);
+		let fetchCount = 0;
+		globalThis.fetch = vi.fn().mockImplementation(async () => {
+			fetchCount += 1;
+			if (fetchCount === 1) {
+				return new Response("data: ok\n\n", { status: 200 });
+			}
+			return fallbackErrorResponse;
+		});
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1", stream: true }),
+		});
+		await Promise.all(pendingFailovers);
+
+		expect(response.status).toBe(200);
+		expect(recordFailure).toHaveBeenCalledTimes(1);
+		expect(recordFailure).toHaveBeenCalledWith(
+			fallbackAccount,
+			"gpt-5.1",
+			"gpt-5.1",
+		);
+		expect(capabilityFailureSpy).toHaveBeenCalledTimes(1);
+		expect(capabilityFailureSpy.mock.calls[0]?.[0]).toMatch(
+			/^account:acc-2::email:/,
+		);
+		expect(capabilityFailureSpy.mock.calls[0]?.[1]).toBe("gpt-5.1");
+		expect(saveToDiskDebounced).not.toHaveBeenCalled();
 	});
 
 	it("forwards persistence error toast arguments through manual OAuth flow", async () => {

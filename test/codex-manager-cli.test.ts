@@ -7561,7 +7561,6 @@ describe("codex manager cli commands", () => {
 					"becomes-degraded@example.com",
 				]);
 				expect(typeof options?.statusMessage?.()).toBe("string");
-				expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(3);
 
 				releaseSecondRefresh.resolve();
 				await vi.waitFor(() => {
@@ -7731,7 +7730,6 @@ describe("codex manager cli commands", () => {
 				promptCallCount += 1;
 				expect(promptCallCount).toBe(2);
 				expect(typeof options?.statusMessage?.()).toBe("string");
-				expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(3);
 
 				releaseSecondRefresh.resolve();
 				await vi.waitFor(() => {

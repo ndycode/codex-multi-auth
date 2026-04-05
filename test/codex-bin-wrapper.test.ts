@@ -94,6 +94,16 @@ function injectShadowCleanupBusyFailures(
 	};
 }
 
+function injectShadowPreflightReadBusyFailures(
+	failuresBeforeSuccess = 2,
+): NodeJS.ProcessEnv {
+	return {
+		CODEX_MULTI_AUTH_TEST_SHADOW_PREFLIGHT_READ_BUSY_FAILURES: String(
+			failuresBeforeSuccess,
+		),
+	};
+}
+
 function createFakeGlobalCodexInstall(rootDir: string): string {
 	const fakeBin = join(rootDir, "@openai", "codex", "bin", "codex.js");
 	mkdirSync(dirname(fakeBin), { recursive: true });
@@ -526,11 +536,131 @@ describe("codex bin wrapper", () => {
 				TMP: controlledTmp,
 				TEMP: controlledTmp,
 				TMPDIR: controlledTmp,
+				...injectShadowCleanupBusyFailures(),
 			},
 		);
 
 		expect(result.status).toBe(0);
 		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe('{"token":"external"}');
+		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe('{"accounts":["shadow"]}');
+		expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"shadow"}');
+	});
+
+	it("does not clobber sync-back files that change during rename retry backoff", () => {
+		const fixtureRoot = createWrapperFixture();
+		const retryMarkerDir = join(fixtureRoot, "retry-markers");
+		const accountsRetryMarker = join(retryMarkerDir, "accounts.json.retry-1");
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const { spawn } = require("node:child_process");',
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const home = process.env.CODEX_HOME ?? "";',
+			'const retryMarker = process.env.CODEX_MULTI_AUTH_TEST_RETRY_MARKER ?? "";',
+			'const originalHome = process.env.CODEX_MULTI_AUTH_TEST_EXTERNAL_HOME ?? "";',
+			'fs.writeFileSync(path.join(home, "accounts.json"), \'{"accounts":["shadow"]}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(home, ".codex-global-state.json"), \'{"last":"shadow"}\\n\', "utf8");',
+			"if (originalHome && retryMarker) {",
+			"  const mutateScript = [",
+			'    \'const fs = require("node:fs");\',',
+			'    \'const path = require("node:path");\',',
+			'    \'const markerPath = process.argv[1];\',',
+			'    \'const target = process.argv[2];\',',
+			'    \'const startedAt = Date.now();\',',
+			'    \'const waitForMarker = () => {\',',
+			'    \'  if (fs.existsSync(markerPath)) {\',',
+			'    \'  fs.writeFileSync(path.join(target, \"accounts.json\"), \"{\\\\\"accounts\\\\\":[\\\\\"external-during-retry\\\\\"]}\\\\n\", \"utf8\");\',',
+			'    \'  fs.writeFileSync(path.join(target, \".codex-global-state.json\"), \"{\\\\\"last\\\\\":\\\\\"external-during-retry\\\\\"}\\\\n\", \"utf8\");\',',
+			'    \'  process.exit(0);\',',
+			'    \'  }\',',
+			'    \'  if (Date.now() - startedAt > 5000) {\',',
+			'    \'    process.exit(2);\',',
+			'    \'  }\',',
+			'    \'  setTimeout(waitForMarker, 5);\',',
+			'    \'};\',',
+			'    \'waitForMarker();\',',
+			"  ].join(\"\\n\");",
+			"  const mutator = spawn(process.execPath, [\"-e\", mutateScript, retryMarker, originalHome], {",
+			"    detached: true,",
+			'    stdio: "ignore",',
+			"  });",
+			"  mutator.unref();",
+			"}",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const controlledTmp = join(fixtureRoot, "tmp");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(controlledTmp, { recursive: true });
+		mkdirSync(retryMarkerDir, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
+		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.1"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_TEST_EXTERNAL_HOME: originalHome,
+				CODEX_MULTI_AUTH_TEST_RETRY_MARKER: accountsRetryMarker,
+				CODEX_MULTI_AUTH_TEST_SHADOW_RETRY_MARKER_DIR: retryMarkerDir,
+				TMP: controlledTmp,
+				TEMP: controlledTmp,
+				TMPDIR: controlledTmp,
+				...injectShadowCleanupBusyFailures(3),
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe('{"token":"original"}');
+		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe(
+			'{"accounts":["external-during-retry"]}',
+		);
+		expect(
+			readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim(),
+		).toBe('{"last":"external-during-retry"}');
+	});
+
+	it("retries preflight destination reads when the sync-back target is transiently locked", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const home = process.env.CODEX_HOME ?? "";',
+			'fs.writeFileSync(path.join(home, "auth.json"), \'{"token":"shadow"}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(home, "accounts.json"), \'{"accounts":["shadow"]}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(home, ".codex-global-state.json"), \'{"last":"shadow"}\\n\', "utf8");',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const controlledTmp = join(fixtureRoot, "tmp");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(controlledTmp, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
+		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.1"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				TMP: controlledTmp,
+				TEMP: controlledTmp,
+				TMPDIR: controlledTmp,
+				...injectShadowCleanupBusyFailures(1),
+				...injectShadowPreflightReadBusyFailures(2),
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe('{"token":"shadow"}');
 		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe('{"accounts":["shadow"]}');
 		expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"shadow"}');
 	});
