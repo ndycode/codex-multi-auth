@@ -1806,6 +1806,14 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 				isRecord,
 				now: () => Date.now(),
 			}),
+		persistRecoveredBackup: async (storage, resetMarkerPath) =>
+			withStorageLock(async () => {
+				if (existsSync(resetMarkerPath)) {
+					return false;
+				}
+				await saveFlaggedAccountsUnlocked(storage);
+				return true;
+			}),
 		saveFlaggedAccounts,
 		loadFlaggedAccountsState,
 		logError: (message, details) => {

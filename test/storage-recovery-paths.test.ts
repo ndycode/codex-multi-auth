@@ -132,6 +132,11 @@ describe("storage recovery paths", () => {
 		const recovered = await loadFlaggedAccounts();
 		expect(recovered.accounts).toHaveLength(1);
 		expect(recovered.accounts[0]?.email).toBe("flagged@example.com");
+
+		const persisted = JSON.parse(await fs.readFile(flaggedPath, "utf-8")) as {
+			accounts?: Array<{ email?: string }>;
+		};
+		expect(persisted.accounts?.[0]?.email).toBe("flagged@example.com");
 	});
 
 	it("recovers flagged accounts from backup file when primary storage is unreadable", async () => {
@@ -157,6 +162,11 @@ describe("storage recovery paths", () => {
 		const recovered = await loadFlaggedAccounts();
 		expect(recovered.accounts).toHaveLength(1);
 		expect(recovered.accounts[0]?.email).toBe("flagged2@example.com");
+
+		const persisted = JSON.parse(await fs.readFile(flaggedPath, "utf-8")) as {
+			accounts?: Array<{ email?: string }>;
+		};
+		expect(persisted.accounts?.[0]?.email).toBe("flagged2@example.com");
 	});
 
 	it("suppresses flagged backup recovery when the reset marker appears mid-read", async () => {

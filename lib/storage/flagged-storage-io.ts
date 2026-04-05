@@ -57,6 +57,10 @@ export async function loadFlaggedAccountsState(params: {
 	legacyPath: string;
 	resetMarkerPath: string;
 	normalizeFlaggedStorage: (data: unknown) => FlaggedAccountStorageV1;
+	persistRecoveredBackup: (
+		storage: FlaggedAccountStorageV1,
+		resetMarkerPath: string,
+	) => Promise<boolean>;
 	saveFlaggedAccounts: (storage: FlaggedAccountStorageV1) => Promise<void>;
 	logError: (message: string, details: Record<string, unknown>) => void;
 	logInfo: (message: string, details: Record<string, unknown>) => void;
@@ -83,6 +87,23 @@ export async function loadFlaggedAccountsState(params: {
 				}
 				if (existsSync(params.resetMarkerPath)) {
 					return empty;
+				}
+				if (recovered.accounts.length > 0) {
+					try {
+						const persisted = await params.persistRecoveredBackup(
+							recovered,
+							params.resetMarkerPath,
+						);
+						if (!persisted) {
+							return empty;
+						}
+					} catch (persistError) {
+						params.logError("Failed to persist recovered flagged account storage", {
+							from: backupPath,
+							to: params.path,
+							error: String(persistError),
+						});
+					}
 				}
 				params.logInfo("Recovered flagged account storage from backup", {
 					from: backupPath,

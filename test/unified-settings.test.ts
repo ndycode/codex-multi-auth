@@ -193,6 +193,72 @@ describe("unified settings", () => {
 		});
 	});
 
+	it("keeps the last good backup when a concurrent writer updates the primary after a backup-derived read", async () => {
+		const {
+			getUnifiedSettingsPath,
+			loadUnifiedPluginConfigSync,
+			saveUnifiedPluginConfig,
+		} = await import("../lib/unified-settings.js");
+
+		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 });
+		await saveUnifiedPluginConfig({ codexMode: false, fetchTimeoutMs: 90_000 });
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+
+		expect(loadUnifiedPluginConfigSync()).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+
+		const concurrentPrimary = {
+			version: 1,
+			pluginConfig: {
+				codexMode: false,
+				fetchTimeoutMs: 150_000,
+				retries: 4,
+			},
+		};
+		const copySpy = vi.spyOn(fs, "copyFile");
+		const renameSpy = vi.spyOn(fs, "rename");
+		let injectedConcurrentWrite = false;
+		renameSpy.mockImplementationOnce(async () => {
+			injectedConcurrentWrite = true;
+			await fs.writeFile(
+				getUnifiedSettingsPath(),
+				`${JSON.stringify(concurrentPrimary, null, 2)}\n`,
+				"utf8",
+			);
+			const error = new Error("denied") as NodeJS.ErrnoException;
+			error.code = "EACCES";
+			throw error;
+		});
+
+		try {
+			await expect(
+				saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 120_000 }),
+			).rejects.toThrow();
+		} finally {
+			copySpy.mockRestore();
+			renameSpy.mockRestore();
+		}
+
+		expect(injectedConcurrentWrite).toBe(true);
+		expect(copySpy).not.toHaveBeenCalledWith(
+			getUnifiedSettingsPath(),
+			`${getUnifiedSettingsPath()}.bak`,
+		);
+		const backupRecord = JSON.parse(
+			await fs.readFile(`${getUnifiedSettingsPath()}.bak`, "utf8"),
+		) as { pluginConfig?: Record<string, unknown> };
+		expect(backupRecord.pluginConfig).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+		const primaryRecord = JSON.parse(
+			await fs.readFile(getUnifiedSettingsPath(), "utf8"),
+		) as { pluginConfig?: Record<string, unknown> };
+		expect(primaryRecord.pluginConfig).toEqual(concurrentPrimary.pluginConfig);
+	});
+
 	it("resumes snapshotting after a backup-derived write succeeds", async () => {
 		const {
 			getUnifiedSettingsPath,

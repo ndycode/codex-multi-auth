@@ -5,12 +5,20 @@ export async function loadFlaggedAccountsEntry(params: {
 	getLegacyFlaggedAccountsPath: () => string;
 	getIntentionalResetMarkerPath: (path: string) => string;
 	normalizeFlaggedStorage: (data: unknown) => FlaggedAccountStorageV1;
+	persistRecoveredBackup: (
+		storage: FlaggedAccountStorageV1,
+		resetMarkerPath: string,
+	) => Promise<boolean>;
 	saveFlaggedAccounts: (storage: FlaggedAccountStorageV1) => Promise<void>;
 	loadFlaggedAccountsState: (args: {
 		path: string;
 		legacyPath: string;
 		resetMarkerPath: string;
 		normalizeFlaggedStorage: (data: unknown) => FlaggedAccountStorageV1;
+		persistRecoveredBackup: (
+			storage: FlaggedAccountStorageV1,
+			resetMarkerPath: string,
+		) => Promise<boolean>;
 		saveFlaggedAccounts: (storage: FlaggedAccountStorageV1) => Promise<void>;
 		logError: (message: string, details: Record<string, unknown>) => void;
 		logInfo: (message: string, details: Record<string, unknown>) => void;
@@ -24,6 +32,7 @@ export async function loadFlaggedAccountsEntry(params: {
 		legacyPath: params.getLegacyFlaggedAccountsPath(),
 		resetMarkerPath: params.getIntentionalResetMarkerPath(path),
 		normalizeFlaggedStorage: params.normalizeFlaggedStorage,
+		persistRecoveredBackup: params.persistRecoveredBackup,
 		saveFlaggedAccounts: params.saveFlaggedAccounts,
 		logError: params.logError,
 		logInfo: params.logInfo,
