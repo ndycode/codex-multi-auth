@@ -106,6 +106,7 @@ export async function loadFlaggedAccountsState(params: {
 							to: params.path,
 							error: String(persistError),
 						});
+						return recovered;
 					}
 				}
 				params.logInfo("Recovered flagged account storage from backup", {

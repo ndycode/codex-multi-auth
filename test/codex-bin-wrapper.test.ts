@@ -548,28 +548,41 @@ describe("codex bin wrapper", () => {
 
 	it("does not clobber sync-back files that change during rename retry backoff", () => {
 		const fixtureRoot = createWrapperFixture();
+		const retryMarkerDir = join(fixtureRoot, "retry-markers");
+		const accountsRetryMarker = join(retryMarkerDir, "accounts.json.retry-1");
 		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
 			"#!/usr/bin/env node",
 			'const { spawn } = require("node:child_process");',
 			'const fs = require("node:fs");',
 			'const path = require("node:path");',
 			'const home = process.env.CODEX_HOME ?? "";',
+			'const retryMarker = process.env.CODEX_MULTI_AUTH_TEST_RETRY_MARKER ?? "";',
 			'const originalHome = process.env.CODEX_MULTI_AUTH_TEST_EXTERNAL_HOME ?? "";',
-			'fs.writeFileSync(path.join(home, "auth.json"), \'{"token":"shadow"}\\n\', "utf8");',
 			'fs.writeFileSync(path.join(home, "accounts.json"), \'{"accounts":["shadow"]}\\n\', "utf8");',
 			'fs.writeFileSync(path.join(home, ".codex-global-state.json"), \'{"last":"shadow"}\\n\', "utf8");',
-			"if (originalHome) {",
+			"if (originalHome && retryMarker) {",
 			"  const mutateScript = [",
 			'    \'const fs = require("node:fs");\',',
 			'    \'const path = require("node:path");\',',
-			'    \'const target = process.argv[1];\',',
-			'    \'setTimeout(() => {\',',
+			'    \'const markerPath = process.argv[1];\',',
+			'    \'const target = process.argv[2];\',',
+			'    \'const startedAt = Date.now();\',',
+			'    \'const waitForMarker = () => {\',',
+			'    \'  if (fs.existsSync(markerPath)) {\',',
 			'    \'  fs.writeFileSync(path.join(target, \"accounts.json\"), \"{\\\\\"accounts\\\\\":[\\\\\"external-during-retry\\\\\"]}\\\\n\", \"utf8\");\',',
 			'    \'  fs.writeFileSync(path.join(target, \".codex-global-state.json\"), \"{\\\\\"last\\\\\":\\\\\"external-during-retry\\\\\"}\\\\n\", \"utf8\");\',',
 			'    \'  process.exit(0);\',',
-			'    \'}, 40);\',',
+			'    \'    return;\',',
+			'    \'  }\',',
+			'    \'  if (Date.now() - startedAt > 5000) {\',',
+			'    \'    process.exit(2);\',',
+			'    \'    return;\',',
+			'    \'  }\',',
+			'    \'  setTimeout(waitForMarker, 5);\',',
+			'    \'};\',',
+			'    \'waitForMarker();\',',
 			"  ].join(\"\\n\");",
-			"  const mutator = spawn(process.execPath, [\"-e\", mutateScript, originalHome], {",
+			"  const mutator = spawn(process.execPath, [\"-e\", mutateScript, retryMarker, originalHome], {",
 			"    detached: true,",
 			'    stdio: "ignore",',
 			"  });",
@@ -581,6 +594,7 @@ describe("codex bin wrapper", () => {
 		const controlledTmp = join(fixtureRoot, "tmp");
 		mkdirSync(originalHome, { recursive: true });
 		mkdirSync(controlledTmp, { recursive: true });
+		mkdirSync(retryMarkerDir, { recursive: true });
 		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
 		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
 		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
@@ -593,6 +607,8 @@ describe("codex bin wrapper", () => {
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_HOME: originalHome,
 				CODEX_MULTI_AUTH_TEST_EXTERNAL_HOME: originalHome,
+				CODEX_MULTI_AUTH_TEST_RETRY_MARKER: accountsRetryMarker,
+				CODEX_MULTI_AUTH_TEST_SHADOW_RETRY_MARKER_DIR: retryMarkerDir,
 				TMP: controlledTmp,
 				TEMP: controlledTmp,
 				TMPDIR: controlledTmp,
@@ -601,7 +617,7 @@ describe("codex bin wrapper", () => {
 		);
 
 		expect(result.status).toBe(0);
-		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe('{"token":"shadow"}');
+		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe('{"token":"original"}');
 		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe(
 			'{"accounts":["external-during-retry"]}',
 		);

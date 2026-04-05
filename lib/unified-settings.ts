@@ -53,10 +53,16 @@ function cloneRecord(value: unknown): JsonRecord | null {
 	return { ...value };
 }
 
+class InvalidSettingsRecordError extends Error {
+	override readonly name = "InvalidSettingsRecordError";
+}
+
 function parseSettingsRecord(content: string): JsonRecord {
 	const parsed = cloneRecord(JSON.parse(content));
 	if (!parsed) {
-		throw new Error("Unified settings must contain a JSON object at the root.");
+		throw new InvalidSettingsRecordError(
+			"Unified settings must contain a JSON object at the root.",
+		);
 	}
 	return parsed;
 }
@@ -157,10 +163,7 @@ function isInvalidSettingsRecordError(error: unknown): boolean {
 	if (error instanceof SyntaxError) {
 		return true;
 	}
-	return (
-		error instanceof Error &&
-		error.message === "Unified settings must contain a JSON object at the root."
-	);
+	return error instanceof InvalidSettingsRecordError;
 }
 
 /**

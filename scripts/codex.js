@@ -32,6 +32,8 @@ let shadowHomeCleanupPreflightReadBusyFailuresRemaining = Number.parseInt(
 	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_PREFLIGHT_READ_BUSY_FAILURES ?? "0",
 	10,
 );
+const shadowHomeCleanupRetryMarkerDir =
+	(process.env.CODEX_MULTI_AUTH_TEST_SHADOW_RETRY_MARKER_DIR ?? "").trim();
 
 function isRetryableShadowHomeCleanupError(error) {
 	const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
@@ -246,6 +248,25 @@ function maybeThrowSimulatedShadowHomePreflightReadBusyError() {
 	}
 }
 
+function writeShadowHomeCleanupRetryMarker(destinationPath, attempt) {
+	if (shadowHomeCleanupRetryMarkerDir.length === 0) {
+		return;
+	}
+	try {
+		mkdirSync(shadowHomeCleanupRetryMarkerDir, { recursive: true });
+		writeFileSync(
+			join(
+				shadowHomeCleanupRetryMarkerDir,
+				`${basename(destinationPath)}.retry-${attempt + 1}`,
+			),
+			`${attempt + 1}\n`,
+			"utf8",
+		);
+	} catch {
+		// Best-effort test hook only.
+	}
+}
+
 function ensureShadowHomeDestinationMatchesSnapshot(destinationPath, expectedState) {
 	if (!expectedState) {
 		return;
@@ -277,6 +298,7 @@ function renameFileWithRetry(sourcePath, destinationPath, expectedDestinationSta
 			) {
 				throw error;
 			}
+			writeShadowHomeCleanupRetryMarker(destinationPath, attempt);
 			sleepSync(SHADOW_HOME_CLEANUP_BACKOFF_MS[attempt]);
 		}
 	}

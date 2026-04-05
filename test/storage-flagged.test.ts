@@ -333,12 +333,12 @@ describe("flagged account storage", () => {
 				return originalReadFile(...args);
 			});
 
-	const flagged = await loadFlaggedAccounts();
-	expect(flagged.accounts).toHaveLength(1);
-	expect(flagged.accounts[0]?.refreshToken).toBe("primary-flagged");
-	expect(existsSync(flaggedPath)).toBe(true);
+		const flagged = await loadFlaggedAccounts();
+		expect(flagged.accounts).toHaveLength(1);
+		expect(flagged.accounts[0]?.refreshToken).toBe("primary-flagged");
+		expect(existsSync(flaggedPath)).toBe(true);
 
-	readSpy.mockRestore();
+		readSpy.mockRestore();
 	});
 
 	it("retries transient flagged primary read errors before falling back to backup", async () => {
@@ -715,5 +715,74 @@ describe("flagged storage extracted helpers", () => {
 			"Failed to inspect flagged snapshot",
 			expect.objectContaining({ path: "flagged.json" }),
 		);
+	});
+
+	it("does not log successful backup recovery when persisting the recovery fails", async () => {
+		const { loadFlaggedAccountsState } = await import(
+			"../lib/storage/flagged-storage-io.js"
+		);
+		const fixtureRoot = join(
+			tmpdir(),
+			`codex-flagged-io-${Math.random().toString(36).slice(2)}`,
+		);
+		const flaggedPath = join(fixtureRoot, "flagged.json");
+		const resetMarkerPath = `${flaggedPath}.reset`;
+		const logError = vi.fn();
+		const logInfo = vi.fn();
+
+		try {
+			await fs.mkdir(fixtureRoot, { recursive: true });
+			await fs.writeFile(
+				`${flaggedPath}.bak`,
+				JSON.stringify(
+					{
+						version: 1,
+						accounts: [
+							{
+								refreshToken: "backup-token",
+								flaggedAt: 1,
+								addedAt: 1,
+								lastUsed: 1,
+							},
+						],
+					},
+					null,
+					2,
+				),
+				"utf8",
+			);
+
+			await expect(
+				loadFlaggedAccountsState({
+					path: flaggedPath,
+					legacyPath: `${flaggedPath}.legacy`,
+					resetMarkerPath,
+					normalizeFlaggedStorage: (data) => data as never,
+					persistRecoveredBackup: vi.fn(async () => {
+						throw new Error("persist failed");
+					}),
+					saveFlaggedAccounts: vi.fn(async () => {}),
+					logError,
+					logInfo,
+				}),
+			).resolves.toEqual({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "backup-token",
+						flaggedAt: 1,
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			});
+			expect(logError).toHaveBeenCalledWith(
+				"Failed to persist recovered flagged account storage",
+				expect.objectContaining({ from: `${flaggedPath}.bak`, to: flaggedPath }),
+			);
+			expect(logInfo).not.toHaveBeenCalled();
+		} finally {
+			await removeWithRetry(fixtureRoot, { recursive: true, force: true });
+		}
 	});
 });
