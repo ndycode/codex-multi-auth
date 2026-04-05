@@ -120,12 +120,46 @@ function createSpawnSyncSuccess(stdout: string): SpawnSyncReturns<string> {
 	};
 }
 
+const WRAPPER_ENV_ALLOWLIST = [
+	"APPDATA",
+	"CI",
+	"COLORTERM",
+	"COMSPEC",
+	"ComSpec",
+	"HOME",
+	"HOMEDRIVE",
+	"HOMEPATH",
+	"LANG",
+	"LOCALAPPDATA",
+	"NODE_OPTIONS",
+	"OS",
+	"PATH",
+	"Path",
+	"PATHEXT",
+	"PROCESSOR_ARCHITECTURE",
+	"PROGRAMDATA",
+	"ProgramData",
+	"SYSTEMROOT",
+	"SystemRoot",
+	"TEMP",
+	"TERM",
+	"TERM_PROGRAM",
+	"TMP",
+	"TMPDIR",
+	"USERPROFILE",
+	"WINDIR",
+] as const;
+
 function buildWrapperEnv(extraEnv: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-	const env: NodeJS.ProcessEnv = {
-		...process.env,
-		CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE: "1",
-		...extraEnv,
-	};
+	const env: NodeJS.ProcessEnv = {};
+	for (const key of WRAPPER_ENV_ALLOWLIST) {
+		const value = process.env[key];
+		if (value !== undefined) {
+			env[key] = value;
+		}
+	}
+	env.CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE = "1";
+	Object.assign(env, extraEnv);
 	for (const [key, value] of Object.entries(env)) {
 		if (value === undefined) {
 			delete env[key];
@@ -405,9 +439,9 @@ describe("codex bin wrapper", () => {
 		);
 
 		expect(result.status).toBe(1);
-		expect(
-			readdirSync(controlledTmp).filter((entry) =>
-				entry.startsWith("codex-multi-auth-home-"),
+	expect(
+		readdirSync(controlledTmp).filter((entry) =>
+			entry.startsWith("codex-multi-auth-home-"),
 			),
 		).toEqual([]);
 	});
@@ -449,12 +483,56 @@ describe("codex bin wrapper", () => {
 		expect(result.status).toBe(0);
 		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe('{"token":"shadow"}');
 		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe('{"accounts":["shadow"]}');
+	expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"shadow"}');
+	expect(
+		readdirSync(controlledTmp).filter((entry) =>
+			entry.startsWith("codex-multi-auth-home-"),
+		),
+	).toEqual([]);
+	});
+
+	it("does not clobber original auth state that changed while the compatibility shadow was active", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const home = process.env.CODEX_HOME ?? "";',
+			'const originalHome = process.env.CODEX_MULTI_AUTH_TEST_EXTERNAL_HOME ?? "";',
+			'fs.writeFileSync(path.join(home, "auth.json"), \'{"token":"shadow"}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(home, "accounts.json"), \'{"accounts":["shadow"]}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(home, ".codex-global-state.json"), \'{"last":"shadow"}\\n\', "utf8");',
+			'if (originalHome) {',
+			'  fs.writeFileSync(path.join(originalHome, "auth.json"), \'{"token":"external"}\\n\', "utf8");',
+			'}',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const controlledTmp = join(fixtureRoot, "tmp");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(controlledTmp, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
+		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.1"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_TEST_EXTERNAL_HOME: originalHome,
+				TMP: controlledTmp,
+				TEMP: controlledTmp,
+				TMPDIR: controlledTmp,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe('{"token":"external"}');
+		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe('{"accounts":["shadow"]}');
 		expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"shadow"}');
-		expect(
-			readdirSync(controlledTmp).filter((entry) =>
-				entry.startsWith("codex-multi-auth-home-"),
-			),
-		).toEqual([]);
 	});
 
 	it("rewrites unquoted config reasoning effort values for mini compatibility models", () => {
@@ -561,10 +639,43 @@ describe("codex bin wrapper", () => {
 		);
 
 		expect(result.status).toBe(0);
-		expect(result.stdout).toContain(
-			'FORWARDED:exec status --model gpt-5.1-codex-mini -c model_reasoning_effort="high" -c cli_auth_credentials_store="file"',
-		);
-		expect(result.stdout).not.toContain('model_reasoning_effort="xhigh"');
+	expect(result.stdout).toContain(
+		'FORWARDED:exec status --model gpt-5.1-codex-mini -c model_reasoning_effort="high" -c cli_auth_credentials_store="file"',
+	);
+	expect(result.stdout).not.toContain('model_reasoning_effort="xhigh"');
+	});
+
+	it("coerces reasoning overrides for reasoning-suffixed general-model aliases", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(join(originalHome, "config.toml"), "", "utf8");
+
+		for (const model of ["gpt-5-low", "gpt-5-chat-latest-low"]) {
+			const result = runWrapper(
+				fixtureRoot,
+				[
+					"exec",
+					"status",
+					"--model",
+					model,
+					"-c",
+					'model_reasoning_effort="xhigh"',
+				],
+				{
+					CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+					CODEX_HOME: originalHome,
+				},
+			);
+
+			expect(result.status).toBe(0);
+			expect(result.stdout).toContain(
+				`FORWARDED:exec status --model ${model} -c model_reasoning_effort="high" -c cli_auth_credentials_store="file"`,
+			);
+			expect(result.stdout).not.toContain('model_reasoning_effort="xhigh"');
+		}
 	});
 
 	it("preserves explicit xhigh overrides for models that support them", () => {

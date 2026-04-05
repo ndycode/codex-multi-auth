@@ -333,12 +333,42 @@ describe("flagged account storage", () => {
 				return originalReadFile(...args);
 			});
 
-		const flagged = await loadFlaggedAccounts();
-		expect(flagged.accounts).toHaveLength(1);
-		expect(flagged.accounts[0]?.refreshToken).toBe("primary-flagged");
-		expect(existsSync(flaggedPath)).toBe(true);
+	const flagged = await loadFlaggedAccounts();
+	expect(flagged.accounts).toHaveLength(1);
+	expect(flagged.accounts[0]?.refreshToken).toBe("primary-flagged");
+	expect(existsSync(flaggedPath)).toBe(true);
 
-		readSpy.mockRestore();
+	readSpy.mockRestore();
+	});
+
+	it("skips invalid latest flagged backups and falls back to older valid snapshots", async () => {
+		const flaggedPath = getFlaggedAccountsPath();
+		await fs.mkdir(dirname(flaggedPath), { recursive: true });
+		await fs.writeFile(
+			`${flaggedPath}.bak`,
+			JSON.stringify({ version: 99, accounts: "broken" }),
+			"utf8",
+		);
+		await fs.writeFile(
+			`${flaggedPath}.bak.1`,
+			JSON.stringify({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "valid-older-backup",
+						flaggedAt: 3,
+						addedAt: 3,
+						lastUsed: 3,
+					},
+				],
+			}),
+			"utf8",
+		);
+
+		const flagged = await loadFlaggedAccounts();
+
+		expect(flagged.accounts).toHaveLength(1);
+		expect(flagged.accounts[0]?.refreshToken).toBe("valid-older-backup");
 	});
 
 	it("honors the reset marker even when it appears during backup recovery", async () => {

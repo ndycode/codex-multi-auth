@@ -481,7 +481,7 @@ async function readConfigRecordForSave(
 				return { status: "invalid", errorMessage };
 			}
 			return { status: "ok", record: parsed };
-		} catch (error) {
+	} catch (error) {
 			const code = (error as NodeJS.ErrnoException | undefined)?.code;
 			if (code === "ENOENT") {
 				return { status: "missing" };
@@ -498,7 +498,10 @@ async function readConfigRecordForSave(
 				error instanceof Error ? error.message : String(error)
 			}`;
 			logConfigWarnOnce(errorMessage);
-			if (typeof code === "string" && RETRYABLE_CONFIG_READ_CODES.has(code)) {
+			if (error instanceof SyntaxError) {
+				return { status: "invalid", errorMessage };
+			}
+			if (typeof code === "string") {
 				return { status: "unreadable", errorMessage };
 			}
 			return { status: "invalid", errorMessage };

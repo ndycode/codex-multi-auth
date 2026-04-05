@@ -4,6 +4,25 @@ import type { FlaggedAccountStorageV1 } from "../storage.js";
 
 const RETRYABLE_UNLINK_CODES = new Set(["EBUSY", "EAGAIN", "EPERM"]);
 
+function isValidFlaggedStorageCandidate(
+	data: unknown,
+	storage: FlaggedAccountStorageV1,
+): boolean {
+	if (
+		!data ||
+		typeof data !== "object" ||
+		!Object.hasOwn(data, "version") ||
+		!Object.hasOwn(data, "accounts")
+	) {
+		return false;
+	}
+	const candidate = data as { version?: unknown; accounts?: unknown };
+	if (candidate.version !== 1 || !Array.isArray(candidate.accounts)) {
+		return false;
+	}
+	return candidate.accounts.length === 0 || storage.accounts.length > 0;
+}
+
 /**
  * Return the ordered backup paths consulted for flagged-account recovery.
  */
@@ -55,6 +74,13 @@ export async function loadFlaggedAccountsState(params: {
 				const backupContent = await fs.readFile(backupPath, "utf-8");
 				const backupData = JSON.parse(backupContent) as unknown;
 				const recovered = params.normalizeFlaggedStorage(backupData);
+				if (!isValidFlaggedStorageCandidate(backupData, recovered)) {
+					params.logError("Skipping invalid flagged account backup payload", {
+						from: backupPath,
+						to: params.path,
+					});
+					continue;
+				}
 				if (existsSync(params.resetMarkerPath)) {
 					return empty;
 				}
@@ -79,6 +105,9 @@ export async function loadFlaggedAccountsState(params: {
 		const content = await fs.readFile(params.path, "utf-8");
 		const data = JSON.parse(content) as unknown;
 		const loaded = params.normalizeFlaggedStorage(data);
+		if (!isValidFlaggedStorageCandidate(data, loaded)) {
+			throw new Error("Invalid flagged account storage payload");
+		}
 		if (existsSync(params.resetMarkerPath)) {
 			return empty;
 		}

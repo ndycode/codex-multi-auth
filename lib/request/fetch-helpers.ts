@@ -1240,6 +1240,13 @@ function parseRetryAfterMs(
 		if (normalized !== null) {
 			return normalized;
 		}
+		const parsedDate = Date.parse(retryAfterHeader);
+		if (Number.isFinite(parsedDate)) {
+			const normalizedDate = normalizeRetryAfterMs(parsedDate - Date.now());
+			if (normalizedDate !== null) {
+				return normalizedDate;
+			}
+		}
 	}
 
 	const resetAfterSecondsHeaders = [

@@ -1072,6 +1072,27 @@ describe('createEntitlementErrorResponse', () => {
 			expect(rateLimit?.retryAfterMs).toBe(10000);
 		});
 
+		it('parses retry-after header (http date)', async () => {
+			vi.useFakeTimers();
+			try {
+				vi.setSystemTime(new Date('2026-04-05T00:00:00.000Z'));
+				const headers = new Headers({
+					'retry-after': new Date('2026-04-05T00:01:30.000Z').toUTCString(),
+				});
+				const response = new Response(
+					JSON.stringify({ error: { message: 'rate limited' } }),
+					{ status: 429, headers },
+				);
+
+				const { rateLimit } = await handleErrorResponse(response);
+
+				expect(rateLimit).toBeDefined();
+				expect(rateLimit?.retryAfterMs).toBe(90_000);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
 		it('parses x-ratelimit-reset header (unix timestamp)', async () => {
 			const futureTimestamp = Math.floor(Date.now() / 1000) + 60;
 			const headers = new Headers({ 'x-ratelimit-reset': String(futureTimestamp) });

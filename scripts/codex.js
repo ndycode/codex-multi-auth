@@ -7,6 +7,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	renameSync,
 	readFileSync,
 	rmSync,
 	statSync,
@@ -215,6 +216,47 @@ const REASONING_FALLBACKS = {
 };
 
 const KNOWN_REASONING_EFFORTS = new Set(Object.keys(REASONING_FALLBACKS));
+const REQUESTED_MODEL_ALIASES = new Map();
+
+function addRequestedModelAlias(alias, normalizedModel) {
+	REQUESTED_MODEL_ALIASES.set(alias, normalizedModel);
+}
+
+function addRequestedModelReasoningAliases(alias, normalizedModel) {
+	addRequestedModelAlias(alias, normalizedModel);
+	for (const effort of KNOWN_REASONING_EFFORTS) {
+		addRequestedModelAlias(`${alias}-${effort}`, normalizedModel);
+	}
+}
+
+function seedRequestedModelAliases() {
+	addRequestedModelReasoningAliases("gpt-5.4", "gpt-5.4");
+	addRequestedModelReasoningAliases("gpt-5.4-pro", "gpt-5.4-pro");
+	addRequestedModelReasoningAliases("gpt-5.2-pro", "gpt-5.2-pro");
+	addRequestedModelReasoningAliases("gpt-5-pro", "gpt-5-pro");
+	addRequestedModelReasoningAliases("gpt-5.2", "gpt-5.2");
+	addRequestedModelReasoningAliases("gpt-5.1", "gpt-5.1");
+	addRequestedModelReasoningAliases("gpt-5", "gpt-5");
+	addRequestedModelReasoningAliases("gpt-5-mini", "gpt-5-mini");
+	addRequestedModelReasoningAliases("gpt-5-nano", "gpt-5-nano");
+	addRequestedModelReasoningAliases("gpt-5.1-chat-latest", "gpt-5.1");
+	addRequestedModelReasoningAliases("gpt-5-chat-latest", "gpt-5");
+	addRequestedModelReasoningAliases("gpt-5.4-mini", "gpt-5-mini");
+	addRequestedModelReasoningAliases("gpt-5.4-nano", "gpt-5-nano");
+	addRequestedModelReasoningAliases("gpt-5-codex", "gpt-5-codex");
+	addRequestedModelReasoningAliases("gpt-5.3-codex-spark", "gpt-5-codex");
+	addRequestedModelReasoningAliases("gpt-5.3-codex", "gpt-5-codex");
+	addRequestedModelReasoningAliases("gpt-5.2-codex", "gpt-5-codex");
+	addRequestedModelReasoningAliases("gpt-5.1-codex", "gpt-5-codex");
+	addRequestedModelAlias("gpt_5_codex", "gpt-5-codex");
+	addRequestedModelReasoningAliases("codex-max", "gpt-5.1-codex-max");
+	addRequestedModelReasoningAliases("gpt-5.1-codex-max", "gpt-5.1-codex-max");
+	addRequestedModelAlias("codex-mini-latest", "gpt-5.1-codex-mini");
+	addRequestedModelReasoningAliases("gpt-5-codex-mini", "gpt-5.1-codex-mini");
+	addRequestedModelReasoningAliases("gpt-5.1-codex-mini", "gpt-5.1-codex-mini");
+}
+
+seedRequestedModelAliases();
 
 function stripProviderPrefix(model) {
 	return typeof model === "string" && model.includes("/")
@@ -226,6 +268,10 @@ function normalizeRequestedModel(model) {
 	const stripped = stripProviderPrefix(model ?? "");
 	const normalized = stripped.trim().toLowerCase();
 	if (normalized.length === 0) return "";
+	const exactMatch = REQUESTED_MODEL_ALIASES.get(normalized);
+	if (exactMatch) {
+		return exactMatch;
+	}
 
 	if (
 		normalized.includes("gpt-5.1-codex-max") ||
@@ -442,6 +488,47 @@ function ensureTrailingNewline(value) {
 	return value.endsWith("\n") ? value : `${value}\n`;
 }
 
+function captureShadowHomeState(filePath) {
+	try {
+		if (!existsSync(filePath)) {
+			return { exists: false, content: null };
+		}
+		return {
+			exists: true,
+			content: readFileSync(filePath, "utf8"),
+		};
+	} catch {
+		return { exists: true, content: null, unreadable: true };
+	}
+}
+
+function shadowHomeStateMatches(left, right) {
+	return (
+		left.exists === right.exists &&
+		left.content === right.content &&
+		Boolean(left.unreadable) === Boolean(right.unreadable)
+	);
+}
+
+function syncShadowHomeStateFile(sourcePath, destinationPath) {
+	const tempPath = join(
+		dirname(destinationPath),
+		`.${basename(destinationPath)}.codex-multi-auth-sync-${process.pid}.tmp`,
+	);
+	try {
+		mkdirSync(dirname(destinationPath), { recursive: true });
+		copyFileSync(sourcePath, tempPath);
+		renameSync(tempPath, destinationPath);
+	} catch (error) {
+		try {
+			rmSync(tempPath, { force: true });
+		} catch {
+			// Best-effort cleanup only.
+		}
+		throw error;
+	}
+}
+
 function rewriteConfigTomlReasoningEffort(rawConfig, requestedModel) {
 	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
 	let changed = false;
@@ -503,6 +590,12 @@ function createCompatibilityCodexHome(
 	if (!existsSync(configPath)) {
 		return { args: processedArgs, env: baseEnv, cleanup: undefined };
 	}
+	const originalShadowHomeState = new Map(
+		SHADOW_HOME_STATE_FILES.map((name) => [
+			name,
+			captureShadowHomeState(join(originalCodexHome, name)),
+		]),
+	);
 
 	const rawConfig = readFileSync(configPath, "utf8");
 	const compatConfig = rewriteConfigTomlReasoningEffort(
@@ -531,20 +624,23 @@ function createCompatibilityCodexHome(
 	const syncShadowHomeStateBack = () => {
 		for (const name of SHADOW_HOME_STATE_FILES) {
 			const shadowPath = join(shadowCodexHome, name);
-			if (!existsSync(shadowPath)) {
+			const shadowState = captureShadowHomeState(shadowPath);
+			if (!shadowState.exists || shadowState.unreadable) {
 				continue;
 			}
 
 			try {
-				const shadowStats = statSync(shadowPath);
 				const originalPath = join(originalCodexHome, name);
-				if (existsSync(originalPath)) {
-					const originalStats = statSync(originalPath);
-					if (originalStats.isFile() && originalStats.mtimeMs > shadowStats.mtimeMs) {
-						continue;
-					}
+				const originalSnapshot =
+					originalShadowHomeState.get(name) ?? { exists: false, content: null };
+				const currentOriginalState = captureShadowHomeState(originalPath);
+				if (!shadowHomeStateMatches(currentOriginalState, originalSnapshot)) {
+					continue;
 				}
-				copyFileSync(shadowPath, originalPath);
+				if (shadowHomeStateMatches(shadowState, originalSnapshot)) {
+					continue;
+				}
+				syncShadowHomeStateFile(shadowPath, originalPath);
 				tightenShadowHomePermissions(originalPath);
 			} catch {
 				// Best-effort only; runtime auth refreshes should not fail cleanup.

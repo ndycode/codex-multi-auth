@@ -7274,7 +7274,7 @@ describe("codex manager cli commands", () => {
 		loadDashboardDisplaySettingsMock.mockResolvedValue(
 			createReadyFirstMenuSettings({
 				menuAutoFetchLimits: true,
-				menuQuotaTtlMs: 1,
+				menuQuotaTtlMs: 0,
 				menuShowFetchStatus: true,
 			}),
 		);

@@ -4260,8 +4260,98 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		expect(showRuntimeToastMock).not.toHaveBeenCalled();
 	});
 
+	it("applies the default cooldown when a 429 has no parsed retry metadata", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
+		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
+
+		const markRateLimitedWithReason = vi.fn();
+		const manager = {
+			getAccountCount: () => 1,
+			getCurrentOrNextForFamilyHybrid: () => ({
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+			}),
+			getCurrentOrNextForFamily: () => ({
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+			}),
+			getCurrentWorkspace: () => null,
+			getAccountByIndex: () => null,
+			getAccountsSnapshot: () => [],
+			isAccountAvailableForFamily: () => true,
+			toAuthDetails: () => ({
+				type: "oauth" as const,
+				access: "access-token",
+				refresh: "refresh-1",
+				expires: Date.now() + 60_000,
+			}),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: () => {},
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => 1,
+			saveToDisk: async () => {},
+			markAccountCoolingDown: () => {},
+			markRateLimited: () => {},
+			markRateLimitedWithReason,
+			consumeToken: () => true,
+			refundToken: () => {},
+			syncCodexCliActiveSelectionForIndex: async () => {},
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			recordRateLimit: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => false,
+			markToastShown: () => {},
+			setActiveIndex: () => null,
+		};
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
+			response: new Response("rate limited", { status: 429 }),
+			rateLimit: undefined,
+			errorBody: "rate limited",
+		} as never);
+		vi.mocked(rateLimitBackoffModule.getRateLimitBackoff).mockReturnValueOnce({
+			attempt: 1,
+			delayMs: 5_000,
+		});
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValueOnce(new Response("rate limited", { status: 429 }));
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(503);
+		expect(markRateLimitedWithReason).toHaveBeenCalledWith(
+			expect.objectContaining({ index: 0 }),
+			60_000,
+			"gpt-5.1",
+			"unknown",
+			"gpt-5.1",
+		);
+	});
+
 	it("persists the longer parsed rate-limit cooldown across overlapping requests", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
+		const { AccountManager: ActualAccountManager } =
+			await vi.importActual<typeof import("../lib/accounts.js")>(
+				"../lib/accounts.js",
+			);
+		const { MODEL_FAMILIES } = await import("../lib/prompts/codex.js");
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
 		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
 		const longCooldownMs = 90 * 60 * 1000;
@@ -4269,43 +4359,27 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		vi.useFakeTimers();
 		try {
 			vi.setSystemTime(new Date("2026-04-05T00:00:00.000Z"));
-			const requestAccount = {
-				index: 0,
-				accountId: "acc-1",
-				email: "alpha@example.com",
-				refreshToken: "refresh-1",
-				rateLimitResetTimes: {} as Record<string, number>,
-				lastSwitchReason: undefined as string | undefined,
-			};
-			let observedBaseResetAt: number | undefined;
+			const actualManager = new ActualAccountManager(undefined, {
+				version: 3,
+				accounts: [
+					{
+						accountId: "acc-1",
+						email: "alpha@example.com",
+						refreshToken: "refresh-1",
+						accessToken: "access-token",
+						expiresAt: Date.now() + 60_000,
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+				activeIndex: 0,
+				activeIndexByFamily: Object.fromEntries(
+					MODEL_FAMILIES.map((family) => [family, 0]),
+				) as Record<string, number>,
+			} as never);
+			const requestAccount = actualManager.getCurrentAccount()!;
 			const markRateLimitedWithReason = vi.fn(
-				(
-					account: { rateLimitResetTimes: Record<string, number> },
-					retryAfterMs: number,
-					family: string,
-					reason: string,
-					model?: string | null,
-				) => {
-					const resetAt = Date.now() + retryAfterMs;
-					const baseKey = family;
-					if (!model || reason === "quota" || reason === "unknown") {
-						account.rateLimitResetTimes[baseKey] = Math.max(
-							account.rateLimitResetTimes[baseKey] ?? 0,
-							resetAt,
-						);
-						observedBaseResetAt = account.rateLimitResetTimes[baseKey];
-					}
-					if (
-						model &&
-						(reason === "tokens" || reason === "concurrent" || reason === "unknown")
-					) {
-						const modelKey = `${family}:${model}`;
-						account.rateLimitResetTimes[modelKey] = Math.max(
-							account.rateLimitResetTimes[modelKey] ?? 0,
-							resetAt,
-						);
-					}
-				},
+				actualManager.markRateLimitedWithReason.bind(actualManager),
 			);
 			const manager = {
 				getAccountCount: () => 1,
@@ -4415,7 +4489,8 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			]);
 
 			expect(markRateLimitedWithReason).toHaveBeenCalledTimes(2);
-			expect(observedBaseResetAt).toBe(
+			const familyKey = markRateLimitedWithReason.mock.calls[0]?.[2] as string;
+			expect(requestAccount.rateLimitResetTimes[familyKey]).toBe(
 				Date.parse("2026-04-05T01:30:00.000Z"),
 			);
 		} finally {
@@ -4444,6 +4519,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		};
 		const markRateLimitedWithReason = vi.fn();
 		const recordRateLimit = vi.fn();
+		const saveToDiskDebounced = vi.fn();
 		const pendingFailovers: Array<Promise<unknown>> = [];
 		const fallback429Response = new Response(
 			new ReadableStream({
@@ -4471,7 +4547,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 				expires: Date.now() + 60_000,
 			}),
 			hasRefreshToken: () => true,
-			saveToDiskDebounced: () => {},
+			saveToDiskDebounced,
 			updateFromAuth: () => {},
 			clearAuthFailures: () => {},
 			incrementAuthFailures: () => 1,
@@ -4555,6 +4631,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			"gpt-5.1",
 			"gpt-5.1",
 		);
+		expect(saveToDiskDebounced).toHaveBeenCalledTimes(1);
 		expect(fallbackCancelSpy).toHaveBeenCalledTimes(1);
 	});
 

@@ -68,10 +68,14 @@ function parseSettingsRecord(content: string): JsonRecord {
  * cannot be parsed into the expected object shape.
  */
 function readSettingsRecordSyncFromPath(filePath: string): JsonRecord | null {
-	if (!existsSync(filePath)) {
-		return null;
+	try {
+		return parseSettingsRecord(readFileSync(filePath, "utf8"));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+			return null;
+		}
+		throw error;
 	}
-	return parseSettingsRecord(readFileSync(filePath, "utf8"));
 }
 
 /**
@@ -80,10 +84,14 @@ function readSettingsRecordSyncFromPath(filePath: string): JsonRecord | null {
 async function readSettingsRecordAsyncFromPath(
 	filePath: string,
 ): Promise<JsonRecord | null> {
-	if (!existsSync(filePath)) {
-		return null;
+	try {
+		return parseSettingsRecord(await fs.readFile(filePath, "utf8"));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+			return null;
+		}
+		throw error;
 	}
-	return parseSettingsRecord(await fs.readFile(filePath, "utf8"));
 }
 
 /**

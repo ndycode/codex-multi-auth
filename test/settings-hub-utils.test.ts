@@ -232,7 +232,7 @@ describe("settings-hub utility coverage", () => {
 		expect(() => api.clampBackendNumber("unknown-setting", 5)).toThrow(
 			"Unknown backend numeric setting key",
 		);
-	}, 15_000);
+	});
 
 	it("formats layout mode labels", async () => {
 		const api = await loadSettingsHubTestApi();

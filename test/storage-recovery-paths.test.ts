@@ -181,11 +181,12 @@ describe("storage recovery paths", () => {
 		);
 
 		const originalReadFile = fs.readFile.bind(fs);
+		const originalWriteFile = fs.writeFile.bind(fs);
 		const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
 			const [targetPath] = args;
 			const result = await originalReadFile(...args);
 			if (targetPath === backupPath) {
-				await fs.writeFile(resetMarkerPath, "reset", "utf-8");
+				await originalWriteFile(resetMarkerPath, "reset", "utf-8");
 			}
 			return result;
 		});

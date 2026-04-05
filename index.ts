@@ -1858,16 +1858,18 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													break;
 												}
 
-												if (rateLimit) {
+												if (response.status === 429) {
 													runtimeMetrics.rateLimitedResponses++;
+													const retryAfterMs =
+														rateLimit?.retryAfterMs ?? 60_000;
 													const { attempt, delayMs } = getRateLimitBackoff(
 														account.index,
 														quotaKey,
-														rateLimit.retryAfterMs,
+														retryAfterMs,
 													);
 													const cooldownMs = Math.max(
 														delayMs,
-														rateLimit.retryAfterMs,
+														retryAfterMs,
 													);
 													preemptiveQuotaScheduler.markRateLimited(
 														quotaScheduleKey,
@@ -1900,7 +1902,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														account,
 														cooldownMs,
 														modelFamily,
-														parseRateLimitReason(rateLimit.code),
+														parseRateLimitReason(rateLimit?.code),
 														model,
 													);
 													accountManager.recordRateLimit(
@@ -2183,6 +2185,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																			modelFamily,
 																			model,
 																		);
+																		accountManager.saveToDiskDebounced();
 																	} else {
 																		accountManager.recordFailure(
 																			fallbackAccount,

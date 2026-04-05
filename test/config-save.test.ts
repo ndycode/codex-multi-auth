@@ -219,6 +219,42 @@ describe("plugin config save paths", () => {
     expect(parsed).toEqual({ codexMode: true, preserved: 1 });
   });
 
+  it("treats non-retryable env-path read failures as unreadable", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ codexMode: true, preserved: 1 }),
+      "utf8",
+    );
+
+    const originalReadFile = fs.readFile.bind(fs);
+    const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+      const [targetPath] = args;
+      if (targetPath === configPath) {
+        const error = new Error("permission denied") as NodeJS.ErrnoException;
+        error.code = "EACCES";
+        throw error;
+      }
+      return originalReadFile(...args);
+    });
+
+    try {
+      const { savePluginConfig } = await import("../lib/config.js");
+      await expect(savePluginConfig({ codexMode: false })).rejects.toThrow(
+        "unreadable",
+      );
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed).toEqual({ codexMode: true, preserved: 1 });
+  });
+
   it("does not overwrite an unreadable unified settings file", async () => {
     delete process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
     const unifiedPath = join(tempDir, "settings.json");
