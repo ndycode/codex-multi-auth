@@ -233,9 +233,25 @@ function maybeThrowSimulatedShadowHomeBusyError() {
 	}
 }
 
-function renameFileWithRetry(sourcePath, destinationPath) {
+function ensureShadowHomeDestinationMatchesSnapshot(destinationPath, expectedState) {
+	if (!expectedState) {
+		return;
+	}
+	const currentState = captureShadowHomeState(destinationPath);
+	if (!shadowHomeStateMatches(currentState, expectedState)) {
+		const error = new Error("shadow-home destination changed during sync-back retry");
+		error.code = "EEXIST";
+		throw error;
+	}
+}
+
+function renameFileWithRetry(sourcePath, destinationPath, expectedDestinationState) {
 	for (let attempt = 0; attempt <= SHADOW_HOME_CLEANUP_BACKOFF_MS.length; attempt += 1) {
 		try {
+			ensureShadowHomeDestinationMatchesSnapshot(
+				destinationPath,
+				expectedDestinationState,
+			);
 			maybeThrowSimulatedShadowHomeBusyError();
 			renameSync(sourcePath, destinationPath);
 			return;
@@ -532,7 +548,11 @@ function shadowHomeStateMatches(left, right) {
 	);
 }
 
-function syncShadowHomeStateFile(sourcePath, destinationPath) {
+function syncShadowHomeStateFile(
+	sourcePath,
+	destinationPath,
+	expectedDestinationState,
+) {
 	const tempPath = join(
 		dirname(destinationPath),
 		`.${basename(destinationPath)}.codex-multi-auth-sync-${process.pid}.tmp`,
@@ -540,7 +560,7 @@ function syncShadowHomeStateFile(sourcePath, destinationPath) {
 	try {
 		mkdirSync(dirname(destinationPath), { recursive: true });
 		copyFileSync(sourcePath, tempPath);
-		renameFileWithRetry(tempPath, destinationPath);
+		renameFileWithRetry(tempPath, destinationPath, expectedDestinationState);
 	} catch (error) {
 		try {
 			rmSync(tempPath, { force: true });
@@ -662,7 +682,7 @@ function createCompatibilityCodexHome(
 				if (shadowHomeStateMatches(shadowState, originalSnapshot)) {
 					continue;
 				}
-				syncShadowHomeStateFile(shadowPath, originalPath);
+				syncShadowHomeStateFile(shadowPath, originalPath, originalSnapshot);
 				tightenShadowHomePermissions(originalPath);
 			} catch {
 				// Best-effort only; runtime auth refreshes should not fail cleanup.

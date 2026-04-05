@@ -98,24 +98,34 @@ async function readSettingsRecordAsyncFromPath(
  * Best-effort backup reader for sync callers.
  *
  * Backup corruption is treated as an unavailable backup so callers can keep
- * their legacy null-on-unavailable behavior.
+ * their legacy null-on-unavailable behavior, but unreadable or locked backups
+ * still surface so writers do not rebuild from `{}` over a transient failure.
  */
 function readSettingsBackupSync(): JsonRecord | null {
 	try {
 		return readSettingsRecordSyncFromPath(UNIFIED_SETTINGS_BACKUP_PATH);
-	} catch {
-		return null;
+	} catch (error) {
+		if (isInvalidSettingsRecordError(error)) {
+			return null;
+		}
+		throw error;
 	}
 }
 
 /**
  * Best-effort backup reader for async callers.
+ *
+ * Like the sync variant, only corrupt backups are collapsed to `null`.
+ * Unreadable or locked backups are rethrown so callers can fail closed.
  */
 async function readSettingsBackupAsync(): Promise<JsonRecord | null> {
 	try {
 		return await readSettingsRecordAsyncFromPath(UNIFIED_SETTINGS_BACKUP_PATH);
-	} catch {
-		return null;
+	} catch (error) {
+		if (isInvalidSettingsRecordError(error)) {
+			return null;
+		}
+		throw error;
 	}
 }
 

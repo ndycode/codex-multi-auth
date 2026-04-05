@@ -146,6 +146,83 @@ describe("unified settings", () => {
 		});
 	});
 
+	it("rethrows sync backup read errors when the primary settings file is invalid", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedPluginConfig,
+		} = await import("../lib/unified-settings.js");
+
+		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 });
+		await saveUnifiedPluginConfig({ codexMode: false, fetchTimeoutMs: 90_000 });
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+
+		const backupPath = `${getUnifiedSettingsPath()}.bak`;
+		vi.resetModules();
+		vi.doMock("node:fs", async () => {
+			const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+			return {
+				...actual,
+				readFileSync: (...args: Parameters<typeof actual.readFileSync>) => {
+					const [filePath] = args;
+					if (String(filePath) === backupPath) {
+						const error = new Error("busy") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return actual.readFileSync(...args);
+				},
+			};
+		});
+
+		try {
+			const { saveUnifiedPluginConfigSync } = await import("../lib/unified-settings.js");
+			expect(() =>
+				saveUnifiedPluginConfigSync({
+					codexMode: true,
+					fetchTimeoutMs: 120_000,
+				}),
+			).toThrow(/busy/);
+		} finally {
+			vi.doUnmock("node:fs");
+			vi.resetModules();
+		}
+	});
+
+	it("rethrows async backup read errors when the primary settings file is invalid", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedPluginConfig,
+		} = await import("../lib/unified-settings.js");
+
+		await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 });
+		await saveUnifiedPluginConfig({ codexMode: false, fetchTimeoutMs: 90_000 });
+		await fs.writeFile(getUnifiedSettingsPath(), "{ invalid json", "utf8");
+
+		const backupPath = `${getUnifiedSettingsPath()}.bak`;
+		const originalReadFile = fs.readFile;
+		const readSpy = vi.spyOn(fs, "readFile");
+		readSpy.mockImplementation((...args: Parameters<typeof fs.readFile>) => {
+			const [filePath] = args;
+			if (String(filePath) === backupPath) {
+				const error = new Error("denied") as NodeJS.ErrnoException;
+				error.code = "EPERM";
+				throw error;
+			}
+			return originalReadFile(...args);
+		});
+
+		try {
+			await expect(
+				saveUnifiedPluginConfig({
+					codexMode: true,
+					fetchTimeoutMs: 120_000,
+				}),
+			).rejects.toMatchObject({ code: "EPERM" });
+		} finally {
+			readSpy.mockRestore();
+		}
+	});
+
 	it("preserves the last good backup when a write fails after a backup-derived read", async () => {
 		const {
 			getUnifiedSettingsPath,
