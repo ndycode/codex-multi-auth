@@ -441,6 +441,42 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		expect(response.status).toBe(200);
 	});
 
+	it("does not replay across all accounts by default when every account is rate-limited", async () => {
+		delete process.env.CODEX_AUTH_RETRY_ALL_RATE_LIMITED;
+		delete process.env.CODEX_AUTH_RETRY_ALL_MAX_WAIT_MS;
+		delete process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
+		vi.resetModules();
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+
+		const plugin = await OpenAIAuthPlugin({ client });
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const response = await sdk.fetch("https://example.com", {});
+		const payload = await response.json();
+
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		expect(response.status).toBe(429);
+		expect(payload).toEqual({
+			error: {
+				message:
+					"All 1 account(s) are rate-limited. Try again in 1000ms or add another account with `codex login`.",
+			},
+		});
+	});
+
 	it("rebuilds request headers after rotating to the next workspace", async () => {
 		const account = createMockAccount({
 			workspaces: [

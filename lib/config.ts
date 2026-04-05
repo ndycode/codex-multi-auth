@@ -166,9 +166,9 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	fastSession: false,
 	fastSessionStrategy: "hybrid",
 	fastSessionMaxInputItems: 30,
-	retryAllAccountsRateLimited: true,
+	retryAllAccountsRateLimited: false,
 	retryAllAccountsMaxWaitMs: 0,
-	retryAllAccountsMaxRetries: Infinity,
+	retryAllAccountsMaxRetries: 0,
 	unsupportedCodexPolicy: "strict",
 	fallbackOnUnsupportedCodexModel: false,
 	fallbackToGpt52OnUnsupportedGpt53: true,
@@ -873,7 +873,7 @@ export function getRetryAllAccountsRateLimited(
 	return resolveBooleanSetting(
 		"CODEX_AUTH_RETRY_ALL_RATE_LIMITED",
 		pluginConfig.retryAllAccountsRateLimited,
-		true,
+		false,
 	);
 }
 
@@ -894,7 +894,7 @@ export function getRetryAllAccountsMaxRetries(
 	return resolveNumberSetting(
 		"CODEX_AUTH_RETRY_ALL_MAX_RETRIES",
 		pluginConfig.retryAllAccountsMaxRetries,
-		Infinity,
+		0,
 		{ min: 0 },
 	);
 }
