@@ -19,7 +19,7 @@ Codex CLI-first multi-account OAuth manager for the official `@openai/codex` CLI
 - Interactive dashboard for account actions and settings
 - Experimental settings tab for staged sync, backup, and refresh-guard controls
 - Forecast, report, fix, and doctor commands for operational safety
-- Runtime request budget, cooldown, and traffic observability in `codex auth status` / `codex auth report`
+- Runtime counters, budget/cooldown state, and multi-auth probe visibility in `codex auth status` / `codex auth report`
 - Flagged account verification and restore flow
 - Session affinity and live account sync controls
 - Proactive refresh and preemptive quota deferral controls
