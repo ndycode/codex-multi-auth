@@ -427,6 +427,55 @@ describe("AccountManager", () => {
     expect(manager.isAccountAvailableForFamily(3, "codex")).toBe(true);
   });
 
+  it("treats accounts with all tracked workspaces disabled as unavailable for selection", () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      activeIndexByFamily: { codex: 0 },
+      accounts: [
+        {
+          refreshToken: "token-workspace-disabled",
+          addedAt: now,
+          lastUsed: now,
+          workspaces: [
+            { id: "workspace-1", name: "Workspace 1", enabled: false },
+            { id: "workspace-2", name: "Workspace 2", enabled: false },
+          ],
+          currentWorkspaceIndex: 0,
+        },
+        {
+          refreshToken: "token-ready",
+          addedAt: now,
+          lastUsed: now - 10_000,
+        },
+      ],
+    };
+
+    const manager = new AccountManager(undefined, stored as never);
+
+    expect(manager.isAccountAvailableForFamily(0, "codex")).toBe(false);
+    expect(manager.getCurrentOrNextForFamily("codex")?.refreshToken).toBe("token-ready");
+    expect(manager.getNextForFamily("codex")?.refreshToken).toBe("token-ready");
+    expect(manager.getCurrentOrNextForFamilyHybrid("codex")?.refreshToken).toBe("token-ready");
+  });
+
+  it("keeps workspace-less legacy accounts eligible for selection", () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      activeIndexByFamily: { codex: 0 },
+      accounts: [{ refreshToken: "token-legacy", addedAt: now, lastUsed: now }],
+    };
+
+    const manager = new AccountManager(undefined, stored as never);
+
+    expect(manager.hasEnabledWorkspaces(manager.getAccountByIndex(0)!)).toBe(true);
+    expect(manager.isAccountAvailableForFamily(0, "codex")).toBe(true);
+    expect(manager.getCurrentOrNextForFamily("codex")?.refreshToken).toBe("token-legacy");
+  });
+
   it("returns false for invalid account index in availability checks", () => {
     const now = Date.now();
     const stored = {
