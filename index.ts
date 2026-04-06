@@ -342,22 +342,27 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 	type RuntimeMetrics = {
 		startedAt: number;
-		totalRequests: number;
-		successfulRequests: number;
-		failedRequests: number;
-		rateLimitedResponses: number;
-		serverErrors: number;
-		networkErrors: number;
-		userAborts: number;
-		authRefreshFailures: number;
-		emptyResponseRetries: number;
-		accountRotations: number;
-		sameAccountRetries: number;
-		streamFailoverAttempts: number;
-		streamFailoverRecoveries: number;
-		streamFailoverCrossAccountRecoveries: number;
-		cumulativeLatencyMs: number;
-		lastRequestAt: number | null;
+	totalRequests: number;
+	successfulRequests: number;
+	failedRequests: number;
+	outboundRequestAttemptBudget: number | null;
+	outboundRequestAttemptsConsumed: number;
+	requestAttemptBudgetExhaustions: number;
+	rateLimitedResponses: number;
+	serverErrors: number;
+	networkErrors: number;
+	userAborts: number;
+	authRefreshFailures: number;
+	emptyResponseRetries: number;
+	accountRotations: number;
+	sameAccountRetries: number;
+	streamFailoverAttempts: number;
+	streamFailoverCandidatesConsidered: number;
+	lastStreamFailoverCandidateCount: number;
+	streamFailoverRecoveries: number;
+	streamFailoverCrossAccountRecoveries: number;
+	cumulativeLatencyMs: number;
+	lastRequestAt: number | null;
 		lastError: string | null;
 	};
 
@@ -366,6 +371,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		totalRequests: 0,
 		successfulRequests: 0,
 		failedRequests: 0,
+		outboundRequestAttemptBudget: null,
+		outboundRequestAttemptsConsumed: 0,
+		requestAttemptBudgetExhaustions: 0,
 		rateLimitedResponses: 0,
 		serverErrors: 0,
 		networkErrors: 0,
@@ -375,6 +383,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		accountRotations: 0,
 		sameAccountRetries: 0,
 		streamFailoverAttempts: 0,
+		streamFailoverCandidatesConsidered: 0,
+		lastStreamFailoverCandidateCount: 0,
 		streamFailoverRecoveries: 0,
 		streamFailoverCrossAccountRecoveries: 0,
 		cumulativeLatencyMs: 0,
@@ -914,6 +924,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									emptyResponseMaxRetries,
 									streamFailoverMax,
 								});
+							runtimeMetrics.outboundRequestAttemptBudget =
+								maxOutboundRequestAttempts;
+							logDebug("Configured outbound request attempt budget.", {
+								budget: maxOutboundRequestAttempts,
+								accountCount: accountManager.getAccountCount(),
+								maxSameAccountRetries,
+								emptyResponseMaxRetries,
+								streamFailoverMax,
+							});
 							let outboundRequestAttemptsRemaining =
 								maxOutboundRequestAttempts;
 							const tryConsumeOutboundRequestAttempt = (
@@ -921,14 +940,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								accountIndex: number,
 							): boolean => {
 								if (outboundRequestAttemptsRemaining <= 0) {
+									runtimeMetrics.requestAttemptBudgetExhaustions += 1;
 									runtimeMetrics.lastError =
 										`Request attempt budget exhausted after ${maxOutboundRequestAttempts} outbound request(s)`;
 									logWarn(
-										`Stopping ${reason} replay after exhausting ${maxOutboundRequestAttempts} outbound request(s) on account ${accountIndex + 1}.`,
+										"Request attempt budget exhausted.",
+										{
+											reason,
+											accountIndex,
+											budget: maxOutboundRequestAttempts,
+											consumed:
+												runtimeMetrics.outboundRequestAttemptsConsumed,
+										},
 									);
 									return false;
 								}
 
+								runtimeMetrics.outboundRequestAttemptsConsumed += 1;
 								outboundRequestAttemptsRemaining -= 1;
 								return true;
 							};
@@ -2016,6 +2044,19 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 															(candidate) => candidate.index,
 														),
 													);
+												runtimeMetrics.lastStreamFailoverCandidateCount =
+													streamFallbackCandidateOrder.length;
+												runtimeMetrics.streamFailoverCandidatesConsidered +=
+													streamFallbackCandidateOrder.length;
+												logDebug(
+													"Prepared stream failover candidates.",
+													{
+														primaryAccountIndex: account.index,
+														candidateCount:
+															streamFallbackCandidateOrder.length,
+														candidateIndices: streamFallbackCandidateOrder,
+													},
+												);
 												responseForSuccess = withStreamingFailover(
 													response,
 													async (failoverAttempt, emittedBytes) => {

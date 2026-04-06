@@ -442,6 +442,10 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 	});
 
 	it("stops after the bounded outbound request budget even when more accounts are available", async () => {
+		const logger = await import("../lib/logger.js");
+		const logDebugSpy = vi.spyOn(logger, "logDebug").mockImplementation(() => {});
+		const logWarnSpy = vi.spyOn(logger, "logWarn").mockImplementation(() => {});
+
 		const accounts = Array.from({ length: 8 }, (_, index) =>
 			createMockAccount({
 				index,
@@ -496,6 +500,25 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 					"Request attempt budget exhausted after 6 outbound request(s). Try again after the current retries settle.",
 			},
 		});
+		expect(logDebugSpy).toHaveBeenCalledWith(
+			"Configured outbound request attempt budget.",
+			expect.objectContaining({
+				budget: 6,
+				accountCount: 8,
+				maxSameAccountRetries: 1,
+				emptyResponseMaxRetries: 2,
+				streamFailoverMax: 1,
+			}),
+		);
+		expect(logWarnSpy).toHaveBeenCalledWith(
+			"Request attempt budget exhausted.",
+			expect.objectContaining({
+				reason: "primary",
+				accountIndex: 6,
+				budget: 6,
+				consumed: 6,
+			}),
+		);
 	});
 
 	it("rebuilds request headers after rotating to the next workspace", async () => {

@@ -7,6 +7,9 @@ export type RuntimeMetrics = {
 	totalRequests: number;
 	successfulRequests: number;
 	failedRequests: number;
+	outboundRequestAttemptBudget: number | null;
+	outboundRequestAttemptsConsumed: number;
+	requestAttemptBudgetExhaustions: number;
 	rateLimitedResponses: number;
 	serverErrors: number;
 	networkErrors: number;
@@ -16,6 +19,8 @@ export type RuntimeMetrics = {
 	accountRotations: number;
 	sameAccountRetries: number;
 	streamFailoverAttempts: number;
+	streamFailoverCandidatesConsidered: number;
+	lastStreamFailoverCandidateCount: number;
 	streamFailoverRecoveries: number;
 	streamFailoverCrossAccountRecoveries: number;
 	cumulativeLatencyMs: number;
@@ -29,6 +34,9 @@ export function createRuntimeMetrics(now = Date.now()): RuntimeMetrics {
 		totalRequests: 0,
 		successfulRequests: 0,
 		failedRequests: 0,
+		outboundRequestAttemptBudget: null,
+		outboundRequestAttemptsConsumed: 0,
+		requestAttemptBudgetExhaustions: 0,
 		rateLimitedResponses: 0,
 		serverErrors: 0,
 		networkErrors: 0,
@@ -38,6 +46,8 @@ export function createRuntimeMetrics(now = Date.now()): RuntimeMetrics {
 		accountRotations: 0,
 		sameAccountRetries: 0,
 		streamFailoverAttempts: 0,
+		streamFailoverCandidatesConsidered: 0,
+		lastStreamFailoverCandidateCount: 0,
 		streamFailoverRecoveries: 0,
 		streamFailoverCrossAccountRecoveries: 0,
 		cumulativeLatencyMs: 0,
