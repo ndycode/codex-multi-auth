@@ -361,6 +361,60 @@ describe("runReportCommand", () => {
 		);
 	});
 
+	it("does not mutate the in-memory report snapshot when refreshed token persistence fails", async () => {
+		const storage = createStorage([
+			{
+				email: "persist-fail@example.com",
+				accountId: "acct-report",
+				accountIdSource: "org",
+				refreshToken: "refresh-token-1",
+				accessToken: "access-token-1",
+				expiresAt: 10,
+				addedAt: 1,
+				lastUsed: 1,
+				enabled: true,
+			},
+		]);
+		const deps = createDeps({
+			loadAccounts: vi.fn(async () => structuredClone(storage)),
+			saveAccounts: vi.fn(async () => {
+				throw Object.assign(new Error("EPERM write blocked"), {
+					code: "EPERM",
+				});
+			}),
+			queuedRefresh: vi.fn(async () => ({
+				type: "success",
+				access: "access-token-updated",
+				refresh: "refresh-token-updated",
+				expires: 500,
+				idToken: "id-token-updated",
+			})),
+			fetchCodexQuotaSnapshot: vi.fn(async () => ({
+				status: 200,
+				model: "gpt-5-codex",
+				primary: {},
+				secondary: {},
+			})),
+		});
+
+		const result = await runReportCommand(["--live", "--json"], deps);
+
+		expect(result).toBe(0);
+		expect(deps.fetchCodexQuotaSnapshot).not.toHaveBeenCalled();
+		const jsonOutput = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ?? "{}",
+		) as {
+			forecast: { probeErrors: string[]; accounts: Array<{ label: string }> };
+		};
+		expect(jsonOutput.forecast.probeErrors).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining("EPERM write blocked"),
+			]),
+		);
+		expect(storage.accounts[0]?.refreshToken).toBe("refresh-token-1");
+		expect(storage.accounts[0]?.accessToken).toBe("access-token-1");
+	});
+
 	it("prints a human-readable report and announces the output path", async () => {
 		const deps = createDeps();
 

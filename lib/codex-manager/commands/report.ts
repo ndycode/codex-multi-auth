@@ -291,9 +291,6 @@ export async function runReportCommand(
 					email: previousEmail,
 					accountId: previousAccountId,
 				};
-				applyRefreshedAccountPatch(account, refreshPatch);
-				probeAccessToken = refreshResult.access;
-				probeAccountId = account.accountId ?? refreshedAccountId;
 				if (
 					previousRefreshToken !== refreshPatch.refreshToken ||
 					previousAccessToken !== refreshPatch.accessToken ||
@@ -317,7 +314,11 @@ export async function runReportCommand(
 						probeErrors.push(`${formatAccountLabel(account, i)}: ${message}`);
 						continue;
 					}
+					applyRefreshedAccountPatch(account, refreshPatch);
 				}
+				probeAccessToken = refreshResult.access;
+				probeAccountId =
+					refreshPatch.accountId ?? account.accountId ?? refreshedAccountId;
 			}
 
 			if (!probeAccessToken || !probeAccountId) {
