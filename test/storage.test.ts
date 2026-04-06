@@ -2961,14 +2961,24 @@ describe("storage", () => {
 			await fs.rm(testWorkDir, { recursive: true, force: true });
 		});
 
-		it("logs but does not throw on non-ENOENT errors", async () => {
-			const readOnlyDir = join(testWorkDir, "readonly");
-			await fs.mkdir(readOnlyDir, { recursive: true });
-			const readOnlyFile = join(readOnlyDir, "accounts.json");
-			await fs.writeFile(readOnlyFile, "{}");
-			setStoragePathDirect(readOnlyFile);
+		it("throws and does not write reset marker when the primary storage file cannot be removed", async () => {
+			await fs.writeFile(testStoragePath, "{}", "utf-8");
+			const resetMarkerPath = getIntentionalResetMarkerPath(testStoragePath);
+			const unlinkSpy = vi
+				.spyOn(fs, "unlink")
+				.mockImplementation(async (targetPath) => {
+					if (String(targetPath) === testStoragePath) {
+						const error = Object.assign(new Error("locked"), { code: "EPERM" });
+						throw error;
+					}
+					return Promise.resolve();
+				});
 
-			await expect(clearAccounts()).resolves.not.toThrow();
+			await expect(clearAccounts()).rejects.toMatchObject({ code: "EPERM" });
+			expect(existsSync(testStoragePath)).toBe(true);
+			expect(existsSync(resetMarkerPath)).toBe(false);
+
+			unlinkSpy.mockRestore();
 		});
 	});
 
@@ -4122,7 +4132,7 @@ describe("storage", () => {
 					Object.assign(new Error("EACCES error"), { code: "EACCES" }),
 				);
 
-			await clearAccounts();
+			await expect(clearAccounts()).rejects.toMatchObject({ code: "EACCES" });
 
 			expect(unlinkSpy).toHaveBeenCalled();
 			unlinkSpy.mockRestore();
