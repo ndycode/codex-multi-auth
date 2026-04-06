@@ -35,6 +35,9 @@ interface ReportCliOptions {
 	json: boolean;
 	explain: boolean;
 	model: string;
+	maxAccounts?: number;
+	maxProbes?: number;
+	cachedOnly: boolean;
 	outPath?: string;
 }
 
@@ -99,6 +102,9 @@ function printReportUsage(logInfo: (message: string) => void): void {
 			"  --json, -j         Print machine-readable JSON output",
 			"  --explain          Print per-account reasoning in text mode",
 			"  --model, -m        Probe model for live mode (default: gpt-5-codex)",
+			"  --max-accounts N   Limit how many enabled accounts live mode can consider",
+			"  --max-probes N     Limit how many live quota probes can run",
+			"  --cached-only      Skip refreshes and only use already-usable access tokens",
 			"  --out              Write JSON report to a file path",
 		].join("\n"),
 	);
@@ -110,6 +116,7 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 		json: false,
 		explain: false,
 		model: "gpt-5-codex",
+		cachedOnly: false,
 	};
 
 	for (let i = 0; i < args.length; i += 1) {
@@ -127,6 +134,10 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 			options.explain = true;
 			continue;
 		}
+		if (arg === "--cached-only") {
+			options.cachedOnly = true;
+			continue;
+		}
 		if (arg === "--model" || arg === "-m") {
 			const value = args[i + 1];
 			if (!value) return { ok: false, message: "Missing value for --model" };
@@ -138,6 +149,44 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 			const value = arg.slice("--model=".length).trim();
 			if (!value) return { ok: false, message: "Missing value for --model" };
 			options.model = value;
+			continue;
+		}
+		if (arg === "--max-accounts") {
+			const value = args[i + 1];
+			if (!value) return { ok: false, message: "Missing value for --max-accounts" };
+			const parsed = Number.parseInt(value, 10);
+			if (!Number.isFinite(parsed) || parsed < 1) {
+				return { ok: false, message: "--max-accounts must be a positive integer" };
+			}
+			options.maxAccounts = parsed;
+			i += 1;
+			continue;
+		}
+		if (arg.startsWith("--max-accounts=")) {
+			const parsed = Number.parseInt(arg.slice("--max-accounts=".length), 10);
+			if (!Number.isFinite(parsed) || parsed < 1) {
+				return { ok: false, message: "--max-accounts must be a positive integer" };
+			}
+			options.maxAccounts = parsed;
+			continue;
+		}
+		if (arg === "--max-probes") {
+			const value = args[i + 1];
+			if (!value) return { ok: false, message: "Missing value for --max-probes" };
+			const parsed = Number.parseInt(value, 10);
+			if (!Number.isFinite(parsed) || parsed < 1) {
+				return { ok: false, message: "--max-probes must be a positive integer" };
+			}
+			options.maxProbes = parsed;
+			i += 1;
+			continue;
+		}
+		if (arg.startsWith("--max-probes=")) {
+			const parsed = Number.parseInt(arg.slice("--max-probes=".length), 10);
+			if (!Number.isFinite(parsed) || parsed < 1) {
+				return { ok: false, message: "--max-probes must be a positive integer" };
+			}
+			options.maxProbes = parsed;
 			continue;
 		}
 		if (arg === "--out") {
@@ -242,16 +291,34 @@ export async function runReportCommand(
 	const refreshFailures = new Map<number, TokenFailure>();
 	const liveQuotaByIndex = new Map<number, CodexQuotaSnapshot>();
 	const probeErrors: string[] = [];
+	let consideredLiveAccounts = 0;
+	let executedLiveProbes = 0;
 
 	if (storage && options.live) {
 		for (let i = 0; i < storage.accounts.length; i += 1) {
+			if (
+				typeof options.maxAccounts === "number" &&
+				consideredLiveAccounts >= options.maxAccounts
+			) {
+				probeErrors.push(
+					`live probe account budget reached (${options.maxAccounts})`,
+				);
+				break;
+			}
 			const account = storage.accounts[i];
 			if (!account || account.enabled === false) continue;
+			consideredLiveAccounts += 1;
 
 			let probeAccessToken = account.accessToken;
 			let probeAccountId =
 				account.accountId ?? extractAccountId(account.accessToken);
 			if (!deps.hasUsableAccessToken(account, now)) {
+				if (options.cachedOnly) {
+					probeErrors.push(
+						`${formatAccountLabel(account, i)}: skipped refresh because --cached-only is enabled`,
+					);
+					continue;
+				}
 				const refreshResult = await deps.queuedRefresh(account.refreshToken);
 				if (refreshResult.type !== "success") {
 					refreshFailures.set(i, {
@@ -327,8 +394,16 @@ export async function runReportCommand(
 				);
 				continue;
 			}
+			if (
+				typeof options.maxProbes === "number" &&
+				executedLiveProbes >= options.maxProbes
+			) {
+				probeErrors.push(`live probe request budget reached (${options.maxProbes})`);
+				break;
+			}
 
 			try {
+				executedLiveProbes += 1;
 				const liveQuota = await deps.fetchCodexQuotaSnapshot({
 					accountId: probeAccountId,
 					accessToken: probeAccessToken,
@@ -389,6 +464,13 @@ export async function runReportCommand(
 			capabilities: modelInspection.capabilities,
 		},
 		liveProbe: options.live,
+		liveProbeBudget: {
+			cachedOnly: options.cachedOnly,
+			maxAccounts: options.maxAccounts ?? null,
+			maxProbes: options.maxProbes ?? null,
+			consideredAccounts: consideredLiveAccounts,
+			executedProbes: executedLiveProbes,
+		},
 		accounts: {
 			total: accountCount,
 			enabled: enabledCount,
@@ -427,6 +509,22 @@ export async function runReportCommand(
 	logInfo(`Report generated at ${report.generatedAt}`);
 	logInfo(`Storage: ${report.storagePath}`);
 	logInfo(`Model: ${formatModelInspection(modelInspection)}`);
+	if (options.live) {
+		const budgetParts = [
+			`considered ${consideredLiveAccounts} account(s)`,
+			`executed ${executedLiveProbes} probe(s)`,
+		];
+		if (typeof options.maxAccounts === "number") {
+			budgetParts.push(`max-accounts ${options.maxAccounts}`);
+		}
+		if (typeof options.maxProbes === "number") {
+			budgetParts.push(`max-probes ${options.maxProbes}`);
+		}
+		if (options.cachedOnly) {
+			budgetParts.push("cached-only");
+		}
+		logInfo(`Live probe budget: ${budgetParts.join(", ")}`);
+	}
 	logInfo(
 		`Accounts: ${report.accounts.total} total (${report.accounts.enabled} enabled, ${report.accounts.disabled} disabled, ${report.accounts.coolingDown} cooling, ${report.accounts.rateLimited} rate-limited)`,
 	);

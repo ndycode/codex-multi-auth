@@ -81,6 +81,17 @@ describe("runReportCommand", () => {
 		expect(deps.logError).toHaveBeenCalledWith("Unknown option: --bogus");
 	});
 
+	it("rejects invalid live probe budget values", async () => {
+		const deps = createDeps();
+
+		const result = await runReportCommand(["--max-probes", "0"], deps);
+
+		expect(result).toBe(1);
+		expect(deps.logError).toHaveBeenCalledWith(
+			"--max-probes must be a positive integer",
+		);
+	});
+
 	it("writes json report output when requested", async () => {
 		const deps = createDeps();
 
@@ -96,6 +107,61 @@ describe("runReportCommand", () => {
 		);
 		expect(deps.logInfo).toHaveBeenCalledWith(
 			expect.stringContaining('"forecast"'),
+		);
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			expect.stringContaining('"liveProbeBudget"'),
+		);
+	});
+
+	it("respects live probe account and probe budgets", async () => {
+		const deps = createDeps({
+			loadAccounts: vi.fn(async () =>
+				createStorage([
+					{ email: "one@example.com", refreshToken: "r1", accessToken: "a1", accountId: "acct-1", expiresAt: 5_000, addedAt: 1, lastUsed: 1, enabled: true },
+					{ email: "two@example.com", refreshToken: "r2", accessToken: "a2", accountId: "acct-2", expiresAt: 5_000, addedAt: 2, lastUsed: 2, enabled: true },
+					{ email: "three@example.com", refreshToken: "r3", accessToken: "a3", accountId: "acct-3", expiresAt: 5_000, addedAt: 3, lastUsed: 3, enabled: true },
+				]),
+			),
+			hasUsableAccessToken: vi.fn(() => true),
+		});
+
+		const result = await runReportCommand(
+			["--live", "--json", "--max-accounts", "2", "--max-probes", "1"],
+			deps,
+		);
+
+		expect(result).toBe(0);
+		expect(deps.fetchCodexQuotaSnapshot).toHaveBeenCalledTimes(1);
+		const jsonOutput = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ?? "{}",
+		) as { liveProbeBudget: { consideredAccounts: number; executedProbes: number }; forecast: { probeErrors: string[] } };
+		expect(jsonOutput.liveProbeBudget).toEqual(
+			expect.objectContaining({ consideredAccounts: 2, executedProbes: 1 }),
+		);
+		expect(jsonOutput.forecast.probeErrors).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining("live probe request budget reached (1)"),
+			]),
+		);
+	});
+
+	it("skips refreshes in cached-only live mode", async () => {
+		const deps = createDeps({
+			hasUsableAccessToken: vi.fn(() => false),
+		});
+
+		const result = await runReportCommand(["--live", "--json", "--cached-only"], deps);
+
+		expect(result).toBe(0);
+		expect(deps.queuedRefresh).not.toHaveBeenCalled();
+		expect(deps.fetchCodexQuotaSnapshot).not.toHaveBeenCalled();
+		const jsonOutput = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ?? "{}",
+		) as { forecast: { probeErrors: string[] } };
+		expect(jsonOutput.forecast.probeErrors).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining("skipped refresh because --cached-only is enabled"),
+			]),
 		);
 	});
 
