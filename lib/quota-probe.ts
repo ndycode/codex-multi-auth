@@ -1,6 +1,7 @@
 import { CODEX_BASE_URL } from "./constants.js";
 import { createCodexHeaders, getUnsupportedCodexModelInfo } from "./request/fetch-helpers.js";
 import { getCodexInstructions } from "./prompts/codex.js";
+import { mutateRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import type { RequestBody } from "./types.js";
 import { isRecord } from "./utils.js";
 
@@ -359,6 +360,10 @@ export async function fetchCodexQuotaSnapshot(
 			const timeout = setTimeout(() => controller.abort(), timeoutMs);
 			let response: Response;
 			try {
+				mutateRuntimeObservabilitySnapshot((snapshot) => {
+					snapshot.diagnosticProbeRequests += 1;
+					snapshot.runtimeMetrics.diagnosticProbeRequests += 1;
+				});
 				response = await fetch(`${CODEX_BASE_URL}/codex/responses`, {
 					method: "POST",
 					headers,
