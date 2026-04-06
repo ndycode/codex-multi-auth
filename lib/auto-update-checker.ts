@@ -41,7 +41,10 @@ function getCurrentVersion(): string {
     const packageJsonPath = join(import.meta.dirname ?? __dirname, "..", "package.json");
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { version: string };
     return packageJson.version;
-  } catch {
+  } catch (error) {
+    log.debug("Failed to read current package version", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return "0.0.0";
   }
 }
@@ -51,7 +54,10 @@ function loadCache(): UpdateCheckCache | null {
     if (!existsSync(CACHE_FILE)) return null;
     const content = readFileSync(CACHE_FILE, "utf8");
     return JSON.parse(content) as UpdateCheckCache;
-  } catch {
+  } catch (error) {
+    log.debug("Failed to load update cache", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 }

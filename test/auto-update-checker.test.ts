@@ -12,6 +12,11 @@ describe("auto-update-checker", () => {
 	let checkForUpdates: typeof import("../lib/auto-update-checker.js").checkForUpdates;
 	let checkAndNotify: typeof import("../lib/auto-update-checker.js").checkAndNotify;
 	let clearUpdateCache: typeof import("../lib/auto-update-checker.js").clearUpdateCache;
+	let logger: {
+		debug: ReturnType<typeof vi.fn>;
+		info: ReturnType<typeof vi.fn>;
+		warn: ReturnType<typeof vi.fn>;
+	};
 
 	const mockPackageJson = { version: "4.12.0" };
 
@@ -20,6 +25,14 @@ describe("auto-update-checker", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-01-30T12:00:00Z"));
 		mockPackageJson.version = "4.12.0";
+		logger = {
+			debug: vi.fn(),
+			info: vi.fn(),
+			warn: vi.fn(),
+		};
+		vi.doMock("../lib/logger.js", () => ({
+			createLogger: () => logger,
+		}));
 
 		fs = await import("node:fs");
 		vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
@@ -226,6 +239,27 @@ describe("auto-update-checker", () => {
 	});
 
 	describe("checkForUpdates", () => {
+		it("logs debug details when package metadata cannot be parsed", async () => {
+			vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
+				if (String(path).includes("package.json")) {
+					return "{";
+				}
+				throw new Error("File not found");
+			});
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+
+			const result = await checkForUpdates(true);
+
+			expect(result.currentVersion).toBe("0.0.0");
+			expect(logger.debug).toHaveBeenCalledWith(
+				"Failed to read current package version",
+				expect.objectContaining({ error: expect.any(String) }),
+			);
+		});
+
 		it("uses cache when check is recent", async () => {
 			const cacheData = {
 				lastCheck: Date.now() - 1000 * 60 * 60,
@@ -248,6 +282,31 @@ describe("auto-update-checker", () => {
 			expect(globalThis.fetch).not.toHaveBeenCalled();
 			expect(result.hasUpdate).toBe(true);
 			expect(result.latestVersion).toBe("5.0.0");
+		});
+
+		it("logs debug details when cached update JSON is unreadable", async () => {
+			vi.mocked(fs.existsSync).mockReturnValue(true);
+			vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
+				if (String(path).includes("package.json")) {
+					return JSON.stringify(mockPackageJson);
+				}
+				if (String(path).includes("update-check-cache.json")) {
+					return "{";
+				}
+				throw new Error("File not found");
+			});
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+
+			await checkForUpdates();
+
+			expect(logger.debug).toHaveBeenCalledWith(
+				"Failed to load update cache",
+				expect.objectContaining({ error: expect.any(String) }),
+			);
+			expect(globalThis.fetch).toHaveBeenCalled();
 		});
 
 		it("handles cached null latestVersion without update", async () => {
