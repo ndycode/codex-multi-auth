@@ -20,6 +20,8 @@ export async function ensureLiveAccountSyncState<
 	targetPath: string;
 	currentSync: TSync | null;
 	currentPath: string | null;
+	currentConfigKey?: string | null;
+	configKey?: string | null;
 	authFallback?: OAuthAuthDetails;
 	createSync: (authFallback?: OAuthAuthDetails) => TSync;
 	registerCleanup: (cleanup: () => void) => void;
@@ -28,21 +30,42 @@ export async function ensureLiveAccountSyncState<
 }): Promise<{
 	liveAccountSync: TSync | null;
 	liveAccountSyncPath: string | null;
+	liveAccountSyncConfigKey: string | null;
 }> {
 	let liveAccountSync = params.currentSync;
 	let liveAccountSyncPath = params.currentPath;
+	let liveAccountSyncConfigKey = params.currentConfigKey ?? null;
 
 	if (!params.enabled) {
 		if (liveAccountSync) {
 			liveAccountSync.stop();
 			liveAccountSync = null;
 			liveAccountSyncPath = null;
+			liveAccountSyncConfigKey = null;
 		}
-		return { liveAccountSync, liveAccountSyncPath };
+		return {
+			liveAccountSync,
+			liveAccountSyncPath,
+			liveAccountSyncConfigKey,
+		};
+	}
+
+	const nextConfigKey = params.configKey ?? null;
+	if (
+		liveAccountSync &&
+		nextConfigKey !== null &&
+		liveAccountSyncConfigKey !== null &&
+		liveAccountSyncConfigKey !== nextConfigKey
+	) {
+		liveAccountSync.stop();
+		liveAccountSync = null;
+		liveAccountSyncPath = null;
+		liveAccountSyncConfigKey = null;
 	}
 
 	if (!liveAccountSync) {
 		liveAccountSync = params.createSync(params.authFallback);
+		liveAccountSyncConfigKey = nextConfigKey;
 		params.registerCleanup(() => {
 			liveAccountSync?.stop();
 		});
@@ -71,7 +94,7 @@ export async function ensureLiveAccountSyncState<
 		}
 	}
 
-	return { liveAccountSync, liveAccountSyncPath };
+	return { liveAccountSync, liveAccountSyncPath, liveAccountSyncConfigKey };
 }
 
 export function ensureRefreshGuardianState<

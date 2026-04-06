@@ -309,8 +309,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let startupPrewarmTriggered = false;
 	let lastCodexCliActiveSyncIndex: number | null = null;
 	let perProjectStorageWarningShown = false;
-	let liveAccountSync: LiveAccountSync | null = null;
-	let liveAccountSyncPath: string | null = null;
+let liveAccountSync: LiveAccountSync | null = null;
+let liveAccountSyncPath: string | null = null;
+let liveAccountSyncConfigKey: string | null = null;
 	let refreshGuardian: RefreshGuardian | null = null;
 	let refreshGuardianConfigKey: string | null = null;
 	let refreshGuardianCleanupRegistered = false;
@@ -481,7 +482,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			authFallback,
 			currentSync: liveAccountSync,
 			currentPath: liveAccountSyncPath,
+			currentConfigKey: liveAccountSyncConfigKey,
 			getLiveAccountSync,
+			getLiveAccountSyncDebounceMs,
+			getLiveAccountSyncPollMs,
 			getStoragePath,
 			createSync: (oauthFallback) =>
 				new LiveAccountSync(
@@ -502,6 +506,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		});
 		liveAccountSync = next.liveAccountSync;
 		liveAccountSyncPath = next.liveAccountSyncPath;
+		liveAccountSyncConfigKey = next.liveAccountSyncConfigKey;
 	};
 	const ensureRefreshGuardian = (
 		pluginConfig: ReturnType<typeof loadPluginConfig>,

@@ -15,6 +15,7 @@ export async function ensureRuntimeLiveAccountSync<
 	getStoragePath: () => string;
 	currentSync: TSync | null;
 	currentPath: string | null;
+	currentConfigKey?: string | null;
 	currentCleanupRegistered: boolean;
 	getCurrentSync: () => TSync | null;
 	createSync: (
@@ -29,6 +30,7 @@ export async function ensureRuntimeLiveAccountSync<
 	commitState: (state: {
 		sync: TSync | null;
 		path: string | null;
+		configKey: string | null;
 		cleanupRegistered: boolean;
 	}) => void;
 	registerCleanup: (cleanup: () => void) => void;
@@ -37,18 +39,24 @@ export async function ensureRuntimeLiveAccountSync<
 }): Promise<{
 	sync: TSync | null;
 	path: string | null;
+	configKey: string | null;
 	cleanupRegistered: boolean;
 }> {
+	const debounceMs = deps.getLiveAccountSyncDebounceMs(deps.pluginConfig);
+	const pollIntervalMs = deps.getLiveAccountSyncPollMs(deps.pluginConfig);
+	const nextConfigKey = `${debounceMs}:${pollIntervalMs}`;
 	if (!deps.getLiveAccountSync(deps.pluginConfig)) {
 		deps.currentSync?.stop();
 		deps.commitState({
 			sync: null,
 			path: null,
+			configKey: null,
 			cleanupRegistered: deps.currentCleanupRegistered,
 		});
 		return {
 			sync: null,
 			path: null,
+			configKey: null,
 			cleanupRegistered: deps.currentCleanupRegistered,
 		};
 	}
@@ -57,10 +65,18 @@ export async function ensureRuntimeLiveAccountSync<
 	let sync = deps.currentSync;
 	let cleanupRegistered = deps.currentCleanupRegistered;
 	let nextPath = deps.currentPath;
+	let configKey = deps.currentConfigKey ?? null;
+	if (sync && configKey !== null && configKey !== nextConfigKey) {
+		sync.stop();
+		sync = null;
+		nextPath = null;
+		configKey = null;
+	}
 	const commitState = (): void => {
 		deps.commitState({
 			sync,
 			path: nextPath,
+			configKey,
 			cleanupRegistered,
 		});
 	};
@@ -70,10 +86,11 @@ export async function ensureRuntimeLiveAccountSync<
 				await deps.reloadAccountManagerFromDisk(deps.authFallback);
 			},
 			{
-				debounceMs: deps.getLiveAccountSyncDebounceMs(deps.pluginConfig),
-				pollIntervalMs: deps.getLiveAccountSyncPollMs(deps.pluginConfig),
+				debounceMs,
+				pollIntervalMs,
 			},
 		);
+		configKey = nextConfigKey;
 		commitState();
 		if (!cleanupRegistered) {
 			deps.registerCleanup(() => {
@@ -106,5 +123,5 @@ export async function ensureRuntimeLiveAccountSync<
 		}
 	}
 
-	return { sync, path: nextPath, cleanupRegistered };
+	return { sync, path: nextPath, configKey, cleanupRegistered };
 }

@@ -17,7 +17,10 @@ describe("live sync entry", () => {
 			} as never,
 			currentSync: null,
 			currentPath: null,
+			currentConfigKey: null,
 			getLiveAccountSync: () => true,
+			getLiveAccountSyncDebounceMs: () => 25,
+			getLiveAccountSyncPollMs: () => 250,
 			getStoragePath: () => "/tmp/accounts.json",
 			createSync: vi.fn(() => ({ stop: vi.fn(), syncToPath: vi.fn() })),
 			registerCleanup: vi.fn(),
@@ -30,6 +33,7 @@ describe("live sync entry", () => {
 			expect.objectContaining({
 				enabled: true,
 				targetPath: "/tmp/accounts.json",
+				configKey: "25:250",
 				pluginName: "plugin",
 			}),
 		);
