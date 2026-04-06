@@ -16,12 +16,13 @@ export interface RateLimitBackoffResult {
  * - Reset backoff after a quiet period.
  */
 const DEFAULT_RATE_LIMIT_DEDUP_WINDOW_MS =
-	DEFAULT_PLUGIN_CONFIG.rateLimitDedupWindowMs;
+	DEFAULT_PLUGIN_CONFIG.rateLimitDedupWindowMs ?? 2_000;
 const DEFAULT_RATE_LIMIT_STATE_RESET_MS =
-	DEFAULT_PLUGIN_CONFIG.rateLimitStateResetMs;
-const DEFAULT_MAX_BACKOFF_MS = DEFAULT_PLUGIN_CONFIG.rateLimitMaxBackoffMs;
+	DEFAULT_PLUGIN_CONFIG.rateLimitStateResetMs ?? 120_000;
+const DEFAULT_MAX_BACKOFF_MS =
+	DEFAULT_PLUGIN_CONFIG.rateLimitMaxBackoffMs ?? 60_000;
 const DEFAULT_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS =
-	DEFAULT_PLUGIN_CONFIG.rateLimitShortRetryThresholdMs;
+	DEFAULT_PLUGIN_CONFIG.rateLimitShortRetryThresholdMs ?? 5_000;
 const RATE_LIMIT_BACKOFF_JITTER_FACTOR = 0.2;
 
 interface RateLimitBackoffConfig {
@@ -281,8 +282,11 @@ export function getRateLimitBackoffWithReason(
 		resolvedServerRetryAfterMs,
 		resolvedStableAccountKey,
 	);
+	const normalizedBaseDelay = normalizeDelayMs(resolvedServerRetryAfterMs, 1000);
 	const adjustedDelay = calculateBackoffMs(
-		result.delayMs,
+		result.attempt === 1 && !result.isDuplicate
+			? normalizedBaseDelay
+			: result.delayMs,
 		result.attempt,
 		resolvedReason,
 	);

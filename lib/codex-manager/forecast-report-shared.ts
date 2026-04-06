@@ -96,6 +96,8 @@ export function serializeForecastResults(
 	index: number;
 	label: string;
 	isCurrent: boolean;
+	selected: boolean;
+	primaryReason?: string;
 	availability: ForecastAccountResult["availability"];
 	riskScore: number;
 	riskLevel: ForecastAccountResult["riskLevel"];
@@ -116,6 +118,8 @@ export function serializeForecastResults(
 			index: result.index,
 			label: result.label,
 			isCurrent: result.isCurrent,
+			selected: false,
+			primaryReason: result.reasons[0],
 			availability: result.availability,
 			riskScore: result.riskScore,
 			riskLevel: result.riskLevel,

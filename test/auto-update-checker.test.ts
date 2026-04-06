@@ -256,6 +256,7 @@ describe("auto-update-checker", () => {
 			const result = await checkForUpdates(true);
 
 			expect(result.currentVersion).toBe("0.0.0");
+			expect(globalThis.fetch).toHaveBeenCalled();
 			expect(logger.debug).toHaveBeenCalledWith(
 				"Failed to read current package version",
 				expect.objectContaining({ error: expect.any(String) }),
@@ -310,6 +311,37 @@ describe("auto-update-checker", () => {
 			);
 			expect(globalThis.fetch).toHaveBeenCalled();
 		});
+
+		it.each(["EBUSY", "EPERM"] as const)(
+			"logs debug details when cache read fails on windows-style lock (%s)",
+			async (code) => {
+				vi.mocked(fs.existsSync).mockReturnValue(true);
+				vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
+					if (String(path).includes("package.json")) {
+						return JSON.stringify(mockPackageJson);
+					}
+					if (String(path).includes("update-check-cache.json")) {
+						const error = new Error(`${code}: locked`) as NodeJS.ErrnoException;
+						error.code = code;
+						error.name = code;
+						throw error;
+					}
+					throw new Error("File not found");
+				});
+				vi.mocked(globalThis.fetch).mockResolvedValue({
+					ok: true,
+					json: async () => ({ version: "5.0.0" }),
+				} as Response);
+
+				await checkForUpdates();
+
+				expect(logger.debug).toHaveBeenCalledWith(
+					"Failed to load update cache",
+					expect.objectContaining({ error: expect.stringContaining(code) }),
+				);
+				expect(globalThis.fetch).toHaveBeenCalled();
+			},
+		);
 
 		it("handles cached null latestVersion without update", async () => {
 			const cacheData = {

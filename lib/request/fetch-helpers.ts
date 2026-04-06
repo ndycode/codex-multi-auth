@@ -982,23 +982,31 @@ function mapUsageLimit404WithBody(response: Response, bodyText: string): Respons
 	if (!bodyText) return null;
 
 	let code = "";
+	let type = "";
 	try {
-		const parsed = JSON.parse(bodyText) as { error?: { code?: string | number; type?: string } };
-		code = (parsed?.error?.code ?? parsed?.error?.type ?? "").toString();
+		const parsed = JSON.parse(bodyText) as {
+			error?: { code?: string | number; type?: string | number };
+		};
+		code = (parsed?.error?.code ?? "").toString();
+		type = (parsed?.error?.type ?? "").toString();
 	} catch {
 		code = "";
+		type = "";
 	}
 
+	const normalizedSignals = [code, type]
+		.map((value) => value.toLowerCase())
+		.filter((value) => value.length > 0);
+
 	// Check for entitlement errors first - these should NOT be treated as rate limits
-	if (isEntitlementError(code, bodyText)) {
+	if (isEntitlementError(normalizedSignals.join(" "), bodyText)) {
 		return createEntitlementErrorResponse(bodyText);
 	}
 
 	// Only structured quota-limit codes should be remapped from 404 to 429.
 	// Free-text 404 bodies and generic rate_limit_* codes are too ambiguous and
 	// degrade downstream rate-limit reason classification to "unknown".
-	const normalizedCode = code.toLowerCase();
-	if (!normalizedCode.includes("usage_limit")) {
+	if (!normalizedSignals.some((value) => value.includes("usage_limit"))) {
 		return null;
 	}
 

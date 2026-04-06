@@ -12,8 +12,10 @@ import {
 	summarizeForecast,
 } from "../../forecast.js";
 import {
+	type AccountIdentityMatch,
 	applyRefreshedAccountPatch,
 	persistRefreshedAccountPatch,
+	type RefreshedAccountPatch,
 	serializeForecastResults,
 } from "../forecast-report-shared.js";
 import {

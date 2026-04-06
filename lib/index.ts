@@ -8,7 +8,17 @@ export * from "./auth/auth.js";
 export * from "./request/fetch-helpers.js";
 export * from "./request/request-transformer.js";
 export * from "./request/response-handler.js";
-export * from "./request/rate-limit-backoff.js";
+export {
+	MAX_SHORT_RETRY_ATTEMPTS,
+	calculateBackoffMs,
+	clearRateLimitBackoffState,
+	configureRateLimitBackoff,
+	getRateLimitBackoff,
+	getRateLimitBackoffWithReason,
+	getRateLimitShortRetryThresholdMs as getConfiguredRateLimitShortRetryThresholdMs,
+	resetRateLimitBackoff,
+	resetRateLimitBackoffConfig,
+} from "./request/rate-limit-backoff.js";
 export * from "./prompts/codex.js";
 export * from "./shutdown.js";
 export * from "./circuit-breaker.js";

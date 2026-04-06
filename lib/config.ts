@@ -1084,7 +1084,7 @@ export function getRateLimitDedupWindowMs(pluginConfig: PluginConfig): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_RATE_LIMIT_DEDUP_WINDOW_MS",
 		pluginConfig.rateLimitDedupWindowMs,
-		DEFAULT_PLUGIN_CONFIG.rateLimitDedupWindowMs,
+		DEFAULT_PLUGIN_CONFIG.rateLimitDedupWindowMs ?? 2_000,
 		{ min: 0 },
 	);
 }
@@ -1093,7 +1093,7 @@ export function getRateLimitStateResetMs(pluginConfig: PluginConfig): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_RATE_LIMIT_STATE_RESET_MS",
 		pluginConfig.rateLimitStateResetMs,
-		DEFAULT_PLUGIN_CONFIG.rateLimitStateResetMs,
+		DEFAULT_PLUGIN_CONFIG.rateLimitStateResetMs ?? 120_000,
 		{ min: 1_000 },
 	);
 }
@@ -1102,7 +1102,7 @@ export function getRateLimitMaxBackoffMs(pluginConfig: PluginConfig): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_RATE_LIMIT_MAX_BACKOFF_MS",
 		pluginConfig.rateLimitMaxBackoffMs,
-		DEFAULT_PLUGIN_CONFIG.rateLimitMaxBackoffMs,
+		DEFAULT_PLUGIN_CONFIG.rateLimitMaxBackoffMs ?? 60_000,
 		{ min: 1_000 },
 	);
 }
@@ -1113,7 +1113,7 @@ export function getRateLimitShortRetryThresholdMs(
 	return resolveNumberSetting(
 		"CODEX_AUTH_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS",
 		pluginConfig.rateLimitShortRetryThresholdMs,
-		DEFAULT_PLUGIN_CONFIG.rateLimitShortRetryThresholdMs,
+		DEFAULT_PLUGIN_CONFIG.rateLimitShortRetryThresholdMs ?? 5_000,
 		{ min: 0 },
 	);
 }
@@ -1842,11 +1842,20 @@ export function getPluginConfigExplainReport(): ConfigExplainReport {
 	const stored = resolveStoredPluginConfigRecord();
 	const storedRecord = stored.record ?? null;
 	const entries = CONFIG_EXPLAIN_ENTRIES.map((entry) => {
-		const value = entry.getValue(pluginConfig);
+		const rawValue = entry.getValue(pluginConfig);
+		const rawDefaultValue = DEFAULT_PLUGIN_CONFIG[entry.key];
+		const value =
+			entry.key === "retryAllAccountsMaxRetries" && rawValue === 0
+				? Number.POSITIVE_INFINITY
+				: rawValue;
+		const defaultValue =
+			entry.key === "retryAllAccountsMaxRetries" && rawDefaultValue === 0
+				? Number.POSITIVE_INFINITY
+				: rawDefaultValue;
 		return {
 			key: entry.key,
 			value: normalizeConfigExplainValue(value),
-			defaultValue: normalizeConfigExplainValue(DEFAULT_PLUGIN_CONFIG[entry.key]),
+			defaultValue: normalizeConfigExplainValue(defaultValue),
 			source: resolveConfigExplainSource(
 				entry,
 				pluginConfig,

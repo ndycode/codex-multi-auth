@@ -494,6 +494,37 @@ describe('Fetch Helpers Module', () => {
 			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
 		});
 
+		it('maps usage-limit 404 errors to 429 when code and type disagree', async () => {
+			const body = {
+				error: {
+					code: 'rate_limit_exceeded',
+					type: 'usage_limit_reached',
+					message: 'limit reached',
+				},
+			};
+			const resp = new Response(JSON.stringify(body), { status: 404 });
+			const { response: mapped, rateLimit } = await handleErrorResponse(resp);
+			expect(mapped.status).toBe(429);
+			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
+		});
+
+		it('maps entitlement-style 404 errors to 403 when only error.type carries the signal', async () => {
+			const body = {
+				error: {
+					code: 'not_found',
+					type: 'usage_not_included',
+					message: 'Not included in your plan',
+				},
+			};
+			const resp = new Response(JSON.stringify(body), { status: 404 });
+			const { response: mapped, rateLimit } = await handleErrorResponse(resp);
+			expect(mapped.status).toBe(403);
+			const json = await mapped.json() as { error: { code?: string; message?: string } };
+			expect(json.error.code).toBe('usage_not_included');
+			expect(json.error.message).toContain('not included');
+			expect(rateLimit).toBeUndefined();
+		});
+
 		it('leaves non-usage 404 errors unchanged', async () => {
 			const body = { error: { code: 'not_found', message: 'nope' } };
 			const resp = new Response(JSON.stringify(body), { status: 404 });
