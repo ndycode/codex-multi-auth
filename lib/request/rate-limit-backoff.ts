@@ -17,6 +17,7 @@ export interface RateLimitBackoffResult {
 const RATE_LIMIT_DEDUP_WINDOW_MS = 2000;
 const RATE_LIMIT_STATE_RESET_MS = 120_000;
 const MAX_BACKOFF_MS = 60_000;
+const RATE_LIMIT_BACKOFF_JITTER_FACTOR = 0.2;
 
 export const RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS = 5000;
 
@@ -34,6 +35,7 @@ interface RateLimitState {
 	consecutive429: number;
 	lastAt: number;
 	quotaKey: string;
+	lastDelayMs: number;
 }
 
 const rateLimitStateByAccountQuota = new Map<string, RateLimitState>();
@@ -41,6 +43,11 @@ const rateLimitStateByAccountQuota = new Map<string, RateLimitState>();
 function normalizeDelayMs(value: number | null | undefined, fallback: number): number {
 	const candidate = typeof value === "number" && Number.isFinite(value) ? value : fallback;
 	return Math.max(0, Math.floor(candidate));
+}
+
+function addBackoffJitter(baseMs: number): number {
+	const jitter = baseMs * RATE_LIMIT_BACKOFF_JITTER_FACTOR * (Math.random() * 2 - 1);
+	return Math.max(0, Math.floor(baseMs + jitter));
 }
 
 function pruneStaleRateLimitState(): void {
@@ -68,13 +75,9 @@ export function getRateLimitBackoff(
 	const baseDelay = normalizeDelayMs(serverRetryAfterMs, 1000);
 
 	if (previous && now - previous.lastAt < RATE_LIMIT_DEDUP_WINDOW_MS) {
-		const backoffDelay = Math.min(
-			baseDelay * Math.pow(2, previous.consecutive429 - 1),
-			MAX_BACKOFF_MS,
-		);
 		return {
 			attempt: previous.consecutive429,
-			delayMs: Math.max(baseDelay, backoffDelay),
+			delayMs: previous.lastDelayMs,
 			isDuplicate: true,
 		};
 	}
@@ -84,16 +87,18 @@ export function getRateLimitBackoff(
 			? previous.consecutive429 + 1
 			: 1;
 
+	const backoffDelay = Math.min(baseDelay * Math.pow(2, attempt - 1), MAX_BACKOFF_MS);
+	const jitteredDelay = Math.min(addBackoffJitter(backoffDelay), MAX_BACKOFF_MS);
+	const delayMs = Math.max(baseDelay, jitteredDelay);
 	rateLimitStateByAccountQuota.set(stateKey, {
 		consecutive429: attempt,
 		lastAt: now,
 		quotaKey,
+		lastDelayMs: delayMs,
 	});
-
-	const backoffDelay = Math.min(baseDelay * Math.pow(2, attempt - 1), MAX_BACKOFF_MS);
 	return {
 		attempt,
-		delayMs: Math.max(baseDelay, backoffDelay),
+		delayMs,
 		isDuplicate: false,
 	};
 }
