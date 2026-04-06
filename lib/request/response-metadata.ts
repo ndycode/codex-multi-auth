@@ -1,4 +1,4 @@
-const MAX_RETRY_HINT_MS = 5 * 60 * 1000;
+const MAX_RETRY_HINT_MS = 24 * 60 * 60 * 1000;
 
 function clampRetryHintMs(value: number): number | null {
 	if (!Number.isFinite(value)) return null;

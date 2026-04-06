@@ -135,7 +135,7 @@ export function evaluateFailurePolicy(
 				markRateLimited: false,
 				removeAccount: false,
 				cooldownMs,
-				cooldownReason: cooldownMs > 0 ? "network-error" : undefined,
+				cooldownReason: cooldownMs > 0 ? "server-error" : undefined,
 				retrySameAccount,
 				retryDelayMs: retrySameAccount ? 500 : undefined,
 				handoffStrategy: "hard",
