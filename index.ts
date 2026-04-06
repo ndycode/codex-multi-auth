@@ -148,6 +148,11 @@ import {
 	parseFailoverMode,
 } from "./lib/request/failover-config.js";
 import {
+	buildStreamFailoverCandidateOrder,
+	capStreamFailoverMax,
+	computeOutboundRequestAttemptBudget,
+} from "./lib/request/request-attempt-budget.js";
+import {
 	evaluateFailurePolicy,
 	type FailoverMode,
 } from "./lib/request/failure-policy.js";
@@ -713,8 +718,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					);
 					const streamFailoverMax = Math.max(
 						0,
-						parseEnvInt(process.env.CODEX_AUTH_STREAM_FAILOVER_MAX) ??
-							STREAM_FAILOVER_MAX_BY_MODE[failoverMode],
+						capStreamFailoverMax(
+							parseEnvInt(process.env.CODEX_AUTH_STREAM_FAILOVER_MAX) ??
+								STREAM_FAILOVER_MAX_BY_MODE[failoverMode],
+						),
 					);
 					const streamFailoverSoftTimeoutMs = Math.max(
 						1_000,
@@ -898,11 +905,36 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								);
 								runtimeMetrics.lastRequestAt = Date.now();
 
-								const abortSignal = requestInit?.signal ?? init?.signal ?? null;
-								const sleep = createAbortableSleep(abortSignal);
+							const abortSignal = requestInit?.signal ?? init?.signal ?? null;
+							const sleep = createAbortableSleep(abortSignal);
+							const maxOutboundRequestAttempts =
+								computeOutboundRequestAttemptBudget({
+									accountCount: accountManager.getAccountCount(),
+									maxSameAccountRetries,
+									emptyResponseMaxRetries,
+									streamFailoverMax,
+								});
+							let outboundRequestAttemptsRemaining =
+								maxOutboundRequestAttempts;
+							const tryConsumeOutboundRequestAttempt = (
+								reason: "primary" | "stream-failover",
+								accountIndex: number,
+							): boolean => {
+								if (outboundRequestAttemptsRemaining <= 0) {
+									runtimeMetrics.lastError =
+										`Request attempt budget exhausted after ${maxOutboundRequestAttempts} outbound request(s)`;
+									logWarn(
+										`Stopping ${reason} replay after exhausting ${maxOutboundRequestAttempts} outbound request(s) on account ${accountIndex + 1}.`,
+									);
+									return false;
+								}
 
-								let allRateLimitedRetries = 0;
-								let emptyResponseRetries = 0;
+								outboundRequestAttemptsRemaining -= 1;
+								return true;
+							};
+
+							let allRateLimitedRetries = 0;
+							let emptyResponseRetries = 0;
 								const attemptedUnsupportedFallbackModels = new Set<string>();
 								if (model) {
 									attemptedUnsupportedFallbackModels.add(model);
@@ -1271,6 +1303,28 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										let successAccountForResponse = account;
 										let successEntitlementAccountKey = entitlementAccountKey;
 										while (true) {
+											if (
+												!tryConsumeOutboundRequestAttempt(
+													"primary",
+													account.index,
+												)
+											) {
+												runtimeMetrics.failedRequests++;
+												const lastErrorDetail = runtimeMetrics.lastError;
+												const message = lastErrorDetail
+													? `${lastErrorDetail}. Try again after the current retries settle.`
+													: "Request attempt budget exhausted. Try again shortly.";
+												return new Response(
+													JSON.stringify({ error: { message } }),
+													{
+														status: 503,
+														headers: {
+															"content-type": "application/json; charset=utf-8",
+														},
+													},
+												);
+											}
+
 											let response: Response;
 											const fetchStart = performance.now();
 
@@ -1955,13 +2009,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											runtimeMetrics.cumulativeLatencyMs += fetchLatencyMs;
 											let responseForSuccess = response;
 											if (isStreaming) {
-												const streamFallbackCandidateOrder = [
-													account.index,
-													...accountManager
-														.getAccountsSnapshot()
-														.map((candidate) => candidate.index)
-														.filter((index) => index !== account.index),
-												];
+												const streamFallbackCandidateOrder =
+													buildStreamFailoverCandidateOrder(
+														account.index,
+														accountSnapshotList.map(
+															(candidate) => candidate.index,
+														),
+													);
 												responseForSuccess = withStreamingFailover(
 													response,
 													async (failoverAttempt, emittedBytes) => {
@@ -2077,6 +2131,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																)
 															) {
 																continue;
+															}
+															if (
+																!tryConsumeOutboundRequestAttempt(
+																	"stream-failover",
+																	fallbackAccount.index,
+																)
+															) {
+																return null;
 															}
 															fallbackAccount.accountId = fallbackAccountId;
 															if (
