@@ -535,6 +535,7 @@ export class AccountManager {
 		const account = this.getAccountByIndex(index);
 		if (!account) return false;
 		if (account.enabled === false) return false;
+		if (!this.hasEnabledWorkspaces(account)) return false;
 		clearExpiredRateLimits(account);
 		return (
 			!isRateLimitedForFamily(account, family, model) &&
@@ -606,6 +607,7 @@ export class AccountManager {
 			const account = this.accounts[idx];
 			if (!account) continue;
 			if (account.enabled === false) continue;
+			if (!this.hasEnabledWorkspaces(account)) continue;
 
 			clearExpiredRateLimits(account);
 			if (
@@ -636,6 +638,7 @@ export class AccountManager {
 			const account = this.accounts[idx];
 			if (!account) continue;
 			if (account.enabled === false) continue;
+			if (!this.hasEnabledWorkspaces(account)) continue;
 
 			clearExpiredRateLimits(account);
 			if (
@@ -666,6 +669,7 @@ export class AccountManager {
 			.map((account): AccountWithMetrics | null => {
 				if (!account) return null;
 				if (account.enabled === false) return null;
+				if (!this.hasEnabledWorkspaces(account)) return null;
 				clearExpiredRateLimits(account);
 				const isAvailable =
 					!isRateLimitedForFamily(account, family, model) &&
