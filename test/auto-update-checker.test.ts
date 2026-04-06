@@ -602,14 +602,20 @@ describe("auto-update-checker", () => {
 		it("writes empty object when cache exists", () => {
 			vi.mocked(fs.existsSync).mockReturnValue(true);
 			vi.mocked(fs.writeFileSync).mockClear();
+			vi.mocked(fs.renameSync).mockClear();
 
 			clearUpdateCache();
 
-			expect(fs.writeFileSync).toHaveBeenCalledWith(
-				expect.stringContaining("update-check-cache.json"),
-				"{}",
-				"utf8"
-			);
+			return Promise.resolve().then(() => {
+				return Promise.resolve().then(() => {
+					expect(fs.writeFileSync).toHaveBeenCalledWith(
+						expect.stringContaining("update-check-cache.json."),
+						"{}",
+						"utf8"
+					);
+					expect(fs.renameSync).toHaveBeenCalled();
+				});
+			});
 		});
 
 		it("does nothing when cache does not exist", () => {
@@ -619,6 +625,25 @@ describe("auto-update-checker", () => {
 			clearUpdateCache();
 
 			expect(fs.writeFileSync).not.toHaveBeenCalled();
+		});
+
+		it("keeps clearUpdateCache ordered after the latest save", async () => {
+			vi.mocked(fs.existsSync).mockReturnValue(true);
+			vi.mocked(fs.writeFileSync).mockClear();
+			vi.mocked(fs.renameSync).mockClear();
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+
+			await checkForUpdates(true);
+			clearUpdateCache();
+			await Promise.resolve();
+			await Promise.resolve();
+
+			const writes = vi.mocked(fs.writeFileSync).mock.calls;
+			expect(writes).toHaveLength(2);
+			expect(writes.at(-1)?.[1]).toBe("{}");
 		});
 	});
 });

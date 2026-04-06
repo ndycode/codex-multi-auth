@@ -1842,16 +1842,8 @@ export function getPluginConfigExplainReport(): ConfigExplainReport {
 	const stored = resolveStoredPluginConfigRecord();
 	const storedRecord = stored.record ?? null;
 	const entries = CONFIG_EXPLAIN_ENTRIES.map((entry) => {
-		const rawValue = entry.getValue(pluginConfig);
-		const rawDefaultValue = DEFAULT_PLUGIN_CONFIG[entry.key];
-		const value =
-			entry.key === "retryAllAccountsMaxRetries" && rawValue === 0
-				? Number.POSITIVE_INFINITY
-				: rawValue;
-		const defaultValue =
-			entry.key === "retryAllAccountsMaxRetries" && rawDefaultValue === 0
-				? Number.POSITIVE_INFINITY
-				: rawDefaultValue;
+		const value = entry.getValue(pluginConfig);
+		const defaultValue = DEFAULT_PLUGIN_CONFIG[entry.key];
 		return {
 			key: entry.key,
 			value: normalizeConfigExplainValue(value),

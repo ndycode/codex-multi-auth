@@ -780,10 +780,11 @@ function resolveMenuQuotaProbeInput(
 	if (account.enabled === false) return null;
 	if (!hasUsableAccessToken(account, now)) return null;
 
-	const existing = getQuotaCacheEntryForAccount(
+	const existing = getPersistedQuotaViewForAccount(
 		cache,
 		account,
 		accounts,
+		now,
 		emailFallbackState,
 	);
 	if (
@@ -946,6 +947,7 @@ function mapAccountStatus(
 	index: number,
 	activeIndex: number,
 	now: number,
+	persistedQuotaStatus?: number,
 ): ExistingAccountInfo["status"] {
 	if (account.enabled === false) return "disabled";
 	if (
@@ -954,6 +956,7 @@ function mapAccountStatus(
 	) {
 		return "cooldown";
 	}
+	if (persistedQuotaStatus === 429) return "rate-limited";
 	const rateLimit = formatRateLimitEntry(account, now, "codex");
 	if (rateLimit) return "rate-limited";
 	if (index === activeIndex) return "active";
@@ -1114,7 +1117,7 @@ function toExistingAccountInfo(
 			email: account.email,
 			addedAt: account.addedAt,
 			lastUsed: account.lastUsed,
-			status: mapAccountStatus(account, index, activeIndex, now),
+			status: mapAccountStatus(account, index, activeIndex, now, entry?.status),
 			quotaSummary:
 				(displaySettings.menuShowQuotaSummary ?? true) && entry
 					? formatAccountQuotaSummary(entry)

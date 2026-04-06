@@ -128,12 +128,12 @@ describe("getPluginConfigExplainReport", () => {
 		expect(fallback?.source).not.toBe("file");
 	});
 
-	it("normalizes non-finite values for json-safe output", async () => {
+	it("reports retry-all max retries honestly for json-safe output", async () => {
 		const { getPluginConfigExplainReport } = await import("../lib/config.js");
 		const report = getPluginConfigExplainReport();
 		const entry = expectEntry(report, "retryAllAccountsMaxRetries");
-		expect(entry?.value).toBe("Infinity");
-		expect(entry?.defaultValue).toBe("Infinity");
+		expect(entry?.value).toBe(0);
+		expect(entry?.defaultValue).toBe(0);
 		const serialized = JSON.parse(JSON.stringify(report)) as {
 			entries: Array<{ key: string; value: unknown; defaultValue: unknown }>;
 		};
@@ -141,8 +141,8 @@ describe("getPluginConfigExplainReport", () => {
 			(item) => item.key === "retryAllAccountsMaxRetries",
 		);
 		expect(serializedEntry).toMatchObject({
-			value: "Infinity",
-			defaultValue: "Infinity",
+			value: 0,
+			defaultValue: 0,
 		});
 	});
 
