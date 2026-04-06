@@ -4427,6 +4427,271 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		);
 	});
 
+	it("retries same account on short-cooldown 429 without marking rate-limited", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
+		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
+
+		const markRateLimitedWithReason = vi.fn();
+		const manager = {
+			getAccountCount: () => 1,
+			getCurrentOrNextForFamilyHybrid: () => ({ index: 0, accountId: "acc-1", email: "alpha@example.com", refreshToken: "refresh-1" }),
+			getCurrentOrNextForFamily: () => ({ index: 0, accountId: "acc-1", email: "alpha@example.com", refreshToken: "refresh-1" }),
+			getCurrentWorkspace: () => null,
+			getAccountByIndex: () => null,
+			getAccountsSnapshot: () => [],
+			isAccountAvailableForFamily: () => true,
+			toAuthDetails: () => ({ type: "oauth" as const, access: "access-token", refresh: "refresh-1", expires: Date.now() + 60_000 }),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: () => {},
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => 1,
+			saveToDisk: async () => {},
+			markAccountCoolingDown: () => {},
+			markRateLimited: () => {},
+			markRateLimitedWithReason,
+			consumeToken: () => true,
+			refundToken: () => {},
+			syncCodexCliActiveSelectionForIndex: async () => {},
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			recordRateLimit: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => false,
+			markToastShown: () => {},
+			setActiveIndex: () => null,
+		};
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		// Short cooldown: 1000ms < 5000ms threshold -> retries same account, does NOT rotate
+		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
+			response: new Response("rate limited", { status: 429 }),
+			rateLimit: { retryAfterMs: 1000, code: "rate_limit_exceeded" },
+			errorBody: "rate limited",
+		} as never);
+		vi.mocked(rateLimitBackoffModule.getRateLimitBackoff).mockReturnValueOnce({ attempt: 1, delayMs: 500 });
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		// Short cooldown -> retries same account -> gets 200 on second attempt
+		expect(response.status).toBe(200);
+		// markRateLimitedWithReason is for long cooldowns; short retries skip it
+		expect(markRateLimitedWithReason).not.toHaveBeenCalled();
+		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not rotate on 404 with unrelated body (not a usage limit)", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
+
+		const markRateLimitedWithReason = vi.fn();
+		const manager = {
+			getAccountCount: () => 1,
+			getCurrentOrNextForFamilyHybrid: () => ({ index: 0, accountId: "acc-1", email: "alpha@example.com", refreshToken: "refresh-1" }),
+			getCurrentOrNextForFamily: () => ({ index: 0, accountId: "acc-1", email: "alpha@example.com", refreshToken: "refresh-1" }),
+			getCurrentWorkspace: () => null,
+			getAccountByIndex: () => null,
+			getAccountsSnapshot: () => [],
+			isAccountAvailableForFamily: () => true,
+			toAuthDetails: () => ({ type: "oauth" as const, access: "access-token", refresh: "refresh-1", expires: Date.now() + 60_000 }),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: () => {},
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => 1,
+			saveToDisk: async () => {},
+			markAccountCoolingDown: () => {},
+			markRateLimited: () => {},
+			markRateLimitedWithReason,
+			consumeToken: () => true,
+			refundToken: () => {},
+			syncCodexCliActiveSelectionForIndex: async () => {},
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			recordRateLimit: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => false,
+			markToastShown: () => {},
+			setActiveIndex: () => null,
+		};
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		// 404 with unrelated body: handleErrorResponse returns 404 + no rateLimit
+		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
+			response: new Response(JSON.stringify({ error: { code: "model_not_found" } }), { status: 404 }),
+			rateLimit: undefined,
+			errorBody: JSON.stringify({ error: { code: "model_not_found" } }),
+		} as never);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "model_not_found" } }), { status: 404 }));
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		// Falls through as a plain 404; no rate-limit rotation
+		expect(response.status).toBe(404);
+		expect(markRateLimitedWithReason).not.toHaveBeenCalled();
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not mark rate-limited when entitlement 404 is remapped to 403", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
+
+		const markRateLimitedWithReason = vi.fn();
+		const manager = {
+			getAccountCount: () => 1,
+			getCurrentOrNextForFamilyHybrid: () => ({ index: 0, accountId: "acc-1", email: "alpha@example.com", refreshToken: "refresh-1" }),
+			getCurrentOrNextForFamily: () => ({ index: 0, accountId: "acc-1", email: "alpha@example.com", refreshToken: "refresh-1" }),
+			getCurrentWorkspace: () => null,
+			getAccountByIndex: () => null,
+			getAccountsSnapshot: () => [],
+			isAccountAvailableForFamily: () => true,
+			toAuthDetails: () => ({ type: "oauth" as const, access: "access-token", refresh: "refresh-1", expires: Date.now() + 60_000 }),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: () => {},
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => 1,
+			saveToDisk: async () => {},
+			markAccountCoolingDown: () => {},
+			markRateLimited: () => {},
+			markRateLimitedWithReason,
+			consumeToken: () => true,
+			refundToken: () => {},
+			syncCodexCliActiveSelectionForIndex: async () => {},
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			recordRateLimit: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => false,
+			markToastShown: () => {},
+			setActiveIndex: () => null,
+		};
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		// Entitlement error: mapUsageLimit404WithBody remaps 404 -> 403 (not 429)
+		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
+			response: new Response(
+				JSON.stringify({ error: { code: "usage_not_included", message: "Not included in your plan" } }),
+				{ status: 403 },
+			),
+			rateLimit: undefined,
+			errorBody: JSON.stringify({ error: { code: "usage_not_included", message: "Not included in your plan" } }),
+		} as never);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "usage_not_included" } }), { status: 404 }));
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		// Entitlement 403 passes through; no rate-limit rotation
+		expect(response.status).toBe(403);
+		expect(markRateLimitedWithReason).not.toHaveBeenCalled();
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+	});
+
+	it("rotates account when upstream 404 body contains rate_limit_exceeded keyword", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
+		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
+
+		const markRateLimitedWithReason = vi.fn();
+		const manager = {
+			getAccountCount: () => 1,
+			getCurrentOrNextForFamilyHybrid: () => ({ index: 0, accountId: "acc-1", email: "alpha@example.com", refreshToken: "refresh-1" }),
+			getCurrentOrNextForFamily: () => ({ index: 0, accountId: "acc-1", email: "alpha@example.com", refreshToken: "refresh-1" }),
+			getCurrentWorkspace: () => null,
+			getAccountByIndex: () => null,
+			getAccountsSnapshot: () => [],
+			isAccountAvailableForFamily: () => true,
+			toAuthDetails: () => ({ type: "oauth" as const, access: "access-token", refresh: "refresh-1", expires: Date.now() + 60_000 }),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: () => {},
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => 1,
+			saveToDisk: async () => {},
+			markAccountCoolingDown: () => {},
+			markRateLimited: () => {},
+			markRateLimitedWithReason,
+			consumeToken: () => true,
+			refundToken: () => {},
+			syncCodexCliActiveSelectionForIndex: async () => {},
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			recordRateLimit: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => true,
+			markToastShown: () => {},
+			setActiveIndex: () => null,
+		};
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
+			response: new Response(
+				JSON.stringify({ error: { code: "rate_limit_exceeded", message: "Rate limit exceeded" } }),
+				{ status: 429 },
+			),
+			rateLimit: { retryAfterMs: 3 * 60 * 60 * 1000, code: "rate_limit_exceeded" },
+			errorBody: JSON.stringify({ error: { code: "rate_limit_exceeded", message: "Rate limit exceeded" } }),
+		} as never);
+		vi.mocked(rateLimitBackoffModule.getRateLimitBackoff).mockReturnValueOnce({ attempt: 1, delayMs: 500 });
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "rate_limit_exceeded" } }), { status: 404 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(503);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+		expect(markRateLimitedWithReason).toHaveBeenCalledWith(
+			expect.objectContaining({ index: 0 }),
+			3 * 60 * 60 * 1000,
+			"gpt-5.1",
+			expect.any(String),
+			"gpt-5.1",
+		);
+	});
+
 	it("persists the longer parsed rate-limit cooldown across overlapping requests", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const { AccountManager: ActualAccountManager } =
