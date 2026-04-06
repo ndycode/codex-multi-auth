@@ -2124,6 +2124,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 															}
 
 															if (
+																!tryConsumeOutboundRequestAttempt(
+																	"stream-failover",
+																	fallbackAccount.index,
+																)
+															) {
+																return null;
+															}
+															if (
 																!accountManager.consumeToken(
 																	fallbackAccount,
 																	modelFamily,
@@ -2131,14 +2139,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																)
 															) {
 																continue;
-															}
-															if (
-																!tryConsumeOutboundRequestAttempt(
-																	"stream-failover",
-																	fallbackAccount.index,
-																)
-															) {
-																return null;
 															}
 															fallbackAccount.accountId = fallbackAccountId;
 															if (

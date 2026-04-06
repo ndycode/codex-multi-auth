@@ -15,14 +15,25 @@ export function computeOutboundRequestAttemptBudget(params: {
 	emptyResponseMaxRetries: number;
 	streamFailoverMax: number;
 }): number {
-	const accountCount = Math.max(1, Math.floor(params.accountCount));
+	const accountCount = Math.max(
+		1,
+		Math.floor(Number.isFinite(params.accountCount) ? params.accountCount : 1),
+	);
 	const maxSameAccountRetries = Math.max(
 		0,
-		Math.floor(params.maxSameAccountRetries),
+		Math.floor(
+			Number.isFinite(params.maxSameAccountRetries)
+				? params.maxSameAccountRetries
+				: 0,
+		),
 	);
 	const emptyResponseMaxRetries = Math.max(
 		0,
-		Math.floor(params.emptyResponseMaxRetries),
+		Math.floor(
+			Number.isFinite(params.emptyResponseMaxRetries)
+				? params.emptyResponseMaxRetries
+				: 0,
+		),
 	);
 	const streamFailoverMax = capStreamFailoverMax(params.streamFailoverMax);
 
