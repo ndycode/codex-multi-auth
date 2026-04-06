@@ -20,6 +20,7 @@ import {
 	sanitizeEmail,
 	shouldUpdateAccountIdFromToken,
 } from "./auth/token-utils.js";
+import { mutateRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 
 const log = createLogger("proactive-refresh");
 
@@ -28,6 +29,7 @@ export const DEFAULT_PROACTIVE_BUFFER_MS = 5 * 60 * 1000;
 
 /** Minimum buffer to prevent unnecessary refreshes (30 seconds) */
 export const MIN_PROACTIVE_BUFFER_MS = 30 * 1000;
+const PROACTIVE_REFRESH_STAGGER_MS = 250;
 
 /**
  * Result of a proactive refresh operation.
@@ -113,6 +115,10 @@ export async function proactiveRefreshAccount(
 		expiresInMinutes: Math.round(timeUntilExpiry / 60000),
 	});
 
+	mutateRuntimeObservabilitySnapshot((snapshot) => {
+		snapshot.authRefreshRequests += 1;
+		snapshot.runtimeMetrics.authRefreshRequests += 1;
+	});
 	const result = await queuedRefresh(account.refreshToken);
 
 	if (result.type === "success") {
@@ -158,14 +164,17 @@ export async function refreshExpiringAccounts(
 
 	log.info(`Proactively refreshing ${accountsToRefresh.length} account(s)`);
 
-	// Refresh in parallel for efficiency
-	const refreshPromises = accountsToRefresh.map(async (account) => {
+	const outcomes: Array<{ index: number; result: ProactiveRefreshResult }> = [];
+	for (let index = 0; index < accountsToRefresh.length; index += 1) {
+		const account = accountsToRefresh[index];
+		if (!account) continue;
+		if (index > 0) {
+			await new Promise((resolve) => setTimeout(resolve, PROACTIVE_REFRESH_STAGGER_MS));
+		}
 		const result = await proactiveRefreshAccount(account, bufferMs);
 		await onResult?.(account, result);
-		return { index: account.index, result };
-	});
-
-	const outcomes = await Promise.all(refreshPromises);
+		outcomes.push({ index: account.index, result });
+	}
 
 	for (const { index, result } of outcomes) {
 		results.set(index, result);
