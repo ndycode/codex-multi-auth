@@ -67,9 +67,20 @@ function createDefaultSnapshot(): RuntimeObservabilitySnapshot {
 }
 
 async function writeSnapshot(snapshot: RuntimeObservabilitySnapshot): Promise<void> {
+	const dir = getCodexMultiAuthDir();
 	const path = getSnapshotPath();
-	await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
-	await fs.writeFile(path, JSON.stringify(snapshot, null, 2), "utf-8");
+	await fs.mkdir(dir, { recursive: true });
+	const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+	let moved = false;
+	try {
+		await fs.writeFile(tempPath, JSON.stringify(snapshot, null, 2), "utf-8");
+		await fs.rename(tempPath, path);
+		moved = true;
+	} finally {
+		if (!moved) {
+			await fs.unlink(tempPath).catch(() => undefined);
+		}
+	}
 }
 
 export function getRuntimeObservabilitySnapshot(): RuntimeObservabilitySnapshot {
@@ -101,9 +112,13 @@ export async function loadPersistedRuntimeObservabilitySnapshot(): Promise<Runti
 	if (!existsSync(path)) {
 		return null;
 	}
-	const raw = await fs.readFile(path, "utf-8");
-	const parsed = JSON.parse(raw) as RuntimeObservabilitySnapshot;
-	return parsed;
+	try {
+		const raw = await fs.readFile(path, "utf-8");
+		const parsed = JSON.parse(raw) as RuntimeObservabilitySnapshot;
+		return parsed;
+	} catch {
+		return null;
+	}
 }
 
 export function resetRuntimeObservabilitySnapshotForTests(): void {
