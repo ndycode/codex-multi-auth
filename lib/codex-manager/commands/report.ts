@@ -481,7 +481,13 @@ export async function runReportCommand(
 		activeIndex: accountCount > 0 ? activeIndex + 1 : null,
 		forecast: {
 			summary: forecastSummary,
-			recommendation,
+			recommendation: {
+				...recommendation,
+				selectedReason:
+					recommendation.recommendedIndex !== null
+						? forecastResults[recommendation.recommendedIndex]?.reasons[0] ?? recommendation.reason
+						: recommendation.reason,
+			},
 			probeErrors,
 			accounts: serializeForecastResults(
 				forecastResults,
@@ -491,6 +497,13 @@ export async function runReportCommand(
 			),
 		},
 	};
+	if (report.forecast.recommendation.recommendedIndex !== null) {
+		const selectedIndex = report.forecast.recommendation.recommendedIndex;
+		const selected = report.forecast.accounts[selectedIndex];
+		if (selected) {
+			selected.selected = true;
+		}
+	}
 
 	const cwd = deps.getCwd?.() ?? process.cwd();
 	if (options.outPath) {

@@ -69,9 +69,15 @@ describe("runStatusCommand", () => {
 		expect(deps.logInfo).toHaveBeenCalledWith("Accounts (2)");
 		expect(deps.logInfo).toHaveBeenCalledWith("Storage: /tmp/codex.json");
 		expect(deps.logInfo).toHaveBeenCalledWith(
+			expect.stringContaining("Selection reason: account 1"),
+		);
+		expect(deps.logInfo).toHaveBeenCalledWith(
 			expect.stringContaining(
 				"1. Account 1 (one@example.com) [current, rate-limited]",
 			),
+		);
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			expect.stringContaining("reason:"),
 		);
 		expect(deps.logInfo).toHaveBeenCalledWith(
 			expect.stringContaining(

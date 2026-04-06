@@ -3,6 +3,10 @@ import {
 	formatCooldown,
 	formatWaitTime,
 } from "../../accounts.js";
+import {
+	evaluateForecastAccounts,
+	recommendForecastAccount,
+} from "../../forecast.js";
 import type { ModelFamily } from "../../prompts/codex.js";
 import type { AccountStorageV3 } from "../../storage.js";
 
@@ -40,8 +44,22 @@ export async function runStatusCommand(
 
 	const now = deps.getNow?.() ?? Date.now();
 	const activeIndex = deps.resolveActiveIndex(storage, "codex");
+	const forecastResults = evaluateForecastAccounts(
+		storage.accounts.map((account, index) => ({
+			index,
+			account,
+			isCurrent: index === activeIndex,
+			now,
+		})),
+	);
+	const recommendation = recommendForecastAccount(forecastResults);
 	logInfo(`Accounts (${storage.accounts.length})`);
 	logInfo(`Storage: ${path}`);
+	if (recommendation.recommendedIndex !== null) {
+		logInfo(
+			`Selection reason: account ${recommendation.recommendedIndex + 1} (${recommendation.reason})`,
+		);
+	}
 	logInfo("");
 
 	for (let i = 0; i < storage.accounts.length; i += 1) {
@@ -61,6 +79,10 @@ export async function runStatusCommand(
 				? `used ${formatWaitTime(now - account.lastUsed)} ago`
 				: "never used";
 		logInfo(`${i + 1}. ${label}${markerLabel} ${lastUsed}`);
+		const primaryReason = forecastResults[i]?.reasons[0];
+		if (primaryReason) {
+			logInfo(`   reason: ${primaryReason}`);
+		}
 	}
 
 	return 0;

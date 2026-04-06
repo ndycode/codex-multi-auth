@@ -257,6 +257,9 @@ describe("runReportCommand", () => {
 			"token expired",
 		);
 		expect(jsonOutput.forecast.accounts[3]?.liveQuota?.planType).toBe("pro");
+		expect(jsonOutput.forecast.recommendation.selectedReason).toEqual(
+		expect.any(String),
+		);
 	});
 
 	it("reuses usable access tokens for live probes without forcing refresh", async () => {
