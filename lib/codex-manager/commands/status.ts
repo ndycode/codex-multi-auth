@@ -8,7 +8,7 @@ import {
 	recommendForecastAccount,
 } from "../../forecast.js";
 import type { ModelFamily } from "../../prompts/codex.js";
-import type { AccountStorageV3 } from "../../storage.js";
+import type { AccountStorageV3, StorageHealthSummary } from "../../storage.js";
 
 type LoadedStorage = AccountStorageV3 | null;
 
@@ -25,6 +25,7 @@ export interface StatusCommandDeps {
 		now: number,
 		family: ModelFamily,
 	) => string | null;
+	inspectStorageHealth?: () => Promise<StorageHealthSummary>;
 	getNow?: () => number;
 	logInfo?: (message: string) => void;
 }
@@ -35,10 +36,22 @@ export async function runStatusCommand(
 	deps.setStoragePath(null);
 	const storage = await deps.loadAccounts();
 	const path = deps.getStoragePath();
+	const storageHealth = await deps.inspectStorageHealth?.();
 	const logInfo = deps.logInfo ?? console.log;
 	if (!storage || storage.accounts.length === 0) {
-		logInfo("No accounts configured.");
+		logInfo(
+			storageHealth?.state === "intentional-reset"
+				? "No accounts configured. Storage was intentionally reset."
+				: storageHealth?.state === "recoverable"
+					? "No accounts configured. Recovery artifacts are available."
+					: storageHealth?.state === "corrupt"
+						? "No accounts configured. Storage appears corrupted."
+						: "No accounts configured.",
+		);
 		logInfo(`Storage: ${path}`);
+		if (storageHealth) {
+			logInfo(`Storage health: ${storageHealth.state}`);
+		}
 		return 0;
 	}
 
@@ -59,6 +72,9 @@ export async function runStatusCommand(
 		logInfo(
 			`Selection reason: account ${recommendation.recommendedIndex + 1} (${recommendation.reason})`,
 		);
+ 	}
+	if (storageHealth) {
+		logInfo(`Storage health: ${storageHealth.state}`);
 	}
 	logInfo("");
 

@@ -3,7 +3,7 @@ import {
 	type ReportCommandDeps,
 	runReportCommand,
 } from "../lib/codex-manager/commands/report.js";
-import type { AccountStorageV3 } from "../lib/storage.js";
+import type { AccountStorageV3, StorageHealthSummary } from "../lib/storage.js";
 
 function createStorage(
 	accounts: AccountStorageV3["accounts"] = [
@@ -50,6 +50,14 @@ function createDeps(
 			secondary: {},
 		})),
 		formatRateLimitEntry: vi.fn(() => null),
+		inspectStorageHealth: vi.fn(async (): Promise<StorageHealthSummary> => ({
+			state: "healthy",
+			path: "/mock/openai-codex-accounts.json",
+			resetMarkerPath: "/mock/openai-codex-accounts.json.intentional-reset",
+			walPath: "/mock/openai-codex-accounts.json.wal",
+			hasResetMarker: false,
+			hasWal: false,
+		})),
 		normalizeFailureDetail: vi.fn((message) => message ?? "unknown"),
 		logInfo: vi.fn(),
 		logError: vi.fn(),
@@ -110,6 +118,9 @@ describe("runReportCommand", () => {
 		);
 		expect(deps.logInfo).toHaveBeenCalledWith(
 			expect.stringContaining('"liveProbeBudget"'),
+		);
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			expect.stringContaining('"storageHealth"'),
 		);
 	});
 
