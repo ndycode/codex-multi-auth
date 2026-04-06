@@ -163,7 +163,7 @@ If browser launch is blocked, use the alternate login paths in [docs/getting-sta
 - active requests use a bounded outbound request budget so one prompt cannot walk the full pool indefinitely
 - repeated cross-account 5xx bursts trigger a short cooldown instead of continuing aggressive rotation
 - proactive refresh is staggered to reduce background refresh bursts
-- `codex auth status` and `codex auth report --json` surface recent runtime request metrics and active cooldown windows
+- `codex auth status` surfaces recent runtime request metrics in text output, and `codex auth report --json` exposes the machine-readable cooldown/runtime snapshot
 
 ---
 
@@ -277,6 +277,7 @@ codex auth login
 - Switch succeeds but wrong account appears active: run `codex auth switch <index>`, then restart session
 - Requests fail fast with a pool cooldown message: wait for the cooldown window or inspect `codex auth status`
 - Requests fail fast after repeated upstream 5xx errors: inspect `codex auth report --json` for runtime traffic and cooldown details
+- Storage cleanup fails with `EBUSY` / `EPERM` (Windows): run `codex auth doctor --fix` to retry, or manually remove `~/.codex/multi-auth/<project-key>/` and re-login
 - OAuth callback on port `1455` fails: free the port and re-run `codex auth login`
 - Browser launch is blocked or you are in a headless shell: re-run `codex auth login --manual` or set `CODEX_AUTH_NO_BROWSER=1`
 - `missing field id_token` / `token_expired` / `refresh_token_reused`: re-login affected account

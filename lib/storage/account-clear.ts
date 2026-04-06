@@ -1,5 +1,14 @@
 import { promises as fs } from "node:fs";
 
+function isRetryableFsError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return code === "EBUSY" || code === "EPERM";
+}
+
+async function sleep(ms: number): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function clearAccountStorageArtifacts(params: {
 	path: string;
 	resetMarkerPath: string;
@@ -12,7 +21,21 @@ export async function clearAccountStorageArtifacts(params: {
 		required: boolean,
 	): Promise<void> => {
 		try {
-			await fs.unlink(targetPath);
+			for (let attempt = 0; attempt < 5; attempt += 1) {
+				try {
+					await fs.unlink(targetPath);
+					return;
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException).code;
+					if (code === "ENOENT") {
+						return;
+					}
+					if (!isRetryableFsError(error) || attempt >= 4) {
+						throw error;
+					}
+					await sleep(10 * 2 ** attempt);
+				}
+			}
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code === "ENOENT") {

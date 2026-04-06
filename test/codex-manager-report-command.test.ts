@@ -58,6 +58,7 @@ function createDeps(
 			hasResetMarker: false,
 			hasWal: false,
 		})),
+		loadRuntimeObservabilitySnapshot: vi.fn(async () => null),
 		normalizeFailureDetail: vi.fn((message) => message ?? "unknown"),
 		logInfo: vi.fn(),
 		logError: vi.fn(),
@@ -138,6 +139,67 @@ describe("runReportCommand", () => {
 		expect(deps.logInfo).toHaveBeenCalledWith(
 			expect.stringContaining('"storageHealth"'),
 		);
+	});
+
+	it("includes runtime observability fields in json output when snapshot is available", async () => {
+		const deps = createDeps({
+			loadRuntimeObservabilitySnapshot: vi.fn(async () => ({
+				version: 1,
+				updatedAt: 2000,
+				responsesRequests: 4,
+				authRefreshRequests: 2,
+				diagnosticProbeRequests: 1,
+				currentRequestId: "req_123",
+				poolExhaustionCooldownUntil: 9000,
+				serverBurstCooldownUntil: 12000,
+				runtimeMetrics: {
+					startedAt: 1000,
+					totalRequests: 4,
+					successfulRequests: 3,
+					failedRequests: 1,
+					responsesRequests: 4,
+					authRefreshRequests: 2,
+					diagnosticProbeRequests: 1,
+					outboundRequestAttemptBudget: 6,
+					outboundRequestAttemptsConsumed: 5,
+					requestAttemptBudgetExhaustions: 0,
+					poolExhaustionFastFails: 1,
+					serverBurstFastFails: 0,
+					rateLimitedResponses: 1,
+					serverErrors: 0,
+					networkErrors: 0,
+					userAborts: 0,
+					authRefreshFailures: 0,
+					emptyResponseRetries: 0,
+					accountRotations: 1,
+					sameAccountRetries: 0,
+					streamFailoverAttempts: 0,
+					streamFailoverCandidatesConsidered: 0,
+					lastStreamFailoverCandidateCount: 0,
+					streamFailoverRecoveries: 0,
+					streamFailoverCrossAccountRecoveries: 0,
+					cumulativeLatencyMs: 42,
+					lastRequestAt: 1999,
+					lastError: null,
+				},
+			})),
+		});
+
+		const result = await runReportCommand(["--json"], deps);
+
+		expect(result).toBe(0);
+		const jsonOutput = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ?? "{}",
+		) as {
+			runtime: {
+				poolExhaustionCooldownUntil: number;
+				serverBurstCooldownUntil: number;
+				runtimeMetrics: Record<string, unknown>;
+			};
+		};
+		expect(jsonOutput.runtime.poolExhaustionCooldownUntil).toBe(9000);
+		expect(jsonOutput.runtime.serverBurstCooldownUntil).toBe(12000);
+		expect(jsonOutput.runtime.runtimeMetrics).toBeDefined();
 	});
 
 	it("respects live probe account and probe budgets", async () => {
@@ -285,7 +347,7 @@ describe("runReportCommand", () => {
 		);
 		expect(jsonOutput.forecast.accounts[3]?.liveQuota?.planType).toBe("pro");
 		expect(jsonOutput.forecast.recommendation.selectedReason).toEqual(
-		expect.any(String),
+			"Lowest risk ready account (low, score 0).",
 		);
 	});
 
@@ -497,6 +559,7 @@ describe("runReportCommand", () => {
 
 		expect(result).toBe(0);
 		expect(deps.fetchCodexQuotaSnapshot).not.toHaveBeenCalled();
+		expect(deps.saveAccounts).toHaveBeenCalledTimes(4);
 		const jsonOutput = JSON.parse(
 			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ?? "{}",
 		) as {

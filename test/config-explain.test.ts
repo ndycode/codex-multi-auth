@@ -39,6 +39,10 @@ describe("getPluginConfigExplainReport", () => {
 		delete process.env.CODEX_MODE;
 		delete process.env.CODEX_AUTH_FAST_SESSION_STRATEGY;
 		delete process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
+		delete process.env.CODEX_AUTH_RATE_LIMIT_DEDUP_WINDOW_MS;
+		delete process.env.CODEX_AUTH_RATE_LIMIT_STATE_RESET_MS;
+		delete process.env.CODEX_AUTH_RATE_LIMIT_MAX_BACKOFF_MS;
+		delete process.env.CODEX_AUTH_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS;
 		for (const configPath of tempConfigPaths) {
 			await removeWithRetry(configPath, { force: true }).catch(() => {});
 		}
