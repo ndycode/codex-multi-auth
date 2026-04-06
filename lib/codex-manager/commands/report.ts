@@ -8,10 +8,14 @@ import {
 } from "../../accounts.js";
 import {
 	evaluateForecastAccounts,
-	type ForecastAccountResult,
 	recommendForecastAccount,
 	summarizeForecast,
 } from "../../forecast.js";
+import {
+	applyRefreshedAccountPatch,
+	persistRefreshedAccountPatch,
+	serializeForecastResults,
+} from "../forecast-report-shared.js";
 import {
 	type CodexQuotaSnapshot,
 	formatQuotaSnapshotLine,
@@ -22,11 +26,7 @@ import {
 	getModelProfile,
 	resolveNormalizedModel,
 } from "../../request/helpers/model-map.js";
-import {
-	findMatchingAccountIndex,
-	type AccountMetadataV3,
-	type AccountStorageV3,
-} from "../../storage.js";
+import { type AccountMetadataV3, type AccountStorageV3 } from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 import { sleep } from "../../utils.js";
 
@@ -159,53 +159,6 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 	return { ok: true, options };
 }
 
-function serializeForecastResults(
-	results: ForecastAccountResult[],
-	liveQuotaByIndex: Map<number, CodexQuotaSnapshot>,
-	refreshFailures: Map<number, TokenFailure>,
-): Array<{
-	index: number;
-	label: string;
-	isCurrent: boolean;
-	availability: ForecastAccountResult["availability"];
-	riskScore: number;
-	riskLevel: ForecastAccountResult["riskLevel"];
-	waitMs: number;
-	reasons: string[];
-	liveQuota?: {
-		status: number;
-		planType?: string;
-		activeLimit?: number;
-		model: string;
-		summary: string;
-	};
-	refreshFailure?: TokenFailure;
-}> {
-	return results.map((result) => {
-		const liveQuota = liveQuotaByIndex.get(result.index);
-		return {
-			index: result.index,
-			label: result.label,
-			isCurrent: result.isCurrent,
-			availability: result.availability,
-			riskScore: result.riskScore,
-			riskLevel: result.riskLevel,
-			waitMs: result.waitMs,
-			reasons: result.reasons,
-			liveQuota: liveQuota
-				? {
-						status: liveQuota.status,
-						planType: liveQuota.planType,
-						activeLimit: liveQuota.activeLimit,
-						model: liveQuota.model,
-						summary: formatQuotaSnapshotLine(liveQuota),
-					}
-				: undefined,
-			refreshFailure: refreshFailures.get(result.index),
-		};
-	});
-}
-
 function inspectRequestedModel(requestedModel: string): ModelInspection {
 	const normalized = resolveNormalizedModel(requestedModel);
 	const profile = getModelProfile(normalized);
@@ -257,77 +210,6 @@ async function defaultWriteFile(path: string, contents: string): Promise<void> {
 			}
 		}
 	}
-}
-
-async function saveAccountsWithRetry(
-	storage: AccountStorageV3,
-	saveAccounts: ReportCommandDeps["saveAccounts"],
-): Promise<void> {
-	for (let attempt = 0; ; attempt += 1) {
-		try {
-			await saveAccounts(storage);
-			return;
-		} catch (error) {
-			if (!isRetryableWriteError(error) || attempt >= 3) {
-				throw error;
-			}
-			await sleep(10 * 2 ** attempt);
-		}
-	}
-}
-
-type AccountIdentityMatch = Pick<
-	AccountMetadataV3,
-	"accountId" | "email" | "refreshToken"
->;
-type RefreshedAccountPatch = Pick<
-	AccountMetadataV3,
-	"refreshToken" | "accessToken" | "expiresAt"
-> & {
-	email?: AccountMetadataV3["email"];
-	accountId?: AccountMetadataV3["accountId"];
-	accountIdSource?: AccountMetadataV3["accountIdSource"];
-};
-
-function applyRefreshedAccountPatch(
-	account: AccountMetadataV3,
-	patch: RefreshedAccountPatch,
-): void {
-	account.refreshToken = patch.refreshToken;
-	account.accessToken = patch.accessToken;
-	account.expiresAt = patch.expiresAt;
-	if (patch.email) account.email = patch.email;
-	if (patch.accountId) {
-		account.accountId = patch.accountId;
-		account.accountIdSource = patch.accountIdSource;
-	}
-}
-
-async function persistRefreshedAccountPatch(
-	storage: AccountStorageV3,
-	accountMatch: AccountIdentityMatch,
-	patch: RefreshedAccountPatch,
-	loadAccounts: ReportCommandDeps["loadAccounts"],
-	saveAccounts: ReportCommandDeps["saveAccounts"],
-): Promise<void> {
-	const latestStorage = (await loadAccounts()) ?? storage;
-	const nextStorage = structuredClone(latestStorage);
-	const targetIndex =
-		findMatchingAccountIndex(nextStorage.accounts, accountMatch, {
-			allowUniqueAccountIdFallbackWithoutEmail: true,
-		}) ??
-		findMatchingAccountIndex(nextStorage.accounts, patch, {
-			allowUniqueAccountIdFallbackWithoutEmail: true,
-		});
-	if (targetIndex === undefined) {
-		throw new Error("Unable to resolve refreshed account for persistence");
-	}
-	const targetAccount = nextStorage.accounts[targetIndex];
-	if (!targetAccount) {
-		throw new Error("Unable to resolve refreshed account for persistence");
-	}
-	applyRefreshedAccountPatch(targetAccount, patch);
-	await saveAccountsWithRetry(nextStorage, saveAccounts);
 }
 
 export async function runReportCommand(
@@ -522,6 +404,7 @@ export async function runReportCommand(
 				forecastResults,
 				liveQuotaByIndex,
 				refreshFailures,
+				formatQuotaSnapshotLine,
 			),
 		},
 	};

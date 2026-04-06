@@ -4,16 +4,18 @@ import {
 	buildForecastExplanation,
 	type ForecastAccountResult,
 } from "../../forecast.js";
+import {
+	applyRefreshedAccountPatch,
+	persistRefreshedAccountPatch,
+	serializeForecastResults,
+	type AccountIdentityMatch,
+	type RefreshedAccountPatch,
+} from "../forecast-report-shared.js";
 import type { QuotaCacheData } from "../../quota-cache.js";
 import type { CodexQuotaSnapshot } from "../../quota-probe.js";
 import { resolveNormalizedModel } from "../../request/helpers/model-map.js";
-import {
-	findMatchingAccountIndex,
-	type AccountMetadataV3,
-	type AccountStorageV3,
-} from "../../storage.js";
+import { type AccountMetadataV3, type AccountStorageV3 } from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
-import { sleep } from "../../utils.js";
 
 interface ForecastCliOptions {
 	live: boolean;
@@ -31,8 +33,6 @@ type QuotaEmailFallbackState = ReadonlyMap<
 	string,
 	{ matchingCount: number; distinctAccountIds: Set<string> }
 >;
-
-const RETRYABLE_STORAGE_WRITE_CODES = new Set(["EBUSY", "EPERM"]);
 
 export interface ForecastCommandDeps {
 	setStoragePath: (path: string | null) => void;
@@ -112,82 +112,6 @@ export interface ForecastCommandDeps {
 	getNow?: () => number;
 }
 
-function isRetryableStorageWriteError(error: unknown): boolean {
-	const code = (error as NodeJS.ErrnoException | undefined)?.code;
-	return typeof code === "string" && RETRYABLE_STORAGE_WRITE_CODES.has(code);
-}
-
-async function saveAccountsWithRetry(
-	storage: AccountStorageV3,
-	saveAccounts: ForecastCommandDeps["saveAccounts"],
-): Promise<void> {
-	for (let attempt = 0; ; attempt += 1) {
-		try {
-			await saveAccounts(storage);
-			return;
-		} catch (error) {
-			if (!isRetryableStorageWriteError(error) || attempt >= 3) {
-				throw error;
-			}
-			await sleep(10 * 2 ** attempt);
-		}
-	}
-}
-
-type AccountIdentityMatch = Pick<
-	AccountMetadataV3,
-	"accountId" | "email" | "refreshToken"
->;
-type RefreshedAccountPatch = Pick<
-	AccountMetadataV3,
-	"refreshToken" | "accessToken" | "expiresAt"
-> & {
-	email?: AccountMetadataV3["email"];
-	accountId?: AccountMetadataV3["accountId"];
-	accountIdSource?: AccountMetadataV3["accountIdSource"];
-};
-
-function applyRefreshedAccountPatch(
-	account: AccountMetadataV3,
-	patch: RefreshedAccountPatch,
-): void {
-	account.refreshToken = patch.refreshToken;
-	account.accessToken = patch.accessToken;
-	account.expiresAt = patch.expiresAt;
-	if (patch.email) account.email = patch.email;
-	if (patch.accountId) {
-		account.accountId = patch.accountId;
-		account.accountIdSource = patch.accountIdSource;
-	}
-}
-
-async function persistRefreshedAccountPatch(
-	storage: AccountStorageV3,
-	accountMatch: AccountIdentityMatch,
-	patch: RefreshedAccountPatch,
-	loadAccounts: ForecastCommandDeps["loadAccounts"],
-	saveAccounts: ForecastCommandDeps["saveAccounts"],
-): Promise<void> {
-	const latestStorage = (await loadAccounts()) ?? storage;
-	const nextStorage = structuredClone(latestStorage);
-	const targetIndex =
-		findMatchingAccountIndex(nextStorage.accounts, accountMatch, {
-			allowUniqueAccountIdFallbackWithoutEmail: true,
-		}) ??
-		findMatchingAccountIndex(nextStorage.accounts, patch, {
-			allowUniqueAccountIdFallbackWithoutEmail: true,
-		});
-	if (targetIndex === undefined) {
-		throw new Error("Unable to resolve refreshed account for persistence");
-	}
-	const targetAccount = nextStorage.accounts[targetIndex];
-	if (!targetAccount) {
-		throw new Error("Unable to resolve refreshed account for persistence");
-	}
-	applyRefreshedAccountPatch(targetAccount, patch);
-	await saveAccountsWithRetry(nextStorage, saveAccounts);
-}
-
 function joinStyledSegments(
 	parts: string[],
 	styleText: (text: string, tone: PromptTone) => string,
@@ -253,54 +177,6 @@ function parseForecastArgs(
 	}
 
 	return { ok: true, options };
-}
-
-function serializeForecastResults(
-	results: ForecastAccountResult[],
-	liveQuotaByIndex: Map<number, CodexQuotaSnapshot>,
-	refreshFailures: Map<number, TokenFailure>,
-	formatQuotaSnapshotLine: (snapshot: CodexQuotaSnapshot) => string,
-): Array<{
-	index: number;
-	label: string;
-	isCurrent: boolean;
-	availability: ForecastAccountResult["availability"];
-	riskScore: number;
-	riskLevel: ForecastAccountResult["riskLevel"];
-	waitMs: number;
-	reasons: string[];
-	liveQuota?: {
-		status: number;
-		planType?: string;
-		activeLimit?: number;
-		model: string;
-		summary: string;
-	};
-	refreshFailure?: TokenFailure;
-}> {
-	return results.map((result) => {
-		const liveQuota = liveQuotaByIndex.get(result.index);
-		return {
-			index: result.index,
-			label: result.label,
-			isCurrent: result.isCurrent,
-			availability: result.availability,
-			riskScore: result.riskScore,
-			riskLevel: result.riskLevel,
-			waitMs: result.waitMs,
-			reasons: result.reasons,
-			liveQuota: liveQuota
-				? {
-						status: liveQuota.status,
-						planType: liveQuota.planType,
-						activeLimit: liveQuota.activeLimit,
-						model: liveQuota.model,
-						summary: formatQuotaSnapshotLine(liveQuota),
-					}
-				: undefined,
-			refreshFailure: refreshFailures.get(result.index),
-		};
-	});
 }
 
 export async function runForecastCommand(
