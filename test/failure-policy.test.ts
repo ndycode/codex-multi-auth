@@ -65,6 +65,7 @@ describe("failure policy", () => {
 		expect(decision.retryDelayMs).toBe(500);
 		expect(decision.rotateAccount).toBe(false);
 		expect(decision.handoffStrategy).toBe("hard");
+		expect(decision.cooldownReason).toBe("server-error");
 	});
 
 	it("marks rate limit without cooldown mutation", () => {
@@ -146,6 +147,7 @@ describe("failure policy", () => {
 		expect(decision.retrySameAccount).toBe(false);
 		expect(decision.rotateAccount).toBe(true);
 		expect(decision.cooldownMs).toBe(3_000);
+		expect(decision.cooldownReason).toBe("server-error");
 	});
 
 	it("uses override cooldowns for network and server kinds", () => {

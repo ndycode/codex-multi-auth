@@ -23,10 +23,10 @@ describe("response metadata helpers", () => {
 		expect(parseRetryAfterHintMs(headers)).toBe(1200);
 	});
 
-	it("parses retry-after seconds and caps large values", () => {
+	it("parses retry-after seconds and caps extreme values to one day", () => {
 		const headers = new Headers({ "retry-after": "999999" });
 
-		expect(parseRetryAfterHintMs(headers)).toBe(300000);
+		expect(parseRetryAfterHintMs(headers)).toBe(86_400_000);
 	});
 
 	it("parses retry-after dates and x-ratelimit-reset timestamps", () => {

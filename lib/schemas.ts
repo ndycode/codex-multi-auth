@@ -81,7 +81,7 @@ export type AccountIdSourceFromSchema = z.infer<typeof AccountIdSourceSchema>;
 /**
  * Cooldown reason for temporary account suspension.
  */
-export const CooldownReasonSchema = z.enum(["auth-failure", "network-error", "rate-limit"]);
+export const CooldownReasonSchema = z.enum(["auth-failure", "network-error", "server-error", "rate-limit"]);
 
 export type CooldownReasonFromSchema = z.infer<typeof CooldownReasonSchema>;
 
