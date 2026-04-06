@@ -5,7 +5,7 @@ import {
 	runStatusCommand,
 	type StatusCommandDeps,
 } from "../lib/codex-manager/commands/status.js";
-import type { AccountStorageV3 } from "../lib/storage.js";
+import type { AccountStorageV3, StorageHealthSummary } from "../lib/storage.js";
 
 function createStorage(): AccountStorageV3 {
 	return {
@@ -39,6 +39,14 @@ function createStatusDeps(
 		loadAccounts: vi.fn(async () => createStorage()),
 		resolveActiveIndex: vi.fn(() => 0),
 		formatRateLimitEntry: vi.fn(() => null),
+		inspectStorageHealth: vi.fn(async (): Promise<StorageHealthSummary> => ({
+			state: "healthy",
+			path: "/tmp/codex.json",
+			resetMarkerPath: "/tmp/codex.json.intentional-reset",
+			walPath: "/tmp/codex.json.wal",
+			hasResetMarker: false,
+			hasWal: false,
+		})),
 		getNow: vi.fn(() => 2_000),
 		logInfo: vi.fn(),
 		...overrides,
@@ -55,6 +63,29 @@ describe("runStatusCommand", () => {
 		expect(deps.getStoragePath).toHaveBeenCalledTimes(1);
 		expect(deps.logInfo).toHaveBeenCalledWith("No accounts configured.");
 		expect(deps.logInfo).toHaveBeenCalledWith("Storage: /tmp/codex.json");
+		expect(deps.logInfo).toHaveBeenCalledWith("Storage health: healthy");
+	});
+
+	it("prints explicit corrupt storage state for empty result cases", async () => {
+		const deps = createStatusDeps({
+			loadAccounts: vi.fn(async () => null),
+			inspectStorageHealth: vi.fn(async () => ({
+				state: "corrupt",
+				path: "/tmp/codex.json",
+				resetMarkerPath: "/tmp/codex.json.intentional-reset",
+				walPath: "/tmp/codex.json.wal",
+				hasResetMarker: false,
+				hasWal: false,
+				details: "Unexpected token",
+			})),
+		});
+
+		await runStatusCommand(deps);
+
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			"No accounts configured. Storage appears corrupted.",
+		);
+		expect(deps.logInfo).toHaveBeenCalledWith("Storage health: corrupt");
 	});
 
 	it("prints account rows with current and disabled markers", async () => {

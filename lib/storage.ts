@@ -52,6 +52,10 @@ import { loadFlaggedAccountsEntry } from "./storage/flagged-load-entry.js";
 import { saveFlaggedAccountsEntry } from "./storage/flagged-save-entry.js";
 import { normalizeFlaggedStorage } from "./storage/flagged-storage.js";
 import {
+	createStorageHealthSummary,
+	type StorageHealthSummary,
+} from "./storage/health.js";
+import {
 	clearFlaggedAccountsOnDisk,
 	loadFlaggedAccountsState,
 	saveFlaggedAccountsUnlockedToDisk,
@@ -128,6 +132,7 @@ import {
 } from "./storage/transactions.js";
 
 export type {
+	StorageHealthSummary,
 	CooldownReason,
 	RateLimitStateV3,
 	AccountMetadataV1,
@@ -1262,6 +1267,105 @@ export async function getRestoreAssessment(): Promise<RestoreAssessment> {
 		backupMetadata,
 		hasResetMarker: existsSync(resetMarkerPath),
 	});
+}
+
+export async function inspectStorageHealth(): Promise<StorageHealthSummary> {
+	const path = getStoragePath();
+	const walPath = getAccountsWalPath(path);
+	const resetMarkerPath = getIntentionalResetMarkerPath(path);
+	if (existsSync(resetMarkerPath)) {
+		return createStorageHealthSummary({
+			state: "intentional-reset",
+			path,
+			walPath,
+			resetMarkerPath,
+			details: "intentional reset marker present",
+		});
+	}
+	if (!existsSync(path)) {
+		const walRecovered = await loadAccountsFromJournal(path);
+		if (walRecovered && walRecovered.accounts.length > 0) {
+			return createStorageHealthSummary({
+				state: "recoverable",
+				path,
+				walPath,
+				resetMarkerPath,
+				details: "primary storage missing but WAL recovery is available",
+				recoverySource: "wal",
+			});
+		}
+		return createStorageHealthSummary({
+			state: "empty",
+			path,
+			walPath,
+			resetMarkerPath,
+			details: "storage file is missing",
+		});
+	}
+	try {
+		const { normalized, schemaErrors } = await loadAccountsFromPath(path, {
+			normalizeAccountStorage,
+			isRecord,
+		});
+		if (normalized && normalized.accounts.length > 0) {
+			return createStorageHealthSummary({
+				state: "healthy",
+				path,
+				walPath,
+				resetMarkerPath,
+				schemaErrors,
+			});
+		}
+		if (normalized) {
+			return createStorageHealthSummary({
+				state: "empty",
+				path,
+				walPath,
+				resetMarkerPath,
+				schemaErrors,
+				details: "storage parsed but contains no accounts",
+			});
+		}
+		const walRecovered = await loadAccountsFromJournal(path);
+		if (walRecovered && walRecovered.accounts.length > 0) {
+			return createStorageHealthSummary({
+				state: "recoverable",
+				path,
+				walPath,
+				resetMarkerPath,
+				schemaErrors,
+				details: "primary storage is invalid but WAL recovery is available",
+				recoverySource: "wal",
+			});
+		}
+		return createStorageHealthSummary({
+			state: "corrupt",
+			path,
+			walPath,
+			resetMarkerPath,
+			schemaErrors,
+			details: "storage could not be normalized",
+		});
+	} catch (error) {
+		const walRecovered = await loadAccountsFromJournal(path);
+		if (walRecovered && walRecovered.accounts.length > 0) {
+			return createStorageHealthSummary({
+				state: "recoverable",
+				path,
+				walPath,
+				resetMarkerPath,
+				details: error instanceof Error ? error.message : String(error),
+				recoverySource: "wal",
+			});
+		}
+		return createStorageHealthSummary({
+			state: "corrupt",
+			path,
+			walPath,
+			resetMarkerPath,
+			details: error instanceof Error ? error.message : String(error),
+		});
+	}
 }
 
 async function loadAccountsFromJournal(

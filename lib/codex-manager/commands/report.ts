@@ -26,6 +26,7 @@ import {
 	findMatchingAccountIndex,
 	type AccountMetadataV3,
 	type AccountStorageV3,
+	type StorageHealthSummary,
 } from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 import { sleep } from "../../utils.js";
@@ -73,6 +74,7 @@ export interface ReportCommandDeps {
 		now: number,
 		family: "codex",
 	) => string | null;
+	inspectStorageHealth?: () => Promise<StorageHealthSummary>;
 	normalizeFailureDetail: (
 		message: string | undefined,
 		reason: string | undefined,
@@ -354,6 +356,7 @@ export async function runReportCommand(
 	deps.setStoragePath(null);
 	const storagePath = deps.getStoragePath();
 	const storage = await deps.loadAccounts();
+	const storageHealth = await deps.inspectStorageHealth?.();
 	const now = deps.getNow?.() ?? Date.now();
 	const accountCount = storage?.accounts.length ?? 0;
 	const activeIndex = storage ? deps.resolveActiveIndex(storage, "codex") : 0;
@@ -497,6 +500,7 @@ export async function runReportCommand(
 		command: "report",
 		generatedAt: new Date(now).toISOString(),
 		storagePath,
+		storageHealth,
 		model: requestedModel,
 		modelSelection: {
 			requested: modelInspection.requested,
@@ -542,6 +546,9 @@ export async function runReportCommand(
 
 	logInfo(`Report generated at ${report.generatedAt}`);
 	logInfo(`Storage: ${report.storagePath}`);
+	if (report.storageHealth) {
+		logInfo(`Storage health: ${report.storageHealth.state}`);
+	}
 	logInfo(`Model: ${formatModelInspection(modelInspection)}`);
 	logInfo(
 		`Accounts: ${report.accounts.total} total (${report.accounts.enabled} enabled, ${report.accounts.disabled} disabled, ${report.accounts.coolingDown} cooling, ${report.accounts.rateLimited} rate-limited)`,

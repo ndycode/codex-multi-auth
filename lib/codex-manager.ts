@@ -100,6 +100,7 @@ import {
 	clearAccounts,
 	findMatchingAccountIndex,
 	formatStorageErrorHint,
+	inspectStorageHealth,
 	getLastAccountsSaveTimestamp,
 	getNamedBackups,
 	getStoragePath,
@@ -3203,6 +3204,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			setStoragePath,
 			getStoragePath,
 			loadAccounts,
+			inspectStorageHealth,
 			resolveActiveIndex,
 			formatRateLimitEntry,
 		});
@@ -3234,6 +3236,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			setStoragePath,
 			getStoragePath,
 			loadAccounts,
+			inspectStorageHealth,
 			saveAccounts,
 			resolveActiveIndex,
 			hasUsableAccessToken,
