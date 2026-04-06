@@ -12,10 +12,12 @@ describe("Rate limit backoff", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date(0));
 		clearRateLimitBackoffState();
+		vi.spyOn(Math, "random").mockReturnValue(0.5);
 	});
 
 	afterEach(() => {
 		clearRateLimitBackoffState();
+		vi.restoreAllMocks();
 		vi.useRealTimers();
 	});
 
@@ -36,6 +38,24 @@ describe("Rate limit backoff", () => {
 		const second = getRateLimitBackoff(0, "codex", 1000);
 		expect(second.attempt).toBe(2);
 		expect(second.delayMs).toBe(2000);
+		expect(second.isDuplicate).toBe(false);
+	});
+
+	it("applies jitter to new backoff windows but keeps duplicate retries stable", () => {
+		vi.mocked(Math.random).mockReturnValueOnce(1);
+		const first = getRateLimitBackoff(4, "jitter-test", 1000);
+		expect(first.delayMs).toBe(1200);
+
+		vi.setSystemTime(new Date(1000));
+		vi.mocked(Math.random).mockReturnValueOnce(0);
+		const duplicate = getRateLimitBackoff(4, "jitter-test", 1000);
+		expect(duplicate.delayMs).toBe(1200);
+		expect(duplicate.isDuplicate).toBe(true);
+
+		vi.setSystemTime(new Date(2500));
+		vi.mocked(Math.random).mockReturnValueOnce(0);
+		const second = getRateLimitBackoff(4, "jitter-test", 1000);
+		expect(second.delayMs).toBe(1600);
 		expect(second.isDuplicate).toBe(false);
 	});
 
