@@ -65,6 +65,10 @@ import {
 	getFastSessionMaxInputItems,
 	getFastSessionStrategy,
 	getFetchTimeoutMs,
+	getRateLimitDedupWindowMs,
+	getRateLimitMaxBackoffMs,
+	getRateLimitShortRetryThresholdMs,
+	getRateLimitStateResetMs,
 	getLiveAccountSync,
 	getLiveAccountSyncDebounceMs,
 	getLiveAccountSyncPollMs,
@@ -166,8 +170,9 @@ import {
 	transformRequestForCodex,
 } from "./lib/request/fetch-helpers.js";
 import {
+	configureRateLimitBackoff,
 	getRateLimitBackoff,
-	RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS,
+	getRateLimitShortRetryThresholdMs as getConfiguredRateLimitShortRetryThresholdMs,
 	resetRateLimitBackoff,
 } from "./lib/request/rate-limit-backoff.js";
 import {
@@ -686,6 +691,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					const fastSessionMaxInputItems =
 						getFastSessionMaxInputItems(pluginConfig);
 					const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
+					configureRateLimitBackoff({
+						dedupWindowMs: getRateLimitDedupWindowMs(pluginConfig),
+						stateResetMs: getRateLimitStateResetMs(pluginConfig),
+						maxBackoffMs: getRateLimitMaxBackoffMs(pluginConfig),
+						shortRetryThresholdMs:
+							getRateLimitShortRetryThresholdMs(pluginConfig),
+					});
 					const rateLimitToastDebounceMs =
 						getRateLimitToastDebounceMs(pluginConfig);
 					const retryAllAccountsRateLimited =
@@ -1877,7 +1889,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													);
 													const waitLabel = formatWaitTime(cooldownMs);
 
-													if (cooldownMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS) {
+											if (
+												cooldownMs <=
+												getConfiguredRateLimitShortRetryThresholdMs()
+											) {
 														if (
 															accountManager.shouldShowAccountToast(
 																account.index,

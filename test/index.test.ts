@@ -80,6 +80,10 @@ vi.mock("../lib/config.js", () => ({
 	getFastSessionStrategy: () => "hybrid",
 	getFastSessionMaxInputItems: () => 30,
 	getRateLimitToastDebounceMs: () => 5000,
+	getRateLimitDedupWindowMs: () => 2000,
+	getRateLimitStateResetMs: () => 120000,
+	getRateLimitMaxBackoffMs: () => 60000,
+	getRateLimitShortRetryThresholdMs: () => 5000,
 	getRetryAllAccountsMaxRetries: () => 3,
 	getRetryAllAccountsMaxWaitMs: () => 30000,
 	getRetryAllAccountsRateLimited: () => true,
@@ -204,8 +208,9 @@ vi.mock("../lib/recovery.js", () => ({
 }));
 
 vi.mock("../lib/request/rate-limit-backoff.js", () => ({
+	configureRateLimitBackoff: vi.fn(),
 	getRateLimitBackoff: vi.fn(() => ({ attempt: 1, delayMs: 1000 })),
-	RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS: 5000,
+	getRateLimitShortRetryThresholdMs: vi.fn(() => 5000),
 	resetRateLimitBackoff: vi.fn(),
 }));
 

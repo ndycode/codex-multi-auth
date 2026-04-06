@@ -16,6 +16,10 @@ import {
 	getFallbackToGpt52OnUnsupportedGpt53,
 	getUnsupportedCodexFallbackChain,
 	getFetchTimeoutMs,
+	getRateLimitDedupWindowMs,
+	getRateLimitMaxBackoffMs,
+	getRateLimitShortRetryThresholdMs,
+	getRateLimitStateResetMs,
 	getStreamStallTimeoutMs,
 	getPreemptiveQuotaEnabled,
 	getPreemptiveQuotaRemainingPercent5h,
@@ -124,6 +128,10 @@ describe('Plugin Configuration', () => {
 				parallelProbingMaxConcurrency: 2,
 				emptyResponseMaxRetries: 2,
 				emptyResponseRetryDelayMs: 1_000,
+				rateLimitDedupWindowMs: 2_000,
+				rateLimitStateResetMs: 120_000,
+				rateLimitMaxBackoffMs: 60_000,
+				rateLimitShortRetryThresholdMs: 5_000,
 				pidOffsetEnabled: false,
 				fetchTimeoutMs: 60_000,
 				streamStallTimeoutMs: 45_000,
@@ -184,6 +192,10 @@ describe('Plugin Configuration', () => {
 				parallelProbingMaxConcurrency: 2,
 				emptyResponseMaxRetries: 2,
 				emptyResponseRetryDelayMs: 1_000,
+				rateLimitDedupWindowMs: 2_000,
+				rateLimitStateResetMs: 120_000,
+				rateLimitMaxBackoffMs: 60_000,
+				rateLimitShortRetryThresholdMs: 5_000,
 				pidOffsetEnabled: false,
 				fetchTimeoutMs: 60_000,
 				streamStallTimeoutMs: 45_000,
@@ -450,6 +462,10 @@ describe('Plugin Configuration', () => {
 				parallelProbingMaxConcurrency: 2,
 				emptyResponseMaxRetries: 2,
 				emptyResponseRetryDelayMs: 1_000,
+				rateLimitDedupWindowMs: 2_000,
+				rateLimitStateResetMs: 120_000,
+				rateLimitMaxBackoffMs: 60_000,
+				rateLimitShortRetryThresholdMs: 5_000,
 				pidOffsetEnabled: false,
 				fetchTimeoutMs: 60_000,
 				streamStallTimeoutMs: 45_000,
@@ -516,6 +532,10 @@ describe('Plugin Configuration', () => {
 		parallelProbingMaxConcurrency: 2,
 		emptyResponseMaxRetries: 2,
 		emptyResponseRetryDelayMs: 1_000,
+		rateLimitDedupWindowMs: 2_000,
+		rateLimitStateResetMs: 120_000,
+		rateLimitMaxBackoffMs: 60_000,
+		rateLimitShortRetryThresholdMs: 5_000,
 		pidOffsetEnabled: false,
 		fetchTimeoutMs: 60_000,
 		streamStallTimeoutMs: 45_000,
@@ -576,6 +596,10 @@ describe('Plugin Configuration', () => {
 			parallelProbingMaxConcurrency: 2,
 			emptyResponseMaxRetries: 2,
 			emptyResponseRetryDelayMs: 1_000,
+			rateLimitDedupWindowMs: 2_000,
+			rateLimitStateResetMs: 120_000,
+			rateLimitMaxBackoffMs: 60_000,
+			rateLimitShortRetryThresholdMs: 5_000,
 			pidOffsetEnabled: false,
 			fetchTimeoutMs: 60_000,
 			streamStallTimeoutMs: 45_000,
@@ -1043,6 +1067,30 @@ describe('Plugin Configuration', () => {
 			process.env.CODEX_AUTH_STREAM_STALL_TIMEOUT_MS = '30000';
 			expect(getStreamStallTimeoutMs({})).toBe(30000);
 			delete process.env.CODEX_AUTH_STREAM_STALL_TIMEOUT_MS;
+		});
+	});
+
+	describe('rate-limit backoff settings', () => {
+		it('uses defaults when no overrides are provided', () => {
+			expect(getRateLimitDedupWindowMs({})).toBe(2_000);
+			expect(getRateLimitStateResetMs({})).toBe(120_000);
+			expect(getRateLimitMaxBackoffMs({})).toBe(60_000);
+			expect(getRateLimitShortRetryThresholdMs({})).toBe(5_000);
+		});
+
+		it('prioritizes environment overrides for backoff settings', () => {
+			process.env.CODEX_AUTH_RATE_LIMIT_DEDUP_WINDOW_MS = '3000';
+			process.env.CODEX_AUTH_RATE_LIMIT_STATE_RESET_MS = '180000';
+			process.env.CODEX_AUTH_RATE_LIMIT_MAX_BACKOFF_MS = '90000';
+			process.env.CODEX_AUTH_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS = '7000';
+			expect(getRateLimitDedupWindowMs({ rateLimitDedupWindowMs: 1_000 })).toBe(3_000);
+			expect(getRateLimitStateResetMs({ rateLimitStateResetMs: 60_000 })).toBe(180_000);
+			expect(getRateLimitMaxBackoffMs({ rateLimitMaxBackoffMs: 30_000 })).toBe(90_000);
+			expect(getRateLimitShortRetryThresholdMs({ rateLimitShortRetryThresholdMs: 2_000 })).toBe(7_000);
+			delete process.env.CODEX_AUTH_RATE_LIMIT_DEDUP_WINDOW_MS;
+			delete process.env.CODEX_AUTH_RATE_LIMIT_STATE_RESET_MS;
+			delete process.env.CODEX_AUTH_RATE_LIMIT_MAX_BACKOFF_MS;
+			delete process.env.CODEX_AUTH_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS;
 		});
 	});
 

@@ -14,11 +14,69 @@ export interface RateLimitBackoffResult {
  * - Deduplicate concurrent 429s so parallel requests don't over-increment backoff.
  * - Reset backoff after a quiet period.
  */
-const RATE_LIMIT_DEDUP_WINDOW_MS = 2000;
-const RATE_LIMIT_STATE_RESET_MS = 120_000;
-const MAX_BACKOFF_MS = 60_000;
+const DEFAULT_RATE_LIMIT_DEDUP_WINDOW_MS = 2_000;
+const DEFAULT_RATE_LIMIT_STATE_RESET_MS = 120_000;
+const DEFAULT_MAX_BACKOFF_MS = 60_000;
+const DEFAULT_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS = 5_000;
 
-export const RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS = 5000;
+interface RateLimitBackoffConfig {
+	dedupWindowMs: number;
+	stateResetMs: number;
+	maxBackoffMs: number;
+	shortRetryThresholdMs: number;
+}
+
+let rateLimitBackoffConfig: RateLimitBackoffConfig = {
+	dedupWindowMs: DEFAULT_RATE_LIMIT_DEDUP_WINDOW_MS,
+	stateResetMs: DEFAULT_RATE_LIMIT_STATE_RESET_MS,
+	maxBackoffMs: DEFAULT_MAX_BACKOFF_MS,
+	shortRetryThresholdMs: DEFAULT_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS,
+};
+
+export function configureRateLimitBackoff(
+	overrides: Partial<RateLimitBackoffConfig> = {},
+): void {
+	if (
+		typeof overrides.dedupWindowMs === "number" &&
+		Number.isFinite(overrides.dedupWindowMs)
+	) {
+		rateLimitBackoffConfig.dedupWindowMs = Math.max(0, Math.floor(overrides.dedupWindowMs));
+	}
+	if (
+		typeof overrides.stateResetMs === "number" &&
+		Number.isFinite(overrides.stateResetMs)
+	) {
+		rateLimitBackoffConfig.stateResetMs = Math.max(1_000, Math.floor(overrides.stateResetMs));
+	}
+	if (
+		typeof overrides.maxBackoffMs === "number" &&
+		Number.isFinite(overrides.maxBackoffMs)
+	) {
+		rateLimitBackoffConfig.maxBackoffMs = Math.max(1_000, Math.floor(overrides.maxBackoffMs));
+	}
+	if (
+		typeof overrides.shortRetryThresholdMs === "number" &&
+		Number.isFinite(overrides.shortRetryThresholdMs)
+	) {
+		rateLimitBackoffConfig.shortRetryThresholdMs = Math.max(
+			0,
+			Math.floor(overrides.shortRetryThresholdMs),
+		);
+	}
+}
+
+export function resetRateLimitBackoffConfig(): void {
+	rateLimitBackoffConfig = {
+		dedupWindowMs: DEFAULT_RATE_LIMIT_DEDUP_WINDOW_MS,
+		stateResetMs: DEFAULT_RATE_LIMIT_STATE_RESET_MS,
+		maxBackoffMs: DEFAULT_MAX_BACKOFF_MS,
+		shortRetryThresholdMs: DEFAULT_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS,
+	};
+}
+
+export function getRateLimitShortRetryThresholdMs(): number {
+	return rateLimitBackoffConfig.shortRetryThresholdMs;
+}
 
 interface RateLimitState {
 	consecutive429: number;
@@ -36,7 +94,7 @@ function normalizeDelayMs(value: number | null | undefined, fallback: number): n
 function pruneStaleRateLimitState(): void {
 	const now = Date.now();
 	for (const [key, state] of rateLimitStateByAccountQuota) {
-		if (now - state.lastAt > RATE_LIMIT_STATE_RESET_MS) {
+		if (now - state.lastAt > rateLimitBackoffConfig.stateResetMs) {
 			rateLimitStateByAccountQuota.delete(key);
 		}
 	}
@@ -57,10 +115,10 @@ export function getRateLimitBackoff(
 
 	const baseDelay = normalizeDelayMs(serverRetryAfterMs, 1000);
 
-	if (previous && now - previous.lastAt < RATE_LIMIT_DEDUP_WINDOW_MS) {
+	if (previous && now - previous.lastAt < rateLimitBackoffConfig.dedupWindowMs) {
 		const backoffDelay = Math.min(
 			baseDelay * Math.pow(2, previous.consecutive429 - 1),
-			MAX_BACKOFF_MS,
+			rateLimitBackoffConfig.maxBackoffMs,
 		);
 		return {
 			attempt: previous.consecutive429,
@@ -70,7 +128,7 @@ export function getRateLimitBackoff(
 	}
 
 	const attempt =
-		previous && now - previous.lastAt < RATE_LIMIT_STATE_RESET_MS
+		previous && now - previous.lastAt < rateLimitBackoffConfig.stateResetMs
 			? previous.consecutive429 + 1
 			: 1;
 
@@ -80,7 +138,10 @@ export function getRateLimitBackoff(
 		quotaKey,
 	});
 
-	const backoffDelay = Math.min(baseDelay * Math.pow(2, attempt - 1), MAX_BACKOFF_MS);
+	const backoffDelay = Math.min(
+		baseDelay * Math.pow(2, attempt - 1),
+		rateLimitBackoffConfig.maxBackoffMs,
+	);
 	return {
 		attempt,
 		delayMs: Math.max(baseDelay, backoffDelay),
@@ -110,7 +171,10 @@ export function calculateBackoffMs(
 ): number {
 	const multiplier = BACKOFF_MULTIPLIERS[reason] ?? 1.0;
 	const exponentialDelay = baseDelayMs * Math.pow(2, attempt - 1);
-	return Math.min(Math.floor(exponentialDelay * multiplier), MAX_BACKOFF_MS);
+	return Math.min(
+		Math.floor(exponentialDelay * multiplier),
+		rateLimitBackoffConfig.maxBackoffMs,
+	);
 }
 
 export interface RateLimitBackoffWithReasonParams {

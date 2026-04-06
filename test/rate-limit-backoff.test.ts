@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
+	configureRateLimitBackoff,
 	clearRateLimitBackoffState,
 	getRateLimitBackoff,
+	getRateLimitShortRetryThresholdMs,
 	resetRateLimitBackoff,
+	resetRateLimitBackoffConfig,
 	calculateBackoffMs,
 	getRateLimitBackoffWithReason,
 } from "../lib/request/rate-limit-backoff.js";
@@ -12,10 +15,12 @@ describe("Rate limit backoff", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date(0));
 		clearRateLimitBackoffState();
+		resetRateLimitBackoffConfig();
 	});
 
 	afterEach(() => {
 		clearRateLimitBackoffState();
+		resetRateLimitBackoffConfig();
 		vi.useRealTimers();
 	});
 
@@ -52,6 +57,20 @@ describe("Rate limit backoff", () => {
 		const next = getRateLimitBackoff(0, "codex", 1000);
 		expect(next.attempt).toBe(1);
 		expect(next.isDuplicate).toBe(false);
+	});
+
+	it("uses configurable dedup and state reset windows", () => {
+		configureRateLimitBackoff({
+			dedupWindowMs: 5_000,
+			stateResetMs: 10_000,
+		});
+		getRateLimitBackoff(0, "codex", 1000);
+
+		vi.setSystemTime(new Date(3_000));
+		expect(getRateLimitBackoff(0, "codex", 1000).isDuplicate).toBe(true);
+
+		vi.setSystemTime(new Date(11_000));
+		expect(getRateLimitBackoff(0, "codex", 1000).attempt).toBe(1);
 	});
 
 	describe("calculateBackoffMs", () => {
@@ -96,8 +115,20 @@ describe("Rate limit backoff", () => {
 
 		it("uses fallback multiplier 1.0 when reason is not in map (line 111 coverage)", () => {
 			const result = calculateBackoffMs(1000, 1, "unknown-reason" as never);
-			expect(result).toBe(1000);
+		expect(result).toBe(1000);
 		});
+
+		it("uses configurable max backoff cap", () => {
+			configureRateLimitBackoff({ maxBackoffMs: 12_000 });
+			const result = calculateBackoffMs(1000, 20, "quota");
+			expect(result).toBe(12_000);
+		});
+	});
+
+	it("exposes configurable short retry threshold", () => {
+		expect(getRateLimitShortRetryThresholdMs()).toBe(5_000);
+		configureRateLimitBackoff({ shortRetryThresholdMs: 9_000 });
+		expect(getRateLimitShortRetryThresholdMs()).toBe(9_000);
 	});
 
 	describe("normalizeDelayMs edge cases (line 32 coverage)", () => {
