@@ -446,6 +446,15 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		delete process.env.CODEX_AUTH_RETRY_ALL_MAX_WAIT_MS;
 		delete process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
 		vi.resetModules();
+		const secondaryAccount = createMockAccount({
+			index: 1,
+			accountId: "account-2",
+			email: "user2@example.com",
+			refreshToken: "refresh-token-account-2",
+			access: "access-token-account-2",
+		});
+		accountManagerState.accounts = [createMockAccount(), secondaryAccount];
+		accountManagerState.accountSelections = [null];
 
 		const { OpenAIAuthPlugin } = await import("../index.js");
 		const client = {
@@ -472,7 +481,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		expect(payload).toEqual({
 			error: {
 				message:
-					"All 1 account(s) are rate-limited. Try again in 1000ms or add another account with `codex login`.",
+					"All 2 account(s) are rate-limited. Try again in 1000ms or add another account with `codex login`.",
 			},
 		});
 	});
