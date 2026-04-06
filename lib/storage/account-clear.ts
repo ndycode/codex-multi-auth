@@ -7,32 +7,43 @@ export async function clearAccountStorageArtifacts(params: {
 	backupPaths: string[];
 	logError: (message: string, details: Record<string, unknown>) => void;
 }): Promise<void> {
+	const clearPath = async (
+		targetPath: string,
+		required: boolean,
+	): Promise<void> => {
+		try {
+			await fs.unlink(targetPath);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") {
+				return;
+			}
+			if (required) {
+				params.logError("Failed to clear account storage artifact", {
+					path: targetPath,
+					error: String(error),
+				});
+				throw error;
+			}
+			params.logError("Failed to clear account storage artifact", {
+				path: targetPath,
+				error: String(error),
+			});
+		}
+	};
+
+	await clearPath(params.path, true);
+	await clearPath(params.walPath, true);
 	await fs.writeFile(
 		params.resetMarkerPath,
 		JSON.stringify({ version: 1, createdAt: Date.now() }),
 		{ encoding: "utf-8", mode: 0o600 },
 	);
-	const clearPath = async (targetPath: string): Promise<void> => {
+	for (const backupPath of params.backupPaths) {
 		try {
-			await fs.unlink(targetPath);
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code !== "ENOENT") {
-				params.logError("Failed to clear account storage artifact", {
-					path: targetPath,
-					error: String(error),
-				});
-			}
+			await clearPath(backupPath, false);
+		} catch {
+			// Non-critical artifacts are already logged best-effort.
 		}
-	};
-
-	try {
-		await Promise.all([
-			clearPath(params.path),
-			clearPath(params.walPath),
-			...params.backupPaths.map(clearPath),
-		]);
-	} catch {
-		// Individual path cleanup is already best-effort with per-artifact logging.
 	}
 }
