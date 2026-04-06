@@ -2171,6 +2171,14 @@ let sessionAffinityWriteVersion = 0;
 															}
 
 															if (
+																!tryConsumeOutboundRequestAttempt(
+																	"stream-failover",
+																	fallbackAccount.index,
+																)
+															) {
+																return null;
+															}
+															if (
 																!accountManager.consumeToken(
 																	fallbackAccount,
 																	modelFamily,
@@ -2178,14 +2186,6 @@ let sessionAffinityWriteVersion = 0;
 																)
 															) {
 																continue;
-															}
-															if (
-																!tryConsumeOutboundRequestAttempt(
-																	"stream-failover",
-																	fallbackAccount.index,
-																)
-															) {
-																return null;
 															}
 															fallbackAccount.accountId = fallbackAccountId;
 															if (

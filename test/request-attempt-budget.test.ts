@@ -23,6 +23,17 @@ describe("request attempt budget", () => {
 		).toBe(6);
 	});
 
+	it("sanitizes non-finite retry inputs to deterministic defaults", () => {
+		expect(
+			computeOutboundRequestAttemptBudget({
+				accountCount: Number.NaN,
+				maxSameAccountRetries: Number.POSITIVE_INFINITY,
+				emptyResponseMaxRetries: Number.NEGATIVE_INFINITY,
+				streamFailoverMax: Number.NaN,
+			}),
+		).toBe(1);
+	});
+
 	it("keeps the primary stream account plus at most one alternate", () => {
 		expect(
 			buildStreamFailoverCandidateOrder(2, [2, 5, 2, 7, 9]),
