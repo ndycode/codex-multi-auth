@@ -105,7 +105,11 @@ async function readChunkWithSoftHardTimeout(
  *
  * The returned Response streams bytes from the initialResponse body and, when the stream stalls or errors, will attempt up to `maxFailovers` failovers by calling `getFallbackResponse(attempt, emittedBytes)`. On each successful failover a textual marker is injected into the stream identifying the failover attempt (and `requestInstanceId` when provided). The function performs best-effort cleanup of underlying readers and enforces soft/hard read timeouts as configured via `options`.
  *
- * Concurrency assumptions: the implementation expects a single consumer reading the returned Response body; callers must not concurrently read the same stream body from multiple consumers. Filesystem/platform note: behavior is platform-agnostic; no filesystem access is performed (Windows-specific filesystem semantics do not apply). Token redaction: any request identifiers embedded in the injected marker are limited to the normalized `requestInstanceId` (trimmed and truncated to 64 chars) to avoid leaking long tokens.
+	 * Concurrency assumptions: the implementation expects a single consumer reading the returned Response body; callers must not concurrently read the same stream body from multiple consumers. Filesystem/platform note: behavior is platform-agnostic; no filesystem access is performed (Windows-specific filesystem semantics do not apply). Token redaction: any request identifiers embedded in the injected marker are limited to the normalized `requestInstanceId` (trimmed and truncated to 64 chars) to avoid leaking long tokens.
+	 *
+	 * Failover safety: once the wrapper has already emitted bytes from the primary stream,
+	 * it will stop attempting fallback replays. Reissuing the upstream request after partial
+	 * output can duplicate streamed text and any side-effectful tool activity.
  *
  * @param initialResponse - The original Response whose body will be streamed and monitored for stalls/errors.
  * @param getFallbackResponse - Async function invoked for each failover attempt with the 1-based attempt number and total emitted bytes; should return a Response with a streaming body to switch to, or `null`/a Response without a body to indicate no fallback.
@@ -160,6 +164,9 @@ export function withStreamingFailover(
 
 			const tryFailover = async (): Promise<boolean> => {
 				if (failoverAttempt >= maxFailovers) {
+					return false;
+				}
+				if (emittedBytes > 0) {
 					return false;
 				}
 				failoverAttempt += 1;
