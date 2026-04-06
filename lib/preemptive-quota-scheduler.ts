@@ -238,14 +238,27 @@ export class PreemptiveQuotaScheduler {
 		const snapshot = this.snapshots.get(key);
 		if (!snapshot) return { defer: false, waitMs: 0 };
 
+		const primaryWait =
+			typeof snapshot.primary.resetAtMs === "number" &&
+			Number.isFinite(snapshot.primary.resetAtMs) &&
+			snapshot.primary.resetAtMs > now
+				? snapshot.primary.resetAtMs - now
+				: 0;
+		const secondaryWait =
+			typeof snapshot.secondary.resetAtMs === "number" &&
+			Number.isFinite(snapshot.secondary.resetAtMs) &&
+			snapshot.secondary.resetAtMs > now
+				? snapshot.secondary.resetAtMs - now
+				: 0;
+
 		const waitCandidates = [snapshot.primary.resetAtMs, snapshot.secondary.resetAtMs]
 			.filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > now)
 			.map((value) => value - now)
 			.filter((value) => value > 0);
-		const nearestWait = waitCandidates.length > 0 ? Math.min(...waitCandidates) : 0;
+		const longestWait = waitCandidates.length > 0 ? Math.max(...waitCandidates) : 0;
 
-		if (snapshot.status === 429 && nearestWait > 0) {
-			const bounded = Math.min(nearestWait, this.maxDeferralMs);
+		if (snapshot.status === 429 && longestWait > 0) {
+			const bounded = Math.min(longestWait, this.maxDeferralMs);
 			if (bounded > 0) {
 				return { defer: true, waitMs: bounded, reason: "rate-limit" };
 			}
@@ -259,9 +272,12 @@ export class PreemptiveQuotaScheduler {
 			typeof snapshot.secondary.usedPercent === "number" &&
 			Number.isFinite(snapshot.secondary.usedPercent) &&
 			snapshot.secondary.usedPercent >= 100 - this.secondaryRemainingPercentThreshold;
-		const nearExhausted = primaryNearExhausted || secondaryNearExhausted;
-		if (nearExhausted && nearestWait > 0) {
-			const bounded = Math.min(nearestWait, this.maxDeferralMs);
+		const nearExhaustedWait = Math.max(
+			primaryNearExhausted ? primaryWait : 0,
+			secondaryNearExhausted ? secondaryWait : 0,
+		);
+		if (nearExhaustedWait > 0) {
+			const bounded = Math.min(nearExhaustedWait, this.maxDeferralMs);
 			if (bounded > 0) {
 				return { defer: true, waitMs: bounded, reason: "quota-near-exhaustion" };
 			}

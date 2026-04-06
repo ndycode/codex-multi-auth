@@ -87,6 +87,21 @@ describe("preemptive quota scheduler", () => {
 		expect(decision.waitMs).toBe(25_000);
 	});
 
+	it("uses the longest active reset window for 429 deferrals", () => {
+		const scheduler = new PreemptiveQuotaScheduler();
+		scheduler.update("acc:model", {
+			status: 429,
+			primary: { resetAtMs: 31_000 },
+			secondary: { resetAtMs: 61_000 },
+			updatedAt: 1_000,
+		});
+
+		const decision = scheduler.getDeferral("acc:model", 6_000);
+		expect(decision.defer).toBe(true);
+		expect(decision.reason).toBe("rate-limit");
+		expect(decision.waitMs).toBe(55_000);
+	});
+
 	it("preserves secondary near-exhaustion state when marking a quota key rate-limited", () => {
 		const scheduler = new PreemptiveQuotaScheduler({
 			remainingPercentThresholdSecondary: 5,
@@ -139,6 +154,24 @@ describe("preemptive quota scheduler", () => {
 		const decision = scheduler.getDeferral("acc:model", 20_000);
 		expect(decision.defer).toBe(true);
 		expect(decision.reason).toBe("quota-near-exhaustion");
+	});
+
+	it("uses the longest near-exhausted reset window for quota deferrals", () => {
+		const scheduler = new PreemptiveQuotaScheduler({
+			remainingPercentThresholdPrimary: 5,
+			remainingPercentThresholdSecondary: 5,
+		});
+		scheduler.update("acc:model", {
+			status: 200,
+			primary: { usedPercent: 96, resetAtMs: 70_000 },
+			secondary: { usedPercent: 97, resetAtMs: 120_000 },
+			updatedAt: 10_000,
+		});
+
+		const decision = scheduler.getDeferral("acc:model", 20_000);
+		expect(decision.defer).toBe(true);
+		expect(decision.reason).toBe("quota-near-exhaustion");
+		expect(decision.waitMs).toBe(100_000);
 	});
 
 	it("prunes expired snapshots", () => {
