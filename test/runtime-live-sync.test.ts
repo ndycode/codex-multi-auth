@@ -21,6 +21,7 @@ describe("runtime live sync", () => {
 		let committedState = {
 			sync: overrides.currentSync ?? null,
 			path: overrides.currentPath ?? null,
+			configKey: null as string | null,
 			cleanupRegistered: overrides.currentCleanupRegistered ?? false,
 		};
 		let cleanupCallback: (() => void) | null = null;
@@ -92,12 +93,14 @@ describe("runtime live sync", () => {
 		await expect(ensureRuntimeLiveAccountSync(deps)).resolves.toEqual({
 			sync: null,
 			path: null,
+			configKey: null,
 			cleanupRegistered: true,
 		});
 		expect(currentSync.stop).toHaveBeenCalledTimes(1);
 		expect(deps.commitState).toHaveBeenCalledWith({
 			sync: null,
 			path: null,
+			configKey: null,
 			cleanupRegistered: true,
 		});
 	});
@@ -111,6 +114,7 @@ describe("runtime live sync", () => {
 		expect(createSync).toHaveBeenCalledTimes(1);
 		expect(registerCleanup).toHaveBeenCalledTimes(1);
 		expect(first.path).toBe("C:\\repo\\accounts.json");
+		expect(first.configKey).toBe("25:250");
 		expect(first.cleanupRegistered).toBe(true);
 		expect(first.sync?.syncToPath).toHaveBeenCalledWith(
 			"C:\\repo\\accounts.json",
@@ -120,6 +124,7 @@ describe("runtime live sync", () => {
 			...deps,
 			currentSync: first.sync,
 			currentPath: first.path,
+			currentConfigKey: first.configKey,
 			currentCleanupRegistered: first.cleanupRegistered,
 		});
 
@@ -151,6 +156,7 @@ describe("runtime live sync", () => {
 		await expect(pending).resolves.toMatchObject({
 			sync: currentSync,
 			path: "C:\\repo\\new.json",
+			configKey: null,
 			cleanupRegistered: true,
 		});
 		expect(currentSync.syncToPath).toHaveBeenCalledTimes(3);
@@ -176,6 +182,7 @@ describe("runtime live sync", () => {
 		await expect(pending).resolves.toMatchObject({
 			sync: currentSync,
 			path: "C:\\repo\\old.json",
+			configKey: null,
 			cleanupRegistered: true,
 		});
 		expect(currentSync.syncToPath).toHaveBeenCalledTimes(3);
@@ -213,6 +220,7 @@ describe("runtime live sync", () => {
 		const committed = getCommittedState();
 		expect(committed.sync).toBe(createdSync);
 		expect(committed.path).toBeNull();
+		expect(committed.configKey).toBe("25:250");
 		expect(committed.cleanupRegistered).toBe(true);
 
 		const cleanup = getCleanupCallback();
@@ -238,12 +246,14 @@ describe("runtime live sync", () => {
 
 		const committed = getCommittedState();
 		expect(committed.sync).toBe(createdSync);
+		expect(committed.configKey).toBe("25:250");
 		expect(committed.cleanupRegistered).toBe(true);
 
 		const second = ensureRuntimeLiveAccountSync({
 			...deps,
 			currentSync: committed.sync,
 			currentPath: committed.path,
+			currentConfigKey: committed.configKey,
 			currentCleanupRegistered: committed.cleanupRegistered,
 		});
 		await vi.runAllTicks();
@@ -253,11 +263,13 @@ describe("runtime live sync", () => {
 		await expect(pending).resolves.toMatchObject({
 			sync: createdSync,
 			path: "C:\\repo\\accounts.json",
+			configKey: "25:250",
 			cleanupRegistered: true,
 		});
 		await expect(second).resolves.toMatchObject({
 			sync: createdSync,
 			path: "C:\\repo\\accounts.json",
+			configKey: "25:250",
 			cleanupRegistered: true,
 		});
 	});
@@ -273,6 +285,7 @@ describe("runtime live sync", () => {
 			...deps,
 			currentSync: first.sync,
 			currentPath: first.path,
+			currentConfigKey: first.configKey,
 			currentCleanupRegistered: first.cleanupRegistered,
 			getLiveAccountSync: vi.fn().mockReturnValue(false),
 		});
@@ -282,6 +295,7 @@ describe("runtime live sync", () => {
 			...deps,
 			currentSync: disabled.sync,
 			currentPath: disabled.path,
+			currentConfigKey: disabled.configKey,
 			currentCleanupRegistered: disabled.cleanupRegistered,
 		});
 		setLiveSync(reenabled.sync);
@@ -292,5 +306,37 @@ describe("runtime live sync", () => {
 		cleanup?.();
 		expect((reenabled.sync as { stop: ReturnType<typeof vi.fn> }).stop).toHaveBeenCalledTimes(1);
 		expect((first.sync as { stop: ReturnType<typeof vi.fn> }).stop).toHaveBeenCalledTimes(1);
+	});
+
+	it("recreates live sync when debounce/poll settings change", async () => {
+		const firstSync = {
+			stop: vi.fn(),
+			syncToPath: vi.fn().mockResolvedValue(undefined),
+		};
+		const secondSync = {
+			stop: vi.fn(),
+			syncToPath: vi.fn().mockResolvedValue(undefined),
+		};
+		const { deps, createSync } = createDeps({
+			currentSync: firstSync,
+			currentPath: "C:\\repo\\accounts.json",
+			currentCleanupRegistered: true,
+		});
+		createSync.mockReturnValue(secondSync);
+		deps.getLiveAccountSyncDebounceMs = vi.fn().mockReturnValue(50);
+		deps.getLiveAccountSyncPollMs = vi.fn().mockReturnValue(500);
+
+		const result = await ensureRuntimeLiveAccountSync({
+			...deps,
+			currentSync: firstSync,
+			currentPath: "C:\\repo\\accounts.json",
+			currentConfigKey: "25:250",
+		});
+
+		expect(firstSync.stop).toHaveBeenCalledTimes(1);
+		expect(createSync).toHaveBeenCalledTimes(1);
+		expect(result.sync).toBe(secondSync);
+		expect(result.configKey).toBe("50:500");
+		expect(secondSync.syncToPath).toHaveBeenCalledWith("C:\\repo\\accounts.json");
 	});
 });
