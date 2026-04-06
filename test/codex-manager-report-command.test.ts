@@ -100,6 +100,22 @@ describe("runReportCommand", () => {
 		);
 	});
 
+	it.each([
+		["--max-accounts", "1.9", "--max-accounts must be a positive integer"],
+		["--max-accounts", "1e3", "--max-accounts must be a positive integer"],
+		["--max-accounts", "2foo", "--max-accounts must be a positive integer"],
+		["--max-probes", "1.9", "--max-probes must be a positive integer"],
+		["--max-probes", "1e3", "--max-probes must be a positive integer"],
+		["--max-probes", "2foo", "--max-probes must be a positive integer"],
+	] as const)("rejects malformed numeric flags %s %s", async (flag, value, message) => {
+		const deps = createDeps();
+
+		const result = await runReportCommand([flag, value], deps);
+
+		expect(result).toBe(1);
+		expect(deps.logError).toHaveBeenCalledWith(message);
+	});
+
 	it("writes json report output when requested", async () => {
 		const deps = createDeps();
 

@@ -525,6 +525,20 @@ describe('Fetch Helpers Module', () => {
 			expect(rateLimit).toBeUndefined();
 		});
 
+		it('prioritizes entitlement over rate-limit when signals conflict', async () => {
+			const body = {
+				error: {
+					code: 'usage_not_included',
+					type: 'usage_limit_reached',
+					message: 'mixed signals',
+				},
+			};
+			const resp = new Response(JSON.stringify(body), { status: 404 });
+			const { response: mapped, rateLimit } = await handleErrorResponse(resp);
+			expect(mapped.status).toBe(403);
+			expect(rateLimit).toBeUndefined();
+		});
+
 		it('leaves non-usage 404 errors unchanged', async () => {
 			const body = { error: { code: 'not_found', message: 'nope' } };
 			const resp = new Response(JSON.stringify(body), { status: 404 });
@@ -1051,6 +1065,15 @@ describe('createEntitlementErrorResponse', () => {
 
 			expect(result.status).toBe(429);
 			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
+		});
+
+		it('does not remap 404s with malformed json bodies', async () => {
+			const response = new Response('{ invalid json', { status: 404 });
+
+			const { response: result, rateLimit } = await handleErrorResponse(response);
+
+			expect(result.status).toBe(404);
+			expect(rateLimit).toBeUndefined();
 		});
 
 		it('does not treat non-429 rate-limit text as a cooldown signal', async () => {

@@ -60,6 +60,20 @@ interface ModelInspection {
 	capabilities: ReturnType<typeof getModelCapabilities>;
 }
 
+function parsePositiveIntegerOption(
+	rawValue: string,
+): number | null {
+	const normalized = rawValue.trim();
+	if (!/^\d+$/.test(normalized)) {
+		return null;
+	}
+	const parsed = Number.parseInt(normalized, 10);
+	if (!Number.isSafeInteger(parsed) || parsed < 1) {
+		return null;
+	}
+	return parsed;
+}
+
 const RETRYABLE_WRITE_CODES = new Set(["EBUSY", "EPERM"]);
 
 export interface ReportCommandDeps {
@@ -163,8 +177,8 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 		if (arg === "--max-accounts") {
 			const value = args[i + 1];
 			if (!value) return { ok: false, message: "Missing value for --max-accounts" };
-			const parsed = Number.parseInt(value, 10);
-			if (!Number.isFinite(parsed) || parsed < 1) {
+			const parsed = parsePositiveIntegerOption(value);
+			if (parsed === null) {
 				return { ok: false, message: "--max-accounts must be a positive integer" };
 			}
 			options.maxAccounts = parsed;
@@ -172,8 +186,8 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 			continue;
 		}
 		if (arg.startsWith("--max-accounts=")) {
-			const parsed = Number.parseInt(arg.slice("--max-accounts=".length), 10);
-			if (!Number.isFinite(parsed) || parsed < 1) {
+			const parsed = parsePositiveIntegerOption(arg.slice("--max-accounts=".length));
+			if (parsed === null) {
 				return { ok: false, message: "--max-accounts must be a positive integer" };
 			}
 			options.maxAccounts = parsed;
@@ -182,8 +196,8 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 		if (arg === "--max-probes") {
 			const value = args[i + 1];
 			if (!value) return { ok: false, message: "Missing value for --max-probes" };
-			const parsed = Number.parseInt(value, 10);
-			if (!Number.isFinite(parsed) || parsed < 1) {
+			const parsed = parsePositiveIntegerOption(value);
+			if (parsed === null) {
 				return { ok: false, message: "--max-probes must be a positive integer" };
 			}
 			options.maxProbes = parsed;
@@ -191,8 +205,8 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 			continue;
 		}
 		if (arg.startsWith("--max-probes=")) {
-			const parsed = Number.parseInt(arg.slice("--max-probes=".length), 10);
-			if (!Number.isFinite(parsed) || parsed < 1) {
+			const parsed = parsePositiveIntegerOption(arg.slice("--max-probes=".length));
+			if (parsed === null) {
 				return { ok: false, message: "--max-probes must be a positive integer" };
 			}
 			options.maxProbes = parsed;

@@ -146,6 +146,42 @@ describe("getPluginConfigExplainReport", () => {
 		});
 	});
 
+	it("covers the rate-limit explain rows and env sources", async () => {
+		const { getPluginConfigExplainReport } = await import("../lib/config.js");
+		const keys = [
+			"rateLimitDedupWindowMs",
+			"rateLimitStateResetMs",
+			"rateLimitMaxBackoffMs",
+			"rateLimitShortRetryThresholdMs",
+		] as const;
+		const report = getPluginConfigExplainReport();
+		for (const key of keys) {
+			expect(expectEntry(report, key)).toBeDefined();
+		}
+
+		const serialized = JSON.parse(JSON.stringify(report)) as {
+			entries: Array<{ key: string; value: unknown; defaultValue: unknown; source: string }>;
+		};
+		for (const key of keys) {
+			const entry = serialized.entries.find((item) => item.key === key);
+			expect(entry).toBeDefined();
+			expect(entry?.value).toBeDefined();
+			expect(entry?.defaultValue).toBeDefined();
+		}
+
+		vi.resetModules();
+		process.env.CODEX_AUTH_RATE_LIMIT_DEDUP_WINDOW_MS = "3210";
+		process.env.CODEX_AUTH_RATE_LIMIT_STATE_RESET_MS = "654321";
+		process.env.CODEX_AUTH_RATE_LIMIT_MAX_BACKOFF_MS = "12345";
+		process.env.CODEX_AUTH_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS = "250";
+		const envMod = await import("../lib/config.js");
+		const envReport = envMod.getPluginConfigExplainReport();
+		for (const key of keys) {
+			const entry = expectEntry(envReport, key);
+			expect(entry?.source).toBe("env");
+		}
+	});
+
 	it("reports default and env sources", async () => {
 		const mod = await import("../lib/config.js");
 		let report = mod.getPluginConfigExplainReport();

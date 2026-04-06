@@ -2980,6 +2980,26 @@ describe("storage", () => {
 
 			unlinkSpy.mockRestore();
 		});
+
+		it("throws and does not write reset marker when the wal file cannot be removed", async () => {
+			await fs.writeFile(testStoragePath, "{}", "utf-8");
+			await fs.writeFile(`${testStoragePath}.wal`, "{}", "utf-8");
+			const resetMarkerPath = getIntentionalResetMarkerPath(testStoragePath);
+			const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (targetPath) => {
+				if (String(targetPath) === `${testStoragePath}.wal`) {
+					const error = Object.assign(new Error("locked"), { code: "EBUSY" });
+					throw error;
+				}
+				return Promise.resolve();
+			});
+
+			try {
+				await expect(clearAccounts()).rejects.toMatchObject({ code: "EBUSY" });
+				expect(existsSync(resetMarkerPath)).toBe(false);
+			} finally {
+				unlinkSpy.mockRestore();
+			}
+		});
 	});
 
 	describe("StorageError with cause", () => {

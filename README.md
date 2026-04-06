@@ -199,6 +199,7 @@ If browser launch is blocked, use the alternate login paths in [docs/getting-sta
 | Accounts | `~/.codex/multi-auth/openai-codex-accounts.json` |
 | Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` |
 | Quota cache | `~/.codex/multi-auth/quota-cache.json` |
+| Runtime observability | `~/.codex/multi-auth/runtime-observability.json` |
 | Logs | `~/.codex/multi-auth/logs/codex-plugin/` |
 | Per-project accounts | `~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json` |
 
