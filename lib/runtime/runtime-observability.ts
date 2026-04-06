@@ -4,6 +4,7 @@ import { getCodexMultiAuthDir } from "../runtime-paths.js";
 import type { RuntimeMetrics } from "./metrics.js";
 
 export interface RuntimeObservabilitySnapshot {
+	version: number;
 	updatedAt: number;
 	currentRequestId: string | null;
 	responsesRequests: number;
@@ -16,6 +17,7 @@ export interface RuntimeObservabilitySnapshot {
 
 const SNAPSHOT_FILE_NAME = "runtime-observability.json";
 const PERSIST_RUNTIME_SNAPSHOT = process.env.VITEST !== "true";
+const RUNTIME_OBSERVABILITY_SNAPSHOT_VERSION = 1;
 
 let snapshotState: RuntimeObservabilitySnapshot | null = null;
 let pendingWrite: Promise<void> | null = null;
@@ -26,6 +28,7 @@ function getSnapshotPath(): string {
 
 function createDefaultSnapshot(): RuntimeObservabilitySnapshot {
 	return {
+		version: RUNTIME_OBSERVABILITY_SNAPSHOT_VERSION,
 		updatedAt: 0,
 		currentRequestId: null,
 		responsesRequests: 0,
@@ -114,8 +117,26 @@ export async function loadPersistedRuntimeObservabilitySnapshot(): Promise<Runti
 	}
 	try {
 		const raw = await fs.readFile(path, "utf-8");
-		const parsed = JSON.parse(raw) as RuntimeObservabilitySnapshot;
-		return parsed;
+		const parsed = JSON.parse(raw) as Partial<RuntimeObservabilitySnapshot> | null;
+		if (!parsed || typeof parsed !== "object") {
+			return null;
+		}
+		if (
+			typeof parsed.version === "number" &&
+			parsed.version !== RUNTIME_OBSERVABILITY_SNAPSHOT_VERSION
+		) {
+			return null;
+		}
+		const base = createDefaultSnapshot();
+		return {
+			...base,
+			...parsed,
+			version: RUNTIME_OBSERVABILITY_SNAPSHOT_VERSION,
+			runtimeMetrics: {
+				...base.runtimeMetrics,
+				...(parsed.runtimeMetrics ?? {}),
+			},
+		};
 	} catch {
 		return null;
 	}
