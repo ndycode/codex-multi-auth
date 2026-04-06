@@ -42,6 +42,10 @@ describe("PluginConfigSchema", () => {
 			perProjectAccounts: true,
 			sessionRecovery: true,
 			autoResume: false,
+			rateLimitDedupWindowMs: 2000,
+			rateLimitStateResetMs: 120000,
+			rateLimitMaxBackoffMs: 60000,
+			rateLimitShortRetryThresholdMs: 5000,
 			fetchTimeoutMs: 60000,
 			streamStallTimeoutMs: 45000,
 			liveAccountSync: true,
@@ -65,6 +69,8 @@ describe("PluginConfigSchema", () => {
 	});
 
 	it.each([
+		["rateLimitStateResetMs", 999, 1000],
+		["rateLimitMaxBackoffMs", 999, 1000],
 		["liveAccountSyncDebounceMs", 49, 50],
 		["liveAccountSyncPollMs", 499, 500],
 		["sessionAffinityTtlMs", 999, 1000],
@@ -80,6 +86,8 @@ describe("PluginConfigSchema", () => {
 	});
 
 	it.each([
+		["rateLimitDedupWindowMs", -1, 0],
+		["rateLimitShortRetryThresholdMs", -1, 0],
 		["networkErrorCooldownMs", -1, 0],
 		["serverErrorCooldownMs", -1, 0],
 	] as const)("allows zero and rejects negatives for %s", (key, invalidValue, validValue) => {
@@ -109,6 +117,10 @@ describe("PluginConfigSchema", () => {
 		"sessionAffinityMaxEntries",
 		"proactiveRefreshIntervalMs",
 		"proactiveRefreshBufferMs",
+		"rateLimitDedupWindowMs",
+		"rateLimitStateResetMs",
+		"rateLimitMaxBackoffMs",
+		"rateLimitShortRetryThresholdMs",
 		"networkErrorCooldownMs",
 		"serverErrorCooldownMs",
 		"preemptiveQuotaRemainingPercent5h",

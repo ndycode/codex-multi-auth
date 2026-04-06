@@ -1,4 +1,5 @@
 import type { RateLimitReason } from "../accounts.js";
+import { DEFAULT_PLUGIN_CONFIG } from "../config.js";
 
 export interface RateLimitBackoffResult {
 	attempt: number;
@@ -14,12 +15,75 @@ export interface RateLimitBackoffResult {
  * - Deduplicate concurrent 429s so parallel requests don't over-increment backoff.
  * - Reset backoff after a quiet period.
  */
-const RATE_LIMIT_DEDUP_WINDOW_MS = 2000;
-const RATE_LIMIT_STATE_RESET_MS = 120_000;
-const MAX_BACKOFF_MS = 60_000;
+const DEFAULT_RATE_LIMIT_DEDUP_WINDOW_MS =
+	DEFAULT_PLUGIN_CONFIG.rateLimitDedupWindowMs;
+const DEFAULT_RATE_LIMIT_STATE_RESET_MS =
+	DEFAULT_PLUGIN_CONFIG.rateLimitStateResetMs;
+const DEFAULT_MAX_BACKOFF_MS = DEFAULT_PLUGIN_CONFIG.rateLimitMaxBackoffMs;
+const DEFAULT_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS =
+	DEFAULT_PLUGIN_CONFIG.rateLimitShortRetryThresholdMs;
 const RATE_LIMIT_BACKOFF_JITTER_FACTOR = 0.2;
 
-export const RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS = 5000;
+interface RateLimitBackoffConfig {
+	dedupWindowMs: number;
+	stateResetMs: number;
+	maxBackoffMs: number;
+	shortRetryThresholdMs: number;
+}
+
+type StableAccountKey = string | null | undefined;
+
+let rateLimitBackoffConfig: RateLimitBackoffConfig = {
+	dedupWindowMs: DEFAULT_RATE_LIMIT_DEDUP_WINDOW_MS,
+	stateResetMs: DEFAULT_RATE_LIMIT_STATE_RESET_MS,
+	maxBackoffMs: DEFAULT_MAX_BACKOFF_MS,
+	shortRetryThresholdMs: DEFAULT_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS,
+};
+
+export function configureRateLimitBackoff(
+	overrides: Partial<RateLimitBackoffConfig> = {},
+): void {
+	if (
+		typeof overrides.dedupWindowMs === "number" &&
+		Number.isFinite(overrides.dedupWindowMs)
+	) {
+		rateLimitBackoffConfig.dedupWindowMs = Math.max(0, Math.floor(overrides.dedupWindowMs));
+	}
+	if (
+		typeof overrides.stateResetMs === "number" &&
+		Number.isFinite(overrides.stateResetMs)
+	) {
+		rateLimitBackoffConfig.stateResetMs = Math.max(1_000, Math.floor(overrides.stateResetMs));
+	}
+	if (
+		typeof overrides.maxBackoffMs === "number" &&
+		Number.isFinite(overrides.maxBackoffMs)
+	) {
+		rateLimitBackoffConfig.maxBackoffMs = Math.max(1_000, Math.floor(overrides.maxBackoffMs));
+	}
+	if (
+		typeof overrides.shortRetryThresholdMs === "number" &&
+		Number.isFinite(overrides.shortRetryThresholdMs)
+	) {
+		rateLimitBackoffConfig.shortRetryThresholdMs = Math.max(
+			0,
+			Math.floor(overrides.shortRetryThresholdMs),
+		);
+	}
+}
+
+export function resetRateLimitBackoffConfig(): void {
+	rateLimitBackoffConfig = {
+		dedupWindowMs: DEFAULT_RATE_LIMIT_DEDUP_WINDOW_MS,
+		stateResetMs: DEFAULT_RATE_LIMIT_STATE_RESET_MS,
+		maxBackoffMs: DEFAULT_MAX_BACKOFF_MS,
+		shortRetryThresholdMs: DEFAULT_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS,
+	};
+}
+
+export function getRateLimitShortRetryThresholdMs(): number {
+	return rateLimitBackoffConfig.shortRetryThresholdMs;
+}
 
 /**
  * Maximum number of consecutive short-cooldown 429 retries before
@@ -40,6 +104,19 @@ interface RateLimitState {
 
 const rateLimitStateByAccountQuota = new Map<string, RateLimitState>();
 
+function resolveRateLimitStateKey(
+	accountIndex: number,
+	quotaKey: string,
+	stableAccountKey?: StableAccountKey,
+): string {
+	const normalizedStableAccountKey = stableAccountKey?.trim();
+	const accountStateKey =
+		normalizedStableAccountKey && normalizedStableAccountKey.length > 0
+			? normalizedStableAccountKey
+			: `slot:${accountIndex}`;
+	return `${accountStateKey}:${quotaKey}`;
+}
+
 function normalizeDelayMs(value: number | null | undefined, fallback: number): number {
 	const candidate = typeof value === "number" && Number.isFinite(value) ? value : fallback;
 	return Math.max(0, Math.floor(candidate));
@@ -53,7 +130,7 @@ function addBackoffJitter(baseMs: number): number {
 function pruneStaleRateLimitState(): void {
 	const now = Date.now();
 	for (const [key, state] of rateLimitStateByAccountQuota) {
-		if (now - state.lastAt > RATE_LIMIT_STATE_RESET_MS) {
+		if (now - state.lastAt > rateLimitBackoffConfig.stateResetMs) {
 			rateLimitStateByAccountQuota.delete(key);
 		}
 	}
@@ -66,15 +143,20 @@ export function getRateLimitBackoff(
 	accountIndex: number,
 	quotaKey: string,
 	serverRetryAfterMs: number | null | undefined,
+	stableAccountKey?: StableAccountKey,
 ): RateLimitBackoffResult {
 	pruneStaleRateLimitState();
 	const now = Date.now();
-	const stateKey = `${accountIndex}:${quotaKey}`;
+	const stateKey = resolveRateLimitStateKey(
+		accountIndex,
+		quotaKey,
+		stableAccountKey,
+	);
 	const previous = rateLimitStateByAccountQuota.get(stateKey);
 
 	const baseDelay = normalizeDelayMs(serverRetryAfterMs, 1000);
 
-	if (previous && now - previous.lastAt < RATE_LIMIT_DEDUP_WINDOW_MS) {
+	if (previous && now - previous.lastAt < rateLimitBackoffConfig.dedupWindowMs) {
 		return {
 			attempt: previous.consecutive429,
 			delayMs: previous.lastDelayMs,
@@ -83,12 +165,18 @@ export function getRateLimitBackoff(
 	}
 
 	const attempt =
-		previous && now - previous.lastAt < RATE_LIMIT_STATE_RESET_MS
+		previous && now - previous.lastAt < rateLimitBackoffConfig.stateResetMs
 			? previous.consecutive429 + 1
 			: 1;
 
-	const backoffDelay = Math.min(baseDelay * Math.pow(2, attempt - 1), MAX_BACKOFF_MS);
-	const jitteredDelay = Math.min(addBackoffJitter(backoffDelay), MAX_BACKOFF_MS);
+	const backoffDelay = Math.min(
+		baseDelay * Math.pow(2, attempt - 1),
+		rateLimitBackoffConfig.maxBackoffMs,
+	);
+	const jitteredDelay = Math.min(
+		addBackoffJitter(backoffDelay),
+		rateLimitBackoffConfig.maxBackoffMs,
+	);
 	const delayMs = Math.max(baseDelay, jitteredDelay);
 	rateLimitStateByAccountQuota.set(stateKey, {
 		consecutive429: attempt,
@@ -103,8 +191,14 @@ export function getRateLimitBackoff(
 	};
 }
 
-export function resetRateLimitBackoff(accountIndex: number, quotaKey: string): void {
-	rateLimitStateByAccountQuota.delete(`${accountIndex}:${quotaKey}`);
+export function resetRateLimitBackoff(
+	accountIndex: number,
+	quotaKey: string,
+	stableAccountKey?: StableAccountKey,
+): void {
+	rateLimitStateByAccountQuota.delete(
+		resolveRateLimitStateKey(accountIndex, quotaKey, stableAccountKey),
+	);
 }
 
 export function clearRateLimitBackoffState(): void {
@@ -125,7 +219,10 @@ export function calculateBackoffMs(
 ): number {
 	const multiplier = BACKOFF_MULTIPLIERS[reason] ?? 1.0;
 	const exponentialDelay = baseDelayMs * Math.pow(2, attempt - 1);
-	return Math.min(Math.floor(exponentialDelay * multiplier), MAX_BACKOFF_MS);
+	return Math.min(
+		Math.floor(exponentialDelay * multiplier),
+		rateLimitBackoffConfig.maxBackoffMs,
+	);
 }
 
 export interface RateLimitBackoffWithReasonParams {
@@ -133,6 +230,7 @@ export interface RateLimitBackoffWithReasonParams {
 	quotaKey: string;
 	serverRetryAfterMs: number | null | undefined;
 	reason?: RateLimitReason;
+	stableAccountKey?: StableAccountKey;
 }
 
 export function getRateLimitBackoffWithReason(
@@ -143,12 +241,14 @@ export function getRateLimitBackoffWithReason(
 	quotaKey: string,
 	serverRetryAfterMs: number | null | undefined,
 	reason?: RateLimitReason,
+	stableAccountKey?: StableAccountKey,
 ): RateLimitBackoffResult;
 export function getRateLimitBackoffWithReason(
 	accountIndexOrParams: number | RateLimitBackoffWithReasonParams,
 	quotaKey?: string,
 	serverRetryAfterMs?: number | null | undefined,
 	reason: RateLimitReason = "unknown",
+	stableAccountKey?: StableAccountKey,
 ): RateLimitBackoffResult {
 	const useNamedParams = typeof accountIndexOrParams !== "number";
 	const resolvedAccountIndex = useNamedParams
@@ -163,6 +263,9 @@ export function getRateLimitBackoffWithReason(
 	const resolvedReason = useNamedParams
 		? (accountIndexOrParams.reason ?? "unknown")
 		: reason;
+	const resolvedStableAccountKey = useNamedParams
+		? accountIndexOrParams.stableAccountKey
+		: stableAccountKey;
 	if (!Number.isInteger(resolvedAccountIndex) || resolvedAccountIndex < 0) {
 		throw new TypeError(
 			"getRateLimitBackoffWithReason requires a non-negative integer accountIndex",
@@ -176,6 +279,7 @@ export function getRateLimitBackoffWithReason(
 		resolvedAccountIndex,
 		normalizedQuotaKey,
 		resolvedServerRetryAfterMs,
+		resolvedStableAccountKey,
 	);
 	const adjustedDelay = calculateBackoffMs(
 		result.delayMs,

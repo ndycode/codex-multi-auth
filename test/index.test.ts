@@ -6,6 +6,26 @@ const { showRuntimeToastMock } = vi.hoisted(() => ({
 	showRuntimeToastMock: vi.fn(),
 }));
 
+const {
+	configureRateLimitBackoffMock,
+	getRateLimitBackoffMock,
+	getRateLimitShortRetryThresholdMock,
+	resetRateLimitBackoffMock,
+	getRateLimitDedupWindowMsMock,
+	getRateLimitStateResetMsMock,
+	getRateLimitMaxBackoffMsMock,
+	getRateLimitShortRetryThresholdConfigMock,
+} = vi.hoisted(() => ({
+	configureRateLimitBackoffMock: vi.fn(),
+	getRateLimitBackoffMock: vi.fn(() => ({ attempt: 1, delayMs: 1000 })),
+	getRateLimitShortRetryThresholdMock: vi.fn(() => 5000),
+	resetRateLimitBackoffMock: vi.fn(),
+	getRateLimitDedupWindowMsMock: vi.fn(() => 2000),
+	getRateLimitStateResetMsMock: vi.fn(() => 120000),
+	getRateLimitMaxBackoffMsMock: vi.fn(() => 60000),
+	getRateLimitShortRetryThresholdConfigMock: vi.fn(() => 5000),
+}));
+
 vi.mock("@codex-ai/plugin/tool", () => {
 	const makeSchema = () => ({
 		optional: () => makeSchema(),
@@ -80,6 +100,10 @@ vi.mock("../lib/config.js", () => ({
 	getFastSessionStrategy: () => "hybrid",
 	getFastSessionMaxInputItems: () => 30,
 	getRateLimitToastDebounceMs: () => 5000,
+	getRateLimitDedupWindowMs: getRateLimitDedupWindowMsMock,
+	getRateLimitStateResetMs: getRateLimitStateResetMsMock,
+	getRateLimitMaxBackoffMs: getRateLimitMaxBackoffMsMock,
+	getRateLimitShortRetryThresholdMs: getRateLimitShortRetryThresholdConfigMock,
 	getRetryAllAccountsMaxRetries: () => 3,
 	getRetryAllAccountsMaxWaitMs: () => 30000,
 	getRetryAllAccountsRateLimited: () => true,
@@ -204,11 +228,29 @@ vi.mock("../lib/recovery.js", () => ({
 }));
 
 vi.mock("../lib/request/rate-limit-backoff.js", () => ({
-	getRateLimitBackoff: vi.fn(() => ({ attempt: 1, delayMs: 1000 })),
-	RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS: 5000,
+	configureRateLimitBackoff: configureRateLimitBackoffMock,
+	getRateLimitBackoff: getRateLimitBackoffMock,
+	getRateLimitShortRetryThresholdMs: getRateLimitShortRetryThresholdMock,
 	MAX_SHORT_RETRY_ATTEMPTS: 3,
-	resetRateLimitBackoff: vi.fn(),
+	resetRateLimitBackoff: resetRateLimitBackoffMock,
 }));
+
+beforeEach(() => {
+	configureRateLimitBackoffMock.mockReset();
+	getRateLimitBackoffMock.mockReset();
+	getRateLimitBackoffMock.mockImplementation(() => ({ attempt: 1, delayMs: 1000 }));
+	getRateLimitShortRetryThresholdMock.mockReset();
+	getRateLimitShortRetryThresholdMock.mockImplementation(() => 5000);
+	resetRateLimitBackoffMock.mockReset();
+	getRateLimitDedupWindowMsMock.mockReset();
+	getRateLimitDedupWindowMsMock.mockImplementation(() => 2000);
+	getRateLimitStateResetMsMock.mockReset();
+	getRateLimitStateResetMsMock.mockImplementation(() => 120000);
+	getRateLimitMaxBackoffMsMock.mockReset();
+	getRateLimitMaxBackoffMsMock.mockImplementation(() => 60000);
+	getRateLimitShortRetryThresholdConfigMock.mockReset();
+	getRateLimitShortRetryThresholdConfigMock.mockImplementation(() => 5000);
+});
 
 vi.mock("../lib/runtime/toast.js", async () => {
 	const actual = await vi.importActual<typeof import("../lib/runtime/toast.js")>(
@@ -4169,10 +4211,31 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		);
 	});
 
-	it("forwards short retry rate-limit toast arguments through showRuntimeToast", async () => {
+	it("configures rate-limit backoff with non-default config getter values during loader", async () => {
+		getRateLimitDedupWindowMsMock.mockImplementation(() => 3_210);
+		getRateLimitStateResetMsMock.mockImplementation(() => 654_321);
+		getRateLimitMaxBackoffMsMock.mockImplementation(() => 12_345);
+		getRateLimitShortRetryThresholdConfigMock.mockImplementation(() => 250);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+
+		await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
+
+		expect(configureRateLimitBackoffMock).toHaveBeenCalledWith({
+			dedupWindowMs: 3_210,
+			stateResetMs: 654_321,
+			maxBackoffMs: 12_345,
+			shortRetryThresholdMs: 250,
+		});
+	});
+
+	it("forwards short retry rate-limit toast arguments through showRuntimeToast when configured threshold allows retry", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
 		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
+		getRateLimitShortRetryThresholdMock.mockReturnValue(1_500);
 
 		const markToastShown = vi.fn();
 		const manager = {
@@ -4263,10 +4326,11 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		expect(markToastShown).toHaveBeenCalledWith(0);
 	});
 
-	it("does not short-retry the same account when the parsed cooldown exceeds the retry floor", async () => {
+	it("rotates when the configured short retry threshold is lower than the cooldown", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
 		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
+		getRateLimitShortRetryThresholdMock.mockReturnValue(500);
 
 		const markRateLimitedWithReason = vi.fn();
 		const manager = {
@@ -4781,7 +4845,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		);
 	});
 
-	it("falls through to rotation when short-retry attempt count reaches MAX_SHORT_RETRY_ATTEMPTS", async () => {
+	it("falls through to rotation after MAX_SHORT_RETRY_ATTEMPTS local short retries", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
 		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
@@ -4835,10 +4899,8 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			setActiveIndex: () => null,
 		};
 		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
-
-		// Return a short cooldown (1s) but attempt=3, which is >= MAX_SHORT_RETRY_ATTEMPTS (3).
-		// This should fall through to rotation instead of short-retrying.
-		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
+		getRateLimitShortRetryThresholdMock.mockReturnValue(1_500);
+		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValue({
 			response: new Response("rate limited", { status: 429 }),
 			rateLimit: {
 				retryAfterMs: 1000,
@@ -4846,27 +4908,32 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			},
 			errorBody: "rate limited",
 		} as never);
-		vi.mocked(rateLimitBackoffModule.getRateLimitBackoff).mockReturnValueOnce({
-			attempt: 3,
+		vi.mocked(rateLimitBackoffModule.getRateLimitBackoff).mockReturnValue({
+			attempt: 1,
 			delayMs: 1000,
 		});
 		globalThis.fetch = vi
 			.fn()
+			.mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
+			.mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
+			.mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
 			.mockResolvedValueOnce(new Response("rate limited", { status: 429 }));
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
 		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
 		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
-		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
+
+		vi.useFakeTimers();
+		const responsePromise = sdk.fetch!("https://api.openai.com/v1/chat/completions", {
 			method: "POST",
 			body: JSON.stringify({ model: "gpt-5.1" }),
 		});
+		await vi.advanceTimersByTimeAsync(4_000);
+		const response = await responsePromise;
 
-		// Should have rotated (503 returned as single-account pool exhausted)
-		// rather than short-retrying
 		expect(response.status).toBe(503);
-		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(4);
 		expect(markRateLimitedWithReason).toHaveBeenCalledWith(
 			expect.objectContaining({ index: 0 }),
 			1000,
