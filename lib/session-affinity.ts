@@ -12,6 +12,7 @@ interface SessionAffinityEntry {
 	expiresAt: number;
 	lastResponseId?: string;
 	updatedAt: number;
+	writeVersion: number;
 }
 
 const DEFAULT_TTL_MS = 20 * 60 * 1000;
@@ -62,17 +63,34 @@ export class SessionAffinityStore {
 	}
 
 	remember(sessionKey: string | null | undefined, accountIndex: number, now = Date.now()): void {
+		this.rememberWithVersion(sessionKey, accountIndex, now, now);
+	}
+
+	rememberWithVersion(
+		sessionKey: string | null | undefined,
+		accountIndex: number,
+		now = Date.now(),
+		writeVersion = now,
+	): void {
 		const key = normalizeSessionKey(sessionKey);
 		if (!key) return;
 		if (!Number.isFinite(accountIndex) || accountIndex < 0) return;
 
 		const existingEntry = this.entries.get(key);
+		if (
+			existingEntry &&
+			existingEntry.expiresAt > now &&
+			existingEntry.writeVersion > writeVersion
+		) {
+			return;
+		}
 
 		this.setEntry(key, {
 			accountIndex,
 			expiresAt: now + this.ttlMs,
 			lastResponseId: existingEntry?.lastResponseId,
 			updatedAt: now,
+			writeVersion,
 		});
 	}
 
@@ -110,6 +128,7 @@ export class SessionAffinityStore {
 		sessionKey: string | null | undefined,
 		responseId: string | null | undefined,
 		now = Date.now(),
+		writeVersion = now,
 	): void {
 		const key = normalizeSessionKey(sessionKey);
 		const normalizedResponseId = typeof responseId === "string" ? responseId.trim() : "";
@@ -121,12 +140,16 @@ export class SessionAffinityStore {
 			this.entries.delete(key);
 			return;
 		}
+		if (entry.writeVersion > writeVersion) {
+			return;
+		}
 
 		this.setEntry(key, {
 			...entry,
 			expiresAt: now + this.ttlMs,
 			lastResponseId: normalizedResponseId,
 			updatedAt: now,
+			writeVersion,
 		});
 	}
 

@@ -1642,7 +1642,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(secondBody?.previous_response_id).toBe("resp_standalone_789");
 	});
 
-	it("keeps account and previous_response_id aligned across overlapping same-session streams", async () => {
+	it("keeps the newest account and previous_response_id across overlapping same-session streams", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const configModule = await import("../lib/config.js");
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
@@ -1748,9 +1748,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			previous_response_id?: string;
 		};
 		const thirdHeaders = new Headers(thirdInit.headers);
-		expect(thirdBody.previous_response_id).toBe("resp_first_123");
-		expect(thirdHeaders.get("x-test-account-id")).toBe("acc-1");
-		expect(thirdHeaders.get("x-test-access-token")).toBe("access-alpha");
+		expect(thirdBody.previous_response_id).toBe("resp_second_456");
+		expect(thirdHeaders.get("x-test-account-id")).toBe("acc-2");
+		expect(thirdHeaders.get("x-test-access-token")).toBe("access-beta");
 	});
 	it("compacts fast-session input before sending the upstream request when compaction succeeds", async () => {
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");

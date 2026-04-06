@@ -143,4 +143,18 @@ describe("SessionAffinityStore", () => {
 		expect(store.getLastResponseId("session-a", 3_500)).toBe("resp_123");
 		expect(store.getPreferredAccountIndex("session-a", 3_500)).toBe(2);
 	});
+
+	it("ignores stale response-id writes from older overlapping requests", () => {
+		const store = new SessionAffinityStore({ ttlMs: 10_000, maxEntries: 4 });
+		store.rememberWithVersion("session-a", 1, 1_000, 1);
+		store.updateLastResponseId("session-a", "resp_first", 2_000, 1);
+		store.rememberWithVersion("session-a", 2, 3_000, 2);
+		store.updateLastResponseId("session-a", "resp_second", 4_000, 2);
+
+		store.rememberWithVersion("session-a", 1, 5_000, 1);
+		store.updateLastResponseId("session-a", "resp_stale", 5_000, 1);
+
+		expect(store.getPreferredAccountIndex("session-a", 5_500)).toBe(2);
+		expect(store.getLastResponseId("session-a", 5_500)).toBe("resp_second");
+	});
 });
