@@ -38,6 +38,34 @@ export interface GetTopCandidatesParams {
 	maxCandidates: number;
 }
 
+function isAccountManager(value: unknown): value is AccountManager {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"getAccountsSnapshot" in value &&
+		typeof value.getAccountsSnapshot === "function"
+	);
+}
+
+function isGetTopCandidatesParams(value: unknown): value is GetTopCandidatesParams {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"accountManager" in value &&
+		isAccountManager(value.accountManager) &&
+		"modelFamily" in value &&
+		typeof value.modelFamily === "string" &&
+		"model" in value &&
+		(typeof value.model === "string" || value.model === null) &&
+		"maxCandidates" in value &&
+		typeof value.maxCandidates === "number"
+	);
+}
+
+function toProbeError(error: unknown): Error {
+	return error instanceof Error ? error : new Error(String(error));
+}
+
 /**
  * Get top N candidates ranked by hybrid score WITHOUT mutating AccountManager state.
  * Uses getAccountsSnapshot() and ranks by health + tokens + freshness.
@@ -64,13 +92,19 @@ export function getTopCandidates(
 	let resolvedMaxCandidates: number | undefined;
 
 	if (useNamedParams) {
-		const namedParams = accountManagerOrParams as GetTopCandidatesParams;
+		if (!isGetTopCandidatesParams(accountManagerOrParams)) {
+			throw new TypeError("getTopCandidates requires accountManager");
+		}
+		const namedParams = accountManagerOrParams;
 		resolvedAccountManager = namedParams.accountManager;
 		resolvedModelFamily = namedParams.modelFamily;
 		resolvedModel = namedParams.model;
 		resolvedMaxCandidates = namedParams.maxCandidates;
 	} else {
-		resolvedAccountManager = accountManagerOrParams as AccountManager;
+		if (!isAccountManager(accountManagerOrParams)) {
+			throw new TypeError("getTopCandidates requires accountManager");
+		}
+		resolvedAccountManager = accountManagerOrParams;
 		resolvedModelFamily = modelFamily;
 		resolvedModel = model;
 		resolvedMaxCandidates = maxCandidates;
@@ -158,7 +192,7 @@ export async function probeAccountsInParallel<T>(
 			const response = await probeFn(account, controller.signal);
 			return { type: "success", account, response };
 		} catch (error) {
-			return { type: "failure", account, error: error as Error };
+			return { type: "failure", account, error: toProbeError(error) };
 		}
 	}
 
