@@ -565,6 +565,105 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		);
 	});
 
+	it("keeps the total request cap when empty-response retries and server-error rotation combine", async () => {
+		const logger = await import("../lib/logger.js");
+		const logWarnSpy = vi.spyOn(logger, "logWarn").mockImplementation(() => {});
+
+		const accounts = Array.from({ length: 6 }, (_, index) =>
+			createMockAccount({
+				index,
+				accountId: `account-${index + 1}`,
+				email: `user${index + 1}@example.com`,
+				refreshToken: `refresh-token-${index + 1}`,
+				access: `access-token-account-${index + 1}`,
+			}),
+		);
+		accountManagerState.accounts = accounts;
+		accountManagerState.accountSelections = [...accounts];
+
+		const serverErrorResponse = () =>
+			new Response(
+				JSON.stringify({
+					error: { code: "server_error", message: "temporary outage" },
+				}),
+				{
+					status: 500,
+					headers: { "content-type": "application/json" },
+				},
+			);
+
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response("{}", {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}),
+			)
+			.mockResolvedValueOnce(serverErrorResponse())
+			.mockResolvedValueOnce(serverErrorResponse())
+			.mockResolvedValueOnce(serverErrorResponse())
+			.mockResolvedValueOnce(serverErrorResponse())
+			.mockResolvedValueOnce(serverErrorResponse());
+		globalThis.fetch = fetchMock as any;
+
+		const { OpenAIAuthPlugin } = await import("../index.js");
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+		const plugin = await OpenAIAuthPlugin({ client });
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const fetchPromise = sdk.fetch("https://example.com", {});
+
+		await vi.advanceTimersByTimeAsync(1500);
+
+		const response = await fetchPromise;
+		const payload = await response.json();
+
+		expect(fetchMock).toHaveBeenCalledTimes(6);
+		expect(
+			fetchMock.mock.calls.map(
+				(call) => (call[1]?.headers as Headers).get("x-account-id"),
+			),
+		).toEqual([
+			"account-1",
+			"account-1",
+			"account-2",
+			"account-3",
+			"account-4",
+			"account-5",
+		]);
+		expect(response.status).toBe(503);
+		expect(payload).toEqual({
+			error: {
+				message:
+					"Request attempt budget exhausted after 6 outbound request(s). Try again after the current retries settle.",
+			},
+		});
+		expect(logWarnSpy).toHaveBeenCalledWith(
+			"Empty response received (attempt 1/2). Retrying...",
+		);
+		expect(logWarnSpy).toHaveBeenCalledWith(
+			"Request attempt budget exhausted.",
+			expect.objectContaining({
+				reason: "primary",
+				accountIndex: 5,
+				budget: 6,
+				consumed: 6,
+			}),
+		);
+	});
+
 	it("rebuilds request headers after rotating to the next workspace", async () => {
 		const account = createMockAccount({
 			workspaces: [
