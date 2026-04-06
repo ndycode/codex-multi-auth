@@ -80,6 +80,7 @@ import {
 } from "./request/helpers/model-map.js";
 import {
 	formatRateLimitEntry as formatAccountRateLimitEntry,
+	getRateLimitResetTimeForFamily,
 	resolveActiveIndex,
 } from "./runtime/account-status.js";
 import {
@@ -644,6 +645,41 @@ function getQuotaCacheEntryForAccount(
 	return null;
 }
 
+function getPersistedQuotaViewForAccount(
+	cache: QuotaCacheData | null,
+	account: Pick<AccountMetadataV3, "accountId" | "email" | "rateLimitResetTimes">,
+	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
+	now: number,
+	emailFallbackState = buildQuotaEmailFallbackState(accounts),
+): QuotaCacheEntry | null {
+	const cachedEntry = cache
+		? getQuotaCacheEntryForAccount(cache, account, accounts, emailFallbackState)
+		: null;
+	const persistedResetAt = getRateLimitResetTimeForFamily(account, now, "codex");
+	if (typeof persistedResetAt !== "number") {
+		return cachedEntry;
+	}
+	const cachedPrimaryResetAt = cachedEntry?.primary.resetAtMs ?? 0;
+	const cachedSecondaryResetAt = cachedEntry?.secondary.resetAtMs ?? 0;
+	if (
+		cachedEntry?.status === 429 &&
+		Math.max(cachedPrimaryResetAt, cachedSecondaryResetAt) >= persistedResetAt
+	) {
+		return cachedEntry;
+	}
+	return {
+		updatedAt: cachedEntry?.updatedAt ?? now,
+		status: 429,
+		model: cachedEntry?.model ?? "gpt-5-codex",
+		planType: cachedEntry?.planType,
+		primary: {
+			...cachedEntry?.primary,
+			resetAtMs: Math.max(cachedPrimaryResetAt, persistedResetAt),
+		},
+		secondary: cachedEntry?.secondary ?? {},
+	};
+}
+
 function updateQuotaCacheForAccount(
 	cache: QuotaCacheData,
 	account: Pick<AccountMetadataV3, "accountId" | "email">,
@@ -1061,14 +1097,13 @@ function toExistingAccountInfo(
 	const layoutMode = resolveMenuLayoutMode(displaySettings);
 	const emailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
 	const baseAccounts = storage.accounts.map((account, index) => {
-		const entry = quotaCache
-			? getQuotaCacheEntryForAccount(
-					quotaCache,
-					account,
-					storage.accounts,
-					emailFallbackState,
-				)
-			: null;
+		const entry = getPersistedQuotaViewForAccount(
+			quotaCache,
+			account,
+			storage.accounts,
+			now,
+			emailFallbackState,
+		);
 		return {
 			index,
 			sourceIndex: index,

@@ -7152,6 +7152,50 @@ describe("codex manager cli commands", () => {
 		expect(firstCallAccounts[1]?.quotaSummary).toBe("5h 90%");
 	});
 
+	it("surfaces persisted account rate limits when quota cache is empty", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "rate-limited@example.com",
+					accountId: "acc_rate_limited",
+					refreshToken: "refresh-rate-limited",
+					accessToken: "access-rate-limited",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+					rateLimitResetTimes: {
+						codex: now + 60_000,
+					},
+				},
+			],
+		});
+		loadDashboardDisplaySettingsMock.mockResolvedValue(
+			createReadyFirstMenuSettings({ menuAutoFetchLimits: false }),
+		);
+		loadQuotaCacheMock.mockResolvedValue({ byAccountId: {}, byEmail: {} });
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		const firstCallAccounts = promptLoginModeMock.mock.calls[0]?.[0] as Array<{
+			email?: string;
+			quotaRateLimited?: boolean;
+			quota5hResetAtMs?: number;
+			quotaSummary?: string;
+		}>;
+		expect(firstCallAccounts[0]?.email).toBe("rate-limited@example.com");
+		expect(firstCallAccounts[0]?.quotaRateLimited).toBe(true);
+		expect(firstCallAccounts[0]?.quota5hResetAtMs).toBe(now + 60_000);
+		expect(firstCallAccounts[0]?.quotaSummary).toBe("rate-limited");
+	});
+
 	it("treats accounts with no quota windows as the lowest ready-first floor", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({
