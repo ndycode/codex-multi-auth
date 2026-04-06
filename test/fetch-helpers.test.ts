@@ -1036,7 +1036,7 @@ describe('createEntitlementErrorResponse', () => {
 			expect(rateLimit).toBeUndefined();
 		});
 
-		it('does not remap 404s with generic rate_limit_exceeded codes', async () => {
+		it('remaps structured 404s with rate_limit_exceeded codes', async () => {
 			const response = new Response(
 				JSON.stringify({
 					error: {
@@ -1049,8 +1049,8 @@ describe('createEntitlementErrorResponse', () => {
 
 			const { response: result, rateLimit } = await handleErrorResponse(response);
 
-			expect(result.status).toBe(404);
-			expect(rateLimit).toBeUndefined();
+			expect(result.status).toBe(429);
+			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
 		});
 
 		it('does not treat non-429 rate-limit text as a cooldown signal', async () => {

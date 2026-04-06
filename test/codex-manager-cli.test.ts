@@ -7189,11 +7189,14 @@ describe("codex manager cli commands", () => {
 			quotaRateLimited?: boolean;
 			quota5hResetAtMs?: number;
 			quotaSummary?: string;
+			status?: string;
 		}>;
 		expect(firstCallAccounts[0]?.email).toBe("rate-limited@example.com");
 		expect(firstCallAccounts[0]?.quotaRateLimited).toBe(true);
 		expect(firstCallAccounts[0]?.quota5hResetAtMs).toBe(now + 60_000);
 		expect(firstCallAccounts[0]?.quotaSummary).toBe("rate-limited");
+		expect(firstCallAccounts[0]?.status).toBe("rate-limited");
+		expect(fetchCodexQuotaSnapshotMock).not.toHaveBeenCalled();
 	});
 
 	it("treats accounts with no quota windows as the lowest ready-first floor", async () => {

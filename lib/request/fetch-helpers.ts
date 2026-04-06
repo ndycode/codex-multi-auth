@@ -1004,9 +1004,14 @@ function mapUsageLimit404WithBody(response: Response, bodyText: string): Respons
 	}
 
 	// Only structured quota-limit codes should be remapped from 404 to 429.
-	// Free-text 404 bodies and generic rate_limit_* codes are too ambiguous and
-	// degrade downstream rate-limit reason classification to "unknown".
-	if (!normalizedSignals.some((value) => value.includes("usage_limit"))) {
+	// Free-text 404 bodies remain untouched, but known quota/rate-limit codes
+	// should still preserve retry semantics for callers.
+	if (
+		!normalizedSignals.some(
+			(value) =>
+				value.includes("usage_limit") || value.includes("rate_limit_exceeded"),
+		)
+	) {
 		return null;
 	}
 
