@@ -20,6 +20,16 @@ const MAX_BACKOFF_MS = 60_000;
 
 export const RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS = 5000;
 
+/**
+ * Maximum number of consecutive short-cooldown 429 retries before
+ * falling through to the long-cooldown rotation path.
+ *
+ * Without this bound, an upstream that perpetually returns short
+ * Retry-After values (≤ RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS) would
+ * keep the request loop spinning on the same account indefinitely.
+ */
+export const MAX_SHORT_RETRY_ATTEMPTS = 3;
+
 interface RateLimitState {
 	consecutive429: number;
 	lastAt: number;
