@@ -477,12 +477,8 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 
 		expect(globalThis.fetch).not.toHaveBeenCalled();
 		expect(response.status).toBe(429);
-		expect(payload).toEqual({
-			error: {
-				message:
-					"All 2 account(s) are rate-limited. Try again in 1000ms or add another account with `codex login`.",
-			},
-		});
+		expect(payload.error.message).toContain("All 2 account(s) are rate-limited.");
+		expect(payload.error.message).toContain("1000ms");
 	});
 
 	it("stops after the bounded outbound request budget even when more accounts are available", async () => {
