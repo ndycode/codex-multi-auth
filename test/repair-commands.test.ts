@@ -751,6 +751,25 @@ describe("repair-commands direct deps coverage", () => {
 		);
 	});
 
+	it("runDoctor marks malformed codex auth payloads as invalid instead of healthy", async () => {
+		existsSyncMock.mockImplementation((path) => path === "/mock/auth.json");
+		readFileMock.mockResolvedValueOnce("[]");
+		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const exitCode = await runDoctor(["--json"], createDeps());
+
+		expect(exitCode).toBe(1);
+		expect(
+			JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")).checks,
+		).toContainEqual(
+			expect.objectContaining({
+				key: "codex-auth-readable",
+				severity: "error",
+				message: "Codex auth file has invalid structure",
+			}),
+		);
+	});
+
 	it("runDoctor derives auto-fix state from the final action set", async () => {
 		const now = Date.now();
 		let persistedAccountStorage: unknown;

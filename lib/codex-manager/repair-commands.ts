@@ -1687,7 +1687,14 @@ export async function runDoctor(
 		try {
 			const raw = await fs.readFile(codexAuthPath, "utf-8");
 			const parsed = JSON.parse(raw) as unknown;
-			if (parsed && typeof parsed === "object") {
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+				addCheck({
+					key: "codex-auth-readable",
+					severity: "error",
+					message: "Codex auth file has invalid structure",
+					details: codexAuthPath,
+				});
+			} else {
 				const payload = parsed as Record<string, unknown>;
 				const tokens = payload.tokens && typeof payload.tokens === "object"
 					? payload.tokens as Record<string, unknown>
@@ -1708,19 +1715,19 @@ export async function runDoctor(
 					emailFromFile ?? extractAccountEmail(accessToken, idToken),
 				);
 				codexAuthAccountId = accountIdFromFile ?? extractAccountId(accessToken);
+				addCheck({
+					key: "codex-auth-readable",
+					severity: "ok",
+					message: "Codex auth file is readable",
+					details:
+						codexAuthEmail || codexAuthAccountId
+							? formatDoctorIdentitySummary({
+								email: codexAuthEmail,
+								accountId: codexAuthAccountId,
+							})
+							: undefined,
+				});
 			}
-			addCheck({
-				key: "codex-auth-readable",
-				severity: "ok",
-				message: "Codex auth file is readable",
-				details:
-					codexAuthEmail || codexAuthAccountId
-						? formatDoctorIdentitySummary({
-							email: codexAuthEmail,
-							accountId: codexAuthAccountId,
-						})
-						: undefined,
-			});
 		} catch (error) {
 			addCheck({
 				key: "codex-auth-readable",
