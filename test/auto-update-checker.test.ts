@@ -5,6 +5,8 @@ vi.mock("node:fs", () => ({
 	writeFileSync: vi.fn(),
 	existsSync: vi.fn(),
 	mkdirSync: vi.fn(),
+	renameSync: vi.fn(),
+	unlinkSync: vi.fn(),
 }));
 
 describe("auto-update-checker", () => {
@@ -358,11 +360,13 @@ describe("auto-update-checker", () => {
 			await checkForUpdates(true);
 
 			expect(fs.writeFileSync).toHaveBeenCalled();
+			expect(fs.renameSync).toHaveBeenCalled();
 			const writeCall = vi.mocked(fs.writeFileSync).mock.calls[0];
 			const savedData = JSON.parse(writeCall[1] as string) as {
 				latestVersion: string;
 			};
 			expect(savedData.latestVersion).toBe("5.0.0");
+			expect(String(writeCall[0])).toContain("update-check-cache.json.");
 		});
 
 		it("creates cache directory if missing", async () => {
@@ -383,8 +387,8 @@ describe("auto-update-checker", () => {
 			"retries cache writes when filesystem is transiently locked (%s)",
 			async (code) => {
 			let attempts = 0;
-			vi.mocked(fs.writeFileSync).mockClear();
-			vi.mocked(fs.writeFileSync).mockImplementation(() => {
+			vi.mocked(fs.renameSync).mockClear();
+			vi.mocked(fs.renameSync).mockImplementation(() => {
 				attempts += 1;
 				if (attempts < 3) {
 					const error = new Error("busy") as NodeJS.ErrnoException;
@@ -400,9 +404,35 @@ describe("auto-update-checker", () => {
 
 			await checkForUpdates(true);
 
-			expect(fs.writeFileSync).toHaveBeenCalledTimes(3);
+			expect(fs.renameSync).toHaveBeenCalledTimes(3);
 			},
 		);
+
+		it("serializes concurrent cache writes through temp-file renames", async () => {
+			vi.mocked(fs.writeFileSync).mockClear();
+			vi.mocked(fs.renameSync).mockClear();
+			vi.mocked(globalThis.fetch)
+				.mockResolvedValueOnce({
+					ok: true,
+					json: async () => ({ version: "5.0.0" }),
+				} as Response)
+				.mockResolvedValueOnce({
+					ok: true,
+					json: async () => ({ version: "5.0.1" }),
+				} as Response);
+
+			await Promise.all([checkForUpdates(true), checkForUpdates(true)]);
+
+			expect(fs.renameSync).toHaveBeenCalledTimes(2);
+			const writeTargets = vi
+				.mocked(fs.writeFileSync)
+				.mock.calls.map((call) => String(call[0]));
+			expect(
+				writeTargets.every((target) =>
+					target.includes("update-check-cache.json."),
+				),
+			).toBe(true);
+		});
 
 		it("includes updateCommand in result", async () => {
 			vi.mocked(globalThis.fetch).mockResolvedValue({

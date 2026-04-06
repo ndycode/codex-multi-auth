@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createLogger } from "./logger.js";
 import { getCodexCacheDir } from "./runtime-paths.js";
@@ -28,6 +28,7 @@ interface ParsedSemver {
 }
 
 const RETRYABLE_WRITE_ERRORS = new Set(["EBUSY", "EPERM"]);
+let updateCacheWriteQueue: Promise<void> = Promise.resolve();
 
 function sleepSync(ms: number): void {
   const delay = Math.max(0, Math.floor(ms));
@@ -56,30 +57,53 @@ function loadCache(): UpdateCheckCache | null {
   }
 }
 
-function saveCache(cache: UpdateCheckCache): void {
-  try {
-    if (!existsSync(CACHE_DIR)) {
-      mkdirSync(CACHE_DIR, { recursive: true });
-    }
-    const serialized = JSON.stringify(cache, null, 2);
-    let lastError: Error | null = null;
-    for (let attempt = 0; attempt < 4; attempt++) {
-      try {
-        writeFileSync(CACHE_FILE, serialized, "utf8");
-        return;
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code ?? "";
-        lastError = error as Error;
-        if (!RETRYABLE_WRITE_ERRORS.has(code) || attempt >= 3) {
-          throw error;
-        }
-        sleepSync(15 * (2 ** attempt));
-      }
-    }
-    if (lastError) throw lastError;
-  } catch (error) {
-    log.warn("Failed to save update cache", { error: (error as Error).message });
-  }
+async function saveCache(cache: UpdateCheckCache): Promise<void> {
+	const writeTask = (): void => {
+		let tempPath: string | null = null;
+		let wroteTemp = false;
+		try {
+			if (!existsSync(CACHE_DIR)) {
+				mkdirSync(CACHE_DIR, { recursive: true });
+			}
+			const serialized = JSON.stringify(cache, null, 2);
+			tempPath = `${CACHE_FILE}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+			let lastError: Error | null = null;
+			for (let attempt = 0; attempt < 4; attempt++) {
+				try {
+					writeFileSync(tempPath, serialized, "utf8");
+					renameSync(tempPath, CACHE_FILE);
+					wroteTemp = false;
+					return;
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException).code ?? "";
+					lastError = error as Error;
+					wroteTemp = true;
+					if (!RETRYABLE_WRITE_ERRORS.has(code) || attempt >= 3) {
+						throw error;
+					}
+					sleepSync(15 * (2 ** attempt));
+				}
+			}
+			if (lastError) throw lastError;
+		} catch (error) {
+			log.warn("Failed to save update cache", { error: (error as Error).message });
+		} finally {
+			if (wroteTemp && tempPath) {
+				try {
+					unlinkSync(tempPath);
+				} catch {
+					// Best effort temp cleanup.
+				}
+			}
+		}
+	};
+
+	const queued = updateCacheWriteQueue.catch(() => undefined).then(writeTask);
+	updateCacheWriteQueue = queued.then(
+		() => undefined,
+		() => undefined,
+	);
+	await queued;
 }
 
 function parseSemver(version: string): ParsedSemver {
@@ -211,11 +235,11 @@ export async function checkForUpdates(force = false): Promise<UpdateCheckResult>
 
   const latestVersion = await fetchLatestVersion();
 
-  saveCache({
-    lastCheck: now,
-    latestVersion,
-    currentVersion,
-  });
+	await saveCache({
+		lastCheck: now,
+		latestVersion,
+		currentVersion,
+	});
 
   const hasUpdate = latestVersion ? compareVersions(currentVersion, latestVersion) > 0 : false;
 

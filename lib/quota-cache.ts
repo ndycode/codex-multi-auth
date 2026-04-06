@@ -33,6 +33,7 @@ interface QuotaCacheFile {
 const QUOTA_CACHE_PATH = join(getCodexMultiAuthDir(), "quota-cache.json");
 const QUOTA_CACHE_LABEL = basename(QUOTA_CACHE_PATH);
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+let quotaCacheWriteQueue: Promise<void> = Promise.resolve();
 
 function isRetryableFsError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -223,39 +224,48 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 		byEmail: data.byEmail,
 	};
 
-	try {
-		await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
-		const tempPath = `${QUOTA_CACHE_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-		await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
-		});
-		let renamed = false;
+	const writeTask = async (): Promise<void> => {
 		try {
-			for (let attempt = 0; attempt < 5; attempt += 1) {
-				try {
-					await fs.rename(tempPath, QUOTA_CACHE_PATH);
-					renamed = true;
-					break;
-				} catch (error) {
-					if (!isRetryableFsError(error) || attempt >= 4) throw error;
-					await sleep(10 * 2 ** attempt);
+			await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
+			const tempPath = `${QUOTA_CACHE_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+			await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
+				encoding: "utf8",
+				mode: 0o600,
+			});
+			let renamed = false;
+			try {
+				for (let attempt = 0; attempt < 5; attempt += 1) {
+					try {
+						await fs.rename(tempPath, QUOTA_CACHE_PATH);
+						renamed = true;
+						break;
+					} catch (error) {
+						if (!isRetryableFsError(error) || attempt >= 4) throw error;
+						await sleep(10 * 2 ** attempt);
+					}
+				}
+			} finally {
+				if (!renamed) {
+					try {
+						await fs.unlink(tempPath);
+					} catch {
+						// Best effort temp cleanup.
+					}
 				}
 			}
-		} finally {
-			if (!renamed) {
-				try {
-					await fs.unlink(tempPath);
-				} catch {
-					// Best effort temp cleanup.
-				}
-			}
+		} catch (error) {
+			logWarn(
+				`Failed to save quota cache to ${QUOTA_CACHE_LABEL}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
 		}
-	} catch (error) {
-		logWarn(
-			`Failed to save quota cache to ${QUOTA_CACHE_LABEL}: ${
-				error instanceof Error ? error.message : String(error)
-			}`,
-		);
-	}
+	};
+
+	const queued = quotaCacheWriteQueue.catch(() => undefined).then(writeTask);
+	quotaCacheWriteQueue = queued.then(
+		() => undefined,
+		() => undefined,
+	);
+	await queued;
 }
