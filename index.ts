@@ -1858,7 +1858,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													break;
 												}
 
-												if (response.status === 429) {
+												if (errorResponse.status === 429 && rateLimit) {
 													runtimeMetrics.rateLimitedResponses++;
 													const retryAfterMs =
 														rateLimit?.retryAfterMs ?? 60_000;
