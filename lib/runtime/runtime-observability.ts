@@ -198,7 +198,8 @@ export function mutateRuntimeObservabilitySnapshot(
 	const nextSnapshot = structuredClone(snapshot);
 	pendingWrite = (pendingWrite ?? Promise.resolve())
 		.catch(() => undefined)
-		.then(() => writeSnapshot(nextSnapshot));
+		.then(() => writeSnapshot(nextSnapshot))
+		.catch(() => undefined);
 }
 
 export async function loadPersistedRuntimeObservabilitySnapshot(): Promise<RuntimeObservabilitySnapshot | null> {

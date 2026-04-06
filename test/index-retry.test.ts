@@ -478,7 +478,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		expect(globalThis.fetch).not.toHaveBeenCalled();
 		expect(response.status).toBe(429);
 		expect(payload.error.message).toContain("All 2 account(s) are rate-limited.");
-		expect(payload.error.message).toContain("1000ms");
+		expect(payload.error.message).toContain("15000ms");
 	});
 
 	it("fast-fails after repeated cross-account 5xx errors arm the server-burst cooldown", async () => {

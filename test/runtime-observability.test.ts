@@ -96,6 +96,32 @@ describe("runtime observability snapshot versioning", () => {
 		expect(unlinkMock).toHaveBeenCalled();
 	});
 
+	it("contains permanent snapshot write failures without leaving pending writes rejected", async () => {
+		process.env.VITEST = "";
+		renameMock.mockImplementation(async () => {
+			throw Object.assign(new Error("disk full"), { code: "EIO" });
+		});
+
+		const mod = await import("../lib/runtime/runtime-observability.js");
+		mod.mutateRuntimeObservabilitySnapshot((snapshot) => {
+			snapshot.responsesRequests = 1;
+		});
+
+		await vi.waitFor(() => {
+			expect(renameMock).toHaveBeenCalled();
+		});
+
+		renameMock.mockReset();
+		renameMock.mockResolvedValue(undefined);
+		mod.mutateRuntimeObservabilitySnapshot((snapshot) => {
+			snapshot.responsesRequests = 2;
+		});
+
+		await vi.waitFor(() => {
+			expect(renameMock).toHaveBeenCalled();
+		});
+	});
+
 	it("seeds the first in-memory snapshot from disk before mutating", async () => {
 		process.env.VITEST = "";
 		readFileSyncMock.mockReturnValue(

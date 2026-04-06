@@ -83,10 +83,10 @@ describe("runtime services helpers", () => {
 			const resultPromise = ensureLiveAccountSyncState({
 				enabled: true,
 				targetPath: "/tmp/new",
-			currentSync,
-			currentPath: "/tmp/old",
-			currentConfigKey: "old",
-			createSync: vi.fn(),
+				currentSync,
+				currentPath: "/tmp/old",
+				currentConfigKey: "old",
+				createSync: vi.fn(),
 				registerCleanup: vi.fn(),
 				logWarn,
 				pluginName: "plugin",
@@ -156,6 +156,26 @@ describe("runtime services helpers", () => {
 		expect(createSync).toHaveBeenCalledTimes(1);
 		expect(result.liveAccountSync).toBe(newSync);
 		expect(result.liveAccountSyncConfigKey).toBe("50:500");
+	});
+
+	it("keeps the existing watcher when configKey is undefined", async () => {
+		const currentSync = { stop: vi.fn(), syncToPath: vi.fn().mockResolvedValue(undefined) };
+		const result = await ensureLiveAccountSyncState({
+			enabled: true,
+			targetPath: "/tmp/a",
+			currentSync,
+			currentPath: "/tmp/a",
+			currentConfigKey: "25:250",
+			configKey: undefined,
+			createSync: vi.fn(),
+			registerCleanup: vi.fn(),
+			logWarn: vi.fn(),
+			pluginName: "plugin",
+		});
+
+		expect(currentSync.stop).not.toHaveBeenCalled();
+		expect(result.liveAccountSync).toBe(currentSync);
+		expect(result.liveAccountSyncConfigKey).toBe("25:250");
 	});
 
 	it("recreates refresh guardian when config changes and clears when disabled", () => {

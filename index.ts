@@ -2723,22 +2723,30 @@ let sessionAffinityWriteVersion = 0;
 										continue;
 									}
 
+											const now = Date.now();
+											const poolCooldownUntil =
+												count > 0 && waitMs > 0
+													? armPoolExhaustionCooldown(waitMs, now)
+													: 0;
+											const effectiveWaitMs =
+												poolCooldownUntil > 0
+													? Math.max(0, poolCooldownUntil - now)
+													: waitMs;
 											const waitLabel =
-												waitMs > 0 ? formatWaitTime(waitMs) : "a bit";
-											if (count > 0 && waitMs > 0) {
-												armPoolExhaustionCooldown(waitMs);
-											}
+												effectiveWaitMs > 0
+													? formatWaitTime(effectiveWaitMs)
+													: "a bit";
 											const message =
 												count === 0
 													? "No Codex accounts configured. Run `codex login`."
-													: waitMs > 0
+													: effectiveWaitMs > 0
 														? `All ${count} account(s) are rate-limited. A short pool cooldown is now active for ${waitLabel}. Try again later or inspect \`codex auth status\`.`
 														: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex auth report --json\`.`;
 											runtimeMetrics.failedRequests++;
 											runtimeMetrics.lastError = message;
 											syncRuntimeObservability(requestTraceId);
 											return new Response(JSON.stringify({ error: { message } }), {
-										status: waitMs > 0 ? 429 : 503,
+										status: effectiveWaitMs > 0 ? 429 : 503,
 										headers: {
 											"content-type": "application/json; charset=utf-8",
 										},
