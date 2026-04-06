@@ -1809,16 +1809,32 @@ let sessionAffinityWriteVersion = 0;
 													const serverRetryAfterMs = parseRetryAfterHintMs(
 														response.headers,
 													);
-													const policy = evaluateFailurePolicy(
-														{
-															kind: "server",
-															failoverMode,
-															serverRetryAfterMs:
-																serverRetryAfterMs ?? undefined,
-														},
-														{ serverCooldownMs: serverErrorCooldownMs },
-													);
-													if (policy.refundToken) {
+							const policy = evaluateFailurePolicy(
+								{
+									kind: "server",
+									failoverMode,
+									serverRetryAfterMs:
+										serverRetryAfterMs ?? undefined,
+								},
+								{ serverCooldownMs: serverErrorCooldownMs },
+							);
+							// Overload-type server errors (502 Bad Gateway, 503 Service
+							// Unavailable, 529 Overloaded) signal upstream capacity
+							// pressure. Notify the quota scheduler so it can proactively
+							// defer subsequent requests for this quota key, mirroring the
+							// 429 handler's scheduler awareness.
+							if (
+								(response.status === 502 ||
+									response.status === 503 ||
+									response.status === 529) &&
+								typeof policy.cooldownMs === "number"
+							) {
+								preemptiveQuotaScheduler.markRateLimited(
+									quotaScheduleKey,
+									policy.cooldownMs,
+								);
+							}
+							if (policy.refundToken) {
 														accountManager.refundToken(
 															account,
 															modelFamily,

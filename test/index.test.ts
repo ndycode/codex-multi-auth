@@ -2655,6 +2655,94 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		dateNowSpy.mockRestore();
 	});
 
+	it("notifies preemptive quota scheduler on 503 overload responses", async () => {
+		const { PreemptiveQuotaScheduler } = await import(
+			"../lib/preemptive-quota-scheduler.js"
+		);
+		const schedulerSpy = vi.spyOn(
+			PreemptiveQuotaScheduler.prototype,
+			"markRateLimited",
+		);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response("service unavailable", { status: 503 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(schedulerSpy).toHaveBeenCalled();
+		schedulerSpy.mockRestore();
+	});
+
+	it("notifies preemptive quota scheduler on 502 overload responses", async () => {
+		const { PreemptiveQuotaScheduler } = await import(
+			"../lib/preemptive-quota-scheduler.js"
+		);
+		const schedulerSpy = vi.spyOn(
+			PreemptiveQuotaScheduler.prototype,
+			"markRateLimited",
+		);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response("bad gateway", { status: 502 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(schedulerSpy).toHaveBeenCalled();
+		schedulerSpy.mockRestore();
+	});
+
+	it("notifies preemptive quota scheduler on 529 overload responses", async () => {
+		const { PreemptiveQuotaScheduler } = await import(
+			"../lib/preemptive-quota-scheduler.js"
+		);
+		const schedulerSpy = vi.spyOn(
+			PreemptiveQuotaScheduler.prototype,
+			"markRateLimited",
+		);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response("overloaded", { status: 529 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(schedulerSpy).toHaveBeenCalled();
+		schedulerSpy.mockRestore();
+	});
+
+	it("does not notify preemptive quota scheduler on generic 500 server errors", async () => {
+		const { PreemptiveQuotaScheduler } = await import(
+			"../lib/preemptive-quota-scheduler.js"
+		);
+		const schedulerSpy = vi.spyOn(
+			PreemptiveQuotaScheduler.prototype,
+			"markRateLimited",
+		);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response("internal server error", { status: 500 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(schedulerSpy).not.toHaveBeenCalled();
+		schedulerSpy.mockRestore();
+	});
+
 	it("falls back from gpt-5.3-codex to gpt-5.2-codex when unsupported fallback is enabled", async () => {
 		const configModule = await import("../lib/config.js");
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
