@@ -314,8 +314,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let refreshGuardian: RefreshGuardian | null = null;
 	let refreshGuardianConfigKey: string | null = null;
 	let refreshGuardianCleanupRegistered = false;
-	let sessionAffinityStore: SessionAffinityStore | null =
-		new SessionAffinityStore();
+let sessionAffinityStore: SessionAffinityStore | null =
+	new SessionAffinityStore();
+let sessionAffinityWriteVersion = 0;
 	let sessionAffinityConfigKey: string | null = null;
 	const entitlementCache = new EntitlementCache();
 	const preemptiveQuotaScheduler = new PreemptiveQuotaScheduler();
@@ -862,6 +863,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										.trim() || undefined;
 								const sessionAffinityKey =
 									threadIdCandidate ?? promptCacheKey ?? null;
+								const sessionAffinityVersion =
+									(sessionAffinityWriteVersion += 1);
 								const effectivePromptCacheKey =
 									(sessionAffinityKey ?? promptCacheKey ?? "")
 										.toString()
@@ -2273,15 +2276,19 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												isStreaming,
 												{
 													onResponseId: (responseId) => {
-														if (!responseContinuationEnabled) return;
-														sessionAffinityStore?.remember(
-															sessionAffinityKey,
-															successAccountForResponse.index,
-														);
-														sessionAffinityStore?.updateLastResponseId(
-															sessionAffinityKey,
-															responseId,
-														);
+												if (!responseContinuationEnabled) return;
+												sessionAffinityStore?.rememberWithVersion(
+													sessionAffinityKey,
+													successAccountForResponse.index,
+													Date.now(),
+													sessionAffinityVersion,
+												);
+												sessionAffinityStore?.updateLastResponseId(
+													sessionAffinityKey,
+													responseId,
+													Date.now(),
+													sessionAffinityVersion,
+												);
 														storedResponseIdForSuccess = true;
 													},
 													streamStallTimeoutMs,
