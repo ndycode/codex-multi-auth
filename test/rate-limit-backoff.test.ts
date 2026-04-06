@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
+	configureRateLimitBackoff,
 	clearRateLimitBackoffState,
 	getRateLimitBackoff,
+	getRateLimitShortRetryThresholdMs,
 	resetRateLimitBackoff,
+	resetRateLimitBackoffConfig,
 	calculateBackoffMs,
 	getRateLimitBackoffWithReason,
 } from "../lib/request/rate-limit-backoff.js";
@@ -13,11 +16,13 @@ describe("Rate limit backoff", () => {
 		vi.setSystemTime(new Date(0));
 		clearRateLimitBackoffState();
 		vi.spyOn(Math, "random").mockReturnValue(0.5);
+		resetRateLimitBackoffConfig();
 	});
 
 	afterEach(() => {
 		clearRateLimitBackoffState();
 		vi.restoreAllMocks();
+		resetRateLimitBackoffConfig();
 		vi.useRealTimers();
 	});
 
@@ -74,6 +79,73 @@ describe("Rate limit backoff", () => {
 		expect(next.isDuplicate).toBe(false);
 	});
 
+	it("uses configurable dedup and state reset windows", () => {
+		configureRateLimitBackoff({
+			dedupWindowMs: 5_000,
+			stateResetMs: 10_000,
+		});
+		getRateLimitBackoff(0, "codex", 1000);
+
+		vi.setSystemTime(new Date(3_000));
+		expect(getRateLimitBackoff(0, "codex", 1000).isDuplicate).toBe(true);
+
+		vi.setSystemTime(new Date(11_000));
+		expect(getRateLimitBackoff(0, "codex", 1000).attempt).toBe(1);
+	});
+
+	it("does not carry rate-limit state across slot reuse when the stable account key changes", () => {
+		getRateLimitBackoff(0, "codex", 1000, "acc-1");
+
+		vi.setSystemTime(new Date(2_500));
+		const nextAccount = getRateLimitBackoff(0, "codex", 1000, "acc-2");
+
+		expect(nextAccount.attempt).toBe(1);
+		expect(nextAccount.isDuplicate).toBe(false);
+	});
+
+	it("keeps concurrent config updates on one complete config profile", async () => {
+		const profiles = [
+			{
+				dedupWindowMs: 500,
+				stateResetMs: 3_000,
+				maxBackoffMs: 7_000,
+				shortRetryThresholdMs: 1_100,
+			},
+			{
+				dedupWindowMs: 9_000,
+				stateResetMs: 20_000,
+				maxBackoffMs: 17_000,
+				shortRetryThresholdMs: 9_100,
+			},
+		] as const;
+
+		await Promise.all(
+			profiles.map(async (profile) => {
+				await Promise.resolve();
+				configureRateLimitBackoff(profile);
+			}),
+		);
+
+		const activeProfile = profiles.find(
+			(profile) =>
+				profile.shortRetryThresholdMs === getRateLimitShortRetryThresholdMs(),
+		);
+
+		expect(activeProfile).toBeDefined();
+		expect(calculateBackoffMs(1000, 20, "quota")).toBe(
+			activeProfile!.maxBackoffMs,
+		);
+
+		const first = getRateLimitBackoff(20, "concurrent", 1000);
+		expect(first.isDuplicate).toBe(false);
+
+		vi.setSystemTime(new Date(activeProfile!.dedupWindowMs - 1));
+		expect(getRateLimitBackoff(20, "concurrent", 1000).isDuplicate).toBe(true);
+
+		vi.setSystemTime(new Date(activeProfile!.stateResetMs + 1));
+		expect(getRateLimitBackoff(20, "concurrent", 1000).attempt).toBe(1);
+	});
+
 	describe("calculateBackoffMs", () => {
 		it("applies quota multiplier (3.0)", () => {
 			const result = calculateBackoffMs(1000, 1, "quota");
@@ -116,8 +188,20 @@ describe("Rate limit backoff", () => {
 
 		it("uses fallback multiplier 1.0 when reason is not in map (line 111 coverage)", () => {
 			const result = calculateBackoffMs(1000, 1, "unknown-reason" as never);
-			expect(result).toBe(1000);
+		expect(result).toBe(1000);
 		});
+
+		it("uses configurable max backoff cap", () => {
+			configureRateLimitBackoff({ maxBackoffMs: 12_000 });
+			const result = calculateBackoffMs(1000, 20, "quota");
+			expect(result).toBe(12_000);
+		});
+	});
+
+	it("exposes configurable short retry threshold", () => {
+		expect(getRateLimitShortRetryThresholdMs()).toBe(5_000);
+		configureRateLimitBackoff({ shortRetryThresholdMs: 9_000 });
+		expect(getRateLimitShortRetryThresholdMs()).toBe(9_000);
 	});
 
 	describe("normalizeDelayMs edge cases (line 32 coverage)", () => {

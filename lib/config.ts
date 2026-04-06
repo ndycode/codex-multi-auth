@@ -183,6 +183,10 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	parallelProbingMaxConcurrency: 2,
 	emptyResponseMaxRetries: 2,
 	emptyResponseRetryDelayMs: 1_000,
+	rateLimitDedupWindowMs: 2_000,
+	rateLimitStateResetMs: 120_000,
+	rateLimitMaxBackoffMs: 60_000,
+	rateLimitShortRetryThresholdMs: 5_000,
 	pidOffsetEnabled: false,
 	fetchTimeoutMs: 60_000,
 	streamStallTimeoutMs: 45_000,
@@ -1076,6 +1080,44 @@ export function getEmptyResponseRetryDelayMs(
 	);
 }
 
+export function getRateLimitDedupWindowMs(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_RATE_LIMIT_DEDUP_WINDOW_MS",
+		pluginConfig.rateLimitDedupWindowMs,
+		DEFAULT_PLUGIN_CONFIG.rateLimitDedupWindowMs,
+		{ min: 0 },
+	);
+}
+
+export function getRateLimitStateResetMs(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_RATE_LIMIT_STATE_RESET_MS",
+		pluginConfig.rateLimitStateResetMs,
+		DEFAULT_PLUGIN_CONFIG.rateLimitStateResetMs,
+		{ min: 1_000 },
+	);
+}
+
+export function getRateLimitMaxBackoffMs(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_RATE_LIMIT_MAX_BACKOFF_MS",
+		pluginConfig.rateLimitMaxBackoffMs,
+		DEFAULT_PLUGIN_CONFIG.rateLimitMaxBackoffMs,
+		{ min: 1_000 },
+	);
+}
+
+export function getRateLimitShortRetryThresholdMs(
+	pluginConfig: PluginConfig,
+): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS",
+		pluginConfig.rateLimitShortRetryThresholdMs,
+		DEFAULT_PLUGIN_CONFIG.rateLimitShortRetryThresholdMs,
+		{ min: 0 },
+	);
+}
+
 export function getPidOffsetEnabled(pluginConfig: PluginConfig): boolean {
 	return resolveBooleanSetting(
 		"CODEX_AUTH_PID_OFFSET_ENABLED",
@@ -1677,6 +1719,26 @@ const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
 		key: "emptyResponseRetryDelayMs",
 		envNames: ["CODEX_AUTH_EMPTY_RESPONSE_RETRY_DELAY_MS"],
 		getValue: getEmptyResponseRetryDelayMs,
+	},
+	{
+		key: "rateLimitDedupWindowMs",
+		envNames: ["CODEX_AUTH_RATE_LIMIT_DEDUP_WINDOW_MS"],
+		getValue: getRateLimitDedupWindowMs,
+	},
+	{
+		key: "rateLimitStateResetMs",
+		envNames: ["CODEX_AUTH_RATE_LIMIT_STATE_RESET_MS"],
+		getValue: getRateLimitStateResetMs,
+	},
+	{
+		key: "rateLimitMaxBackoffMs",
+		envNames: ["CODEX_AUTH_RATE_LIMIT_MAX_BACKOFF_MS"],
+		getValue: getRateLimitMaxBackoffMs,
+	},
+	{
+		key: "rateLimitShortRetryThresholdMs",
+		envNames: ["CODEX_AUTH_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS"],
+		getValue: getRateLimitShortRetryThresholdMs,
 	},
 	{
 		key: "pidOffsetEnabled",

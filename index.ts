@@ -65,6 +65,10 @@ import {
 	getFastSessionMaxInputItems,
 	getFastSessionStrategy,
 	getFetchTimeoutMs,
+	getRateLimitDedupWindowMs,
+	getRateLimitMaxBackoffMs,
+	getRateLimitShortRetryThresholdMs,
+	getRateLimitStateResetMs,
 	getLiveAccountSync,
 	getLiveAccountSyncDebounceMs,
 	getLiveAccountSyncPollMs,
@@ -166,9 +170,10 @@ import {
 	transformRequestForCodex,
 } from "./lib/request/fetch-helpers.js";
 import {
+	configureRateLimitBackoff,
 	getRateLimitBackoff,
 	MAX_SHORT_RETRY_ATTEMPTS,
-	RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS,
+	getRateLimitShortRetryThresholdMs as getConfiguredRateLimitShortRetryThresholdMs,
 	resetRateLimitBackoff,
 } from "./lib/request/rate-limit-backoff.js";
 import {
@@ -693,6 +698,13 @@ let sessionAffinityWriteVersion = 0;
 					const fastSessionMaxInputItems =
 						getFastSessionMaxInputItems(pluginConfig);
 					const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
+					configureRateLimitBackoff({
+						dedupWindowMs: getRateLimitDedupWindowMs(pluginConfig),
+						stateResetMs: getRateLimitStateResetMs(pluginConfig),
+						maxBackoffMs: getRateLimitMaxBackoffMs(pluginConfig),
+						shortRetryThresholdMs:
+							getRateLimitShortRetryThresholdMs(pluginConfig),
+					});
 					const rateLimitToastDebounceMs =
 						getRateLimitToastDebounceMs(pluginConfig);
 					const retryAllAccountsRateLimited =
@@ -1277,6 +1289,7 @@ let sessionAffinityWriteVersion = 0;
 										}
 
 										let sameAccountRetryCount = 0;
+										let shortRateLimitRetryCount = 0;
 										let successAccountForResponse = account;
 										let successEntitlementAccountKey = entitlementAccountKey;
 										while (true) {
@@ -1887,10 +1900,11 @@ let sessionAffinityWriteVersion = 0;
 													runtimeMetrics.rateLimitedResponses++;
 													const retryAfterMs =
 														rateLimit?.retryAfterMs ?? 60_000;
-													const { attempt, delayMs } = getRateLimitBackoff(
+													const { delayMs } = getRateLimitBackoff(
 														account.index,
 														quotaKey,
 														retryAfterMs,
+														account.accountId ?? account.email ?? null,
 													);
 													const cooldownMs = Math.max(
 														delayMs,
@@ -1901,30 +1915,35 @@ let sessionAffinityWriteVersion = 0;
 														cooldownMs,
 													);
 													const waitLabel = formatWaitTime(cooldownMs);
+													const shortRetryThresholdMs =
+														getConfiguredRateLimitShortRetryThresholdMs();
 
-								if (
-									cooldownMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS &&
-									attempt < MAX_SHORT_RETRY_ATTEMPTS
-								) {
-									if (
-										accountManager.shouldShowAccountToast(
-											account.index,
-											rateLimitToastDebounceMs,
-										)
-									) {
-										await showRuntimeToast(client, 
-											`Rate limited. Retrying in ${waitLabel} (attempt ${attempt})...`,
-											"warning",
-											{ duration: toastDurationMs },
-										);
-										accountManager.markToastShown(account.index);
-									}
+													if (
+														cooldownMs <=
+														shortRetryThresholdMs &&
+														shortRateLimitRetryCount < MAX_SHORT_RETRY_ATTEMPTS
+													) {
+														shortRateLimitRetryCount += 1;
+														if (
+															accountManager.shouldShowAccountToast(
+																account.index,
+																rateLimitToastDebounceMs,
+															)
+														) {
+															await showRuntimeToast(
+																client,
+																`Rate limited. Retrying in ${waitLabel} (attempt ${shortRateLimitRetryCount})...`,
+																"warning",
+																{ duration: toastDurationMs },
+															);
+															accountManager.markToastShown(account.index);
+														}
 
-									await sleep(
-										addJitter(Math.max(MIN_BACKOFF_MS, cooldownMs), 0.2),
-									);
-									continue;
-								}
+														await sleep(
+															addJitter(Math.max(MIN_BACKOFF_MS, cooldownMs), 0.2),
+														);
+														continue;
+													}
 
 													accountManager.markRateLimitedWithReason(
 														account,
