@@ -27,6 +27,7 @@ import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
 } from "../../storage.js";
+import type { RuntimeObservabilitySnapshot } from "../../runtime/runtime-observability.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 import { sleep } from "../../utils.js";
 
@@ -82,6 +83,7 @@ export interface ReportCommandDeps {
 	getNow?: () => number;
 	getCwd?: () => string;
 	writeFile?: (path: string, contents: string) => Promise<void>;
+	loadRuntimeObservabilitySnapshot?: () => Promise<RuntimeObservabilitySnapshot | null>;
 }
 
 function isRetryableWriteError(error: unknown): boolean {
@@ -524,6 +526,7 @@ export async function runReportCommand(
 				refreshFailures,
 			),
 		},
+		runtime: await deps.loadRuntimeObservabilitySnapshot?.(),
 	};
 
 	const cwd = deps.getCwd?.() ?? process.cwd();
@@ -564,6 +567,11 @@ export async function runReportCommand(
 	}
 	if (report.forecast.probeErrors.length > 0) {
 		logInfo(`Probe notes: ${report.forecast.probeErrors.length}`);
+	}
+	if (report.runtime) {
+		logInfo(
+			`Runtime traffic: responses=${report.runtime.responsesRequests}, refresh=${report.runtime.authRefreshRequests}, probes=${report.runtime.diagnosticProbeRequests}`,
+		);
 	}
 	if (options.explain) {
 		logInfo("");

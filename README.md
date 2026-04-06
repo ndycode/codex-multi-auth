@@ -19,6 +19,7 @@ Codex CLI-first multi-account OAuth manager for the official `@openai/codex` CLI
 - Interactive dashboard for account actions and settings
 - Experimental settings tab for staged sync, backup, and refresh-guard controls
 - Forecast, report, fix, and doctor commands for operational safety
+- Runtime request budget, cooldown, and traffic observability in `codex auth status` / `codex auth report`
 - Flagged account verification and restore flow
 - Session affinity and live account sync controls
 - Proactive refresh and preemptive quota deferral controls
@@ -156,6 +157,14 @@ If browser launch is blocked, use the alternate login paths in [docs/getting-sta
 | `codex auth report --live --json` | How do I get the full machine-readable health report? |
 | `codex auth fix --live --model gpt-5-codex` | How do I run live repair probes with a chosen model? |
 
+### Reliability behavior
+
+- whole-pool replay is disabled by default when every account is rate-limited
+- active requests use a bounded outbound request budget so one prompt cannot walk the full pool indefinitely
+- repeated cross-account 5xx bursts trigger a short cooldown instead of continuing aggressive rotation
+- proactive refresh is staggered to reduce background refresh bursts
+- `codex auth status` and `codex auth report --json` surface recent runtime request metrics and active cooldown windows
+
 ---
 
 ## Dashboard Hotkeys
@@ -265,6 +274,8 @@ codex auth login
 
 - `codex auth` unrecognized: run `where codex`, then follow `docs/troubleshooting.md` for routing fallback commands
 - Switch succeeds but wrong account appears active: run `codex auth switch <index>`, then restart session
+- Requests fail fast with a pool cooldown message: wait for the cooldown window or inspect `codex auth status`
+- Requests fail fast after repeated upstream 5xx errors: inspect `codex auth report --json` for runtime traffic and cooldown details
 - OAuth callback on port `1455` fails: free the port and re-run `codex auth login`
 - Browser launch is blocked or you are in a headless shell: re-run `codex auth login --manual` or set `CODEX_AUTH_NO_BROWSER=1`
 - `missing field id_token` / `token_expired` / `refresh_token_reused`: re-login affected account

@@ -7,9 +7,14 @@ export type RuntimeMetrics = {
 	totalRequests: number;
 	successfulRequests: number;
 	failedRequests: number;
+	responsesRequests: number;
+	authRefreshRequests: number;
+	diagnosticProbeRequests: number;
 	outboundRequestAttemptBudget: number | null;
 	outboundRequestAttemptsConsumed: number;
 	requestAttemptBudgetExhaustions: number;
+	poolExhaustionFastFails: number;
+	serverBurstFastFails: number;
 	rateLimitedResponses: number;
 	serverErrors: number;
 	networkErrors: number;
@@ -34,9 +39,14 @@ export function createRuntimeMetrics(now = Date.now()): RuntimeMetrics {
 		totalRequests: 0,
 		successfulRequests: 0,
 		failedRequests: 0,
+		responsesRequests: 0,
+		authRefreshRequests: 0,
+		diagnosticProbeRequests: 0,
 		outboundRequestAttemptBudget: null,
 		outboundRequestAttemptsConsumed: 0,
 		requestAttemptBudgetExhaustions: 0,
+		poolExhaustionFastFails: 0,
+		serverBurstFastFails: 0,
 		rateLimitedResponses: 0,
 		serverErrors: 0,
 		networkErrors: 0,

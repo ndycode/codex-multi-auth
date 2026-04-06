@@ -148,10 +148,18 @@ import {
 	parseFailoverMode,
 } from "./lib/request/failover-config.js";
 import {
-	buildStreamFailoverCandidateOrder,
 	capStreamFailoverMax,
 	computeOutboundRequestAttemptBudget,
 } from "./lib/request/request-attempt-budget.js";
+import {
+	armPoolExhaustionCooldown,
+	buildAdaptiveStreamFailoverCandidateOrder,
+	clearPoolExhaustionCooldown,
+	clearServerBurstCooldown,
+	getPoolExhaustionCooldownRemaining,
+	getServerBurstCooldownRemaining,
+	recordServerBurstFailure,
+} from "./lib/request/request-resilience.js";
 import {
 	evaluateFailurePolicy,
 	type FailoverMode,
@@ -233,6 +241,7 @@ import {
 	ensureRefreshGuardianState,
 	ensureSessionAffinityState,
 } from "./lib/runtime/runtime-services.js";
+import { mutateRuntimeObservabilitySnapshot } from "./lib/runtime/runtime-observability.js";
 import { applyAccountStorageScopeFromConfig } from "./lib/runtime/storage-scope.js";
 import { showRuntimeToast } from "./lib/runtime/toast.js";
 import { createRuntimeSessionRecoveryHook } from "./lib/runtime/session-recovery.js";
@@ -345,9 +354,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	totalRequests: number;
 	successfulRequests: number;
 	failedRequests: number;
+	responsesRequests: number;
+	authRefreshRequests: number;
+	diagnosticProbeRequests: number;
 	outboundRequestAttemptBudget: number | null;
 	outboundRequestAttemptsConsumed: number;
 	requestAttemptBudgetExhaustions: number;
+	poolExhaustionFastFails: number;
+	serverBurstFastFails: number;
 	rateLimitedResponses: number;
 	serverErrors: number;
 	networkErrors: number;
@@ -371,9 +385,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		totalRequests: 0,
 		successfulRequests: 0,
 		failedRequests: 0,
+		responsesRequests: 0,
+		authRefreshRequests: 0,
+		diagnosticProbeRequests: 0,
 		outboundRequestAttemptBudget: null,
 		outboundRequestAttemptsConsumed: 0,
 		requestAttemptBudgetExhaustions: 0,
+		poolExhaustionFastFails: 0,
+		serverBurstFastFails: 0,
 		rateLimitedResponses: 0,
 		serverErrors: 0,
 		networkErrors: 0,
@@ -414,6 +433,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		findMatchingAccountIndex,
 		modelFamilies: MODEL_FAMILIES,
 	});
+	const syncRuntimeObservability = (requestId: string | null): void => {
+		mutateRuntimeObservabilitySnapshot((snapshot) => {
+			snapshot.currentRequestId = requestId;
+			snapshot.poolExhaustionCooldownUntil =
+				getPoolExhaustionCooldownRemaining() > 0
+					? Date.now() + getPoolExhaustionCooldownRemaining()
+					: null;
+			snapshot.serverBurstCooldownUntil =
+				getServerBurstCooldownRemaining() > 0
+					? Date.now() + getServerBurstCooldownRemaining()
+					: null;
+			snapshot.responsesRequests = runtimeMetrics.responsesRequests;
+			snapshot.authRefreshRequests = runtimeMetrics.authRefreshRequests;
+			snapshot.diagnosticProbeRequests = runtimeMetrics.diagnosticProbeRequests;
+			snapshot.runtimeMetrics = { ...runtimeMetrics };
+		});
+	};
 	const persistAccountPoolAndFlagged = async (
 		results: TokenSuccessWithAccount[],
 		flaggedStorage: Parameters<typeof saveFlaggedAccounts>[0],
@@ -908,15 +944,47 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										sessionAffinityKey,
 									);
 								sessionAffinityStore?.prune();
-								const requestCorrelationId = setCorrelationId(
-									threadIdCandidate
-										? `${threadIdCandidate}:${Date.now()}`
-										: undefined,
-								);
-								runtimeMetrics.lastRequestAt = Date.now();
+							const requestCorrelationId = setCorrelationId(
+								threadIdCandidate
+									? `${threadIdCandidate}:${Date.now()}`
+									: undefined,
+							);
+							const requestTraceId = requestCorrelationId;
+							runtimeMetrics.lastRequestAt = Date.now();
+							syncRuntimeObservability(requestTraceId);
 
 							const abortSignal = requestInit?.signal ?? init?.signal ?? null;
 							const sleep = createAbortableSleep(abortSignal);
+							const poolCooldownRemainingMs = getPoolExhaustionCooldownRemaining();
+							if (poolCooldownRemainingMs > 0) {
+								runtimeMetrics.failedRequests += 1;
+								runtimeMetrics.poolExhaustionFastFails += 1;
+								runtimeMetrics.lastError = "Pool exhaustion cooldown active";
+								syncRuntimeObservability(requestTraceId);
+								return new Response(
+									JSON.stringify({
+										error: {
+											message: `The account pool is cooling down after recent rate-limit exhaustion. Try again in ${formatWaitTime(poolCooldownRemainingMs)} or inspect \`codex auth status\`.`,
+										},
+									}),
+									{ status: 429, headers: { "content-type": "application/json; charset=utf-8" } },
+								);
+							}
+							const serverBurstCooldownRemainingMs = getServerBurstCooldownRemaining();
+							if (serverBurstCooldownRemainingMs > 0) {
+								runtimeMetrics.failedRequests += 1;
+								runtimeMetrics.serverBurstFastFails += 1;
+								runtimeMetrics.lastError = "Server burst cooldown active";
+								syncRuntimeObservability(requestTraceId);
+								return new Response(
+									JSON.stringify({
+										error: {
+											message: `Multiple accounts recently failed with upstream server errors. Try again in ${formatWaitTime(serverBurstCooldownRemainingMs)} or inspect \`codex auth report --json\`.`,
+										},
+									}),
+									{ status: 503, headers: { "content-type": "application/json; charset=utf-8" } },
+								);
+							}
 							const maxOutboundRequestAttempts =
 								computeOutboundRequestAttemptBudget({
 									accountCount: accountManager.getAccountCount(),
@@ -927,12 +995,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							runtimeMetrics.outboundRequestAttemptBudget =
 								maxOutboundRequestAttempts;
 							logDebug("Configured outbound request attempt budget.", {
+								requestTraceId,
 								budget: maxOutboundRequestAttempts,
 								accountCount: accountManager.getAccountCount(),
 								maxSameAccountRetries,
 								emptyResponseMaxRetries,
 								streamFailoverMax,
 							});
+							syncRuntimeObservability(requestTraceId);
 							let outboundRequestAttemptsRemaining =
 								maxOutboundRequestAttempts;
 							const tryConsumeOutboundRequestAttempt = (
@@ -943,17 +1013,19 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									runtimeMetrics.requestAttemptBudgetExhaustions += 1;
 									runtimeMetrics.lastError =
 										`Request attempt budget exhausted after ${maxOutboundRequestAttempts} outbound request(s)`;
-									logWarn(
-										"Request attempt budget exhausted.",
-										{
-											reason,
-											accountIndex,
-											budget: maxOutboundRequestAttempts,
-											consumed:
-												runtimeMetrics.outboundRequestAttemptsConsumed,
-										},
-									);
-									return false;
+											logWarn(
+												"Request attempt budget exhausted.",
+												{
+													requestTraceId,
+													reason,
+													accountIndex,
+													budget: maxOutboundRequestAttempts,
+													consumed:
+														runtimeMetrics.outboundRequestAttemptsConsumed,
+												},
+											);
+											syncRuntimeObservability(requestTraceId);
+											return false;
 								}
 
 								runtimeMetrics.outboundRequestAttemptsConsumed += 1;
@@ -1075,6 +1147,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										) as OAuthAuthDetails;
 										try {
 											if (shouldRefreshToken(accountAuth, tokenRefreshSkewMs)) {
+												runtimeMetrics.authRefreshRequests += 1;
+												syncRuntimeObservability(requestTraceId);
 												accountAuth = (await refreshAndUpdateToken(
 													accountAuth,
 													client,
@@ -1387,6 +1461,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 											try {
 												runtimeMetrics.totalRequests++;
+												runtimeMetrics.responsesRequests++;
+												syncRuntimeObservability(requestTraceId);
 												response = await fetch(
 													url,
 													applyProxyCompatibleInit(url, {
@@ -1940,7 +2016,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													break;
 												}
 
-												if (response.status === 429) {
+														if (response.status === 429) {
 													runtimeMetrics.rateLimitedResponses++;
 													const retryAfterMs =
 														rateLimit?.retryAfterMs ?? 60_000;
@@ -2038,11 +2114,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											let responseForSuccess = response;
 											if (isStreaming) {
 												const streamFallbackCandidateOrder =
-													buildStreamFailoverCandidateOrder(
+													buildAdaptiveStreamFailoverCandidateOrder(
 														account.index,
-														accountSnapshotList.map(
-															(candidate) => candidate.index,
-														),
+														accountSnapshotList as Array<
+															Pick<
+																import("./lib/accounts.js").ManagedAccount,
+																"index" | "lastUsed" | "enabled" | "coolingDownUntil" | "rateLimitResetTimes"
+															>
+														>,
 													);
 												runtimeMetrics.lastStreamFailoverCandidateCount =
 													streamFallbackCandidateOrder.length;
@@ -2051,12 +2130,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												logDebug(
 													"Prepared stream failover candidates.",
 													{
+														requestTraceId,
 														primaryAccountIndex: account.index,
 														candidateCount:
 															streamFallbackCandidateOrder.length,
 														candidateIndices: streamFallbackCandidateOrder,
 													},
 												);
+												syncRuntimeObservability(requestTraceId);
 												responseForSuccess = withStreamingFailover(
 													response,
 													async (failoverAttempt, emittedBytes) => {
@@ -2089,13 +2170,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																fallbackAccount,
 															) as OAuthAuthDetails;
 															try {
-																if (
-																	shouldRefreshToken(
-																		fallbackAuth,
-																		tokenRefreshSkewMs,
-																	)
-																) {
-																	fallbackAuth = (await refreshAndUpdateToken(
+															if (
+																shouldRefreshToken(
+																	fallbackAuth,
+																	tokenRefreshSkewMs,
+																)
+															) {
+																runtimeMetrics.authRefreshRequests += 1;
+																syncRuntimeObservability(requestTraceId);
+																fallbackAuth = (await refreshAndUpdateToken(
 																		fallbackAuth,
 																		client,
 																	)) as OAuthAuthDetails;
@@ -2231,6 +2314,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 															try {
 																runtimeMetrics.totalRequests++;
+																runtimeMetrics.responsesRequests++;
+																syncRuntimeObservability(requestTraceId);
 																const fallbackResponse = await fetch(
 																	url,
 																	applyProxyCompatibleInit(url, {
@@ -2456,6 +2541,24 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 															);
 															break;
 														}
+														if (response.status >= 500) {
+															const serverBurstCooldownUntil =
+																recordServerBurstFailure(account.index);
+															if (serverBurstCooldownUntil > 0) {
+																runtimeMetrics.serverBurstFastFails += 1;
+																runtimeMetrics.lastError =
+																	"Repeated upstream server errors across the account pool";
+																syncRuntimeObservability(requestTraceId);
+																return new Response(
+																	JSON.stringify({
+																		error: {
+																			message: `Upstream server failures were observed across multiple accounts. Pausing retries for ${formatWaitTime(serverBurstCooldownUntil - Date.now())}. Check \`codex auth report --json\` for runtime metrics.`,
+																		},
+																	}),
+																	{ status: 503, headers: { "content-type": "application/json; charset=utf-8" } },
+																);
+															}
+														}
 														logWarn(
 															`Empty response after ${emptyResponseMaxRetries} retries. Returning as-is.`,
 														);
@@ -2507,6 +2610,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												lastCodexCliActiveSyncIndex =
 													successAccountForResponse.index;
 											}
+											clearPoolExhaustionCooldown();
+											clearServerBurstCooldown();
+											syncRuntimeObservability(requestTraceId);
 											return successResponse;
 										}
 										if (retryNextAccountBeforeFallback) {
@@ -2552,26 +2658,31 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										continue;
 									}
 
-									const waitLabel =
-										waitMs > 0 ? formatWaitTime(waitMs) : "a bit";
-									const message =
-										count === 0
-											? "No Codex accounts configured. Run `codex login`."
-											: waitMs > 0
-												? `All ${count} account(s) are rate-limited. Try again in ${waitLabel} or add another account with \`codex login\`.`
-												: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`;
-									runtimeMetrics.failedRequests++;
-									runtimeMetrics.lastError = message;
-									return new Response(JSON.stringify({ error: { message } }), {
+											const waitLabel =
+												waitMs > 0 ? formatWaitTime(waitMs) : "a bit";
+											if (count > 0 && waitMs > 0) {
+												armPoolExhaustionCooldown(waitMs);
+											}
+											const message =
+												count === 0
+													? "No Codex accounts configured. Run `codex login`."
+													: waitMs > 0
+														? `All ${count} account(s) are rate-limited. A short pool cooldown is now active for ${waitLabel}. Try again later or inspect \`codex auth status\`.`
+														: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex auth report --json\`.`;
+											runtimeMetrics.failedRequests++;
+											runtimeMetrics.lastError = message;
+											syncRuntimeObservability(requestTraceId);
+											return new Response(JSON.stringify({ error: { message } }), {
 										status: waitMs > 0 ? 429 : 503,
 										headers: {
 											"content-type": "application/json; charset=utf-8",
 										},
 									});
 								}
-							} finally {
-								clearCorrelationId();
-							}
+								} finally {
+									syncRuntimeObservability(null);
+									clearCorrelationId();
+								}
 						},
 					};
 				} finally {

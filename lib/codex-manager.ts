@@ -50,6 +50,7 @@ import {
 	runFeaturesCommand,
 	runStatusCommand,
 } from "./codex-manager/commands/status.js";
+import { loadPersistedRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import { runSwitchCommand } from "./codex-manager/commands/switch.js";
 import { parseAuthLoginArgs, printUsage } from "./codex-manager/help.js";
 import {
@@ -3205,6 +3206,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			loadAccounts,
 			resolveActiveIndex,
 			formatRateLimitEntry,
+			loadRuntimeObservabilitySnapshot: loadPersistedRuntimeObservabilitySnapshot,
 		});
 	}
 	if (command === "switch") {
@@ -3241,6 +3243,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			fetchCodexQuotaSnapshot,
 			formatRateLimitEntry,
 			normalizeFailureDetail,
+			loadRuntimeObservabilitySnapshot: loadPersistedRuntimeObservabilitySnapshot,
 		});
 	}
 	if (command === "fix") {
