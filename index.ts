@@ -167,6 +167,7 @@ import {
 } from "./lib/request/fetch-helpers.js";
 import {
 	getRateLimitBackoff,
+	MAX_SHORT_RETRY_ATTEMPTS,
 	RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS,
 	resetRateLimitBackoff,
 } from "./lib/request/rate-limit-backoff.js";
@@ -1901,26 +1902,29 @@ let sessionAffinityWriteVersion = 0;
 													);
 													const waitLabel = formatWaitTime(cooldownMs);
 
-													if (cooldownMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS) {
-														if (
-															accountManager.shouldShowAccountToast(
-																account.index,
-																rateLimitToastDebounceMs,
-															)
-														) {
-															await showRuntimeToast(client, 
-																`Rate limited. Retrying in ${waitLabel} (attempt ${attempt})...`,
-																"warning",
-																{ duration: toastDurationMs },
-															);
-															accountManager.markToastShown(account.index);
-														}
+								if (
+									cooldownMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS &&
+									attempt < MAX_SHORT_RETRY_ATTEMPTS
+								) {
+									if (
+										accountManager.shouldShowAccountToast(
+											account.index,
+											rateLimitToastDebounceMs,
+										)
+									) {
+										await showRuntimeToast(client, 
+											`Rate limited. Retrying in ${waitLabel} (attempt ${attempt})...`,
+											"warning",
+											{ duration: toastDurationMs },
+										);
+										accountManager.markToastShown(account.index);
+									}
 
-														await sleep(
-															addJitter(Math.max(MIN_BACKOFF_MS, cooldownMs), 0.2),
-														);
-														continue;
-													}
+									await sleep(
+										addJitter(Math.max(MIN_BACKOFF_MS, cooldownMs), 0.2),
+									);
+									continue;
+								}
 
 													accountManager.markRateLimitedWithReason(
 														account,
