@@ -978,8 +978,8 @@ async function safeReadBody(response: Response): Promise<string> {
 }
 
 function mapUsageLimit404WithBody(response: Response, bodyText: string): Response | null {
-        if (response.status !== HTTP_STATUS.NOT_FOUND) return null;
-        if (!bodyText) return null;
+	if (response.status !== HTTP_STATUS.NOT_FOUND) return null;
+	if (!bodyText) return null;
 
 	let code = "";
 	try {
@@ -994,8 +994,11 @@ function mapUsageLimit404WithBody(response: Response, bodyText: string): Respons
 		return createEntitlementErrorResponse(bodyText);
 	}
 
-	const haystack = `${code} ${bodyText}`.toLowerCase();
-	if (!/usage_limit_reached|rate_limit_exceeded|usage limit/i.test(haystack)) {
+	// Only structured quota-limit codes should be remapped from 404 to 429.
+	// Free-text 404 bodies and generic rate_limit_* codes are too ambiguous and
+	// degrade downstream rate-limit reason classification to "unknown".
+	const normalizedCode = code.toLowerCase();
+	if (!normalizedCode.includes("usage_limit")) {
 		return null;
 	}
 
