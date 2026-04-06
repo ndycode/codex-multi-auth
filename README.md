@@ -321,8 +321,8 @@ codex auth doctor --json
 
 ## Release Notes
 
-- Current stable: [docs/releases/v1.2.5.md](docs/releases/v1.2.5.md)
-- Recent patch release: [docs/releases/v1.2.4.md](docs/releases/v1.2.4.md)
+- Current stable: [docs/releases/v1.2.6.md](docs/releases/v1.2.6.md)
+- Recent patch release: [docs/releases/v1.2.5.md](docs/releases/v1.2.5.md)
 - Previous stable: [docs/releases/v1.2.2.md](docs/releases/v1.2.2.md)
 - Earlier stable: [docs/releases/v1.2.1.md](docs/releases/v1.2.1.md)
 - Archived prerelease: [docs/releases/v0.1.0-beta.0.md](docs/releases/v0.1.0-beta.0.md)

@@ -661,6 +661,189 @@ function resolveOriginalMultiAuthDir(env) {
 	return undefined;
 }
 
+async function loadRuntimeObservabilityModule() {
+	try {
+		const mod = await import("../dist/lib/runtime/runtime-observability.js");
+		if (
+			typeof mod.loadPersistedRuntimeObservabilitySnapshot !== "function" ||
+			typeof mod.mutateRuntimeObservabilitySnapshot !== "function"
+		) {
+			return null;
+		}
+		return mod;
+	} catch (error) {
+		if (
+			error &&
+			typeof error === "object" &&
+			"code" in error &&
+			error.code === "ERR_MODULE_NOT_FOUND"
+		) {
+			return null;
+		}
+		throw error;
+	}
+}
+
+function isPureHelpOrVersionArgs(rawArgs) {
+	if (!Array.isArray(rawArgs) || rawArgs.length === 0) {
+		return false;
+	}
+	return rawArgs.every((arg) =>
+		typeof arg === "string" && ["--help", "-h", "--version", "-V"].includes(arg),
+	);
+}
+
+function consumesNextArg(arg) {
+	return new Set([
+		"-c",
+		"--config",
+		"--enable",
+		"--disable",
+		"--remote",
+		"--remote-auth-token-env",
+		"-i",
+		"--image",
+		"-m",
+		"--model",
+		"--local-provider",
+		"-p",
+		"--profile",
+		"-s",
+		"--sandbox",
+		"-a",
+		"--ask-for-approval",
+		"-C",
+		"--cd",
+		"--add-dir",
+		"--output-schema",
+		"--color",
+		"-o",
+		"--output-last-message",
+	]).has(arg);
+}
+
+function shouldTrackForwardedRuntimeObservability(rawArgs) {
+	if (!Array.isArray(rawArgs) || rawArgs.length === 0) {
+		return true;
+	}
+	if (isPureHelpOrVersionArgs(rawArgs)) {
+		return false;
+	}
+
+	const requestCommands = new Set(["exec", "review", "resume", "fork"]);
+	const nonRequestCommands = new Set([
+		"help",
+		"completion",
+		"login",
+		"logout",
+		"mcp",
+		"mcp-server",
+		"app-server",
+		"sandbox",
+		"debug",
+		"apply",
+		"cloud",
+		"features",
+		"auth",
+	]);
+
+	for (let i = 0; i < rawArgs.length; i += 1) {
+		const arg = rawArgs[i];
+		if (typeof arg !== "string" || arg.length === 0) continue;
+		if (arg === "--") {
+			return i + 1 < rawArgs.length;
+		}
+		if (arg.startsWith("--config=")) {
+			continue;
+		}
+		if (arg.startsWith("--") || (arg.startsWith("-") && arg !== "-")) {
+			if (consumesNextArg(arg)) {
+				i += 1;
+			}
+			continue;
+		}
+		if (requestCommands.has(arg)) {
+			return true;
+		}
+		if (nonRequestCommands.has(arg)) {
+			return false;
+		}
+		return true;
+	}
+
+	return true;
+}
+
+function createRuntimeSnapshotChangeToken(snapshot) {
+	return JSON.stringify({
+		updatedAt: snapshot?.updatedAt ?? null,
+		responsesRequests: snapshot?.responsesRequests ?? null,
+		authRefreshRequests: snapshot?.authRefreshRequests ?? null,
+		diagnosticProbeRequests: snapshot?.diagnosticProbeRequests ?? null,
+		totalRequests: snapshot?.runtimeMetrics?.totalRequests ?? null,
+		successfulRequests: snapshot?.runtimeMetrics?.successfulRequests ?? null,
+		failedRequests: snapshot?.runtimeMetrics?.failedRequests ?? null,
+		lastRequestAt: snapshot?.runtimeMetrics?.lastRequestAt ?? null,
+	});
+}
+
+async function loadRuntimeSnapshotWithRetry(runtimeObservabilityModule) {
+	let snapshot = null;
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		snapshot =
+			(await runtimeObservabilityModule.loadPersistedRuntimeObservabilitySnapshot()) ??
+			null;
+		if (snapshot) {
+			return snapshot;
+		}
+		if (attempt < 4) {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+	}
+	return snapshot;
+}
+
+async function withForwardedRuntimeObservability(rawArgs, runForwardedCommand) {
+	if (!shouldTrackForwardedRuntimeObservability(rawArgs)) {
+		return runForwardedCommand();
+	}
+
+	const runtimeObservabilityModule = await loadRuntimeObservabilityModule();
+	if (!runtimeObservabilityModule) {
+		return runForwardedCommand();
+	}
+
+	const beforeSnapshot = await loadRuntimeSnapshotWithRetry(runtimeObservabilityModule);
+	const beforeToken = createRuntimeSnapshotChangeToken(beforeSnapshot);
+	const startedAt = Date.now();
+	const exitCode = await runForwardedCommand();
+	const afterSnapshot = await loadRuntimeSnapshotWithRetry(runtimeObservabilityModule);
+	const afterToken = createRuntimeSnapshotChangeToken(afterSnapshot);
+	if (afterToken !== beforeToken) {
+		return exitCode;
+	}
+
+	runtimeObservabilityModule.mutateRuntimeObservabilitySnapshot((snapshot) => {
+		snapshot.currentRequestId = null;
+		snapshot.responsesRequests += 1;
+		snapshot.runtimeMetrics.totalRequests += 1;
+		snapshot.runtimeMetrics.responsesRequests += 1;
+		snapshot.runtimeMetrics.cumulativeLatencyMs += Math.max(0, Date.now() - startedAt);
+		snapshot.runtimeMetrics.lastRequestAt = Date.now();
+		if (!snapshot.runtimeMetrics.startedAt) {
+			snapshot.runtimeMetrics.startedAt = startedAt;
+		}
+		if (exitCode === 0) {
+			snapshot.runtimeMetrics.successfulRequests += 1;
+			snapshot.runtimeMetrics.lastError = null;
+		} else {
+			snapshot.runtimeMetrics.failedRequests += 1;
+			snapshot.runtimeMetrics.lastError = `forwarded-codex-exit:${exitCode}`;
+		}
+	});
+	return exitCode;
+}
+
 function createCompatibilityCodexHome(
 	processedArgs,
 	requestedModel,
@@ -1149,11 +1332,13 @@ async function main() {
 		forwardArgs,
 		requestedModel,
 	);
-	return forwardToRealCodex(
-		realCodexBin,
-		compatibility.args,
-		compatibility.env,
-		compatibility.cleanup,
+	return withForwardedRuntimeObservability(rawArgs, () =>
+		forwardToRealCodex(
+			realCodexBin,
+			compatibility.args,
+			compatibility.env,
+			compatibility.cleanup,
+		),
 	);
 }
 

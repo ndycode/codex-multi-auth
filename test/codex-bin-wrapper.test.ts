@@ -66,6 +66,89 @@ function createWrapperFixture(): string {
 	return fixtureRoot;
 }
 
+function createRuntimeObservabilityFixtureModule(fixtureRoot: string): string {
+	const runtimeDir = join(fixtureRoot, "dist", "lib", "runtime");
+	mkdirSync(runtimeDir, { recursive: true });
+	const modulePath = join(runtimeDir, "runtime-observability.js");
+	writeFileSync(
+		modulePath,
+		[
+			"import { existsSync, mkdirSync, readFileSync, writeFileSync } from \"node:fs\";",
+			"import { dirname, join } from \"node:path\";",
+			"",
+			"function getSnapshotPath() {",
+			"  const root = (process.env.CODEX_MULTI_AUTH_DIR ?? '').trim();",
+			"  if (root.length === 0) throw new Error('CODEX_MULTI_AUTH_DIR is required in wrapper tests');",
+			"  return join(root, 'runtime-observability.json');",
+			"}",
+			"",
+			"function createDefaultSnapshot() {",
+			"  return {",
+			"    version: 1,",
+			"    updatedAt: 0,",
+			"    currentRequestId: null,",
+			"    responsesRequests: 0,",
+			"    authRefreshRequests: 0,",
+			"    diagnosticProbeRequests: 0,",
+			"    poolExhaustionCooldownUntil: null,",
+			"    serverBurstCooldownUntil: null,",
+			"    runtimeMetrics: {",
+			"      startedAt: 0,",
+			"      totalRequests: 0,",
+			"      successfulRequests: 0,",
+			"      failedRequests: 0,",
+			"      responsesRequests: 0,",
+			"      authRefreshRequests: 0,",
+			"      diagnosticProbeRequests: 0,",
+			"      outboundRequestAttemptBudget: null,",
+			"      outboundRequestAttemptsConsumed: 0,",
+			"      requestAttemptBudgetExhaustions: 0,",
+			"      poolExhaustionFastFails: 0,",
+			"      serverBurstFastFails: 0,",
+			"      rateLimitedResponses: 0,",
+			"      serverErrors: 0,",
+			"      networkErrors: 0,",
+			"      userAborts: 0,",
+			"      authRefreshFailures: 0,",
+			"      emptyResponseRetries: 0,",
+			"      accountRotations: 0,",
+			"      sameAccountRetries: 0,",
+			"      streamFailoverAttempts: 0,",
+			"      streamFailoverCandidatesConsidered: 0,",
+			"      lastStreamFailoverCandidateCount: 0,",
+			"      streamFailoverRecoveries: 0,",
+			"      streamFailoverCrossAccountRecoveries: 0,",
+			"      cumulativeLatencyMs: 0,",
+			"      lastRequestAt: null,",
+			"      lastError: null,",
+			"    },",
+			"  };",
+			"}",
+			"",
+			"function readSnapshot() {",
+			"  const snapshotPath = getSnapshotPath();",
+			"  if (!existsSync(snapshotPath)) return null;",
+			"  return JSON.parse(readFileSync(snapshotPath, 'utf8'));",
+			"}",
+			"",
+			"export async function loadPersistedRuntimeObservabilitySnapshot() {",
+			"  return readSnapshot();",
+			"}",
+			"",
+			"export function mutateRuntimeObservabilitySnapshot(mutator) {",
+			"  const snapshot = readSnapshot() ?? createDefaultSnapshot();",
+			"  mutator(snapshot);",
+			"  snapshot.updatedAt = Date.now();",
+			"  const snapshotPath = getSnapshotPath();",
+			"  mkdirSync(dirname(snapshotPath), { recursive: true });",
+			"  writeFileSync(snapshotPath, JSON.stringify(snapshot), 'utf8');",
+			"}",
+		].join("\n"),
+		"utf8",
+	);
+	return modulePath;
+}
+
 function createFakeCodexBin(rootDir: string): string {
 	const fakeBin = join(rootDir, "fake-codex.js");
 	writeFileSync(
@@ -306,6 +389,115 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).toContain(
 			'FORWARDED:exec status -c cli_auth_credentials_store="file"',
 		);
+	});
+
+	it("records forwarded exec traffic in runtime observability when the child process does not update it", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeObservabilityFixtureModule(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const multiAuthDir = join(fixtureRoot, "multi-auth");
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+		});
+
+		expect(result.status).toBe(0);
+		const snapshot = JSON.parse(
+			readFileSync(join(multiAuthDir, "runtime-observability.json"), "utf8"),
+		) as {
+			responsesRequests: number;
+			runtimeMetrics: {
+				totalRequests: number;
+				responsesRequests: number;
+				successfulRequests: number;
+				failedRequests: number;
+				lastRequestAt: number | null;
+				lastError: string | null;
+			};
+		};
+		expect(snapshot.responsesRequests).toBe(1);
+		expect(snapshot.runtimeMetrics.totalRequests).toBe(1);
+		expect(snapshot.runtimeMetrics.responsesRequests).toBe(1);
+		expect(snapshot.runtimeMetrics.successfulRequests).toBe(1);
+		expect(snapshot.runtimeMetrics.failedRequests).toBe(0);
+		expect(snapshot.runtimeMetrics.lastRequestAt).not.toBeNull();
+		expect(snapshot.runtimeMetrics.lastError).toBeNull();
+	});
+
+	it("does not double-count forwarded exec traffic when the child process already updates runtime observability", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeObservabilityFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const root = process.env.CODEX_MULTI_AUTH_DIR ?? "";',
+			'const snapshotPath = path.join(root, "runtime-observability.json");',
+			"const snapshot = {",
+			"  version: 1,",
+			"  updatedAt: Date.now(),",
+			"  currentRequestId: null,",
+			"  responsesRequests: 1,",
+			"  authRefreshRequests: 0,",
+			"  diagnosticProbeRequests: 0,",
+			"  poolExhaustionCooldownUntil: null,",
+			"  serverBurstCooldownUntil: null,",
+			"  runtimeMetrics: {",
+			"    startedAt: Date.now(),",
+			"    totalRequests: 1,",
+			"    successfulRequests: 1,",
+			"    failedRequests: 0,",
+			"    responsesRequests: 1,",
+			"    authRefreshRequests: 0,",
+			"    diagnosticProbeRequests: 0,",
+			"    outboundRequestAttemptBudget: null,",
+			"    outboundRequestAttemptsConsumed: 0,",
+			"    requestAttemptBudgetExhaustions: 0,",
+			"    poolExhaustionFastFails: 0,",
+			"    serverBurstFastFails: 0,",
+			"    rateLimitedResponses: 0,",
+			"    serverErrors: 0,",
+			"    networkErrors: 0,",
+			"    userAborts: 0,",
+			"    authRefreshFailures: 0,",
+			"    emptyResponseRetries: 0,",
+			"    accountRotations: 0,",
+			"    sameAccountRetries: 0,",
+			"    streamFailoverAttempts: 0,",
+			"    streamFailoverCandidatesConsidered: 0,",
+			"    lastStreamFailoverCandidateCount: 0,",
+			"    streamFailoverRecoveries: 0,",
+			"    streamFailoverCrossAccountRecoveries: 0,",
+			"    cumulativeLatencyMs: 10,",
+			"    lastRequestAt: Date.now(),",
+			"    lastError: null,",
+			"  },",
+			"};",
+			"fs.mkdirSync(root, { recursive: true });",
+			"fs.writeFileSync(snapshotPath, JSON.stringify(snapshot), 'utf8');",
+			"process.exit(0);",
+		]);
+		const multiAuthDir = join(fixtureRoot, "multi-auth");
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+		});
+
+		expect(result.status).toBe(0);
+		const snapshot = JSON.parse(
+			readFileSync(join(multiAuthDir, "runtime-observability.json"), "utf8"),
+		) as {
+			responsesRequests: number;
+			runtimeMetrics: {
+				totalRequests: number;
+				responsesRequests: number;
+				successfulRequests: number;
+			};
+		};
+		expect(snapshot.responsesRequests).toBe(1);
+		expect(snapshot.runtimeMetrics.totalRequests).toBe(1);
+		expect(snapshot.runtimeMetrics.responsesRequests).toBe(1);
+		expect(snapshot.runtimeMetrics.successfulRequests).toBe(1);
 	});
 
 	it("skips file auth store forwarding when the opt-out env var is disabled", () => {
