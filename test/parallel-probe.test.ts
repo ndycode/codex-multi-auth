@@ -77,6 +77,19 @@ describe("parallel-probe", () => {
 			expect(result?.error?.message).toBe("network error");
 		});
 
+		it("normalizes non-Error probe failures for single candidates", async () => {
+			const account = createMockAccount(0);
+			const candidates = createProbeCandidates([account]);
+
+			const result = await probeAccountsInParallel(candidates, async () => {
+				throw "string failure";
+			});
+
+			expect(result?.type).toBe("failure");
+			expect(result?.error).toBeInstanceOf(Error);
+			expect(result?.error?.message).toBe("string failure");
+		});
+
 		it("returns first success in parallel probing", async () => {
 			const accounts = [createMockAccount(0), createMockAccount(1), createMockAccount(2)];
 			const candidates = createProbeCandidates(accounts);
@@ -174,6 +187,23 @@ describe("parallel-probe", () => {
 	});
 
 	describe("getTopCandidates", () => {
+		it("accepts named params without overload casts", () => {
+			const accounts = [createMockAccount(0), createMockAccount(1)];
+			const mockManager = {
+				getAccountsSnapshot: vi.fn().mockReturnValue(accounts),
+			};
+
+			const candidates = getTopCandidates({
+				accountManager: mockManager as AccountManager,
+				modelFamily: "codex",
+				model: null,
+				maxCandidates: 1,
+			});
+
+			expect(candidates).toHaveLength(1);
+			expect(mockManager.getAccountsSnapshot).toHaveBeenCalledTimes(1);
+		});
+
 		it("returns empty array when no accounts available", () => {
 			const mockManager = {
 				getAccountsSnapshot: vi.fn().mockReturnValue([]),
