@@ -1,0 +1,6 @@
+# Keep repository language stats focused on authored TypeScript sources.
+*.ts linguist-detectable
+*.js -linguist-detectable
+*.mjs -linguist-detectable
+*.sh -linguist-detectable
+*.html -linguist-detectable
