@@ -617,11 +617,17 @@ function compareSemverDescending(left: string, right: string): number {
 		).toBe(true);
 
 		const content = read(gitattributes);
-		expect(content).toContain("*.ts linguist-detectable");
-		expect(content).toContain("*.js -linguist-detectable");
-		expect(content).toContain("*.mjs -linguist-detectable");
-		expect(content).toContain("*.sh -linguist-detectable");
-		expect(content).toContain("*.html -linguist-detectable");
+		const normalized = content
+			.split(/\r?\n/)
+			.map((line) => line.trim())
+			.filter((line) => line.length > 0 && !line.startsWith("#"));
+		expect(normalized).toEqual([
+			"*.ts linguist-detectable",
+			"*.js -linguist-detectable",
+			"*.mjs -linguist-detectable",
+			"*.sh -linguist-detectable",
+			"*.html -linguist-detectable",
+		]);
 	});
 
 	it("publishes maintainer runbooks for refactor-era changes", () => {
