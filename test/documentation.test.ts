@@ -609,6 +609,21 @@ function compareSemverDescending(left: string, right: string): number {
 		expect(conduct).toContain("security.md");
 	});
 
+	it("locks linguist overrides for a TypeScript-only repository language bar", () => {
+		const gitattributes = ".gitattributes";
+		expect(
+			existsSync(join(projectRoot, gitattributes)),
+			`${gitattributes} should exist`,
+		).toBe(true);
+
+		const content = read(gitattributes);
+		expect(content).toContain("*.ts linguist-detectable");
+		expect(content).toContain("*.js -linguist-detectable");
+		expect(content).toContain("*.mjs -linguist-detectable");
+		expect(content).toContain("*.sh -linguist-detectable");
+		expect(content).toContain("*.html -linguist-detectable");
+	});
+
 	it("publishes maintainer runbooks for refactor-era changes", () => {
 		const docsPortal = read("docs/README.md");
 		const testingGuide = read("docs/development/TESTING.md");
