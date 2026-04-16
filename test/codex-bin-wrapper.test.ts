@@ -21,6 +21,7 @@ import { resolveRealCodexBin } from "../scripts/codex-bin-resolver.js";
 const createdDirs: string[] = [];
 const testFileDir = dirname(fileURLToPath(import.meta.url));
 const repoRootDir = join(testFileDir, "..");
+const EXIT_SUCCESS_LINE = "exit 0";
 
 function isRetriableFsError(error: unknown): boolean {
 	if (!error || typeof error !== "object" || !("code" in error)) {
@@ -191,16 +192,12 @@ function createFakeNativeCodexBin(rootDir: string): string {
 		[
 			"#!/bin/sh",
 			'printf "FORWARDED_NATIVE:%s\\n" "$*"',
-			exitLine(),
+			EXIT_SUCCESS_LINE,
 		].join("\n"),
 		"utf8",
 	);
 	chmodSync(fakeBin, 0o755);
 	return fakeBin;
-}
-
-function exitLine(): string {
-	return "exit 0";
 }
 
 function resolveWindowsPowerShellPath(): string {
