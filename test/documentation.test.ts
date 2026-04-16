@@ -34,9 +34,10 @@ function readPackageVersion(): string {
 let packageVersion = "";
 let currentStableReleaseDoc = "";
 // These stay manual so the docs portal keeps an intentional short stable-history window.
-const previousStableReleaseDoc = "docs/releases/v1.2.5.md";
-const earlierStableReleaseDoc = "docs/releases/v1.2.4.md";
+const previousStableReleaseDoc = "docs/releases/v1.2.6.md";
+const earlierStableReleaseDoc = "docs/releases/v1.2.5.md";
 const stableArchiveReleaseDocs = [
+	"docs/releases/v1.2.4.md",
 	"docs/releases/v1.2.2.md",
 	"docs/releases/v1.2.1.md",
 	"docs/releases/v1.2.0.md",
