@@ -2,6 +2,7 @@ import { type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
 import {
 	chmodSync,
 	copyFileSync,
+	linkSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -205,6 +206,54 @@ function exitLine(): string {
 function resolveWindowsPowerShellPath(): string {
 	const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
 	return join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
+function createPathDiscoveredNativeCodexFixture(rootDir: string): {
+	args: string[];
+	binDir: string;
+	expectedOutput: string;
+} {
+	const binDir = join(rootDir, `native-codex-bin-${createdDirs.length}`);
+	mkdirSync(binDir, { recursive: true });
+	if (process.platform === "win32") {
+		const scriptPath = join(binDir, "native-codex-marker.js");
+		writeFileSync(
+			scriptPath,
+			[
+				'console.log(`FORWARDED_NATIVE_PATH:${process.argv.slice(2).join(" ")}`);',
+				"process.exit(0);",
+			].join("\n"),
+			"utf8",
+		);
+		const nativeExePath = join(binDir, "codex.exe");
+		try {
+			linkSync(process.execPath, nativeExePath);
+		} catch {
+			copyFileSync(process.execPath, nativeExePath);
+		}
+		return {
+			binDir,
+			args: [scriptPath, "--version"],
+			expectedOutput: "FORWARDED_NATIVE_PATH:--version",
+		};
+	}
+
+	const nativeCodexPath = join(binDir, "codex");
+	writeFileSync(
+		nativeCodexPath,
+		[
+			"#!/bin/sh",
+			'printf "FORWARDED_NATIVE_PATH:%s\\n" "$*"',
+			"exit 0",
+		].join("\n"),
+		"utf8",
+	);
+	chmodSync(nativeCodexPath, 0o755);
+	return {
+		binDir,
+		args: ["--version"],
+		expectedOutput: "FORWARDED_NATIVE_PATH:--version",
+	};
 }
 
 function injectShadowCleanupBusyFailures(
@@ -430,6 +479,28 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("FORWARDED_NATIVE:--version");
+	});
+
+	it("auto-discovers native codex executables on PATH and forwards end-to-end", () => {
+		const fixtureRoot = createWrapperFixture();
+		const resolverPath = join(fixtureRoot, "scripts", "codex-bin-resolver.js");
+		writeFileSync(
+			resolverPath,
+			readFileSync(resolverPath, "utf8").replace(
+				'return require.resolve("@openai/codex/bin/codex.js");',
+				"return null;",
+			),
+			"utf8",
+		);
+		const nativeFixture = createPathDiscoveredNativeCodexFixture(fixtureRoot);
+		const result = runWrapper(fixtureRoot, nativeFixture.args, {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: undefined,
+			PATH: nativeFixture.binDir,
+			Path: nativeFixture.binDir,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(nativeFixture.expectedOutput);
 	});
 
 	it("injects file auth store forwarding for wrapped real cli invocations by default", () => {
@@ -1321,6 +1392,51 @@ describe("codex bin wrapper", () => {
 			);
 			expect(readFileSync(pwshProfilePath, "utf8")).toContain(
 				"CodexMultiAuthShim",
+			);
+		},
+	);
+
+	it.skipIf(process.platform !== "win32")(
+		"installs Windows shell guards over native Codex launcher shims",
+		() => {
+			const fixtureRoot = createWrapperFixture();
+			const fakeBin = createFakeCodexBin(fixtureRoot);
+			const shimDir = join(fixtureRoot, "native-shim-bin");
+			mkdirSync(shimDir, { recursive: true });
+			writeFileSync(
+				join(shimDir, "codex-multi-auth.cmd"),
+				"@ECHO OFF\r\nREM fixture codex-multi-auth shim\r\n",
+				"utf8",
+			);
+			writeFileSync(
+				join(shimDir, "codex.cmd"),
+				'@ECHO OFF\r\necho "%dp0%\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\codex\\codex.exe"\r\n',
+				"utf8",
+			);
+			writeFileSync(
+				join(shimDir, "codex.ps1"),
+				'Write-Output "$basedir/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/codex/codex.exe"' +
+					"\r\n",
+				"utf8",
+			);
+
+			const result = runWrapper(fixtureRoot, ["--version"], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD: "1",
+				PATH: `${shimDir}${delimiter}${process.env.PATH ?? ""}`,
+				USERPROFILE: fixtureRoot,
+				HOME: fixtureRoot,
+			});
+			expect(result.status).toBe(0);
+
+			expect(readFileSync(join(shimDir, "codex.bat"), "utf8")).toContain(
+				"codex-multi-auth windows shim guardian v1",
+			);
+			expect(readFileSync(join(shimDir, "codex.cmd"), "utf8")).toContain(
+				"node_modules\\codex-multi-auth\\scripts\\codex.js",
+			);
+			expect(readFileSync(join(shimDir, "codex.ps1"), "utf8")).toContain(
+				"node_modules/codex-multi-auth/scripts/codex.js",
 			);
 		},
 	);
