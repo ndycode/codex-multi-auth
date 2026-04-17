@@ -50,7 +50,10 @@ import {
 	redactOAuthUrlForLog,
 	REDIRECT_URI,
 } from "./lib/auth/auth.js";
-import { isBrowserLaunchSuppressed, openBrowserUrl } from "./lib/auth/browser.js";
+import {
+	isBrowserLaunchSuppressed,
+	openBrowserUrl,
+} from "./lib/auth/browser.js";
 import { startLocalOAuthServer } from "./lib/auth/server.js";
 import { checkAndNotify } from "./lib/auto-update-checker.js";
 import { CapabilityPolicyStore } from "./lib/capability-policy.js";
@@ -239,9 +242,7 @@ import { buildLoginMenuAccounts } from "./lib/runtime/login-menu-accounts.js";
 import { ensureLiveAccountSyncEntry } from "./lib/runtime/live-sync-entry.js";
 import { applyLoaderRuntimeSetup } from "./lib/runtime/loader-setup.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
-import {
-	applyPreemptiveQuotaSettingsFromConfig,
-} from "./lib/runtime/quota-settings.js";
+import { applyPreemptiveQuotaSettingsFromConfig } from "./lib/runtime/quota-settings.js";
 import {
 	ensureLiveAccountSyncState,
 	ensureRefreshGuardianState,
@@ -300,9 +301,7 @@ import {
 	formatUiSection,
 	paintUiText,
 } from "./lib/ui/format.js";
-import {
-	setUiRuntimeOptions,
-} from "./lib/ui/runtime.js";
+import { setUiRuntimeOptions } from "./lib/ui/runtime.js";
 
 /**
  * OpenAI Codex OAuth authentication plugin for Codex CLI host runtime
@@ -329,15 +328,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let startupPrewarmTriggered = false;
 	let lastCodexCliActiveSyncIndex: number | null = null;
 	let perProjectStorageWarningShown = false;
-let liveAccountSync: LiveAccountSync | null = null;
-let liveAccountSyncPath: string | null = null;
-let liveAccountSyncConfigKey: string | null = null;
+	let liveAccountSync: LiveAccountSync | null = null;
+	let liveAccountSyncPath: string | null = null;
+	let liveAccountSyncConfigKey: string | null = null;
 	let refreshGuardian: RefreshGuardian | null = null;
 	let refreshGuardianConfigKey: string | null = null;
 	let refreshGuardianCleanupRegistered = false;
-let sessionAffinityStore: SessionAffinityStore | null =
-	new SessionAffinityStore();
-let sessionAffinityWriteVersion = 0;
+	let sessionAffinityStore: SessionAffinityStore | null =
+		new SessionAffinityStore();
+	let sessionAffinityWriteVersion = 0;
 	let sessionAffinityConfigKey: string | null = null;
 	const entitlementCache = new EntitlementCache();
 	const preemptiveQuotaScheduler = new PreemptiveQuotaScheduler();
@@ -359,32 +358,32 @@ let sessionAffinityWriteVersion = 0;
 
 	type RuntimeMetrics = {
 		startedAt: number;
-	totalRequests: number;
-	successfulRequests: number;
-	failedRequests: number;
-	responsesRequests: number;
-	authRefreshRequests: number;
-	diagnosticProbeRequests: number;
-	outboundRequestAttemptBudget: number | null;
-	outboundRequestAttemptsConsumed: number;
-	requestAttemptBudgetExhaustions: number;
-	poolExhaustionFastFails: number;
-	serverBurstFastFails: number;
-	rateLimitedResponses: number;
-	serverErrors: number;
-	networkErrors: number;
-	userAborts: number;
-	authRefreshFailures: number;
-	emptyResponseRetries: number;
-	accountRotations: number;
-	sameAccountRetries: number;
-	streamFailoverAttempts: number;
-	streamFailoverCandidatesConsidered: number;
-	lastStreamFailoverCandidateCount: number;
-	streamFailoverRecoveries: number;
-	streamFailoverCrossAccountRecoveries: number;
-	cumulativeLatencyMs: number;
-	lastRequestAt: number | null;
+		totalRequests: number;
+		successfulRequests: number;
+		failedRequests: number;
+		responsesRequests: number;
+		authRefreshRequests: number;
+		diagnosticProbeRequests: number;
+		outboundRequestAttemptBudget: number | null;
+		outboundRequestAttemptsConsumed: number;
+		requestAttemptBudgetExhaustions: number;
+		poolExhaustionFastFails: number;
+		serverBurstFastFails: number;
+		rateLimitedResponses: number;
+		serverErrors: number;
+		networkErrors: number;
+		userAborts: number;
+		authRefreshFailures: number;
+		emptyResponseRetries: number;
+		accountRotations: number;
+		sameAccountRetries: number;
+		streamFailoverAttempts: number;
+		streamFailoverCandidatesConsidered: number;
+		lastStreamFailoverCandidateCount: number;
+		streamFailoverRecoveries: number;
+		streamFailoverCrossAccountRecoveries: number;
+		cumulativeLatencyMs: number;
+		lastRequestAt: number | null;
 		lastError: string | null;
 	};
 
@@ -448,13 +447,9 @@ let sessionAffinityWriteVersion = 0;
 			const burstRemaining = getServerBurstCooldownRemaining(now);
 			snapshot.currentRequestId = requestId;
 			snapshot.poolExhaustionCooldownUntil =
-				poolRemaining > 0
-					? now + poolRemaining
-					: null;
+				poolRemaining > 0 ? now + poolRemaining : null;
 			snapshot.serverBurstCooldownUntil =
-				burstRemaining > 0
-					? now + burstRemaining
-					: null;
+				burstRemaining > 0 ? now + burstRemaining : null;
 			snapshot.responsesRequests = runtimeMetrics.responsesRequests;
 			snapshot.authRefreshRequests = runtimeMetrics.authRefreshRequests;
 			snapshot.diagnosticProbeRequests = runtimeMetrics.diagnosticProbeRequests;
@@ -589,8 +584,7 @@ let sessionAffinityWriteVersion = 0;
 		});
 		refreshGuardian = next.refreshGuardian;
 		refreshGuardianConfigKey = next.refreshGuardianConfigKey;
-		refreshGuardianCleanupRegistered =
-			next.refreshGuardianCleanupRegistered;
+		refreshGuardianCleanupRegistered = next.refreshGuardianCleanupRegistered;
 	};
 
 	const ensureSessionAffinity = (
@@ -917,7 +911,8 @@ let sessionAffinityWriteVersion = 0;
 										fastSessionStrategy,
 										fastSessionMaxInputItems,
 										deferFastSessionInputTrimming: fastSessionEnabled,
-										allowBackgroundResponses: getBackgroundResponses(pluginConfig),
+										allowBackgroundResponses:
+											getBackgroundResponses(pluginConfig),
 									},
 								);
 								let requestInit = transformation?.updatedInit ?? baseInit;
@@ -949,9 +944,7 @@ let sessionAffinityWriteVersion = 0;
 									!transformedBody?.previous_response_id;
 								if (shouldUseResponseContinuation && transformedBody) {
 									const lastResponseId =
-										sessionAffinityStore?.getLastResponseId(
-											sessionAffinityKey,
-										);
+										sessionAffinityStore?.getLastResponseId(sessionAffinityKey);
 									if (lastResponseId) {
 										transformedBody = {
 											...transformedBody,
@@ -968,96 +961,104 @@ let sessionAffinityWriteVersion = 0;
 										sessionAffinityKey,
 									);
 								sessionAffinityStore?.prune();
-							const requestCorrelationId = setCorrelationId(
-								threadIdCandidate
-									? `${threadIdCandidate}:${Date.now()}`
-									: undefined,
-							);
-							const requestTraceId = requestCorrelationId;
-							runtimeMetrics.lastRequestAt = Date.now();
-							syncRuntimeObservability(requestTraceId);
+								const requestCorrelationId = setCorrelationId(
+									threadIdCandidate
+										? `${threadIdCandidate}:${Date.now()}`
+										: undefined,
+								);
+								const requestTraceId = requestCorrelationId;
+								runtimeMetrics.lastRequestAt = Date.now();
+								syncRuntimeObservability(requestTraceId);
 
-							const abortSignal = requestInit?.signal ?? init?.signal ?? null;
-							const sleep = createAbortableSleep(abortSignal);
-							const poolCooldownRemainingMs = getPoolExhaustionCooldownRemaining();
-							if (poolCooldownRemainingMs > 0) {
-								runtimeMetrics.failedRequests += 1;
-								runtimeMetrics.poolExhaustionFastFails += 1;
-								runtimeMetrics.lastError = "Pool exhaustion cooldown active";
-								syncRuntimeObservability(requestTraceId);
-								return new Response(
-									JSON.stringify({
-										error: {
-											message: `The account pool is cooling down after recent rate-limit exhaustion. Try again in ${formatWaitTime(poolCooldownRemainingMs)} or inspect \`codex auth status\`.`,
+								const abortSignal = requestInit?.signal ?? init?.signal ?? null;
+								const sleep = createAbortableSleep(abortSignal);
+								const poolCooldownRemainingMs =
+									getPoolExhaustionCooldownRemaining();
+								if (poolCooldownRemainingMs > 0) {
+									runtimeMetrics.failedRequests += 1;
+									runtimeMetrics.poolExhaustionFastFails += 1;
+									runtimeMetrics.lastError = "Pool exhaustion cooldown active";
+									syncRuntimeObservability(requestTraceId);
+									return new Response(
+										JSON.stringify({
+											error: {
+												message: `The account pool is cooling down after recent rate-limit exhaustion. Try again in ${formatWaitTime(poolCooldownRemainingMs)} or inspect \`codex auth status\`.`,
+											},
+										}),
+										{
+											status: 429,
+											headers: {
+												"content-type": "application/json; charset=utf-8",
+											},
 										},
-									}),
-									{ status: 429, headers: { "content-type": "application/json; charset=utf-8" } },
-								);
-							}
-							const serverBurstCooldownRemainingMs = getServerBurstCooldownRemaining();
-							if (serverBurstCooldownRemainingMs > 0) {
-								runtimeMetrics.failedRequests += 1;
-								runtimeMetrics.serverBurstFastFails += 1;
-								runtimeMetrics.lastError = "Server burst cooldown active";
-								syncRuntimeObservability(requestTraceId);
-								return new Response(
-									JSON.stringify({
-										error: {
-											message: `Multiple accounts recently failed with upstream server errors. Try again in ${formatWaitTime(serverBurstCooldownRemainingMs)} or inspect \`codex auth report --json\`.`,
+									);
+								}
+								const serverBurstCooldownRemainingMs =
+									getServerBurstCooldownRemaining();
+								if (serverBurstCooldownRemainingMs > 0) {
+									runtimeMetrics.failedRequests += 1;
+									runtimeMetrics.serverBurstFastFails += 1;
+									runtimeMetrics.lastError = "Server burst cooldown active";
+									syncRuntimeObservability(requestTraceId);
+									return new Response(
+										JSON.stringify({
+											error: {
+												message: `Multiple accounts recently failed with upstream server errors. Try again in ${formatWaitTime(serverBurstCooldownRemainingMs)} or inspect \`codex auth report --json\`.`,
+											},
+										}),
+										{
+											status: 503,
+											headers: {
+												"content-type": "application/json; charset=utf-8",
+											},
 										},
-									}),
-									{ status: 503, headers: { "content-type": "application/json; charset=utf-8" } },
-								);
-							}
-							const maxOutboundRequestAttempts =
-								computeOutboundRequestAttemptBudget({
+									);
+								}
+								const maxOutboundRequestAttempts =
+									computeOutboundRequestAttemptBudget({
+										accountCount: accountManager.getAccountCount(),
+										maxSameAccountRetries,
+										emptyResponseMaxRetries,
+										streamFailoverMax,
+									});
+								runtimeMetrics.outboundRequestAttemptBudget ??=
+									maxOutboundRequestAttempts;
+								logDebug("Configured outbound request attempt budget.", {
+									requestTraceId,
+									budget: maxOutboundRequestAttempts,
 									accountCount: accountManager.getAccountCount(),
 									maxSameAccountRetries,
 									emptyResponseMaxRetries,
 									streamFailoverMax,
 								});
-								runtimeMetrics.outboundRequestAttemptBudget ??=
+								syncRuntimeObservability(requestTraceId);
+								let outboundRequestAttemptsRemaining =
 									maxOutboundRequestAttempts;
-							logDebug("Configured outbound request attempt budget.", {
-								requestTraceId,
-								budget: maxOutboundRequestAttempts,
-								accountCount: accountManager.getAccountCount(),
-								maxSameAccountRetries,
-								emptyResponseMaxRetries,
-								streamFailoverMax,
-							});
-							syncRuntimeObservability(requestTraceId);
-							let outboundRequestAttemptsRemaining =
-								maxOutboundRequestAttempts;
-							const tryConsumeOutboundRequestAttempt = (
-								reason: "primary" | "stream-failover",
-								accountIndex: number,
-							): boolean => {
-								if (outboundRequestAttemptsRemaining <= 0) {
-									runtimeMetrics.requestAttemptBudgetExhaustions += 1;
-									runtimeMetrics.lastError =
-										`Request attempt budget exhausted after ${maxOutboundRequestAttempts} outbound request(s)`;
-											logWarn(
-												"Request attempt budget exhausted.",
-												{
-													requestTraceId,
-													reason,
-													accountIndex,
-													budget: maxOutboundRequestAttempts,
+								const tryConsumeOutboundRequestAttempt = (
+									reason: "primary" | "stream-failover",
+									accountIndex: number,
+								): boolean => {
+									if (outboundRequestAttemptsRemaining <= 0) {
+										runtimeMetrics.requestAttemptBudgetExhaustions += 1;
+										runtimeMetrics.lastError = `Request attempt budget exhausted after ${maxOutboundRequestAttempts} outbound request(s)`;
+										logWarn("Request attempt budget exhausted.", {
+											requestTraceId,
+											reason,
+											accountIndex,
+											budget: maxOutboundRequestAttempts,
 											consumed: maxOutboundRequestAttempts,
-												},
-											);
-											syncRuntimeObservability(requestTraceId);
-											return false;
-								}
+										});
+										syncRuntimeObservability(requestTraceId);
+										return false;
+									}
 
-								runtimeMetrics.outboundRequestAttemptsConsumed += 1;
-								outboundRequestAttemptsRemaining -= 1;
-								return true;
-							};
+									runtimeMetrics.outboundRequestAttemptsConsumed += 1;
+									outboundRequestAttemptsRemaining -= 1;
+									return true;
+								};
 
-							let allRateLimitedRetries = 0;
-							let emptyResponseRetries = 0;
+								let allRateLimitedRetries = 0;
+								let emptyResponseRetries = 0;
 								const attemptedUnsupportedFallbackModels = new Set<string>();
 								if (model) {
 									attemptedUnsupportedFallbackModels.add(model);
@@ -1213,7 +1214,8 @@ let sessionAffinityWriteVersion = 0;
 													);
 												}
 												if (
-													typeof retryableRefreshPolicy.cooldownMs === "number" &&
+													typeof retryableRefreshPolicy.cooldownMs ===
+														"number" &&
 													retryableRefreshPolicy.cooldownReason
 												) {
 													accountManager.markAccountCoolingDown(
@@ -1239,7 +1241,8 @@ let sessionAffinityWriteVersion = 0;
 												accountManager.removeAccount(account);
 												sessionAffinityStore?.reindexAfterRemoval(removedIndex);
 												accountManager.saveToDiskDebounced();
-												await showRuntimeToast(client, 
+												await showRuntimeToast(
+													client,
 													`Removed ${accountLabel} after ${failures} consecutive auth failures. Run 'codex login' to re-add.`,
 													"error",
 													{ duration: toastDurationMs * 2 },
@@ -1331,7 +1334,8 @@ let sessionAffinityWriteVersion = 0;
 												account,
 												account.index,
 											);
-											await showRuntimeToast(client, 
+											await showRuntimeToast(
+												client,
 												`Using ${accountLabel} (${account.index + 1}/${accountCount})`,
 												"info",
 											);
@@ -1351,28 +1355,27 @@ let sessionAffinityWriteVersion = 0;
 											const activeFastSessionInputTrim =
 												pendingFastSessionInputTrim;
 											pendingFastSessionInputTrim = undefined;
-											const compactionResult =
-												await applyResponseCompaction({
-													body: transformedBody,
-													requestUrl: url,
-													headers,
-													trim: activeFastSessionInputTrim,
-													fetchImpl: async (requestUrl, requestInit) => {
-														const normalizedCompactionUrl =
-															typeof requestUrl === "string"
-																? requestUrl
-																: String(requestUrl);
-														return fetch(
+											const compactionResult = await applyResponseCompaction({
+												body: transformedBody,
+												requestUrl: url,
+												headers,
+												trim: activeFastSessionInputTrim,
+												fetchImpl: async (requestUrl, requestInit) => {
+													const normalizedCompactionUrl =
+														typeof requestUrl === "string"
+															? requestUrl
+															: String(requestUrl);
+													return fetch(
+														normalizedCompactionUrl,
+														applyProxyCompatibleInit(
 															normalizedCompactionUrl,
-															applyProxyCompatibleInit(
-																normalizedCompactionUrl,
-																requestInit,
-															),
-														);
-													},
-													signal: abortSignal,
-													timeoutMs: Math.min(fetchTimeoutMs, 4_000),
-												});
+															requestInit,
+														),
+													);
+												},
+												signal: abortSignal,
+												timeoutMs: Math.min(fetchTimeoutMs, 4_000),
+											});
 											if (compactionResult.mode !== "unchanged") {
 												transformedBody = compactionResult.body;
 												requestInit = {
@@ -1769,7 +1772,8 @@ let sessionAffinityWriteVersion = 0;
 															fallbackReason: "unsupported-model-entitlement",
 														},
 													);
-													await showRuntimeToast(client, 
+													await showRuntimeToast(
+														client,
 														`Model ${previousModel} is not available for this account. Retrying with ${model}.`,
 														"warning",
 														{ duration: toastDurationMs },
@@ -1802,7 +1806,8 @@ let sessionAffinityWriteVersion = 0;
 															fallbackReason: "unsupported-model-entitlement",
 														},
 													);
-													await showRuntimeToast(client, 
+													await showRuntimeToast(
+														client,
 														`Model ${blockedModel} is not available for this account. Strict policy blocked automatic fallback.`,
 														"warning",
 														{ duration: toastDurationMs },
@@ -1897,7 +1902,8 @@ let sessionAffinityWriteVersion = 0;
 
 															const newWorkspaceName =
 																nextWorkspace.name ?? nextWorkspace.id;
-															await showRuntimeToast(client, 
+															await showRuntimeToast(
+																client,
 																`Workspace ${workspaceName} disabled. Switched to ${newWorkspaceName}.`,
 																"warning",
 																{ duration: toastDurationMs },
@@ -1922,7 +1928,8 @@ let sessionAffinityWriteVersion = 0;
 														);
 														accountManager.saveToDiskDebounced();
 
-														await showRuntimeToast(client, 
+														await showRuntimeToast(
+															client,
 															`All workspaces disabled for account ${account.index + 1}. Switching to another account.`,
 															"warning",
 															{ duration: toastDurationMs },
@@ -1961,7 +1968,8 @@ let sessionAffinityWriteVersion = 0;
 													const errorType = detectErrorType(errorBody);
 													const toastContent =
 														getRecoveryToastContent(errorType);
-													await showRuntimeToast(client, 
+													await showRuntimeToast(
+														client,
 														`${toastContent.title}: ${toastContent.message}`,
 														"warning",
 														{ duration: toastDurationMs },
@@ -1983,40 +1991,39 @@ let sessionAffinityWriteVersion = 0;
 													const serverRetryAfterMs = parseRetryAfterHintMs(
 														response.headers,
 													);
-												const policy = evaluateFailurePolicy(
-													{
-														kind: "server",
-														failoverMode,
-														serverRetryAfterMs:
-															serverRetryAfterMs ?? undefined,
-													},
-													{ serverCooldownMs: serverErrorCooldownMs },
-												);
-												const serverBurstCooldownUntil = recordServerBurstFailure(
-													account.index,
-												);
-												if (serverBurstCooldownUntil > 0) {
-													runtimeMetrics.lastError =
-														"Repeated upstream server errors across the account pool";
-													syncRuntimeObservability(requestTraceId);
-												}
-												// Overload-type server errors (502 Bad Gateway, 503 Service
-												// Unavailable, 529 Overloaded) signal upstream capacity
-												// pressure. Notify the quota scheduler so it can proactively
-							// defer subsequent requests for this quota key, mirroring the
-							// 429 handler's scheduler awareness.
-							if (
-								(response.status === 502 ||
-									response.status === 503 ||
-									response.status === 529) &&
-								typeof policy.cooldownMs === "number"
-							) {
-								preemptiveQuotaScheduler.markRateLimited(
-									quotaScheduleKey,
-									policy.cooldownMs,
-								);
-							}
-							if (policy.refundToken) {
+													const policy = evaluateFailurePolicy(
+														{
+															kind: "server",
+															failoverMode,
+															serverRetryAfterMs:
+																serverRetryAfterMs ?? undefined,
+														},
+														{ serverCooldownMs: serverErrorCooldownMs },
+													);
+													const serverBurstCooldownUntil =
+														recordServerBurstFailure(account.index);
+													if (serverBurstCooldownUntil > 0) {
+														runtimeMetrics.lastError =
+															"Repeated upstream server errors across the account pool";
+														syncRuntimeObservability(requestTraceId);
+													}
+													// Overload-type server errors (502 Bad Gateway, 503 Service
+													// Unavailable, 529 Overloaded) signal upstream capacity
+													// pressure. Notify the quota scheduler so it can proactively
+													// defer subsequent requests for this quota key, mirroring the
+													// 429 handler's scheduler awareness.
+													if (
+														(response.status === 502 ||
+															response.status === 503 ||
+															response.status === 529) &&
+														typeof policy.cooldownMs === "number"
+													) {
+														preemptiveQuotaScheduler.markRateLimited(
+															quotaScheduleKey,
+															policy.cooldownMs,
+														);
+													}
+													if (policy.refundToken) {
 														accountManager.refundToken(
 															account,
 															modelFamily,
@@ -2064,7 +2071,7 @@ let sessionAffinityWriteVersion = 0;
 													break;
 												}
 
-										if (errorResponse.status === 429 && rateLimit) {
+												if (errorResponse.status === 429 && rateLimit) {
 													runtimeMetrics.rateLimitedResponses++;
 													const retryAfterMs =
 														rateLimit?.retryAfterMs ?? 60_000;
@@ -2074,10 +2081,7 @@ let sessionAffinityWriteVersion = 0;
 														retryAfterMs,
 														account.accountId ?? account.email ?? null,
 													);
-													const cooldownMs = Math.max(
-														delayMs,
-														retryAfterMs,
-													);
+													const cooldownMs = Math.max(delayMs, retryAfterMs);
 													preemptiveQuotaScheduler.markRateLimited(
 														quotaScheduleKey,
 														cooldownMs,
@@ -2087,11 +2091,31 @@ let sessionAffinityWriteVersion = 0;
 														getConfiguredRateLimitShortRetryThresholdMs();
 
 													if (
-														cooldownMs <=
-														shortRetryThresholdMs &&
+														cooldownMs <= shortRetryThresholdMs &&
 														shortRateLimitRetryCount < MAX_SHORT_RETRY_ATTEMPTS
 													) {
 														shortRateLimitRetryCount += 1;
+
+														// Mark the account unavailable BEFORE we sleep so
+														// concurrent in-flight requests do not select the
+														// same freshly rate-limited account during the retry
+														// window. Without this, the fetch loop amplifies the
+														// throttling pressure instead of spreading load.
+														// The current request will continue after the sleep
+														// regardless of the cooldown mark (AUDIT-H3 / D-07).
+														accountManager.markRateLimitedWithReason(
+															account,
+															cooldownMs,
+															modelFamily,
+															parseRateLimitReason(rateLimit?.code),
+															model,
+														);
+														accountManager.recordRateLimit(
+															account,
+															modelFamily,
+															model,
+														);
+
 														if (
 															accountManager.shouldShowAccountToast(
 																account.index,
@@ -2108,7 +2132,10 @@ let sessionAffinityWriteVersion = 0;
 														}
 
 														await sleep(
-															addJitter(Math.max(MIN_BACKOFF_MS, cooldownMs), 0.2),
+															addJitter(
+																Math.max(MIN_BACKOFF_MS, cooldownMs),
+																0.2,
+															),
 														);
 														continue;
 													}
@@ -2142,7 +2169,8 @@ let sessionAffinityWriteVersion = 0;
 															rateLimitToastDebounceMs,
 														)
 													) {
-														await showRuntimeToast(client, 
+														await showRuntimeToast(
+															client,
 															`Rate limited. Switching accounts (retry in ${waitLabel}).`,
 															"warning",
 															{ duration: toastDurationMs },
@@ -2176,7 +2204,11 @@ let sessionAffinityWriteVersion = 0;
 														accountSnapshotList as Array<
 															Pick<
 																import("./lib/accounts.js").ManagedAccount,
-																"index" | "lastUsed" | "enabled" | "coolingDownUntil" | "rateLimitResetTimes"
+																| "index"
+																| "lastUsed"
+																| "enabled"
+																| "coolingDownUntil"
+																| "rateLimitResetTimes"
 															>
 														>,
 													);
@@ -2184,16 +2216,12 @@ let sessionAffinityWriteVersion = 0;
 													streamFallbackCandidateOrder.length;
 												runtimeMetrics.streamFailoverCandidatesConsidered +=
 													streamFallbackCandidateOrder.length;
-												logDebug(
-													"Prepared stream failover candidates.",
-													{
-														requestTraceId,
-														primaryAccountIndex: account.index,
-														candidateCount:
-															streamFallbackCandidateOrder.length,
-														candidateIndices: streamFallbackCandidateOrder,
-													},
-												);
+												logDebug("Prepared stream failover candidates.", {
+													requestTraceId,
+													primaryAccountIndex: account.index,
+													candidateCount: streamFallbackCandidateOrder.length,
+													candidateIndices: streamFallbackCandidateOrder,
+												});
 												syncRuntimeObservability(requestTraceId);
 												responseForSuccess = withStreamingFailover(
 													response,
@@ -2227,15 +2255,15 @@ let sessionAffinityWriteVersion = 0;
 																fallbackAccount,
 															) as OAuthAuthDetails;
 															try {
-															if (
-																shouldRefreshToken(
-																	fallbackAuth,
-																	tokenRefreshSkewMs,
-																)
-															) {
-																runtimeMetrics.authRefreshRequests += 1;
-																syncRuntimeObservability(requestTraceId);
-																fallbackAuth = (await refreshAndUpdateToken(
+																if (
+																	shouldRefreshToken(
+																		fallbackAuth,
+																		tokenRefreshSkewMs,
+																	)
+																) {
+																	runtimeMetrics.authRefreshRequests += 1;
+																	syncRuntimeObservability(requestTraceId);
+																	fallbackAuth = (await refreshAndUpdateToken(
 																		fallbackAuth,
 																		client,
 																	)) as OAuthAuthDetails;
@@ -2393,7 +2421,10 @@ let sessionAffinityWriteVersion = 0;
 																	);
 																}
 																if (!fallbackResponse.ok) {
-																	const { response: handledFallbackResponse, rateLimit: fallbackRateLimit } =
+																	const {
+																		response: handledFallbackResponse,
+																		rateLimit: fallbackRateLimit,
+																	} =
 																		await handleErrorResponse(fallbackResponse);
 																	try {
 																		await fallbackResponse.body?.cancel();
@@ -2403,8 +2434,9 @@ let sessionAffinityWriteVersion = 0;
 																	if (handledFallbackResponse.status === 429) {
 																		const retryAfterMs =
 																			fallbackRateLimit?.retryAfterMs ?? 60_000;
-																		const fallbackQuotaKey =
-																			model ? `${modelFamily}:${model}` : modelFamily;
+																		const fallbackQuotaKey = model
+																			? `${modelFamily}:${model}`
+																			: modelFamily;
 																		const { delayMs } = getRateLimitBackoff(
 																			fallbackAccount.index,
 																			fallbackQuotaKey,
@@ -2452,14 +2484,14 @@ let sessionAffinityWriteVersion = 0;
 																if (fallbackAccount.index !== account.index) {
 																	runtimeMetrics.streamFailoverCrossAccountRecoveries += 1;
 																	runtimeMetrics.accountRotations += 1;
-													if (!responseContinuationEnabled) {
-														sessionAffinityStore?.rememberWithVersion(
-															sessionAffinityKey,
-															fallbackAccount.index,
-															Date.now(),
-															sessionAffinityVersion,
-														);
-													}
+																	if (!responseContinuationEnabled) {
+																		sessionAffinityStore?.rememberWithVersion(
+																			sessionAffinityKey,
+																			fallbackAccount.index,
+																			Date.now(),
+																			sessionAffinityVersion,
+																		);
+																	}
 																}
 
 																logInfo(
@@ -2520,19 +2552,19 @@ let sessionAffinityWriteVersion = 0;
 												isStreaming,
 												{
 													onResponseId: (responseId) => {
-												if (!responseContinuationEnabled) return;
-												sessionAffinityStore?.rememberWithVersion(
-													sessionAffinityKey,
-													successAccountForResponse.index,
-													Date.now(),
-													sessionAffinityVersion,
-												);
-												sessionAffinityStore?.updateLastResponseId(
-													sessionAffinityKey,
-													responseId,
-													Date.now(),
-													sessionAffinityVersion,
-												);
+														if (!responseContinuationEnabled) return;
+														sessionAffinityStore?.rememberWithVersion(
+															sessionAffinityKey,
+															successAccountForResponse.index,
+															Date.now(),
+															sessionAffinityVersion,
+														);
+														sessionAffinityStore?.updateLastResponseId(
+															sessionAffinityKey,
+															responseId,
+															Date.now(),
+															sessionAffinityVersion,
+														);
 														storedResponseIdForSuccess = true;
 													},
 													streamStallTimeoutMs,
@@ -2555,7 +2587,8 @@ let sessionAffinityWriteVersion = 0;
 															logWarn(
 																`Empty response received (attempt ${emptyResponseRetries}/${emptyResponseMaxRetries}). Retrying...`,
 															);
-															await showRuntimeToast(client, 
+															await showRuntimeToast(
+																client,
 																`Empty response. Retrying (${emptyResponseRetries}/${emptyResponseMaxRetries})...`,
 																"warning",
 																{ duration: toastDurationMs },
@@ -2618,7 +2651,13 @@ let sessionAffinityWriteVersion = 0;
 																			message: `Upstream server failures were observed across multiple accounts. Pausing retries for ${formatWaitTime(serverBurstCooldownUntil - Date.now())}. Check \`codex auth report --json\` for runtime metrics.`,
 																		},
 																	}),
-																	{ status: 503, headers: { "content-type": "application/json; charset=utf-8" } },
+																	{
+																		status: 503,
+																		headers: {
+																			"content-type":
+																				"application/json; charset=utf-8",
+																		},
+																	},
 																);
 															}
 														}
@@ -2723,39 +2762,39 @@ let sessionAffinityWriteVersion = 0;
 										continue;
 									}
 
-											const now = Date.now();
-											const poolCooldownUntil =
-												count > 0 && waitMs > 0
-													? armPoolExhaustionCooldown(waitMs, now)
-													: 0;
-											const effectiveWaitMs =
-												poolCooldownUntil > 0
-													? Math.max(0, poolCooldownUntil - now)
-													: waitMs;
-											const waitLabel =
-												effectiveWaitMs > 0
-													? formatWaitTime(effectiveWaitMs)
-													: "a bit";
-											const message =
-												count === 0
-													? "No Codex accounts configured. Run `codex login`."
-													: effectiveWaitMs > 0
-														? `All ${count} account(s) are rate-limited. A short pool cooldown is now active for ${waitLabel}. Try again later or inspect \`codex auth status\`.`
-														: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex auth report --json\`.`;
-											runtimeMetrics.failedRequests++;
-											runtimeMetrics.lastError = message;
-											syncRuntimeObservability(requestTraceId);
-											return new Response(JSON.stringify({ error: { message } }), {
+									const now = Date.now();
+									const poolCooldownUntil =
+										count > 0 && waitMs > 0
+											? armPoolExhaustionCooldown(waitMs, now)
+											: 0;
+									const effectiveWaitMs =
+										poolCooldownUntil > 0
+											? Math.max(0, poolCooldownUntil - now)
+											: waitMs;
+									const waitLabel =
+										effectiveWaitMs > 0
+											? formatWaitTime(effectiveWaitMs)
+											: "a bit";
+									const message =
+										count === 0
+											? "No Codex accounts configured. Run `codex login`."
+											: effectiveWaitMs > 0
+												? `All ${count} account(s) are rate-limited. A short pool cooldown is now active for ${waitLabel}. Try again later or inspect \`codex auth status\`.`
+												: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex auth report --json\`.`;
+									runtimeMetrics.failedRequests++;
+									runtimeMetrics.lastError = message;
+									syncRuntimeObservability(requestTraceId);
+									return new Response(JSON.stringify({ error: { message } }), {
 										status: effectiveWaitMs > 0 ? 429 : 503,
 										headers: {
 											"content-type": "application/json; charset=utf-8",
 										},
 									});
 								}
-								} finally {
-									syncRuntimeObservability(null);
-									clearCorrelationId();
-								}
+							} finally {
+								syncRuntimeObservability(null);
+								clearCorrelationId();
+							}
 						},
 					};
 				} finally {
@@ -2847,11 +2886,7 @@ let sessionAffinityWriteVersion = 0;
 										now,
 										activeIndex,
 										formatRateLimitEntry: (account, currentNow) =>
-											formatRateLimitEntry(
-												account,
-												currentNow,
-												formatWaitTime,
-											),
+											formatRateLimitEntry(account, currentNow, formatWaitTime),
 									},
 								);
 
@@ -2928,8 +2963,7 @@ let sessionAffinityWriteVersion = 0;
 										queuedRefresh,
 										resolveTokenSuccessAccount,
 										persistAccounts: persistAccountPool,
-										persistAccountsAndFlagged:
-											persistAccountPoolAndFlagged,
+										persistAccountsAndFlagged: persistAccountPoolAndFlagged,
 										invalidateAccountManagerCache: () =>
 											invalidateRuntimeAccountManagerCache(
 												accountManagerCacheInvalidationDeps,
@@ -3183,7 +3217,8 @@ let sessionAffinityWriteVersion = 0;
 							}
 
 							accounts.push(resolved);
-							await showRuntimeToast(client, 
+							await showRuntimeToast(
+								client,
 								`Account ${accounts.length} authenticated`,
 								"success",
 							);

@@ -63,7 +63,9 @@ vi.mock("../lib/auth/auth.js", () => ({
 			state: stateMatch?.[1],
 		};
 	}),
-	redactOAuthUrlForLog: vi.fn((url: string) => url.replace(/state=[^&]+/, "state=%3Credacted%3E")),
+	redactOAuthUrlForLog: vi.fn((url: string) =>
+		url.replace(/state=[^&]+/, "state=%3Credacted%3E"),
+	),
 	REDIRECT_URI: "http://localhost:1455/auth/callback",
 }));
 
@@ -238,7 +240,10 @@ vi.mock("../lib/request/rate-limit-backoff.js", () => ({
 beforeEach(() => {
 	configureRateLimitBackoffMock.mockReset();
 	getRateLimitBackoffMock.mockReset();
-	getRateLimitBackoffMock.mockImplementation(() => ({ attempt: 1, delayMs: 1000 }));
+	getRateLimitBackoffMock.mockImplementation(() => ({
+		attempt: 1,
+		delayMs: 1000,
+	}));
 	getRateLimitShortRetryThresholdMock.mockReset();
 	getRateLimitShortRetryThresholdMock.mockImplementation(() => 5000);
 	resetRateLimitBackoffMock.mockReset();
@@ -253,9 +258,9 @@ beforeEach(() => {
 });
 
 vi.mock("../lib/runtime/toast.js", async () => {
-	const actual = await vi.importActual<typeof import("../lib/runtime/toast.js")>(
-		"../lib/runtime/toast.js",
-	);
+	const actual = await vi.importActual<
+		typeof import("../lib/runtime/toast.js")
+	>("../lib/runtime/toast.js");
 	showRuntimeToastMock.mockImplementation(actual.showRuntimeToast);
 	return {
 		...actual,
@@ -263,24 +268,25 @@ vi.mock("../lib/runtime/toast.js", async () => {
 	};
 });
 
-	vi.mock("../lib/request/fetch-helpers.js", () => ({
-		extractRequestUrl: (input: unknown) => (typeof input === "string" ? input : String(input)),
-		rewriteUrlForCodex: (url: string) => url,
-		applyProxyCompatibleInit: vi.fn((_url: string, init: RequestInit) => init),
-		transformRequestForCodex: vi.fn(async (init: unknown) => ({
+vi.mock("../lib/request/fetch-helpers.js", () => ({
+	extractRequestUrl: (input: unknown) =>
+		typeof input === "string" ? input : String(input),
+	rewriteUrlForCodex: (url: string) => url,
+	applyProxyCompatibleInit: vi.fn((_url: string, init: RequestInit) => init),
+	transformRequestForCodex: vi.fn(async (init: unknown) => ({
 		updatedInit: init,
 		body: { model: "gpt-5.1" },
 	})),
-		shouldRefreshToken: () => false,
-		refreshAndUpdateToken: vi.fn(async (auth: unknown) => auth),
-		createCodexHeaders: vi.fn(() => new Headers()),
-		handleErrorResponse: vi.fn(async (response: Response) => ({ response })),
-		isWorkspaceDisabledError: (status: number, code: string, bodyText: string) =>
-			status === 403 &&
-			(code.toLowerCase().includes("workspace_disabled") ||
-				code.toLowerCase().includes("workspace_expired") ||
-				bodyText.toLowerCase().includes("workspace disabled") ||
-				bodyText.toLowerCase().includes("workspace expired")),
+	shouldRefreshToken: () => false,
+	refreshAndUpdateToken: vi.fn(async (auth: unknown) => auth),
+	createCodexHeaders: vi.fn(() => new Headers()),
+	handleErrorResponse: vi.fn(async (response: Response) => ({ response })),
+	isWorkspaceDisabledError: (status: number, code: string, bodyText: string) =>
+		status === 403 &&
+		(code.toLowerCase().includes("workspace_disabled") ||
+			code.toLowerCase().includes("workspace_expired") ||
+			bodyText.toLowerCase().includes("workspace disabled") ||
+			bodyText.toLowerCase().includes("workspace expired")),
 	getUnsupportedCodexModelInfo: vi.fn(() => ({ isUnsupported: false })),
 	resolveUnsupportedCodexFallbackModel: vi.fn(() => undefined),
 	shouldFallbackToGpt52OnUnsupportedGpt53: vi.fn(() => false),
@@ -327,7 +333,9 @@ const saveAccountsMock = vi.fn(
 		activeIndexByFamily?: Record<string, number>;
 	}) => {
 		mockStorage.version = storage.version;
-		mockStorage.accounts = storage.accounts.map((account) => cloneMockAccount(account));
+		mockStorage.accounts = storage.accounts.map((account) =>
+			cloneMockAccount(account),
+		);
 		mockStorage.activeIndex = storage.activeIndex;
 		mockStorage.activeIndexByFamily = {
 			...(storage.activeIndexByFamily ?? {}),
@@ -361,7 +369,9 @@ const withAccountStorageTransactionMock = vi.fn(
 			handler(
 				{
 					version: 3,
-					accounts: mockStorage.accounts.map((account) => cloneMockAccount(account)),
+					accounts: mockStorage.accounts.map((account) =>
+						cloneMockAccount(account),
+					),
 					activeIndex: mockStorage.activeIndex,
 					activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
 				},
@@ -412,7 +422,9 @@ vi.mock("../lib/storage.js", async () => {
 
 const extractAccountEmailMock = vi.fn(() => "user@example.com");
 const extractAccountIdMock = vi.fn(() => "account-1");
-const getAccountIdCandidatesMock = vi.fn(() => [{ accountId: "acc-1", source: "token", label: "Test" }]);
+const getAccountIdCandidatesMock = vi.fn(() => [
+	{ accountId: "acc-1", source: "token", label: "Test" },
+]);
 const selectBestAccountCandidateMock = vi.fn(
 	(candidates: Array<{ accountId: string }>) => candidates[0] ?? null,
 );
@@ -446,7 +458,9 @@ vi.mock("../lib/accounts.js", async () => {
 		}
 
 		getCurrentWorkspace(account: Record<string, unknown>) {
-			const workspaces = Array.isArray(account.workspaces) ? account.workspaces : [];
+			const workspaces = Array.isArray(account.workspaces)
+				? account.workspaces
+				: [];
 			const currentWorkspaceIndex =
 				typeof account.currentWorkspaceIndex === "number"
 					? account.currentWorkspaceIndex
@@ -474,12 +488,16 @@ vi.mock("../lib/accounts.js", async () => {
 		saveToDiskDebounced() {}
 		updateFromAuth() {}
 		clearAuthFailures() {}
-		incrementAuthFailures() { return 1; }
+		incrementAuthFailures() {
+			return 1;
+		}
 		async saveToDisk() {}
 		markAccountCoolingDown() {}
 		markRateLimited() {}
 		markRateLimitedWithReason() {}
-		consumeToken() { return true; }
+		consumeToken() {
+			return true;
+		}
 		refundToken() {}
 		syncCodexCliActiveSelectionForIndex(index: number) {
 			return syncCodexCliSelectionMock(index);
@@ -557,7 +575,8 @@ vi.mock("../lib/accounts.js", async () => {
 		resolveRequestAccountId: (
 			tokenUtils as typeof import("../lib/auth/token-utils.js")
 		).resolveRequestAccountId,
-		formatAccountLabel: (_account: unknown, index: number) => `Account ${index + 1}`,
+		formatAccountLabel: (_account: unknown, index: number) =>
+			`Account ${index + 1}`,
 		formatCooldown: () => null,
 		formatWaitTime: (ms: number) => `${Math.round(ms / 1000)}s`,
 		sanitizeEmail: (email: string | undefined) =>
@@ -571,18 +590,23 @@ vi.mock("../lib/accounts.js", async () => {
 
 type ToolExecute<T = void> = { execute: (args: T) => Promise<string> };
 type PluginType = {
-	event: (input: { event: { type: string; properties?: unknown } }) => Promise<void>;
+	event: (input: {
+		event: { type: string; properties?: unknown };
+	}) => Promise<void>;
 	auth: {
 		provider: string;
 		methods: Array<{ label: string; type: string }>;
-		loader: (getAuth: () => Promise<unknown>, provider: unknown) => Promise<{
+		loader: (
+			getAuth: () => Promise<unknown>,
+			provider: unknown,
+		) => Promise<{
 			apiKey?: string;
 			baseURL?: string;
 			fetch?: (input: unknown, init?: unknown) => Promise<Response>;
 		}>;
 	};
 	tool: {
-		"edit": ToolExecute<{
+		edit: ToolExecute<{
 			path: string;
 			oldString?: string;
 			newString?: string;
@@ -592,7 +616,7 @@ type PluginType = {
 			operation?: string;
 			content?: string;
 		}>;
-		"apply_patch": ToolExecute<{
+		apply_patch: ToolExecute<{
 			path: string;
 			oldString?: string;
 			newString?: string;
@@ -602,7 +626,7 @@ type PluginType = {
 			operation?: string;
 			content?: string;
 		}>;
-		"hashline_read": ToolExecute<{
+		hashline_read: ToolExecute<{
 			path: string;
 			startLine?: number;
 			maxLines?: number;
@@ -651,7 +675,9 @@ describe("OpenAIOAuthPlugin", () => {
 		mockStorage.activeIndexByFamily = {};
 
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 	});
 
 	afterEach(() => {
@@ -692,9 +718,9 @@ describe("OpenAIOAuthPlugin", () => {
 			try {
 				const mockClient = createMockClient();
 				const { OpenAIOAuthPlugin } = await import("../index.js");
-				const defaultPlugin = await OpenAIOAuthPlugin({
+				const defaultPlugin = (await OpenAIOAuthPlugin({
 					client: mockClient,
-				} as never) as unknown as PluginType;
+				} as never)) as unknown as PluginType;
 
 				expect(defaultPlugin.tool["codex-metrics"]).toBeUndefined();
 				expect(defaultPlugin.tool["codex-remove"]).toBeUndefined();
@@ -712,13 +738,19 @@ describe("OpenAIOAuthPlugin", () => {
 
 		it("has two auth methods", () => {
 			expect(plugin.auth.methods).toHaveLength(2);
-			expect(plugin.auth.methods[0].label).toBe("ChatGPT Plus/Pro MULTI (Codex Subscription)");
-			expect(plugin.auth.methods[1].label).toBe("ChatGPT Plus/Pro MULTI (Manual URL Paste)");
+			expect(plugin.auth.methods[0].label).toBe(
+				"ChatGPT Plus/Pro MULTI (Codex Subscription)",
+			);
+			expect(plugin.auth.methods[1].label).toBe(
+				"ChatGPT Plus/Pro MULTI (Manual URL Paste)",
+			);
 		});
 
 		it("uses manual auth flow when browser launch is globally suppressed", async () => {
 			const browserModule = await import("../lib/auth/browser.js");
-			vi.mocked(browserModule.isBrowserLaunchSuppressed).mockReturnValueOnce(true);
+			vi.mocked(browserModule.isBrowserLaunchSuppressed).mockReturnValueOnce(
+				true,
+			);
 			const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
 			const autoMethod = plugin.auth.methods[0] as unknown as {
 				authorize: (inputs?: Record<string, string>) => Promise<{
@@ -732,7 +764,9 @@ describe("OpenAIOAuthPlugin", () => {
 
 			expect(flow.method).toBe("code");
 			expect(flow.instructions).toContain("copy the full redirect URL");
-			expect(flow.validate("invalid-callback-value")).toContain("No authorization code found");
+			expect(flow.validate("invalid-callback-value")).toContain(
+				"No authorization code found",
+			);
 			expect(openBrowserUrlMock).not.toHaveBeenCalled();
 		});
 
@@ -762,18 +796,23 @@ describe("OpenAIOAuthPlugin", () => {
 			const manualMethod = plugin.auth.methods[1] as unknown as {
 				authorize: () => Promise<{
 					validate: (input: string) => string | undefined;
-					callback: (input: string) => Promise<{ type: string; reason?: string; message?: string }>;
+					callback: (
+						input: string,
+					) => Promise<{ type: string; reason?: string; message?: string }>;
 				}>;
 			};
 
 			const flow = await manualMethod.authorize();
-			const invalidInput = "http://127.0.0.1:1455/auth/callback?code=abc123&state=wrong-state";
+			const invalidInput =
+				"http://127.0.0.1:1455/auth/callback?code=abc123&state=wrong-state";
 
 			expect(flow.validate(invalidInput)).toContain("state mismatch");
 			const result = await flow.callback(invalidInput);
 			expect(result.type).toBe("failed");
 			expect(result.reason).toBe("invalid_response");
-			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
+			expect(
+				vi.mocked(authModule.exchangeAuthorizationCode),
+			).not.toHaveBeenCalled();
 		});
 
 		it("uses REDIRECT_URI in manual callback validation copy", async () => {
@@ -794,7 +833,9 @@ describe("OpenAIOAuthPlugin", () => {
 			const loggerModule = await import("../lib/logger.js");
 			const browserModule = await import("../lib/auth/browser.js");
 			const serverModule = await import("../lib/auth/server.js");
-			const flow: Awaited<ReturnType<typeof authModule.createAuthorizationFlow>> = {
+			const flow: Awaited<
+				ReturnType<typeof authModule.createAuthorizationFlow>
+			> = {
 				pkce: { verifier: "v", challenge: "c" },
 				state: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 				url: "https://auth.openai.com/oauth/authorize?state=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&response_type=code&client_id=test",
@@ -849,12 +890,14 @@ describe("OpenAIOAuthPlugin", () => {
 				refresh: "restored-refresh",
 				expires: now + 60_000,
 			});
-			vi.mocked(storageModule.loadFlaggedAccounts).mockImplementation(async () => {
-				loadFlaggedCallCount += 1;
-				return loadFlaggedCallCount <= 2
-					? flaggedStorage
-					: { version: 1, accounts: [] };
-			});
+			vi.mocked(storageModule.loadFlaggedAccounts).mockImplementation(
+				async () => {
+					loadFlaggedCallCount += 1;
+					return loadFlaggedCallCount <= 2
+						? flaggedStorage
+						: { version: 1, accounts: [] };
+				},
+			);
 			withAccountAndFlaggedStorageTransactionMock.mockImplementationOnce(
 				async (handler) =>
 					handler(
@@ -881,7 +924,9 @@ describe("OpenAIOAuthPlugin", () => {
 			};
 			await autoMethod.authorize();
 
-			expect(withAccountAndFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
+			expect(withAccountAndFlaggedStorageTransactionMock).toHaveBeenCalledTimes(
+				1,
+			);
 			expect(mockStorage.accounts).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({
@@ -890,25 +935,34 @@ describe("OpenAIOAuthPlugin", () => {
 					}),
 				]),
 			);
-			expect(vi.mocked(storageModule.saveFlaggedAccounts)).toHaveBeenCalledWith({
-				version: 1,
-				accounts: [],
-			});
+			expect(vi.mocked(storageModule.saveFlaggedAccounts)).toHaveBeenCalledWith(
+				{
+					version: 1,
+					accounts: [],
+				},
+			);
 		});
 	});
 
 	describe("event handler", () => {
 		it("handles account.select event", async () => {
-			await plugin.event({ event: { type: "account.select", properties: { index: 0 } } });
+			await plugin.event({
+				event: { type: "account.select", properties: { index: 0 } },
+			});
 		});
 
 		it("handles openai.account.select event", async () => {
-			await plugin.event({ event: { type: "openai.account.select", properties: { index: 0 } } });
+			await plugin.event({
+				event: { type: "openai.account.select", properties: { index: 0 } },
+			});
 		});
 
 		it("ignores events with different provider", async () => {
 			await plugin.event({
-				event: { type: "account.select", properties: { provider: "other", index: 0 } },
+				event: {
+					type: "account.select",
+					properties: { provider: "other", index: 0 },
+				},
 			});
 		});
 
@@ -945,7 +999,10 @@ describe("OpenAIOAuthPlugin", () => {
 				expires: Date.now() + 60_000,
 				multiAccount: true,
 			});
-			const result = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			const result = await plugin.auth.loader(getAuth, {
+				options: {},
+				models: {},
+			});
 			expect(result.apiKey).toBeDefined();
 			expect(result.baseURL).toBeDefined();
 			expect(result.fetch).toBeDefined();
@@ -1004,7 +1061,7 @@ describe("OpenAIOAuthPlugin", () => {
 				{
 					refreshToken: "r1",
 					email: "user@example.com",
-					rateLimitResetTimes: { "codex": Date.now() + 60000 },
+					rateLimitResetTimes: { codex: Date.now() + 60000 },
 				},
 			];
 			const result = await plugin.tool["codex-list"].execute();
@@ -1079,7 +1136,11 @@ describe("OpenAIOAuthPlugin", () => {
 
 		it("shows detailed status for accounts", async () => {
 			mockStorage.accounts = [
-				{ refreshToken: "r1", email: "user@example.com", lastUsed: Date.now() - 60000 },
+				{
+					refreshToken: "r1",
+					email: "user@example.com",
+					lastUsed: Date.now() - 60000,
+				},
 			];
 			mockStorage.activeIndexByFamily = { codex: 0 };
 			const result = await plugin.tool["codex-status"].execute();
@@ -1137,7 +1198,9 @@ describe("OpenAIOAuthPlugin", () => {
 		});
 
 		it("handles removal of last account", async () => {
-			mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
+			mockStorage.accounts = [
+				{ refreshToken: "r1", email: "user@example.com" },
+			];
 			const result = await plugin.tool["codex-remove"].execute({ index: 1 });
 			expect(result).toContain("Removed");
 			expect(result).toContain("No accounts remaining");
@@ -1199,9 +1262,13 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const mockClient = createMockClient();
 
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
-		await plugin.event({ event: { type: "account.select", properties: { index: "not-a-number" } } });
+		await plugin.event({
+			event: { type: "account.select", properties: { index: "not-a-number" } },
+		});
 	});
 
 	it("handles storage errors in codex-switch", async () => {
@@ -1213,7 +1280,9 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const mockClient = createMockClient();
 
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		const result = await plugin.tool["codex-switch"].execute({ index: 1 });
 		expect(result).toContain("failed to persist");
@@ -1226,7 +1295,9 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const mockClient = createMockClient();
 
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		const result = await plugin.tool["codex-export"].execute({
 			path: "/tmp/backup.json",
@@ -1241,7 +1312,9 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const mockClient = createMockClient();
 
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		const result = await plugin.tool["codex-import"].execute({
 			path: "/tmp/backup.json",
@@ -1258,7 +1331,9 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const mockClient = createMockClient();
 
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		const result = await plugin.tool["codex-health"].execute();
 		expect(result).toContain("Error");
@@ -1278,7 +1353,9 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const mockClient = createMockClient();
 
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		const result = await plugin.tool["codex-refresh"].execute();
 		expect(result).toContain("Failed");
@@ -1286,14 +1363,18 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 
 	it("handles refresh throwing errors", async () => {
 		const { queuedRefresh } = await import("../lib/refresh-queue.js");
-		vi.mocked(queuedRefresh).mockRejectedValueOnce(new Error("Network timeout"));
+		vi.mocked(queuedRefresh).mockRejectedValueOnce(
+			new Error("Network timeout"),
+		);
 
 		mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
 
 		const mockClient = createMockClient();
 
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		const result = await plugin.tool["codex-refresh"].execute();
 		expect(result).toContain("Error");
@@ -1312,7 +1393,9 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const mockClient = createMockClient();
 
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		const result = await plugin.tool["codex-remove"].execute({ index: 1 });
 		expect(result).toContain("failed to persist");
@@ -1332,7 +1415,9 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const mockClient = createMockClient();
 
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		await plugin.tool["codex-remove"].execute({ index: 1 });
 		// After removing account at 0-based index 0, length is 2.
@@ -1352,7 +1437,9 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const mockClient = createMockClient();
 
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		await plugin.tool["codex-remove"].execute({ index: 2 });
 		expect(mockStorage.activeIndex).toBe(0);
@@ -1385,7 +1472,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 	const setupPlugin = async () => {
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		const getAuth = async () => ({
 			type: "oauth" as const,
@@ -1419,7 +1508,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				workspaces?: Array<{ id: string; name?: string; enabled?: boolean }>;
 				currentWorkspaceIndex?: number;
 			}) => {
-				const workspaces = Array.isArray(account.workspaces) ? account.workspaces : [];
+				const workspaces = Array.isArray(account.workspaces)
+					? account.workspaces
+					: [];
 				const currentWorkspaceIndex =
 					typeof account.currentWorkspaceIndex === "number"
 						? account.currentWorkspaceIndex
@@ -1431,7 +1522,8 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			isAccountAvailableForFamily: (index: number) => Boolean(accounts[index]),
 			toAuthDetails: (account: (typeof accounts)[number]) => ({
 				type: "oauth" as const,
-				access: account.accessToken ?? `access-${account.accountId ?? account.index}`,
+				access:
+					account.accessToken ?? `access-${account.accountId ?? account.index}`,
 				refresh: account.refreshToken,
 				expires: Date.now() + 60_000,
 				...(account.idToken ? { idToken: account.idToken } : {}),
@@ -1461,26 +1553,26 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		};
 	};
 
-	const buildStableRoutingManager = (
-		account: {
-			index: number;
-			accountId?: string;
-			accountIdSource?: string;
-			email?: string;
-			refreshToken: string;
-			accessToken?: string;
-			idToken?: string;
-		},
-	) => ({
+	const buildStableRoutingManager = (account: {
+		index: number;
+		accountId?: string;
+		accountIdSource?: string;
+		email?: string;
+		refreshToken: string;
+		accessToken?: string;
+		idToken?: string;
+	}) => ({
 		...buildRoutingManager([account]),
 		getCurrentOrNextForFamilyHybrid: () => account,
 		getCurrentOrNextForFamily: () => account,
 	});
 
 	it("returns success response for successful fetch", async () => {
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
-		);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify({ content: "test" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -1515,22 +1607,26 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 						? `${body.prompt_cache_key.trim()}:normalized`
 						: undefined;
 				return {
-				updatedInit: {
-					...(init as RequestInit),
-					body: JSON.stringify({
-						...(body ?? {}),
+					updatedInit: {
+						...(init as RequestInit),
+						body: JSON.stringify({
+							...(body ?? {}),
+							...(normalizedPromptCacheKey
+								? { prompt_cache_key: normalizedPromptCacheKey }
+								: {}),
+						}),
+					},
+					body: {
+						...(body ?? { model: "gpt-5.4" }),
 						...(normalizedPromptCacheKey
 							? { prompt_cache_key: normalizedPromptCacheKey }
 							: {}),
-					}),
-				},
-				body: {
-					...(body ?? { model: "gpt-5.4" }),
-					...(normalizedPromptCacheKey
-						? { prompt_cache_key: normalizedPromptCacheKey }
-						: {}),
-				} as { model: string; prompt_cache_key?: string; previous_response_id?: string },
-			};
+					} as {
+						model: string;
+						prompt_cache_key?: string;
+						previous_response_id?: string;
+					},
+				};
 			},
 		);
 		vi.mocked(fetchHelpers.handleSuccessResponse)
@@ -1543,21 +1639,30 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		globalThis.fetch = vi
 			.fn()
 			.mockImplementation(
-				async () => new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+				async () =>
+					new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
 			);
 
 		const { sdk } = await setupPlugin();
 		await sdk.fetch!("https://api.openai.com/v1/chat", {
 			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
+			body: JSON.stringify({
+				model: "gpt-5.4",
+				prompt_cache_key: "ses_contract",
+			}),
 		});
 		await sdk.fetch!("https://api.openai.com/v1/chat", {
 			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
+			body: JSON.stringify({
+				model: "gpt-5.4",
+				prompt_cache_key: "ses_contract",
+			}),
 		});
 
-		const firstInit = vi.mocked(globalThis.fetch).mock.calls[0]?.[1] as RequestInit;
-		const secondInit = vi.mocked(globalThis.fetch).mock.calls[1]?.[1] as RequestInit;
+		const firstInit = vi.mocked(globalThis.fetch).mock
+			.calls[0]?.[1] as RequestInit;
+		const secondInit = vi.mocked(globalThis.fetch).mock
+			.calls[1]?.[1] as RequestInit;
 		const firstBody = JSON.parse(String(firstInit.body)) as {
 			previous_response_id?: string;
 			prompt_cache_key?: string;
@@ -1606,12 +1711,17 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		globalThis.fetch = vi
 			.fn()
-			.mockResolvedValue(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockResolvedValue(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		await sdk.fetch!("https://api.openai.com/v1/chat", {
 			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
+			body: JSON.stringify({
+				model: "gpt-5.4",
+				prompt_cache_key: "ses_contract",
+			}),
 		});
 		await sdk.fetch!("https://api.openai.com/v1/chat", {
 			method: "POST",
@@ -1622,7 +1732,8 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			}),
 		});
 
-		const secondInit = vi.mocked(globalThis.fetch).mock.calls[1]?.[1] as RequestInit;
+		const secondInit = vi.mocked(globalThis.fetch).mock
+			.calls[1]?.[1] as RequestInit;
 		const secondBody = JSON.parse(String(secondInit.body)) as {
 			previous_response_id?: string;
 		};
@@ -1666,19 +1777,28 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		globalThis.fetch = vi
 			.fn()
-			.mockResolvedValue(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockResolvedValue(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		await sdk.fetch!("https://api.openai.com/v1/chat", {
 			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
+			body: JSON.stringify({
+				model: "gpt-5.4",
+				prompt_cache_key: "ses_contract",
+			}),
 		});
 		await sdk.fetch!("https://api.openai.com/v1/chat", {
 			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
+			body: JSON.stringify({
+				model: "gpt-5.4",
+				prompt_cache_key: "ses_contract",
+			}),
 		});
 
-		const secondInit = vi.mocked(globalThis.fetch).mock.calls[1]?.[1] as RequestInit;
+		const secondInit = vi.mocked(globalThis.fetch).mock
+			.calls[1]?.[1] as RequestInit;
 		const secondBody = JSON.parse(String(secondInit.body)) as {
 			previous_response_id?: string;
 		};
@@ -1689,7 +1809,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const configModule = await import("../lib/config.js");
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
-		const streamFailoverModule = await import("../lib/request/stream-failover.js");
+		const streamFailoverModule = await import(
+			"../lib/request/stream-failover.js"
+		);
 		const accounts = [
 			{
 				index: 0,
@@ -1709,12 +1831,16 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		let selection = 0;
 		const manager = {
 			...buildRoutingManager(accounts),
-			getCurrentOrNextForFamilyHybrid: () => accounts[selection++] ?? accounts[1] ?? null,
-			getCurrentOrNextForFamily: () => accounts[selection++] ?? accounts[1] ?? null,
+			getCurrentOrNextForFamilyHybrid: () =>
+				accounts[selection++] ?? accounts[1] ?? null,
+			getCurrentOrNextForFamily: () =>
+				accounts[selection++] ?? accounts[1] ?? null,
 		};
 		const responseIdCallbacks: Array<(responseId: string) => void> = [];
 
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
+			manager as never,
+		);
 		vi.mocked(configModule.getSessionAffinity).mockReturnValue(true);
 		vi.mocked(configModule.getResponseContinuation).mockReturnValue(true);
 		extractAccountIdMock.mockImplementation((accessToken: unknown) => {
@@ -1756,7 +1882,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		globalThis.fetch = vi
 			.fn()
-			.mockResolvedValue(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockResolvedValue(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		const firstRequest = sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -1783,10 +1911,14 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		await sdk.fetch!("https://api.openai.com/v1/chat", {
 			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.4", prompt_cache_key: "ses_contract" }),
+			body: JSON.stringify({
+				model: "gpt-5.4",
+				prompt_cache_key: "ses_contract",
+			}),
 		});
 
-		const thirdInit = vi.mocked(globalThis.fetch).mock.calls[2]?.[1] as RequestInit;
+		const thirdInit = vi.mocked(globalThis.fetch).mock
+			.calls[2]?.[1] as RequestInit;
 		const thirdBody = JSON.parse(String(thirdInit.body)) as {
 			previous_response_id?: string;
 		};
@@ -1816,13 +1948,18 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				body: JSON.stringify({ model: "gpt-5-mini", input: longInput }),
 			},
 			body: { model: "gpt-5-mini", input: longInput },
-			deferredFastSessionInputTrim: { maxItems: 8, preferLatestUserOnly: false },
+			deferredFastSessionInputTrim: {
+				maxItems: 8,
+				preferLatestUserOnly: false,
+			},
 		});
 
 		globalThis.fetch = vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ output: compactedInput }), { status: 200 }),
+				new Response(JSON.stringify({ output: compactedInput }), {
+					status: 200,
+				}),
 			)
 			.mockResolvedValueOnce(
 				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
@@ -1840,7 +1977,8 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			"https://api.openai.com/v1/chat/compact",
 		);
 
-		const upstreamInit = vi.mocked(globalThis.fetch).mock.calls[1]?.[1] as RequestInit;
+		const upstreamInit = vi.mocked(globalThis.fetch).mock
+			.calls[1]?.[1] as RequestInit;
 		const upstreamBody =
 			typeof upstreamInit.body === "string"
 				? (JSON.parse(upstreamInit.body) as { input?: unknown[] })
@@ -1856,11 +1994,14 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			role: index === 0 ? "developer" : "user",
 			content: index === 0 ? "system prompt" : `message-${index}`,
 		}));
-		const partiallyCompactedInput = Array.from({ length: 10 }, (_value, index) => ({
-			type: "message",
-			role: index === 0 ? "developer" : "user",
-			content: index === 0 ? "compacted system prompt" : `compacted-${index}`,
-		}));
+		const partiallyCompactedInput = Array.from(
+			{ length: 10 },
+			(_value, index) => ({
+				type: "message",
+				role: index === 0 ? "developer" : "user",
+				content: index === 0 ? "compacted system prompt" : `compacted-${index}`,
+			}),
+		);
 		const manager = buildRoutingManager([
 			{
 				index: 0,
@@ -1879,14 +2020,19 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				accessToken: "access-beta",
 			},
 		]);
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
+			manager as never,
+		);
 		vi.mocked(fetchHelpers.transformRequestForCodex).mockResolvedValueOnce({
 			updatedInit: {
 				method: "POST",
 				body: JSON.stringify({ model: "gpt-5-mini", input: longInput }),
 			},
 			body: { model: "gpt-5-mini", input: longInput },
-			deferredFastSessionInputTrim: { maxItems: 8, preferLatestUserOnly: false },
+			deferredFastSessionInputTrim: {
+				maxItems: 8,
+				preferLatestUserOnly: false,
+			},
 		});
 		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
 			(_init, accountId, accessToken) =>
@@ -1899,9 +2045,12 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			const normalizedUrl =
 				typeof requestUrl === "string" ? requestUrl : String(requestUrl);
 			if (normalizedUrl.endsWith("/compact")) {
-				return new Response(JSON.stringify({ output: partiallyCompactedInput }), {
-					status: 200,
-				});
+				return new Response(
+					JSON.stringify({ output: partiallyCompactedInput }),
+					{
+						status: 200,
+					},
+				);
 			}
 
 			const headers = new Headers(init?.headers);
@@ -1947,18 +2096,24 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				refreshToken: "refresh-1",
 			},
 		]);
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
+			manager as never,
+		);
 		extractAccountEmailMock.mockReturnValueOnce("fresh@example.com");
 		const entitlementModule = await import("../lib/entitlement-cache.js");
 		const isBlockedSpy = vi
 			.spyOn(entitlementModule.EntitlementCache.prototype, "isBlocked")
 			.mockImplementation(() => {
-				expect(manager.getAccountsSnapshot()[0]?.email).toBe("stale@example.com");
+				expect(manager.getAccountsSnapshot()[0]?.email).toBe(
+					"stale@example.com",
+				);
 				return { blocked: false, waitMs: 0 };
 			});
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
-		);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify({ content: "test" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -1977,48 +2132,49 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 	it.each([
 		["org", "workspace-alpha"],
 		["manual", "workspace-beta"],
-	] as const)(
-		"preserves %s-selected workspace in primary request routing",
-		async (accountIdSource, expectedAccountId) => {
-			const { AccountManager } = await import("../lib/accounts.js");
-			const fetchHelpers = await import("../lib/request/fetch-helpers.js");
-			const manager = buildRoutingManager([
-				{
-					index: 0,
-					accountId: expectedAccountId,
-					accountIdSource,
-					email: "owner@example.com",
-					refreshToken: "refresh-1",
-					accessToken: "access-primary",
-				},
-			]);
-			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
-			extractAccountIdMock.mockReturnValueOnce("token-personal");
-			vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
-				(_init, accountId, accessToken) =>
-					new Headers({
-						"x-test-account-id": String(accountId),
-						"x-test-access-token": String(accessToken),
-					}),
-			);
-			globalThis.fetch = vi.fn().mockResolvedValue(
+	] as const)("preserves %s-selected workspace in primary request routing", async (accountIdSource, expectedAccountId) => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const manager = buildRoutingManager([
+			{
+				index: 0,
+				accountId: expectedAccountId,
+				accountIdSource,
+				email: "owner@example.com",
+				refreshToken: "refresh-1",
+				accessToken: "access-primary",
+			},
+		]);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
+			manager as never,
+		);
+		extractAccountIdMock.mockReturnValueOnce("token-personal");
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, accountId, accessToken) =>
+				new Headers({
+					"x-test-account-id": String(accountId),
+					"x-test-access-token": String(accessToken),
+				}),
+		);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
 				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
 			);
 
-			const { sdk } = await setupPlugin();
-			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
-				method: "POST",
-				body: JSON.stringify({ model: "gpt-5.1" }),
-			});
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
 
-			expect(response.status).toBe(200);
-			const headers = new Headers(
-				vi.mocked(globalThis.fetch).mock.calls[0]?.[1]?.headers,
-			);
-			expect(headers.get("x-test-account-id")).toBe(expectedAccountId);
-			expect(headers.get("x-test-access-token")).toBe("access-primary");
-		},
-	);
+		expect(response.status).toBe(200);
+		const headers = new Headers(
+			vi.mocked(globalThis.fetch).mock.calls[0]?.[1]?.headers,
+		);
+		expect(headers.get("x-test-account-id")).toBe(expectedAccountId);
+		expect(headers.get("x-test-access-token")).toBe("access-primary");
+	});
 
 	it("keeps token-derived routing on the refreshed token accountId", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
@@ -2033,7 +2189,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				accessToken: "access-primary",
 			},
 		]);
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
+			manager as never,
+		);
 		extractAccountIdMock.mockReturnValueOnce("token-personal");
 		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
 			(_init, accountId, accessToken) =>
@@ -2042,9 +2200,11 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 					"x-test-access-token": String(accessToken),
 				}),
 		);
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
-		);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -2080,7 +2240,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				accessToken: "access-beta",
 			},
 		]);
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
+			manager as never,
+		);
 		extractAccountIdMock
 			.mockReturnValueOnce("token-primary")
 			.mockReturnValueOnce("token-personal-fallback");
@@ -2095,7 +2257,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			.fn()
 			.mockRejectedValueOnce(new Error("Network timeout"))
 			.mockRejectedValueOnce(new Error("Network timeout"))
-			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -2116,13 +2280,17 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 	it("attaches proxy dispatcher returned by the helper to the primary upstream request", async () => {
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
 		const proxyDispatcher = { kind: "proxy-dispatcher" };
-		vi.mocked(fetchHelpers.applyProxyCompatibleInit).mockImplementation((_url, init) => ({
-			...(init ?? {}),
-			dispatcher: proxyDispatcher,
-		}));
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		vi.mocked(fetchHelpers.applyProxyCompatibleInit).mockImplementation(
+			(_url, init) => ({
+				...(init ?? {}),
+				dispatcher: proxyDispatcher,
+			}),
 		);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -2132,7 +2300,8 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(response.status).toBe(200);
 		expect(vi.mocked(fetchHelpers.applyProxyCompatibleInit)).toHaveBeenCalled();
-		const firstInit = vi.mocked(globalThis.fetch).mock.calls[0]?.[1] as RequestInit;
+		const firstInit = vi.mocked(globalThis.fetch).mock
+			.calls[0]?.[1] as RequestInit;
 		expect(firstInit.dispatcher).toBe(proxyDispatcher);
 	});
 
@@ -2158,16 +2327,22 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				accessToken: "access-beta",
 			},
 		]);
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
-		vi.mocked(fetchHelpers.applyProxyCompatibleInit).mockImplementation((_url, init) => ({
-			...(init ?? {}),
-			dispatcher: proxyDispatcher,
-		}));
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
+			manager as never,
+		);
+		vi.mocked(fetchHelpers.applyProxyCompatibleInit).mockImplementation(
+			(_url, init) => ({
+				...(init ?? {}),
+				dispatcher: proxyDispatcher,
+			}),
+		);
 		globalThis.fetch = vi
 			.fn()
 			.mockRejectedValueOnce(new Error("Network timeout"))
 			.mockRejectedValueOnce(new Error("Network timeout"))
-			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -2176,8 +2351,11 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		});
 
 		expect(response.status).toBe(200);
-		expect(vi.mocked(fetchHelpers.applyProxyCompatibleInit)).toHaveBeenCalledTimes(3);
-		const thirdInit = vi.mocked(globalThis.fetch).mock.calls[2]?.[1] as RequestInit;
+		expect(
+			vi.mocked(fetchHelpers.applyProxyCompatibleInit),
+		).toHaveBeenCalledTimes(3);
+		const thirdInit = vi.mocked(globalThis.fetch).mock
+			.calls[2]?.[1] as RequestInit;
 		expect(thirdInit.dispatcher).toBe(proxyDispatcher);
 	});
 	it("locks fallback entitlement checks to a stable account snapshot before mutating the shared account", async () => {
@@ -2203,7 +2381,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				idToken: "id-token-beta",
 			},
 		]);
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
+			manager as never,
+		);
 		extractAccountIdMock
 			.mockReturnValueOnce("token-primary")
 			.mockReturnValueOnce("token-personal-fallback");
@@ -2220,7 +2400,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		const isBlockedSpy = vi
 			.spyOn(entitlementModule.EntitlementCache.prototype, "isBlocked")
 			.mockImplementation((key) => {
-				if (key === "account:workspace-fallback::email:beta-fresh@example.com") {
+				if (
+					key === "account:workspace-fallback::email:beta-fresh@example.com"
+				) {
 					const fallbackSnapshot = manager.getAccountsSnapshot()[1];
 					expect(fallbackSnapshot?.accountId).toBe("workspace-fallback");
 					expect(fallbackSnapshot?.email).toBe("beta-stale@example.com");
@@ -2231,7 +2413,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			.fn()
 			.mockRejectedValueOnce(new Error("Network timeout"))
 			.mockRejectedValueOnce(new Error("Network timeout"))
-			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -2270,7 +2454,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				idToken: "id-token-beta",
 			},
 		]);
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
+			manager as never,
+		);
 		extractAccountIdMock
 			.mockReturnValueOnce("token-primary")
 			.mockReturnValueOnce("workspace-fallback");
@@ -2288,7 +2474,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			.fn()
 			.mockRejectedValueOnce(new Error("Network timeout"))
 			.mockRejectedValueOnce(new Error("Network timeout"))
-			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -2334,7 +2522,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			getCurrentOrNextForFamily: () =>
 				selectionCount++ < 2 ? accounts[0] : accounts[1],
 		};
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
+			manager as never,
+		);
 		extractAccountIdMock
 			.mockReturnValueOnce("token-primary")
 			.mockReturnValueOnce("token-primary")
@@ -2354,25 +2544,29 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		);
 		const blockedKeys: Array<[string, string | undefined]> = [];
 		const clearedKeys: Array<[string, string | undefined]> = [];
-		vi.spyOn(entitlementModule.EntitlementCache.prototype, "isBlocked").mockImplementation(
-			(accountKey, modelKey) => {
-				blockedKeys.push([accountKey, modelKey]);
-				return { blocked: false, waitMs: 0 };
-			},
-		);
-		vi.spyOn(entitlementModule.EntitlementCache.prototype, "clear").mockImplementation(
-			(accountKey, modelKey) => {
-				clearedKeys.push([accountKey, modelKey]);
-			},
-		);
+		vi.spyOn(
+			entitlementModule.EntitlementCache.prototype,
+			"isBlocked",
+		).mockImplementation((accountKey, modelKey) => {
+			blockedKeys.push([accountKey, modelKey]);
+			return { blocked: false, waitMs: 0 };
+		});
+		vi.spyOn(
+			entitlementModule.EntitlementCache.prototype,
+			"clear",
+		).mockImplementation((accountKey, modelKey) => {
+			clearedKeys.push([accountKey, modelKey]);
+		});
 
 		let releasePrimaryFailures: (() => void) | undefined;
 		const primaryBarrier = new Promise<void>((resolve) => {
 			releasePrimaryFailures = resolve;
 		});
 		let primaryAttempts = 0;
-		const fallbackResponses: Array<{ accountId: string | null; accessToken: string | null }> =
-			[];
+		const fallbackResponses: Array<{
+			accountId: string | null;
+			accessToken: string | null;
+		}> = [];
 		globalThis.fetch = vi.fn().mockImplementation(async (_url, init) => {
 			const headers = new Headers(init?.headers);
 			const accountId = headers.get("x-test-account-id");
@@ -2387,7 +2581,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			}
 
 			fallbackResponses.push({ accountId, accessToken });
-			return new Response(JSON.stringify({ accountId, accessToken }), { status: 200 });
+			return new Response(JSON.stringify({ accountId, accessToken }), {
+				status: 200,
+			});
 		});
 
 		const { sdk } = await setupPlugin();
@@ -2413,7 +2609,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			.filter((accountId): accountId is string => accountId !== null);
 		expect(primaryAttempts).toBeGreaterThanOrEqual(2);
 		expect(
-			routedFetchCalls.filter((accountId) => accountId === "workspace-fallback"),
+			routedFetchCalls.filter(
+				(accountId) => accountId === "workspace-fallback",
+			),
 		).toHaveLength(2);
 		expect(fallbackResponses).toEqual([
 			{ accountId: "workspace-fallback", accessToken: "access-beta" },
@@ -2421,14 +2619,26 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		]);
 		expect(blockedKeys).toEqual(
 			expect.arrayContaining([
-				["account:workspace-fallback::email:beta-fresh-a@example.com", "gpt-5.1"],
-				["account:workspace-fallback::email:beta-fresh-b@example.com", "gpt-5.1"],
+				[
+					"account:workspace-fallback::email:beta-fresh-a@example.com",
+					"gpt-5.1",
+				],
+				[
+					"account:workspace-fallback::email:beta-fresh-b@example.com",
+					"gpt-5.1",
+				],
 			]),
 		);
 		expect(clearedKeys).toEqual(
 			expect.arrayContaining([
-				["account:workspace-fallback::email:beta-fresh-a@example.com", "gpt-5.1"],
-				["account:workspace-fallback::email:beta-fresh-b@example.com", "gpt-5.1"],
+				[
+					"account:workspace-fallback::email:beta-fresh-a@example.com",
+					"gpt-5.1",
+				],
+				[
+					"account:workspace-fallback::email:beta-fresh-b@example.com",
+					"gpt-5.1",
+				],
 			]),
 		);
 		const fallbackAfterRequests = manager.getAccountsSnapshot()[1];
@@ -2453,12 +2663,25 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 	it("does not penalize account health when fetch is aborted by user", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
-		const { CapabilityPolicyStore } = await import("../lib/capability-policy.js");
-		const recordFailureSpy = vi.spyOn(AccountManager.prototype, "recordFailure");
-		const markCooldownSpy = vi.spyOn(AccountManager.prototype, "markAccountCoolingDown");
+		const { CapabilityPolicyStore } = await import(
+			"../lib/capability-policy.js"
+		);
+		const recordFailureSpy = vi.spyOn(
+			AccountManager.prototype,
+			"recordFailure",
+		);
+		const markCooldownSpy = vi.spyOn(
+			AccountManager.prototype,
+			"markAccountCoolingDown",
+		);
 		const refundSpy = vi.spyOn(AccountManager.prototype, "refundToken");
-		const capabilityFailureSpy = vi.spyOn(CapabilityPolicyStore.prototype, "recordFailure");
-		const abortError = Object.assign(new Error("aborted by user"), { name: "AbortError" });
+		const capabilityFailureSpy = vi.spyOn(
+			CapabilityPolicyStore.prototype,
+			"recordFailure",
+		);
+		const abortError = Object.assign(new Error("aborted by user"), {
+			name: "AbortError",
+		});
 		globalThis.fetch = vi.fn().mockRejectedValue(abortError);
 
 		const { sdk } = await setupPlugin();
@@ -2477,11 +2700,15 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(capabilityFailureSpy).not.toHaveBeenCalled();
 	});
 
-		it("skips fetch when local token bucket is depleted", async () => {
-			const { AccountManager } = await import("../lib/accounts.js");
-			const consumeSpy = vi.spyOn(AccountManager.prototype, "consumeToken").mockReturnValue(false);
-			globalThis.fetch = vi.fn().mockResolvedValue(
-				new Response(JSON.stringify({ content: "should-not-be-returned" }), { status: 200 }),
+	it("skips fetch when local token bucket is depleted", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const consumeSpy = vi
+			.spyOn(AccountManager.prototype, "consumeToken")
+			.mockReturnValue(false);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "should-not-be-returned" }), {
+				status: 200,
+			}),
 		);
 
 		const { sdk } = await setupPlugin();
@@ -2492,79 +2719,87 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(globalThis.fetch).not.toHaveBeenCalled();
 		expect(response.status).toBe(503);
-			expect(await response.text()).toContain("server errors or auth issues");
-			consumeSpy.mockRestore();
+		expect(await response.text()).toContain("server errors or auth issues");
+		consumeSpy.mockRestore();
+	});
+
+	it("continues to next account when local token bucket is depleted", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const accountOne = {
+			index: 0,
+			accountId: "acc-1",
+			email: "user1@example.com",
+			refreshToken: "refresh-1",
+		};
+		const accountTwo = {
+			index: 1,
+			accountId: "acc-2",
+			email: "user2@example.com",
+			refreshToken: "refresh-2",
+		};
+		const countSpy = vi
+			.spyOn(AccountManager.prototype, "getAccountCount")
+			.mockReturnValue(2);
+		const selectionSpy = vi
+			.spyOn(AccountManager.prototype, "getCurrentOrNextForFamilyHybrid")
+			.mockImplementationOnce(() => accountOne)
+			.mockImplementationOnce(() => accountTwo)
+			.mockImplementation(() => null);
+		const consumeSpy = vi
+			.spyOn(AccountManager.prototype, "consumeToken")
+			.mockReturnValueOnce(false)
+			.mockReturnValueOnce(true);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "from-second-account" }), {
+				status: 200,
+			}),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
 		});
 
-		it("continues to next account when local token bucket is depleted", async () => {
-			const { AccountManager } = await import("../lib/accounts.js");
-			const accountOne = {
-				index: 0,
-				accountId: "acc-1",
-				email: "user1@example.com",
-				refreshToken: "refresh-1",
-			};
-			const accountTwo = {
-				index: 1,
-				accountId: "acc-2",
-				email: "user2@example.com",
-				refreshToken: "refresh-2",
-			};
-			const countSpy = vi
-				.spyOn(AccountManager.prototype, "getAccountCount")
-				.mockReturnValue(2);
-			const selectionSpy = vi
-				.spyOn(AccountManager.prototype, "getCurrentOrNextForFamilyHybrid")
-				.mockImplementationOnce(() => accountOne)
-				.mockImplementationOnce(() => accountTwo)
-				.mockImplementation(() => null);
-			const consumeSpy = vi
-				.spyOn(AccountManager.prototype, "consumeToken")
-				.mockReturnValueOnce(false)
-				.mockReturnValueOnce(true);
-			globalThis.fetch = vi.fn().mockResolvedValue(
-				new Response(JSON.stringify({ content: "from-second-account" }), { status: 200 }),
-			);
-
-			const { sdk } = await setupPlugin();
-			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
-				method: "POST",
-				body: JSON.stringify({ model: "gpt-5.1" }),
-			});
-
-			expect(response.status).toBe(200);
-			expect(globalThis.fetch).toHaveBeenCalledTimes(1);
-			expect(consumeSpy).toHaveBeenCalledTimes(2);
-			countSpy.mockRestore();
-			selectionSpy.mockRestore();
-			consumeSpy.mockRestore();
-		});
+		expect(response.status).toBe(200);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+		expect(consumeSpy).toHaveBeenCalledTimes(2);
+		countSpy.mockRestore();
+		selectionSpy.mockRestore();
+		consumeSpy.mockRestore();
+	});
 
 	it("treats timeout-triggered abort as network failure", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const configModule = await import("../lib/config.js");
-		const recordFailureSpy = vi.spyOn(AccountManager.prototype, "recordFailure");
-		const timeoutSpy = vi.spyOn(configModule, "getFetchTimeoutMs").mockReturnValueOnce(5);
-			globalThis.fetch = vi.fn((_: unknown, init?: { signal?: AbortSignal }) => {
-				return new Promise((_resolve, reject) => {
-					const signal = init?.signal;
-					if (!signal) {
-						reject(new Error("missing signal"));
-						return;
-					}
-					if (signal.aborted) {
-						reject(Object.assign(new Error("timeout"), { name: "AbortError" }));
-						return;
-					}
-					signal.addEventListener(
-						"abort",
-						() => reject(Object.assign(new Error("timeout"), { name: "AbortError" })),
-						{ once: true },
-					);
-				});
+		const recordFailureSpy = vi.spyOn(
+			AccountManager.prototype,
+			"recordFailure",
+		);
+		const timeoutSpy = vi
+			.spyOn(configModule, "getFetchTimeoutMs")
+			.mockReturnValueOnce(5);
+		globalThis.fetch = vi.fn((_: unknown, init?: { signal?: AbortSignal }) => {
+			return new Promise((_resolve, reject) => {
+				const signal = init?.signal;
+				if (!signal) {
+					reject(new Error("missing signal"));
+					return;
+				}
+				if (signal.aborted) {
+					reject(Object.assign(new Error("timeout"), { name: "AbortError" }));
+					return;
+				}
+				signal.addEventListener(
+					"abort",
+					() =>
+						reject(Object.assign(new Error("timeout"), { name: "AbortError" })),
+					{ once: true },
+				);
 			});
+		});
 
-			const { sdk } = await setupPlugin();
+		const { sdk } = await setupPlugin();
 		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
 			method: "POST",
 			body: JSON.stringify({ model: "gpt-5.1" }),
@@ -2578,7 +2813,10 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 	it("uses numeric retry-after hints for server cooldown decisions", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
-		const cooldownSpy = vi.spyOn(AccountManager.prototype, "markAccountCoolingDown");
+		const cooldownSpy = vi.spyOn(
+			AccountManager.prototype,
+			"markAccountCoolingDown",
+		);
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			new Response("server error", {
 				status: 500,
@@ -2600,7 +2838,10 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 	it("uses retry-after-ms hints for server cooldown decisions", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
-		const cooldownSpy = vi.spyOn(AccountManager.prototype, "markAccountCoolingDown");
+		const cooldownSpy = vi.spyOn(
+			AccountManager.prototype,
+			"markAccountCoolingDown",
+		);
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			new Response("server error", {
 				status: 500,
@@ -2625,7 +2866,10 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(baseNow);
 		const resetAtSeconds = Math.floor((baseNow + 7_000) / 1000);
 		const { AccountManager } = await import("../lib/accounts.js");
-		const cooldownSpy = vi.spyOn(AccountManager.prototype, "markAccountCoolingDown");
+		const cooldownSpy = vi.spyOn(
+			AccountManager.prototype,
+			"markAccountCoolingDown",
+		);
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			new Response("server error", {
 				status: 500,
@@ -2651,7 +2895,10 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(baseNow);
 		const resetAtMs = baseNow + 12_000;
 		const { AccountManager } = await import("../lib/accounts.js");
-		const cooldownSpy = vi.spyOn(AccountManager.prototype, "markAccountCoolingDown");
+		const cooldownSpy = vi.spyOn(
+			AccountManager.prototype,
+			"markAccountCoolingDown",
+		);
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			new Response("server error", {
 				status: 500,
@@ -2677,7 +2924,10 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(baseNow);
 		const retryAt = new Date(baseNow + 9_000).toUTCString();
 		const { AccountManager } = await import("../lib/accounts.js");
-		const cooldownSpy = vi.spyOn(AccountManager.prototype, "markAccountCoolingDown");
+		const cooldownSpy = vi.spyOn(
+			AccountManager.prototype,
+			"markAccountCoolingDown",
+		);
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			new Response("server error", {
 				status: 500,
@@ -2706,9 +2956,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			PreemptiveQuotaScheduler.prototype,
 			"markRateLimited",
 		);
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			new Response("service unavailable", { status: 503 }),
-		);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(new Response("service unavailable", { status: 503 }));
 
 		const { sdk } = await setupPlugin();
 		await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -2728,9 +2978,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			PreemptiveQuotaScheduler.prototype,
 			"markRateLimited",
 		);
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			new Response("bad gateway", { status: 502 }),
-		);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(new Response("bad gateway", { status: 502 }));
 
 		const { sdk } = await setupPlugin();
 		await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -2750,9 +3000,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			PreemptiveQuotaScheduler.prototype,
 			"markRateLimited",
 		);
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			new Response("overloaded", { status: 529 }),
-		);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(new Response("overloaded", { status: 529 }));
 
 		const { sdk } = await setupPlugin();
 		await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -2772,9 +3022,11 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			PreemptiveQuotaScheduler.prototype,
 			"markRateLimited",
 		);
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			new Response("internal server error", { status: 500 }),
-		);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				new Response("internal server error", { status: 500 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -2790,8 +3042,12 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		const configModule = await import("../lib/config.js");
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
 
-		vi.mocked(configModule.getFallbackOnUnsupportedCodexModel).mockReturnValueOnce(true);
-		vi.mocked(configModule.getFallbackToGpt52OnUnsupportedGpt53).mockReturnValueOnce(true);
+		vi.mocked(
+			configModule.getFallbackOnUnsupportedCodexModel,
+		).mockReturnValueOnce(true);
+		vi.mocked(
+			configModule.getFallbackToGpt52OnUnsupportedGpt53,
+		).mockReturnValueOnce(true);
 		vi.mocked(fetchHelpers.transformRequestForCodex).mockResolvedValueOnce({
 			updatedInit: {
 				method: "POST",
@@ -2819,12 +3075,16 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				},
 			},
 		});
-		vi.mocked(fetchHelpers.resolveUnsupportedCodexFallbackModel).mockReturnValueOnce("gpt-5.2-codex");
+		vi.mocked(
+			fetchHelpers.resolveUnsupportedCodexFallbackModel,
+		).mockReturnValueOnce("gpt-5.2-codex");
 
 		globalThis.fetch = vi
 			.fn()
 			.mockResolvedValueOnce(new Response("bad", { status: 400 }))
-			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -2834,18 +3094,24 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(response.status).toBe(200);
 		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
-		const firstInit = vi.mocked(globalThis.fetch).mock.calls[0]?.[1] as RequestInit;
-		const secondInit = vi.mocked(globalThis.fetch).mock.calls[1]?.[1] as RequestInit;
+		const firstInit = vi.mocked(globalThis.fetch).mock
+			.calls[0]?.[1] as RequestInit;
+		const secondInit = vi.mocked(globalThis.fetch).mock
+			.calls[1]?.[1] as RequestInit;
 		expect(JSON.parse(firstInit.body as string).model).toBe("gpt-5.3-codex");
 		expect(JSON.parse(secondInit.body as string).model).toBe("gpt-5.2-codex");
 	});
 
-		it("cascades Spark fallback from gpt-5.3-codex-spark -> gpt-5.3-codex -> gpt-5.2-codex", async () => {
-			const configModule = await import("../lib/config.js");
-			const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+	it("cascades Spark fallback from gpt-5.3-codex-spark -> gpt-5.3-codex -> gpt-5.2-codex", async () => {
+		const configModule = await import("../lib/config.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
 
-		vi.mocked(configModule.getFallbackOnUnsupportedCodexModel).mockReturnValueOnce(true);
-		vi.mocked(configModule.getFallbackToGpt52OnUnsupportedGpt53).mockReturnValueOnce(true);
+		vi.mocked(
+			configModule.getFallbackOnUnsupportedCodexModel,
+		).mockReturnValueOnce(true);
+		vi.mocked(
+			configModule.getFallbackToGpt52OnUnsupportedGpt53,
+		).mockReturnValueOnce(true);
 		vi.mocked(fetchHelpers.transformRequestForCodex).mockResolvedValueOnce({
 			updatedInit: {
 				method: "POST",
@@ -2855,7 +3121,12 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		});
 		vi.mocked(fetchHelpers.handleErrorResponse)
 			.mockResolvedValueOnce({
-				response: new Response(JSON.stringify({ error: { code: "model_not_supported_with_chatgpt_account" } }), { status: 400 }),
+				response: new Response(
+					JSON.stringify({
+						error: { code: "model_not_supported_with_chatgpt_account" },
+					}),
+					{ status: 400 },
+				),
 				rateLimit: undefined,
 				errorBody: {
 					error: {
@@ -2866,7 +3137,12 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				},
 			})
 			.mockResolvedValueOnce({
-				response: new Response(JSON.stringify({ error: { code: "model_not_supported_with_chatgpt_account" } }), { status: 400 }),
+				response: new Response(
+					JSON.stringify({
+						error: { code: "model_not_supported_with_chatgpt_account" },
+					}),
+					{ status: 400 },
+				),
 				rateLimit: undefined,
 				errorBody: {
 					error: {
@@ -2884,7 +3160,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			.fn()
 			.mockResolvedValueOnce(new Response("bad", { status: 400 }))
 			.mockResolvedValueOnce(new Response("still bad", { status: 400 }))
-			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -2894,21 +3172,32 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(response.status).toBe(200);
 		expect(globalThis.fetch).toHaveBeenCalledTimes(3);
-		const firstInit = vi.mocked(globalThis.fetch).mock.calls[0]?.[1] as RequestInit;
-		const secondInit = vi.mocked(globalThis.fetch).mock.calls[1]?.[1] as RequestInit;
-		const thirdInit = vi.mocked(globalThis.fetch).mock.calls[2]?.[1] as RequestInit;
-		expect(JSON.parse(firstInit.body as string).model).toBe("gpt-5.3-codex-spark");
-			expect(JSON.parse(secondInit.body as string).model).toBe("gpt-5.3-codex");
-			expect(JSON.parse(thirdInit.body as string).model).toBe("gpt-5.2-codex");
-		});
+		const firstInit = vi.mocked(globalThis.fetch).mock
+			.calls[0]?.[1] as RequestInit;
+		const secondInit = vi.mocked(globalThis.fetch).mock
+			.calls[1]?.[1] as RequestInit;
+		const thirdInit = vi.mocked(globalThis.fetch).mock
+			.calls[2]?.[1] as RequestInit;
+		expect(JSON.parse(firstInit.body as string).model).toBe(
+			"gpt-5.3-codex-spark",
+		);
+		expect(JSON.parse(secondInit.body as string).model).toBe("gpt-5.3-codex");
+		expect(JSON.parse(thirdInit.body as string).model).toBe("gpt-5.2-codex");
+	});
 
 	it("forces Spark fallback even when strict policy disables generic unsupported fallback", async () => {
 		const configModule = await import("../lib/config.js");
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
 
-		vi.mocked(configModule.getUnsupportedCodexPolicy).mockReturnValueOnce("strict");
-		vi.mocked(configModule.getFallbackOnUnsupportedCodexModel).mockReturnValueOnce(false);
-		vi.mocked(configModule.getFallbackToGpt52OnUnsupportedGpt53).mockReturnValueOnce(true);
+		vi.mocked(configModule.getUnsupportedCodexPolicy).mockReturnValueOnce(
+			"strict",
+		);
+		vi.mocked(
+			configModule.getFallbackOnUnsupportedCodexModel,
+		).mockReturnValueOnce(false);
+		vi.mocked(
+			configModule.getFallbackToGpt52OnUnsupportedGpt53,
+		).mockReturnValueOnce(true);
 		vi.mocked(fetchHelpers.transformRequestForCodex).mockResolvedValueOnce({
 			updatedInit: {
 				method: "POST",
@@ -2917,9 +3206,14 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			body: { model: "gpt-5.3-codex-spark" },
 		});
 		vi.mocked(fetchHelpers.handleErrorResponse).mockResolvedValueOnce({
-			response: new Response(JSON.stringify({ error: { code: "model_not_supported_with_chatgpt_account" } }), {
-				status: 400,
-			}),
+			response: new Response(
+				JSON.stringify({
+					error: { code: "model_not_supported_with_chatgpt_account" },
+				}),
+				{
+					status: 400,
+				},
+			),
 			rateLimit: undefined,
 			errorBody: {
 				error: {
@@ -2934,14 +3228,18 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			code: "model_not_supported_with_chatgpt_account",
 			unsupportedModel: "gpt-5.3-codex-spark",
 		});
-		vi.mocked(fetchHelpers.resolveUnsupportedCodexFallbackModel).mockImplementationOnce((options) =>
+		vi.mocked(
+			fetchHelpers.resolveUnsupportedCodexFallbackModel,
+		).mockImplementationOnce((options) =>
 			options.fallbackOnUnsupportedCodexModel ? "gpt-5-codex" : undefined,
 		);
 
 		globalThis.fetch = vi
 			.fn()
 			.mockResolvedValueOnce(new Response("bad", { status: 400 }))
-			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -2951,112 +3249,137 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(response.status).toBe(200);
 		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
-		const resolveOptions = vi.mocked(fetchHelpers.resolveUnsupportedCodexFallbackModel).mock
-			.calls[0]?.[0];
+		const resolveOptions = vi.mocked(
+			fetchHelpers.resolveUnsupportedCodexFallbackModel,
+		).mock.calls[0]?.[0];
 		expect(resolveOptions?.fallbackOnUnsupportedCodexModel).toBe(true);
-		const firstInit = vi.mocked(globalThis.fetch).mock.calls[0]?.[1] as RequestInit;
-		const secondInit = vi.mocked(globalThis.fetch).mock.calls[1]?.[1] as RequestInit;
-		expect(JSON.parse(firstInit.body as string).model).toBe("gpt-5.3-codex-spark");
+		const firstInit = vi.mocked(globalThis.fetch).mock
+			.calls[0]?.[1] as RequestInit;
+		const secondInit = vi.mocked(globalThis.fetch).mock
+			.calls[1]?.[1] as RequestInit;
+		expect(JSON.parse(firstInit.body as string).model).toBe(
+			"gpt-5.3-codex-spark",
+		);
 		expect(JSON.parse(secondInit.body as string).model).toBe("gpt-5-codex");
 	});
 
-		it("restarts account traversal after fallback model switch", async () => {
-			const configModule = await import("../lib/config.js");
-			const fetchHelpers = await import("../lib/request/fetch-helpers.js");
-			const { AccountManager } = await import("../lib/accounts.js");
+	it("restarts account traversal after fallback model switch", async () => {
+		const configModule = await import("../lib/config.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const { AccountManager } = await import("../lib/accounts.js");
 
-			const accountOne = {
-				index: 0,
-				accountId: "acc-1",
-				email: "user1@example.com",
-				refreshToken: "refresh-1",
-			};
-			const accountTwo = {
-				index: 1,
-				accountId: "acc-2",
-				email: "user2@example.com",
-				refreshToken: "refresh-2",
-			};
+		const accountOne = {
+			index: 0,
+			accountId: "acc-1",
+			email: "user1@example.com",
+			refreshToken: "refresh-1",
+		};
+		const accountTwo = {
+			index: 1,
+			accountId: "acc-2",
+			email: "user2@example.com",
+			refreshToken: "refresh-2",
+		};
 
-			let legacySelection = 0;
-			let fallbackSelection = 0;
-			const customManager = {
-				getAccountCount: () => 2,
-				getCurrentOrNextForFamilyHybrid: (_family: string, currentModel?: string) => {
-					if (currentModel === "gpt-5-codex") {
-						if (fallbackSelection === 0) {
-							fallbackSelection++;
-							return accountOne;
-						}
-						if (fallbackSelection === 1) {
-							fallbackSelection++;
-							return accountTwo;
-						}
-						return null;
-					}
-					if (legacySelection === 0) {
-						legacySelection++;
+		let legacySelection = 0;
+		let fallbackSelection = 0;
+		const customManager = {
+			getAccountCount: () => 2,
+			getCurrentOrNextForFamilyHybrid: (
+				_family: string,
+				currentModel?: string,
+			) => {
+				if (currentModel === "gpt-5-codex") {
+					if (fallbackSelection === 0) {
+						fallbackSelection++;
 						return accountOne;
 					}
-					if (legacySelection === 1) {
-						legacySelection++;
+					if (fallbackSelection === 1) {
+						fallbackSelection++;
 						return accountTwo;
 					}
 					return null;
-				},
-				toAuthDetails: (account: { accountId?: string }) => ({
-					type: "oauth" as const,
-					access: `access-${account.accountId ?? "unknown"}`,
-					refresh: "refresh-token",
-					expires: Date.now() + 60_000,
-				}),
-				hasRefreshToken: () => true,
-				saveToDiskDebounced: () => {},
-				updateFromAuth: () => {},
-				clearAuthFailures: () => {},
-				incrementAuthFailures: () => 1,
-				markAccountCoolingDown: () => {},
-				markRateLimitedWithReason: () => {},
-				recordRateLimit: () => {},
-				consumeToken: () => true,
-				refundToken: () => {},
-				getCurrentWorkspace: () => null,
-				syncCodexCliActiveSelectionForIndex: async () => {},
-				markSwitched: () => {},
-				removeAccount: () => {},
-				recordFailure: () => {},
-				recordSuccess: () => {},
-				getMinWaitTimeForFamily: () => 0,
-				shouldShowAccountToast: () => false,
-				markToastShown: () => {},
-				disableCurrentWorkspace: () => false,
-				rotateToNextWorkspace: () => null,
-				hasEnabledWorkspaces: () => true,
-				setActiveIndex: () => accountOne,
-				getAccountsSnapshot: () => [accountOne, accountTwo],
-			};
-			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(customManager as never);
+				}
+				if (legacySelection === 0) {
+					legacySelection++;
+					return accountOne;
+				}
+				if (legacySelection === 1) {
+					legacySelection++;
+					return accountTwo;
+				}
+				return null;
+			},
+			toAuthDetails: (account: { accountId?: string }) => ({
+				type: "oauth" as const,
+				access: `access-${account.accountId ?? "unknown"}`,
+				refresh: "refresh-token",
+				expires: Date.now() + 60_000,
+			}),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: () => {},
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => 1,
+			markAccountCoolingDown: () => {},
+			markRateLimitedWithReason: () => {},
+			recordRateLimit: () => {},
+			consumeToken: () => true,
+			refundToken: () => {},
+			getCurrentWorkspace: () => null,
+			syncCodexCliActiveSelectionForIndex: async () => {},
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => false,
+			markToastShown: () => {},
+			disableCurrentWorkspace: () => false,
+			rotateToNextWorkspace: () => null,
+			hasEnabledWorkspaces: () => true,
+			setActiveIndex: () => accountOne,
+			getAccountsSnapshot: () => [accountOne, accountTwo],
+		};
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
+			customManager as never,
+		);
 
-			vi.mocked(configModule.getFallbackOnUnsupportedCodexModel).mockReturnValueOnce(true);
-			vi.mocked(configModule.getFallbackToGpt52OnUnsupportedGpt53).mockReturnValueOnce(true);
-			vi.mocked(fetchHelpers.transformRequestForCodex).mockResolvedValueOnce({
-				updatedInit: {
-					method: "POST",
-					body: JSON.stringify({ model: "gpt-5.3-codex" }),
-				},
-				body: { model: "gpt-5.3-codex" },
-			});
-			vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
-				(_init, _accountId, accessToken) =>
-					new Headers({ "x-test-access-token": String(accessToken) }),
-			);
-			vi.mocked(fetchHelpers.handleErrorResponse).mockImplementation(async (response) => {
-				const errorBody = await response.clone().json().catch(() => ({}));
+		vi.mocked(
+			configModule.getFallbackOnUnsupportedCodexModel,
+		).mockReturnValueOnce(true);
+		vi.mocked(
+			configModule.getFallbackToGpt52OnUnsupportedGpt53,
+		).mockReturnValueOnce(true);
+		vi.mocked(fetchHelpers.transformRequestForCodex).mockResolvedValueOnce({
+			updatedInit: {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.3-codex" }),
+			},
+			body: { model: "gpt-5.3-codex" },
+		});
+		vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+			(_init, _accountId, accessToken) =>
+				new Headers({ "x-test-access-token": String(accessToken) }),
+		);
+		vi.mocked(fetchHelpers.handleErrorResponse).mockImplementation(
+			async (response) => {
+				const errorBody = await response
+					.clone()
+					.json()
+					.catch(() => ({}));
 				return { response, rateLimit: undefined, errorBody };
-			});
-			vi.mocked(fetchHelpers.getUnsupportedCodexModelInfo).mockImplementation((errorBody: unknown) => {
-				const message = (errorBody as { error?: { message?: string } })?.error?.message ?? "";
-				if (!/not supported when using codex with a chatgpt account/i.test(message)) {
+			},
+		);
+		vi.mocked(fetchHelpers.getUnsupportedCodexModelInfo).mockImplementation(
+			(errorBody: unknown) => {
+				const message =
+					(errorBody as { error?: { message?: string } })?.error?.message ?? "";
+				if (
+					!/not supported when using codex with a chatgpt account/i.test(
+						message,
+					)
+				) {
 					return { isUnsupported: false };
 				}
 				const match = message.match(/'([^']+)'/);
@@ -3066,78 +3389,83 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 					message,
 					code: "model_not_supported_with_chatgpt_account",
 				};
-			});
-			vi.mocked(fetchHelpers.resolveUnsupportedCodexFallbackModel).mockImplementation(({ requestedModel }) => {
-				return requestedModel === "gpt-5.3-codex" ? "gpt-5-codex" : undefined;
-			});
+			},
+		);
+		vi.mocked(
+			fetchHelpers.resolveUnsupportedCodexFallbackModel,
+		).mockImplementation(({ requestedModel }) => {
+			return requestedModel === "gpt-5.3-codex" ? "gpt-5-codex" : undefined;
+		});
 
-			globalThis.fetch = vi.fn(async (_url, init) => {
-				const body =
-					init && typeof init.body === "string"
-						? (JSON.parse(init.body) as { model?: string })
-						: {};
-				const headers = new Headers(init?.headers);
-				const accessToken = headers.get("x-test-access-token");
+		globalThis.fetch = vi.fn(async (_url, init) => {
+			const body =
+				init && typeof init.body === "string"
+					? (JSON.parse(init.body) as { model?: string })
+					: {};
+			const headers = new Headers(init?.headers);
+			const accessToken = headers.get("x-test-access-token");
 
-				if (body.model === "gpt-5.3-codex") {
-					return new Response(
-						JSON.stringify({
-							error: {
-								code: "model_not_supported_with_chatgpt_account",
-								message:
-									"The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.",
-							},
-						}),
-						{ status: 400 },
-					);
-				}
-
-				if (body.model === "gpt-5-codex" && accessToken === "access-account-1") {
-					return new Response(JSON.stringify({ content: "ok" }), { status: 200 });
-				}
-
+			if (body.model === "gpt-5.3-codex") {
 				return new Response(
 					JSON.stringify({
 						error: {
 							code: "model_not_supported_with_chatgpt_account",
 							message:
-								"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+								"The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.",
 						},
 					}),
 					{ status: 400 },
 				);
-			});
+			}
 
-			const { sdk } = await setupPlugin();
-			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
-				method: "POST",
-				body: JSON.stringify({ model: "gpt-5.3-codex" }),
-			});
+			if (body.model === "gpt-5-codex" && accessToken === "access-account-1") {
+				return new Response(JSON.stringify({ content: "ok" }), { status: 200 });
+			}
 
-			const fetchCalls = vi.mocked(globalThis.fetch).mock.calls.map((call) => {
-				const init = call[1] as RequestInit;
-				const body =
-					typeof init.body === "string"
-						? (JSON.parse(init.body) as { model?: string })
-						: {};
-				const headers = new Headers(init.headers);
-				return {
-					model: body.model,
-					accessToken: headers.get("x-test-access-token"),
-				};
-			});
-			expect(fetchCalls).toEqual([
-				{ model: "gpt-5.3-codex", accessToken: "access-acc-1" },
-				{ model: "gpt-5.3-codex", accessToken: "access-acc-2" },
-				{ model: "gpt-5-codex", accessToken: "access-account-1" },
-			]);
-			expect(response.status).toBe(200);
+			return new Response(
+				JSON.stringify({
+					error: {
+						code: "model_not_supported_with_chatgpt_account",
+						message:
+							"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+					},
+				}),
+				{ status: 400 },
+			);
 		});
 
-		it("handles empty body in request", async () => {
-			globalThis.fetch = vi.fn().mockResolvedValue(
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.3-codex" }),
+		});
+
+		const fetchCalls = vi.mocked(globalThis.fetch).mock.calls.map((call) => {
+			const init = call[1] as RequestInit;
+			const body =
+				typeof init.body === "string"
+					? (JSON.parse(init.body) as { model?: string })
+					: {};
+			const headers = new Headers(init.headers);
+			return {
+				model: body.model,
+				accessToken: headers.get("x-test-access-token"),
+			};
+		});
+		expect(fetchCalls).toEqual([
+			{ model: "gpt-5.3-codex", accessToken: "access-acc-1" },
+			{ model: "gpt-5.3-codex", accessToken: "access-acc-2" },
+			{ model: "gpt-5-codex", accessToken: "access-account-1" },
+		]);
+		expect(response.status).toBe(200);
+	});
+
+	it("handles empty body in request", async () => {
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
 				new Response(JSON.stringify({ content: "test" }), { status: 200 }),
-		);
+			);
 
 		const { sdk } = await setupPlugin();
 		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {});
@@ -3146,9 +3474,11 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 	});
 
 	it("handles malformed JSON body gracefully", async () => {
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
-		);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify({ content: "test" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -3160,9 +3490,11 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 	});
 
 	it("handles abort signal during fetch", async () => {
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
-		);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify({ content: "test" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		const controller = new AbortController();
@@ -3177,9 +3509,11 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 	});
 
 	it("handles streaming request (stream=true in body)", async () => {
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
-		);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(JSON.stringify({ content: "test" }), { status: 200 }),
+			);
 
 		const { sdk } = await setupPlugin();
 		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
@@ -3208,12 +3542,18 @@ describe("OpenAIOAuthPlugin resolveAccountSelection", () => {
 		process.env.CODEX_AUTH_ACCOUNT_ID = "override-account-12345";
 
 		mockStorage.accounts = [
-			{ accountId: "acc-1", email: "user@example.com", refreshToken: "refresh-1" },
+			{
+				accountId: "acc-1",
+				email: "user@example.com",
+				refreshToken: "refresh-1",
+			},
 		];
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		const getAuth = async () => ({
 			type: "oauth" as const,
@@ -3231,12 +3571,18 @@ describe("OpenAIOAuthPlugin resolveAccountSelection", () => {
 		process.env.CODEX_AUTH_ACCOUNT_ID = "short";
 
 		mockStorage.accounts = [
-			{ accountId: "acc-1", email: "user@example.com", refreshToken: "refresh-1" },
+			{
+				accountId: "acc-1",
+				email: "user@example.com",
+				refreshToken: "refresh-1",
+			},
 		];
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		const getAuth = async () => ({
 			type: "oauth" as const,
@@ -3310,7 +3656,10 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		const authModule = await import("../lib/auth/auth.js");
 		const accountsModule = await import("../lib/accounts.js");
 		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
-			pkce: { verifier: "persist-new-workspace-index", challenge: "persist-new-workspace-index" },
+			pkce: {
+				verifier: "persist-new-workspace-index",
+				challenge: "persist-new-workspace-index",
+			},
 			state: "persist-new-workspace-index",
 			url: "https://auth.openai.com/test?state=persist-new-workspace-index",
 		});
@@ -3323,7 +3672,12 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		});
 		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValueOnce([
 			{ accountId: "workspace-a", source: "org", label: "Workspace A" },
-			{ accountId: "workspace-b", source: "org", label: "Workspace B", isDefault: true },
+			{
+				accountId: "workspace-b",
+				source: "org",
+				label: "Workspace B",
+				isDefault: true,
+			},
 			{ accountId: "workspace-c", source: "org", label: "Workspace C" },
 		]);
 		vi.mocked(accountsModule.selectBestAccountCandidate).mockImplementationOnce(
@@ -3332,10 +3686,9 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin =
-			(await OpenAIOAuthPlugin({
-				client: mockClient,
-			} as never)) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 		const manualMethod = plugin.auth.methods[1] as unknown as {
 			authorize: () => Promise<{
 				callback: (input: string) => Promise<{ type: string }>;
@@ -3354,9 +3707,24 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				accountId: "workspace-b",
 				currentWorkspaceIndex: 1,
 				workspaces: [
-					{ id: "workspace-a", name: "Workspace A", enabled: true, isDefault: undefined },
-					{ id: "workspace-b", name: "Workspace B", enabled: true, isDefault: true },
-					{ id: "workspace-c", name: "Workspace C", enabled: true, isDefault: undefined },
+					{
+						id: "workspace-a",
+						name: "Workspace A",
+						enabled: true,
+						isDefault: undefined,
+					},
+					{
+						id: "workspace-b",
+						name: "Workspace B",
+						enabled: true,
+						isDefault: true,
+					},
+					{
+						id: "workspace-c",
+						name: "Workspace C",
+						enabled: true,
+						isDefault: undefined,
+					},
 				],
 			}),
 		);
@@ -3393,10 +3761,9 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin =
-			(await OpenAIOAuthPlugin({
-				client: mockClient,
-			} as never)) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 		const manualMethod = plugin.auth.methods[1] as unknown as {
 			authorize: () => Promise<{
 				callback: (input: string) => Promise<{ type: string }>;
@@ -3447,7 +3814,10 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		const authModule = await import("../lib/auth/auth.js");
 		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
-			pkce: { verifier: "persist-verifier-same-refresh", challenge: "persist-challenge-same-refresh" },
+			pkce: {
+				verifier: "persist-verifier-same-refresh",
+				challenge: "persist-challenge-same-refresh",
+			},
 			state: "persist-state-same-refresh",
 			url: "https://auth.openai.com/test?state=persist-state-same-refresh",
 		});
@@ -3461,7 +3831,9 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 		const manualMethod = plugin.auth.methods[1] as unknown as {
 			authorize: () => Promise<{
 				callback: (input: string) => Promise<{ type: string }>;
@@ -3513,8 +3885,18 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				addedAt: Date.now() - 200000,
 				lastUsed: Date.now() - 200000,
 				workspaces: [
-					{ id: "workspace-a", name: "Workspace A", enabled: false, disabledAt: 111 },
-					{ id: "workspace-b", name: "Workspace B", enabled: true, isDefault: true },
+					{
+						id: "workspace-a",
+						name: "Workspace A",
+						enabled: false,
+						disabledAt: 111,
+					},
+					{
+						id: "workspace-b",
+						name: "Workspace B",
+						enabled: true,
+						isDefault: true,
+					},
 				],
 				currentWorkspaceIndex: 1,
 			},
@@ -3523,7 +3905,10 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		const authModule = await import("../lib/auth/auth.js");
 		const accountsModule = await import("../lib/accounts.js");
 		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
-			pkce: { verifier: "persist-preserve-workspaces", challenge: "persist-preserve-workspaces" },
+			pkce: {
+				verifier: "persist-preserve-workspaces",
+				challenge: "persist-preserve-workspaces",
+			},
 			state: "persist-preserve-workspaces",
 			url: "https://auth.openai.com/test?state=persist-preserve-workspaces",
 		});
@@ -3534,15 +3919,18 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			expires: Date.now() + 3600_000,
 			idToken: undefined,
 		});
-		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce("user@example.com");
-		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce("shared-workspace");
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce(
+			"user@example.com",
+		);
+		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce(
+			"shared-workspace",
+		);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin =
-			(await OpenAIOAuthPlugin({
-				client: mockClient,
-			} as never)) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 		const manualMethod = plugin.auth.methods[1] as unknown as {
 			authorize: () => Promise<{
 				callback: (input: string) => Promise<{ type: string }>;
@@ -3562,8 +3950,18 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				refreshToken: "refresh-updated",
 				currentWorkspaceIndex: 1,
 				workspaces: [
-					{ id: "workspace-a", name: "Workspace A", enabled: false, disabledAt: 111 },
-					{ id: "workspace-b", name: "Workspace B", enabled: true, isDefault: true },
+					{
+						id: "workspace-a",
+						name: "Workspace A",
+						enabled: false,
+						disabledAt: 111,
+					},
+					{
+						id: "workspace-b",
+						name: "Workspace B",
+						enabled: true,
+						isDefault: true,
+					},
 				],
 			}),
 		);
@@ -3581,7 +3979,13 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				addedAt: Date.now() - 200000,
 				lastUsed: Date.now() - 200000,
 				workspaces: [
-					{ id: "workspace-a", name: "Workspace A", enabled: false, disabledAt: 222, isDefault: true },
+					{
+						id: "workspace-a",
+						name: "Workspace A",
+						enabled: false,
+						disabledAt: 222,
+						isDefault: true,
+					},
 				],
 				currentWorkspaceIndex: 0,
 			},
@@ -3590,7 +3994,10 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		const authModule = await import("../lib/auth/auth.js");
 		const accountsModule = await import("../lib/accounts.js");
 		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
-			pkce: { verifier: "persist-merge-workspaces", challenge: "persist-merge-workspaces" },
+			pkce: {
+				verifier: "persist-merge-workspaces",
+				challenge: "persist-merge-workspaces",
+			},
 			state: "persist-merge-workspaces",
 			url: "https://auth.openai.com/test?state=persist-merge-workspaces",
 		});
@@ -3601,18 +4008,26 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			expires: Date.now() + 3600_000,
 			idToken: undefined,
 			workspaces: [
-				{ id: "workspace-a", name: "Workspace A Renamed", enabled: true, isDefault: true },
+				{
+					id: "workspace-a",
+					name: "Workspace A Renamed",
+					enabled: true,
+					isDefault: true,
+				},
 			],
 		});
-		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce("user@example.com");
-		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce("shared-workspace");
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce(
+			"user@example.com",
+		);
+		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce(
+			"shared-workspace",
+		);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin =
-			(await OpenAIOAuthPlugin({
-				client: mockClient,
-			} as never)) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 		const manualMethod = plugin.auth.methods[1] as unknown as {
 			authorize: () => Promise<{
 				callback: (input: string) => Promise<{ type: string }>;
@@ -3649,7 +4064,12 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				addedAt: Date.now() - 200000,
 				lastUsed: Date.now() - 200000,
 				workspaces: [
-					{ id: "workspace-a", name: "Workspace A", enabled: true, isDefault: true },
+					{
+						id: "workspace-a",
+						name: "Workspace A",
+						enabled: true,
+						isDefault: true,
+					},
 					{ id: "workspace-b", name: "Workspace B", enabled: true },
 				],
 				currentWorkspaceIndex: 1,
@@ -3659,7 +4079,10 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		const authModule = await import("../lib/auth/auth.js");
 		const accountsModule = await import("../lib/accounts.js");
 		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
-			pkce: { verifier: "persist-clamp-workspace-index", challenge: "persist-clamp-workspace-index" },
+			pkce: {
+				verifier: "persist-clamp-workspace-index",
+				challenge: "persist-clamp-workspace-index",
+			},
 			state: "persist-clamp-workspace-index",
 			url: "https://auth.openai.com/test?state=persist-clamp-workspace-index",
 		});
@@ -3670,18 +4093,26 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			expires: Date.now() + 3600_000,
 			idToken: undefined,
 			workspaces: [
-				{ id: "workspace-a", name: "Workspace A", enabled: true, isDefault: true },
+				{
+					id: "workspace-a",
+					name: "Workspace A",
+					enabled: true,
+					isDefault: true,
+				},
 			],
 		});
-		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce("user@example.com");
-		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce("shared-workspace");
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce(
+			"user@example.com",
+		);
+		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce(
+			"shared-workspace",
+		);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin =
-			(await OpenAIOAuthPlugin({
-				client: mockClient,
-			} as never)) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 		const manualMethod = plugin.auth.methods[1] as unknown as {
 			authorize: () => Promise<{
 				callback: (input: string) => Promise<{ type: string }>;
@@ -3697,7 +4128,12 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts).toHaveLength(1);
 		expect(mockStorage.accounts[0]?.currentWorkspaceIndex).toBe(0);
 		expect(mockStorage.accounts[0]?.workspaces).toEqual([
-			{ id: "workspace-a", name: "Workspace A", enabled: true, isDefault: true },
+			{
+				id: "workspace-a",
+				name: "Workspace A",
+				enabled: true,
+				isDefault: true,
+			},
 		]);
 	});
 
@@ -3714,7 +4150,13 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				lastUsed: Date.now() - 200000,
 				workspaces: [
 					{ id: "workspace-a", name: "Workspace A", enabled: true },
-					{ id: "workspace-b", name: "Workspace B", enabled: false, disabledAt: 222, isDefault: true },
+					{
+						id: "workspace-b",
+						name: "Workspace B",
+						enabled: false,
+						disabledAt: 222,
+						isDefault: true,
+					},
 					{ id: "workspace-c", name: "Workspace C", enabled: true },
 				],
 				currentWorkspaceIndex: 1,
@@ -3724,7 +4166,10 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		const authModule = await import("../lib/auth/auth.js");
 		const accountsModule = await import("../lib/accounts.js");
 		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
-			pkce: { verifier: "persist-reorder-workspaces", challenge: "persist-reorder-workspaces" },
+			pkce: {
+				verifier: "persist-reorder-workspaces",
+				challenge: "persist-reorder-workspaces",
+			},
 			state: "persist-reorder-workspaces",
 			url: "https://auth.openai.com/test?state=persist-reorder-workspaces",
 		});
@@ -3735,20 +4180,28 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			expires: Date.now() + 3600_000,
 			idToken: undefined,
 			workspaces: [
-				{ id: "workspace-b", name: "Workspace B Renamed", enabled: true, isDefault: true },
+				{
+					id: "workspace-b",
+					name: "Workspace B Renamed",
+					enabled: true,
+					isDefault: true,
+				},
 				{ id: "workspace-a", name: "Workspace A", enabled: true },
 				{ id: "workspace-c", name: "Workspace C", enabled: true },
 			],
 		});
-		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce("user@example.com");
-		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce("shared-workspace");
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce(
+			"user@example.com",
+		);
+		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce(
+			"shared-workspace",
+		);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin =
-			(await OpenAIOAuthPlugin({
-				client: mockClient,
-			} as never)) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 		const manualMethod = plugin.auth.methods[1] as unknown as {
 			authorize: () => Promise<{
 				callback: (input: string) => Promise<{ type: string }>;
@@ -3764,7 +4217,13 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts).toHaveLength(1);
 		expect(mockStorage.accounts[0]?.currentWorkspaceIndex).toBe(0);
 		expect(mockStorage.accounts[0]?.workspaces).toEqual([
-			{ id: "workspace-b", name: "Workspace B Renamed", enabled: false, disabledAt: 222, isDefault: true },
+			{
+				id: "workspace-b",
+				name: "Workspace B Renamed",
+				enabled: false,
+				disabledAt: 222,
+				isDefault: true,
+			},
 			{ id: "workspace-a", name: "Workspace A", enabled: true },
 			{ id: "workspace-c", name: "Workspace C", enabled: true },
 		]);
@@ -3801,17 +4260,18 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			expires: Date.now() + 3600_000,
 			idToken: undefined,
 		});
-		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce(undefined);
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce(
+			undefined,
+		);
 		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce(
 			"shared-workspace",
 		);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin =
-			(await OpenAIOAuthPlugin({
-				client: mockClient,
-			} as never)) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 		const manualMethod = plugin.auth.methods[1] as unknown as {
 			authorize: () => Promise<{
 				callback: (input: string) => Promise<{ type: string }>;
@@ -3825,9 +4285,9 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		expect(result.type).toBe("success");
 		expect(mockStorage.accounts).toHaveLength(3);
-		expect(
-			mockStorage.accounts.map((account) => account.refreshToken),
-		).toEqual(["refresh-a", "refresh-b", "refresh-c"]);
+		expect(mockStorage.accounts.map((account) => account.refreshToken)).toEqual(
+			["refresh-a", "refresh-b", "refresh-c"],
+		);
 		expect(mockStorage.accounts.map((account) => account.accountId)).toEqual([
 			"shared-workspace",
 			"shared-workspace",
@@ -3853,7 +4313,9 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			.mockImplementationOnce(async (storage) => {
 				await firstPersist.promise;
 				mockStorage.version = storage.version;
-				mockStorage.accounts = storage.accounts.map((account) => cloneMockAccount(account));
+				mockStorage.accounts = storage.accounts.map((account) =>
+					cloneMockAccount(account),
+				);
 				mockStorage.activeIndex = storage.activeIndex;
 				mockStorage.activeIndexByFamily = {
 					...(storage.activeIndexByFamily ?? {}),
@@ -3861,7 +4323,9 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			})
 			.mockImplementation(async (storage) => {
 				mockStorage.version = storage.version;
-				mockStorage.accounts = storage.accounts.map((account) => cloneMockAccount(account));
+				mockStorage.accounts = storage.accounts.map((account) =>
+					cloneMockAccount(account),
+				);
 				mockStorage.activeIndex = storage.activeIndex;
 				mockStorage.activeIndexByFamily = {
 					...(storage.activeIndexByFamily ?? {}),
@@ -3872,12 +4336,18 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		const accountsModule = await import("../lib/accounts.js");
 		vi.mocked(authModule.createAuthorizationFlow)
 			.mockResolvedValueOnce({
-				pkce: { verifier: "persist-concurrent-verifier-1", challenge: "persist-concurrent-challenge-1" },
+				pkce: {
+					verifier: "persist-concurrent-verifier-1",
+					challenge: "persist-concurrent-challenge-1",
+				},
 				state: "persist-concurrent-state-1",
 				url: "https://auth.openai.com/test?state=persist-concurrent-state-1",
 			})
 			.mockResolvedValueOnce({
-				pkce: { verifier: "persist-concurrent-verifier-2", challenge: "persist-concurrent-challenge-2" },
+				pkce: {
+					verifier: "persist-concurrent-verifier-2",
+					challenge: "persist-concurrent-challenge-2",
+				},
 				state: "persist-concurrent-state-2",
 				url: "https://auth.openai.com/test?state=persist-concurrent-state-2",
 			});
@@ -3905,10 +4375,9 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin =
-			(await OpenAIOAuthPlugin({
-				client: mockClient,
-			} as never)) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 		const manualMethod = plugin.auth.methods[1] as unknown as {
 			authorize: () => Promise<{
 				callback: (input: string) => Promise<{ type: string }>;
@@ -3978,17 +4447,18 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			expires: Date.now() + 3600_000,
 			idToken: undefined,
 		});
-		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce(undefined);
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce(
+			undefined,
+		);
 		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce(
 			"shared-workspace",
 		);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin =
-			(await OpenAIOAuthPlugin({
-				client: mockClient,
-			} as never)) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 		const manualMethod = plugin.auth.methods[1] as unknown as {
 			authorize: () => Promise<{
 				callback: (input: string) => Promise<{ type: string }>;
@@ -4015,7 +4485,11 @@ describe("OpenAIOAuthPlugin showToast error handling", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockStorage.accounts = [
-			{ accountId: "acc-1", email: "user@example.com", refreshToken: "refresh-1" },
+			{
+				accountId: "acc-1",
+				email: "user@example.com",
+				refreshToken: "refresh-1",
+			},
 		];
 		mockStorage.activeIndex = 0;
 		mockStorage.activeIndexByFamily = {};
@@ -4035,7 +4509,9 @@ describe("OpenAIOAuthPlugin showToast error handling", () => {
 		};
 
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		const result = await plugin.tool["codex-switch"].execute({ index: 1 });
 		expect(result).toContain("Switched to account");
@@ -4046,8 +4522,16 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockStorage.accounts = [
-			{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },
-			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+			{
+				accountId: "acc-1",
+				email: "user1@example.com",
+				refreshToken: "refresh-1",
+			},
+			{
+				accountId: "acc-2",
+				email: "user2@example.com",
+				refreshToken: "refresh-2",
+			},
 		];
 		mockStorage.activeIndex = 0;
 		mockStorage.activeIndexByFamily = {};
@@ -4060,7 +4544,9 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 	it("handles account.select with accountIndex property", async () => {
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		const getAuth = async () => ({
 			type: "oauth" as const,
@@ -4080,7 +4566,9 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 	it("reloads account manager from disk when handling account.select", async () => {
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 		const { AccountManager } = await import("../lib/accounts.js");
 		const loadFromDiskSpy = vi.spyOn(AccountManager, "loadFromDisk");
 
@@ -4105,7 +4593,9 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 	it("handles openai.account.select with openai provider", async () => {
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		const getAuth = async () => ({
 			type: "oauth" as const,
@@ -4128,7 +4618,9 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 	it("ignores account.select when cachedAccountManager is null", async () => {
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		await plugin.event({
 			event: { type: "account.select", properties: { index: 0 } },
@@ -4138,7 +4630,9 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 	it("handles non-numeric index gracefully", async () => {
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		await plugin.event({
 			event: { type: "account.select", properties: { index: "invalid" } },
@@ -4169,12 +4663,22 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 
 	it("forwards account selection toast arguments through showRuntimeToast", async () => {
 		mockStorage.accounts = [
-			{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },
-			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+			{
+				accountId: "acc-1",
+				email: "user1@example.com",
+				refreshToken: "refresh-1",
+			},
+			{
+				accountId: "acc-2",
+				email: "user2@example.com",
+				refreshToken: "refresh-2",
+			},
 		];
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
 		showRuntimeToastMock.mockClear();
@@ -4193,14 +4697,21 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 	it("forwards update notification toast arguments through showRuntimeToast", async () => {
 		const updateCheckerModule = await import("../lib/auto-update-checker.js");
 		vi.mocked(updateCheckerModule.checkAndNotify).mockImplementationOnce(
-			async (notify: (message: string, variant: "info" | "success" | "warning" | "error") => Promise<void>) => {
+			async (
+				notify: (
+					message: string,
+					variant: "info" | "success" | "warning" | "error",
+				) => Promise<void>,
+			) => {
 				await notify("Update available", "warning");
 			},
 		);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
 
@@ -4219,7 +4730,9 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 
 		await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
 
@@ -4234,7 +4747,9 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 	it("forwards short retry rate-limit toast arguments through showRuntimeToast when configured threshold allows retry", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
-		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
+		const rateLimitBackoffModule = await import(
+			"../lib/request/rate-limit-backoff.js"
+		);
 		getRateLimitShortRetryThresholdMock.mockReturnValue(1_500);
 
 		const markToastShown = vi.fn();
@@ -4284,7 +4799,9 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			markToastShown,
 			setActiveIndex: () => null,
 		};
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(
+			manager as never,
+		);
 		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
 			response: new Response("rate limited", { status: 429 }),
 			rateLimit: {
@@ -4300,19 +4817,29 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		globalThis.fetch = vi
 			.fn()
 			.mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
-			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
-		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, {
+			options: {},
+			models: {},
+		});
 		showRuntimeToastMock.mockClear();
 
 		vi.useFakeTimers();
-		const responsePromise = sdk.fetch!("https://api.openai.com/v1/chat/completions", {
-			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.1" }),
-		});
+		const responsePromise = sdk.fetch!(
+			"https://api.openai.com/v1/chat/completions",
+			{
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			},
+		);
 		await vi.advanceTimersByTimeAsync(1000);
 		const response = await responsePromise;
 
@@ -4329,7 +4856,9 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 	it("rotates when the configured short retry threshold is lower than the cooldown", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
-		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
+		const rateLimitBackoffModule = await import(
+			"../lib/request/rate-limit-backoff.js"
+		);
 		getRateLimitShortRetryThresholdMock.mockReturnValue(500);
 
 		const markRateLimitedWithReason = vi.fn();
@@ -4379,7 +4908,9 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			markToastShown: () => {},
 			setActiveIndex: () => null,
 		};
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(
+			manager as never,
+		);
 		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
 			response: new Response("rate limited", { status: 429 }),
 			rateLimit: {
@@ -4395,21 +4926,33 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		globalThis.fetch = vi
 			.fn()
 			.mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
-			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
-		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
-		showRuntimeToastMock.mockClear();
-		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
-			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.1" }),
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, {
+			options: {},
+			models: {},
 		});
+		showRuntimeToastMock.mockClear();
+		const response = await sdk.fetch!(
+			"https://api.openai.com/v1/chat/completions",
+			{
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			},
+		);
 
 		expect(response.status).toBe(503);
 		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
-		expect(markRateLimitedWithReason.mock.calls[0]?.[1]).toBe(2 * 60 * 60 * 1000);
+		expect(markRateLimitedWithReason.mock.calls[0]?.[1]).toBe(
+			2 * 60 * 60 * 1000,
+		);
 		expect(showRuntimeToastMock).not.toHaveBeenCalled();
 	});
 
@@ -4464,7 +5007,9 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			markToastShown: () => {},
 			setActiveIndex: () => null,
 		};
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(
+			manager as never,
+		);
 		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
 			response: new Response("rate limited", { status: 429 }),
 			rateLimit: undefined,
@@ -4476,12 +5021,20 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
-		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
-		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
-			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.1" }),
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, {
+			options: {},
+			models: {},
 		});
+		const response = await sdk.fetch!(
+			"https://api.openai.com/v1/chat/completions",
+			{
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			},
+		);
 
 		expect(response.status).toBe(429);
 		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
@@ -4491,7 +5044,9 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 	it("rotates account when upstream 404 usage_limit_reached is remapped to 429", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
-		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
+		const rateLimitBackoffModule = await import(
+			"../lib/request/rate-limit-backoff.js"
+		);
 
 		const markRateLimitedWithReason = vi.fn();
 		const manager = {
@@ -4540,14 +5095,26 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			markToastShown: () => {},
 			setActiveIndex: () => null,
 		};
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(
+			manager as never,
+		);
 		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
-			response: new Response(JSON.stringify({ error: { code: "usage_limit_reached", message: "Usage limit reached" } }), { status: 429 }),
+			response: new Response(
+				JSON.stringify({
+					error: {
+						code: "usage_limit_reached",
+						message: "Usage limit reached",
+					},
+				}),
+				{ status: 429 },
+			),
 			rateLimit: {
 				retryAfterMs: 2 * 60 * 60 * 1000,
 				code: "usage_limit_reached",
 			},
-			errorBody: JSON.stringify({ error: { code: "usage_limit_reached", message: "Usage limit reached" } }),
+			errorBody: JSON.stringify({
+				error: { code: "usage_limit_reached", message: "Usage limit reached" },
+			}),
 		} as never);
 		vi.mocked(rateLimitBackoffModule.getRateLimitBackoff).mockReturnValueOnce({
 			attempt: 2,
@@ -4556,18 +5123,36 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		globalThis.fetch = vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ error: { code: "usage_limit_reached", message: "Usage limit reached" } }), { status: 404 }),
+				new Response(
+					JSON.stringify({
+						error: {
+							code: "usage_limit_reached",
+							message: "Usage limit reached",
+						},
+					}),
+					{ status: 404 },
+				),
 			)
-			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
-		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
-		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
-			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.1" }),
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, {
+			options: {},
+			models: {},
 		});
+		const response = await sdk.fetch!(
+			"https://api.openai.com/v1/chat/completions",
+			{
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			},
+		);
 
 		expect(response.status).toBe(503);
 		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
@@ -4580,21 +5165,38 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		);
 	});
 
-	it("retries same account on short-cooldown 429 without marking rate-limited", async () => {
+	it("retries same account on short-cooldown 429 and pre-emptively marks rate-limited (AUDIT-H3)", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
-		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
+		const rateLimitBackoffModule = await import(
+			"../lib/request/rate-limit-backoff.js"
+		);
 
 		const markRateLimitedWithReason = vi.fn();
 		const manager = {
 			getAccountCount: () => 1,
-			getCurrentOrNextForFamilyHybrid: () => ({ index: 0, accountId: "acc-1", email: "alpha@example.com", refreshToken: "refresh-1" }),
-			getCurrentOrNextForFamily: () => ({ index: 0, accountId: "acc-1", email: "alpha@example.com", refreshToken: "refresh-1" }),
+			getCurrentOrNextForFamilyHybrid: () => ({
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+			}),
+			getCurrentOrNextForFamily: () => ({
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+			}),
 			getCurrentWorkspace: () => null,
 			getAccountByIndex: () => null,
 			getAccountsSnapshot: () => [],
 			isAccountAvailableForFamily: () => true,
-			toAuthDetails: () => ({ type: "oauth" as const, access: "access-token", refresh: "refresh-1", expires: Date.now() + 60_000 }),
+			toAuthDetails: () => ({
+				type: "oauth" as const,
+				access: "access-token",
+				refresh: "refresh-1",
+				expires: Date.now() + 60_000,
+			}),
 			hasRefreshToken: () => true,
 			saveToDiskDebounced: () => {},
 			updateFromAuth: () => {},
@@ -4617,32 +5219,50 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			markToastShown: () => {},
 			setActiveIndex: () => null,
 		};
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(
+			manager as never,
+		);
 		// Short cooldown: 1000ms < 5000ms threshold -> retries same account, does NOT rotate
 		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
 			response: new Response("rate limited", { status: 429 }),
 			rateLimit: { retryAfterMs: 1000, code: "rate_limit_exceeded" },
 			errorBody: "rate limited",
 		} as never);
-		vi.mocked(rateLimitBackoffModule.getRateLimitBackoff).mockReturnValueOnce({ attempt: 1, delayMs: 500 });
+		vi.mocked(rateLimitBackoffModule.getRateLimitBackoff).mockReturnValueOnce({
+			attempt: 1,
+			delayMs: 500,
+		});
 		globalThis.fetch = vi
 			.fn()
 			.mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
-			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
-		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
-		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
-			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.1" }),
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, {
+			options: {},
+			models: {},
 		});
+		const response = await sdk.fetch!(
+			"https://api.openai.com/v1/chat/completions",
+			{
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			},
+		);
 
 		// Short cooldown -> retries same account -> gets 200 on second attempt
 		expect(response.status).toBe(200);
-		// markRateLimitedWithReason is for long cooldowns; short retries skip it
-		expect(markRateLimitedWithReason).not.toHaveBeenCalled();
+		// AUDIT-H3 / D-07: short retries now pre-emptively mark the account as
+		// rate-limited BEFORE sleeping so concurrent in-flight requests do not
+		// select the same freshly rate-limited account and amplify throttling.
+		// Previously markRateLimitedWithReason was only called for long cooldowns.
+		expect(markRateLimitedWithReason).toHaveBeenCalledTimes(1);
 		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
 	});
 
@@ -4653,13 +5273,28 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		const markRateLimitedWithReason = vi.fn();
 		const manager = {
 			getAccountCount: () => 1,
-			getCurrentOrNextForFamilyHybrid: () => ({ index: 0, accountId: "acc-1", email: "alpha@example.com", refreshToken: "refresh-1" }),
-			getCurrentOrNextForFamily: () => ({ index: 0, accountId: "acc-1", email: "alpha@example.com", refreshToken: "refresh-1" }),
+			getCurrentOrNextForFamilyHybrid: () => ({
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+			}),
+			getCurrentOrNextForFamily: () => ({
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+			}),
 			getCurrentWorkspace: () => null,
 			getAccountByIndex: () => null,
 			getAccountsSnapshot: () => [],
 			isAccountAvailableForFamily: () => true,
-			toAuthDetails: () => ({ type: "oauth" as const, access: "access-token", refresh: "refresh-1", expires: Date.now() + 60_000 }),
+			toAuthDetails: () => ({
+				type: "oauth" as const,
+				access: "access-token",
+				refresh: "refresh-1",
+				expires: Date.now() + 60_000,
+			}),
 			hasRefreshToken: () => true,
 			saveToDiskDebounced: () => {},
 			updateFromAuth: () => {},
@@ -4682,25 +5317,40 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			markToastShown: () => {},
 			setActiveIndex: () => null,
 		};
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(
+			manager as never,
+		);
 		// 404 with unrelated body: handleErrorResponse returns 404 + no rateLimit
 		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
-			response: new Response(JSON.stringify({ error: { code: "model_not_found" } }), { status: 404 }),
+			response: new Response(
+				JSON.stringify({ error: { code: "model_not_found" } }),
+				{ status: 404 },
+			),
 			rateLimit: undefined,
 			errorBody: JSON.stringify({ error: { code: "model_not_found" } }),
 		} as never);
-		globalThis.fetch = vi
-			.fn()
-			.mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "model_not_found" } }), { status: 404 }));
+		globalThis.fetch = vi.fn().mockResolvedValueOnce(
+			new Response(JSON.stringify({ error: { code: "model_not_found" } }), {
+				status: 404,
+			}),
+		);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
-		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
-		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
-			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.1" }),
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, {
+			options: {},
+			models: {},
 		});
+		const response = await sdk.fetch!(
+			"https://api.openai.com/v1/chat/completions",
+			{
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			},
+		);
 
 		// Falls through as a plain 404; no rate-limit rotation
 		expect(response.status).toBe(404);
@@ -4715,13 +5365,28 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		const markRateLimitedWithReason = vi.fn();
 		const manager = {
 			getAccountCount: () => 1,
-			getCurrentOrNextForFamilyHybrid: () => ({ index: 0, accountId: "acc-1", email: "alpha@example.com", refreshToken: "refresh-1" }),
-			getCurrentOrNextForFamily: () => ({ index: 0, accountId: "acc-1", email: "alpha@example.com", refreshToken: "refresh-1" }),
+			getCurrentOrNextForFamilyHybrid: () => ({
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+			}),
+			getCurrentOrNextForFamily: () => ({
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+			}),
 			getCurrentWorkspace: () => null,
 			getAccountByIndex: () => null,
 			getAccountsSnapshot: () => [],
 			isAccountAvailableForFamily: () => true,
-			toAuthDetails: () => ({ type: "oauth" as const, access: "access-token", refresh: "refresh-1", expires: Date.now() + 60_000 }),
+			toAuthDetails: () => ({
+				type: "oauth" as const,
+				access: "access-token",
+				refresh: "refresh-1",
+				expires: Date.now() + 60_000,
+			}),
 			hasRefreshToken: () => true,
 			saveToDiskDebounced: () => {},
 			updateFromAuth: () => {},
@@ -4744,28 +5409,53 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			markToastShown: () => {},
 			setActiveIndex: () => null,
 		};
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(
+			manager as never,
+		);
 		// Entitlement error: mapUsageLimit404WithBody remaps 404 -> 403 (not 429)
 		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
 			response: new Response(
-				JSON.stringify({ error: { code: "usage_not_included", message: "Not included in your plan" } }),
+				JSON.stringify({
+					error: {
+						code: "usage_not_included",
+						message: "Not included in your plan",
+					},
+				}),
 				{ status: 403 },
 			),
 			rateLimit: undefined,
-			errorBody: JSON.stringify({ error: { code: "usage_not_included", message: "Not included in your plan" } }),
+			errorBody: JSON.stringify({
+				error: {
+					code: "usage_not_included",
+					message: "Not included in your plan",
+				},
+			}),
 		} as never);
 		globalThis.fetch = vi
 			.fn()
-			.mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "usage_not_included" } }), { status: 404 }));
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({ error: { code: "usage_not_included" } }),
+					{ status: 404 },
+				),
+			);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
-		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
-		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
-			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.1" }),
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, {
+			options: {},
+			models: {},
 		});
+		const response = await sdk.fetch!(
+			"https://api.openai.com/v1/chat/completions",
+			{
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			},
+		);
 
 		// Entitlement 403 passes through; no rate-limit rotation
 		expect(response.status).toBe(403);
@@ -4776,18 +5466,35 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 	it("rotates account when upstream 404 body contains rate_limit_exceeded keyword", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
-		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
+		const rateLimitBackoffModule = await import(
+			"../lib/request/rate-limit-backoff.js"
+		);
 
 		const markRateLimitedWithReason = vi.fn();
 		const manager = {
 			getAccountCount: () => 1,
-			getCurrentOrNextForFamilyHybrid: () => ({ index: 0, accountId: "acc-1", email: "alpha@example.com", refreshToken: "refresh-1" }),
-			getCurrentOrNextForFamily: () => ({ index: 0, accountId: "acc-1", email: "alpha@example.com", refreshToken: "refresh-1" }),
+			getCurrentOrNextForFamilyHybrid: () => ({
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+			}),
+			getCurrentOrNextForFamily: () => ({
+				index: 0,
+				accountId: "acc-1",
+				email: "alpha@example.com",
+				refreshToken: "refresh-1",
+			}),
 			getCurrentWorkspace: () => null,
 			getAccountByIndex: () => null,
 			getAccountsSnapshot: () => [],
 			isAccountAvailableForFamily: () => true,
-			toAuthDetails: () => ({ type: "oauth" as const, access: "access-token", refresh: "refresh-1", expires: Date.now() + 60_000 }),
+			toAuthDetails: () => ({
+				type: "oauth" as const,
+				access: "access-token",
+				refresh: "refresh-1",
+				expires: Date.now() + 60_000,
+			}),
 			hasRefreshToken: () => true,
 			saveToDiskDebounced: () => {},
 			updateFromAuth: () => {},
@@ -4810,29 +5517,59 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			markToastShown: () => {},
 			setActiveIndex: () => null,
 		};
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(
+			manager as never,
+		);
 		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValueOnce({
 			response: new Response(
-				JSON.stringify({ error: { code: "rate_limit_exceeded", message: "Rate limit exceeded" } }),
+				JSON.stringify({
+					error: {
+						code: "rate_limit_exceeded",
+						message: "Rate limit exceeded",
+					},
+				}),
 				{ status: 429 },
 			),
-			rateLimit: { retryAfterMs: 3 * 60 * 60 * 1000, code: "rate_limit_exceeded" },
-			errorBody: JSON.stringify({ error: { code: "rate_limit_exceeded", message: "Rate limit exceeded" } }),
+			rateLimit: {
+				retryAfterMs: 3 * 60 * 60 * 1000,
+				code: "rate_limit_exceeded",
+			},
+			errorBody: JSON.stringify({
+				error: { code: "rate_limit_exceeded", message: "Rate limit exceeded" },
+			}),
 		} as never);
-		vi.mocked(rateLimitBackoffModule.getRateLimitBackoff).mockReturnValueOnce({ attempt: 1, delayMs: 500 });
+		vi.mocked(rateLimitBackoffModule.getRateLimitBackoff).mockReturnValueOnce({
+			attempt: 1,
+			delayMs: 500,
+		});
 		globalThis.fetch = vi
 			.fn()
-			.mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "rate_limit_exceeded" } }), { status: 404 }))
-			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({ error: { code: "rate_limit_exceeded" } }),
+					{ status: 404 },
+				),
+			)
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
-		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
-		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
-			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.1" }),
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, {
+			options: {},
+			models: {},
 		});
+		const response = await sdk.fetch!(
+			"https://api.openai.com/v1/chat/completions",
+			{
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			},
+		);
 
 		expect(response.status).toBe(503);
 		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
@@ -4848,7 +5585,9 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 	it("falls through to rotation after MAX_SHORT_RETRY_ATTEMPTS local short retries", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
-		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
+		const rateLimitBackoffModule = await import(
+			"../lib/request/rate-limit-backoff.js"
+		);
 
 		const markRateLimitedWithReason = vi.fn();
 		const recordRateLimit = vi.fn();
@@ -4898,7 +5637,9 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			markToastShown: () => {},
 			setActiveIndex: () => null,
 		};
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(
+			manager as never,
+		);
 		getRateLimitShortRetryThresholdMock.mockReturnValue(1_500);
 		vi.mocked(fetchHelpersModule.handleErrorResponse).mockResolvedValue({
 			response: new Response("rate limited", { status: 429 }),
@@ -4921,14 +5662,22 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
-		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, {
+			options: {},
+			models: {},
+		});
 
 		vi.useFakeTimers();
-		const responsePromise = sdk.fetch!("https://api.openai.com/v1/chat/completions", {
-			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.1" }),
-		});
+		const responsePromise = sdk.fetch!(
+			"https://api.openai.com/v1/chat/completions",
+			{
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			},
+		);
 		await vi.advanceTimersByTimeAsync(4_000);
 		const response = await responsePromise;
 
@@ -4947,7 +5696,9 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 	it("short-retries the same account when attempt is below MAX_SHORT_RETRY_ATTEMPTS", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
-		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
+		const rateLimitBackoffModule = await import(
+			"../lib/request/rate-limit-backoff.js"
+		);
 
 		const markRateLimitedWithReason = vi.fn();
 		const manager = {
@@ -4996,7 +5747,9 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			markToastShown: () => {},
 			setActiveIndex: () => null,
 		};
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(
+			manager as never,
+		);
 
 		// First request: 429 with attempt=2 (below MAX_SHORT_RETRY_ATTEMPTS=3) → short retry
 		// Second request: 200 OK
@@ -5015,26 +5768,39 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		globalThis.fetch = vi
 			.fn()
 			.mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
-			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
-		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, {
+			options: {},
+			models: {},
+		});
 
 		vi.useFakeTimers();
-		const responsePromise = sdk.fetch!("https://api.openai.com/v1/chat/completions", {
-			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.1" }),
-		});
+		const responsePromise = sdk.fetch!(
+			"https://api.openai.com/v1/chat/completions",
+			{
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			},
+		);
 		await vi.advanceTimersByTimeAsync(2000);
 		const response = await responsePromise;
 
 		// Should have short-retried and succeeded
 		expect(response.status).toBe(200);
 		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
-		// markRateLimitedWithReason should NOT have been called (no rotation)
-		expect(markRateLimitedWithReason).not.toHaveBeenCalled();
+		// AUDIT-H3 / D-07: short retries now pre-emptively mark the account as
+		// rate-limited BEFORE sleeping so concurrent requests don't select the
+		// same freshly rate-limited account. Previously marking was only called
+		// for long cooldowns / rotation paths.
+		expect(markRateLimitedWithReason).toHaveBeenCalledTimes(1);
 	});
 
 	it("persists the longer parsed rate-limit cooldown across overlapping requests", async () => {
@@ -5045,7 +5811,9 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			);
 		const { MODEL_FAMILIES } = await import("../lib/prompts/codex.js");
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
-		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
+		const rateLimitBackoffModule = await import(
+			"../lib/request/rate-limit-backoff.js"
+		);
 		const longCooldownMs = 90 * 60 * 1000;
 		const shortCooldownMs = 60_000;
 		vi.useFakeTimers();
@@ -5109,7 +5877,9 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 				markToastShown: () => {},
 				setActiveIndex: () => null,
 			};
-			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(
+				manager as never,
+			);
 
 			let rateLimitCallCount = 0;
 			const waitForSecondRateLimitCall = async () => {
@@ -5166,8 +5936,13 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 
 			const mockClient = createMockClient();
 			const { OpenAIOAuthPlugin } = await import("../index.js");
-			const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
-			const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
+			const plugin = (await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+			const sdk = await plugin.auth.loader(getOAuthAuth, {
+				options: {},
+				models: {},
+			});
 
 			await Promise.all([
 				sdk.fetch!("https://api.openai.com/v1/chat/completions", {
@@ -5192,10 +5967,16 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 
 	it("uses the floored cooldown for stream failover 429s", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
-		const { CapabilityPolicyStore } = await import("../lib/capability-policy.js");
+		const { CapabilityPolicyStore } = await import(
+			"../lib/capability-policy.js"
+		);
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
-		const rateLimitBackoffModule = await import("../lib/request/rate-limit-backoff.js");
-		const streamFailoverModule = await import("../lib/request/stream-failover.js");
+		const rateLimitBackoffModule = await import(
+			"../lib/request/rate-limit-backoff.js"
+		);
+		const streamFailoverModule = await import(
+			"../lib/request/stream-failover.js"
+		);
 		const currentAccount = {
 			index: 0,
 			accountId: "acc-1",
@@ -5237,8 +6018,11 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			getAccountByIndex: (index: number) =>
 				index === fallbackAccount.index ? fallbackAccount : currentAccount,
 			getAccountsSnapshot: () => [currentAccount, fallbackAccount],
-			isAccountAvailableForFamily: (index: number) => index === fallbackAccount.index,
-			toAuthDetails: (account: typeof currentAccount | typeof fallbackAccount) => ({
+			isAccountAvailableForFamily: (index: number) =>
+				index === fallbackAccount.index,
+			toAuthDetails: (
+				account: typeof currentAccount | typeof fallbackAccount,
+			) => ({
 				type: "oauth" as const,
 				access: account.accessToken,
 				refresh: account.refreshToken,
@@ -5266,7 +6050,9 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			markToastShown: () => {},
 			setActiveIndex: () => null,
 		};
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
+			manager as never,
+		);
 		vi.mocked(fetchHelpersModule.handleErrorResponse).mockImplementation(
 			async (response: Response) =>
 				({
@@ -5314,12 +6100,20 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
-		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
-		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
-			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.1", stream: true }),
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, {
+			options: {},
+			models: {},
 		});
+		const response = await sdk.fetch!(
+			"https://api.openai.com/v1/chat/completions",
+			{
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1", stream: true }),
+			},
+		);
 		await Promise.all(pendingFailovers);
 
 		expect(response.status).toBe(200);
@@ -5337,9 +6131,13 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 
 	it("records capability failure once for non-429 stream failover fallback errors", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
-		const { CapabilityPolicyStore } = await import("../lib/capability-policy.js");
+		const { CapabilityPolicyStore } = await import(
+			"../lib/capability-policy.js"
+		);
 		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
-		const streamFailoverModule = await import("../lib/request/stream-failover.js");
+		const streamFailoverModule = await import(
+			"../lib/request/stream-failover.js"
+		);
 		const currentAccount = {
 			index: 0,
 			accountId: "acc-1",
@@ -5378,8 +6176,11 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			getAccountByIndex: (index: number) =>
 				index === fallbackAccount.index ? fallbackAccount : currentAccount,
 			getAccountsSnapshot: () => [currentAccount, fallbackAccount],
-			isAccountAvailableForFamily: (index: number) => index === fallbackAccount.index,
-			toAuthDetails: (account: typeof currentAccount | typeof fallbackAccount) => ({
+			isAccountAvailableForFamily: (index: number) =>
+				index === fallbackAccount.index,
+			toAuthDetails: (
+				account: typeof currentAccount | typeof fallbackAccount,
+			) => ({
 				type: "oauth" as const,
 				access: account.accessToken,
 				refresh: account.refreshToken,
@@ -5407,7 +6208,9 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			markToastShown: () => {},
 			setActiveIndex: () => null,
 		};
-		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(manager as never);
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(
+			manager as never,
+		);
 		vi.mocked(fetchHelpersModule.handleErrorResponse).mockImplementation(
 			async (response: Response) =>
 				({
@@ -5447,12 +6250,20 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
-		const sdk = await plugin.auth.loader(getOAuthAuth, { options: {}, models: {} });
-		const response = await sdk.fetch!("https://api.openai.com/v1/chat/completions", {
-			method: "POST",
-			body: JSON.stringify({ model: "gpt-5.1", stream: true }),
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const sdk = await plugin.auth.loader(getOAuthAuth, {
+			options: {},
+			models: {},
 		});
+		const response = await sdk.fetch!(
+			"https://api.openai.com/v1/chat/completions",
+			{
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1", stream: true }),
+			},
+		);
 		await Promise.all(pendingFailovers);
 
 		expect(response.status).toBe(200);
@@ -5474,7 +6285,10 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		const authModule = await import("../lib/auth/auth.js");
 		const storageModule = await import("../lib/storage.js");
 		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
-			pkce: { verifier: "toast-persist-verifier", challenge: "toast-persist-challenge" },
+			pkce: {
+				verifier: "toast-persist-verifier",
+				challenge: "toast-persist-challenge",
+			},
 			state: "toast-persist-state",
 			url: "https://auth.openai.com/test?state=toast-persist-state",
 		});
@@ -5486,15 +6300,14 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			idToken: "id-token",
 		});
 		vi.mocked(storageModule.saveAccounts).mockRejectedValueOnce(
-			new storageModule.StorageError(
-				"Write failed",
-				"Persist hint",
-			),
+			new storageModule.StorageError("Write failed", "Persist hint"),
 		);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 		const manualMethod = plugin.auth.methods[1] as unknown as {
 			authorize: () => Promise<{
 				callback: (input: string) => Promise<{ type: string }>;
@@ -5521,7 +6334,10 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		const browserModule = await import("../lib/auth/browser.js");
 		const serverModule = await import("../lib/auth/server.js");
 		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
-			pkce: { verifier: "toast-success-verifier", challenge: "toast-success-challenge" },
+			pkce: {
+				verifier: "toast-success-verifier",
+				challenge: "toast-success-challenge",
+			},
 			state: "toast-success-state",
 			url: "https://auth.openai.com/test?state=toast-success-state",
 		});
@@ -5541,7 +6357,9 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
 		const autoMethod = plugin.auth.methods[0] as unknown as {
 			authorize: (inputs?: Record<string, string>) => Promise<unknown>;
 		};
@@ -5563,7 +6381,9 @@ describe("reloadRuntimeAccountManager", () => {
 	});
 
 	it("reuses the same in-flight promise for concurrent reloads", async () => {
-		const runtimeCacheModule = await import("../lib/runtime/account-manager-cache.js");
+		const runtimeCacheModule = await import(
+			"../lib/runtime/account-manager-cache.js"
+		);
 		const reloadedManager = { name: "manager" };
 		let resolveLoad!: (value: typeof reloadedManager) => void;
 		const loadPromise = new Promise<typeof reloadedManager>((resolve) => {
@@ -5579,7 +6399,9 @@ describe("reloadRuntimeAccountManager", () => {
 			setCachedAccountManager: (value: typeof reloadedManager) => {
 				cachedAccountManager = value;
 			},
-			setAccountManagerPromise: (value: Promise<typeof reloadedManager> | null) => {
+			setAccountManagerPromise: (
+				value: Promise<typeof reloadedManager> | null,
+			) => {
 				accountManagerPromise = value;
 			},
 			setReloadInFlight: (value: Promise<typeof reloadedManager> | null) => {
@@ -5587,8 +6409,12 @@ describe("reloadRuntimeAccountManager", () => {
 			},
 		});
 
-		const firstReload = runtimeCacheModule.reloadRuntimeAccountManager(makeDeps());
-		const secondReload = runtimeCacheModule.reloadRuntimeAccountManager(makeDeps());
+		const firstReload = runtimeCacheModule.reloadRuntimeAccountManager(
+			makeDeps(),
+		);
+		const secondReload = runtimeCacheModule.reloadRuntimeAccountManager(
+			makeDeps(),
+		);
 
 		expect(secondReload).toBe(firstReload);
 		expect(loadFromDisk).toHaveBeenCalledTimes(1);
@@ -5601,5 +6427,3 @@ describe("reloadRuntimeAccountManager", () => {
 		expect(accountReloadInFlight).toBeNull();
 	});
 });
-
-
