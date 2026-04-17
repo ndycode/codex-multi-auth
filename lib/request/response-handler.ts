@@ -766,7 +766,13 @@ export async function convertSseToJson(
 	}
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
-	let fullText = "";
+	// REQ-HIGH-03: Accumulate decoded chunks in an array instead of concatenating
+	// into a growing string. Repeated `fullText += chunk` is O(n) per append,
+	// producing O(n^2) total work on V8 for large streams. The array-then-join()
+	// pattern is O(n) total. The size check runs BEFORE appending so we never
+	// allocate a chunk that would exceed MAX_SSE_SIZE.
+	const chunks: string[] = [];
+	let totalSize = 0;
 	const streamStallTimeoutMs = Math.max(
 		1_000,
 		Math.floor(
@@ -782,11 +788,18 @@ export async function convertSseToJson(
 				streamStallTimeoutMs,
 			);
 			if (done) break;
-			fullText += decoder.decode(value, { stream: true });
-			if (fullText.length > MAX_SSE_SIZE) {
+			const decoded = decoder.decode(value, { stream: true });
+			// Pre-append size check: reject before allocating/retaining the chunk
+			// alongside the accumulated buffer. This bounds peak memory to the
+			// cap rather than cap + chunk.
+			if (totalSize + decoded.length > MAX_SSE_SIZE) {
 				throw new Error(`SSE response exceeds ${MAX_SSE_SIZE} bytes limit`);
 			}
+			chunks.push(decoded);
+			totalSize += decoded.length;
 		}
+
+		const fullText = chunks.join("");
 
 		if (LOGGING_ENABLED) {
 			logRequest("stream-full", { fullContent: fullText });
