@@ -1,0 +1,11 @@
+﻿# Command: npm run vendor:verify
+# Exit: 0
+# Duration: 0.3s
+# Timestamp: 2026-04-17T08:27:53Z
+---
+
+> codex-multi-auth@1.2.7 vendor:verify
+> node scripts/verify-vendor-provenance.mjs
+
+Vendor provenance ok: 2 component(s), 8 file(s) verified
+

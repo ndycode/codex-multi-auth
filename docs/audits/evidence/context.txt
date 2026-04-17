@@ -1,0 +1,71 @@
+﻿# Codex-Multi-Auth Master Audit Context
+# Generated: 2026-04-17T08:24:53Z
+
+## Git
+HEAD: 1f6da97d06dcc8c268b304e6e45b6baa9a386679
+Branch: main
+Describe: v1.2.7-1-g1f6da97
+
+## Working Tree
+ M test/__snapshots__/copy-oauth-success.test.ts.snap
+?? .audit-tmp/snapshots/node-modules.txt
+?? .audit-tmp/snapshots/port-1455.txt
+?? .audit-tmp/snapshots/pre-git-state.txt
+?? .audit-tmp/snapshots/pre-host-codex.txt
+
+
+## Runtime
+Node: v25.6.1
+npm: 11.9.0
+OS: Windows Microsoft Windows 11 IoT Enterprise 10.0.26200
+
+## Package
+Name: codex-multi-auth
+Version: 1.2.7
+Type: module
+Engines: {"node":"\u003e=18.0.0"}
+
+## Top-level Deps (npm ls --depth=0)
+codex-multi-auth@1.2.7 <HOME>\Downloads\temp\codex-multi-auth
++-- @codex-ai/plugin@1.2.10-codex.1 -> .\vendor\codex-ai-plugin
++-- @codex-ai/sdk@1.2.10-codex.1 -> .\vendor\codex-ai-sdk
++-- @fast-check/vitest@0.2.4
++-- @openauthjs/openauth@0.4.3
++-- @types/node@25.3.0
++-- @typescript-eslint/eslint-plugin@8.56.0
++-- @typescript-eslint/parser@8.56.0
++-- @vitest/coverage-v8@4.0.18
++-- @vitest/ui@4.0.18
++-- eslint@10.0.0
++-- fast-check@4.5.3
++-- hono@4.12.14 overridden
++-- husky@9.1.7
++-- lint-staged@16.2.7
++-- typescript-language-server@5.1.3
++-- typescript@5.9.3
++-- undici@6.24.1
++-- vitest@4.0.18
+`-- zod@4.3.6
+
+
+
+## Vendored
+codex-multi-auth@1.2.7 <HOME>\Downloads\temp\codex-multi-auth
++-- @codex-ai/plugin@1.2.10-codex.1 -> .\vendor\codex-ai-plugin
+`-- @codex-ai/sdk@1.2.10-codex.1 -> .\vendor\codex-ai-sdk
+
+
+
+## Repo LOC
+TS files in lib/: 221
+TS total LOC in lib/: 46371
+Test files (*.test.ts): 225
+Scripts count: 19
+Docs md count: 55
+
+## CI Workflows
+ci.yml
+codeql.yml
+codex-plugin-scanner.yml
+pr-ci.yml
+

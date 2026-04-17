@@ -1,0 +1,234 @@
+﻿# T6 Docs Claims Extraction
+
+Package version (actual, from package.json): 1.2.7
+Generated: 2026-04-17
+Scope: Quantitative/factual claims extracted verbatim or tight-paraphrased from repo docs.
+Redaction: No host paths, emails, or tokens included.
+
+Categories:
+  command | path | feature | storage-location | port-number | env-var |
+  api-behavior | platform | version | security-guarantee | privacy-statement |
+  performance-claim | version-compat
+
+===============================================================================
+CLAIMS TABLE
+===============================================================================
+
+| File | Line | Claim (verbatim or tight paraphrase) | Category | Expected Verification Source |
+|---|---|---|---|---|
+| AGENTS.md | 3 | "Generated: 2026-03-01" | version | git log / package.json / file mtime (drift: file mtime 2026-04-17) |
+| AGENTS.md | 4 | "Commit: 9ac8a84" | version | git rev-parse HEAD |
+| AGENTS.md | 5 | "Branch: main" | version | git branch --show-current |
+| AGENTS.md | 8 | Plugin "intercepts OpenAI SDK calls, routes through ChatGPT Codex backend with multi-account OAuth rotation" | feature | index.ts plugin entry |
+| AGENTS.md | 13 | "index.ts # plugin entry (7-step fetch pipeline, tool registration)" | feature | index.ts |
+| AGENTS.md | 46 | "OAuth flow + PKCE | lib/auth/auth.ts | REDIRECT_URI = 127.0.0.1:1455" | port-number | lib/auth/auth.ts REDIRECT_URI constant |
+| AGENTS.md | 47 | "OAuth callback server | lib/auth/server.ts | binds port 1455" | port-number | lib/auth/server.ts listen call |
+| AGENTS.md | 62 | "settings-hub.ts ... extracted interactive settings (2100 lines), Q = cancel without save" | feature | wc -l lib/codex-manager/settings-hub.ts |
+| AGENTS.md | 73 | "vitest globals, 80% coverage threshold, 87 files, 2071 tests" | performance-claim | vitest.config.ts + npm test run (KNOWN STALE vs v1.2.7) |
+| AGENTS.md | 80 | "ESM only (\"type\": \"module\"), Node >= 18." | platform | package.json type + engines |
+| AGENTS.md | 89 | "Do not hardcode ports other than 1455 for OAuth server." | port-number | grep for port literals |
+| AGENTS.md | 97 | "npm test # vitest once (87 files, 2071 tests)" | performance-claim | npm test output |
+| AGENTS.md | 106 | "OAuth callback: http://127.0.0.1:1455/auth/callback." | port-number | lib/auth/auth.ts REDIRECT_URI |
+| AGENTS.md | 107 | "ChatGPT backend requires store: false, include reasoning.encrypted_content." | api-behavior | lib/request/request-transformer.ts |
+| AGENTS.md | 108 | "Per-project accounts: ~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json" | storage-location | lib/storage.ts + lib/storage/paths.ts |
+| AGENTS.md | 109 | "Global accounts: ~/.codex/multi-auth/openai-codex-accounts.json" | storage-location | lib/storage.ts |
+| AGENTS.md | 117 | "Settings writes use queued retry with EBUSY/EPERM/EAGAIN backoff (max 4 retries, exponential)." | api-behavior | lib/unified-settings.ts |
+| README.md | 6 | "Codex CLI-first multi-account OAuth manager for the official Codex CLI" | feature | product positioning |
+| README.md | 19 | "Project-scoped account storage under ~/.codex/multi-auth/projects/<project-key>/..." | storage-location | lib/storage/paths.ts |
+| README.md | 55 | "npm i -g codex-multi-auth" | command | npm registry + package.json name |
+| README.md | 208 | "Settings | ~/.codex/multi-auth/settings.json" | storage-location | lib/unified-settings.ts |
+| README.md | 209 | "Accounts | ~/.codex/multi-auth/openai-codex-accounts.json" | storage-location | lib/storage.ts |
+| README.md | 210 | "Flagged accounts | ~/.codex/multi-auth/openai-codex-flagged-accounts.json" | storage-location | lib/storage.ts |
+| README.md | 211 | "Quota cache | ~/.codex/multi-auth/quota-cache.json" | storage-location | lib/quota-cache.ts |
+| README.md | 212 | "Runtime observability | ~/.codex/multi-auth/runtime-observability.json" | storage-location | lib/codex-cli/ observability |
+| README.md | 213 | "Logs | ~/.codex/multi-auth/logs/codex-plugin/" | storage-location | lib/logger.ts |
+| README.md | 216 | "Override root with CODEX_MULTI_AUTH_DIR=<path>." | env-var | lib/runtime-paths.ts |
+| README.md | 230 | "CODEX_MULTI_AUTH_DIR | Override settings/accounts root" | env-var | lib/runtime-paths.ts |
+| README.md | 231 | "CODEX_MULTI_AUTH_CONFIG_PATH | Alternate config file path" | env-var | lib/config.ts |
+| README.md | 232 | "CODEX_MODE=0/1 | Disable/enable Codex mode" | env-var | lib/config.ts |
+| README.md | 236 | "CODEX_AUTH_BACKGROUND_RESPONSES=0/1 | Opt in/out of stateful Responses background:true compatibility" | env-var | lib/request/request-transformer.ts |
+| README.md | 237 | "CODEX_AUTH_FETCH_TIMEOUT_MS=<ms> | Request timeout override" | env-var | lib/request/fetch-helpers.ts |
+| README.md | 291 | "OAuth callback on port 1455 fails: free the port and re-run codex auth login" | port-number | lib/auth/server.ts |
+| README.md | 292 | "or set CODEX_AUTH_NO_BROWSER=1" | env-var | lib/auth/browser.ts |
+| README.md | 334 | "Current stable: docs/releases/v1.2.7.md" | version | docs/releases/v1.2.7.md + package.json |
+| README.md | 342 | "MIT License. See LICENSE." | security-guarantee | LICENSE file |
+| README.md | 348 | "\"ChatGPT\", \"Codex\", and \"OpenAI\" are trademarks of OpenAI." | privacy-statement | n/a (factual) |
+| SECURITY.md | 9 | "1.x latest | Supported" | version-compat | package.json version |
+| SECURITY.md | 10 | "pre-1.0 historical releases | Not supported" | version-compat | git tags |
+| SECURITY.md | 20 | VERBATIM: "PKCE-based OAuth flow." | security-guarantee | lib/auth/auth.ts PKCE code |
+| SECURITY.md | 21 | VERBATIM: "Local storage under ~/.codex/multi-auth (or CODEX_MULTI_AUTH_DIR)." | security-guarantee | lib/runtime-paths.ts |
+| SECURITY.md | 22 | VERBATIM: "Refresh-token lifecycle management and account health isolation." | security-guarantee | lib/refresh-queue.ts + lib/health.ts |
+| SECURITY.md | 23 | VERBATIM: "No project-owned telemetry backend." | privacy-statement | grep for network calls |
+| SECURITY.md | 36 | VERBATIM: "ENABLE_PLUGIN_REQUEST_LOGGING=1 (metadata)" | env-var | lib/logger.ts |
+| SECURITY.md | 37 | VERBATIM: "CODEX_PLUGIN_LOG_BODIES=1 (raw bodies; sensitive)" | env-var | lib/logger.ts |
+| SECURITY.md | 53 | "Target response time: within 48 hours." | security-guarantee | policy-only |
+| SECURITY.md | 80 | "hono: pinned to 4.12.10 ... vulnerable 4.12.0-4.12.1 range (GHSA-xh87-mx6m-69f3)" | security-guarantee | package.json overrides |
+| SECURITY.md | 81 | "rollup: pinned to ^4.59.0" | security-guarantee | package.json overrides |
+| docs/privacy.md | 3 | VERBATIM: "codex-multi-auth is local-first: account/session state is stored on your machine under the configured runtime root." | privacy-statement | runtime-paths / storage |
+| docs/privacy.md | 9 | VERBATIM: "No custom analytics pipeline in this repository." | privacy-statement | grep codebase for telemetry |
+| docs/privacy.md | 10 | VERBATIM: "No project-owned remote database." | privacy-statement | grep codebase |
+| docs/privacy.md | 11 | VERBATIM: "Network calls are limited to required OAuth/backend/update endpoints." | privacy-statement | grep fetch/http calls |
+| docs/privacy.md | 19 | "Unified settings | ~/.codex/multi-auth/settings.json" | storage-location | lib/unified-settings.ts |
+| docs/privacy.md | 20 | "Accounts | ~/.codex/multi-auth/openai-codex-accounts.json" | storage-location | lib/storage.ts |
+| docs/privacy.md | 21 | "Flagged accounts | ~/.codex/multi-auth/openai-codex-flagged-accounts.json" | storage-location | lib/storage.ts |
+| docs/privacy.md | 25 | "Codex CLI state | ~/.codex/accounts.json, ~/.codex/auth.json" | storage-location | official Codex CLI files |
+| docs/privacy.md | 38 | VERBATIM: "OpenAI OAuth endpoints (auth.openai.com)" | privacy-statement | lib/auth/auth.ts |
+| docs/privacy.md | 39 | VERBATIM: "OpenAI Codex/ChatGPT backend endpoints" | privacy-statement | lib/request/ |
+| docs/privacy.md | 40 | VERBATIM: "GitHub raw/releases endpoints for prompt template sync" | privacy-statement | lib/prompts/codex.ts |
+| docs/privacy.md | 46 | VERBATIM: "ENABLE_PLUGIN_REQUEST_LOGGING=1 enables request logging metadata." | env-var | lib/logger.ts |
+| docs/privacy.md | 47 | VERBATIM: "CODEX_PLUGIN_LOG_BODIES=1 enables raw request/response body logging." | env-var | lib/logger.ts |
+| docs/privacy.md | 49 | VERBATIM: "Raw body logs may contain sensitive payload text. Treat logs as sensitive data and rotate/delete as needed." | privacy-statement | policy-only |
+| docs/privacy.md | 88-89 | Policy links: openai.com terms-of-use + privacy-policy | privacy-statement | n/a |
+| docs/architecture.md | 13 | "account state is stored under ~/.codex/multi-auth" | storage-location | lib/runtime-paths.ts |
+| docs/architecture.md | 92 | "The OAuth callback port remains 1455" | port-number | lib/auth/server.ts |
+| docs/architecture.md | 90 | "The official OAuth flow remains the source of authentication" | security-guarantee | lib/auth/auth.ts |
+| docs/configuration.md | 11 | "Unified settings | ~/.codex/multi-auth/settings.json" | storage-location | lib/unified-settings.ts |
+| docs/configuration.md | 36 | "\"fetchTimeoutMs\": 60000" | api-behavior | lib/config.ts DEFAULT_PLUGIN_CONFIG |
+| docs/configuration.md | 37 | "\"streamStallTimeoutMs\": 45000" | api-behavior | lib/config.ts DEFAULT_PLUGIN_CONFIG |
+| docs/configuration.md | 65 | "CODEX_MODE=0/1" | env-var | lib/config.ts |
+| docs/configuration.md | 67 | "CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16" | env-var | lib/ui/theme.ts |
+| docs/configuration.md | 68 | "CODEX_TUI_GLYPHS=ascii|unicode|auto" | env-var | lib/ui/theme.ts |
+| docs/getting-started.md | 9 | "Node.js 18+" | platform | package.json engines |
+| docs/getting-started.md | 85 | "http://127.0.0.1:1455/auth/callback?code=... | codex auth login --manual" | port-number | lib/auth/server.ts |
+| docs/getting-started.md | 94 | "~/.codex/multi-auth/backups by default, or %CODEX_MULTI_AUTH_DIR%\backups" | storage-location | lib/storage backups |
+| docs/getting-started.md | 139 | "~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json" | storage-location | lib/storage/paths.ts |
+| docs/getting-started.md | 141 | "Linked Git worktrees share the same repo identity" | feature | lib/storage/paths.ts resolveProjectStorageIdentityRoot |
+| docs/getting-started.md | 155 | "If the OAuth callback on port 1455 fails" | port-number | lib/auth/server.ts |
+| docs/troubleshooting.md | 52 | "OAuth callback port 1455 is in use" | port-number | lib/auth/server.ts |
+| docs/upgrade.md | 11 | "Runtime root: ~/.codex/multi-auth" | storage-location | lib/runtime-paths.ts |
+| docs/upgrade.md | 58 | "http://127.0.0.1:1455/auth/callback?code=..." | port-number | lib/auth/auth.ts |
+| docs/upgrade.md | 96 | "backup root remains ~/.codex/multi-auth/backups by default" | storage-location | lib/storage backups |
+| docs/features.md | 11 | "Multi-account dashboard login | codex auth login" | command | lib/codex-manager.ts |
+| docs/features.md | 14 | "Explicit active-account switching | codex auth switch <index>" | command | lib/codex-manager.ts |
+| docs/features.md | 59 | "CODEX_AUTH_NO_BROWSER=1 keep login usable in browser-restricted shells" | env-var | lib/auth/browser.ts |
+| docs/faq.md | 45 | "By default, under ~/.codex/multi-auth. Project-scoped account pools can also live under ~/.codex/multi-auth/projects/<project-key>/..." | storage-location | lib/storage/paths.ts |
+| docs/reference/commands.md | 84 | "http://127.0.0.1:1455/auth/callback?code=... | codex auth login --manual" | port-number | lib/auth/server.ts |
+| docs/reference/commands.md | 95 | non-TTY env triggers: CODEX_TUI=1, CODEX_DESKTOP=1, TERM_PROGRAM=codex, ELECTRON_RUN_AS_NODE=1 | env-var | lib/codex-manager.ts non-TTY detection |
+| docs/reference/storage-paths.md | 10 | "Default root: ~/.codex/multi-auth" | storage-location | lib/runtime-paths.ts |
+| docs/reference/storage-paths.md | 15 | "CODEX_MULTI_AUTH_DIR=<path>" | env-var | lib/runtime-paths.ts |
+| docs/reference/storage-paths.md | 23-34 | Settings + accounts + WAL + flagged + quota + logs + cache canonical paths table | storage-location | lib/storage.ts + lib/unified-settings.ts |
+| docs/reference/storage-paths.md | 40 | Wrapper forwards non-auth commands with -c cli_auth_credentials_store=\"file\" | api-behavior | scripts/codex.js |
+| docs/reference/storage-paths.md | 41 | "CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE=0 to opt out" | env-var | scripts/codex.js |
+| docs/reference/storage-paths.md | 69-73 | project-key: "sanitized project folder basename (max 40 chars) + '-' + first 12 chars of sha256(normalized project path)" | feature | lib/storage/paths.ts deriveProjectKey |
+| docs/reference/storage-paths.md | 75 | "On Windows, normalization lowercases drive/path segments before hashing." | platform | lib/storage/paths.ts |
+| docs/reference/settings.md | 174 | "fetchTimeoutMs | 60000 | Request timeout" | api-behavior | lib/config.ts default |
+| docs/reference/settings.md | 175 | "streamStallTimeoutMs | 45000 | Stream stall timeout" | api-behavior | lib/config.ts default |
+| docs/reference/settings.md | 176 | "networkErrorCooldownMs | 6000" | api-behavior | lib/config.ts default |
+| docs/reference/settings.md | 177 | "serverErrorCooldownMs | 4000" | api-behavior | lib/config.ts default |
+| docs/reference/settings.md | 135 | "sessionAffinityTtlMs | 1200000" | api-behavior | lib/config.ts default |
+| docs/reference/settings.md | 136 | "sessionAffinityMaxEntries | 512" | api-behavior | lib/config.ts default |
+| docs/reference/settings.md | 145-146 | preemptive quota thresholds 5% (5h) and 5% (7d) | api-behavior | lib/config.ts default |
+| docs/reference/settings.md | 147 | "preemptiveQuotaMaxDeferralMs | 7200000" | api-behavior | lib/config.ts default |
+| docs/reference/settings.md | 156 | "tokenRefreshSkewMs | 60000" | api-behavior | lib/config.ts default |
+| docs/reference/error-contracts.md | 11-12 | "0: successful; 1: usage error / failure" | api-behavior | lib/codex-manager.ts exit codes |
+| docs/reference/error-contracts.md | 52 | "Upstream entitlement-like 404 payloads are normalized to 403 with entitlement_error payloads" | api-behavior | lib/request/fetch-helpers.ts |
+| docs/reference/public-api.md | 13 | "Stable APIs ... backward-compatible inside the current 1.x line" | version-compat | semver policy |
+| docs/reference/public-api.md | 18 | "Package root plugin entrypoint exports: OpenAIOAuthPlugin, OpenAIAuthPlugin, default" | api-behavior | index.ts exports |
+| docs/reference/public-api.md | 77 | "background only passes through when pluginConfig.backgroundResponses or CODEX_AUTH_BACKGROUND_RESPONSES=1 explicitly enables" | env-var | lib/request/request-transformer.ts |
+| docs/reference/public-api.md | 78 | "Background-mode requests force store=true, keep caller-supplied input item IDs, skip stateless-only defaults" | api-behavior | lib/request/request-transformer.ts |
+| docs/reference/public-api.md | 106 | "This repository currently ships on a 1.x line" | version-compat | package.json version |
+| docs/benchmarks/code-edit-format-benchmark.md | 16 | "npm run bench:edit-formats" | command | package.json scripts |
+| docs/benchmarks/code-edit-format-benchmark.md | 22 | "npm run bench:edit-formats:smoke" | command | package.json scripts |
+| docs/benchmarks/code-edit-format-benchmark.md | 37 | "Benchmark report JSON | .tmp/edit-format-benchmark-*.json" | performance-claim | scripts/bench |
+| docs/benchmarks/code-edit-format-benchmark.md | 38 | "Render preview artifacts | .tmp/edit-format-benchmark-render-*.txt" | performance-claim | scripts/bench |
+| docs/development/ARCHITECTURE.md | 52 | "lib/codex-manager/settings-hub.ts | Extracted interactive settings panels (~2100 lines); Q = cancel without save" | feature | wc -l lib/codex-manager/settings-hub.ts |
+| docs/development/ARCHITECTURE.md | 110 | "1. OAuth callback port remains 1455." | port-number | lib/auth/server.ts |
+| docs/development/ARCHITECTURE.md | 112 | "3. Non-auth codex commands are always forwarded to official Codex CLI." | api-behavior | scripts/codex.js |
+| docs/development/ARCHITECTURE.md | 84 | "Canonical root: ~/.codex/multi-auth" | storage-location | lib/runtime-paths.ts |
+| docs/development/CONFIG_FIELDS.md | 56 | "fastSessionMaxInputItems | 30" | api-behavior | lib/config.ts default |
+| docs/development/CONFIG_FIELDS.md | 79 | "backgroundResponses | false" | api-behavior | lib/config.ts default |
+| docs/development/CONFIG_FIELDS.md | 118 | "fetchTimeoutMs | 60000" | api-behavior | lib/config.ts default |
+| docs/development/CONFIG_FIELDS.md | 119 | "streamStallTimeoutMs | 45000" | api-behavior | lib/config.ts default |
+| docs/development/CONFIG_FIELDS.md | 200 | "CODEX_MULTI_AUTH_DIR | Custom root for settings/accounts/cache/logs" | env-var | lib/runtime-paths.ts |
+| docs/development/CONFIG_FIELDS.md | 208 | "CODEX_MULTI_AUTH_SYNC_CODEX_CLI | Toggle Codex CLI state sync" | env-var | lib/codex-cli/sync |
+| docs/development/CONFIG_FLOW.md | 11-14 | Runtime root priority: CODEX_MULTI_AUTH_DIR > CODEX_HOME/multi-auth > detected fallbacks > legacy | env-var | lib/runtime-paths.ts |
+| docs/development/TESTING.md | 16 | "Coverage thresholds in vitest.config.ts: statements/branches/functions/lines >= 80." | performance-claim | vitest.config.ts |
+| docs/development/TESTING.md | 32 | "Node requirement: >=18" (implicit via package.json) | platform | package.json engines |
+| docs/development/DEEP_AUDIT_2026-03-01.md | 48 | "npm test -> pass (87 files, 2071 tests)" | performance-claim | npm test output (STALE vs v1.2.7) |
+| docs/development/DEEP_AUDIT_2026-03-01.md | 6 | "origin/main at commit 36cf5d4e5c4d30f5a98b44f5711379425c7c8b1a" | version | git rev-parse origin/main |
+| docs/releases/v1.2.7.md | 9 | "Published package version: 1.2.7" | version | package.json version |
+| docs/releases/v1.2.7.md | 10 | "Previous stable release: v1.2.6" | version | git tags |
+| CHANGELOG.md | 6 | "This repository's current stable release line is 1.x." | version-compat | package.json version |
+| CHANGELOG.md | 10 | "[0.1.8] - 2026-03-11" | version | git tags (DRIFT: top entry is 0.1.8 but current is 1.2.7) |
+| CHANGELOG.md | 150 | "87 test files and 2071 tests." | performance-claim | npm test output (KNOWN STALE vs v1.2.7) |
+| CHANGELOG.md | 152 | "[0.1.0] - 2026-02-27" | version | git tags |
+| CHANGELOG.md | 176-183 | Release tag URLs only cover 0.1.0 through 0.1.7 | version | git tags (DRIFT: missing all 1.x tags) |
+| CONTRIBUTING.md | 32 | "Node requirement: >=18." | platform | package.json engines |
+| CONTRIBUTING.md | 38 | "TypeScript strict mode" | security-guarantee | tsconfig.json |
+| CONTRIBUTING.md | 39 | "no as any, @ts-ignore, or @ts-expect-error" | security-guarantee | eslint.config.js |
+| LICENSE | 3 | "Copyright (c) 2026 ndycode" | version | n/a |
+| LICENSE | 1 | "MIT License" | security-guarantee | package.json license |
+| docs/STYLE_GUIDE.md | 42 | "Canonical command family is codex auth ..." | command | lib/codex-manager.ts |
+| docs/STYLE_GUIDE.md | 43 | "Canonical runtime root is ~/.codex/multi-auth" | storage-location | lib/runtime-paths.ts |
+| docs/DOCUMENTATION.md | 54 | "Canonical package name: codex-multi-auth." | version | package.json name |
+| docs/DOCUMENTATION.md | 56 | "Canonical storage root: ~/.codex/multi-auth unless explicitly overridden." | storage-location | lib/runtime-paths.ts |
+| docs/DOCUMENTATION.md | 59 | "Current stable release line is 1.x" | version-compat | package.json version |
+| docs/index.md | 48 | "Canonical storage root: ~/.codex/multi-auth" | storage-location | lib/runtime-paths.ts |
+
+===============================================================================
+SUMMARY
+===============================================================================
+
+Total distinct claims extracted: 140
+Files covered:
+  Root: AGENTS.md, README.md, SECURITY.md, CHANGELOG.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, LICENSE
+  docs/: index.md, README.md, architecture.md, configuration.md, DOCUMENTATION.md, faq.md, features.md,
+         getting-started.md, privacy.md, STYLE_GUIDE.md, troubleshooting.md, upgrade.md
+  docs/development/: ARCHITECTURE.md, CONFIG_FIELDS.md, CONFIG_FLOW.md, TESTING.md, DEEP_AUDIT_2026-03-01.md
+  docs/reference/: commands.md, error-contracts.md, public-api.md, settings.md, storage-paths.md
+  docs/releases/: v1.2.7.md (primary); others on disk spot-checked
+  docs/benchmarks/: code-edit-format-benchmark.md
+
+Coverage checklist:
+  [x] AGENTS.md version/commit-SHA/Generated-date claim captured (known stale)
+  [x] Port 1455 references: AGENTS.md 46,47,89,106; README.md 291; docs/architecture.md 92;
+      docs/troubleshooting.md 52; docs/getting-started.md 85,155; docs/upgrade.md 58;
+      docs/reference/commands.md 84; docs/development/ARCHITECTURE.md 110
+  [x] Storage path claims (~/.codex/multi-auth/...) captured across AGENTS.md, README.md, docs/privacy.md,
+      docs/configuration.md, docs/reference/storage-paths.md, docs/architecture.md, docs/upgrade.md,
+      docs/faq.md, docs/getting-started.md, docs/index.md, docs/STYLE_GUIDE.md, docs/DOCUMENTATION.md,
+      docs/development/ARCHITECTURE.md
+  [x] Privacy claims VERBATIM from docs/privacy.md (lines 3, 9, 10, 11, 38-40, 46, 47, 49)
+  [x] Privacy claims VERBATIM from SECURITY.md (lines 20-23, 36-37)
+  [x] Performance claims from docs/benchmarks/ + TESTING.md + coverage
+  [x] Platform claims (Node >=18, Windows normalization, macOS/Linux) captured
+  [x] Node engine claim (>=18) captured in AGENTS.md:80, getting-started.md:9, CONTRIBUTING.md:32, TESTING.md:32
+
+===============================================================================
+TOP-3 LIKELY-DRIFT CLAIMS (docs claim X vs v1.2.7 reality)
+===============================================================================
+
+DRIFT-1 (HIGH): AGENTS.md lines 3-4
+  Doc claim: "Generated: 2026-03-01", "Commit: 9ac8a84"
+  v1.2.7 reality: package version bumped to 1.2.7; AGENTS.md metadata header was never updated when
+    release line moved from 0.1.x to 1.x. File mtime is 2026-04-17 but stated Generated date is 2026-03-01.
+    Commit SHA 9ac8a84 predates v1.2.6 and v1.2.7 releases.
+  Impact: Agents loading AGENTS.md as knowledge base receive stale project framing (still describes 0.1.x era).
+
+DRIFT-2 (HIGH): Test-count performance claims
+  Doc claim (AGENTS.md:73,97; CHANGELOG.md:150; DEEP_AUDIT_2026-03-01.md:48):
+    "87 files, 2071 tests", "80% coverage threshold"
+  v1.2.7 reality: task brief explicitly flags this as known stale. Test count almost certainly diverges
+    after v1.1.x and v1.2.x feature additions (native-path discovery, wrapper regression coverage per v1.2.7,
+    experimental sync flows, merged release regressions per 0.1.8). Coverage threshold likely still 80 but
+    file/test counts are unverified against current suite.
+  Impact: Misleads contributors about actual test scale; invalidates "87 files, 2071 tests" as truth.
+
+DRIFT-3 (MEDIUM): CHANGELOG.md coverage gap
+  Doc claim (CHANGELOG.md:10 + 176-183):
+    Top changelog entry is "[0.1.8] - 2026-03-11"; tag link table only enumerates 0.1.0 through 0.1.7.
+  v1.2.7 reality: releases v0.1.9, v1.1.10, v1.2.0, v1.2.1, v1.2.2, v1.2.3, v1.2.4, v1.2.5, v1.2.6, v1.2.7
+    all exist under docs/releases/ but NONE are reflected in root CHANGELOG.md. Semver jump 0.1.9 -> 1.1.10
+    -> 1.2.0 suggests intentional bump but CHANGELOG.md never tracks the 1.x line despite SECURITY.md +
+    docs/DOCUMENTATION.md calling 1.x the current supported line.
+  Impact: Root-level changelog is effectively frozen at 0.1.8; humans/agents consulting it as source of
+    truth will miss all 1.x behavior changes.
+
+===============================================================================
+T6 DONE
+Total claim count: 140
+Top-3 drift candidates:
+  1. AGENTS.md header metadata (0.1.x era, stale commit SHA + date)
+  2. Test-count claims (87/2071) repeated across AGENTS.md, CHANGELOG.md, DEEP_AUDIT
+  3. CHANGELOG.md frozen at 0.1.8 with no 1.x coverage
+===============================================================================

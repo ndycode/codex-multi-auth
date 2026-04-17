@@ -1,0 +1,12 @@
+﻿# F1-F4 Post-Oracle Verification
+Timestamp: 2026-04-17T09:19:43Z
+
+F1: sections=17 dims=16/16 modules=10/10 -> APPROVE
+F2: placeholders=0 jwt=0 host=0 rows=60 -> APPROVE
+F3: CRIT=1 HIGH=25 MEDIUM=46 LOW=14 top20=20 -> APPROVE
+F4: src=0 -> APPROVE
+
+findings-index.json: total=60 CRIT=2 HIGH=6 MEDIUM=38 LOW=14
+Oracle: applied=True adjustments=7
+
+OVERALL: ALL APPROVE

@@ -1,0 +1,19 @@
+﻿# Command: npm run clean:repo:check
+# Exit: 0
+# Duration: 0.3s
+# Timestamp: 2026-04-17T08:27:55Z
+---
+
+> codex-multi-auth@1.2.7 clean:repo:check
+> node scripts/repo-hygiene.js check
+
+repo-hygiene check passed
+
+
+# FINDING SEED: Tmp files in repo root (test-cleanup leakage suspects):
+# - tmp-accounts.marker (39B, modified 04/17/2026 08:26:46)
+# - tmp-all-files.txt (19981B, modified 04/17/2026 08:25:49)
+# - tmp-flagged.json.1776383412325.f7wi2w.tmp (36B, modified 04/17/2026 07:50:12)
+# - tmp-flagged.json.1776383498917.6inhic.tmp (36B, modified 04/17/2026 07:51:38)
+# - tmp-flagged.json.1776385607421.4d9c1v.tmp (36B, modified 04/17/2026 08:26:47)
+# - tmp-script-purposes.txt (3268B, modified 04/17/2026 08:26:08)

@@ -1,0 +1,10 @@
+﻿# Command: npm run typecheck
+# Exit: 0
+# Duration: 2.3s
+# Timestamp: 2026-04-17T08:26:13Z
+---
+
+> codex-multi-auth@1.2.7 typecheck
+> tsc --noEmit
+
+

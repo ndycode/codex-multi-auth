@@ -1,0 +1,45 @@
+﻿# Command: npm run pack:check
+# Exit: 1
+# Duration: 1.1s
+# Timestamp: 2026-04-17T08:27:54Z
+---
+
+> codex-multi-auth@1.2.7 pack:check
+> node scripts/check-pack-budget.mjs
+
+node.exe : file:///C:/Users/neil/Downloads/temp/codex-multi-auth/scripts/check-pack-budget-lib.js:109
+At line:1 char:1
++ & "<HOME>\DevTools\scoop\apps\nodejs\current/node.exe" "C:\Use ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (file:///C:/User...dget-lib.js:109:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+		throw new Error(`Failed to validate npm pack output: ${message}
+		      ^
+
+Error: Failed to validate npm pack output: Required package content missing from npm pack output: dist/
+stdout: [
+  {
+    "id": "codex-multi-auth@1.2.7",
+    "name": "codex-multi-auth",
+    "version": "1.2.7",
+    "size": 60760,
+    "unpackedSize": 253168,
+    "shasum": "c73f8ae5a84f566d77f73b3633432b5daa2401c3",
+    "integrity": "sha512-THl7xmV3UptGQDInr8F1g6Hhdw0jyff82OyeR2LEjnZLmrKRass90LWy2wApeuqg3NiBFXbiR5OSRgA1Ae3T3Q==",
+    "filename": "codex-multi-auth-1.2.7.tgz",
+    "files": [
+      {
+        "path": "LICENSE",
+        "size": 1085,
+        "mode": 420
+      },
+      {
+        "path": "README.md
+    at runPackBudgetCheck 
+(file:///C:/Users/neil/Downloads/temp/codex-multi-auth/scripts/check-pack-budget-lib.js:109:9)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async file:///C:/Users/neil/Downloads/temp/codex-multi-auth/scripts/check-pack-budget.mjs:9:2
+
+Node.js v25.6.1
+

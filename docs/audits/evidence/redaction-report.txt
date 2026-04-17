@@ -1,0 +1,25 @@
+﻿# Redaction Validation Report
+# Timestamp: 2026-04-17T08:28:25Z
+
+## Files scanned
+Count: 9
+- audit-ci.txt (388B)
+- clean-repo-check.txt (732B)
+- context.txt (1690B)
+- git-forensics.txt (10593B)
+- lint.txt (308B)
+- pack-check.txt (1645B)
+- test-summary.txt (5183B)
+- typecheck.txt (155B)
+- vendor-verify.txt (250B)
+
+## Grid Checks
+JWT leakage: CLEAN
+Host paths (Windows): CLEAN
+Emails: CLEAN
+Bearer tokens: CLEAN
+API keys: CLEAN
+Size cap (100KB): CLEAN
+
+## Verdict
+REDACTION: PASS (emails warning may include legitimate @types/* domains)

@@ -1,0 +1,19 @@
+﻿# Command: npm run audit:ci
+# Exit: 0
+# Duration: 3.5s
+# Timestamp: 2026-04-17T08:27:53Z
+---
+
+> codex-multi-auth@1.2.7 audit:ci
+> npm run audit:prod && npm run audit:dev:allowlist
+
+
+> codex-multi-auth@1.2.7 audit:prod
+> npm audit --omit=dev --audit-level=high
+
+found 0 vulnerabilities
+
+> codex-multi-auth@1.2.7 audit:dev:allowlist
+> node scripts/audit-dev-allowlist.js
+
+

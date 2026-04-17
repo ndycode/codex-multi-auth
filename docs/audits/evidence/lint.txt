@@ -1,0 +1,18 @@
+﻿# Command: npm run lint
+# Exit: 0
+# Duration: 9.7s
+# Timestamp: 2026-04-17T08:27:50Z
+---
+
+> codex-multi-auth@1.2.7 lint
+> npm run lint:ts && npm run lint:scripts
+
+
+> codex-multi-auth@1.2.7 lint:ts
+> eslint . --ext .ts
+
+
+> codex-multi-auth@1.2.7 lint:scripts
+> eslint scripts --ext .js,.mjs
+
+

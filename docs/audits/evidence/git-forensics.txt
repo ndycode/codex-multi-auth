@@ -1,0 +1,251 @@
+Git Forensics Audit
+Generated: 2026-04-17
+Repo: codex-multi-auth
+HEAD: 1f6da97d06dcc8c268b304e6e45b6baa9a386679
+Scope notes:
+- Git-only evidence. No diff bodies included.
+- Recent-history scans capped at 500 commits where applicable.
+- Email redaction applied: <user>@domain.
+- Host-path redaction rule available; no host paths emitted below.
+
+1. Churn Hotspots (top 50 files, last 1 year)
+Count  File
+137    index.ts
+116    lib/storage.ts
+108    test/codex-manager-cli.test.ts
+92     lib/codex-manager.ts
+57     test/index.test.ts
+52     test/storage.test.ts
+52     README.md
+45     package.json
+43     lib/codex-manager/settings-hub.ts
+43     test/documentation.test.ts
+36     docs/README.md
+36     lib/accounts.ts
+35     test/fetch-helpers.test.ts
+30     test/accounts.test.ts
+30     lib/request/fetch-helpers.ts
+30     package-lock.json
+29     lib/config.ts
+27     test/index-retry.test.ts
+26     test/codex-bin-wrapper.test.ts
+25     scripts/codex.js
+23     test/storage-flagged.test.ts
+22     test/request-transformer.test.ts
+21     docs/reference/commands.md
+19     lib/request/request-transformer.ts
+19     test/paths.test.ts
+18     lib/request/response-handler.ts
+17     test/response-handler.test.ts
+17     test/unified-settings.test.ts
+16     test/storage-recovery-paths.test.ts
+16     docs/reference/storage-paths.md
+15     docs/getting-started.md
+15     lib/codex-manager/commands/report.ts
+15     lib/codex-manager/repair-commands.ts
+15     test/settings-hub-utils.test.ts
+14     lib/ui/copy.ts
+14     lib/unified-settings.ts
+14     test/plugin-config.test.ts
+14     test/dashboard-settings.test.ts
+14     test/refresh-guardian.test.ts
+13     lib/runtime-paths.ts
+13     lib/refresh-guardian.ts
+13     docs/upgrade.md
+13     test/storage-last-backup.test.ts
+12     test/codex-cli-sync.test.ts
+12     lib/oc-chatgpt-import-adapter.ts
+12     test/runtime-verify-flagged.test.ts
+12     test/browser.test.ts
+12     test/runtime-account-check.test.ts
+11     test/codex-manager-report-command.test.ts
+11     CHANGELOG.md
+
+Top-3 churn summary:
+- index.ts (137)
+- lib/storage.ts (116)
+- test/codex-manager-cli.test.ts (108)
+
+2. Blame Summary For Critical Files
+Method:
+- Current-file line blame via `git blame --line-porcelain`.
+- Contributor list truncated to top 5 by current blamed lines.
+- Recent fix/revert/hotfix history scanned with `git log -n 500 --follow --perl-regexp --regexp-ignore-case --grep='fix|revert|hotfix'`.
+- Recent commit lists below show latest 10 matches per file.
+
+2.1 lib/auth/auth.ts
+Top contributors by current blamed lines:
+- 281  <user>@users.noreply.github.com
+Recent fix/revert/hotfix commits (latest 7):
+- 19a9990 fix(auth-sync): stabilize codex CLI account switching
+- d92b166 fix: resolve PR feedback on token normalization and refresh queue races
+- 5ed9dd0 fix(review): resolve remaining PR-27 thread findings
+- f2b838d fix(review): close remaining PR27 audit findings
+- 73e8cbc integration-fix(review): resolve remaining PR27 audit findings
+- c375093 fix(auth): unify oauth callback host to 127.0.0.1
+- dc82e8f Fix PR review findings: harden storage/logging/auth redaction and align tests
+
+2.2 lib/storage.ts
+Top contributors by current blamed lines:
+- 2030  <user>@users.noreply.github.com
+- 5     <user>@micr.dev
+Recent fix/revert/hotfix commits (latest 10 of 59):
+- c5ebffd fix: address remaining PR 387 runtime regressions
+- 467e5f5 fix: persist recovered flagged backups
+- d895a32 fix-export-reset-fallback
+- bca26bd fix(storage): rethrow reappeared export locks
+- 52be680 fix(storage): honor reappeared export storage
+- fcd6be3 fix(storage): keep export reads side-effect free
+- 49839a9 fix(storage): defer export legacy migration
+- be50b28 fix(storage): clarify locked export migration path
+- f9fa780 fix(storage): harden export review followups
+- efe8cbe fix(storage): fail export when current pool is empty
+
+2.3 lib/accounts.ts
+Top contributors by current blamed lines:
+- 1250  <user>@users.noreply.github.com
+- 69    <user>@micr.dev
+Recent fix/revert/hotfix commits (latest 10 of 23):
+- 79ba2a0 fix: skip accounts with all workspaces disabled during rotation
+- 53a9b5f fix usage-limit cooldown persistence
+- b5eb1af "fix-storage-path-context-for-deferred-saves"
+- ec2bfd7 fix-refresh-guardian-commit-failures
+- 6af711f fix refresh persistence review followups
+- 2fac214 fix expired cli cache refresh hydration
+- 9f2a9ad fix: preserve live refresh state and terminal auth setter failures
+- efd08ad fix: harden refresh persistence follow-ups
+- 694fa56 fix: guard cli refresh token hydration by freshness
+- fdca81c fix: heal stale cooldown metadata on success
+
+2.4 lib/request/request-transformer.ts
+Top contributors by current blamed lines:
+- 1132  <user>@users.noreply.github.com
+Recent fix/revert/hotfix commits (latest 4):
+- 8ca227f fix-background-response-guardrails
+- 5974961 Fix plan-only tool removal counting
+- 73e8cbc integration-fix(review): resolve remaining PR27 audit findings
+- 445184f fix(pr6): address remaining review issues and add regressions
+
+2.5 lib/circuit-breaker.ts
+Top contributors by current blamed lines:
+- 196  <user>@users.noreply.github.com
+Recent fix/revert/hotfix commits:
+- none in last scanned 500 matching commits for this path
+
+2.6 lib/refresh-queue.ts
+Top contributors by current blamed lines:
+- 410  <user>@users.noreply.github.com
+Recent fix/revert/hotfix commits (latest 5):
+- d92b166 fix: resolve PR feedback on token normalization and refresh queue races
+- 5ed9dd0 fix(review): resolve remaining PR-27 thread findings
+- f2b838d fix(review): close remaining PR27 audit findings
+- 73e8cbc integration-fix(review): resolve remaining PR27 audit findings
+- c2841d2 fix: harden refresh lease/queue flows and proactive refresh handling
+
+3. Settings-Hub Extraction History
+Command:
+- `git log --follow --find-renames=70 --pretty='%h %s' -- lib/codex-manager/settings-hub.ts`
+
+Observed extraction lineage (selected):
+- e6d9ef4 refactor(cli): extract settings hub and align cancel semantics
+- 273d424 feat(settings): add experimental settings flows
+- b531307 refactor: extract dashboard display panel
+- 1bfe51c refactor: extract statusline settings panel
+- ad405e7 refactor: extract backend settings schema
+- 8c2089f refactor: extract settings write queue
+- 4d5d6d8 refactor: split runtime settings and storage helpers
+- a10dcd3 refactor: extract settings hub entry wrappers
+- 4489758 refactor: extract experimental settings entry wrapper
+- 23d6585 test: cover dashboard display panel extraction
+- 16345c1 test: harden merged refactor foundations
+
+Primary extraction commit SHA:
+- e6d9ef4
+
+Signal:
+- `settings-hub.ts` remains a churn hotspot (43 touches in last year) despite repeated wrapper/panel/helper extractions.
+
+4. Recent Regression / Fix Commits
+Window:
+- Last 6 months
+- Command used: `git log -n 500 --perl-regexp --regexp-ignore-case --grep='fix|revert|regression|hotfix' --since='6 months ago' --pretty='%h %s'`
+
+Count:
+- 340 matching commits in bounded scan
+
+Latest 30 matches:
+- 6a63b9d fix resolver self-guard default
+- c6ef13f fix stale test expectations
+- 0d9ae60 fix native CLI resolver edge cases
+- 1f639d3 Tighten the linguist override regression so contradictions fail
+- ab76069 release: ship v1.2.6 forwarded observability fix
+- 29c8f7d fix: address remaining PR 387 docs and cleanup comments
+- 971bcea fix: close remaining PR 387 follow-ups
+- c5ebffd fix: address remaining PR 387 runtime regressions
+- e861d3d fix: address remaining PR 387 bug findings
+- 21dfa40 fix: fold review follow-ups into rebuilt main wave
+- c2dca9e fix: surface persisted rate limits in quota views
+- f235057 fix: surface silent update-check parse failures
+- b417887 fix: flag malformed codex auth payloads in doctor
+- 3e80d52 fix: stop stream failover replay after output
+- dd2f672 fix: tighten stream budget accounting
+- 66085ec fix: cap request retries and stream failover
+- ce56f72 fix: preserve server retry policy fidelity
+- 48e2438 fix: add jitter to rate-limit backoff
+- 2b4a80a fix: bound short-429 retry loop to MAX_SHORT_RETRY_ATTEMPTS
+- 4d947ef fix: disable default rate-limit replay
+- 79ba2a0 fix: skip accounts with all workspaces disabled during rotation
+- 71645a5 fix: notify quota scheduler on 502/503/529 overload responses
+- ef997e1 fix: stop quota scheduler cooldown drift
+- 00ec8ac fix: narrow 404 usage-limit remapping
+- b2aa55f fix: check remapped errorResponse status for 404->429 usage_limit rotation
+- 76e809f fix: recreate live account sync on config changes
+- 81c45e5 fix: serialize concurrent runtime cache writes
+- a607a74 fix: prevent stale prompt cache session overwrites
+- 1ab19be fix: persist report refreshes before mutating state
+- fec9318 fix: make account clear reset atomic
+
+Signal:
+- Regression/fix density stays high in runtime routing, storage, refresh persistence, and CLI/report flows.
+
+5. Reverted Commits
+Command:
+- `git log -n 500 --perl-regexp --grep='^Revert' --pretty='%h %s'`
+
+Count:
+- 0 matching revert commits in bounded scan
+
+6. Recent Security / Dependency Bumps
+Window:
+- Last 3 months
+- Command used: `git log -n 500 --perl-regexp --regexp-ignore-case --grep='bump|security' --since='3 months ago' --pretty='%h %s'`
+
+Count:
+- 13 matching commits in bounded scan
+
+Matches:
+- 1f6da97 security(deps): bump hono to 4.12.14 and vite override to ^7.3.2 (#392)
+- e275984 chore(release): bump version to 1.2.7 and publish notes
+- 0512c82 chore(release): bump version to 1.1.10 and publish notes
+- 0a1f08b chore(release): bump version to 0.1.9 and publish notes
+- 4504ef8 Merge pull request #67 from ndycode/fix/hono-audit
+- e82bfd4 fix(deps): bump hono for audit compliance
+- 70bac33 chore(release): cut v0.1.5
+- eec001d chore(release): prepare v0.1.4
+- 894fe55 chore(release): prepare v0.1.2 release notes and version bump
+- ba15566 supersede(pr18): import docs policy and security audit updates
+- 4cbb00c chore(release): bump version to 0.1.1 and update changelog
+- 04e4fc5 fix(security): validate worktree ownership before aliasing
+- 5c6edad Add docstrings to `feat/final-single-overhaul-pr`
+
+Signal:
+- Clear dependency/security maintenance signal around Hono audit compliance and recent Hono/Vite security bump.
+- Release/version-bump noise overlaps keyword search; evidence above separates explicit security/dependency items from release-tag churn.
+
+7. Self-Check
+- File includes top-50 churn rows: yes
+- Churn rows >= 30: yes (50)
+- Blame summary covers all 6 requested files: yes
+- Settings-hub extraction SHA recorded: yes (`e6d9ef4`)
+- Recent regression/fix evidence >= 10 commits: yes (340 bounded matches; 30 listed)
+- Unredacted emails present: no

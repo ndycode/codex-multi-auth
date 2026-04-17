@@ -1,0 +1,114 @@
+﻿# Command: npm test -- --run --reporter=verbose
+# Exit: 1
+# Duration: 12.6s
+# Timestamp: 2026-04-17T08:26:55Z
+
+## Summary
+[2m Test Files [22m [1m[31m3 failed[39m[22m[2m | [22m[1m[32m222 passed[39m[22m[90m (225)[39m
+[2m   Duration [22m 11.90s[2m (transform 20.55s, setup 0ms, import 40.25s, tests 66.80s, environment 28ms)[22m
+[2m   Duration [22m 11.90s[2m (transform 20.55s, setup 0ms, import 40.25s, tests 66.80s, environment 28ms)[22m
+Exit Code: 1
+
+## Last 100 lines (summary)
+ [32mΓ£ô[39m test/codex-manager-cli.test.ts[2m > [22mcodex manager cli commands[2m > [22mpreserves the active selection when deleting a different account[32m 7[2mms[22m[39m
+ [32mΓ£ô[39m test/codex-manager-cli.test.ts[2m > [22mcodex manager cli commands[2m > [22mtoggles account enabled state from manage mode[32m 6[2mms[22m[39m
+ [32mΓ£ô[39m test/codex-manager-cli.test.ts[2m > [22mcodex manager cli commands[2m > [22mkeeps settings unchanged in non-interactive mode and returns to menu[32m 6[2mms[22m[39m
+node.exe : 
+At line:1 char:1
++ & "<HOME>\DevTools\scoop\apps\nodejs\current/node.exe" "C:\Use ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[31mΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[39m[1m[41m Failed Tests 3 [49m[22m[31mΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[39m
+
+[41m[1m FAIL [22m[49m test/codex-manager-cli.test.ts[2m > [22mcodex manager cli commands[2m > [22mprints empty 
+account status for auth list
+[31m[1mAssertionError[22m: expected "log" to be called with arguments: [ Array(1) ]
+
+Received: 
+
+  1st log call:
+
+  [
+-   "No accounts configured. Storage was intentionally reset.",
++   "No accounts configured.",
+  ]
+
+  2nd log call:
+
+  [
+-   "No accounts configured. Storage was intentionally reset.",
++   "Storage: /mock/openai-codex-accounts.json",
+  ]
+
+  3rd log call:
+
+  [
+-   "No accounts configured. Storage was intentionally reset.",
++   "Storage health: empty",
+  ]
+
+
+Number of calls: 3
+[39m
+[36m [2mΓ¥»[22m test/codex-manager-cli.test.ts:[2m913:18[22m[39m
+    [90m911| [39m
+    [90m912| [39m  expect(exitCode).toBe(0);
+    [90m913| [39m  expect(logSpy).toHaveBeenCalledWith(
+    [90m   | [39m                 [31m^[39m
+    [90m914| [39m   "No accounts configured. Storage was intentionally reset.",
+    [90m915| [39m  );
+
+[31m[2mΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[1/3]ΓÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m test/paths.test.ts[2m > [22mStorage Paths Module[2m > [22mresolvePath[2m > [22mrejects 
+lookalike prefix paths outside home directory
+[31m[1mAssertionError[22m: expected [Function] to throw an error[39m
+
+- Expected: 
+null
+
++ Received: 
+undefined
+
+[36m [2mΓ¥»[22m test/paths.test.ts:[2m846:48[22m[39m
+    [90m844| [39m   [35mconst[39m parent [33m=[39m path[33m.[39m[34mdirname[39m(home)[33m;[39m
+    [90m845| [39m   const outsideLookalike = path.join(parent, `${path.basename(home)}-ΓÇª
+    [90m846| [39m   expect(() => resolvePath(outsideLookalike)).toThrow("Access denied"ΓÇª
+    [90m   | [39m                                               [31m^[39m
+    [90m847| [39m  })[33m;[39m
+    [90m848| [39m
+
+[31m[2mΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[2/3]ΓÄ»[22m[39m
+
+[41m[1m FAIL [22m[49m test/plugin-config.test.ts[2m > [22mPlugin Configuration[2m > [22mloadPluginConfig[2m > 
+[22mprefers primary CONFIG_PATH over CODEX_HOME legacy path when both exist
+[31m[1mAssertionError[22m: expected false to be true // Object.is equality[39m
+
+- Expected
++ Received
+
+- true
++ false
+
+[36m [2mΓ¥»[22m test/plugin-config.test.ts:[2m417:41[22m[39m
+    [90m415| [39m
+    [90m416| [39m   const posixResult = await runWithCodexHome(path.join(process.cwd(),ΓÇª
+    [90m417| [39m   
+[34mexpect[39m(posixResult[33m.[39mconfig[33m.[39mcodexMode)[33m.[39m[34mtoBe[39m([35mtrue[39m)[33m;[39m
+    [90m   | [39m                                        [31m^[39m
+    [90m418| [39m   
+[34mexpect[39m(posixResult[33m.[39mreadFileSyncMock)[33m.[39m[34mtoHaveBeenCalledWith[39m(
+    [90m419| [39m    expect[33m.[39m[34mstringMatching[39m([36m/multi-auth[\\/]config\.json$/[39m)[33m,[39m
+
+[31m[2mΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[3/3]ΓÄ»[22m[39m
+
+
+[2m Test Files [22m [1m[31m3 failed[39m[22m[2m | [22m[1m[32m222 passed[39m[22m[90m (225)[39m
+[2m      Tests [22m [1m[31m3 failed[39m[22m[2m | [22m[1m[32m3415 passed[39m[22m[90m (3418)[39m
+[2m   Start at [22m 08:26:42
+[2m   Duration [22m 11.90s[2m (transform 20.55s, setup 0ms, import 40.25s, tests 66.80s, environment 28ms)[22m
+
+
+## HERMETICITY: CLEAN (zero delta in ~/.codex/multi-auth/)

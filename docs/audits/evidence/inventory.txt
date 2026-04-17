@@ -1,0 +1,268 @@
+==============================================================
+T1 REPO INVENTORY  codex-multi-auth
+Generated: 2026-04-17  Branch: main  (redacted)
+Host paths scrubbed to <HOME>/  Emails scrubbed to <EMAIL>
+Extensions counted: .ts .js .mjs .md .json (d.ts excluded)
+OVERGROWN = >500 LOC   CRITICAL = >1000 LOC
+==============================================================
+
+[REPO TOTALS]
+  Files (tracked extensions): 568
+  Total LOC: 144994
+
+[OVERGROWN FILES >500 LOC]
+  CRITICAL    10114 LOC  test/codex-manager-cli.test.ts
+  CRITICAL     5102 LOC  test/index.test.ts
+  CRITICAL     4222 LOC  index.ts
+  CRITICAL     3794 LOC  test/storage.test.ts
+  CRITICAL     3769 LOC  package-lock.json
+  CRITICAL     3135 LOC  lib/codex-manager.ts
+  CRITICAL     3064 LOC  test/accounts.test.ts
+  CRITICAL     2480 LOC  test/request-transformer.test.ts
+  CRITICAL     2079 LOC  lib/codex-manager/repair-commands.ts
+  CRITICAL     1973 LOC  test/codex-bin-wrapper.test.ts
+  CRITICAL     1910 LOC  lib/storage.ts
+  CRITICAL     1839 LOC  .sisyphus/plans/master-audit.md
+  CRITICAL     1742 LOC  lib/config.ts
+  CRITICAL     1549 LOC  test/fetch-helpers.test.ts
+  CRITICAL     1338 LOC  test/refresh-guardian.test.ts
+  CRITICAL     1268 LOC  lib/request/fetch-helpers.ts
+  CRITICAL     1248 LOC  scripts/codex.js
+  CRITICAL     1175 LOC  lib/accounts.ts
+  CRITICAL     1087 LOC  test/codex-cli-state.test.ts
+  CRITICAL     1060 LOC  scripts/benchmark-edit-formats.mjs
+  CRITICAL     1056 LOC  test/repair-commands.test.ts
+  CRITICAL     1017 LOC  lib/request/request-transformer.ts
+  OVERGROWN     996 LOC  test/plugin-config.test.ts
+  OVERGROWN     952 LOC  test/recovery.test.ts
+  OVERGROWN     937 LOC  test/storage-flagged.test.ts
+  OVERGROWN     876 LOC  test/codex-manager-auth-commands.test.ts
+  OVERGROWN     860 LOC  test/index-retry.test.ts
+  OVERGROWN     831 LOC  test/refresh-queue.test.ts
+  OVERGROWN     827 LOC  lib/codex-manager/auth-commands.ts
+  OVERGROWN     822 LOC  test/logger.test.ts
+  OVERGROWN     799 LOC  lib/request/response-handler.ts
+  OVERGROWN     787 LOC  test/storage-recovery-paths.test.ts
+  OVERGROWN     783 LOC  test/paths.test.ts
+  OVERGROWN     769 LOC  lib/codex-manager/settings-hub.ts
+  OVERGROWN     768 LOC  test/token-utils.test.ts
+  OVERGROWN     761 LOC  test/settings-hub-utils.test.ts
+  OVERGROWN     746 LOC  test/response-handler.test.ts
+  OVERGROWN     733 LOC  test/unified-settings.test.ts
+  OVERGROWN     727 LOC  test/oc-chatgpt-import-adapter.test.ts
+  OVERGROWN     702 LOC  test/recovery-storage.test.ts
+  OVERGROWN     669 LOC  test/documentation.test.ts
+  OVERGROWN     640 LOC  lib/ui/auth-menu.ts
+  OVERGROWN     611 LOC  test/tool-utils.test.ts
+  OVERGROWN     599 LOC  lib/oc-chatgpt-import-adapter.ts
+  OVERGROWN     597 LOC  scripts/bench-format/hashline-v2.mjs
+  OVERGROWN     589 LOC  test/codex-manager-report-command.test.ts
+  OVERGROWN     588 LOC  lib/codex-manager/commands/report.ts
+  OVERGROWN     580 LOC  test/rotation.test.ts
+  OVERGROWN     576 LOC  lib/codex-manager/forecast-report-commands.ts
+  OVERGROWN     571 LOC  config/codex-legacy.json
+  OVERGROWN     562 LOC  test/storage-last-backup.test.ts
+  OVERGROWN     560 LOC  lib/tools/hashline-tools.ts
+  OVERGROWN     558 LOC  test/auth.test.ts
+  OVERGROWN     551 LOC  lib/codex-cli/writer.ts
+  OVERGROWN     548 LOC  test/forecast.test.ts
+  OVERGROWN     543 LOC  lib/codex-manager/commands/fix.ts
+  OVERGROWN     543 LOC  lib/codex-manager/commands/doctor.ts
+  OVERGROWN     541 LOC  scripts/test-model-matrix.js
+  OVERGROWN     540 LOC  test/auto-update-checker.test.ts
+  OVERGROWN     517 LOC  test/codex-prompts.test.ts
+  OVERGROWN     515 LOC  lib/unified-settings.ts
+  OVERGROWN     514 LOC  test/chaos/fault-injection.test.ts
+  OVERGROWN     513 LOC  test/codex-cli-writer.test.ts
+  OVERGROWN     502 LOC  lib/codex-cli/state.ts
+  OVERGROWN     501 LOC  lib/ui/select.ts
+  Count: 65 overgrown (22 critical >1000)
+
+[LIB/ MODULES]
+  lib/ (root files only): 43 files, 17635 LOC
+      3135 LOC  lib/codex-manager.ts [CRITICAL]
+      1910 LOC  lib/storage.ts [CRITICAL]
+      1742 LOC  lib/config.ts [CRITICAL]
+      1175 LOC  lib/accounts.ts [CRITICAL]
+       599 LOC  lib/oc-chatgpt-import-adapter.ts [OVERGROWN]
+  lib/auth: 5 files, 951 LOC
+       384 LOC  lib/auth/token-utils.ts
+       256 LOC  lib/auth/auth.ts
+       191 LOC  lib/auth/browser.ts
+       119 LOC  lib/auth/server.ts
+         1 LOC  lib/auth/index.ts
+  lib/accounts: 1 files, 71 LOC
+        71 LOC  lib/accounts/rate-limits.ts
+  lib/codex-cli: 5 files, 1216 LOC
+       551 LOC  lib/codex-cli/writer.ts [OVERGROWN]
+       502 LOC  lib/codex-cli/state.ts [OVERGROWN]
+       104 LOC  lib/codex-cli/sync.ts
+        55 LOC  lib/codex-cli/observability.ts
+         4 LOC  lib/codex-cli/index.ts
+  lib/codex-manager: 49 files, 11652 LOC
+      2079 LOC  lib/codex-manager/repair-commands.ts [CRITICAL]
+       827 LOC  lib/codex-manager/auth-commands.ts [OVERGROWN]
+       769 LOC  lib/codex-manager/settings-hub.ts [OVERGROWN]
+       588 LOC  lib/codex-manager/commands/report.ts [OVERGROWN]
+       576 LOC  lib/codex-manager/forecast-report-commands.ts [OVERGROWN]
+  lib/prompts: 3 files, 932 LOC
+       424 LOC  lib/prompts/codex.ts
+       362 LOC  lib/prompts/host-codex-prompt.ts
+       146 LOC  lib/prompts/codex-host-bridge.ts
+  lib/recovery: 4 files, 500 LOC
+       326 LOC  lib/recovery/storage.ts
+       133 LOC  lib/recovery/types.ts
+        30 LOC  lib/recovery/constants.ts
+        11 LOC  lib/recovery/index.ts
+  lib/request: 17 files, 5041 LOC
+      1268 LOC  lib/request/fetch-helpers.ts [CRITICAL]
+      1017 LOC  lib/request/request-transformer.ts [CRITICAL]
+       799 LOC  lib/request/response-handler.ts [OVERGROWN]
+       378 LOC  lib/request/helpers/model-map.ts
+       272 LOC  lib/request/rate-limit-backoff.ts
+  lib/runtime: 43 files, 3168 LOC
+       329 LOC  lib/runtime/account-check.ts
+       208 LOC  lib/runtime/runtime-observability.ts
+       194 LOC  lib/runtime/account-pool.ts
+       169 LOC  lib/runtime/quota-headers.ts
+       161 LOC  lib/runtime/runtime-services.ts
+  lib/storage: 43 files, 2858 LOC
+       318 LOC  lib/storage/paths.ts
+       293 LOC  lib/storage/flagged-storage-io.ts
+       166 LOC  lib/storage/backup-metadata-builder.ts
+       139 LOC  lib/storage/import-export.ts
+       125 LOC  lib/storage/snapshot-inspectors.ts
+  lib/tools: 1 files, 560 LOC
+       560 LOC  lib/tools/hashline-tools.ts [OVERGROWN]
+  lib/ui: 8 files, 1931 LOC
+       640 LOC  lib/ui/auth-menu.ts [OVERGROWN]
+       501 LOC  lib/ui/select.ts [OVERGROWN]
+       221 LOC  lib/ui/theme.ts
+       214 LOC  lib/ui/format.ts
+       167 LOC  lib/ui/copy.ts
+
+[TEST/ DIRECTORY]
+  test/ (root): 223 files, 75330 LOC
+     10114 LOC  test/codex-manager-cli.test.ts [CRITICAL]
+      5102 LOC  test/index.test.ts [CRITICAL]
+      3794 LOC  test/storage.test.ts [CRITICAL]
+      3064 LOC  test/accounts.test.ts [CRITICAL]
+      2480 LOC  test/request-transformer.test.ts [CRITICAL]
+  test/chaos: 1 files, 514 LOC
+       514 LOC  test/chaos/fault-injection.test.ts [OVERGROWN]
+  test/property: 5 files, 635 LOC
+       258 LOC  test/property/rotation.property.test.ts
+       234 LOC  test/property/transformer.property.test.ts
+        92 LOC  test/property/helpers.ts
+        34 LOC  test/property/setup.test.ts
+        17 LOC  test/property/setup.ts
+  test/fixtures: 1 files, 12 LOC
+        12 LOC  test/fixtures/v3-storage.json
+  test/helpers: 1 files, 22 LOC
+        22 LOC  test/helpers/remove-with-retry.ts
+  CATEGORIZATION:
+    unit tests (test/*.test.ts): 221
+    property tests (test/property/*.test.ts): 3
+    chaos tests (test/chaos/*.test.ts): 1
+    fixtures (test/fixtures/*): 1
+    helpers (test/helpers/*): 1
+
+[SCRIPTS/ ENUMERATION]
+  scripts/audit-dev-allowlist.js                   - npm audit wrapper enforcing curated allowlist of high/critical advisories
+  scripts/benchmark-edit-formats.mjs               - edit-format benchmark runner (hashline/diff/full) across model matrix
+  scripts/benchmark-render-dashboard.mjs           - render benchmark summary JSON as dashboard
+  scripts/benchmark-runtime-path.mjs               - measure runtime request path latency/overhead
+  scripts/check-pack-budget.mjs                    - enforce npm pack size budget in CI
+  scripts/check-pack-budget-lib.js                 - pack size budget helpers shared by check-pack-budget.mjs
+  scripts/codex.js                                 - bin entry: codex wrapper delegating to auth runtime (lazy load, graceful missing-dist)
+  scripts/codex-bin-resolver.js                    - resolve real codex CLI binary across platforms
+  scripts/codex-multi-auth.js                      - bin entry: codex-multi-auth wrapper command
+  scripts/codex-routing.js                         - bin helper: inspect/override routing policy
+  scripts/copy-oauth-success.js                    - build step: copy lib/oauth-success.html to dist/lib/
+  scripts/install-codex-auth.js                    - installer for codex-auth plugin (host Codex integration)
+  scripts/install-codex-auth-utils.js              - shared utilities for install-codex-auth
+  scripts/repo-hygiene.js                          - deterministic repo cleanup: clean --mode aggressive, check mode, Windows removeWithRetry
+  scripts/test-all-models.sh                       - shell harness exercising every configured model
+  scripts/test-model-matrix.js                     - JS harness running model-matrix smoke suite
+  scripts/update-vendor-provenance.mjs             - regenerate vendor/provenance.json checksums
+  scripts/validate-model-map.sh                    - shell guard validating lib/request/helpers/model-map.ts
+  scripts/verify-vendor-provenance.mjs             - verify vendor bundles match provenance checksums
+  scripts/bench-format/ (benchmark helpers):
+    scripts/bench-format/codex-host.mjs  (5.9 KB)
+    scripts/bench-format/hashline-v2.mjs  (18.6 KB)
+    scripts/bench-format/models.mjs  (3.3 KB)
+    scripts/bench-format/render.mjs  (16.1 KB)
+    scripts/bench-format/stats.mjs  (1.5 KB)
+    scripts/bench-format/tasks.mjs  (6.3 KB)
+  TOTAL scripts enumerated: 19 + 6 bench-format/ = 25
+
+[DOCS/ ENUMERATION]
+  docs: 12 .md files, 5060 words
+       514 words  docs/README.md
+       592 words  docs/upgrade.md
+       587 words  docs/getting-started.md
+       513 words  docs/DOCUMENTATION.md
+       606 words  docs/features.md
+  docs/development: 16 .md files, 7097 words
+      1057 words  docs/development/IA_FINDABILITY_AUDIT_2026-03-01.md
+       998 words  docs/development/CONFIG_FIELDS.md
+       656 words  docs/development/ARCHITECTURE.md
+       568 words  docs/development/GITHUB_DISCOVERABILITY.md
+       510 words  docs/development/TESTING.md
+  docs/reference: 5 .md files, 3735 words
+      1083 words  docs/reference/settings.md
+       973 words  docs/reference/commands.md
+       709 words  docs/reference/storage-paths.md
+       659 words  docs/reference/public-api.md
+       311 words  docs/reference/error-contracts.md
+  docs/releases: 21 .md files, 9192 words
+      4010 words  docs/releases/legacy-pre-0.1-history.md
+       843 words  docs/releases/v0.1.1.md
+       364 words  docs/releases/v0.1.2.md
+       466 words  docs/releases/v0.1.8.md
+       355 words  docs/releases/v0.1.9.md
+  docs/benchmarks: 1 .md files, 189 words
+       189 words  docs/benchmarks/code-edit-format-benchmark.md
+
+[.github/workflows/ (4 files)]
+  .github/workflows/ci.yml                               105 LOC  3158 bytes
+  .github/workflows/codeql.yml                            28 LOC  714 bytes
+  .github/workflows/codex-plugin-scanner.yml              69 LOC  2367 bytes
+  .github/workflows/pr-ci.yml                             79 LOC  2275 bytes
+
+[CONFIG/]
+  config/codex-legacy.json                 571 LOC
+  config/codex-modern.json                 239 LOC
+  config/minimal-codex.json                 12 LOC
+  config/README.md                          20 LOC
+  config/schema/config.schema.json                 21 LOC
+
+[BENCH/ TARGETS]
+  bench/format-benchmark/fixtures/TodoApp.tsx                      72 LOC
+  bench/format-benchmark/prompts/hashline-v2.md                    56 LOC
+  bench/format-benchmark/schema/summary.schema.json                76 LOC
+
+[VENDOR/ (manifests only, source NOT read)]
+  vendor/provenance.json present (1918 bytes)
+  vendor/codex-ai-plugin/package.json: name=@codex-ai/plugin version=1.2.10-codex.1 type=module
+  vendor/codex-ai-sdk/package.json: name=@codex-ai/sdk version=1.2.10-codex.1 type=module
+  NOTE: vendor/**/dist/ source deliberately not enumerated per task scope
+
+[REPO ROOT NOTABLE FILES]
+    4222 LOC  index.ts [CRITICAL]
+    3769 LOC  package-lock.json [CRITICAL]
+     252 LOC  README.md
+     175 LOC  package.json
+     150 LOC  AGENTS.md
+     121 LOC  CHANGELOG.md
+      75 LOC  eslint.config.js
+      71 LOC  CONTRIBUTING.md
+      66 LOC  SECURITY.md
+      61 LOC  vitest.config.ts
+      36 LOC  tsconfig.json
+      20 LOC  CODE_OF_CONDUCT.md
+      17 LOC  tsconfig.scripts.json
+
+==============================================================
+END T1 INVENTORY
+==============================================================
