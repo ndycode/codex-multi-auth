@@ -1094,10 +1094,38 @@ export class AccountManager {
 		return waitTimes.length > 0 ? Math.min(...waitTimes) : 0;
 	}
 
+	/**
+	 * Walks forward from `start` (inclusive) looking for the next enabled
+	 * account, wrapping around at most once. Returns -1 when every account in
+	 * the pool is disabled or the pool is empty.
+	 */
+	private findNextEnabled(start: number): number {
+		const count = this.accounts.length;
+		if (count === 0) return -1;
+		const base = ((start % count) + count) % count;
+		for (let step = 0; step < count; step++) {
+			const candidate = (base + step) % count;
+			const account = this.accounts[candidate];
+			if (account && account.enabled !== false) {
+				return candidate;
+			}
+		}
+		return -1;
+	}
+
 	removeAccount(account: ManagedAccount): boolean {
 		const idx = this.accounts.indexOf(account);
 		if (idx < 0) {
 			return false;
+		}
+
+		// Snapshot family pointers before splice so we can distinguish "was
+		// pointing at the removed account" from "was pointing past it".
+		const priorCursor: Record<ModelFamily, number> = {} as Record<ModelFamily, number>;
+		const priorActive: Record<ModelFamily, number> = {} as Record<ModelFamily, number>;
+		for (const family of MODEL_FAMILIES) {
+			priorCursor[family] = this.cursorByFamily[family];
+			priorActive[family] = this.currentAccountIndexByFamily[family];
 		}
 
 		this.accounts.splice(idx, 1);
@@ -1114,21 +1142,39 @@ export class AccountManager {
 		}
 
 		for (const family of MODEL_FAMILIES) {
-			if (this.cursorByFamily[family] > idx) {
-				this.cursorByFamily[family] = Math.max(0, this.cursorByFamily[family] - 1);
+			// Cursor: shift down if it was past the removed index, then normalize
+			// into [0, length). If the cursor was pointing AT the removed slot
+			// we keep the same numeric position which now references the
+			// successor account (post-splice).
+			let cursor = priorCursor[family];
+			if (cursor > idx) {
+				cursor = Math.max(0, cursor - 1);
 			}
-		}
-		for (const family of MODEL_FAMILIES) {
-			this.cursorByFamily[family] = this.cursorByFamily[family] % this.accounts.length;
-		}
+			if (cursor >= this.accounts.length) {
+				cursor = 0;
+			}
+			if (cursor < 0) {
+				cursor = 0;
+			}
+			this.cursorByFamily[family] = cursor;
 
-		for (const family of MODEL_FAMILIES) {
-			if (this.currentAccountIndexByFamily[family] > idx) {
-				this.currentAccountIndexByFamily[family] -= 1;
+			// Active pointer: preserve pre-PR behavior for pointers strictly
+			// past the removed index (just shift down). When the pointer was
+			// AT the removed slot (or is now dangling off the end after
+			// splice), advance to the next enabled account instead of
+			// defaulting to -1. Fall back to -1 only when every remaining
+			// account is disabled or the pool is empty.
+			let active = priorActive[family];
+			if (active > idx) {
+				active -= 1;
+			} else if (active === idx) {
+				// Same numeric position now hosts the successor account.
+				active = this.findNextEnabled(Math.min(idx, this.accounts.length - 1));
 			}
-			if (this.currentAccountIndexByFamily[family] >= this.accounts.length) {
-				this.currentAccountIndexByFamily[family] = -1;
+			if (active >= this.accounts.length) {
+				active = this.findNextEnabled(0);
 			}
+			this.currentAccountIndexByFamily[family] = active;
 		}
 
 		return true;

@@ -27,6 +27,7 @@ import {
   setStoragePathState,
 } from "../lib/storage/path-state.js";
 import type { OAuthAuthDetails } from "../lib/types.js";
+import { MODEL_FAMILIES } from "../lib/prompts/codex.js";
 
 vi.mock("../lib/storage.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/storage.js")>();
@@ -2617,6 +2618,162 @@ describe("AccountManager", () => {
       
       expect(manager.getAccountCount()).toBe(0);
       expect(manager.getActiveIndexForFamily("codex")).toBe(-1);
+    });
+
+    // Regression suite for audit finding HIGH-3 (PR #399 audit report):
+    // removeAccount previously set activeIndex to -1 whenever the active
+    // account was removed from the last array slot (even when other enabled
+    // accounts remained). Pointer must advance to the next enabled account.
+    describe("active-account pointer dangle (audit HIGH-3)", () => {
+      it("advances active pointer to next enabled account when active is at last slot", () => {
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 2,
+          activeIndexByFamily: { codex: 2 },
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+            { refreshToken: "token-2", addedAt: now, lastUsed: now },
+            { refreshToken: "token-3", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored as never);
+        const active = manager.getCurrentAccountForFamily("codex");
+        expect(active?.refreshToken).toBe("token-3");
+
+        // Remove the currently active account that lives at the last slot.
+        manager.removeAccount(active!);
+
+        expect(manager.getAccountCount()).toBe(2);
+        // Pointer must reference a valid enabled account, not -1.
+        const after = manager.getActiveIndexForFamily("codex");
+        expect(after).toBeGreaterThanOrEqual(0);
+        expect(after).toBeLessThan(2);
+        const newActive = manager.getCurrentAccountForFamily("codex");
+        expect(newActive).not.toBeNull();
+        expect(newActive?.enabled).not.toBe(false);
+      });
+
+      it("advances active pointer to next enabled when active is at middle slot", () => {
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 1,
+          activeIndexByFamily: { codex: 1 },
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+            { refreshToken: "token-2", addedAt: now, lastUsed: now },
+            { refreshToken: "token-3", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored as never);
+        const active = manager.getCurrentAccountForFamily("codex");
+        expect(active?.refreshToken).toBe("token-2");
+
+        manager.removeAccount(active!);
+
+        expect(manager.getAccountCount()).toBe(2);
+        // After removing token-2 from index 1, token-3 slides into index 1.
+        // The pointer should now reference token-3 (the successor).
+        const newActive = manager.getCurrentAccountForFamily("codex");
+        expect(newActive?.refreshToken).toBe("token-3");
+        expect(manager.getActiveIndexForFamily("codex")).toBe(1);
+      });
+
+      it("yields no routable account when every remaining account is disabled", () => {
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 2,
+          activeIndexByFamily: { codex: 2 },
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now, enabled: false },
+            { refreshToken: "token-2", addedAt: now, lastUsed: now, enabled: false },
+            { refreshToken: "token-3", addedAt: now, lastUsed: now, enabled: true },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored as never);
+        const active = manager.getCurrentAccountForFamily("codex");
+        expect(active?.refreshToken).toBe("token-3");
+
+        // Remove the last enabled account; remaining pool is all-disabled.
+        manager.removeAccount(active!);
+
+        expect(manager.getAccountCount()).toBe(2);
+        // getCurrentAccountForFamily returns null whenever the pointer
+        // references a disabled slot or is -1, which is the observable
+        // contract callers rely on for "no routable account".
+        expect(manager.getCurrentAccountForFamily("codex")).toBeNull();
+      });
+
+      it("sets active pointer to -1 when pool becomes empty", () => {
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+        const account = manager.getCurrentAccount()!;
+        manager.removeAccount(account);
+
+        expect(manager.getAccountCount()).toBe(0);
+        expect(manager.getActiveIndexForFamily("codex")).toBe(-1);
+      });
+
+      it("does not perturb unrelated family pointers", () => {
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          activeIndexByFamily: { codex: 2 },
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+            { refreshToken: "token-2", addedAt: now, lastUsed: now },
+            { refreshToken: "token-3", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored as never);
+        // Pick a family other than codex that exists in MODEL_FAMILIES.
+        const otherFamilies = MODEL_FAMILIES.filter((f) => f !== "codex");
+        if (otherFamilies.length === 0) {
+          // Defensive: single-family config means this test reduces to no-op.
+          return;
+        }
+        const otherFamily = otherFamilies[0]!;
+
+        // Drive the other-family pointer to index 0 via its own rotation.
+        // Directly manipulate via getActiveIndexForFamily/setActiveIndex since
+        // setActiveIndex mirrors all families; instead rotate the target
+        // family by calling getCurrentOrNextForFamily once.
+        const viaRotation = manager.getCurrentOrNextForFamily(otherFamily);
+        expect(viaRotation).not.toBeNull();
+        const otherBefore = manager.getActiveIndexForFamily(otherFamily);
+        expect(otherBefore).toBeGreaterThanOrEqual(0);
+        expect(otherBefore).toBeLessThan(3);
+
+        // Remove the codex-active account (last slot).
+        const codexActive = manager.getCurrentAccountForFamily("codex");
+        expect(codexActive?.refreshToken).toBe("token-3");
+        manager.removeAccount(codexActive!);
+
+        // The other family's pointer must still reference a valid enabled
+        // account in the new pool; it must not dangle to -1 just because we
+        // removed from codex.
+        const otherAfter = manager.getActiveIndexForFamily(otherFamily);
+        expect(otherAfter).toBeGreaterThanOrEqual(0);
+        expect(otherAfter).toBeLessThan(2);
+        const otherAccount = manager.getCurrentAccountForFamily(otherFamily);
+        expect(otherAccount).not.toBeNull();
+        expect(otherAccount?.enabled).not.toBe(false);
+      });
     });
   });
 
