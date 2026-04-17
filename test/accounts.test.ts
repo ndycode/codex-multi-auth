@@ -3566,5 +3566,117 @@ describe("AccountManager", () => {
 			const selected = manager.getCurrentOrNextForFamilyHybrid("codex");
 			expect(selected).toBeNull();
 		});
+
+		it("normalizes active pointer to next enabled slot when active account is disabled (AUDIT-H10)", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 1,
+				activeIndexByFamily: { codex: 1 },
+				accounts: [
+					{ refreshToken: "token-0", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-1", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-2", addedAt: now, lastUsed: now },
+				],
+			};
+
+			const manager = new AccountManager(undefined, stored as never);
+
+			// Sanity: active pointer initially references account 1.
+			expect(manager.getActiveIndexForFamily("codex")).toBe(1);
+
+			// Disable the active account.
+			manager.setAccountEnabled(1, false);
+
+			// AUDIT-H10 / D-05: active pointer must advance to the next enabled slot
+			// (index 2 here) so UI / automation / routing do not hold a stale pointer
+			// to a disabled account.
+			expect(manager.getActiveIndexForFamily("codex")).toBe(2);
+		});
+
+		it("returns -1 when all accounts are disabled (oracle F1)", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{ refreshToken: "token-0", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-1", addedAt: now, lastUsed: now },
+				],
+			};
+
+			const manager = new AccountManager(undefined, stored as never);
+
+			// Disable every account in the pool.
+			manager.setAccountEnabled(0, false);
+			manager.setAccountEnabled(1, false);
+
+			// Oracle F1: all-disabled must surface as -1 (the empty-pool sentinel)
+			// so callers cannot trust a returned index without an enabled re-check.
+			expect(manager.getActiveIndexForFamily("codex")).toBe(-1);
+		});
+
+		it("preserves pointer semantics when the same account is disabled then re-enabled", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 1,
+				activeIndexByFamily: { codex: 1 },
+				accounts: [
+					{ refreshToken: "token-0", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-1", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-2", addedAt: now, lastUsed: now },
+				],
+			};
+
+			const manager = new AccountManager(undefined, stored as never);
+
+			// Baseline: active pointer is on index 1.
+			expect(manager.getActiveIndexForFamily("codex")).toBe(1);
+
+			// Disable the active account: pointer walks forward to index 2.
+			manager.setAccountEnabled(1, false);
+			expect(manager.getActiveIndexForFamily("codex")).toBe(2);
+
+			// Re-enable index 1: the pointer already advanced to 2, and re-enabling
+			// must not silently rewind it back to 1 (the post-disable pointer is
+			// the authoritative state the rotation/UI have been observing).
+			manager.setAccountEnabled(1, true);
+			expect(manager.getActiveIndexForFamily("codex")).toBe(2);
+
+			// And index 1 is once again routable for explicit selection.
+			expect(manager.getAccountByIndex(1)?.enabled).not.toBe(false);
+		});
+
+		it("does not disturb sibling families' pointers when a disabled index only matches one family (oracle F2 multi-family)", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				activeIndexByFamily: {
+					codex: 0,
+					"gpt-5-codex": 2,
+				},
+				accounts: [
+					{ refreshToken: "token-0", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-1", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-2", addedAt: now, lastUsed: now },
+				],
+			};
+
+			const manager = new AccountManager(undefined, stored as never);
+
+			// Baseline: each family points at its own slot.
+			expect(manager.getActiveIndexForFamily("codex")).toBe(0);
+			expect(manager.getActiveIndexForFamily("gpt-5-codex")).toBe(2);
+
+			// Disable account 0: only the codex family's pointer matches, so it
+			// must advance, but the gpt-5-codex pointer (index 2) must stay put.
+			manager.setAccountEnabled(0, false);
+
+			expect(manager.getActiveIndexForFamily("codex")).toBe(1);
+			expect(manager.getActiveIndexForFamily("gpt-5-codex")).toBe(2);
+		});
 	});
 });
