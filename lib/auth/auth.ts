@@ -1,6 +1,12 @@
 import { generatePKCE } from "@openauthjs/openauth/pkce";
 import { randomBytes } from "node:crypto";
-import type { PKCEPair, AuthorizationFlow, TokenResult, ParsedAuthInput, JWTPayload } from "../types.js";
+import type {
+	PKCEPair,
+	AuthorizationFlow,
+	TokenResult,
+	ParsedAuthInput,
+	JWTPayload,
+} from "../types.js";
 import { logError } from "../logger.js";
 import { safeParseOAuthTokenResponse } from "../schemas.js";
 import { isAbortError } from "../utils.js";
@@ -12,6 +18,29 @@ export const TOKEN_URL = "https://auth.openai.com/oauth/token";
 export const REDIRECT_URI = "http://localhost:1455/auth/callback";
 export const SCOPE = "openid profile email offline_access";
 
+/**
+ * Parsed representation of {@link REDIRECT_URI}. Single source of truth for the
+ * OAuth callback origin so that the local server bind, user-facing copy, and
+ * any future success-page template never drift from each other.
+ *
+ * The provider registers the exact string in {@link REDIRECT_URI}; this helper
+ * derives host/port/path at module-load time and is frozen so consumers cannot
+ * mutate the shared record by accident.
+ */
+export const AUTH_REDIRECT = Object.freeze(
+	(() => {
+		const parsed = new URL(REDIRECT_URI);
+		const port = parsed.port.length > 0 ? Number(parsed.port) : 1455;
+		return {
+			host: parsed.hostname,
+			port,
+			path: parsed.pathname,
+			origin: `${parsed.protocol}//${parsed.host}`,
+			url: REDIRECT_URI,
+		} as const;
+	})(),
+);
+
 const OAUTH_SENSITIVE_QUERY_PARAMS = [
 	"state",
 	"code",
@@ -19,7 +48,9 @@ const OAUTH_SENSITIVE_QUERY_PARAMS = [
 	"code_verifier",
 ] as const;
 
-function getOAuthResponseLogMetadata(rawResponse: unknown): Record<string, unknown> {
+function getOAuthResponseLogMetadata(
+	rawResponse: unknown,
+): Record<string, unknown> {
 	if (Array.isArray(rawResponse)) {
 		return { responseType: "array", itemCount: rawResponse.length };
 	}
@@ -130,16 +161,31 @@ export async function exchangeAuthorizationCode(
 	if (!res.ok) {
 		const text = await res.text().catch(() => "");
 		logError(`code->token failed: ${res.status} ${text}`);
-		return { type: "failed", reason: "http_error", statusCode: res.status, message: text || undefined };
+		return {
+			type: "failed",
+			reason: "http_error",
+			statusCode: res.status,
+			message: text || undefined,
+		};
 	}
 	const rawJson = (await res.json()) as unknown;
 	const json = safeParseOAuthTokenResponse(rawJson);
 	if (!json) {
-		logError("token response validation failed", getOAuthResponseLogMetadata(rawJson));
-		return { type: "failed", reason: "invalid_response", message: "Response failed schema validation" };
+		logError(
+			"token response validation failed",
+			getOAuthResponseLogMetadata(rawJson),
+		);
+		return {
+			type: "failed",
+			reason: "invalid_response",
+			message: "Response failed schema validation",
+		};
 	}
 	if (!json.refresh_token || json.refresh_token.trim().length === 0) {
-		logError("token response missing refresh token", getOAuthResponseLogMetadata(rawJson));
+		logError(
+			"token response missing refresh token",
+			getOAuthResponseLogMetadata(rawJson),
+		);
 		return {
 			type: "failed",
 			reason: "invalid_response",
@@ -207,21 +253,37 @@ export async function refreshAccessToken(
 		if (!response.ok) {
 			const text = await response.text().catch(() => "");
 			logError(`Token refresh failed: ${response.status} ${text}`);
-			return { type: "failed", reason: "http_error", statusCode: response.status, message: text || undefined };
+			return {
+				type: "failed",
+				reason: "http_error",
+				statusCode: response.status,
+				message: text || undefined,
+			};
 		}
 
 		const rawJson = (await response.json()) as unknown;
 		const json = safeParseOAuthTokenResponse(rawJson);
 		if (!json) {
-			logError("Token refresh response validation failed", getOAuthResponseLogMetadata(rawJson));
-			return { type: "failed", reason: "invalid_response", message: "Response failed schema validation" };
+			logError(
+				"Token refresh response validation failed",
+				getOAuthResponseLogMetadata(rawJson),
+			);
+			return {
+				type: "failed",
+				reason: "invalid_response",
+				message: "Response failed schema validation",
+			};
 		}
 
 		const nextRefreshRaw = json.refresh_token ?? refreshToken;
 		const nextRefresh = nextRefreshRaw.trim();
 		if (!nextRefresh) {
 			logError("Token refresh missing refresh token");
-			return { type: "failed", reason: "missing_refresh", message: "No refresh token in response or input" };
+			return {
+				type: "failed",
+				reason: "missing_refresh",
+				message: "No refresh token in response or input",
+			};
 		}
 
 		return {
@@ -235,7 +297,11 @@ export async function refreshAccessToken(
 	} catch (error) {
 		const err = error as Error;
 		if (isAbortError(err)) {
-			return { type: "failed", reason: "unknown", message: err?.message ?? "Request aborted" };
+			return {
+				type: "failed",
+				reason: "unknown",
+				message: err?.message ?? "Request aborted",
+			};
 		}
 		logError("Token refresh error", err);
 		return { type: "failed", reason: "network_error", message: err?.message };
@@ -255,7 +321,9 @@ export interface AuthorizationFlowOptions {
  * @param options - Optional configuration for the flow
  * @returns Authorization flow details
  */
-export async function createAuthorizationFlow(options?: AuthorizationFlowOptions): Promise<AuthorizationFlow> {
+export async function createAuthorizationFlow(
+	options?: AuthorizationFlowOptions,
+): Promise<AuthorizationFlow> {
 	const pkce = (await generatePKCE()) as PKCEPair;
 	const state = createState();
 

@@ -4,10 +4,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OAuthServerInfo } from "../types.js";
 import { logError, logWarn } from "../logger.js";
+import { AUTH_REDIRECT } from "./auth.js";
 
 // Resolve path to oauth-success.html (one level up from auth/ subfolder)
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const successHtml = fs.readFileSync(path.join(__dirname, "..", "oauth-success.html"), "utf-8");
+const successHtml = fs.readFileSync(
+	path.join(__dirname, "..", "oauth-success.html"),
+	"utf-8",
+);
 
 /**
  * Start a local HTTP server that captures an OAuth authorization code sent to /auth/callback.
@@ -28,12 +32,16 @@ const successHtml = fs.readFileSync(path.join(__dirname, "..", "oauth-success.ht
  *          function to abort polling and close the server, and `waitForCode` which returns
  *          `{ code: string }` when a code becomes available or `null` on timeout/abort.
  */
-export function startLocalOAuthServer({ state }: { state: string }): Promise<OAuthServerInfo> {
+export function startLocalOAuthServer({
+	state,
+}: {
+	state: string;
+}): Promise<OAuthServerInfo> {
 	let pollAborted = false;
 	const server = http.createServer((req, res) => {
 		try {
-			const url = new URL(req.url || "", "http://localhost");
-			if (url.pathname !== "/auth/callback") {
+			const url = new URL(req.url || "", AUTH_REDIRECT.origin);
+			if (url.pathname !== AUTH_REDIRECT.path) {
 				res.statusCode = 404;
 				res.end("Not found");
 				return;
@@ -60,12 +68,16 @@ export function startLocalOAuthServer({ state }: { state: string }): Promise<OAu
 			res.end(successHtml);
 			const trackedServer = server as http.Server & { _lastCode?: string };
 			if (trackedServer._lastCode) {
-				logWarn("Duplicate OAuth callback received; preserving first authorization code");
+				logWarn(
+					"Duplicate OAuth callback received; preserving first authorization code",
+				);
 				return;
 			}
 			trackedServer._lastCode = code;
 		} catch (err) {
-			logError(`Request handler error: ${(err as Error)?.message ?? String(err)}`);
+			logError(
+				`Request handler error: ${(err as Error)?.message ?? String(err)}`,
+			);
 			res.statusCode = 500;
 			res.end("Internal error");
 		}
@@ -75,9 +87,9 @@ export function startLocalOAuthServer({ state }: { state: string }): Promise<OAu
 
 	return new Promise((resolve) => {
 		server
-			.listen(1455, "localhost", () => {
+			.listen(AUTH_REDIRECT.port, AUTH_REDIRECT.host, () => {
 				resolve({
-					port: 1455,
+					port: AUTH_REDIRECT.port,
 					ready: true,
 					close: () => {
 						pollAborted = true;
@@ -87,10 +99,12 @@ export function startLocalOAuthServer({ state }: { state: string }): Promise<OAu
 						const POLL_INTERVAL_MS = 100;
 						const TIMEOUT_MS = 5 * 60 * 1000;
 						const maxIterations = Math.floor(TIMEOUT_MS / POLL_INTERVAL_MS);
-						const poll = () => new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
+						const poll = () =>
+							new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
 						for (let i = 0; i < maxIterations; i++) {
 							if (pollAborted) return null;
-							const lastCode = (server as http.Server & { _lastCode?: string })._lastCode;
+							const lastCode = (server as http.Server & { _lastCode?: string })
+								._lastCode;
 							if (lastCode) return { code: lastCode };
 							await poll();
 						}
@@ -101,10 +115,10 @@ export function startLocalOAuthServer({ state }: { state: string }): Promise<OAu
 			})
 			.on("error", (err: NodeJS.ErrnoException) => {
 				logError(
-					`Failed to bind http://localhost:1455 (${err?.code}). Falling back to manual paste.`,
+					`Failed to bind ${AUTH_REDIRECT.origin} (${err?.code}). Falling back to manual paste.`,
 				);
 				resolve({
-					port: 1455,
+					port: AUTH_REDIRECT.port,
 					ready: false,
 					close: () => {
 						pollAborted = true;
