@@ -49,6 +49,49 @@ For user-facing behavior changes, review these files at minimum:
 
 ---
 
+## Tooling Stack
+
+### Dual-Linter Scope (Biome + ESLint)
+
+This repo ships configuration for **both** Biome and ESLint, but only
+ESLint is wired into automation. Each tool owns a different slice:
+
+- **Biome (`biome.jsonc`)** — formatting + fast style checks. Biome is
+  configured but **not** automatically invoked by any npm script,
+  `lint-staged` entry, or git hook. Run it manually when you want
+  formatting applied, for example `npx biome check --write .` before
+  committing large mechanical changes.
+- **ESLint (`eslint.config.js`)** — correctness rules: `no-explicit-any`,
+  unused-var hygiene (`_` prefix), TypeScript-specific checks. ESLint is
+  invoked two ways:
+  - **Pre-commit**: `lint-staged` (via the Husky `pre-commit` hook) runs
+    `eslint --max-warnings=0 --fix --no-warn-ignored` on staged `*.ts`
+    and `scripts/**/*.{js,mjs}` files.
+  - **CI**: `npm run lint` runs as a dedicated job in
+    `.github/workflows/ci.yml` (push to `main`) and
+    `.github/workflows/pr-ci.yml` (pull requests).
+
+If the two tools ever disagree on a file you format manually with
+Biome, prefer ESLint's verdict for correctness and surface formatting
+conflicts in a PR so they can be resolved intentionally rather than
+silenced.
+
+### `prepare` Hook Installs Husky On Every `npm install`
+
+`package.json` `scripts.prepare` runs `husky` at install time to wire
+the pre-commit hook. This is an install-time side effect: running
+`npm install` or `npm ci` mutates `.git/hooks/`. That is intentional
+for the `lint-staged` flow, but contributors should be aware:
+
+- cloning the repo then running `npm install` will overwrite any
+  custom pre-commit hook you had set locally
+- running `npm install` in a CI container also runs `prepare`, which
+  is why CI workflows often set `HUSKY=0` to disable it
+
+Set `HUSKY=0` in environments where the hook install is undesirable.
+
+---
+
 ## Pull Request Process
 
 1. Create a focused branch from `main`.
