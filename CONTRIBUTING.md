@@ -49,6 +49,40 @@ For user-facing behavior changes, review these files at minimum:
 
 ---
 
+## Tooling Stack
+
+### Dual-Linter Scope (Biome + ESLint)
+
+This repo runs **both** Biome and ESLint, each owning a different slice:
+
+- **Biome (`biome.jsonc`)** — formatting + fast style checks. Pre-commit
+  hook (via `lint-staged`) applies Biome formatting automatically on
+  every staged change; that is why commits can touch adjacent lines for
+  trailing-comma / wrap normalization.
+- **ESLint (`eslint.config.js`)** — correctness rules: `no-explicit-any`,
+  unused-var hygiene (`_` prefix), TypeScript-specific checks. Enforced
+  in CI via `npm run lint`.
+
+If the two tools disagree, Biome wins on formatting and ESLint wins on
+correctness. Do not disable either one to silence conflicts — surface
+the conflict in a PR so it can be resolved intentionally.
+
+### `prepare` Hook Installs Husky On Every `npm install`
+
+`package.json` `scripts.prepare` runs `husky` at install time to wire
+the pre-commit hook. This is an install-time side effect: running
+`npm install` or `npm ci` mutates `.git/hooks/`. That is intentional
+for the `lint-staged` flow, but contributors should be aware:
+
+- cloning the repo then running `npm install` will overwrite any
+  custom pre-commit hook you had set locally
+- running `npm install` in a CI container also runs `prepare`, which
+  is why CI workflows often set `HUSKY=0` to disable it
+
+Set `HUSKY=0` in environments where the hook install is undesirable.
+
+---
+
 ## Pull Request Process
 
 1. Create a focused branch from `main`.
