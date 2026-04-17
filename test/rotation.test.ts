@@ -3,6 +3,7 @@ import {
 	HealthScoreTracker,
 	TokenBucketTracker,
 	selectHybridAccount,
+	selectHybridAccountTraced,
 	addJitter,
 	randomDelay,
 	exponentialBackoff,
@@ -31,7 +32,7 @@ describe("HealthScoreTracker", () => {
 
 		it("returns maxScore for accounts with quotaKey", () => {
 			expect(tracker.getScore(0, "quota-a")).toBe(
-				DEFAULT_HEALTH_SCORE_CONFIG.maxScore
+				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
 			);
 		});
 	});
@@ -61,7 +62,7 @@ describe("HealthScoreTracker", () => {
 				tracker.recordSuccess(0);
 			}
 			expect(tracker.getScore(0)).toBeLessThanOrEqual(
-				DEFAULT_HEALTH_SCORE_CONFIG.maxScore
+				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
 			);
 		});
 	});
@@ -109,7 +110,8 @@ describe("HealthScoreTracker", () => {
 			vi.advanceTimersByTime(1000 * 60 * 60);
 			const afterOneHour = tracker.getScore(0);
 
-			const expectedRecovery = DEFAULT_HEALTH_SCORE_CONFIG.passiveRecoveryPerHour;
+			const expectedRecovery =
+				DEFAULT_HEALTH_SCORE_CONFIG.passiveRecoveryPerHour;
 			expect(afterOneHour).toBeCloseTo(afterRateLimit + expectedRecovery, 1);
 		});
 
@@ -118,7 +120,7 @@ describe("HealthScoreTracker", () => {
 
 			vi.advanceTimersByTime(1000 * 60 * 60 * 100);
 			expect(tracker.getScore(0)).toBeLessThanOrEqual(
-				DEFAULT_HEALTH_SCORE_CONFIG.maxScore
+				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
 			);
 		});
 	});
@@ -132,7 +134,7 @@ describe("HealthScoreTracker", () => {
 
 			expect(tracker.getScore(0)).toBe(DEFAULT_HEALTH_SCORE_CONFIG.maxScore);
 			expect(tracker.getScore(1)).toBeLessThan(
-				DEFAULT_HEALTH_SCORE_CONFIG.maxScore
+				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
 			);
 		});
 
@@ -155,10 +157,10 @@ describe("HealthScoreTracker", () => {
 			tracker.recordSuccess(0, "quota-b");
 
 			expect(tracker.getScore(0, "quota-a")).toBeLessThan(
-				DEFAULT_HEALTH_SCORE_CONFIG.maxScore
+				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
 			);
 			expect(tracker.getScore(0, "quota-b")).toBe(
-				DEFAULT_HEALTH_SCORE_CONFIG.maxScore
+				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
 			);
 		});
 	});
@@ -188,7 +190,7 @@ describe("TokenBucketTracker", () => {
 			const result = tracker.tryConsume(0);
 			expect(result).toBe(true);
 			expect(tracker.getTokens(0)).toBe(
-				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens - 1
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens - 1,
 			);
 		});
 
@@ -251,7 +253,7 @@ describe("TokenBucketTracker", () => {
 
 			vi.advanceTimersByTime(1000 * 60 * 60);
 			expect(tracker.getTokens(0)).toBeLessThanOrEqual(
-				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
 			);
 		});
 	});
@@ -260,7 +262,7 @@ describe("TokenBucketTracker", () => {
 		it("removes specified tokens", () => {
 			tracker.drain(0, undefined, 20);
 			expect(tracker.getTokens(0)).toBe(
-				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens - 20
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens - 20,
 			);
 		});
 
@@ -272,7 +274,7 @@ describe("TokenBucketTracker", () => {
 		it("uses maxTokens when no prior entry exists for drain (line 205 coverage)", () => {
 			tracker.drain(5, "new-quota", 5);
 			expect(tracker.getTokens(5, "new-quota")).toBe(
-				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens - 5
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens - 5,
 			);
 		});
 	});
@@ -286,7 +288,7 @@ describe("TokenBucketTracker", () => {
 
 			expect(tracker.getTokens(0)).toBe(DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens);
 			expect(tracker.getTokens(1)).toBeLessThan(
-				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
 			);
 		});
 
@@ -405,7 +407,14 @@ describe("selectHybridAccount", () => {
 			{ index: 1, isAvailable: true, lastUsed: Date.now() },
 		];
 
-		const result1 = selectHybridAccount(accounts, healthTracker, tokenTracker, undefined, undefined, { pidOffsetEnabled: false });
+		const result1 = selectHybridAccount(
+			accounts,
+			healthTracker,
+			tokenTracker,
+			undefined,
+			undefined,
+			{ pidOffsetEnabled: false },
+		);
 		const result2 = selectHybridAccount(accounts, healthTracker, tokenTracker);
 
 		expect(result1?.index).toBe(result2?.index);
@@ -417,7 +426,14 @@ describe("selectHybridAccount", () => {
 			{ index: 1, isAvailable: true, lastUsed: Date.now() },
 		];
 
-		const result = selectHybridAccount(accounts, healthTracker, tokenTracker, undefined, undefined, { pidOffsetEnabled: true });
+		const result = selectHybridAccount(
+			accounts,
+			healthTracker,
+			tokenTracker,
+			undefined,
+			undefined,
+			{ pidOffsetEnabled: true },
+		);
 
 		expect(result).not.toBe(null);
 		expect([0, 1]).toContain(result?.index);
@@ -433,10 +449,20 @@ describe("selectHybridAccount", () => {
 				{ index: 1, isAvailable: true, lastUsed: Date.now() },
 			];
 
-			const result = selectHybridAccount(accounts, healthTracker, tokenTracker, undefined, undefined, { pidOffsetEnabled: true });
+			const result = selectHybridAccount(
+				accounts,
+				healthTracker,
+				tokenTracker,
+				undefined,
+				undefined,
+				{ pidOffsetEnabled: true },
+			);
 			expect(result).not.toBe(null);
 		} finally {
-			Object.defineProperty(process, "pid", { value: originalPid, configurable: true });
+			Object.defineProperty(process, "pid", {
+				value: originalPid,
+				configurable: true,
+			});
 		}
 	});
 
@@ -453,14 +479,27 @@ describe("selectHybridAccount", () => {
 		const selectedIndices = new Set<number>();
 		try {
 			for (let pid = 0; pid < 100; pid += 10) {
-				Object.defineProperty(process, "pid", { value: pid, configurable: true });
-				const result = selectHybridAccount(accounts, healthTracker, tokenTracker, undefined, undefined, { pidOffsetEnabled: true });
+				Object.defineProperty(process, "pid", {
+					value: pid,
+					configurable: true,
+				});
+				const result = selectHybridAccount(
+					accounts,
+					healthTracker,
+					tokenTracker,
+					undefined,
+					undefined,
+					{ pidOffsetEnabled: true },
+				);
 				if (result) {
 					selectedIndices.add(result.index);
 				}
 			}
 		} finally {
-			Object.defineProperty(process, "pid", { value: originalPid, configurable: true });
+			Object.defineProperty(process, "pid", {
+				value: originalPid,
+				configurable: true,
+			});
 		}
 
 		expect(selectedIndices.size).toBeGreaterThan(1);
@@ -659,29 +698,159 @@ describe("utility functions", () => {
 				);
 				expect(() =>
 					exponentialBackoff(Number.NaN as unknown as number, 1000, 60000, 0.1),
-				).toThrowError("exponentialBackoff requires attempt to be a positive integer");
+				).toThrowError(
+					"exponentialBackoff requires attempt to be a positive integer",
+				);
 				expect(() =>
-					exponentialBackoff(Number.POSITIVE_INFINITY as unknown as number, 1000, 60000, 0.1),
-				).toThrowError("exponentialBackoff requires attempt to be a positive integer");
+					exponentialBackoff(
+						Number.POSITIVE_INFINITY as unknown as number,
+						1000,
+						60000,
+						0.1,
+					),
+				).toThrowError(
+					"exponentialBackoff requires attempt to be a positive integer",
+				);
 				expect(() =>
 					exponentialBackoff(undefined as unknown as number, 1000, 60000, 0.1),
-				).toThrowError("exponentialBackoff requires attempt to be a positive integer");
+				).toThrowError(
+					"exponentialBackoff requires attempt to be a positive integer",
+				);
 				expect(() => exponentialBackoff(1, -1, 60000, 0.1)).toThrowError(
 					"exponentialBackoff requires baseMs to be a finite non-negative number",
 				);
 				expect(() => exponentialBackoff(1, 1000, -1, 0.1)).toThrowError(
 					"exponentialBackoff requires maxMs to be a finite non-negative number",
 				);
-				expect(() => exponentialBackoff({} as unknown as Parameters<typeof exponentialBackoff>[0])).toThrowError(
+				expect(() =>
+					exponentialBackoff(
+						{} as unknown as Parameters<typeof exponentialBackoff>[0],
+					),
+				).toThrowError(
 					"exponentialBackoff requires attempt to be a positive integer",
 				);
 				expect(() =>
 					exponentialBackoff({ attempt: 1, jitterFactor: 2 }),
-				).toThrowError("exponentialBackoff requires jitterFactor to be between 0 and 1");
+				).toThrowError(
+					"exponentialBackoff requires jitterFactor to be between 0 and 1",
+				);
 				expect(randomSpy).not.toHaveBeenCalled();
 			} finally {
 				randomSpy.mockRestore();
 			}
 		});
+	});
+});
+
+describe("selectHybridAccountTraced", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-04-17T12:00:00Z"));
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("returns empty result for no accounts", () => {
+		const result = selectHybridAccountTraced({
+			accounts: [],
+			healthTracker: new HealthScoreTracker(),
+			tokenTracker: new TokenBucketTracker(),
+		});
+		expect(result.selected).toBeNull();
+		expect(result.candidates).toHaveLength(0);
+		expect(result.availableCount).toBe(0);
+		expect(result.selectionReason).toMatch(/no accounts/i);
+	});
+
+	it("returns the single available account trivially", () => {
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: Date.now() - 3600_000 },
+		];
+		const result = selectHybridAccountTraced({
+			accounts,
+			healthTracker: new HealthScoreTracker(),
+			tokenTracker: new TokenBucketTracker(),
+		});
+		expect(result.selected?.index).toBe(0);
+		expect(result.candidates).toHaveLength(1);
+		expect(result.selectionReason).toMatch(/single available/i);
+	});
+
+	it("sorts candidates descending by score and picks the top one", () => {
+		const now = Date.now();
+		const health = new HealthScoreTracker();
+		const token = new TokenBucketTracker();
+		// Drain tokens on account 0 to make account 1 the winner.
+		token.drain(0, undefined, 40);
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now - 60_000 },
+			{ index: 1, isAvailable: true, lastUsed: now - 60_000 },
+		];
+		const result = selectHybridAccountTraced({
+			accounts,
+			healthTracker: health,
+			tokenTracker: token,
+		});
+		expect(result.selected?.index).toBe(1);
+		expect(result.candidates[0]?.index).toBe(1);
+		expect(result.candidates[0]?.score).toBeGreaterThanOrEqual(
+			result.candidates[1]?.score ?? 0,
+		);
+	});
+
+	it("falls back to least-recently-used when no accounts are available", () => {
+		const now = Date.now();
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: false, lastUsed: now - 1_000 },
+			{ index: 1, isAvailable: false, lastUsed: now - 10_000 },
+		];
+		const result = selectHybridAccountTraced({
+			accounts,
+			healthTracker: new HealthScoreTracker(),
+			tokenTracker: new TokenBucketTracker(),
+		});
+		expect(result.availableCount).toBe(0);
+		expect(result.selected?.index).toBe(1);
+		expect(result.selectionReason).toMatch(/least-recently-used/i);
+		for (const candidate of result.candidates) {
+			expect(candidate.reason).toMatch(/unavailable/i);
+		}
+	});
+
+	it("does not mutate trackers", () => {
+		const health = new HealthScoreTracker();
+		const token = new TokenBucketTracker();
+		const before = { health: health.getScore(0), tokens: token.getTokens(0) };
+		selectHybridAccountTraced({
+			accounts: [
+				{ index: 0, isAvailable: true, lastUsed: Date.now() },
+				{ index: 1, isAvailable: true, lastUsed: Date.now() },
+			],
+			healthTracker: health,
+			tokenTracker: token,
+		});
+		expect(health.getScore(0)).toBe(before.health);
+		expect(token.getTokens(0)).toBe(before.tokens);
+	});
+
+	it("agrees with selectHybridAccount on the winning index", () => {
+		const now = Date.now();
+		const health = new HealthScoreTracker();
+		const token = new TokenBucketTracker();
+		token.drain(0, undefined, 30);
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: true, lastUsed: now - 10_000 },
+			{ index: 1, isAvailable: true, lastUsed: now - 10_000 },
+			{ index: 2, isAvailable: true, lastUsed: now - 10_000 },
+		];
+		const plain = selectHybridAccount(accounts, health, token);
+		const traced = selectHybridAccountTraced({
+			accounts,
+			healthTracker: health,
+			tokenTracker: token,
+		});
+		expect(traced.selected?.index).toBe(plain?.index);
 	});
 });
