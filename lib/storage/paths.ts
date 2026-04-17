@@ -5,12 +5,28 @@
 
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { basename, dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
+import {
+	basename,
+	dirname,
+	isAbsolute,
+	join,
+	relative,
+	resolve,
+	sep,
+	win32,
+} from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { getCodexMultiAuthDir } from "../runtime-paths.js";
 import { getStoragePathState } from "./path-state.js";
 
-const PROJECT_MARKERS = [".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", ".codex"];
+const PROJECT_MARKERS = [
+	".git",
+	"package.json",
+	"Cargo.toml",
+	"go.mod",
+	"pyproject.toml",
+	".codex",
+];
 const PROJECTS_DIR = "projects";
 const PROJECT_KEY_HASH_LENGTH = 12;
 
@@ -28,7 +44,11 @@ function normalizePathDelimiters(pathValue: string): string {
 }
 
 function isWindowsRootedPath(pathValue: string): boolean {
-	return /^[A-Za-z]:[\\/]/.test(pathValue) || /^\\\\[^\\]/.test(pathValue) || /^\/\/[^/]/.test(pathValue);
+	return (
+		/^[A-Za-z]:[\\/]/.test(pathValue) ||
+		/^\\\\[^\\]/.test(pathValue) ||
+		/^\/\/[^/]/.test(pathValue)
+	);
 }
 
 function resolveGitPath(basePath: string, pointerValue: string): string {
@@ -81,12 +101,16 @@ function normalizePathForIdentityCheck(pathValue: string): string {
 	}
 
 	if (isWindowsRootedPath(normalizedDelimiters)) {
-		return win32.normalize(normalizedDelimiters.replace(/\//g, "\\")).toLowerCase();
+		return win32
+			.normalize(normalizedDelimiters.replace(/\//g, "\\"))
+			.toLowerCase();
 	}
 
 	const resolvedPath = resolve(normalizedDelimiters);
 	const normalizedResolved = normalizePathDelimiters(resolvedPath);
-	return process.platform === "win32" ? normalizedResolved.toLowerCase() : normalizedResolved;
+	return process.platform === "win32"
+		? normalizedResolved.toLowerCase()
+		: normalizedResolved;
 }
 
 function normalizeCanonicalPathForIdentityCheck(pathValue: string): string {
@@ -106,7 +130,10 @@ function normalizeCanonicalPathForIdentityCheck(pathValue: string): string {
 	}
 }
 
-function worktreeGitDirBelongsToProject(projectRoot: string, gitDirPath: string): boolean {
+function worktreeGitDirBelongsToProject(
+	projectRoot: string,
+	gitDirPath: string,
+): boolean {
 	const gitdirBackRefPath = join(gitDirPath, "gitdir");
 	if (!existsSync(gitdirBackRefPath)) {
 		return false;
@@ -129,7 +156,10 @@ function worktreeGitDirBelongsToProject(projectRoot: string, gitDirPath: string)
 	}
 }
 
-function isGitDirUnderCommonWorktrees(gitDirPath: string, commonGitDir: string): boolean {
+function isGitDirUnderCommonWorktrees(
+	gitDirPath: string,
+	commonGitDir: string,
+): boolean {
 	const normalizedGitDir = normalizePathDelimiters(
 		normalizePathForIdentityCheck(gitDirPath),
 	).replace(/\/+$/, "");
@@ -202,7 +232,9 @@ function normalizeProjectPath(projectPath: string): string {
  */
 function sanitizeProjectName(projectPath: string): string {
 	const name = basename(projectPath);
-	const sanitized = name.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+	const sanitized = name
+		.replace(/[^a-zA-Z0-9._-]+/g, "-")
+		.replace(/^-+|-+$/g, "");
 	return sanitized || "project";
 }
 
@@ -305,7 +337,7 @@ export function isProjectDirectory(dir: string): boolean {
 export function findProjectRoot(startDir: string): string | null {
 	let current = startDir;
 	let firstMarkerRoot: string | null = null;
-	
+
 	while (current) {
 		if (existsSync(join(current, ".git"))) {
 			return current;
@@ -314,20 +346,22 @@ export function findProjectRoot(startDir: string): string | null {
 		if (!firstMarkerRoot && isProjectDirectory(current)) {
 			firstMarkerRoot = current;
 		}
-		
+
 		const parent = dirname(current);
 		if (parent === current) {
 			break;
 		}
 		current = parent;
 	}
-	
+
 	return firstMarkerRoot;
 }
 
 function normalizePathForComparison(filePath: string): string {
 	const resolvedPath = resolve(filePath);
-	return process.platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath;
+	return process.platform === "win32"
+		? resolvedPath.toLowerCase()
+		: resolvedPath;
 }
 
 function isWithinDirectory(baseDir: string, targetPath: string): boolean {
@@ -335,6 +369,22 @@ function isWithinDirectory(baseDir: string, targetPath: string): boolean {
 	const normalizedTarget = normalizePathForComparison(targetPath);
 	const rel = relative(normalizedBase, normalizedTarget);
 	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * Detects lookalike-prefix paths such as `~/../home-outside/file.json` where the
+ * target string shares a character prefix with `baseDir` but is actually a sibling
+ * (not a descendant). A trailing separator after the base prefix must be present
+ * to be considered a proper descendant; anything else (e.g. `home-evil/...`) is a
+ * lookalike sibling and must be rejected to prevent path-guard bypass.
+ */
+function isLookalikeSibling(baseDir: string, targetPath: string): boolean {
+	const normalizedBase = normalizePathForComparison(baseDir);
+	const normalizedTarget = normalizePathForComparison(targetPath);
+	if (normalizedTarget.length <= normalizedBase.length) return false;
+	if (!normalizedTarget.startsWith(normalizedBase)) return false;
+	const boundary = normalizedTarget.charAt(normalizedBase.length);
+	return boundary !== sep && boundary !== "/" && boundary !== "\\";
 }
 
 export function resolvePath(filePath: string): string {
@@ -348,12 +398,30 @@ export function resolvePath(filePath: string): string {
 	const home = homedir();
 	const projectRoot = getStoragePathState().currentProjectRoot ?? process.cwd();
 	const tmp = tmpdir();
+
+	// Reject lookalike-prefix siblings of any approved root, even if the path
+	// happens to be within another approved root. A string like
+	// `<parent-of-home>/<basename(home)>-outside/file.json` is a sibling of home
+	// that must not be treated as within home; without this check, a permissive
+	// project-root match could still grant access to a lookalike home path.
+	if (
+		isLookalikeSibling(home, resolved) ||
+		isLookalikeSibling(projectRoot, resolved) ||
+		isLookalikeSibling(tmp, resolved)
+	) {
+		throw new Error(
+			`Access denied: path must be within home directory, project directory, or temp directory`,
+		);
+	}
+
 	if (
 		!isWithinDirectory(home, resolved) &&
 		!isWithinDirectory(projectRoot, resolved) &&
 		!isWithinDirectory(tmp, resolved)
 	) {
-		throw new Error(`Access denied: path must be within home directory, project directory, or temp directory`);
+		throw new Error(
+			`Access denied: path must be within home directory, project directory, or temp directory`,
+		);
 	}
 
 	return resolved;
