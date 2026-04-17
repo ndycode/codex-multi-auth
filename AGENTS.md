@@ -16,7 +16,7 @@ Codex plugin: intercepts OpenAI SDK calls, routes through ChatGPT Codex backend 
 │   ├── auth/             # OAuth flow, PKCE, callback server
 │   ├── accounts/         # rate limit tracking per account
 │   ├── codex-cli/        # CLI state, sync, observability
-│   ├── codex-manager/    # settings-hub extraction (2100 lines)
+│   ├── codex-manager/    # settings-hub split into 5 focused sub-modules (all <500 LOC)
 │   ├── prompts/          # model-family prompts, GitHub ETag cache
 │   ├── recovery/         # conversation state persistence
 │   ├── request/          # request transform, SSE, rate-limit backoff
@@ -60,7 +60,7 @@ Codex plugin: intercepts OpenAI SDK calls, routes through ChatGPT Codex backend 
 | Prompt templates | `lib/prompts/codex.ts` | model-family detection, GitHub ETag cache |
 | Config parsing | `lib/config.ts` | CODEX_MODE, plugin options |
 | CLI manager | `lib/codex-manager.ts` | command dispatcher, `codex auth ...` family |
-| Settings hub | `lib/codex-manager/settings-hub.ts` | extracted interactive settings (2100 lines), Q = cancel without save |
+| Settings hub | `lib/codex-manager/settings-hub/` | interactive settings split into shared/dashboard/backend/experimental/index (all <500 LOC), Q = cancel without save; `settings-hub.ts` is a back-compat re-export stub |
 | CLI state/sync | `lib/codex-cli/` | state management, observability, sync, writer |
 | Session recovery | `lib/recovery/` | conversation state persistence |
 | Graceful shutdown | `lib/shutdown.ts` | cleanup on process exit |

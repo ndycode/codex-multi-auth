@@ -30,7 +30,13 @@ lib/
 │   └── writer.ts            # output formatting
 ├── codex-manager.ts         # CLI command dispatcher (codex auth ...)
 ├── codex-manager/
-│   └── settings-hub.ts      # extracted interactive settings (2100 lines)
+│   ├── settings-hub.ts      # back-compat re-export stub (9 lines)
+│   └── settings-hub/        # interactive settings split into 5 focused files
+│       ├── index.ts         # composition root: configureUnifiedSettings, __testOnly barrel
+│       ├── shared.ts        # persistence + clone/equal + preview + clampBackendNumber + SettingsHubAction
+│       ├── dashboard.ts     # account list, statusline, behavior, theme panels + applyUiThemeFromDashboardSettings
+│       ├── backend.ts       # backend category + backend settings prompts
+│       └── experimental.ts  # experimental settings prompt + loadExperimentalSyncTarget
 ├── config.ts                # plugin config parsing (CODEX_MODE, etc.)
 ├── constants.ts             # URLs, limits, labels
 ├── context-overflow.ts      # context length error handling
