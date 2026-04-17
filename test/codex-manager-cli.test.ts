@@ -64,6 +64,13 @@ vi.mock("../lib/auth/auth.js", () => ({
 		};
 	}),
 	REDIRECT_URI: "http://localhost:1455/auth/callback",
+	AUTH_REDIRECT: {
+		host: "localhost",
+		port: 1455,
+		path: "/auth/callback",
+		origin: "http://localhost:1455",
+		url: "http://localhost:1455/auth/callback",
+	},
 }));
 
 vi.mock("../lib/auth/browser.js", () => ({
