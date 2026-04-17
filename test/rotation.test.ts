@@ -811,7 +811,7 @@ describe("selectHybridAccountTraced", () => {
 		);
 	});
 
-	it("falls back to least-recently-used when no accounts are available", () => {
+	it("returns null when no accounts are available (AUDIT-H2 contract)", () => {
 		const now = Date.now();
 		const accounts: AccountWithMetrics[] = [
 			{ index: 0, isAvailable: false, lastUsed: now - 1_000 },
@@ -822,9 +822,12 @@ describe("selectHybridAccountTraced", () => {
 			healthTracker: new HealthScoreTracker(),
 			tokenTracker: new TokenBucketTracker(),
 		});
+		// AUDIT-H2 / D-01: trace variant mirrors production null-contract so
+		// `why-selected` diagnostics match actual selection behaviour. The
+		// old LRU fallback was removed in PR #397.
 		expect(result.availableCount).toBe(0);
-		expect(result.selected?.index).toBe(1);
-		expect(result.selectionReason).toMatch(/least-recently-used/i);
+		expect(result.selected).toBeNull();
+		expect(result.selectionReason).toMatch(/all accounts unavailable/i);
 		for (const candidate of result.candidates) {
 			expect(candidate.reason).toMatch(/unavailable/i);
 		}
