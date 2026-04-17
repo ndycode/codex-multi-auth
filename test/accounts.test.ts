@@ -1911,6 +1911,48 @@ describe("AccountManager", () => {
 			manager.markSwitched(account, "rate-limit", "codex");
 			expect(account.lastSwitchReason).toBe("rate-limit");
 		});
+
+		it("syncs cursorByFamily past the just-switched account (HI-02)", () => {
+			// Regression: markSwitched used to only update
+			// currentAccountIndexByFamily, leaving cursorByFamily pointing at
+			// the pre-switch position. The next round-robin pass would then
+			// start from the stale cursor instead of advancing past the
+			// freshly marked account.
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{ refreshToken: "token-0", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-1", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-2", addedAt: now, lastUsed: now },
+				],
+			};
+
+			const manager = new AccountManager(undefined, stored);
+
+			// Walk the cursor to a known non-zero position: first rotation
+			// returns index 0 and advances cursor to 1.
+			expect(manager.getCurrentOrNextForFamily("codex")?.refreshToken).toBe(
+				"token-0",
+			);
+
+			const account2 = manager.getAccountByIndex(2)!;
+			manager.markSwitched(account2, "rate-limit", "codex");
+
+			// Active pointer moved to 2.
+			expect(manager.getCurrentAccountForFamily("codex")?.refreshToken).toBe(
+				"token-2",
+			);
+
+			// Cursor must advance to (2+1)%3 = 0 so the next rotation starts
+			// AFTER the just-switched account. Without the fix, cursor would
+			// still be at 1 and the next call would return token-1, skipping
+			// the round-robin intent of marking index 2.
+			expect(manager.getCurrentOrNextForFamily("codex")?.refreshToken).toBe(
+				"token-0",
+			);
+		});
 	});
 
 	describe("saveToDisk", () => {
