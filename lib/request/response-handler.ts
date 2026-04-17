@@ -81,7 +81,10 @@ function cloneContentArray(content: unknown): MutableRecord[] {
 	return content.filter(isRecord).map((part) => ({ ...part }));
 }
 
-function mergeRecord(base: MutableRecord | null, update: MutableRecord): MutableRecord {
+function mergeRecord(
+	base: MutableRecord | null,
+	update: MutableRecord,
+): MutableRecord {
 	if (!base) return { ...update };
 	const merged: MutableRecord = { ...base, ...update };
 	if ("content" in update || "content" in base) {
@@ -94,7 +97,10 @@ function mergeRecord(base: MutableRecord | null, update: MutableRecord): Mutable
 	return merged;
 }
 
-function makeOutputTextKey(outputIndex: number | null, contentIndex: number | null): string | null {
+function makeOutputTextKey(
+	outputIndex: number | null,
+	contentIndex: number | null,
+): string | null {
 	if (
 		!isValidSynthesizedIndex(outputIndex) ||
 		!isValidSynthesizedIndex(contentIndex)
@@ -108,7 +114,10 @@ function makePhaseTextSegmentKey(phase: string, outputTextKey: string): string {
 	return `${phase}\u0000${outputTextKey}`;
 }
 
-function makeSummaryKey(outputIndex: number | null, summaryIndex: number | null): string | null {
+function makeSummaryKey(
+	outputIndex: number | null,
+	summaryIndex: number | null,
+): string | null {
 	if (
 		!isValidSynthesizedIndex(outputIndex) ||
 		!isValidSynthesizedIndex(summaryIndex)
@@ -125,10 +134,7 @@ function getPartText(part: unknown): string | null {
 	return null;
 }
 
-function capturePhase(
-	state: ParsedResponseState,
-	phase: unknown,
-): void {
+function capturePhase(state: ParsedResponseState, phase: unknown): void {
 	if (typeof phase !== "string" || phase.trim().length === 0) return;
 	state.lastPhase = phase.trim();
 }
@@ -184,7 +190,7 @@ function setPhaseTextSegment(
 	const normalizedPhase =
 		typeof phase === "string" && phase.trim().length > 0
 			? phase.trim()
-			: state.outputTextPhases.get(outputTextKey) ?? null;
+			: (state.outputTextPhases.get(outputTextKey) ?? null);
 	if (!normalizedPhase) return;
 	state.outputTextPhases.set(outputTextKey, normalizedPhase);
 	state.lastPhase = normalizedPhase;
@@ -212,12 +218,16 @@ function appendPhaseTextSegment(
 	const normalizedPhase =
 		typeof phase === "string" && phase.trim().length > 0
 			? phase.trim()
-			: state.outputTextPhases.get(outputTextKey) ?? null;
+			: (state.outputTextPhases.get(outputTextKey) ?? null);
 	if (!normalizedPhase) return;
 	state.outputTextPhases.set(outputTextKey, normalizedPhase);
 	state.lastPhase = normalizedPhase;
 	const segmentKey = makePhaseTextSegmentKey(normalizedPhase, outputTextKey);
-	const phaseOrder = rememberPhaseSegmentOrder(state, normalizedPhase, segmentKey);
+	const phaseOrder = rememberPhaseSegmentOrder(
+		state,
+		normalizedPhase,
+		segmentKey,
+	);
 	const existing = state.phaseTextSegments.get(segmentKey) ?? "";
 	state.phaseTextSegments.set(segmentKey, `${existing}${delta}`);
 	if (phaseOrder[phaseOrder.length - 1] === segmentKey) {
@@ -228,7 +238,11 @@ function appendPhaseTextSegment(
 	rebuildPhaseText(state, normalizedPhase);
 }
 
-function upsertOutputItem(state: ParsedResponseState, outputIndex: number | null, item: unknown): void {
+function upsertOutputItem(
+	state: ParsedResponseState,
+	outputIndex: number | null,
+	item: unknown,
+): void {
 	if (!isValidSynthesizedIndex(outputIndex) || !isRecord(item)) return;
 	const current = state.outputItems.get(outputIndex) ?? null;
 	const merged = mergeRecord(current, item);
@@ -297,7 +311,10 @@ function appendReasoningSummaryValue(
 	state.reasoningSummaryText.set(key, `${existing}${delta}`);
 }
 
-function ensureOutputItemAtIndex(output: unknown[], index: number): MutableRecord | null {
+function ensureOutputItemAtIndex(
+	output: unknown[],
+	index: number,
+): MutableRecord | null {
 	if (!isValidSynthesizedIndex(index)) return null;
 	while (output.length <= index) {
 		output.push({});
@@ -309,7 +326,10 @@ function ensureOutputItemAtIndex(output: unknown[], index: number): MutableRecor
 	return isRecord(output[index]) ? (output[index] as MutableRecord) : null;
 }
 
-function ensureContentPartAtIndex(item: MutableRecord, index: number): MutableRecord | null {
+function ensureContentPartAtIndex(
+	item: MutableRecord,
+	index: number,
+): MutableRecord | null {
 	if (!isValidSynthesizedIndex(index)) return null;
 	const content = Array.isArray(item.content) ? [...item.content] : [];
 	while (content.length <= index) {
@@ -323,7 +343,10 @@ function ensureContentPartAtIndex(item: MutableRecord, index: number): MutableRe
 	return isRecord(content[index]) ? (content[index] as MutableRecord) : null;
 }
 
-function applyAccumulatedOutputText(response: MutableRecord, state: ParsedResponseState): void {
+function applyAccumulatedOutputText(
+	response: MutableRecord,
+	state: ParsedResponseState,
+): void {
 	if (state.outputText.size === 0) return;
 	const output = Array.isArray(response.output) ? [...response.output] : [];
 
@@ -356,7 +379,10 @@ function applyAccumulatedOutputText(response: MutableRecord, state: ParsedRespon
 	}
 }
 
-function mergeOutputItemsIntoResponse(response: MutableRecord, state: ParsedResponseState): void {
+function mergeOutputItemsIntoResponse(
+	response: MutableRecord,
+	state: ParsedResponseState,
+): void {
 	if (state.outputItems.size === 0) return;
 	const output = Array.isArray(response.output) ? [...response.output] : [];
 
@@ -365,7 +391,10 @@ function mergeOutputItemsIntoResponse(response: MutableRecord, state: ParsedResp
 		while (output.length <= outputIndex) {
 			output.push({});
 		}
-		output[outputIndex] = mergeRecord(toMutableRecord(output[outputIndex]), item);
+		output[outputIndex] = mergeRecord(
+			toMutableRecord(output[outputIndex]),
+			item,
+		);
 	}
 
 	response.output = output;
@@ -405,7 +434,10 @@ function collectReasoningSummaryText(output: unknown[]): string {
 		.join("\n\n");
 }
 
-function applyReasoningSummaries(response: MutableRecord, state: ParsedResponseState): void {
+function applyReasoningSummaries(
+	response: MutableRecord,
+	state: ParsedResponseState,
+): void {
 	if (state.reasoningSummaryText.size === 0) return;
 	const output = Array.isArray(response.output) ? [...response.output] : [];
 
@@ -446,7 +478,9 @@ function applyReasoningSummaries(response: MutableRecord, state: ParsedResponseS
 	}
 }
 
-function finalizeParsedResponse(state: ParsedResponseState): MutableRecord | null {
+function finalizeParsedResponse(
+	state: ParsedResponseState,
+): MutableRecord | null {
 	const response = state.finalResponse ? { ...state.finalResponse } : null;
 	if (!response) return null;
 	if (state.encounteredError) return null;
@@ -501,7 +535,8 @@ function notifyResponseId(
 	response: unknown,
 ): void {
 	const responseId = extractResponseId(response);
-	if (!responseId || !onResponseId || state.seenResponseIds.has(responseId)) return;
+	if (!responseId || !onResponseId || state.seenResponseIds.has(responseId))
+		return;
 	state.seenResponseIds.add(responseId);
 	try {
 		onResponseId(responseId);
@@ -513,11 +548,16 @@ function notifyResponseId(
 	}
 }
 
-function truncateDiagnosticText(value: unknown, maxLength = 400): string | undefined {
+function truncateDiagnosticText(
+	value: unknown,
+	maxLength = 400,
+): string | undefined {
 	if (typeof value !== "string") return undefined;
 	const trimmed = value.trim();
 	if (trimmed.length === 0) return undefined;
-	return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}...` : trimmed;
+	return trimmed.length > maxLength
+		? `${trimmed.slice(0, maxLength)}...`
+		: trimmed;
 }
 
 function logStreamDiagnostics(finalResponse: unknown): void {
@@ -528,8 +568,12 @@ function logStreamDiagnostics(finalResponse: unknown): void {
 	const responseId = extractResponseId(finalResponse);
 	const phase = getStringField(finalResponse, "phase");
 	const commentaryText = truncateDiagnosticText(finalResponse.commentary_text);
-	const finalAnswerText = truncateDiagnosticText(finalResponse.final_answer_text);
-	const reasoningSummaryText = truncateDiagnosticText(finalResponse.reasoning_summary_text);
+	const finalAnswerText = truncateDiagnosticText(
+		finalResponse.final_answer_text,
+	);
+	const reasoningSummaryText = truncateDiagnosticText(
+		finalResponse.reasoning_summary_text,
+	);
 	if (phase || commentaryText || finalAnswerText || reasoningSummaryText) {
 		logRequest("stream-diagnostics", {
 			...(responseId ? { responseId } : {}),
@@ -564,7 +608,10 @@ function maybeCaptureResponseEvent(
 	if (!eventRecord) return;
 	const outputIndex = getNumberField(eventRecord, "output_index");
 
-	if (data.type === "response.output_item.added" || data.type === "response.output_item.done") {
+	if (
+		data.type === "response.output_item.added" ||
+		data.type === "response.output_item.done"
+	) {
 		upsertOutputItem(state, outputIndex, eventRecord.item);
 		return;
 	}
@@ -591,7 +638,10 @@ function maybeCaptureResponseEvent(
 		return;
 	}
 
-	if (data.type === "response.content_part.added" || data.type === "response.content_part.done") {
+	if (
+		data.type === "response.content_part.added" ||
+		data.type === "response.content_part.done"
+	) {
 		const part = toMutableRecord(eventRecord.part);
 		if (!part || getStringField(part, "type") !== "output_text") {
 			capturePhase(state, part?.phase);
@@ -656,19 +706,42 @@ function parseSseStream(
 	const lines = sseText.split(/\r?\n/);
 	const state = createParsedResponseState();
 
+	let malformedChunkCount = 0;
+	let firstMalformedSample: string | null = null;
 	for (const line of lines) {
 		const trimmedLine = line.trim();
-		if (trimmedLine.startsWith('data: ')) {
+		if (trimmedLine.startsWith("data: ")) {
 			const payload = trimmedLine.substring(6).trim();
-			if (!payload || payload === '[DONE]') continue;
+			if (!payload || payload === "[DONE]") continue;
 			try {
 				const data = JSON.parse(payload) as SSEEventData;
 				maybeCaptureResponseEvent(state, data, onResponseId);
 				if (state.encounteredError) return null;
-			} catch {
-				// Skip malformed JSON
+			} catch (error) {
+				// AUDIT-H9 / H-03: previously these malformed chunks were
+				// silently discarded, masking upstream protocol drift + the
+				// downstream "empty response" symptom. Surface a structured
+				// warn with bounded context (first 120 chars + error message)
+				// and a running tally so operators can see frequency at a glance.
+				malformedChunkCount += 1;
+				if (firstMalformedSample === null) {
+					firstMalformedSample = payload.slice(0, 120);
+				}
+				if (malformedChunkCount === 1) {
+					log.warn("SSE malformed JSON chunk discarded", {
+						reason: error instanceof Error ? error.message : String(error),
+						sample: firstMalformedSample,
+					});
+				}
 			}
 		}
+	}
+
+	if (malformedChunkCount > 1) {
+		log.warn("SSE malformed JSON chunks discarded (rollup)", {
+			totalCount: malformedChunkCount,
+			firstSample: firstMalformedSample,
+		});
 	}
 
 	return finalizeParsedResponse(state);
@@ -693,16 +766,21 @@ export async function convertSseToJson(
 	}
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
-	let fullText = '';
+	let fullText = "";
 	const streamStallTimeoutMs = Math.max(
 		1_000,
-		Math.floor(options?.streamStallTimeoutMs ?? DEFAULT_STREAM_STALL_TIMEOUT_MS),
+		Math.floor(
+			options?.streamStallTimeoutMs ?? DEFAULT_STREAM_STALL_TIMEOUT_MS,
+		),
 	);
 
 	try {
 		// Consume the entire stream
 		while (true) {
-			const { done, value } = await readWithTimeout(reader, streamStallTimeoutMs);
+			const { done, value } = await readWithTimeout(
+				reader,
+				streamStallTimeoutMs,
+			);
 			if (done) break;
 			fullText += decoder.decode(value, { stream: true });
 			if (fullText.length > MAX_SSE_SIZE) {
@@ -736,14 +814,13 @@ export async function convertSseToJson(
 
 		// Return as plain JSON (not SSE)
 		const jsonHeaders = new Headers(headers);
-		jsonHeaders.set('content-type', 'application/json; charset=utf-8');
+		jsonHeaders.set("content-type", "application/json; charset=utf-8");
 
 		return new Response(JSON.stringify(finalResponse), {
 			status: response.status,
 			statusText: response.statusText,
 			headers: jsonHeaders,
 		});
-
 	} catch (error) {
 		log.error("Error converting stream", { error: String(error) });
 		logRequest("stream-error", { error: String(error) });
@@ -755,7 +832,6 @@ export async function convertSseToJson(
 		// Release the reader lock to prevent resource leaks
 		reader.releaseLock();
 	}
-
 }
 
 function createResponseIdCapturingStream(
@@ -764,6 +840,7 @@ function createResponseIdCapturingStream(
 ): ReadableStream<Uint8Array> {
 	const decoder = new TextDecoder();
 	let bufferedText = "";
+	let loggedMalformedStreamChunk = false;
 	const state = createParsedResponseState();
 
 	const processBufferedLines = (flush = false): void => {
@@ -784,8 +861,19 @@ function createResponseIdCapturingStream(
 				const data = JSON.parse(payload) as SSEEventData;
 				maybeCaptureResponseEvent(state, data, onResponseId);
 				if (state.encounteredError) break;
-			} catch {
-				// Ignore malformed SSE lines and keep forwarding the raw stream.
+			} catch (error) {
+				// AUDIT-H9 / H-03: stream passthrough. The raw bytes still
+				// reach the downstream consumer so malformed JSON does not
+				// break streaming — but we now warn ONCE with bounded
+				// context so operators can see the event rather than it
+				// being a silent black hole in the logs.
+				if (!loggedMalformedStreamChunk) {
+					loggedMalformedStreamChunk = true;
+					log.warn("SSE malformed JSON chunk in stream passthrough", {
+						reason: error instanceof Error ? error.message : String(error),
+						sample: payload.slice(0, 120),
+					});
+				}
 			}
 		}
 	};
@@ -813,8 +901,8 @@ function createResponseIdCapturingStream(
 export function ensureContentType(headers: Headers): Headers {
 	const responseHeaders = new Headers(headers);
 
-	if (!responseHeaders.has('content-type')) {
-		responseHeaders.set('content-type', 'text/event-stream; charset=utf-8');
+	if (!responseHeaders.has("content-type")) {
+		responseHeaders.set("content-type", "text/event-stream; charset=utf-8");
 	}
 
 	return responseHeaders;
@@ -853,20 +941,32 @@ async function readWithTimeout(
  */
 export function isEmptyResponse(body: unknown): boolean {
 	if (body === null || body === undefined) return true;
-	if (typeof body === 'string' && body.trim() === '') return true;
-	if (typeof body !== 'object') return false;
+	if (typeof body === "string" && body.trim() === "") return true;
+	if (typeof body !== "object") return false;
 
 	const obj = body as Record<string, unknown>;
 
 	if (Object.keys(obj).length === 0) return true;
 
-	const hasOutput = 'output' in obj && obj.output !== null && obj.output !== undefined;
-	const hasChoices = 'choices' in obj && Array.isArray(obj.choices) && 
-		obj.choices.some(c => c !== null && c !== undefined && typeof c === 'object' && Object.keys(c as object).length > 0);
-	const hasContent = 'content' in obj && obj.content !== null && obj.content !== undefined &&
-		(typeof obj.content !== 'string' || obj.content.trim() !== '');
+	const hasOutput =
+		"output" in obj && obj.output !== null && obj.output !== undefined;
+	const hasChoices =
+		"choices" in obj &&
+		Array.isArray(obj.choices) &&
+		obj.choices.some(
+			(c) =>
+				c !== null &&
+				c !== undefined &&
+				typeof c === "object" &&
+				Object.keys(c as object).length > 0,
+		);
+	const hasContent =
+		"content" in obj &&
+		obj.content !== null &&
+		obj.content !== undefined &&
+		(typeof obj.content !== "string" || obj.content.trim() !== "");
 
-	if ('id' in obj || 'object' in obj || 'model' in obj) {
+	if ("id" in obj || "object" in obj || "model" in obj) {
 		return !hasOutput && !hasChoices && !hasContent;
 	}
 
@@ -886,9 +986,12 @@ export function attachResponseIdCapture(
 		});
 	}
 
-	return new Response(createResponseIdCapturingStream(response.body, onResponseId), {
-		status: response.status,
-		statusText: response.statusText,
-		headers,
-	});
+	return new Response(
+		createResponseIdCapturingStream(response.body, onResponseId),
+		{
+			status: response.status,
+			statusText: response.statusText,
+			headers,
+		},
+	);
 }
