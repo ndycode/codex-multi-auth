@@ -31,7 +31,7 @@ describe("HealthScoreTracker", () => {
 
 		it("returns maxScore for accounts with quotaKey", () => {
 			expect(tracker.getScore(0, "quota-a")).toBe(
-				DEFAULT_HEALTH_SCORE_CONFIG.maxScore
+				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
 			);
 		});
 	});
@@ -61,7 +61,7 @@ describe("HealthScoreTracker", () => {
 				tracker.recordSuccess(0);
 			}
 			expect(tracker.getScore(0)).toBeLessThanOrEqual(
-				DEFAULT_HEALTH_SCORE_CONFIG.maxScore
+				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
 			);
 		});
 	});
@@ -109,7 +109,8 @@ describe("HealthScoreTracker", () => {
 			vi.advanceTimersByTime(1000 * 60 * 60);
 			const afterOneHour = tracker.getScore(0);
 
-			const expectedRecovery = DEFAULT_HEALTH_SCORE_CONFIG.passiveRecoveryPerHour;
+			const expectedRecovery =
+				DEFAULT_HEALTH_SCORE_CONFIG.passiveRecoveryPerHour;
 			expect(afterOneHour).toBeCloseTo(afterRateLimit + expectedRecovery, 1);
 		});
 
@@ -118,7 +119,7 @@ describe("HealthScoreTracker", () => {
 
 			vi.advanceTimersByTime(1000 * 60 * 60 * 100);
 			expect(tracker.getScore(0)).toBeLessThanOrEqual(
-				DEFAULT_HEALTH_SCORE_CONFIG.maxScore
+				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
 			);
 		});
 	});
@@ -132,7 +133,7 @@ describe("HealthScoreTracker", () => {
 
 			expect(tracker.getScore(0)).toBe(DEFAULT_HEALTH_SCORE_CONFIG.maxScore);
 			expect(tracker.getScore(1)).toBeLessThan(
-				DEFAULT_HEALTH_SCORE_CONFIG.maxScore
+				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
 			);
 		});
 
@@ -155,10 +156,10 @@ describe("HealthScoreTracker", () => {
 			tracker.recordSuccess(0, "quota-b");
 
 			expect(tracker.getScore(0, "quota-a")).toBeLessThan(
-				DEFAULT_HEALTH_SCORE_CONFIG.maxScore
+				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
 			);
 			expect(tracker.getScore(0, "quota-b")).toBe(
-				DEFAULT_HEALTH_SCORE_CONFIG.maxScore
+				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
 			);
 		});
 	});
@@ -188,7 +189,7 @@ describe("TokenBucketTracker", () => {
 			const result = tracker.tryConsume(0);
 			expect(result).toBe(true);
 			expect(tracker.getTokens(0)).toBe(
-				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens - 1
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens - 1,
 			);
 		});
 
@@ -251,7 +252,7 @@ describe("TokenBucketTracker", () => {
 
 			vi.advanceTimersByTime(1000 * 60 * 60);
 			expect(tracker.getTokens(0)).toBeLessThanOrEqual(
-				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
 			);
 		});
 	});
@@ -260,7 +261,7 @@ describe("TokenBucketTracker", () => {
 		it("removes specified tokens", () => {
 			tracker.drain(0, undefined, 20);
 			expect(tracker.getTokens(0)).toBe(
-				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens - 20
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens - 20,
 			);
 		});
 
@@ -272,7 +273,7 @@ describe("TokenBucketTracker", () => {
 		it("uses maxTokens when no prior entry exists for drain (line 205 coverage)", () => {
 			tracker.drain(5, "new-quota", 5);
 			expect(tracker.getTokens(5, "new-quota")).toBe(
-				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens - 5
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens - 5,
 			);
 		});
 	});
@@ -286,7 +287,7 @@ describe("TokenBucketTracker", () => {
 
 			expect(tracker.getTokens(0)).toBe(DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens);
 			expect(tracker.getTokens(1)).toBeLessThan(
-				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
 			);
 		});
 
@@ -322,14 +323,25 @@ describe("selectHybridAccount", () => {
 		expect(result).toBe(null);
 	});
 
-	it("returns least-recently-used account when all accounts unavailable (fallback)", () => {
+	it("returns null when all accounts are unavailable (AUDIT-H2 contract)", () => {
 		const accounts: AccountWithMetrics[] = [
 			{ index: 0, isAvailable: false, lastUsed: 100 },
 			{ index: 1, isAvailable: false, lastUsed: 50 },
 		];
 		const result = selectHybridAccount(accounts, healthTracker, tokenTracker);
-		// When all accounts unavailable, returns the least-recently-used one as fallback
-		expect(result?.index).toBe(1); // index 1 has lastUsed: 50 (older)
+		// Previously returned the least-recently-used unavailable account as a
+		// "fallback"; the fetch loop trusted it and churned through blocked
+		// candidates (AUDIT-H2 / D-01). New contract: return null so the caller
+		// surfaces the pool-wide unavailable condition explicitly.
+		expect(result).toBe(null);
+	});
+
+	it("returns null when a single account is unavailable", () => {
+		const accounts: AccountWithMetrics[] = [
+			{ index: 0, isAvailable: false, lastUsed: 0 },
+		];
+		const result = selectHybridAccount(accounts, healthTracker, tokenTracker);
+		expect(result).toBe(null);
 	});
 
 	it("returns the only available account", () => {
@@ -405,7 +417,14 @@ describe("selectHybridAccount", () => {
 			{ index: 1, isAvailable: true, lastUsed: Date.now() },
 		];
 
-		const result1 = selectHybridAccount(accounts, healthTracker, tokenTracker, undefined, undefined, { pidOffsetEnabled: false });
+		const result1 = selectHybridAccount(
+			accounts,
+			healthTracker,
+			tokenTracker,
+			undefined,
+			undefined,
+			{ pidOffsetEnabled: false },
+		);
 		const result2 = selectHybridAccount(accounts, healthTracker, tokenTracker);
 
 		expect(result1?.index).toBe(result2?.index);
@@ -417,7 +436,14 @@ describe("selectHybridAccount", () => {
 			{ index: 1, isAvailable: true, lastUsed: Date.now() },
 		];
 
-		const result = selectHybridAccount(accounts, healthTracker, tokenTracker, undefined, undefined, { pidOffsetEnabled: true });
+		const result = selectHybridAccount(
+			accounts,
+			healthTracker,
+			tokenTracker,
+			undefined,
+			undefined,
+			{ pidOffsetEnabled: true },
+		);
 
 		expect(result).not.toBe(null);
 		expect([0, 1]).toContain(result?.index);
@@ -433,10 +459,20 @@ describe("selectHybridAccount", () => {
 				{ index: 1, isAvailable: true, lastUsed: Date.now() },
 			];
 
-			const result = selectHybridAccount(accounts, healthTracker, tokenTracker, undefined, undefined, { pidOffsetEnabled: true });
+			const result = selectHybridAccount(
+				accounts,
+				healthTracker,
+				tokenTracker,
+				undefined,
+				undefined,
+				{ pidOffsetEnabled: true },
+			);
 			expect(result).not.toBe(null);
 		} finally {
-			Object.defineProperty(process, "pid", { value: originalPid, configurable: true });
+			Object.defineProperty(process, "pid", {
+				value: originalPid,
+				configurable: true,
+			});
 		}
 	});
 
@@ -453,14 +489,27 @@ describe("selectHybridAccount", () => {
 		const selectedIndices = new Set<number>();
 		try {
 			for (let pid = 0; pid < 100; pid += 10) {
-				Object.defineProperty(process, "pid", { value: pid, configurable: true });
-				const result = selectHybridAccount(accounts, healthTracker, tokenTracker, undefined, undefined, { pidOffsetEnabled: true });
+				Object.defineProperty(process, "pid", {
+					value: pid,
+					configurable: true,
+				});
+				const result = selectHybridAccount(
+					accounts,
+					healthTracker,
+					tokenTracker,
+					undefined,
+					undefined,
+					{ pidOffsetEnabled: true },
+				);
 				if (result) {
 					selectedIndices.add(result.index);
 				}
 			}
 		} finally {
-			Object.defineProperty(process, "pid", { value: originalPid, configurable: true });
+			Object.defineProperty(process, "pid", {
+				value: originalPid,
+				configurable: true,
+			});
 		}
 
 		expect(selectedIndices.size).toBeGreaterThan(1);
@@ -659,25 +708,42 @@ describe("utility functions", () => {
 				);
 				expect(() =>
 					exponentialBackoff(Number.NaN as unknown as number, 1000, 60000, 0.1),
-				).toThrowError("exponentialBackoff requires attempt to be a positive integer");
+				).toThrowError(
+					"exponentialBackoff requires attempt to be a positive integer",
+				);
 				expect(() =>
-					exponentialBackoff(Number.POSITIVE_INFINITY as unknown as number, 1000, 60000, 0.1),
-				).toThrowError("exponentialBackoff requires attempt to be a positive integer");
+					exponentialBackoff(
+						Number.POSITIVE_INFINITY as unknown as number,
+						1000,
+						60000,
+						0.1,
+					),
+				).toThrowError(
+					"exponentialBackoff requires attempt to be a positive integer",
+				);
 				expect(() =>
 					exponentialBackoff(undefined as unknown as number, 1000, 60000, 0.1),
-				).toThrowError("exponentialBackoff requires attempt to be a positive integer");
+				).toThrowError(
+					"exponentialBackoff requires attempt to be a positive integer",
+				);
 				expect(() => exponentialBackoff(1, -1, 60000, 0.1)).toThrowError(
 					"exponentialBackoff requires baseMs to be a finite non-negative number",
 				);
 				expect(() => exponentialBackoff(1, 1000, -1, 0.1)).toThrowError(
 					"exponentialBackoff requires maxMs to be a finite non-negative number",
 				);
-				expect(() => exponentialBackoff({} as unknown as Parameters<typeof exponentialBackoff>[0])).toThrowError(
+				expect(() =>
+					exponentialBackoff(
+						{} as unknown as Parameters<typeof exponentialBackoff>[0],
+					),
+				).toThrowError(
 					"exponentialBackoff requires attempt to be a positive integer",
 				);
 				expect(() =>
 					exponentialBackoff({ attempt: 1, jitterFactor: 2 }),
-				).toThrowError("exponentialBackoff requires jitterFactor to be between 0 and 1");
+				).toThrowError(
+					"exponentialBackoff requires jitterFactor to be between 0 and 1",
+				);
 				expect(randomSpy).not.toHaveBeenCalled();
 			} finally {
 				randomSpy.mockRestore();
