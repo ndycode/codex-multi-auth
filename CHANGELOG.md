@@ -7,6 +7,17 @@ This repository's current stable release line is `1.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
+## [Unreleased]
+
+### Added
+
+- `routingMutex` plugin config flag (PR-N / R4) with values `"enabled" | "legacy"` (default `"legacy"`). When `"enabled"`, cursor-mutation sites in the account pool (`markSwitchedLocked`, `markAccountCoolingDownLocked`, `setActiveIndexLocked`) are serialized through a promise-chain async mutex in `lib/routing-mutex.ts`, closing the TOCTOU race described in design items D-02/D-09. The flag defaults to `"legacy"` for one full release cycle so existing deployments see zero behavior change; users can opt in via settings or the `CODEX_AUTH_ROUTING_MUTEX=enabled` environment variable. A new `SelectionRecord` type is threaded out of the rotation decision path so the fetch loop can hand structured selection metadata to observability, why-selected, and failure-policy consumers.
+
+### Rollout plan
+
+- Release N: flag shipped with default `"legacy"`. Advanced users opt in via config or env.
+- Release N+1: evaluate enablement based on telemetry and flip default to `"enabled"`.
+
 ## [0.1.8] - 2026-03-11
 
 ### Fixed

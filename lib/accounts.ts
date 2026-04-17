@@ -18,6 +18,11 @@ import {
 	type AccountWithMetrics,
 	type HybridSelectionOptions,
 } from "./rotation.js";
+import {
+	withRoutingMutex,
+	type RoutingMutexMode,
+	type SelectionRecord,
+} from "./routing-mutex.js";
 import { nowMs } from "./utils.js";
 import { ERROR_MESSAGES, HTTP_STATUS } from "./constants.js";
 import { CodexAuthError } from "./errors.js";
@@ -97,9 +102,7 @@ function getAccountCircuitKey(account: ManagedAccount): string {
 	return account.circuitKeyId;
 }
 
-export function getRuntimeTrackerKey(
-	account: ManagedAccount,
-): string | number {
+export function getRuntimeTrackerKey(account: ManagedAccount): string | number {
 	if (account._runtimeTrackerKey !== undefined) {
 		return account._runtimeTrackerKey;
 	}
@@ -173,7 +176,10 @@ function buildAccountIdentityCandidates(
 }
 
 function findAccountIndexByIdentity<
-	T extends Pick<AccountIdentityCandidate, "accountId" | "email" | "refreshToken">,
+	T extends Pick<
+		AccountIdentityCandidate,
+		"accountId" | "email" | "refreshToken"
+	>,
 >(
 	accounts: readonly T[],
 	source: AccountIdentityCandidate,
@@ -243,12 +249,7 @@ export interface ManagedAccount {
 	expires?: number;
 	addedAt: number;
 	lastUsed: number;
-	lastSwitchReason?:
-		| "rate-limit"
-		| "initial"
-		| "rotation"
-		| "best"
-		| "restore";
+	lastSwitchReason?: "rate-limit" | "initial" | "rotation" | "best" | "restore";
 	lastRateLimitReason?: RateLimitReason;
 	rateLimitResetTimes: RateLimitStateV3;
 	coolingDownUntil?: number;
@@ -261,14 +262,25 @@ export interface ManagedAccount {
 export class AccountManager {
 	private accounts: ManagedAccount[] = [];
 	private cursorByFamily: Record<ModelFamily, number> = initFamilyState(0);
-	private currentAccountIndexByFamily: Record<ModelFamily, number> = initFamilyState(-1);
+	private currentAccountIndexByFamily: Record<ModelFamily, number> =
+		initFamilyState(-1);
 	private lastToastAccountIndex = -1;
 	private lastToastTime = 0;
 	private saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private pendingSave: Promise<void> | null = null;
 	private readonly storagePathState: StoragePathState;
+	/**
+	 * PR-N / R4: feature-flagged routing mutex mode.
+	 * Defaults to `"legacy"` to preserve pre-PR-N behaviour for one release
+	 * cycle. When set to `"enabled"` the cursor-mutation helpers (markSwitched,
+	 * markAccountCoolingDown, setActiveIndex) serialize through the shared
+	 * async mutex in `lib/routing-mutex.ts`.
+	 */
+	private routingMutexMode: RoutingMutexMode = "legacy";
 
-	static async loadFromDisk(authFallback?: OAuthAuthDetails): Promise<AccountManager> {
+	static async loadFromDisk(
+		authFallback?: OAuthAuthDetails,
+	): Promise<AccountManager> {
 		const stored = await loadAccounts();
 		const synced = await syncAccountStorageFromCodexCli(stored);
 		const sourceOfTruthStorage = synced.storage ?? stored;
@@ -288,7 +300,9 @@ export class AccountManager {
 	}
 
 	hasRefreshToken(refreshToken: string): boolean {
-		return this.accounts.some((account) => account.refreshToken === refreshToken);
+		return this.accounts.some(
+			(account) => account.refreshToken === refreshToken,
+		);
 	}
 
 	private async hydrateFromCodexCli(): Promise<void> {
@@ -323,7 +337,9 @@ export class AccountManager {
 			}
 
 			const missingOrExpired =
-				!account.access || account.expires === undefined || account.expires <= now;
+				!account.access ||
+				account.expires === undefined ||
+				account.expires <= now;
 			if (missingOrExpired) {
 				account.access = cached.accessToken;
 				if (typeof cached.expiresAt === "number") {
@@ -335,7 +351,10 @@ export class AccountManager {
 			if (
 				!account.accountId &&
 				cached.accountId &&
-				shouldUpdateAccountIdFromToken(account.accountIdSource, account.accountId)
+				shouldUpdateAccountIdFromToken(
+					account.accountIdSource,
+					account.accountId,
+				)
 			) {
 				account.accountId = cached.accountId;
 				account.accountIdSource = account.accountIdSource ?? "token";
@@ -348,14 +367,22 @@ export class AccountManager {
 		try {
 			await this.saveToDisk();
 		} catch (error) {
-			log.debug("Failed to persist Codex CLI cache hydration", { error: String(error) });
+			log.debug("Failed to persist Codex CLI cache hydration", {
+				error: String(error),
+			});
 		}
 	}
 
-	constructor(authFallback?: OAuthAuthDetails, stored?: AccountStorageV3 | null) {
+	constructor(
+		authFallback?: OAuthAuthDetails,
+		stored?: AccountStorageV3 | null,
+	) {
 		this.storagePathState = { ...getStoragePathState() };
-		const fallbackAccountId = extractAccountId(authFallback?.access)?.trim() || undefined;
-		const fallbackAccountEmail = sanitizeEmail(extractAccountEmail(authFallback?.access));
+		const fallbackAccountId =
+			extractAccountId(authFallback?.access)?.trim() || undefined;
+		const fallbackAccountEmail = sanitizeEmail(
+			extractAccountEmail(authFallback?.access),
+		);
 
 		if (stored && stored.accounts.length > 0) {
 			const storedIdentityRows: Array<{
@@ -382,18 +409,18 @@ export class AccountManager {
 			const fallbackMatchedRowIndex =
 				authFallback && storedIdentityRows.length > 0
 					? storedIdentityRows[
-						findMatchingAccountIndex(
-							storedIdentityRows,
-							{
-								accountId: fallbackAccountId,
-								email: fallbackAccountEmail,
-								refreshToken: authFallback.refresh,
-							},
-							{
-								allowUniqueAccountIdFallbackWithoutEmail: true,
-							},
-						) ?? -1
-					]?.index
+							findMatchingAccountIndex(
+								storedIdentityRows,
+								{
+									accountId: fallbackAccountId,
+									email: fallbackAccountEmail,
+									refreshToken: authFallback.refresh,
+								},
+								{
+									allowUniqueAccountIdFallbackWithoutEmail: true,
+								},
+							) ?? -1
+						]?.index
 					: undefined;
 			const baseNow = nowMs();
 			this.accounts = stored.accounts
@@ -406,23 +433,33 @@ export class AccountManager {
 					}
 
 					const matchesFallback =
-						!!authFallback &&
-						fallbackMatchedRowIndex === index;
+						!!authFallback && fallbackMatchedRowIndex === index;
 
-					const refreshToken = matchesFallback && authFallback ? authFallback.refresh : account.refreshToken;
- 
+					const refreshToken =
+						matchesFallback && authFallback
+							? authFallback.refresh
+							: account.refreshToken;
+
 					return {
 						index,
-						accountId: matchesFallback ? fallbackAccountId ?? account.accountId : account.accountId,
+						accountId: matchesFallback
+							? (fallbackAccountId ?? account.accountId)
+							: account.accountId,
 						accountIdSource: account.accountIdSource,
 						accountLabel: account.accountLabel,
 						email: matchesFallback
-							? fallbackAccountEmail ?? sanitizeEmail(account.email)
+							? (fallbackAccountEmail ?? sanitizeEmail(account.email))
 							: sanitizeEmail(account.email),
 						refreshToken,
 						enabled: account.enabled !== false,
-						access: matchesFallback && authFallback ? authFallback.access : account.accessToken,
-						expires: matchesFallback && authFallback ? authFallback.expires : account.expiresAt,
+						access:
+							matchesFallback && authFallback
+								? authFallback.access
+								: account.accessToken,
+						expires:
+							matchesFallback && authFallback
+								? authFallback.expires
+								: account.expiresAt,
 						addedAt: clampNonNegativeInt(account.addedAt, baseNow),
 						lastUsed: clampNonNegativeInt(account.lastUsed, 0),
 						lastSwitchReason: account.lastSwitchReason,
@@ -436,8 +473,7 @@ export class AccountManager {
 				.filter((account): account is ManagedAccount => account !== null);
 
 			const hasMatchingFallback =
-				!!authFallback &&
-				fallbackMatchedRowIndex !== undefined;
+				!!authFallback && fallbackMatchedRowIndex !== undefined;
 
 			if (authFallback && !hasMatchingFallback) {
 				const now = nowMs();
@@ -458,11 +494,13 @@ export class AccountManager {
 			}
 
 			if (this.accounts.length > 0) {
-				const defaultIndex = clampNonNegativeInt(stored.activeIndex, 0) % this.accounts.length;
+				const defaultIndex =
+					clampNonNegativeInt(stored.activeIndex, 0) % this.accounts.length;
 
 				for (const family of MODEL_FAMILIES) {
 					const rawIndex = stored.activeIndexByFamily?.[family];
-					const nextIndex = clampNonNegativeInt(rawIndex, defaultIndex) % this.accounts.length;
+					const nextIndex =
+						clampNonNegativeInt(rawIndex, defaultIndex) % this.accounts.length;
 					this.currentAccountIndexByFamily[family] = nextIndex;
 					this.cursorByFamily[family] = nextIndex;
 				}
@@ -531,7 +569,11 @@ export class AccountManager {
 		return account ?? null;
 	}
 
-	isAccountAvailableForFamily(index: number, family: ModelFamily, model?: string | null): boolean {
+	isAccountAvailableForFamily(
+		index: number,
+		family: ModelFamily,
+		model?: string | null,
+	): boolean {
 		const account = this.getAccountByIndex(index);
 		if (!account) return false;
 		if (account.enabled === false) return false;
@@ -596,12 +638,15 @@ export class AccountManager {
 		return this.getCurrentOrNextForFamily("codex");
 	}
 
-	getCurrentOrNextForFamily(family: ModelFamily, model?: string | null): ManagedAccount | null {
+	getCurrentOrNextForFamily(
+		family: ModelFamily,
+		model?: string | null,
+	): ManagedAccount | null {
 		const count = this.accounts.length;
 		if (count === 0) return null;
 
 		const cursor = this.cursorByFamily[family];
-		
+
 		for (let i = 0; i < count; i++) {
 			const idx = (cursor + i) % count;
 			const account = this.accounts[idx];
@@ -617,7 +662,7 @@ export class AccountManager {
 			) {
 				continue;
 			}
-			
+
 			this.cursorByFamily[family] = (idx + 1) % count;
 			this.currentAccountIndexByFamily[family] = idx;
 			account.lastUsed = nowMs();
@@ -627,12 +672,15 @@ export class AccountManager {
 		return null;
 	}
 
-	getNextForFamily(family: ModelFamily, model?: string | null): ManagedAccount | null {
+	getNextForFamily(
+		family: ModelFamily,
+		model?: string | null,
+	): ManagedAccount | null {
 		const count = this.accounts.length;
 		if (count === 0) return null;
 
 		const cursor = this.cursorByFamily[family];
-		
+
 		for (let i = 0; i < count; i++) {
 			const idx = (cursor + i) % count;
 			const account = this.accounts[idx];
@@ -648,7 +696,7 @@ export class AccountManager {
 			) {
 				continue;
 			}
-			
+
 			this.cursorByFamily[family] = (idx + 1) % count;
 			account.lastUsed = nowMs();
 			return account;
@@ -657,7 +705,11 @@ export class AccountManager {
 		return null;
 	}
 
-	getCurrentOrNextForFamilyHybrid(family: ModelFamily, model?: string | null, options?: HybridSelectionOptions): ManagedAccount | null {
+	getCurrentOrNextForFamilyHybrid(
+		family: ModelFamily,
+		model?: string | null,
+		options?: HybridSelectionOptions,
+	): ManagedAccount | null {
 		const count = this.accounts.length;
 		if (count === 0) return null;
 
@@ -684,7 +736,14 @@ export class AccountManager {
 			})
 			.filter((a): a is AccountWithMetrics => a !== null);
 
-		const selected = selectHybridAccount(accountsWithMetrics, healthTracker, tokenTracker, quotaKey, {}, options);
+		const selected = selectHybridAccount(
+			accountsWithMetrics,
+			healthTracker,
+			tokenTracker,
+			quotaKey,
+			{},
+			options,
+		);
 		if (!selected) return null;
 
 		const account = this.accounts[selected.index];
@@ -696,12 +755,17 @@ export class AccountManager {
 		return account;
 	}
 
-	recordSuccess(account: ManagedAccount, family: ModelFamily, model?: string | null): void {
+	recordSuccess(
+		account: ManagedAccount,
+		family: ModelFamily,
+		model?: string | null,
+	): void {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
 		healthTracker.recordSuccess(getRuntimeTrackerKey(account), quotaKey);
 		const hadCooldownMetadata =
-			account.coolingDownUntil !== undefined || account.cooldownReason !== undefined;
+			account.coolingDownUntil !== undefined ||
+			account.cooldownReason !== undefined;
 		const hadAuthFailures = (account.consecutiveAuthFailures ?? 0) > 0;
 		const isCoolingDown = this.isAccountCoolingDown(account);
 		let healed = false;
@@ -722,7 +786,11 @@ export class AccountManager {
 		getCircuitBreaker(getAccountCircuitKey(account)).recordSuccess();
 	}
 
-	recordRateLimit(account: ManagedAccount, family: ModelFamily, model?: string | null): void {
+	recordRateLimit(
+		account: ManagedAccount,
+		family: ModelFamily,
+		model?: string | null,
+	): void {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
 		const tokenTracker = getTokenTracker();
@@ -731,14 +799,22 @@ export class AccountManager {
 		tokenTracker.drain(trackerKey, quotaKey);
 	}
 
-	recordFailure(account: ManagedAccount, family: ModelFamily, model?: string | null): void {
+	recordFailure(
+		account: ManagedAccount,
+		family: ModelFamily,
+		model?: string | null,
+	): void {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const healthTracker = getHealthTracker();
 		healthTracker.recordFailure(getRuntimeTrackerKey(account), quotaKey);
 		getCircuitBreaker(getAccountCircuitKey(account)).recordFailure();
 	}
 
-	consumeToken(account: ManagedAccount, family: ModelFamily, model?: string | null): boolean {
+	consumeToken(
+		account: ManagedAccount,
+		family: ModelFamily,
+		model?: string | null,
+	): boolean {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const tokenTracker = getTokenTracker();
 		const trackerKey = getRuntimeTrackerKey(account);
@@ -760,19 +836,114 @@ export class AccountManager {
 	 * Use this when a request fails due to network errors (not rate limits).
 	 * @returns true if refund was successful, false if no valid consumption found
 	 */
-	refundToken(account: ManagedAccount, family: ModelFamily, model?: string | null): boolean {
+	refundToken(
+		account: ManagedAccount,
+		family: ModelFamily,
+		model?: string | null,
+	): boolean {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const tokenTracker = getTokenTracker();
 		return tokenTracker.refundToken(getRuntimeTrackerKey(account), quotaKey);
 	}
 
-	markSwitched(account: ManagedAccount, reason: "rate-limit" | "initial" | "rotation", family: ModelFamily): void {
+	markSwitched(
+		account: ManagedAccount,
+		reason: "rate-limit" | "initial" | "rotation",
+		family: ModelFamily,
+	): void {
 		account.lastSwitchReason = reason;
 		this.currentAccountIndexByFamily[family] = account.index;
 	}
 
-	markRateLimited(account: ManagedAccount, retryAfterMs: number, family: ModelFamily, model?: string | null): void {
-		this.markRateLimitedWithReason(account, retryAfterMs, family, "unknown", model);
+	/**
+	 * PR-N / R4: configure routing-mutex mode for this pool.
+	 * Callers typically derive the value from `getRoutingMutexMode(pluginConfig)`
+	 * at plugin init / settings reload. Called frequently during tests too; no
+	 * side effects beyond mutating the private field.
+	 */
+	setRoutingMutexMode(mode: RoutingMutexMode): void {
+		this.routingMutexMode = mode;
+	}
+
+	/** PR-N / R4: expose current mutex mode (mostly for diagnostics/tests). */
+	getRoutingMutexMode(): RoutingMutexMode {
+		return this.routingMutexMode;
+	}
+
+	/**
+	 * PR-N / R4: mutex-serialized variant of `markSwitched`.
+	 *
+	 * Wraps the cursor mutation in the shared async mutex when
+	 * `routingMutexMode === "enabled"`. In legacy mode it runs inline so the
+	 * flag check stays O(1) per call. Returns a `SelectionRecord` describing
+	 * the decision so the fetch loop can thread it through to observability.
+	 */
+	async markSwitchedLocked(
+		account: ManagedAccount,
+		reason: "rate-limit" | "initial" | "rotation",
+		family: ModelFamily,
+		context?: { trackerKeyQuota?: string; score?: number },
+	): Promise<SelectionRecord> {
+		return withRoutingMutex(this.routingMutexMode, () => {
+			account.lastSwitchReason = reason;
+			this.currentAccountIndexByFamily[family] = account.index;
+			const trackerKey = getRuntimeTrackerKey(account);
+			const healthTracker = getHealthTracker();
+			const tokenTracker = getTokenTracker();
+			const trackerKeyQuota = context?.trackerKeyQuota;
+			return {
+				accountIndex: account.index,
+				accountId: account.accountId ?? account.email ?? String(trackerKey),
+				reason,
+				timestamp: nowMs(),
+				trackerKeyQuota,
+				health: healthTracker.getScore(trackerKey, trackerKeyQuota),
+				tokens: tokenTracker.getTokens(trackerKey, trackerKeyQuota),
+				score: context?.score,
+			};
+		});
+	}
+
+	/**
+	 * PR-N / R4: mutex-serialized variant of `markAccountCoolingDown`.
+	 * Same flag-gated behaviour as `markSwitchedLocked`.
+	 */
+	async markAccountCoolingDownLocked(
+		account: ManagedAccount,
+		cooldownMs: number,
+		reason: CooldownReason,
+	): Promise<void> {
+		await withRoutingMutex(this.routingMutexMode, () => {
+			const ms = Math.max(0, Math.floor(cooldownMs));
+			account.coolingDownUntil = nowMs() + ms;
+			account.cooldownReason = reason;
+		});
+	}
+
+	/**
+	 * PR-N / R4: mutex-serialized variant of `setActiveIndex`.
+	 * Returns the newly active account on success, or `null` when the index
+	 * is out of range / disabled (matching sync semantics).
+	 */
+	async setActiveIndexLocked(index: number): Promise<ManagedAccount | null> {
+		return withRoutingMutex(this.routingMutexMode, () => {
+			return this.setActiveIndex(index);
+		});
+	}
+
+	markRateLimited(
+		account: ManagedAccount,
+		retryAfterMs: number,
+		family: ModelFamily,
+		model?: string | null,
+	): void {
+		this.markRateLimitedWithReason(
+			account,
+			retryAfterMs,
+			family,
+			"unknown",
+			model,
+		);
 	}
 
 	markRateLimitedWithReason(
@@ -803,7 +974,11 @@ export class AccountManager {
 		account.lastRateLimitReason = reason;
 	}
 
-	markAccountCoolingDown(account: ManagedAccount, cooldownMs: number, reason: CooldownReason): void {
+	markAccountCoolingDown(
+		account: ManagedAccount,
+		cooldownMs: number,
+		reason: CooldownReason,
+	): void {
 		const ms = Math.max(0, Math.floor(cooldownMs));
 		account.coolingDownUntil = nowMs() + ms;
 		account.cooldownReason = reason;
@@ -828,7 +1003,8 @@ export class AccountManager {
 	}
 
 	incrementAuthFailures(account: ManagedAccount): number {
-		account.consecutiveAuthFailures = (account.consecutiveAuthFailures ?? 0) + 1;
+		account.consecutiveAuthFailures =
+			(account.consecutiveAuthFailures ?? 0) + 1;
 		return account.consecutiveAuthFailures;
 	}
 
@@ -849,7 +1025,10 @@ export class AccountManager {
 
 	shouldShowAccountToast(accountIndex: number, debounceMs = 30000): boolean {
 		const now = nowMs();
-		if (accountIndex === this.lastToastAccountIndex && now - this.lastToastTime < debounceMs) {
+		if (
+			accountIndex === this.lastToastAccountIndex &&
+			now - this.lastToastTime < debounceMs
+		) {
 			return false;
 		}
 		return true;
@@ -867,12 +1046,13 @@ export class AccountManager {
 		const tokenAccountId = extractAccountId(auth.access)?.trim() || undefined;
 		if (
 			tokenAccountId &&
-			(shouldUpdateAccountIdFromToken(account.accountIdSource, account.accountId))
+			shouldUpdateAccountIdFromToken(account.accountIdSource, account.accountId)
 		) {
 			account.accountId = tokenAccountId;
 			account.accountIdSource = "token";
 		}
-		account.email = sanitizeEmail(extractAccountEmail(auth.access)) ?? account.email;
+		account.email =
+			sanitizeEmail(extractAccountEmail(auth.access)) ?? account.email;
 	}
 
 	private buildStorageSnapshot(): AccountStorageV3 {
@@ -899,7 +1079,9 @@ export class AccountManager {
 				lastUsed: account.lastUsed,
 				lastSwitchReason: account.lastSwitchReason,
 				rateLimitResetTimes:
-					Object.keys(account.rateLimitResetTimes).length > 0 ? account.rateLimitResetTimes : undefined,
+					Object.keys(account.rateLimitResetTimes).length > 0
+						? account.rateLimitResetTimes
+						: undefined,
 				coolingDownUntil: account.coolingDownUntil,
 				cooldownReason: account.cooldownReason,
 				workspaces: account.workspaces,
@@ -996,9 +1178,7 @@ export class AccountManager {
 						liveAccount.enabled = previousLiveAccountState.enabled;
 						liveAccount.consecutiveAuthFailures =
 							previousLiveAccountState.consecutiveAuthFailures;
-						if (
-							previousLiveAccountState.coolingDownUntil === undefined
-						) {
+						if (previousLiveAccountState.coolingDownUntil === undefined) {
 							delete liveAccount.coolingDownUntil;
 						} else {
 							liveAccount.coolingDownUntil =
@@ -1045,7 +1225,9 @@ export class AccountManager {
 
 	getMinWaitTimeForFamily(family: ModelFamily, model?: string | null): number {
 		const now = nowMs();
-		const enabledAccounts = this.accounts.filter((account) => account.enabled !== false);
+		const enabledAccounts = this.accounts.filter(
+			(account) => account.enabled !== false,
+		);
 		const available = enabledAccounts.filter((account) => {
 			clearExpiredRateLimits(account);
 			return (
@@ -1115,11 +1297,15 @@ export class AccountManager {
 
 		for (const family of MODEL_FAMILIES) {
 			if (this.cursorByFamily[family] > idx) {
-				this.cursorByFamily[family] = Math.max(0, this.cursorByFamily[family] - 1);
+				this.cursorByFamily[family] = Math.max(
+					0,
+					this.cursorByFamily[family] - 1,
+				);
 			}
 		}
 		for (const family of MODEL_FAMILIES) {
-			this.cursorByFamily[family] = this.cursorByFamily[family] % this.accounts.length;
+			this.cursorByFamily[family] =
+				this.cursorByFamily[family] % this.accounts.length;
 		}
 
 		for (const family of MODEL_FAMILIES) {
@@ -1179,7 +1365,9 @@ export class AccountManager {
 					});
 					await this.pendingSave;
 				} catch (error) {
-					log.warn("Debounced save failed", { error: error instanceof Error ? error.message : String(error) });
+					log.warn("Debounced save failed", {
+						error: error instanceof Error ? error.message : String(error),
+					});
 				}
 			};
 			void doSave();
@@ -1203,7 +1391,9 @@ export class AccountManager {
 			return;
 		}
 
-		const resetIndex = account.workspaces.findIndex((workspace) => workspace.isDefault === true);
+		const resetIndex = account.workspaces.findIndex(
+			(workspace) => workspace.isDefault === true,
+		);
 
 		for (const workspace of account.workspaces) {
 			workspace.enabled = true;
@@ -1251,7 +1441,7 @@ export class AccountManager {
 		}
 		const currentIdx = account.currentWorkspaceIndex ?? 0;
 		const totalWorkspaces = account.workspaces.length;
-		
+
 		// Search successor workspaces only; the current slot was just evaluated.
 		for (let i = 1; i < totalWorkspaces; i++) {
 			const nextIdx = (currentIdx + i) % totalWorkspaces;
@@ -1261,7 +1451,7 @@ export class AccountManager {
 				return workspace;
 			}
 		}
-		
+
 		return null; // No enabled workspaces found
 	}
 
@@ -1287,21 +1477,30 @@ export class AccountManager {
 }
 
 export function formatAccountLabel(
-	account: { email?: string; accountId?: string; accountLabel?: string } | undefined,
+	account:
+		| { email?: string; accountId?: string; accountLabel?: string }
+		| undefined,
 	index: number,
 ): string {
 	const accountLabel = account?.accountLabel?.trim();
 	const email = account?.email?.trim();
 	const accountId = account?.accountId?.trim();
-	const idSuffix = accountId ? (accountId.length > 6 ? accountId.slice(-6) : accountId) : null;
+	const idSuffix = accountId
+		? accountId.length > 6
+			? accountId.slice(-6)
+			: accountId
+		: null;
 
 	if (accountLabel && email && idSuffix) {
 		return `Account ${index + 1} (${accountLabel}, ${email}, id:${idSuffix})`;
 	}
-	if (accountLabel && email) return `Account ${index + 1} (${accountLabel}, ${email})`;
-	if (accountLabel && idSuffix) return `Account ${index + 1} (${accountLabel}, id:${idSuffix})`;
+	if (accountLabel && email)
+		return `Account ${index + 1} (${accountLabel}, ${email})`;
+	if (accountLabel && idSuffix)
+		return `Account ${index + 1} (${accountLabel}, id:${idSuffix})`;
 	if (accountLabel) return `Account ${index + 1} (${accountLabel})`;
-	if (email && idSuffix) return `Account ${index + 1} (${email}, id:${idSuffix})`;
+	if (email && idSuffix)
+		return `Account ${index + 1} (${email}, id:${idSuffix})`;
 	if (email) return `Account ${index + 1} (${email})`;
 	if (idSuffix) return `Account ${index + 1} (${idSuffix})`;
 	return `Account ${index + 1}`;

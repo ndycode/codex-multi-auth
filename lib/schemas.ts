@@ -24,10 +24,9 @@ export const PluginConfigSchema = z.object({
 	unsupportedCodexPolicy: z.enum(["strict", "fallback"]).optional(),
 	fallbackOnUnsupportedCodexModel: z.boolean().optional(),
 	fallbackToGpt52OnUnsupportedGpt53: z.boolean().optional(),
-	unsupportedCodexFallbackChain: z.record(
-		z.string(),
-		z.array(z.string().min(1)),
-	).optional(),
+	unsupportedCodexFallbackChain: z
+		.record(z.string(), z.array(z.string().min(1)))
+		.optional(),
 	tokenRefreshSkewMs: z.number().min(0).optional(),
 	rateLimitToastDebounceMs: z.number().min(0).optional(),
 	toastDurationMs: z.number().min(1000).optional(),
@@ -63,6 +62,7 @@ export const PluginConfigSchema = z.object({
 	preemptiveQuotaRemainingPercent5h: z.number().min(0).max(100).optional(),
 	preemptiveQuotaRemainingPercent7d: z.number().min(0).max(100).optional(),
 	preemptiveQuotaMaxDeferralMs: z.number().min(1_000).optional(),
+	routingMutex: z.enum(["enabled", "legacy"]).optional(),
 });
 
 export type PluginConfigFromSchema = z.infer<typeof PluginConfigSchema>;
@@ -74,14 +74,24 @@ export type PluginConfigFromSchema = z.infer<typeof PluginConfigSchema>;
 /**
  * Source of the accountId used for ChatGPT requests.
  */
-export const AccountIdSourceSchema = z.enum(["token", "id_token", "org", "manual"]);
+export const AccountIdSourceSchema = z.enum([
+	"token",
+	"id_token",
+	"org",
+	"manual",
+]);
 
 export type AccountIdSourceFromSchema = z.infer<typeof AccountIdSourceSchema>;
 
 /**
  * Cooldown reason for temporary account suspension.
  */
-export const CooldownReasonSchema = z.enum(["auth-failure", "network-error", "server-error", "rate-limit"]);
+export const CooldownReasonSchema = z.enum([
+	"auth-failure",
+	"network-error",
+	"server-error",
+	"rate-limit",
+]);
 
 export type CooldownReasonFromSchema = z.infer<typeof CooldownReasonSchema>;
 
@@ -101,7 +111,10 @@ export type SwitchReasonFromSchema = z.infer<typeof SwitchReasonSchema>;
 /**
  * Rate limit state - maps model family to reset timestamp.
  */
-export const RateLimitStateV3Schema = z.record(z.string(), z.number().optional());
+export const RateLimitStateV3Schema = z.record(
+	z.string(),
+	z.number().optional(),
+);
 
 export type RateLimitStateV3FromSchema = z.infer<typeof RateLimitStateV3Schema>;
 
@@ -125,17 +138,29 @@ export const AccountMetadataV3Schema = z.object({
 	cooldownReason: CooldownReasonSchema.optional(),
 });
 
-export type AccountMetadataV3FromSchema = z.infer<typeof AccountMetadataV3Schema>;
+export type AccountMetadataV3FromSchema = z.infer<
+	typeof AccountMetadataV3Schema
+>;
 
 /**
  * Build activeIndexByFamily schema dynamically from MODEL_FAMILIES.
  */
-const modelFamilyEntries = MODEL_FAMILIES.map((family) => [family, z.number().optional()]);
-export const ActiveIndexByFamilySchema = z.object(
-	Object.fromEntries(modelFamilyEntries) as Record<ModelFamily, z.ZodOptional<z.ZodNumber>>
-).partial();
+const modelFamilyEntries = MODEL_FAMILIES.map((family) => [
+	family,
+	z.number().optional(),
+]);
+export const ActiveIndexByFamilySchema = z
+	.object(
+		Object.fromEntries(modelFamilyEntries) as Record<
+			ModelFamily,
+			z.ZodOptional<z.ZodNumber>
+		>,
+	)
+	.partial();
 
-export type ActiveIndexByFamilyFromSchema = z.infer<typeof ActiveIndexByFamilySchema>;
+export type ActiveIndexByFamilyFromSchema = z.infer<
+	typeof ActiveIndexByFamilySchema
+>;
 
 /**
  * Account storage V3 - current storage format with per-family active indices.
@@ -169,7 +194,9 @@ export const AccountMetadataV1Schema = z.object({
 	cooldownReason: CooldownReasonSchema.optional(),
 });
 
-export type AccountMetadataV1FromSchema = z.infer<typeof AccountMetadataV1Schema>;
+export type AccountMetadataV1FromSchema = z.infer<
+	typeof AccountMetadataV1Schema
+>;
 
 /**
  * Legacy V1 storage format for migration support.
@@ -190,7 +217,9 @@ export const AnyAccountStorageSchema = z.discriminatedUnion("version", [
 	AccountStorageV3Schema,
 ]);
 
-export type AnyAccountStorageFromSchema = z.infer<typeof AnyAccountStorageSchema>;
+export type AnyAccountStorageFromSchema = z.infer<
+	typeof AnyAccountStorageSchema
+>;
 
 // ============================================================================
 // Token Result Schemas
@@ -207,7 +236,9 @@ export const TokenFailureReasonSchema = z.enum([
 	"unknown",
 ]);
 
-export type TokenFailureReasonFromSchema = z.infer<typeof TokenFailureReasonSchema>;
+export type TokenFailureReasonFromSchema = z.infer<
+	typeof TokenFailureReasonSchema
+>;
 
 /**
  * Successful token exchange result.
@@ -261,7 +292,9 @@ export const OAuthTokenResponseSchema = z.object({
 	scope: z.string().optional(),
 });
 
-export type OAuthTokenResponseFromSchema = z.infer<typeof OAuthTokenResponseSchema>;
+export type OAuthTokenResponseFromSchema = z.infer<
+	typeof OAuthTokenResponseSchema
+>;
 
 // ============================================================================
 // Helper Functions
@@ -271,7 +304,9 @@ export type OAuthTokenResponseFromSchema = z.infer<typeof OAuthTokenResponseSche
  * Safely parse plugin configuration with detailed error logging.
  * Returns null on failure, allowing graceful degradation.
  */
-export function safeParsePluginConfig(data: unknown): PluginConfigFromSchema | null {
+export function safeParsePluginConfig(
+	data: unknown,
+): PluginConfigFromSchema | null {
 	const result = PluginConfigSchema.safeParse(data);
 	if (!result.success) {
 		return null;
@@ -283,7 +318,9 @@ export function safeParsePluginConfig(data: unknown): PluginConfigFromSchema | n
  * Safely parse account storage (any version).
  * Returns null on failure, allowing graceful degradation.
  */
-export function safeParseAccountStorage(data: unknown): AnyAccountStorageFromSchema | null {
+export function safeParseAccountStorage(
+	data: unknown,
+): AnyAccountStorageFromSchema | null {
 	const result = AnyAccountStorageSchema.safeParse(data);
 	if (!result.success) {
 		return null;
@@ -295,7 +332,9 @@ export function safeParseAccountStorage(data: unknown): AnyAccountStorageFromSch
  * Safely parse V3 account storage specifically.
  * Returns null on failure.
  */
-export function safeParseAccountStorageV3(data: unknown): AccountStorageV3FromSchema | null {
+export function safeParseAccountStorageV3(
+	data: unknown,
+): AccountStorageV3FromSchema | null {
 	const result = AccountStorageV3Schema.safeParse(data);
 	if (!result.success) {
 		return null;
@@ -307,7 +346,9 @@ export function safeParseAccountStorageV3(data: unknown): AccountStorageV3FromSc
  * Safely parse token result.
  * Returns null on failure.
  */
-export function safeParseTokenResult(data: unknown): TokenResultFromSchema | null {
+export function safeParseTokenResult(
+	data: unknown,
+): TokenResultFromSchema | null {
 	const result = TokenResultSchema.safeParse(data);
 	if (!result.success) {
 		return null;
@@ -319,7 +360,9 @@ export function safeParseTokenResult(data: unknown): TokenResultFromSchema | nul
  * Safely parse OAuth token response from API.
  * Returns null on failure.
  */
-export function safeParseOAuthTokenResponse(data: unknown): OAuthTokenResponseFromSchema | null {
+export function safeParseOAuthTokenResponse(
+	data: unknown,
+): OAuthTokenResponseFromSchema | null {
 	const result = OAuthTokenResponseSchema.safeParse(data);
 	if (!result.success) {
 		return null;
@@ -331,7 +374,10 @@ export function safeParseOAuthTokenResponse(data: unknown): OAuthTokenResponseFr
  * Get validation errors as a flat array of strings.
  * Useful for logging and error messages.
  */
-export function getValidationErrors(schema: z.ZodType, data: unknown): string[] {
+export function getValidationErrors(
+	schema: z.ZodType,
+	data: unknown,
+): string[] {
 	const result = schema.safeParse(data);
 	if (result.success) {
 		return [];

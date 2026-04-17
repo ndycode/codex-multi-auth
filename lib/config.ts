@@ -51,21 +51,14 @@ type ConfigReadState =
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
-type ConfigExplainStorageKind =
-	| "unified"
-	| "file"
-	| "none"
-	| "unreadable";
+type ConfigExplainStorageKind = "unified" | "file" | "none" | "unreadable";
 
 type ConfigExplainStoredSource = Extract<
 	ConfigExplainStorageKind,
 	"unified" | "file"
 >;
 
-export type ConfigExplainSource =
-	| "env"
-	| ConfigExplainStoredSource
-	| "default";
+export type ConfigExplainSource = "env" | ConfigExplainStoredSource | "default";
 
 export interface ConfigExplainEntry {
 	key: keyof PluginConfig;
@@ -208,6 +201,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	preemptiveQuotaRemainingPercent5h: 5,
 	preemptiveQuotaRemainingPercent7d: 5,
 	preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
+	routingMutex: "legacy",
 };
 
 const PLUGIN_CONFIG_FIELD_SCHEMAS = PluginConfigSchema.shape;
@@ -485,7 +479,7 @@ async function readConfigRecordForSave(
 				return { status: "invalid", errorMessage };
 			}
 			return { status: "ok", record: parsed };
-	} catch (error) {
+		} catch (error) {
 			const code = (error as NodeJS.ErrnoException | undefined)?.code;
 			if (code === "ENOENT") {
 				return { status: "missing" };
@@ -566,10 +560,13 @@ function resolveStoredPluginConfigRecord(): {
  * Concurrency: synchronous and side-effect free; callers are responsible for coordinating concurrent writes to the filesystem.
  * Filesystem: no Windows-specific path normalization or filesystem I/O is performed by this function.
  */
-function sanitizePluginConfigForSave(
-	config: Partial<PluginConfig>,
-	): { sanitized: Record<string, unknown>; droppedKeys: string[] } {
-	const normalized = sanitizePluginConfigRecord(config as Record<string, unknown>);
+function sanitizePluginConfigForSave(config: Partial<PluginConfig>): {
+	sanitized: Record<string, unknown>;
+	droppedKeys: string[];
+} {
+	const normalized = sanitizePluginConfigRecord(
+		config as Record<string, unknown>,
+	);
 	const entries = Object.entries((normalized ?? {}) as Record<string, unknown>);
 	const sanitized: Record<string, unknown> = {};
 	const inputRecord = isRecord(config) ? config : {};
@@ -665,9 +662,7 @@ export async function savePluginConfig(
 				? sanitizeStoredPluginConfigRecord(legacyConfigState.record)
 				: null;
 		const merged = {
-			...(unifiedConfig ??
-				legacyConfig ??
-				{}),
+			...(unifiedConfig ?? legacyConfig ?? {}),
 			...sanitizedPatch,
 		};
 		await saveUnifiedPluginConfig(merged);
@@ -685,18 +680,10 @@ function parseBooleanEnv(value: string | undefined): boolean | undefined {
 	if (value === undefined) return undefined;
 	const normalized = value.trim().toLowerCase();
 	if (normalized.length === 0) return undefined;
-	if (
-		normalized === "1" ||
-		normalized === "true" ||
-		normalized === "yes"
-	) {
+	if (normalized === "1" || normalized === "true" || normalized === "yes") {
 		return true;
 	}
-	if (
-		normalized === "0" ||
-		normalized === "false" ||
-		normalized === "no"
-	) {
+	if (normalized === "0" || normalized === "false" || normalized === "no") {
 		return false;
 	}
 	return undefined;
@@ -1515,6 +1502,32 @@ export function getPreemptiveQuotaMaxDeferralMs(
 		pluginConfig.preemptiveQuotaMaxDeferralMs,
 		2 * 60 * 60_000,
 		{ min: 1_000 },
+	);
+}
+
+const ROUTING_MUTEX_MODES = new Set<string>(["enabled", "legacy"]);
+
+/**
+ * Resolve the routing-mutex mode (PR-N / R4).
+ *
+ * When `"enabled"` the account pool wraps cursor mutations in a promise-chain
+ * async mutex so concurrent requests cannot race on `activeIndex` or on
+ * `markSwitched` / `markAccountCoolingDown`. Defaults to `"legacy"` for one
+ * release cycle to preserve the pre-PR-N behaviour for existing users. The
+ * `CODEX_AUTH_ROUTING_MUTEX` env var accepts the same two values for opt-in
+ * trials without editing settings.
+ *
+ * Concurrency: pure read; safe for concurrent callers. Performs no I/O and
+ * is unaffected by Windows filesystem semantics. Contains no secrets.
+ */
+export function getRoutingMutexMode(
+	pluginConfig: PluginConfig,
+): "enabled" | "legacy" {
+	return resolveStringSetting(
+		"CODEX_AUTH_ROUTING_MUTEX",
+		pluginConfig.routingMutex,
+		"legacy",
+		ROUTING_MUTEX_MODES,
 	);
 }
 
