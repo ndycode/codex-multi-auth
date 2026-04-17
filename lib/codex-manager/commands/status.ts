@@ -41,18 +41,27 @@ export async function runStatusCommand(
 	const storageHealth = await deps.inspectStorageHealth?.();
 	const logInfo = deps.logInfo ?? console.log;
 	if (!storage || storage.accounts.length === 0) {
+		// When loadAccounts() returns null, the caller has detected an intentional
+		// reset (e.g. via the reset-intent marker) that inspectStorageHealth() may
+		// not see if the storage path has already been cleared or redirected. Treat
+		// the null return as a stronger "reset" signal than the filesystem probe's
+		// "empty" fallback so the output message is accurate.
+		const effectiveState: StorageHealthSummary["state"] | undefined =
+			storage === null && (!storageHealth || storageHealth.state === "empty")
+				? "intentional-reset"
+				: storageHealth?.state;
 		logInfo(
-			storageHealth?.state === "intentional-reset"
+			effectiveState === "intentional-reset"
 				? "No accounts configured. Storage was intentionally reset."
-				: storageHealth?.state === "recoverable"
+				: effectiveState === "recoverable"
 					? "No accounts configured. Recovery artifacts are available."
-					: storageHealth?.state === "corrupt"
+					: effectiveState === "corrupt"
 						? "No accounts configured. Storage appears corrupted."
 						: "No accounts configured.",
 		);
 		logInfo(`Storage: ${path}`);
-		if (storageHealth) {
-			logInfo(`Storage health: ${storageHealth.state}`);
+		if (effectiveState) {
+			logInfo(`Storage health: ${effectiveState}`);
 		}
 		return 0;
 	}
