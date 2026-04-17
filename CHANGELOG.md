@@ -9,6 +9,10 @@ This top-level changelog preserves the foundational `0.x` milestones and points 
 
 ## [Unreleased]
 
+### Changed
+
+- **Default `routingMutex` flipped from `"legacy"` to `"enabled"`** (v1.4.0 candidate, addresses audit finding HI-03). Completes the one-release-cycle rollout announced under "Rollout plan" in the v1.3.0 notes below. The opt-in flag introduced in PR #412 now becomes the on-by-default safe path; users can still roll back per-host via `CODEX_AUTH_ROUTING_MUTEX=legacy` or by setting `routingMutex: "legacy"` in `~/.codex/multi-auth/settings.json`. The Zod schema (`lib/schemas.ts`) and env override resolver are unchanged, so rollback requires no code change. Impacts: cursor mutations in `AccountManager` (`markSwitchedLocked`, `markAccountCoolingDownLocked`, `setActiveIndexLocked`) are now serialized for all users, eliminating the TOCTOU window described in audit findings D-02 / D-09 / HI-03.
+
 ## [1.3.0] - 2026-04-17
 
 Phase 1 post-audit hardening: 20 focused PRs + 7 audit-fix commits + 1 follow-up PR (#413). 3527 tests (+182 from v1.2.7). Zero breaking changes, one opt-in flag (`routingMutex`). See [docs/releases/v1.3.0.md](docs/releases/v1.3.0.md) for full details.

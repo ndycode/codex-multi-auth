@@ -201,7 +201,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	preemptiveQuotaRemainingPercent5h: 5,
 	preemptiveQuotaRemainingPercent7d: 5,
 	preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
-	routingMutex: "legacy",
+	routingMutex: "enabled",
 };
 
 const PLUGIN_CONFIG_FIELD_SCHEMAS = PluginConfigSchema.shape;
@@ -1512,10 +1512,11 @@ const ROUTING_MUTEX_MODES = new Set<string>(["enabled", "legacy"]);
  *
  * When `"enabled"` the account pool wraps cursor mutations in a promise-chain
  * async mutex so concurrent requests cannot race on `activeIndex` or on
- * `markSwitched` / `markAccountCoolingDown`. Defaults to `"legacy"` for one
- * release cycle to preserve the pre-PR-N behaviour for existing users. The
- * `CODEX_AUTH_ROUTING_MUTEX` env var accepts the same two values for opt-in
- * trials without editing settings.
+ * `markSwitched` / `markAccountCoolingDown`. Default is `"enabled"` starting
+ * in v1.4.0 after one release cycle of opt-in use in v1.3.0 (per the roadmap
+ * in CHANGELOG "Rollout plan"); the `"legacy"` value remains supported for
+ * emergency rollback. The `CODEX_AUTH_ROUTING_MUTEX` env var accepts the same
+ * two values for trials or rollback without editing settings.
  *
  * Concurrency: pure read; safe for concurrent callers. Performs no I/O and
  * is unaffected by Windows filesystem semantics. Contains no secrets.
@@ -1526,7 +1527,7 @@ export function getRoutingMutexMode(
 	return resolveStringSetting(
 		"CODEX_AUTH_ROUTING_MUTEX",
 		pluginConfig.routingMutex,
-		"legacy",
+		"enabled",
 		ROUTING_MUTEX_MODES,
 	);
 }

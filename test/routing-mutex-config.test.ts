@@ -17,24 +17,24 @@ describe("routingMutex config flag", () => {
 		}
 	});
 
-	it("defaults to legacy in DEFAULT_PLUGIN_CONFIG", () => {
-		expect(DEFAULT_PLUGIN_CONFIG.routingMutex).toBe("legacy");
+	it("defaults to enabled in DEFAULT_PLUGIN_CONFIG", () => {
+		expect(DEFAULT_PLUGIN_CONFIG.routingMutex).toBe("enabled");
 	});
 
-	it("getRoutingMutexMode returns legacy when config is undefined", () => {
+	it("getRoutingMutexMode returns enabled when config is undefined", () => {
 		const cfg: PluginConfig = {
 			...DEFAULT_PLUGIN_CONFIG,
 			routingMutex: undefined,
 		};
-		expect(getRoutingMutexMode(cfg)).toBe("legacy");
+		expect(getRoutingMutexMode(cfg)).toBe("enabled");
 	});
 
-	it("getRoutingMutexMode respects explicit enabled in config", () => {
+	it("getRoutingMutexMode respects explicit legacy in config (rollback path)", () => {
 		const cfg: PluginConfig = {
 			...DEFAULT_PLUGIN_CONFIG,
-			routingMutex: "enabled",
+			routingMutex: "legacy",
 		};
-		expect(getRoutingMutexMode(cfg)).toBe("enabled");
+		expect(getRoutingMutexMode(cfg)).toBe("legacy");
 	});
 
 	it("env var CODEX_AUTH_ROUTING_MUTEX=enabled overrides config", () => {

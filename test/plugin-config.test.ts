@@ -162,7 +162,7 @@ describe("Plugin Configuration", () => {
 				preemptiveQuotaRemainingPercent5h: 5,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
-				routingMutex: "legacy",
+				routingMutex: "enabled",
 			});
 			// existsSync is called with multiple candidate config paths (primary + legacy fallbacks)
 			expect(mockExistsSync).toHaveBeenCalled();
@@ -232,7 +232,7 @@ describe("Plugin Configuration", () => {
 				preemptiveQuotaRemainingPercent5h: 5,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
-				routingMutex: "legacy",
+				routingMutex: "enabled",
 			});
 		});
 
@@ -546,7 +546,7 @@ describe("Plugin Configuration", () => {
 				preemptiveQuotaRemainingPercent5h: 5,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
-				routingMutex: "legacy",
+				routingMutex: "enabled",
 			});
 		});
 
@@ -617,7 +617,7 @@ describe("Plugin Configuration", () => {
 				preemptiveQuotaRemainingPercent5h: 5,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
-				routingMutex: "legacy",
+				routingMutex: "enabled",
 			});
 			expect(mockLogWarn).toHaveBeenCalled();
 		});
@@ -682,7 +682,7 @@ describe("Plugin Configuration", () => {
 				preemptiveQuotaRemainingPercent5h: 5,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
-				routingMutex: "legacy",
+				routingMutex: "enabled",
 			});
 			expect(mockLogWarn).toHaveBeenCalled();
 		});
