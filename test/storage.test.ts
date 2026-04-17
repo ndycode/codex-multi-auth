@@ -956,11 +956,20 @@ describe("storage", () => {
 					),
 				).toBe(true);
 
+				// STORAGE-001: the failed rollback still wrote its intended
+				// pre-transaction payload to the WAL journal before the rename
+				// exhausted its retry budget. Because the rollback WAL is
+				// strictly newer than the primary (which was renamed during
+				// attempt 1 with the 2-account forward state), loadAccounts
+				// now replays the WAL and surfaces the rolled-back single
+				// account. The AggregateError above still reports the double
+				// failure to the caller; the durable on-disk state no longer
+				// silently discards a committed-to-WAL rollback.
 				const loadedAccounts = await isolatedStorageModule.loadAccounts();
-				expect(loadedAccounts?.accounts).toHaveLength(2);
+				expect(loadedAccounts?.accounts).toHaveLength(1);
 				expect(
 					loadedAccounts?.accounts.map((account) => account.refreshToken),
-				).toEqual(["refresh-existing", "refresh-restored"]);
+				).toEqual(["refresh-existing"]);
 
 				const loadedFlagged = await isolatedStorageModule.loadFlaggedAccounts();
 				expect(loadedFlagged.accounts).toHaveLength(1);

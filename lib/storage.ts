@@ -1454,6 +1454,74 @@ async function loadAccountsFromJournal(
 	}
 }
 
+/**
+ * STORAGE-001 helper: return replayed WAL storage when the WAL journal is
+ * strictly newer than the primary file and its checksum validates.
+ *
+ * saveAccountsToDisk writes the WAL journal before the temp file and before
+ * renaming temp -> primary. If a crash (or a rename that exhausts its retry
+ * budget) occurs after the WAL write but before cleanupWal runs, the primary
+ * still holds stale content while the WAL holds the intended new content.
+ * Consulting the WAL only inside the catch branch of loadAccountsInternal
+ * silently discards committed-to-WAL saves. Resolve that durability gap by
+ * checking mtime when the primary parses successfully.
+ *
+ * Returns null when:
+ *   - the WAL file does not exist
+ *   - the primary does not exist (caller goes through existing catch branch)
+ *   - the WAL mtime is not strictly newer than the primary mtime
+ *   - loadAccountsFromJournal rejects the WAL (invalid checksum, schema,
+ *     reset marker, etc.)
+ *
+ * Any stat failure other than ENOENT is treated as "no replay" and the
+ * primary content is returned by the caller unchanged.
+ */
+async function replayWalIfNewerThanPrimary(
+	path: string,
+): Promise<AccountStorageV3 | null> {
+	const walPath = getAccountsWalPath(path);
+	let primaryStat: { mtimeMs: number };
+	let walStat: { mtimeMs: number };
+	try {
+		primaryStat = await fs.stat(path);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to stat primary account storage for WAL freshness", {
+				path,
+				error: String(error),
+			});
+		}
+		return null;
+	}
+	try {
+		walStat = await fs.stat(walPath);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			log.warn("Failed to stat WAL journal for WAL freshness", {
+				path: walPath,
+				error: String(error),
+			});
+		}
+		return null;
+	}
+	if (!(walStat.mtimeMs > primaryStat.mtimeMs)) {
+		return null;
+	}
+	const replayed = await loadAccountsFromJournal(path, { silent: true });
+	if (!replayed) {
+		return null;
+	}
+	log.warn("Replayed WAL journal newer than primary account storage", {
+		path,
+		walPath,
+		primaryMtimeMs: primaryStat.mtimeMs,
+		walMtimeMs: walStat.mtimeMs,
+	});
+	return replayed;
+}
+
 async function loadAccountsInternal(
 	persistMigration: ((storage: AccountStorageV3) => Promise<void>) | null,
 ): Promise<AccountStorageV3 | null> {
@@ -1493,6 +1561,36 @@ async function loadAccountsInternal(
 
 		if (existsSync(resetMarkerPath)) {
 			return createEmptyStorageWithMetadata(false, "intentional-reset");
+		}
+
+		// STORAGE-001: saveAccountsToDisk writes WAL first, then the temp
+		// file, then renames temp into place. If a crash or a failed rename
+		// occurs AFTER the WAL write but BEFORE cleanupWal runs, the primary
+		// file holds stale content while the WAL holds the intended new
+		// content. The try-branch below returns the stale primary unless we
+		// explicitly consult the WAL. Replay the WAL when its mtime is
+		// strictly newer than the primary and its checksum validates.
+		if (normalized) {
+			const walReplay = await replayWalIfNewerThanPrimary(path);
+			if (walReplay) {
+				if (existsSync(resetMarkerPath)) {
+					return createEmptyStorageWithMetadata(false, "intentional-reset");
+				}
+				if (persistMigration) {
+					try {
+						await persistMigration(walReplay);
+					} catch (persistError) {
+						log.warn("Failed to persist WAL-newer storage replay", {
+							path,
+							error: String(persistError),
+						});
+					}
+				}
+				if (walReplay.accounts.length === 0) {
+					return withRestoreMetadata(walReplay, true, "empty-storage");
+				}
+				return walReplay;
+			}
 		}
 
 		if (normalized && normalized.accounts.length === 0) {

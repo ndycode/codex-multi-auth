@@ -15,12 +15,24 @@ import {
 	getRestoreAssessment,
 } from "../lib/storage.js";
 
-function getRestoreEligibility(value: unknown): { restoreEligible?: boolean; restoreReason?: string } {
+function getRestoreEligibility(value: unknown): {
+	restoreEligible?: boolean;
+	restoreReason?: string;
+} {
 	if (value && typeof value === "object" && "restoreEligible" in value) {
-		const candidate = value as { restoreEligible?: unknown; restoreReason?: unknown };
+		const candidate = value as {
+			restoreEligible?: unknown;
+			restoreReason?: unknown;
+		};
 		return {
-			restoreEligible: typeof candidate.restoreEligible === "boolean" ? candidate.restoreEligible : undefined,
-			restoreReason: typeof candidate.restoreReason === "string" ? candidate.restoreReason : undefined,
+			restoreEligible:
+				typeof candidate.restoreEligible === "boolean"
+					? candidate.restoreEligible
+					: undefined,
+			restoreReason:
+				typeof candidate.restoreReason === "string"
+					? candidate.restoreReason
+					: undefined,
 		};
 	}
 	return {};
@@ -35,7 +47,10 @@ describe("storage recovery paths", () => {
 	let storagePath = "";
 
 	beforeEach(async () => {
-		workDir = join(tmpdir(), `codex-storage-recovery-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		workDir = join(
+			tmpdir(),
+			`codex-storage-recovery-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		);
 		storagePath = join(workDir, "openai-codex-accounts.json");
 		await fs.mkdir(workDir, { recursive: true });
 		setStoragePathDirect(storagePath);
@@ -46,6 +61,146 @@ describe("storage recovery paths", () => {
 		setStoragePathDirect(null);
 		setStorageBackupEnabled(true);
 		await removeWithRetry(workDir, { recursive: true, force: true });
+	});
+
+	it("prefers WAL journal when primary parses but WAL mtime is newer (STORAGE-001)", async () => {
+		// Regression guard for STORAGE-001: saveAccountsToDisk writes the WAL
+		// journal before the temp file is renamed into place. If the process
+		// crashes (or the rename retry budget is exhausted) between the WAL
+		// write and cleanupWal, the primary still holds OLD content while the
+		// WAL holds the intended NEW content. Before the fix, loadAccounts
+		// only consulted the WAL in the catch branch (primary read throws),
+		// so a valid-but-stale primary silently shadowed a valid newer WAL.
+		const stalePrimaryPayload = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "stale-primary-refresh",
+					accountId: "stale-primary",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		};
+		await fs.writeFile(
+			storagePath,
+			JSON.stringify(stalePrimaryPayload),
+			"utf-8",
+		);
+
+		// Ensure a real mtime gap so the WAL-newer test cannot be flaky on
+		// filesystems with coarse (~1s) mtime granularity (e.g. FAT, some NFS).
+		await new Promise((resolve) => setTimeout(resolve, 1100));
+
+		const walPayload = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "newer-wal-refresh",
+					accountId: "newer-wal",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		};
+		const walContent = JSON.stringify(walPayload);
+		const walEntry = {
+			version: 1,
+			createdAt: Date.now(),
+			path: storagePath,
+			checksum: sha256(walContent),
+			content: walContent,
+		};
+		await fs.writeFile(`${storagePath}.wal`, JSON.stringify(walEntry), "utf-8");
+
+		const primaryStat = await fs.stat(storagePath);
+		const walStat = await fs.stat(`${storagePath}.wal`);
+		expect(walStat.mtimeMs).toBeGreaterThan(primaryStat.mtimeMs);
+
+		const recovered = await loadAccounts();
+		expect(recovered?.accounts).toHaveLength(1);
+		expect(recovered?.accounts[0]?.accountId).toBe("newer-wal");
+
+		const persisted = JSON.parse(await fs.readFile(storagePath, "utf-8")) as {
+			accounts?: Array<{ accountId?: string }>;
+		};
+		expect(persisted.accounts?.[0]?.accountId).toBe("newer-wal");
+	});
+
+	it("keeps primary content when WAL mtime is older than primary (STORAGE-001 guard)", async () => {
+		// Control scenario for STORAGE-001: an older WAL must not overwrite a
+		// newer primary. Verifies the mtime comparison is strict and does not
+		// regress the common post-save state where cleanupWal was interrupted
+		// yet the WAL is already stale relative to a later successful save.
+		const walPayload = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "older-wal-refresh",
+					accountId: "older-wal",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		};
+		const walContent = JSON.stringify(walPayload);
+		const walEntry = {
+			version: 1,
+			createdAt: Date.now(),
+			path: storagePath,
+			checksum: sha256(walContent),
+			content: walContent,
+		};
+		await fs.writeFile(`${storagePath}.wal`, JSON.stringify(walEntry), "utf-8");
+
+		await new Promise((resolve) => setTimeout(resolve, 1100));
+
+		const primaryPayload = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "fresh-primary-refresh",
+					accountId: "fresh-primary",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+			],
+		};
+		await fs.writeFile(storagePath, JSON.stringify(primaryPayload), "utf-8");
+
+		const primaryStat = await fs.stat(storagePath);
+		const walStat = await fs.stat(`${storagePath}.wal`);
+		expect(primaryStat.mtimeMs).toBeGreaterThan(walStat.mtimeMs);
+
+		const recovered = await loadAccounts();
+		expect(recovered?.accounts).toHaveLength(1);
+		expect(recovered?.accounts[0]?.accountId).toBe("fresh-primary");
+	});
+
+	it("keeps primary content when no WAL exists (STORAGE-001 guard)", async () => {
+		// Baseline: no WAL file at all -> normal primary load, no mtime lookup
+		// falls over.
+		const primaryPayload = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "plain-primary-refresh",
+					accountId: "plain-primary",
+					addedAt: 3,
+					lastUsed: 3,
+				},
+			],
+		};
+		await fs.writeFile(storagePath, JSON.stringify(primaryPayload), "utf-8");
+
+		const recovered = await loadAccounts();
+		expect(recovered?.accounts).toHaveLength(1);
+		expect(recovered?.accounts[0]?.accountId).toBe("plain-primary");
 	});
 
 	it("recovers from WAL journal when primary storage is unreadable", async () => {
@@ -98,7 +253,11 @@ describe("storage recovery paths", () => {
 				},
 			],
 		};
-		await fs.writeFile(`${storagePath}.bak`, JSON.stringify(backupPayload), "utf-8");
+		await fs.writeFile(
+			`${storagePath}.bak`,
+			JSON.stringify(backupPayload),
+			"utf-8",
+		);
 
 		const recovered = await loadAccounts();
 		expect(recovered?.accounts).toHaveLength(1);
@@ -192,14 +351,16 @@ describe("storage recovery paths", () => {
 
 		const originalReadFile = fs.readFile.bind(fs);
 		const originalWriteFile = fs.writeFile.bind(fs);
-		const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
-			const [targetPath] = args;
-			const result = await originalReadFile(...args);
-			if (targetPath === backupPath) {
-				await originalWriteFile(resetMarkerPath, "reset", "utf-8");
-			}
-			return result;
-		});
+		const readSpy = vi
+			.spyOn(fs, "readFile")
+			.mockImplementation(async (...args) => {
+				const [targetPath] = args;
+				const result = await originalReadFile(...args);
+				if (targetPath === backupPath) {
+					await originalWriteFile(resetMarkerPath, "reset", "utf-8");
+				}
+				return result;
+			});
 
 		try {
 			const recovered = await loadFlaggedAccounts();
@@ -225,7 +386,11 @@ describe("storage recovery paths", () => {
 				},
 			],
 		};
-		await fs.writeFile(`${storagePath}.bak.1`, JSON.stringify(historicalBackupPayload), "utf-8");
+		await fs.writeFile(
+			`${storagePath}.bak.1`,
+			JSON.stringify(historicalBackupPayload),
+			"utf-8",
+		);
 
 		const recovered = await loadAccounts();
 		expect(recovered?.accounts).toHaveLength(1);
@@ -254,7 +419,11 @@ describe("storage recovery paths", () => {
 				},
 			],
 		};
-		await fs.writeFile(`${storagePath}.bak.2`, JSON.stringify(oldestBackupPayload), "utf-8");
+		await fs.writeFile(
+			`${storagePath}.bak.2`,
+			JSON.stringify(oldestBackupPayload),
+			"utf-8",
+		);
 
 		const recovered = await loadAccounts();
 		expect(recovered?.accounts).toHaveLength(1);
@@ -515,14 +684,20 @@ describe("storage recovery paths", () => {
 				},
 			],
 		};
-		await fs.writeFile(`${storagePath}.bak`, JSON.stringify(backupPayload), "utf-8");
+		await fs.writeFile(
+			`${storagePath}.bak`,
+			JSON.stringify(backupPayload),
+			"utf-8",
+		);
 
 		const assessment = await getRestoreAssessment();
 
 		expect(assessment.restoreEligible).toBe(true);
 		expect(assessment.restoreReason).toBe("missing-storage");
 		expect(assessment.latestSnapshot?.path).toBe(`${storagePath}.bak`);
-		expect(assessment.backupMetadata.accounts.latestValidPath).toBe(`${storagePath}.bak`);
+		expect(assessment.backupMetadata.accounts.latestValidPath).toBe(
+			`${storagePath}.bak`,
+		);
 	});
 
 	it("ignores Codex CLI mirror files during restore assessment", async () => {
@@ -573,7 +748,9 @@ describe("storage recovery paths", () => {
 		expect(assessment.backupMetadata.accounts.latestValidPath).toBeUndefined();
 		expect(
 			assessment.backupMetadata.accounts.snapshots.some(
-				(snapshot) => snapshot.path === codexCliAccountsPath || snapshot.path === codexCliAuthPath,
+				(snapshot) =>
+					snapshot.path === codexCliAccountsPath ||
+					snapshot.path === codexCliAuthPath,
 			),
 		).toBe(false);
 	});
@@ -651,7 +828,9 @@ describe("storage recovery paths", () => {
 
 		const reloaded = await loadAccounts();
 		expect(reloaded?.accounts).toHaveLength(0);
-		expect(getRestoreEligibility(reloaded).restoreReason).toBe("intentional-reset");
+		expect(getRestoreEligibility(reloaded).restoreReason).toBe(
+			"intentional-reset",
+		);
 	});
 
 	it("suppresses WAL recovery when a reset marker appears while the WAL is being read", async () => {
@@ -680,22 +859,26 @@ describe("storage recovery paths", () => {
 
 		const originalReadFile = fs.readFile.bind(fs);
 		const originalWriteFile = fs.writeFile.bind(fs);
-		const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
-			const [targetPath] = args;
-			if (targetPath === `${storagePath}.wal`) {
-				await originalWriteFile(
-					`${storagePath}.reset-intent`,
-					JSON.stringify({ version: 1, createdAt: Date.now() }),
-					"utf-8",
-				);
-			}
-			return originalReadFile(...args);
-		});
+		const readSpy = vi
+			.spyOn(fs, "readFile")
+			.mockImplementation(async (...args) => {
+				const [targetPath] = args;
+				if (targetPath === `${storagePath}.wal`) {
+					await originalWriteFile(
+						`${storagePath}.reset-intent`,
+						JSON.stringify({ version: 1, createdAt: Date.now() }),
+						"utf-8",
+					);
+				}
+				return originalReadFile(...args);
+			});
 
 		try {
 			const reloaded = await loadAccounts();
 			expect(reloaded?.accounts).toHaveLength(0);
-			expect(getRestoreEligibility(reloaded).restoreReason).toBe("intentional-reset");
+			expect(getRestoreEligibility(reloaded).restoreReason).toBe(
+				"intentional-reset",
+			);
 		} finally {
 			readSpy.mockRestore();
 		}
@@ -731,7 +914,14 @@ describe("storage recovery paths", () => {
 			JSON.stringify({
 				version: 3,
 				activeIndex: 0,
-				accounts: [{ refreshToken: "primary-refresh", accountId: "primary", addedAt: 6, lastUsed: 6 }],
+				accounts: [
+					{
+						refreshToken: "primary-refresh",
+						accountId: "primary",
+						addedAt: 6,
+						lastUsed: 6,
+					},
+				],
 			}),
 			"utf-8",
 		);
@@ -767,7 +957,14 @@ describe("storage recovery paths", () => {
 			JSON.stringify({
 				version: 3,
 				activeIndex: 0,
-				accounts: [{ refreshToken: "backup-refresh", accountId: "disabled-backup", addedAt: 3, lastUsed: 3 }],
+				accounts: [
+					{
+						refreshToken: "backup-refresh",
+						accountId: "disabled-backup",
+						addedAt: 3,
+						lastUsed: 3,
+					},
+				],
 			}),
 			"utf-8",
 		);
@@ -838,10 +1035,16 @@ describe("storage recovery paths", () => {
 
 		const metadata = await getBackupMetadata();
 		const accountSnapshots = metadata.accounts.snapshots;
-		const cacheEntries = accountSnapshots.filter((snapshot) => snapshot.path.endsWith(".cache"));
+		const cacheEntries = accountSnapshots.filter((snapshot) =>
+			snapshot.path.endsWith(".cache"),
+		);
 		expect(cacheEntries).toHaveLength(0);
-		expect(metadata.accounts.latestValidPath).toBe(`${storagePath}.manual-meta-checkpoint`);
-		const discovered = accountSnapshots.find((snapshot) => snapshot.path.endsWith("manual-meta-checkpoint"));
+		expect(metadata.accounts.latestValidPath).toBe(
+			`${storagePath}.manual-meta-checkpoint`,
+		);
+		const discovered = accountSnapshots.find((snapshot) =>
+			snapshot.path.endsWith("manual-meta-checkpoint"),
+		);
 		expect(discovered?.kind).toBe("accounts-discovered-backup");
 		expect(discovered?.valid).toBe(true);
 		expect(discovered?.accountCount).toBe(1);
@@ -857,7 +1060,14 @@ describe("storage recovery paths", () => {
 			JSON.stringify({
 				version: 3,
 				activeIndex: 0,
-				accounts: [{ refreshToken: "older-refresh", accountId: "older", addedAt: 1, lastUsed: 1 }],
+				accounts: [
+					{
+						refreshToken: "older-refresh",
+						accountId: "older",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
 			}),
 			"utf-8",
 		);
@@ -867,7 +1077,14 @@ describe("storage recovery paths", () => {
 			JSON.stringify({
 				version: 3,
 				activeIndex: 0,
-				accounts: [{ refreshToken: "newer-refresh", accountId: "newer", addedAt: 2, lastUsed: 2 }],
+				accounts: [
+					{
+						refreshToken: "newer-refresh",
+						accountId: "newer",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
 			}),
 			"utf-8",
 		);
@@ -876,4 +1093,3 @@ describe("storage recovery paths", () => {
 		expect(metadata.accounts.latestValidPath).toBe(newerManualPath);
 	});
 });
-
