@@ -39,6 +39,30 @@ import { runCheckCommand } from "./codex-manager/commands/check.js";
 import { runConfigExplainCommand } from "./codex-manager/commands/config-explain.js";
 import { runDebugBundleCommand } from "./codex-manager/commands/debug-bundle.js";
 import {
+	parseWhySelectedArgs,
+	printWhySelectedUsage,
+	runWhySelectedCommand,
+} from "./codex-manager/commands/why-selected.js";
+import {
+	parseVerifyArgs,
+	printVerifyUsage,
+	runVerifyCommand,
+} from "./codex-manager/commands/verify.js";
+import {
+	findProjectRoot,
+	getProjectConfigDir,
+	getProjectGlobalConfigDir,
+	getProjectStorageKey,
+	resolveProjectStorageIdentityRoot,
+	resolvePath as resolveStoragePath,
+} from "./storage/paths.js";
+import {
+	type AccountWithMetrics,
+	getHealthTracker,
+	getTokenTracker,
+	selectHybridAccountTraced,
+} from "./rotation.js";
+import {
 	runDoctor as runRepairDoctor,
 	type RepairCommandDeps,
 	runFix as runRepairFix,
@@ -3237,6 +3261,44 @@ export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
 		...(syncIdToken ? { idToken: syncIdToken } : {}),
 	});
 }
+function buildSelectAccountTraced(): (
+	storage: AccountStorageV3,
+) => ReturnType<typeof selectHybridAccountTraced> {
+	return (storage: AccountStorageV3) => {
+		const now = Date.now();
+		const healthTracker = getHealthTracker();
+		const tokenTracker = getTokenTracker();
+		const accountsWithMetrics: AccountWithMetrics[] = storage.accounts.map(
+			(account, index) => {
+				const enabled = account?.enabled !== false;
+				const rateLimits = account?.rateLimitResetTimes ?? {};
+				let rateLimited = false;
+				for (const value of Object.values(rateLimits)) {
+					if (typeof value === "number" && value > now) {
+						rateLimited = true;
+						break;
+					}
+				}
+				const coolingDown =
+					typeof account?.coolingDownUntil === "number" &&
+					account.coolingDownUntil > now;
+				const isAvailable = enabled && !rateLimited && !coolingDown;
+				return {
+					index,
+					trackerKey: account?.accountId ?? index,
+					isAvailable,
+					lastUsed: account?.lastUsed ?? 0,
+				};
+			},
+		);
+		return selectHybridAccountTraced({
+			accounts: accountsWithMetrics,
+			healthTracker,
+			tokenTracker,
+		});
+	};
+}
+
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	const startupDisplaySettings = await loadDashboardDisplaySettings();
 	applyUiThemeFromDashboardSettings(startupDisplaySettings);
@@ -3314,6 +3376,47 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			normalizeFailureDetail,
 			loadRuntimeObservabilitySnapshot:
 				loadPersistedRuntimeObservabilitySnapshot,
+		});
+	}
+	if (command === "why-selected") {
+		return runWhySelectedCommand(rest, {
+			parseWhySelectedArgs,
+			printWhySelectedUsage,
+			setStoragePath,
+			loadAccounts,
+			resolveActiveIndex,
+			selectAccountTraced: buildSelectAccountTraced(),
+			loadRuntimeObservabilitySnapshot: async () => {
+				const snapshot = await loadPersistedRuntimeObservabilitySnapshot();
+				if (!snapshot) return null;
+				const generatedAt =
+					typeof (snapshot as { generatedAt?: unknown }).generatedAt ===
+						"number" ||
+					typeof (snapshot as { generatedAt?: unknown }).generatedAt ===
+						"string"
+						? (snapshot as { generatedAt?: number | string }).generatedAt
+						: undefined;
+				return { generatedAt };
+			},
+			sanitizeEmail,
+		});
+	}
+	if (command === "verify") {
+		return runVerifyCommand(rest, {
+			parseVerifyArgs,
+			printVerifyUsage,
+			runVerifyFlagged: async (flaggedArgs: string[]) =>
+				runRepairVerifyFlagged(flaggedArgs, createRepairCommandDeps()),
+			setStoragePath,
+			verifyPathsDeps: {
+				getCwd: () => process.cwd(),
+				findProjectRoot,
+				resolveProjectStorageIdentityRoot,
+				getProjectStorageKey,
+				getProjectConfigDir,
+				getProjectGlobalConfigDir,
+				resolvePath: resolveStoragePath,
+			},
 		});
 	}
 	if (command === "fix") {

@@ -8582,6 +8582,79 @@ describe("codex manager cli commands", () => {
 		expect(storageState).toEqual(originalStorage);
 	});
 
+	it("dispatches why-selected --json command", async () => {
+		const now = Date.now();
+		loadAccountsMock.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "alpha@example.com",
+					refreshToken: "refresh-a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+				{
+					email: "beta@example.com",
+					refreshToken: "refresh-b",
+					addedAt: now - 500,
+					lastUsed: now - 500,
+					enabled: true,
+				},
+			],
+		});
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"why-selected",
+			"--json",
+		]);
+		expect(exitCode).toBe(0);
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			command: string;
+			mode: string;
+			selected: { index: number } | null;
+			candidates: Array<{ index: number }>;
+		};
+		expect(payload.command).toBe("why-selected");
+		expect(payload.mode).toBe("now");
+		expect(payload.selected?.index).toBeDefined();
+		expect(payload.candidates.length).toBe(2);
+	});
+
+	it("dispatches verify --paths --json command", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"verify",
+			"--paths",
+			"--json",
+		]);
+		expect([0, 1]).toContain(exitCode);
+		const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+			command: string;
+			mode: string;
+			paths: {
+				steps: Array<{ name: string }>;
+				sandboxTests: Array<{ name: string }>;
+			};
+		};
+		expect(payload.command).toBe("verify");
+		expect(payload.paths.steps.map((step) => step.name)).toContain(
+			"process.cwd",
+		);
+		expect(
+			payload.paths.sandboxTests.some(
+				(test) => test.name === "sandbox-reject-escape",
+			),
+		).toBe(true);
+	});
+
 	it("runs report command in json mode", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValueOnce({

@@ -25,7 +25,10 @@ function readPackageVersion(): string {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`Failed to read ${packagePath}: ${message}`);
 	}
-	if (typeof parsed.version !== "string" || parsed.version.trim().length === 0) {
+	if (
+		typeof parsed.version !== "string" ||
+		parsed.version.trim().length === 0
+	) {
 		throw new Error("package.json must define a non-empty version string");
 	}
 	return parsed.version.trim();
@@ -150,7 +153,7 @@ function compareSemverDescending(left: string, right: string): number {
 	return 0;
 }
 
-	describe("Documentation Integrity", () => {
+describe("Documentation Integrity", () => {
 	it("has all required user docs and release notes", () => {
 		for (const docPath of getUserDocs()) {
 			const fullPath = join(projectRoot, docPath);
@@ -327,7 +330,7 @@ function compareSemverDescending(left: string, right: string): number {
 
 		expect(readme).toContain("codex auth fix --live --model gpt-5-codex");
 		expect(commandRef).toContain(
-			"| `--json` | verify-flagged, best, forecast, report, fix, doctor, config explain, debug bundle |",
+			"| `--json` | verify-flagged, verify, why-selected, best, forecast, report, fix, doctor, config explain, debug bundle |",
 		);
 		expect(commandRef).toContain(
 			"| `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |",
@@ -636,9 +639,10 @@ function compareSemverDescending(left: string, right: string): number {
 		const testingGuide = read("docs/development/TESTING.md");
 
 		for (const filePath of maintainerRunbooks) {
-			expect(existsSync(join(projectRoot, filePath)), `${filePath} should exist`).toBe(
-				true,
-			);
+			expect(
+				existsSync(join(projectRoot, filePath)),
+				`${filePath} should exist`,
+			).toBe(true);
 			const content = read(filePath).toLowerCase();
 			expect(content).toContain("validation");
 			expect(content).toContain("review checklist");
@@ -646,7 +650,9 @@ function compareSemverDescending(left: string, right: string): number {
 
 		expect(docsPortal).toContain("development/RUNBOOK_ADD_AUTH_COMMAND.md");
 		expect(docsPortal).toContain("development/RUNBOOK_ADD_CONFIG_FIELD.md");
-		expect(docsPortal).toContain("development/RUNBOOK_CHANGE_ROUTING_POLICY.md");
+		expect(docsPortal).toContain(
+			"development/RUNBOOK_CHANGE_ROUTING_POLICY.md",
+		);
 		expect(testingGuide).toContain("## Refactor Guardrail Checklist");
 		expect(testingGuide).toContain("stream: true");
 		expect(testingGuide).toContain("store: false");

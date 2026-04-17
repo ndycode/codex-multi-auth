@@ -484,6 +484,158 @@ export function selectHybridAccount(
 }
 
 // ============================================================================
+// Trace-mode Selection (non-mutating, diagnostic)
+// ============================================================================
+
+/**
+ * Per-candidate score breakdown emitted by `selectHybridAccountTraced`.
+ *
+ * Values are captured live from the same inputs and weights used by
+ * `selectHybridAccount`, so the trace is faithful to production selection.
+ * Tokens/health are reported as raw (unrounded) numbers so callers can
+ * display exact values or round for presentation.
+ */
+export interface HybridSelectionCandidateTrace {
+	index: number;
+	trackerKey: TrackerKey;
+	isAvailable: boolean;
+	lastUsed: number;
+	health: number;
+	tokens: number;
+	hoursSinceUsed: number;
+	capabilityBoost: number;
+	pidBonus: number;
+	score: number;
+	reason?: string;
+}
+
+export interface HybridSelectionTraceResult {
+	selected: AccountWithMetrics | null;
+	selectedIndex: number | null;
+	selectionReason: string;
+	candidates: HybridSelectionCandidateTrace[];
+	config: HybridSelectionConfig;
+	quotaKey?: string;
+	availableCount: number;
+}
+
+export interface SelectHybridAccountTracedParams {
+	accounts: AccountWithMetrics[];
+	healthTracker: HealthScoreTracker;
+	tokenTracker: TokenBucketTracker;
+	quotaKey?: string;
+	config?: Partial<HybridSelectionConfig>;
+	options?: HybridSelectionOptions;
+}
+
+/**
+ * Non-mutating variant of {@link selectHybridAccount} that returns the winning
+ * account alongside a per-candidate score breakdown.
+ *
+ * The scoring logic mirrors `selectHybridAccount` exactly (same weights, same
+ * availability gating, same PID offset behaviour, same capability boost), so
+ * this function can be used by diagnostic commands (e.g. `codex auth
+ * why-selected --now`) without drifting from production selection. Candidates
+ * are returned sorted by descending score.
+ *
+ * No mutation of trackers or account state occurs; this is purely a read.
+ */
+export function selectHybridAccountTraced(
+	params: SelectHybridAccountTracedParams,
+): HybridSelectionTraceResult {
+	const cfg = { ...DEFAULT_HYBRID_SELECTION_CONFIG, ...(params.config ?? {}) };
+	const options = params.options ?? {};
+	const quotaKey = params.quotaKey;
+	const now = Date.now();
+	const pidBonus = options.pidOffsetEnabled ? (process.pid % 100) * 0.01 : 0;
+
+	const accounts = Array.isArray(params.accounts) ? params.accounts : [];
+	const availableAccounts = accounts.filter((account) => account.isAvailable);
+
+	const candidates: HybridSelectionCandidateTrace[] = accounts.map(
+		(account) => {
+			const trackerKey: TrackerKey = account.trackerKey ?? account.index;
+			const health = params.healthTracker.getScore(trackerKey, quotaKey);
+			const tokens = params.tokenTracker.getTokens(trackerKey, quotaKey);
+			const hoursSinceUsed = (now - account.lastUsed) / (1000 * 60 * 60);
+
+			const rawCapabilityBoost =
+				typeof options.scoreBoostByAccount?.[account.index] === "number"
+					? (options.scoreBoostByAccount[account.index] ?? 0)
+					: 0;
+			const capabilityBoost = Number.isFinite(rawCapabilityBoost)
+				? rawCapabilityBoost
+				: 0;
+
+			let score =
+				health * cfg.healthWeight +
+				tokens * cfg.tokenWeight +
+				hoursSinceUsed * cfg.freshnessWeight +
+				capabilityBoost;
+
+			if (options.pidOffsetEnabled) {
+				score +=
+					((account.index * 0.131 + pidBonus) % 1) * cfg.freshnessWeight * 0.1;
+			}
+
+			return {
+				index: account.index,
+				trackerKey,
+				isAvailable: account.isAvailable,
+				lastUsed: account.lastUsed,
+				health,
+				tokens,
+				hoursSinceUsed,
+				capabilityBoost,
+				pidBonus: options.pidOffsetEnabled ? pidBonus : 0,
+				score,
+				reason: account.isAvailable
+					? undefined
+					: "unavailable (rate-limited, cooling down, or circuit open)",
+			};
+		},
+	);
+
+	candidates.sort((a, b) => b.score - a.score);
+
+	let selected: AccountWithMetrics | null = null;
+	let selectionReason = "no accounts provided";
+
+	if (accounts.length === 0) {
+		selectionReason = "no accounts configured";
+	} else if (availableAccounts.length === 0) {
+		// AUDIT-H2 / D-01 contract: when no account is available, selection
+		// returns null rather than a blocked LRU candidate. The trace variant
+		// mirrors the production contract so why-selected diagnostics match
+		// actual selection behaviour.
+		selected = null;
+		selectionReason =
+			"all accounts unavailable (rate-limited, cooling down, or circuit open)";
+	} else if (availableAccounts.length === 1) {
+		selected = availableAccounts[0] ?? null;
+		selectionReason = "single available account";
+	} else {
+		const bestCandidate = candidates.find((candidate) => candidate.isAvailable);
+		if (bestCandidate) {
+			selected =
+				accounts.find((account) => account.index === bestCandidate.index) ??
+				null;
+			selectionReason = `highest hybrid score (${bestCandidate.score.toFixed(2)}) across ${availableAccounts.length} available account(s)`;
+		}
+	}
+
+	return {
+		selected,
+		selectedIndex: selected?.index ?? null,
+		selectionReason,
+		candidates,
+		config: cfg,
+		quotaKey,
+		availableCount: availableAccounts.length,
+	};
+}
+
+// ============================================================================
 // Utility Functions
 // ============================================================================
 

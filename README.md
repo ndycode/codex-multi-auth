@@ -157,6 +157,7 @@ If browser launch is blocked, use the alternate login paths in [docs/getting-sta
 | Command | What it answers |
 | --- | --- |
 | `codex auth verify-flagged` | Can any previously flagged account be restored? |
+| `codex auth verify --paths` | Do my storage path chain and sandbox probes still pass self-test? |
 | `codex auth fix --dry-run` | What safe storage or account repairs are available? |
 | `codex auth doctor --fix` | Can the CLI diagnose and apply the safest fixes now? |
 
@@ -166,6 +167,7 @@ If browser launch is blocked, use the alternate login paths in [docs/getting-sta
 | --- | --- |
 | `codex auth report --live --json` | How do I get the full machine-readable health report? |
 | `codex auth fix --live --model gpt-5-codex` | How do I run live repair probes with a chosen model? |
+| `codex auth why-selected --json` | Which account does the selector pick now, and why? |
 
 ### Reliability behavior
 
