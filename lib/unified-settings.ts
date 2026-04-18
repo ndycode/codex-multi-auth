@@ -522,8 +522,8 @@ export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
  */
 export async function saveUnifiedPluginConfig(pluginConfig: JsonRecord): Promise<void> {
 	await enqueueSettingsWrite(async () => {
-		let { record, usedBackup } = await readSettingsRecordAsyncInternal();
 		let expectedMtimeMs = await getUnifiedSettingsMtimeMs();
+		let { record, usedBackup } = await readSettingsRecordAsyncInternal();
 		for (let attempt = 0; attempt < 3; attempt += 1) {
 			const nextRecord = record ?? {};
 			nextRecord.pluginConfig = { ...pluginConfig };
@@ -537,8 +537,8 @@ export async function saveUnifiedPluginConfig(pluginConfig: JsonRecord): Promise
 				if ((error as NodeJS.ErrnoException).code !== "ESTALE" || attempt >= 2) {
 					throw error;
 				}
-				({ record, usedBackup } = await readSettingsRecordAsyncInternal());
 				expectedMtimeMs = await getUnifiedSettingsMtimeMs();
+				({ record, usedBackup } = await readSettingsRecordAsyncInternal());
 			}
 		}
 	});
@@ -581,8 +581,8 @@ export async function saveUnifiedDashboardSettings(
 	dashboardDisplaySettings: JsonRecord,
 ): Promise<void> {
 	await enqueueSettingsWrite(async () => {
-		let { record, usedBackup } = await readSettingsRecordAsyncInternal();
 		let expectedMtimeMs = await getUnifiedSettingsMtimeMs();
+		let { record, usedBackup } = await readSettingsRecordAsyncInternal();
 		for (let attempt = 0; attempt < 3; attempt += 1) {
 			const nextRecord = record ?? {};
 			nextRecord.dashboardDisplaySettings = { ...dashboardDisplaySettings };
@@ -596,8 +596,8 @@ export async function saveUnifiedDashboardSettings(
 				if ((error as NodeJS.ErrnoException).code !== "ESTALE" || attempt >= 2) {
 					throw error;
 				}
-				({ record, usedBackup } = await readSettingsRecordAsyncInternal());
 				expectedMtimeMs = await getUnifiedSettingsMtimeMs();
+				({ record, usedBackup } = await readSettingsRecordAsyncInternal());
 			}
 		}
 	});
