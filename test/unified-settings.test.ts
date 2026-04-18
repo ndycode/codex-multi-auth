@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
@@ -495,6 +495,80 @@ describe("unified settings", () => {
 		}
 	});
 
+	it("retries sync rename on retryable fs errors without Atomics.wait", async () => {
+		const atomicsWaitSpy = vi.spyOn(Atomics, "wait");
+		vi.resetModules();
+		vi.doMock("node:fs", async () => {
+			const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+			let first = true;
+			return {
+				...actual,
+				renameSync: (...args: Parameters<typeof actual.renameSync>) => {
+					if (first) {
+						first = false;
+						const error = new Error("busy") as NodeJS.ErrnoException;
+						error.code = "EBUSY";
+						throw error;
+					}
+					return actual.renameSync(...args);
+				},
+			};
+		});
+		try {
+			const { saveUnifiedPluginConfigSync, loadUnifiedPluginConfigSync } =
+				await import("../lib/unified-settings.js");
+			saveUnifiedPluginConfigSync({ codexMode: true, retries: 9 });
+			expect(atomicsWaitSpy).not.toHaveBeenCalled();
+			expect(loadUnifiedPluginConfigSync()).toEqual({
+				codexMode: true,
+				retries: 9,
+			});
+		} finally {
+			vi.doUnmock("node:fs");
+			vi.resetModules();
+			atomicsWaitSpy.mockRestore();
+		}
+	});
+
+	it("retries sync backup snapshot copy on retryable fs errors without Atomics.wait", async () => {
+		const { getUnifiedSettingsPath } = await import("../lib/unified-settings.js");
+		const settingsPath = getUnifiedSettingsPath();
+		await fs.mkdir(dirname(settingsPath), { recursive: true });
+		await fs.writeFile(
+			settingsPath,
+			JSON.stringify({ version: 1, pluginConfig: { codexMode: true } }, null, 2),
+			"utf8",
+		);
+
+		const atomicsWaitSpy = vi.spyOn(Atomics, "wait");
+		vi.resetModules();
+		vi.doMock("node:fs", async () => {
+			const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+			let first = true;
+			return {
+				...actual,
+				copyFileSync: (...args: Parameters<typeof actual.copyFileSync>) => {
+					if (first) {
+						first = false;
+						const error = new Error("perm") as NodeJS.ErrnoException;
+						error.code = "EPERM";
+						throw error;
+					}
+					return actual.copyFileSync(...args);
+				},
+			};
+		});
+		try {
+			const { saveUnifiedPluginConfigSync } = await import("../lib/unified-settings.js");
+			saveUnifiedPluginConfigSync({ codexMode: true, retries: 1 });
+			expect(atomicsWaitSpy).not.toHaveBeenCalled();
+		} finally {
+			vi.doUnmock("node:fs");
+			vi.resetModules();
+			atomicsWaitSpy.mockRestore();
+		}
+	});
+
 	it("cleans async temp file when rename fails with non-retryable code", async () => {
 		const { saveUnifiedPluginConfig, getUnifiedSettingsPath } = await import(
 			"../lib/unified-settings.js"
@@ -733,6 +807,93 @@ describe("unified settings", () => {
 		expect(parsed.experimentalDraft).toEqual({
 			enabled: false,
 			panels: ["future"],
+		});
+	});
+
+	it("retries plugin section write against newer on-disk record to avoid stale overwrite", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedPluginConfig,
+		} = await import("../lib/unified-settings.js");
+
+		await fs.writeFile(
+			getUnifiedSettingsPath(),
+			JSON.stringify(
+				{
+					version: 1,
+					pluginConfig: { codexMode: false, retries: 9 },
+					dashboardDisplaySettings: {
+						menuShowLastUsed: true,
+						uiThemePreset: "green",
+					},
+					experimentalDraft: {
+						enabled: false,
+						panels: ["future"],
+					},
+				},
+				null,
+				2,
+			),
+			"utf8",
+		);
+
+		const originalWriteFile = fs.writeFile;
+		const writeSpy = vi.spyOn(fs, "writeFile");
+		let injectedConcurrentWrite = false;
+		writeSpy.mockImplementation(async (...args: Parameters<typeof fs.writeFile>) => {
+			const [filePath, data] = args;
+			const result = await originalWriteFile(...args);
+			if (!injectedConcurrentWrite && String(filePath).includes(".tmp")) {
+				injectedConcurrentWrite = true;
+				await originalWriteFile(
+					getUnifiedSettingsPath(),
+					`${JSON.stringify(
+						{
+							version: 1,
+							pluginConfig: { codexMode: false, retries: 9 },
+							dashboardDisplaySettings: {
+								menuShowLastUsed: false,
+								uiThemePreset: "purple",
+							},
+							experimentalDraft: {
+								enabled: true,
+								panels: ["fresh"],
+							},
+						},
+						null,
+						2,
+					)}\n`,
+					"utf8",
+				);
+			}
+			return result;
+		});
+
+		try {
+			await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 });
+		} finally {
+			writeSpy.mockRestore();
+		}
+
+		expect(injectedConcurrentWrite).toBe(true);
+		const parsed = JSON.parse(
+			await fs.readFile(getUnifiedSettingsPath(), "utf8"),
+		) as {
+			pluginConfig?: Record<string, unknown>;
+			dashboardDisplaySettings?: Record<string, unknown>;
+			experimentalDraft?: Record<string, unknown>;
+		};
+		expect(parsed.pluginConfig).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+		expect(parsed.dashboardDisplaySettings).toEqual({
+			menuShowLastUsed: false,
+			uiThemePreset: "purple",
+		});
+		expect(parsed.experimentalDraft).toEqual({
+			enabled: true,
+			panels: ["fresh"],
 		});
 	});
 

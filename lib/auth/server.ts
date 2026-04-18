@@ -66,7 +66,10 @@ export function startLocalOAuthServer({
 				"default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; script-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
 			);
 			res.end(successHtml);
-			const trackedServer = server as http.Server & { _lastCode?: string };
+			const trackedServer = server as http.Server & {
+				_lastCode?: string;
+				_lastState?: string;
+			};
 			if (trackedServer._lastCode) {
 				logWarn(
 					"Duplicate OAuth callback received; preserving first authorization code",
@@ -74,6 +77,7 @@ export function startLocalOAuthServer({
 				return;
 			}
 			trackedServer._lastCode = code;
+			trackedServer._lastState = state;
 		} catch (err) {
 			logError(
 				`Request handler error: ${(err as Error)?.message ?? String(err)}`,
@@ -95,7 +99,7 @@ export function startLocalOAuthServer({
 						pollAborted = true;
 						server.close();
 					},
-					waitForCode: async () => {
+					waitForCode: async (expectedState: string) => {
 						const POLL_INTERVAL_MS = 100;
 						const TIMEOUT_MS = 5 * 60 * 1000;
 						const maxIterations = Math.floor(TIMEOUT_MS / POLL_INTERVAL_MS);
@@ -103,9 +107,20 @@ export function startLocalOAuthServer({
 							new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
 						for (let i = 0; i < maxIterations; i++) {
 							if (pollAborted) return null;
-							const lastCode = (server as http.Server & { _lastCode?: string })
-								._lastCode;
-							if (lastCode) return { code: lastCode };
+							const trackedServer = server as http.Server & {
+								_lastCode?: string;
+								_lastState?: string;
+							};
+							const lastCode = trackedServer._lastCode;
+							if (lastCode) {
+								if (trackedServer._lastState !== expectedState) {
+									logWarn(
+										"Discarding OAuth callback due to state mismatch in waitForCode",
+									);
+									return null;
+								}
+								return { code: lastCode };
+							}
 							await poll();
 						}
 						logWarn("OAuth poll timeout after 5 minutes");
@@ -130,7 +145,7 @@ export function startLocalOAuthServer({
 							);
 						}
 					},
-					waitForCode: () => Promise.resolve(null),
+					waitForCode: (_expectedState: string) => Promise.resolve(null),
 				});
 			});
 	});

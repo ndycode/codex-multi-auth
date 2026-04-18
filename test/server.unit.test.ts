@@ -300,6 +300,27 @@ describe('OAuth Server Unit Tests', () => {
 			expect(code).toEqual({ code: 'the-code' });
 		});
 
+		it('returns null when stored callback state does not match expectedState', async () => {
+			(mockServer.listen as ReturnType<typeof vi.fn>).mockImplementation(
+				(_port: number, _host: string, callback: () => void) => {
+					callback();
+					return mockServer;
+				}
+			);
+			(mockServer.on as ReturnType<typeof vi.fn>).mockReturnValue(mockServer);
+
+			const result = await startLocalOAuthServer({ state: 'test-state' });
+
+			mockServer._lastCode = 'the-code';
+			mockServer._lastState = 'other-state';
+
+			const code = await result.waitForCode('test-state');
+			expect(code).toBeNull();
+			expect(logWarn).toHaveBeenCalledWith(
+				'Discarding OAuth callback due to state mismatch in waitForCode',
+			);
+		});
+
 		it('should return null after 5 minute timeout', async () => {
 			vi.useFakeTimers();
 			

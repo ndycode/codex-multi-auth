@@ -866,6 +866,16 @@ export class AccountManager {
 	): void {
 		account.lastSwitchReason = reason;
 		this.currentAccountIndexByFamily[family] = account.index;
+		// HI-02: keep cursorByFamily in lockstep so subsequent round-robin
+		// passes resume AFTER the just-switched account, matching the
+		// convention used in getCurrentOrNextForFamilyHybrid / the
+		// getCurrentOrNextForFamily inner loop. Without this, the cursor
+		// still points at the pre-switch position and the next selection
+		// can re-pick or skip the freshly marked account.
+		const count = this.accounts.length;
+		if (count > 0) {
+			this.cursorByFamily[family] = (account.index + 1) % count;
+		}
 	}
 
 	/**
@@ -900,6 +910,13 @@ export class AccountManager {
 		return withRoutingMutex(this.routingMutexMode, () => {
 			account.lastSwitchReason = reason;
 			this.currentAccountIndexByFamily[family] = account.index;
+			// HI-02: keep cursorByFamily in lockstep with the active-index
+			// mutation so the mutex-serialized variant preserves the same
+			// round-robin invariant as the legacy `markSwitched` path.
+			const count = this.accounts.length;
+			if (count > 0) {
+				this.cursorByFamily[family] = (account.index + 1) % count;
+			}
 			const trackerKey = getRuntimeTrackerKey(account);
 			const healthTracker = getHealthTracker();
 			const tokenTracker = getTokenTracker();
@@ -1316,16 +1333,38 @@ export class AccountManager {
 
 		// Snapshot family pointers before splice so we can distinguish "was
 		// pointing at the removed account" from "was pointing past it".
-		const priorCursor: Record<ModelFamily, number> = {} as Record<ModelFamily, number>;
-		const priorActive: Record<ModelFamily, number> = {} as Record<ModelFamily, number>;
+		const priorCursor: Record<ModelFamily, number> = {} as Record<
+			ModelFamily,
+			number
+		>;
+		const priorActive: Record<ModelFamily, number> = {} as Record<
+			ModelFamily,
+			number
+		>;
 		for (const family of MODEL_FAMILIES) {
 			priorCursor[family] = this.cursorByFamily[family];
 			priorActive[family] = this.currentAccountIndexByFamily[family];
 		}
 
 		this.accounts.splice(idx, 1);
+		// Clear numeric-keyed tracker state in the shifted range. After reindex,
+		// any refresh-only account that moved from N to N-1 must not inherit the
+		// stale health/token entries that used to belong to the old numeric slot.
+		getHealthTracker().clearNumericKeysAtOrAbove(idx);
+		getTokenTracker().clearNumericKeysAtOrAbove(idx);
 		this.accounts.forEach((acc, index) => {
 			acc.index = index;
+			// Invalidate the cached runtime tracker key when it was keyed by
+			// numeric index (fallback path in getRuntimeAccountIdentityKey).
+			// After the splice+reindex above, a remaining account that was at
+			// index N (e.g. 3) may now live at index N-1 (e.g. 2); if we keep
+			// the previously cached numeric key, rotation/health/token state
+			// queries would consult the stale position and mismatch the
+			// current one. Identity-based string keys remain stable because
+			// accountId/email are not affected by array position changes.
+			if (typeof acc._runtimeTrackerKey === "number") {
+				acc._runtimeTrackerKey = undefined;
+			}
 		});
 
 		if (this.accounts.length === 0) {

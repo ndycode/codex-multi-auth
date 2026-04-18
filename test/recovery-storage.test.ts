@@ -570,24 +570,87 @@ describe("RecoveryStorage", () => {
 			});
 			// AUDIT-M01 / R6 atomic recovery writes: prependThinkingPart now
 			// stages the payload to a .tmp.<rand> sibling and renames it over
-			// the final prt_0000000000_thinking.json target.
+			// the final prt_0000000000_thinking_<timestamp>_<counter>_<random>.json
+			// target. RPTU-001: the id is unique per invocation so repeat
+			// recovery passes on the same messageID no longer clobber the prior
+			// synthetic part.
 			expect(fsMock.writeFileSync).toHaveBeenCalledTimes(1);
 			expect(fsMock.renameSync).toHaveBeenCalledTimes(1);
 
-			const finalPath = join(partDir, "prt_0000000000_thinking.json");
 			const [tempPath, payload] = fsMock.writeFileSync.mock.calls[0] ?? [];
-			expect(tempPath).toMatch(/prt_0000000000_thinking\.json\.tmp\./);
+			expect(tempPath).toMatch(
+				/prt_0000000000_thinking_[0-9a-f]+_[0-9a-z]+_[0-9a-z]+\.json\.tmp\./,
+			);
 			const [renameFrom, renameTo] = fsMock.renameSync.mock.calls[0] ?? [];
 			expect(renameFrom).toBe(tempPath);
-			expect(renameTo).toBe(finalPath);
-			expect(JSON.parse(payload)).toMatchObject({
-				id: "prt_0000000000_thinking",
+			expect(renameTo).toMatch(
+				new RegExp(
+					`^${partDir.replace(/\\/g, "\\\\")}[\\\\/]prt_0000000000_thinking_[0-9a-f]+_[0-9a-z]+_[0-9a-z]+\\.json$`,
+				),
+			);
+			const parsed = JSON.parse(payload);
+			expect(parsed).toMatchObject({
 				sessionID,
 				messageID,
 				type: "thinking",
 				thinking: "",
 				synthetic: true,
 			});
+			expect(parsed.id).toMatch(
+				/^prt_0000000000_thinking_[0-9a-f]+_[0-9a-z]+_[0-9a-z]+$/,
+			);
+		});
+
+		it("should generate unique ids on repeat calls so retries do not overwrite (RPTU-001)", () => {
+			// Simulate two recovery passes on the same messageID: each invocation
+			// must stage and rename a DISTINCT target file, proving the synthetic
+			// thinking part from the first pass is preserved.
+			const sessionID = "s";
+			const messageID = "m";
+			const partDir = join(PART_STORAGE, messageID);
+			fsMock.existsSync.mockReturnValue(true);
+
+			expect(storage.prependThinkingPart(sessionID, messageID)).toBe(true);
+			expect(storage.prependThinkingPart(sessionID, messageID)).toBe(true);
+
+			expect(fsMock.writeFileSync).toHaveBeenCalledTimes(2);
+			expect(fsMock.renameSync).toHaveBeenCalledTimes(2);
+
+			const [firstTemp, firstPayload] =
+				fsMock.writeFileSync.mock.calls[0] ?? [];
+			const [secondTemp, secondPayload] =
+				fsMock.writeFileSync.mock.calls[1] ?? [];
+			const [, firstTarget] = fsMock.renameSync.mock.calls[0] ?? [];
+			const [, secondTarget] = fsMock.renameSync.mock.calls[1] ?? [];
+
+			// Temp staging paths must differ (otherwise two writers would race).
+			expect(firstTemp).not.toBe(secondTemp);
+			// Final target paths MUST differ so the second pass does not
+			// overwrite the first synthetic thinking part.
+			expect(firstTarget).not.toBe(secondTarget);
+
+			// Both payloads must carry their own unique id matching their final
+			// target filename, so readers see two distinct parts on disk.
+			const firstParsed = JSON.parse(firstPayload);
+			const secondParsed = JSON.parse(secondPayload);
+			expect(firstParsed.id).toMatch(/^prt_0000000000_thinking_[0-9a-f]+_[0-9a-z]+_[0-9a-z]+$/);
+			expect(secondParsed.id).toMatch(/^prt_0000000000_thinking_[0-9a-f]+_[0-9a-z]+_[0-9a-z]+$/);
+			expect(firstParsed.id).not.toBe(secondParsed.id);
+			expect(firstTarget).toContain(`${firstParsed.id}.json`);
+			expect(secondTarget).toContain(`${secondParsed.id}.json`);
+		});
+
+		it("should generate ids that sort before real generatePartId ids so orphan detection still sees thinking first", () => {
+			// findMessagesWithOrphanThinking sorts parts by id and checks the
+			// first element. Synthetic thinking ids MUST sort lexicographically
+			// before any id from generatePartId(), which starts with
+			// `prt_<hex_timestamp>` where the hex timestamp's leading digit is
+			// non-zero for any real-world time.
+			const thinkingId = storage.generateThinkingPartId();
+			const realId = storage.generatePartId();
+
+			expect(thinkingId.startsWith("prt_0000000000_thinking_")).toBe(true);
+			expect([thinkingId, realId].sort()).toEqual([thinkingId, realId]);
 		});
 
 		it("should return false on write error", () => {

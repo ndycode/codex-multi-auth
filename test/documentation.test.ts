@@ -310,22 +310,16 @@ describe("Documentation Integrity", () => {
 		const readme = read("README.md");
 		const commandRef = read("docs/reference/commands.md");
 		const helpPath = "lib/codex-manager/help.ts";
-		const authCommandsPath = "lib/codex-manager/auth-commands.ts";
 		const switchPath = "lib/codex-manager/commands/switch.ts";
 		expect(
 			existsSync(join(projectRoot, helpPath)),
 			`${helpPath} should exist`,
 		).toBe(true);
 		expect(
-			existsSync(join(projectRoot, authCommandsPath)),
-			`${authCommandsPath} should exist`,
-		).toBe(true);
-		expect(
 			existsSync(join(projectRoot, switchPath)),
 			`${switchPath} should exist`,
 		).toBe(true);
 		const help = read(helpPath);
-		const authCommands = read(authCommandsPath);
 		const switchCommand = read(switchPath);
 
 		expect(readme).toContain("codex auth fix --live --model gpt-5-codex");
@@ -348,10 +342,6 @@ describe("Documentation Integrity", () => {
 		);
 		expect(help).toContain("codex auth config explain [--json]");
 		expect(help).toContain("codex auth debug bundle [--json]");
-		expect(authCommands).toContain(
-			"Missing index. Usage: codex auth switch <index>",
-		);
-		expect(authCommands).not.toContain("codex-multi-auth auth switch <index>");
 		expect(switchCommand).toContain(
 			"Missing index. Usage: codex auth switch <index>",
 		);

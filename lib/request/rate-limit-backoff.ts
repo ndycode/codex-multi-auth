@@ -48,19 +48,28 @@ export function configureRateLimitBackoff(
 		typeof overrides.dedupWindowMs === "number" &&
 		Number.isFinite(overrides.dedupWindowMs)
 	) {
-		rateLimitBackoffConfig.dedupWindowMs = Math.max(0, Math.floor(overrides.dedupWindowMs));
+		rateLimitBackoffConfig.dedupWindowMs = Math.max(
+			0,
+			Math.floor(overrides.dedupWindowMs),
+		);
 	}
 	if (
 		typeof overrides.stateResetMs === "number" &&
 		Number.isFinite(overrides.stateResetMs)
 	) {
-		rateLimitBackoffConfig.stateResetMs = Math.max(1_000, Math.floor(overrides.stateResetMs));
+		rateLimitBackoffConfig.stateResetMs = Math.max(
+			1_000,
+			Math.floor(overrides.stateResetMs),
+		);
 	}
 	if (
 		typeof overrides.maxBackoffMs === "number" &&
 		Number.isFinite(overrides.maxBackoffMs)
 	) {
-		rateLimitBackoffConfig.maxBackoffMs = Math.max(1_000, Math.floor(overrides.maxBackoffMs));
+		rateLimitBackoffConfig.maxBackoffMs = Math.max(
+			1_000,
+			Math.floor(overrides.maxBackoffMs),
+		);
 	}
 	if (
 		typeof overrides.shortRetryThresholdMs === "number" &&
@@ -118,13 +127,18 @@ function resolveRateLimitStateKey(
 	return `${accountStateKey}:${quotaKey}`;
 }
 
-function normalizeDelayMs(value: number | null | undefined, fallback: number): number {
-	const candidate = typeof value === "number" && Number.isFinite(value) ? value : fallback;
+function normalizeDelayMs(
+	value: number | null | undefined,
+	fallback: number,
+): number {
+	const candidate =
+		typeof value === "number" && Number.isFinite(value) ? value : fallback;
 	return Math.max(0, Math.floor(candidate));
 }
 
 function addBackoffJitter(baseMs: number): number {
-	const jitter = baseMs * RATE_LIMIT_BACKOFF_JITTER_FACTOR * (Math.random() * 2 - 1);
+	const jitter =
+		baseMs * RATE_LIMIT_BACKOFF_JITTER_FACTOR * (Math.random() * 2 - 1);
 	return Math.max(0, Math.floor(baseMs + jitter));
 }
 
@@ -157,7 +171,10 @@ export function getRateLimitBackoff(
 
 	const baseDelay = normalizeDelayMs(serverRetryAfterMs, 1000);
 
-	if (previous && now - previous.lastAt < rateLimitBackoffConfig.dedupWindowMs) {
+	if (
+		previous &&
+		now - previous.lastAt < rateLimitBackoffConfig.dedupWindowMs
+	) {
 		return {
 			attempt: previous.consecutive429,
 			delayMs: previous.lastDelayMs,
@@ -213,15 +230,27 @@ const BACKOFF_MULTIPLIERS: Record<RateLimitReason, number> = {
 	unknown: 1.0,
 };
 
+/**
+ * Apply a reason-based multiplier to an already-exponential backoff delay.
+ *
+ * NOTE: `baseDelayMs` is expected to already incorporate any exponential
+ * progression and jitter (as produced by `getRateLimitBackoff`). This
+ * function intentionally does NOT re-apply `2^(attempt-1)`; doing so would
+ * double-apply the exponential when chained with `getRateLimitBackoff`,
+ * which previously caused delays to saturate at `maxBackoffMs` after just
+ * two consecutive 429s (see audit finding REQ-HIGH-01).
+ *
+ * The `attempt` parameter is retained for API compatibility and potential
+ * future use (e.g. reason-specific progression) but is not currently read.
+ */
 export function calculateBackoffMs(
 	baseDelayMs: number,
-	attempt: number,
+	_attempt: number,
 	reason: RateLimitReason = "unknown",
 ): number {
 	const multiplier = BACKOFF_MULTIPLIERS[reason] ?? 1.0;
-	const exponentialDelay = baseDelayMs * Math.pow(2, attempt - 1);
 	return Math.min(
-		Math.floor(exponentialDelay * multiplier),
+		Math.max(0, Math.floor(baseDelayMs * multiplier)),
 		rateLimitBackoffConfig.maxBackoffMs,
 	);
 }
@@ -272,8 +301,13 @@ export function getRateLimitBackoffWithReason(
 			"getRateLimitBackoffWithReason requires a non-negative integer accountIndex",
 		);
 	}
-	if (typeof resolvedQuotaKey !== "string" || resolvedQuotaKey.trim().length === 0) {
-		throw new TypeError("getRateLimitBackoffWithReason requires a non-empty quotaKey");
+	if (
+		typeof resolvedQuotaKey !== "string" ||
+		resolvedQuotaKey.trim().length === 0
+	) {
+		throw new TypeError(
+			"getRateLimitBackoffWithReason requires a non-empty quotaKey",
+		);
 	}
 	const normalizedQuotaKey = resolvedQuotaKey.trim();
 	const result = getRateLimitBackoff(
@@ -282,7 +316,17 @@ export function getRateLimitBackoffWithReason(
 		resolvedServerRetryAfterMs,
 		resolvedStableAccountKey,
 	);
-	const normalizedBaseDelay = normalizeDelayMs(resolvedServerRetryAfterMs, 1000);
+	const normalizedBaseDelay = normalizeDelayMs(
+		resolvedServerRetryAfterMs,
+		1000,
+	);
+	// For the first fresh attempt, pass the un-jittered normalized base so the
+	// deterministic portion of the reason multiplier is visible to callers.
+	// For subsequent attempts (or duplicate-window hits), `result.delayMs`
+	// already encodes the exponential progression + jitter from
+	// `getRateLimitBackoff`, and `calculateBackoffMs` intentionally applies
+	// only the reason multiplier so the exponential is NOT double-applied
+	// (see audit finding REQ-HIGH-01).
 	const adjustedDelay = calculateBackoffMs(
 		result.attempt === 1 && !result.isDuplicate
 			? normalizedBaseDelay

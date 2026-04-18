@@ -5,6 +5,7 @@ import type { AccountStorageV3 } from "../storage.js";
 
 const EXPORT_RENAME_MAX_ATTEMPTS = 4;
 const EXPORT_RENAME_BASE_DELAY_MS = 25;
+const MAX_IMPORT_BYTES = 4 * 1024 * 1024;
 
 async function renameExportFileWithRetry(
 	sourcePath: string,
@@ -89,7 +90,21 @@ export async function readImportFile(params: {
 		throw new Error(`Import file not found: ${params.resolvedPath}`);
 	}
 
-	const content = await fs.readFile(params.resolvedPath, "utf-8");
+	const handle = await fs.open(params.resolvedPath, "r");
+	let content: string;
+	try {
+		const stats = await handle.stat();
+		if (stats.size > MAX_IMPORT_BYTES) {
+			throw new Error(
+				`Import file exceeds maximum size of ${MAX_IMPORT_BYTES} bytes: ${params.resolvedPath}`,
+			);
+		}
+		content = await handle.readFile({ encoding: "utf-8" });
+	} finally {
+		await handle.close().catch(() => {
+			// Best-effort cleanup for import file handles.
+		});
+	}
 	// Try the strict Zod-guarded boundary first (fail-closed parse + schema).
 	// A successful parse hands Zod-validated data straight to the normalizer,
 	// making Zod authoritative for imports. On failure we distinguish

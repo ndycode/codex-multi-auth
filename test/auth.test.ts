@@ -7,6 +7,7 @@ import {
 	redactOAuthUrlForLog,
 	refreshAccessToken,
 	exchangeAuthorizationCode,
+	sanitizeOAuthResponseBodyForLog,
 	CLIENT_ID,
 	AUTHORIZE_URL,
 	REDIRECT_URI,
@@ -741,6 +742,218 @@ describe("Auth Module", () => {
 			} finally {
 				globalThis.fetch = originalFetch;
 				vi.restoreAllMocks();
+			}
+		});
+	});
+
+	describe("sanitizeOAuthResponseBodyForLog (LIB-HIGH-001 regression)", () => {
+		const OPAQUE_REFRESH =
+			"RT_ch_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP0123456789";
+		const OPAQUE_ACCESS =
+			"AT_ch_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+
+		it("masks refresh_token and access_token in JSON error body", () => {
+			const body = JSON.stringify({
+				error: "invalid_grant",
+				error_description: "bad refresh",
+				refresh_token: OPAQUE_REFRESH,
+				access_token: OPAQUE_ACCESS,
+				id_token: "some.id.token",
+			});
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toContain(OPAQUE_REFRESH);
+			expect(out).not.toContain(OPAQUE_ACCESS);
+			expect(out).toContain("***REDACTED***");
+			expect(out).toContain("invalid_grant");
+		});
+
+		it("masks nested sensitive fields in JSON body", () => {
+			const body = JSON.stringify({
+				error: "invalid_grant",
+				debug: { refresh_token: OPAQUE_REFRESH, reason: "x" },
+			});
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toContain(OPAQUE_REFRESH);
+			expect(out).toContain("invalid_grant");
+			expect(out).toContain("x");
+		});
+
+		it("masks urlencoded refresh_token=value form", () => {
+			const body = `error=invalid_grant&refresh_token=${OPAQUE_REFRESH}&other=safe`;
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toContain(OPAQUE_REFRESH);
+			expect(out).toContain("refresh_token=***REDACTED***");
+			expect(out).toContain("other=safe");
+		});
+
+		it("does not over-redact longer parameter names ending in _code", () => {
+			const body = `error=invalid_grant&device_code=device-safe&refresh_token=${OPAQUE_REFRESH}&other=safe`;
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).toContain("device_code=device-safe");
+			expect(out).toContain("refresh_token=***REDACTED***");
+			expect(out).toContain("other=safe");
+		});
+
+		it("masks refresh_token in malformed JSON via regex fallback", () => {
+			const body = `{"error":"invalid_grant","refresh_token":"${OPAQUE_REFRESH}",`;
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toContain(OPAQUE_REFRESH);
+			expect(out).toContain('"refresh_token":"***REDACTED***"');
+		});
+
+		it("returns non-token plain text unchanged", () => {
+			expect(sanitizeOAuthResponseBodyForLog("Bad Request")).toBe(
+				"Bad Request",
+			);
+			expect(sanitizeOAuthResponseBodyForLog("")).toBe("");
+		});
+
+		it("preserves structure and non-sensitive JSON fields", () => {
+			const body = JSON.stringify({
+				error: "invalid_grant",
+				status: 400,
+				refresh_token: OPAQUE_REFRESH,
+			});
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			const parsed = JSON.parse(out) as Record<string, unknown>;
+			expect(parsed.error).toBe("invalid_grant");
+			expect(parsed.status).toBe(400);
+			expect(parsed.refresh_token).toBe("***REDACTED***");
+		});
+
+		it("masks camelCase variants (refreshToken / accessToken)", () => {
+			const body = JSON.stringify({
+				refreshToken: OPAQUE_REFRESH,
+				accessToken: OPAQUE_ACCESS,
+			});
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toContain(OPAQUE_REFRESH);
+			expect(out).not.toContain(OPAQUE_ACCESS);
+		});
+
+		it("masks codeVerifier camelCase variant", () => {
+			const body = JSON.stringify({
+				codeVerifier: OPAQUE_REFRESH,
+				status: 400,
+			});
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toContain(OPAQUE_REFRESH);
+			expect(out).toContain("***REDACTED***");
+			expect(out).toContain("400");
+		});
+
+		it("scrubs token-like substrings inside parsed JSON string values", () => {
+			const body = JSON.stringify({
+				error_description: `refresh failed for token ${OPAQUE_REFRESH}`,
+			});
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toContain(OPAQUE_REFRESH);
+			expect(out).toContain("***REDACTED***");
+		});
+	});
+
+	describe("refreshAccessToken does not leak tokens into log message (LIB-HIGH-001)", () => {
+		const OPAQUE_REFRESH =
+			"RT_ch_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP0123456789";
+		const OPAQUE_NEW_REFRESH =
+			"RT_ch_NEW_nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn";
+
+		it("scrubs refresh_token from logError when refresh fails with JSON body", async () => {
+			const logErrorSpy = vi
+				.spyOn(loggerModule, "logError")
+				.mockImplementation(() => {});
+			const originalFetch = globalThis.fetch;
+			const errorBody = JSON.stringify({
+				error: "invalid_grant",
+				error_description: "refresh_token expired",
+				refresh_token: OPAQUE_NEW_REFRESH,
+			});
+			globalThis.fetch = vi.fn(
+				async () =>
+					new Response(errorBody, {
+						status: 400,
+					}),
+			) as never;
+
+			try {
+				const result = await refreshAccessToken(OPAQUE_REFRESH);
+				expect(result.type).toBe("failed");
+				if (result.type === "failed") {
+					expect(result.statusCode).toBe(400);
+					expect(result.message).toBeDefined();
+					expect(result.message).not.toContain(OPAQUE_NEW_REFRESH);
+				}
+				const loggedArgs = logErrorSpy.mock.calls.flat().map(String);
+				for (const entry of loggedArgs) {
+					expect(entry).not.toContain(OPAQUE_NEW_REFRESH);
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+				logErrorSpy.mockRestore();
+			}
+		});
+
+		it("scrubs access_token from logError when code->token exchange fails with JSON body", async () => {
+			const logErrorSpy = vi
+				.spyOn(loggerModule, "logError")
+				.mockImplementation(() => {});
+			const OPAQUE_ACCESS =
+				"AT_ch_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+			const originalFetch = globalThis.fetch;
+			const errorBody = JSON.stringify({
+				error: "server_error",
+				access_token: OPAQUE_ACCESS,
+			});
+			globalThis.fetch = vi.fn(
+				async () =>
+					new Response(errorBody, {
+						status: 500,
+					}),
+			) as never;
+
+			try {
+				const result = await exchangeAuthorizationCode("code", "verifier");
+				expect(result.type).toBe("failed");
+				if (result.type === "failed") {
+					expect(result.statusCode).toBe(500);
+					expect(result.message).toBeDefined();
+					expect(result.message).not.toContain(OPAQUE_ACCESS);
+				}
+				const loggedArgs = logErrorSpy.mock.calls.flat().map(String);
+				for (const entry of loggedArgs) {
+					expect(entry).not.toContain(OPAQUE_ACCESS);
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+				logErrorSpy.mockRestore();
+			}
+		});
+
+		it("preserves non-sensitive body content in log message", async () => {
+			const logErrorSpy = vi
+				.spyOn(loggerModule, "logError")
+				.mockImplementation(() => {});
+			const originalFetch = globalThis.fetch;
+			globalThis.fetch = vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							error: "invalid_grant",
+							error_description: "token expired",
+						}),
+						{ status: 400 },
+					),
+			) as never;
+
+			try {
+				await refreshAccessToken("some-token");
+				const loggedArgs = logErrorSpy.mock.calls.flat().map(String);
+				const joined = loggedArgs.join(" ");
+				expect(joined).toContain("invalid_grant");
+				expect(joined).toContain("token expired");
+			} finally {
+				globalThis.fetch = originalFetch;
+				logErrorSpy.mockRestore();
 			}
 		});
 	});

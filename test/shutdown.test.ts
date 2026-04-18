@@ -29,7 +29,7 @@ describe("Graceful shutdown", () => {
 		expect(fn).not.toHaveBeenCalled();
 	});
 
-	it("runs multiple cleanup functions in order", async () => {
+	it("runs multiple cleanup functions in registration order", async () => {
 		const order: number[] = [];
 		registerCleanup(() => { order.push(1); });
 		registerCleanup(() => { order.push(2); });
@@ -63,6 +63,26 @@ describe("Graceful shutdown", () => {
 		expect(getCleanupCount()).toBe(2);
 		await runCleanup();
 		expect(getCleanupCount()).toBe(0);
+	});
+
+	it("returns the same promise for concurrent runCleanup calls", async () => {
+		let release!: () => void;
+		const blocker = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const cleanupFn = vi.fn(async () => {
+			await blocker;
+		});
+		registerCleanup(cleanupFn);
+
+		const first = runCleanup();
+		const second = runCleanup();
+
+		expect(first).toBe(second);
+		expect(cleanupFn).toHaveBeenCalledTimes(1);
+
+		release();
+		await first;
 	});
 
 	it("unregister is no-op for non-registered function", () => {

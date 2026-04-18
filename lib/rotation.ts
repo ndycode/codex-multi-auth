@@ -165,6 +165,19 @@ export class HealthScoreTracker {
 	clear(): void {
 		this.entries.clear();
 	}
+
+	clearNumericKeysAtOrAbove(startIndex: number): void {
+		for (const key of this.entries.keys()) {
+			try {
+				const [accountKey] = JSON.parse(key) as [string, string | null];
+				if (/^\d+$/.test(accountKey) && Number(accountKey) >= startIndex) {
+					this.entries.delete(key);
+				}
+			} catch {
+				// Ignore malformed tracker keys.
+			}
+		}
+	}
 }
 
 // ============================================================================
@@ -306,6 +319,19 @@ export class TokenBucketTracker {
 
 	clear(): void {
 		this.buckets.clear();
+	}
+
+	clearNumericKeysAtOrAbove(startIndex: number): void {
+		for (const key of this.buckets.keys()) {
+			try {
+				const [accountKey] = JSON.parse(key) as [string, string | null];
+				if (/^\d+$/.test(accountKey) && Number(accountKey) >= startIndex) {
+					this.buckets.delete(key);
+				}
+			} catch {
+				// Ignore malformed tracker keys.
+			}
+		}
 	}
 }
 

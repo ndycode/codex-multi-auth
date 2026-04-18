@@ -498,8 +498,12 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 					}
 					return;
 				default:
+					const hotkey = decodeHotkeyInput(data);
+					if (hotkey && hotkey.toLowerCase() === "q") {
+						finish(null);
+						return;
+					}
 					if (options.onInput) {
-						const hotkey = decodeHotkeyInput(data);
 						if (hotkey) {
 							rerenderRequested = false;
 							const result = options.onInput(hotkey, {

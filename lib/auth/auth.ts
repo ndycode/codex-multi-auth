@@ -66,6 +66,98 @@ function getOAuthResponseLogMetadata(
 	return { responseType: typeof rawResponse };
 }
 
+const OAUTH_SENSITIVE_BODY_KEYS = [
+	"refresh_token",
+	"refreshToken",
+	"access_token",
+	"accessToken",
+	"id_token",
+	"idToken",
+	"codeVerifier",
+	"token",
+	"code",
+	"code_verifier",
+] as const;
+
+function scrubTokenLikeSubstrings(value: string): string {
+	let scrubbed = value.replace(
+		/(\b(?:refresh|access|id)[_-]?token\s*[:=]\s*)([^\s,;"'}]{8,})/gi,
+		(_match, prefix) => `${prefix}***REDACTED***`,
+	);
+	scrubbed = scrubbed.replace(
+		/\b(?:RT|AT)_ch_[A-Za-z0-9_-]{20,}\b/g,
+		"***REDACTED***",
+	);
+	return scrubbed;
+}
+
+function redactSensitiveFields(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map((item) => redactSensitiveFields(item));
+	}
+	if (value !== null && typeof value === "object") {
+		const out: Record<string, unknown> = {};
+		const sensitiveSet = new Set<string>(OAUTH_SENSITIVE_BODY_KEYS);
+		for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+			if (sensitiveSet.has(k)) {
+				out[k] = "***REDACTED***";
+			} else {
+				out[k] = redactSensitiveFields(v);
+			}
+		}
+		return out;
+	}
+	if (typeof value === "string") {
+		return scrubTokenLikeSubstrings(value);
+	}
+	return value;
+}
+
+/**
+ * Scrub opaque tokens from a raw OAuth token-endpoint response body before
+ * interpolating it into a log message.
+ *
+ * Error and success responses from `/oauth/token` may contain `refresh_token`,
+ * `access_token`, or `id_token` values. ChatGPT refresh tokens are opaque
+ * high-entropy strings that do NOT match the logger's `TOKEN_PATTERNS`
+ * (JWT, long hex, `sk-*`, `Bearer <x>`), so they would be written verbatim
+ * to disk log files when a status-body string is concatenated into a
+ * `logError` message.
+ *
+ * Strategy:
+ *   1. If the body parses as JSON, walk it and mask sensitive keys.
+ *   2. Otherwise fall back to a targeted regex scrub of `"key":"value"` and
+ *      `key=value` patterns for the known sensitive keys.
+ *
+ * The returned string is safe to interpolate into log messages.
+ */
+export function sanitizeOAuthResponseBodyForLog(rawBody: string): string {
+	if (!rawBody) return rawBody;
+	const trimmed = rawBody.trim();
+	if (trimmed.length === 0) return rawBody;
+
+	if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+		try {
+			const parsed = JSON.parse(trimmed) as unknown;
+			const redacted = redactSensitiveFields(parsed);
+			return JSON.stringify(redacted);
+		} catch {
+			// Fall through to regex scrub for malformed JSON.
+		}
+	}
+
+	let scrubbed = rawBody;
+	for (const key of OAUTH_SENSITIVE_BODY_KEYS) {
+		// "key":"value" style (JSON-like text)
+		const jsonPattern = new RegExp(`("${key}"\\s*:\\s*)"[^"]*"`, "g");
+		scrubbed = scrubbed.replace(jsonPattern, `$1"***REDACTED***"`);
+		// key=value style (urlencoded / query-string)
+		const urlPattern = new RegExp(`(^|[?&\\s])(${key}=)[^&\\s]+`, "g");
+		scrubbed = scrubbed.replace(urlPattern, `$1$2***REDACTED***`);
+	}
+	return scrubbed;
+}
+
 /**
  * Redacts sensitive OAuth query parameters for safe logging.
  * Returns the original string when parsing fails.
@@ -160,12 +252,13 @@ export async function exchangeAuthorizationCode(
 	});
 	if (!res.ok) {
 		const text = await res.text().catch(() => "");
-		logError(`code->token failed: ${res.status} ${text}`);
+		const safeText = sanitizeOAuthResponseBodyForLog(text);
+		logError(`code->token failed: ${res.status} ${safeText}`);
 		return {
 			type: "failed",
 			reason: "http_error",
 			statusCode: res.status,
-			message: text || undefined,
+			message: safeText || undefined,
 		};
 	}
 	const rawJson = (await res.json()) as unknown;
@@ -252,12 +345,13 @@ export async function refreshAccessToken(
 
 		if (!response.ok) {
 			const text = await response.text().catch(() => "");
-			logError(`Token refresh failed: ${response.status} ${text}`);
+			const safeText = sanitizeOAuthResponseBodyForLog(text);
+			logError(`Token refresh failed: ${response.status} ${safeText}`);
 			return {
 				type: "failed",
 				reason: "http_error",
 				statusCode: response.status,
-				message: text || undefined,
+				message: safeText || undefined,
 			};
 		}
 

@@ -2,6 +2,7 @@ type CleanupFn = () => void | Promise<void>;
 
 const cleanupFunctions: CleanupFn[] = [];
 let shutdownRegistered = false;
+let cleanupPromise: Promise<void> | null = null;
 
 export function registerCleanup(fn: CleanupFn): void {
 	cleanupFunctions.push(fn);
@@ -15,17 +16,27 @@ export function unregisterCleanup(fn: CleanupFn): void {
 	}
 }
 
-export async function runCleanup(): Promise<void> {
-	const fns = [...cleanupFunctions];
-	cleanupFunctions.length = 0;
-
-	for (const fn of fns) {
-		try {
-			await fn();
-		} catch {
-			// Ignore cleanup errors during shutdown
-		}
+export function runCleanup(): Promise<void> {
+	if (cleanupPromise) {
+		return cleanupPromise;
 	}
+
+	cleanupPromise = (async () => {
+		const fns = [...cleanupFunctions];
+		cleanupFunctions.length = 0;
+
+		for (const fn of fns) {
+			try {
+				await fn();
+			} catch {
+				// Ignore cleanup errors during shutdown
+			}
+		}
+	})().finally(() => {
+		cleanupPromise = null;
+	});
+
+	return cleanupPromise;
 }
 
 function ensureShutdownHandler(): void {

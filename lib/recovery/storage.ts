@@ -148,6 +148,33 @@ export function generatePartId(): string {
 	return `prt_${timestamp}${random}`;
 }
 
+/**
+ * Counter used to disambiguate synthetic thinking-part ids produced within
+ * the same millisecond. Combined with the millisecond timestamp and a random
+ * suffix, this guarantees each invocation of `prependThinkingPart` writes a
+ * distinct file instead of clobbering a prior synthetic part (RPTU-001).
+ */
+let thinkingPartCounter = 0;
+
+/**
+ * Generate a unique id for a synthetic thinking part.
+ *
+ * The id keeps the `prt_0000000000_thinking` prefix so it still sorts
+ * lexicographically before any id produced by `generatePartId()` (those
+ * start with a non-zero hex timestamp), which preserves the "prepend"
+ * ordering relied on by `findMessagesWithOrphanThinking` and
+ * `findMessageByIndexNeedingThinking`. The suffix — millisecond timestamp
+ * (hex), monotonic counter, and short random token — makes the id unique
+ * per invocation so that repeat recovery passes on the same message do not
+ * overwrite the prior synthetic part (RPTU-001).
+ */
+export function generateThinkingPartId(): string {
+	const timestamp = Date.now().toString(16);
+	const counter = (thinkingPartCounter++).toString(36);
+	const random = Math.random().toString(36).substring(2, 8);
+	return `prt_0000000000_thinking_${timestamp}_${counter}_${random}`;
+}
+
 // =============================================================================
 // Directory Helpers
 // =============================================================================
@@ -380,7 +407,13 @@ export function prependThinkingPart(
 			mkdirSync(partDir, { recursive: true });
 		}
 
-		const partId = "prt_0000000000_thinking";
+		// RPTU-001: the id MUST be unique per invocation so that repeat recovery
+		// passes on the same messageID do not overwrite a prior synthetic
+		// thinking part. The `prt_0000000000_thinking_` prefix keeps the id
+		// sorted before any real part id (which begins with a non-zero hex
+		// timestamp after the `prt_` prefix), so the part still acts as a
+		// prepend for `findMessagesWithOrphanThinking`.
+		const partId = generateThinkingPartId();
 		const part = {
 			id: partId,
 			sessionID,

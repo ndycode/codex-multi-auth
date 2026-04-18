@@ -1911,6 +1911,79 @@ describe("AccountManager", () => {
 			manager.markSwitched(account, "rate-limit", "codex");
 			expect(account.lastSwitchReason).toBe("rate-limit");
 		});
+
+		it("syncs cursorByFamily past the just-switched account (HI-02)", () => {
+			// Regression: markSwitched used to only update
+			// currentAccountIndexByFamily, leaving cursorByFamily pointing at
+			// the pre-switch position. The next round-robin pass would then
+			// start from the stale cursor instead of advancing past the
+			// freshly marked account.
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{ refreshToken: "token-0", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-1", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-2", addedAt: now, lastUsed: now },
+				],
+			};
+
+			const manager = new AccountManager(undefined, stored);
+
+			// Walk the cursor to a known non-zero position: first rotation
+			// returns index 0 and advances cursor to 1.
+			expect(manager.getCurrentOrNextForFamily("codex")?.refreshToken).toBe(
+				"token-0",
+			);
+
+			const account2 = manager.getAccountByIndex(2)!;
+			manager.markSwitched(account2, "rate-limit", "codex");
+
+			// Active pointer moved to 2.
+			expect(manager.getCurrentAccountForFamily("codex")?.refreshToken).toBe(
+				"token-2",
+			);
+
+			// Cursor must advance to (2+1)%3 = 0 so the next rotation starts
+			// AFTER the just-switched account. Without the fix, cursor would
+			// still be at 1 and the next call would return token-1, skipping
+			// the round-robin intent of marking index 2.
+			expect(manager.getCurrentOrNextForFamily("codex")?.refreshToken).toBe(
+				"token-0",
+			);
+		});
+
+		it("syncs cursorByFamily in the mutex-serialized markSwitchedLocked path", async () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{ refreshToken: "token-0", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-1", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-2", addedAt: now, lastUsed: now },
+				],
+			};
+
+			const manager = new AccountManager(undefined, stored, {
+				routingMutexMode: "enabled",
+			});
+
+			expect(manager.getCurrentOrNextForFamily("codex")?.refreshToken).toBe(
+				"token-0",
+			);
+
+			const account2 = manager.getAccountByIndex(2)!;
+			await manager.markSwitchedLocked(account2, "rate-limit", "codex");
+
+			expect(manager.getCurrentAccountForFamily("codex")?.refreshToken).toBe(
+				"token-2",
+			);
+			expect(manager.getCurrentOrNextForFamily("codex")?.refreshToken).toBe(
+				"token-0",
+			);
+		});
 	});
 
 	describe("saveToDisk", () => {
@@ -2887,6 +2960,121 @@ describe("AccountManager", () => {
 				const otherAccount = manager.getCurrentAccountForFamily(otherFamily);
 				expect(otherAccount).not.toBeNull();
 				expect(otherAccount?.enabled).not.toBe(false);
+			});
+
+			it("invalidates numeric runtime tracker key after removeAccount reindex (HI-01)", () => {
+				// Regression: _runtimeTrackerKey was cached to the numeric
+				// account.index when no accountId/email was present. After
+				// removeAccount spliced the array and reindexed surviving
+				// accounts, the cached numeric key still pointed at the
+				// old (stale) position, so getRuntimeTrackerKey returned the
+				// wrong key and rotation/health/token tracker lookups
+				// mismatched the current index. Identity-based string keys
+				// must continue to survive a reindex unchanged.
+				const now = Date.now();
+				const stored = {
+					version: 3 as const,
+					activeIndex: 0,
+					accounts: [
+						{ refreshToken: "token-a", addedAt: now, lastUsed: now },
+						{
+							refreshToken: "token-b",
+							email: "remove-me@example.com",
+							addedAt: now,
+							lastUsed: now,
+						},
+						{ refreshToken: "token-c", addedAt: now, lastUsed: now },
+				{
+					refreshToken: "token-d",
+					addedAt: now,
+					lastUsed: now,
+				},
+					],
+				};
+
+				const manager = new AccountManager(undefined, stored);
+
+				const refreshOnlyBefore = manager.getAccountByIndex(2)!;
+				const refreshOnlyAfterShift = manager.getAccountByIndex(3)!;
+
+				// Prime the cache: getRuntimeTrackerKey writes
+				// _runtimeTrackerKey on first access. The refresh-only
+				// account caches its numeric index (2); the identity
+				// account caches its string identity key.
+				const refreshKeyBefore = getRuntimeTrackerKey(refreshOnlyBefore);
+				const refreshOnlyAfterShiftKeyBefore = getRuntimeTrackerKey(
+					refreshOnlyAfterShift,
+				);
+				expect(refreshKeyBefore).toBe(2);
+				expect(refreshOnlyAfterShiftKeyBefore).toBe(3);
+				expect(refreshOnlyBefore._runtimeTrackerKey).toBe(2);
+				expect(refreshOnlyAfterShift._runtimeTrackerKey).toBe(3);
+
+				// Record observable tracker state keyed by the current
+				// tracker key so we can prove the same account is
+				// consulted under its new key after the reindex. Use the
+				// health tracker: that is what recordFailure mutates via
+				// getRuntimeTrackerKey.
+				const healthTracker = getHealthTracker();
+				const tokenTracker = getTokenTracker();
+				const initialRefreshScore = healthTracker.getScore(
+					refreshKeyBefore,
+					"codex",
+				);
+				manager.recordFailure(refreshOnlyBefore, "codex");
+				tokenTracker.tryConsume(refreshKeyBefore, "codex");
+				const postFailureScore = healthTracker.getScore(
+					refreshKeyBefore,
+					"codex",
+				);
+				expect(postFailureScore).toBeLessThan(initialRefreshScore);
+				expect(tokenTracker.getTokens(refreshKeyBefore, "codex")).toBeLessThan(
+					50,
+				);
+
+				// Remove the identity-bearing account at index 1. The
+				// refresh-only account that was at index 2 now lives at
+				// index 1 after the splice + reindex.
+				const victim = manager.getAccountByIndex(1)!;
+				expect(manager.removeAccount(victim)).toBe(true);
+
+				const refreshOnlyAfter = manager.getAccountByIndex(1);
+				expect(refreshOnlyAfter).not.toBeNull();
+				expect(refreshOnlyAfter?.refreshToken).toBe("token-c");
+				expect(refreshOnlyAfter?.index).toBe(1);
+
+				// getRuntimeTrackerKey must now report the NEW numeric
+				// index (1), not the stale cached value (2). Before the
+				// fix, the stale cache caused this assertion to fail with 2.
+				const refreshKeyAfter = getRuntimeTrackerKey(refreshOnlyAfter!);
+				expect(refreshKeyAfter).toBe(1);
+				expect(refreshOnlyAfter?._runtimeTrackerKey).toBe(1);
+
+				// The health score recorded under the pre-reindex key (2)
+				// must NOT bleed into the post-reindex key (1). Querying
+				// the new key should return the default (pristine) score.
+				// This proves the runtime tracker consults the refreshed
+				// key after reindex.
+				expect(healthTracker.getScore(refreshKeyAfter, "codex")).toBe(
+					initialRefreshScore,
+				);
+
+				// The next refresh-only survivor shifts from numeric key 3 to 2.
+				// The stale numeric state for old key 2 must NOT bleed onto it.
+				const refreshOnlyShifted = manager.getAccountByIndex(2);
+				expect(refreshOnlyShifted).not.toBeNull();
+				expect(refreshOnlyShifted?.refreshToken).toBe("token-d");
+				expect(refreshOnlyShifted?.index).toBe(2);
+				const refreshOnlyShiftedKeyAfter = getRuntimeTrackerKey(
+					refreshOnlyShifted!,
+				);
+				expect(refreshOnlyShiftedKeyAfter).toBe(2);
+				expect(healthTracker.getScore(refreshOnlyShiftedKeyAfter, "codex")).toBe(
+					initialRefreshScore,
+				);
+				expect(tokenTracker.getTokens(refreshOnlyShiftedKeyAfter, "codex")).toBe(
+					50,
+				);
 			});
 		});
 
