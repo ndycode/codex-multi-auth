@@ -531,6 +531,15 @@ describe("unified settings", () => {
 	});
 
 	it("retries sync backup snapshot copy on retryable fs errors without Atomics.wait", async () => {
+		const { getUnifiedSettingsPath } = await import("../lib/unified-settings.js");
+		const settingsPath = getUnifiedSettingsPath();
+		await fs.mkdir(dirname(settingsPath), { recursive: true });
+		await fs.writeFile(
+			settingsPath,
+			JSON.stringify({ version: 1, pluginConfig: { codexMode: true } }, null, 2),
+			"utf8",
+		);
+
 		const atomicsWaitSpy = vi.spyOn(Atomics, "wait");
 		vi.resetModules();
 		vi.doMock("node:fs", async () => {
