@@ -2911,30 +2911,31 @@ describe("AccountManager", () => {
 							lastUsed: now,
 						},
 						{ refreshToken: "token-c", addedAt: now, lastUsed: now },
-						{
-							refreshToken: "token-d",
-							email: "stable@example.com",
-							addedAt: now,
-							lastUsed: now,
-						},
+				{
+					refreshToken: "token-d",
+					addedAt: now,
+					lastUsed: now,
+				},
 					],
 				};
 
 				const manager = new AccountManager(undefined, stored);
 
 				const refreshOnlyBefore = manager.getAccountByIndex(2)!;
-				const identityBefore = manager.getAccountByIndex(3)!;
+				const refreshOnlyAfterShift = manager.getAccountByIndex(3)!;
 
 				// Prime the cache: getRuntimeTrackerKey writes
 				// _runtimeTrackerKey on first access. The refresh-only
 				// account caches its numeric index (2); the identity
 				// account caches its string identity key.
 				const refreshKeyBefore = getRuntimeTrackerKey(refreshOnlyBefore);
-				const identityKeyBefore = getRuntimeTrackerKey(identityBefore);
+				const refreshOnlyAfterShiftKeyBefore = getRuntimeTrackerKey(
+					refreshOnlyAfterShift,
+				);
 				expect(refreshKeyBefore).toBe(2);
-				expect(typeof identityKeyBefore).toBe("string");
+				expect(refreshOnlyAfterShiftKeyBefore).toBe(3);
 				expect(refreshOnlyBefore._runtimeTrackerKey).toBe(2);
-				expect(identityBefore._runtimeTrackerKey).toBe(identityKeyBefore);
+				expect(refreshOnlyAfterShift._runtimeTrackerKey).toBe(3);
 
 				// Record observable tracker state keyed by the current
 				// tracker key so we can prove the same account is
@@ -2942,16 +2943,21 @@ describe("AccountManager", () => {
 				// health tracker: that is what recordFailure mutates via
 				// getRuntimeTrackerKey.
 				const healthTracker = getHealthTracker();
+				const tokenTracker = getTokenTracker();
 				const initialRefreshScore = healthTracker.getScore(
 					refreshKeyBefore,
 					"codex",
 				);
 				manager.recordFailure(refreshOnlyBefore, "codex");
+				tokenTracker.tryConsume(refreshKeyBefore, "codex");
 				const postFailureScore = healthTracker.getScore(
 					refreshKeyBefore,
 					"codex",
 				);
 				expect(postFailureScore).toBeLessThan(initialRefreshScore);
+				expect(tokenTracker.getTokens(refreshKeyBefore, "codex")).toBeLessThan(
+					50,
+				);
 
 				// Remove the identity-bearing account at index 1. The
 				// refresh-only account that was at index 2 now lives at
@@ -2980,13 +2986,22 @@ describe("AccountManager", () => {
 					initialRefreshScore,
 				);
 
-				// Identity-based tracker key survives the reindex unchanged.
-				const identityAfter = manager.getAccountByIndex(2);
-				expect(identityAfter).not.toBeNull();
-				expect(identityAfter?.refreshToken).toBe("token-d");
-				expect(identityAfter?.index).toBe(2);
-				expect(getRuntimeTrackerKey(identityAfter!)).toBe(identityKeyBefore);
-				expect(identityAfter?._runtimeTrackerKey).toBe(identityKeyBefore);
+				// The next refresh-only survivor shifts from numeric key 3 to 2.
+				// The stale numeric state for old key 2 must NOT bleed onto it.
+				const refreshOnlyShifted = manager.getAccountByIndex(2);
+				expect(refreshOnlyShifted).not.toBeNull();
+				expect(refreshOnlyShifted?.refreshToken).toBe("token-d");
+				expect(refreshOnlyShifted?.index).toBe(2);
+				const refreshOnlyShiftedKeyAfter = getRuntimeTrackerKey(
+					refreshOnlyShifted!,
+				);
+				expect(refreshOnlyShiftedKeyAfter).toBe(2);
+				expect(healthTracker.getScore(refreshOnlyShiftedKeyAfter, "codex")).toBe(
+					initialRefreshScore,
+				);
+				expect(tokenTracker.getTokens(refreshOnlyShiftedKeyAfter, "codex")).toBe(
+					50,
+				);
 			});
 		});
 

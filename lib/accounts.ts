@@ -1330,6 +1330,11 @@ export class AccountManager {
 		}
 
 		this.accounts.splice(idx, 1);
+		// Clear numeric-keyed tracker state in the shifted range. After reindex,
+		// any refresh-only account that moved from N to N-1 must not inherit the
+		// stale health/token entries that used to belong to the old numeric slot.
+		getHealthTracker().clearNumericKeysAtOrAbove(idx);
+		getTokenTracker().clearNumericKeysAtOrAbove(idx);
 		this.accounts.forEach((acc, index) => {
 			acc.index = index;
 			// Invalidate the cached runtime tracker key when it was keyed by
