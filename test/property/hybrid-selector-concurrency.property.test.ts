@@ -174,6 +174,14 @@ describe("selectHybridAccount concurrency (HI-05)", () => {
 					// broken mutex would let two+ tasks enter the critical section
 					// concurrently and both see the same `isAvailable` view.
 					expect(pool.maxConcurrentCallers).toBeLessThanOrEqual(1);
+
+					// Invariant 5: once more than one parallel caller runs, at least
+					// one later observation must report seeing a predecessor's write.
+					// This makes the `sawPredecessorWrite` field meaningful instead
+					// of dead bookkeeping.
+					expect(results.slice(1).some((r) => r.sawPredecessorWrite)).toBe(
+						true,
+					);
 				},
 			),
 			{ numRuns: 50 },
@@ -203,6 +211,9 @@ describe("selectHybridAccount concurrency (HI-05)", () => {
 					expect(losers).toHaveLength(concurrentRequests - 1);
 
 					expect(pool.maxConcurrentCallers).toBeLessThanOrEqual(1);
+					expect(results.slice(1).some((r) => r.sawPredecessorWrite)).toBe(
+						true,
+					);
 				},
 			),
 			{ numRuns: 50 },
@@ -226,8 +237,11 @@ describe("selectHybridAccount concurrency (HI-05)", () => {
 		// Every slot must be claimed exactly once, overflow callers see null.
 		expect(winners).toHaveLength(accountCount);
 		expect(new Set(winners).size).toBe(accountCount);
-		expect(new Set(winners)).toEqual(new Set([0, 1, 2]));
+				expect(new Set(winners)).toEqual(new Set([0, 1, 2]));
 
-		expect(pool.maxConcurrentCallers).toBeLessThanOrEqual(1);
-	});
+				expect(pool.maxConcurrentCallers).toBeLessThanOrEqual(1);
+				expect(results.slice(1).some((r) => r.sawPredecessorWrite)).toBe(
+					true,
+				);
+			});
 });
