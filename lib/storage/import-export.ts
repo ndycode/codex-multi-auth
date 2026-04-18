@@ -90,14 +90,21 @@ export async function readImportFile(params: {
 		throw new Error(`Import file not found: ${params.resolvedPath}`);
 	}
 
-	const stats = await fs.stat(params.resolvedPath);
-	if (stats.size > MAX_IMPORT_BYTES) {
-		throw new Error(
-			`Import file exceeds maximum size of ${MAX_IMPORT_BYTES} bytes: ${params.resolvedPath}`,
-		);
+	const handle = await fs.open(params.resolvedPath, "r");
+	let content: string;
+	try {
+		const stats = await handle.stat();
+		if (stats.size > MAX_IMPORT_BYTES) {
+			throw new Error(
+				`Import file exceeds maximum size of ${MAX_IMPORT_BYTES} bytes: ${params.resolvedPath}`,
+			);
+		}
+		content = await handle.readFile({ encoding: "utf-8" });
+	} finally {
+		await handle.close().catch(() => {
+			// Best-effort cleanup for import file handles.
+		});
 	}
-
-	const content = await fs.readFile(params.resolvedPath, "utf-8");
 	// Try the strict Zod-guarded boundary first (fail-closed parse + schema).
 	// A successful parse hands Zod-validated data straight to the normalizer,
 	// making Zod authoritative for imports. On failure we distinguish
