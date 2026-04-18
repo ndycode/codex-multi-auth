@@ -1360,8 +1360,8 @@ async function promptManualCallback(
 			return null;
 		}
 		const parsed = parseAuthorizationInput(answer);
-		if (!parsed.code) return null;
-		if (parsed.state && parsed.state !== state) return null;
+		if (!parsed.code || !parsed.state) return null;
+		if (parsed.state !== state) return null;
 		return parsed.code;
 	} catch (error) {
 		if (isAbortError(error) || isReadlineClosedError(error)) {
