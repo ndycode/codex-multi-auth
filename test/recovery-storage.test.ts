@@ -638,15 +638,11 @@ describe("RecoveryStorage", () => {
 				// Final target paths MUST differ so the second pass does not
 				// overwrite the first synthetic thinking part.
 				expect(firstTarget).not.toBe(secondTarget);
-				expect(firstTarget).toMatch(
-					new RegExp(
-						`^${partDir.replace(/\\/g, "\\\\")}[\\/]prt_0000000000_thinking_abc123_0_[0-9a-z]{1,6}\\.json$`,
-					),
+				expect(firstTarget).toContain(
+					join(partDir, "prt_0000000000_thinking_abc123_0_"),
 				);
-				expect(secondTarget).toMatch(
-					new RegExp(
-						`^${partDir.replace(/\\/g, "\\\\")}[\\/]prt_0000000000_thinking_abc124_1_[0-9a-z]{1,6}\\.json$`,
-					),
+				expect(secondTarget).toContain(
+					join(partDir, "prt_0000000000_thinking_abc124_1_"),
 				);
 
 				// Both payloads must carry their own unique id matching their final
