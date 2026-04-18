@@ -132,9 +132,12 @@ describe("Rate limit backoff", () => {
 		);
 
 		expect(activeProfile).toBeDefined();
-		expect(calculateBackoffMs(1000, 20, "quota")).toBe(
-			activeProfile!.maxBackoffMs,
-		);
+		// calculateBackoffMs now applies only the reason multiplier (not an
+		// additional 2^(attempt-1)) so saturating maxBackoffMs requires a
+		// baseDelayMs well above the cap. See REQ-HIGH-01.
+		expect(
+			calculateBackoffMs(activeProfile!.maxBackoffMs * 10, 20, "quota"),
+		).toBe(activeProfile!.maxBackoffMs);
 
 		const first = getRateLimitBackoff(20, "concurrent", 1000);
 		expect(first.isDuplicate).toBe(false);
@@ -167,17 +170,24 @@ describe("Rate limit backoff", () => {
 			expect(result).toBe(1000);
 		});
 
-		it("applies exponential backoff on higher attempts", () => {
+		it("does not re-apply exponential on higher attempts (REQ-HIGH-01)", () => {
+			// calculateBackoffMs must not multiply by 2^(attempt-1) because its
+			// baseDelayMs argument is already exponential+jittered when chained
+			// with getRateLimitBackoff. Before the fix, this path caused a
+			// double-exponential that saturated maxBackoffMs after ~2 retries.
 			const attempt1 = calculateBackoffMs(1000, 1, "unknown");
 			const attempt2 = calculateBackoffMs(1000, 2, "unknown");
 			const attempt3 = calculateBackoffMs(1000, 3, "unknown");
 			expect(attempt1).toBe(1000);
-			expect(attempt2).toBe(2000);
-			expect(attempt3).toBe(4000);
+			expect(attempt2).toBe(1000);
+			expect(attempt3).toBe(1000);
 		});
 
 		it("caps at MAX_BACKOFF_MS", () => {
-			const result = calculateBackoffMs(1000, 20, "quota");
+			// Use a baseDelayMs large enough that the multiplier would exceed
+			// the default cap (5 min in this test's config context).
+			const huge = 10 * 60 * 1000;
+			const result = calculateBackoffMs(huge, 20, "quota");
 			expect(result).toBeLessThanOrEqual(5 * 60 * 1000);
 		});
 
@@ -188,12 +198,13 @@ describe("Rate limit backoff", () => {
 
 		it("uses fallback multiplier 1.0 when reason is not in map (line 111 coverage)", () => {
 			const result = calculateBackoffMs(1000, 1, "unknown-reason" as never);
-		expect(result).toBe(1000);
+			expect(result).toBe(1000);
 		});
 
 		it("uses configurable max backoff cap", () => {
 			configureRateLimitBackoff({ maxBackoffMs: 12_000 });
-			const result = calculateBackoffMs(1000, 20, "quota");
+			// baseDelayMs * quota multiplier (3.0) = 30_000, which clamps to 12_000.
+			const result = calculateBackoffMs(10_000, 20, "quota");
 			expect(result).toBe(12_000);
 		});
 	});
@@ -233,14 +244,24 @@ describe("Rate limit backoff", () => {
 
 	describe("getRateLimitBackoffWithReason", () => {
 		it("returns adjusted delay with quota reason", () => {
-			const result = getRateLimitBackoffWithReason(0, "test-quota", 1000, "quota");
+			const result = getRateLimitBackoffWithReason(
+				0,
+				"test-quota",
+				1000,
+				"quota",
+			);
 			expect(result.reason).toBe("quota");
 			expect(result.delayMs).toBe(3000);
 			expect(result.attempt).toBe(1);
 		});
 
 		it("returns adjusted delay with tokens reason", () => {
-			const result = getRateLimitBackoffWithReason(1, "test-tokens", 2000, "tokens");
+			const result = getRateLimitBackoffWithReason(
+				1,
+				"test-tokens",
+				2000,
+				"tokens",
+			);
 			expect(result.reason).toBe("tokens");
 			expect(result.delayMs).toBe(3000);
 		});
@@ -254,13 +275,27 @@ describe("Rate limit backoff", () => {
 		it("increments attempt on subsequent calls", () => {
 			getRateLimitBackoffWithReason(3, "test-increment", 1000, "quota");
 			vi.setSystemTime(new Date(2500));
-			const second = getRateLimitBackoffWithReason(3, "test-increment", 1000, "quota");
+			const second = getRateLimitBackoffWithReason(
+				3,
+				"test-increment",
+				1000,
+				"quota",
+			);
 			expect(second.attempt).toBe(2);
-			expect(second.delayMs).toBe(12000);
+			// getRateLimitBackoff gives 1000 * 2^1 = 2000 (attempt=2, zero jitter
+			// via Math.random mock). calculateBackoffMs applies only the quota
+			// multiplier (3.0): 2000 * 3.0 = 6000. Before REQ-HIGH-01 fix this
+			// double-applied the exponential and produced 12000.
+			expect(second.delayMs).toBe(6000);
 		});
 
 		it("supports named-parameter options form", () => {
-			const positional = getRateLimitBackoffWithReason(20, "named-quota", 1000, "tokens");
+			const positional = getRateLimitBackoffWithReason(
+				20,
+				"named-quota",
+				1000,
+				"tokens",
+			);
 			clearRateLimitBackoffState();
 			const named = getRateLimitBackoffWithReason({
 				accountIndex: 20,
@@ -301,9 +336,72 @@ describe("Rate limit backoff", () => {
 				}),
 			).toThrow();
 
-			const firstValid = getRateLimitBackoffWithReason(7, "state-safe", 1000, "unknown");
+			const firstValid = getRateLimitBackoffWithReason(
+				7,
+				"state-safe",
+				1000,
+				"unknown",
+			);
 			expect(firstValid.attempt).toBe(1);
 			expect(firstValid.isDuplicate).toBe(false);
+		});
+
+		// REQ-HIGH-01 regression: previously `getRateLimitBackoffWithReason`
+		// chained `getRateLimitBackoff` (which applies baseDelay * 2^(attempt-1)
+		// + jitter) and `calculateBackoffMs` (which ALSO applied 2^(attempt-1)).
+		// The double-exponential caused delays to saturate at `maxBackoffMs`
+		// after just ~2 consecutive 429s. See
+		// `.sisyphus/notepads/deep-audit/reports/request.json` for the audit.
+		it("does not double-apply exponential across chained attempts (REQ-HIGH-01)", () => {
+			const accountIndex = 42;
+			const quotaKey = "req-high-01-regression";
+			const baseDelayMs = 1000;
+
+			// attempt 1
+			const first = getRateLimitBackoffWithReason(
+				accountIndex,
+				quotaKey,
+				baseDelayMs,
+				"tokens",
+			);
+			expect(first.attempt).toBe(1);
+			// 1000 * 2^0 = 1000, jitter mocked to 0, then * tokens(1.5) = 1500.
+			expect(first.delayMs).toBe(1500);
+
+			// attempt 2 (step past default dedup window of 2000ms)
+			vi.setSystemTime(new Date(2_500));
+			const second = getRateLimitBackoffWithReason(
+				accountIndex,
+				quotaKey,
+				baseDelayMs,
+				"tokens",
+			);
+			expect(second.attempt).toBe(2);
+			// 1000 * 2^1 = 2000, then * tokens(1.5) = 3000.
+			expect(second.delayMs).toBe(3000);
+
+			// attempt 3
+			vi.setSystemTime(new Date(5_000));
+			const third = getRateLimitBackoffWithReason(
+				accountIndex,
+				quotaKey,
+				baseDelayMs,
+				"tokens",
+			);
+			expect(third.attempt).toBe(3);
+			// 1000 * 2^2 = 4000, then * tokens(1.5) = 6000.
+			// Before the fix this path evaluated to 4000 * 2^2 * 1.5 = 24000
+			// (still under the 60s cap for attempt=3 but rapidly saturating).
+			expect(third.delayMs).toBe(6000);
+
+			// Stays well under the default 60s cap.
+			expect(third.delayMs).toBeLessThan(60_000);
+
+			// Ratio attempt=1 -> attempt=3 must reflect a single exponential
+			// (2^2 = 4x), NOT a double exponential (2^4 = 16x or hitting cap).
+			const ratio = third.delayMs / first.delayMs;
+			expect(ratio).toBeCloseTo(4, 1);
+			expect(ratio).toBeLessThan(8);
 		});
 	});
 });
