@@ -98,4 +98,33 @@ describe("ui select", () => {
 		expect(process.listenerCount("SIGINT")).toBe(initialSigintCount);
 		clearIntervalSpy.mockRestore();
 	});
+
+	it("treats q hotkey as back/cancel", async () => {
+		const { select } = await import("../lib/ui/select.js");
+		const selectPromise = select(
+			[
+				{ label: "A", value: "a" },
+				{ label: "B", value: "b" },
+			],
+			{
+				message: "Pick",
+			},
+		);
+
+		await vi.advanceTimersByTimeAsync(130);
+		stdin.emit("data", Buffer.from("q", "utf8"));
+
+		const result = await selectPromise;
+		expect(result).toBeNull();
+	});
+
+	it("confirm returns false when q hotkey cancels", async () => {
+		const { confirm } = await import("../lib/ui/confirm.js");
+		const confirmPromise = confirm("Are you sure?");
+
+		await vi.advanceTimersByTimeAsync(130);
+		stdin.emit("data", Buffer.from("q", "utf8"));
+
+		await expect(confirmPromise).resolves.toBe(false);
+	});
 });
