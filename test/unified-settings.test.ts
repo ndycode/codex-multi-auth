@@ -736,6 +736,93 @@ describe("unified settings", () => {
 		});
 	});
 
+	it("retries plugin section write against newer on-disk record to avoid stale overwrite", async () => {
+		const {
+			getUnifiedSettingsPath,
+			saveUnifiedPluginConfig,
+		} = await import("../lib/unified-settings.js");
+
+		await fs.writeFile(
+			getUnifiedSettingsPath(),
+			JSON.stringify(
+				{
+					version: 1,
+					pluginConfig: { codexMode: false, retries: 9 },
+					dashboardDisplaySettings: {
+						menuShowLastUsed: true,
+						uiThemePreset: "green",
+					},
+					experimentalDraft: {
+						enabled: false,
+						panels: ["future"],
+					},
+				},
+				null,
+				2,
+			),
+			"utf8",
+		);
+
+		const originalWriteFile = fs.writeFile;
+		const writeSpy = vi.spyOn(fs, "writeFile");
+		let injectedConcurrentWrite = false;
+		writeSpy.mockImplementation(async (...args: Parameters<typeof fs.writeFile>) => {
+			const [filePath, data] = args;
+			const result = await originalWriteFile(...args);
+			if (!injectedConcurrentWrite && String(filePath).includes(".tmp")) {
+				injectedConcurrentWrite = true;
+				await originalWriteFile(
+					getUnifiedSettingsPath(),
+					`${JSON.stringify(
+						{
+							version: 1,
+							pluginConfig: { codexMode: false, retries: 9 },
+							dashboardDisplaySettings: {
+								menuShowLastUsed: false,
+								uiThemePreset: "purple",
+							},
+							experimentalDraft: {
+								enabled: true,
+								panels: ["fresh"],
+							},
+						},
+						null,
+						2,
+					)}\n`,
+					"utf8",
+				);
+			}
+			return result;
+		});
+
+		try {
+			await saveUnifiedPluginConfig({ codexMode: true, fetchTimeoutMs: 45_000 });
+		} finally {
+			writeSpy.mockRestore();
+		}
+
+		expect(injectedConcurrentWrite).toBe(true);
+		const parsed = JSON.parse(
+			await fs.readFile(getUnifiedSettingsPath(), "utf8"),
+		) as {
+			pluginConfig?: Record<string, unknown>;
+			dashboardDisplaySettings?: Record<string, unknown>;
+			experimentalDraft?: Record<string, unknown>;
+		};
+		expect(parsed.pluginConfig).toEqual({
+			codexMode: true,
+			fetchTimeoutMs: 45_000,
+		});
+		expect(parsed.dashboardDisplaySettings).toEqual({
+			menuShowLastUsed: false,
+			uiThemePreset: "purple",
+		});
+		expect(parsed.experimentalDraft).toEqual({
+			enabled: true,
+			panels: ["fresh"],
+		});
+	});
+
 	it("falls back to backup when the primary settings file is unreadable", async () => {
 		const {
 			saveUnifiedPluginConfig,

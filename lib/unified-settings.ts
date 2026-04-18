@@ -385,7 +385,7 @@ function writeSettingsRecordSync(
  */
 async function writeSettingsRecordAsync(
 	record: JsonRecord,
-	options?: { skipBackupSnapshot?: boolean },
+	options?: { skipBackupSnapshot?: boolean; expectedMtimeMs?: number | null },
 ): Promise<void> {
 	await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
 	const payload = normalizeForWrite(record);
@@ -397,6 +397,24 @@ async function writeSettingsRecordAsync(
 	await fs.writeFile(tempPath, data, "utf8");
 	let moved = false;
 	try {
+		if (options && "expectedMtimeMs" in options) {
+			let currentMtimeMs: number | null = null;
+			try {
+				currentMtimeMs = (await fs.stat(UNIFIED_SETTINGS_PATH)).mtimeMs;
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "ENOENT") {
+					throw error;
+				}
+			}
+			if (currentMtimeMs !== options.expectedMtimeMs) {
+				const staleError = new Error(
+					"Unified settings changed on disk during save; retrying with latest state.",
+				) as NodeJS.ErrnoException;
+				staleError.code = "ESTALE";
+				throw staleError;
+			}
+		}
 		for (let attempt = 0; attempt < 5; attempt += 1) {
 			try {
 				await fs.rename(tempPath, UNIFIED_SETTINGS_PATH);
@@ -417,6 +435,18 @@ async function writeSettingsRecordAsync(
 				// Best-effort temp cleanup.
 			}
 		}
+	}
+}
+
+async function getUnifiedSettingsMtimeMs(): Promise<number | null> {
+	try {
+		return (await fs.stat(UNIFIED_SETTINGS_PATH)).mtimeMs;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return null;
+		}
+		throw error;
 	}
 }
 
@@ -492,12 +522,25 @@ export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
  */
 export async function saveUnifiedPluginConfig(pluginConfig: JsonRecord): Promise<void> {
 	await enqueueSettingsWrite(async () => {
-		const { record, usedBackup } = await readSettingsRecordAsyncInternal();
-		const nextRecord = record ?? {};
-		nextRecord.pluginConfig = { ...pluginConfig };
-		await writeSettingsRecordAsync(nextRecord, {
-			skipBackupSnapshot: usedBackup,
-		});
+		let expectedMtimeMs = await getUnifiedSettingsMtimeMs();
+		let { record, usedBackup } = await readSettingsRecordAsyncInternal();
+		for (let attempt = 0; attempt < 3; attempt += 1) {
+			const nextRecord = record ?? {};
+			nextRecord.pluginConfig = { ...pluginConfig };
+			try {
+				await writeSettingsRecordAsync(nextRecord, {
+					skipBackupSnapshot: usedBackup,
+					expectedMtimeMs,
+				});
+				return;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ESTALE" || attempt >= 2) {
+					throw error;
+				}
+				expectedMtimeMs = await getUnifiedSettingsMtimeMs();
+				({ record, usedBackup } = await readSettingsRecordAsyncInternal());
+			}
+		}
 	});
 }
 
@@ -538,11 +581,24 @@ export async function saveUnifiedDashboardSettings(
 	dashboardDisplaySettings: JsonRecord,
 ): Promise<void> {
 	await enqueueSettingsWrite(async () => {
-		const { record, usedBackup } = await readSettingsRecordAsyncInternal();
-		const nextRecord = record ?? {};
-		nextRecord.dashboardDisplaySettings = { ...dashboardDisplaySettings };
-		await writeSettingsRecordAsync(nextRecord, {
-			skipBackupSnapshot: usedBackup,
-		});
+		let expectedMtimeMs = await getUnifiedSettingsMtimeMs();
+		let { record, usedBackup } = await readSettingsRecordAsyncInternal();
+		for (let attempt = 0; attempt < 3; attempt += 1) {
+			const nextRecord = record ?? {};
+			nextRecord.dashboardDisplaySettings = { ...dashboardDisplaySettings };
+			try {
+				await writeSettingsRecordAsync(nextRecord, {
+					skipBackupSnapshot: usedBackup,
+					expectedMtimeMs,
+				});
+				return;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ESTALE" || attempt >= 2) {
+					throw error;
+				}
+				expectedMtimeMs = await getUnifiedSettingsMtimeMs();
+				({ record, usedBackup } = await readSettingsRecordAsyncInternal());
+			}
+		}
 	});
 }
