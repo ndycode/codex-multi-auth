@@ -1316,16 +1316,38 @@ export class AccountManager {
 
 		// Snapshot family pointers before splice so we can distinguish "was
 		// pointing at the removed account" from "was pointing past it".
-		const priorCursor: Record<ModelFamily, number> = {} as Record<ModelFamily, number>;
-		const priorActive: Record<ModelFamily, number> = {} as Record<ModelFamily, number>;
+		const priorCursor: Record<ModelFamily, number> = {} as Record<
+			ModelFamily,
+			number
+		>;
+		const priorActive: Record<ModelFamily, number> = {} as Record<
+			ModelFamily,
+			number
+		>;
 		for (const family of MODEL_FAMILIES) {
 			priorCursor[family] = this.cursorByFamily[family];
 			priorActive[family] = this.currentAccountIndexByFamily[family];
 		}
 
 		this.accounts.splice(idx, 1);
+		// Clear numeric-keyed tracker state in the shifted range. After reindex,
+		// any refresh-only account that moved from N to N-1 must not inherit the
+		// stale health/token entries that used to belong to the old numeric slot.
+		getHealthTracker().clearNumericKeysAtOrAbove(idx);
+		getTokenTracker().clearNumericKeysAtOrAbove(idx);
 		this.accounts.forEach((acc, index) => {
 			acc.index = index;
+			// Invalidate the cached runtime tracker key when it was keyed by
+			// numeric index (fallback path in getRuntimeAccountIdentityKey).
+			// After the splice+reindex above, a remaining account that was at
+			// index N (e.g. 3) may now live at index N-1 (e.g. 2); if we keep
+			// the previously cached numeric key, rotation/health/token state
+			// queries would consult the stale position and mismatch the
+			// current one. Identity-based string keys remain stable because
+			// accountId/email are not affected by array position changes.
+			if (typeof acc._runtimeTrackerKey === "number") {
+				acc._runtimeTrackerKey = undefined;
+			}
 		});
 
 		if (this.accounts.length === 0) {
