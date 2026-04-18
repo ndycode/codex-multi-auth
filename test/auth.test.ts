@@ -786,6 +786,14 @@ describe("Auth Module", () => {
 			expect(out).toContain("other=safe");
 		});
 
+		it("does not over-redact longer parameter names ending in _code", () => {
+			const body = `error=invalid_grant&device_code=device-safe&refresh_token=${OPAQUE_REFRESH}&other=safe`;
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).toContain("device_code=device-safe");
+			expect(out).toContain("refresh_token=***REDACTED***");
+			expect(out).toContain("other=safe");
+		});
+
 		it("masks refresh_token in malformed JSON via regex fallback", () => {
 			const body = `{"error":"invalid_grant","refresh_token":"${OPAQUE_REFRESH}",`;
 			const out = sanitizeOAuthResponseBodyForLog(body);

@@ -136,8 +136,8 @@ export function sanitizeOAuthResponseBodyForLog(rawBody: string): string {
 		const jsonPattern = new RegExp(`("${key}"\\s*:\\s*)"[^"]*"`, "g");
 		scrubbed = scrubbed.replace(jsonPattern, `$1"***REDACTED***"`);
 		// key=value style (urlencoded / query-string)
-		const urlPattern = new RegExp(`(${key}=)[^&\\s]+`, "g");
-		scrubbed = scrubbed.replace(urlPattern, `$1***REDACTED***`);
+		const urlPattern = new RegExp(`(^|[?&\\s])(${key}=)[^&\\s]+`, "g");
+		scrubbed = scrubbed.replace(urlPattern, `$1$2***REDACTED***`);
 	}
 	return scrubbed;
 }
