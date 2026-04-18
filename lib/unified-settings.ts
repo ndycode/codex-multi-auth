@@ -25,6 +25,7 @@ let settingsWriteQueue: Promise<void> = Promise.resolve();
 type SettingsReadResult = {
 	record: JsonRecord | null;
 	usedBackup: boolean;
+	mtimeMs?: number | null;
 };
 
 function isRetryableFsError(error: unknown): boolean {
@@ -90,13 +91,33 @@ function readSettingsRecordSyncFromPath(filePath: string): JsonRecord | null {
 async function readSettingsRecordAsyncFromPath(
 	filePath: string,
 ): Promise<JsonRecord | null> {
+	const result = await readSettingsRecordAsyncFromPathWithMetadata(filePath);
+	return result?.record ?? null;
+}
+
+async function readSettingsRecordAsyncFromPathWithMetadata(
+	filePath: string,
+): Promise<{ record: JsonRecord; mtimeMs: number | null } | null> {
+	let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
 	try {
-		return parseSettingsRecord(await fs.readFile(filePath, "utf8"));
+		handle = await fs.open(filePath, "r");
+		const [content, stats] = await Promise.all([
+			handle.readFile({ encoding: "utf8" }),
+			handle.stat(),
+		]);
+		return {
+			record: parseSettingsRecord(content),
+			mtimeMs: stats.mtimeMs,
+		};
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
 			return null;
 		}
 		throw error;
+	} finally {
+		await handle?.close().catch(() => {
+			// Best-effort cleanup for read handles.
+		});
 	}
 }
 
@@ -267,11 +288,11 @@ function readSettingsRecordSync(): JsonRecord | null {
 async function readSettingsRecordAsyncInternal(): Promise<SettingsReadResult> {
 	const primaryExists = existsSync(UNIFIED_SETTINGS_PATH);
 	try {
-		const primaryRecord = await readSettingsRecordAsyncFromPath(
+		const primaryRead = await readSettingsRecordAsyncFromPathWithMetadata(
 			UNIFIED_SETTINGS_PATH,
 		);
-		if (primaryRecord) {
-			return { record: primaryRecord, usedBackup: false };
+		if (primaryRead) {
+			return { record: primaryRead.record, usedBackup: false, mtimeMs: primaryRead.mtimeMs };
 		}
 	} catch (error) {
 		if (!shouldFallbackToSettingsBackup(primaryExists, error)) {
@@ -279,15 +300,15 @@ async function readSettingsRecordAsyncInternal(): Promise<SettingsReadResult> {
 		}
 		const backupRecord = await readSettingsBackupAsync();
 		if (backupRecord) {
-			return { record: backupRecord, usedBackup: true };
+			return { record: backupRecord, usedBackup: true, mtimeMs: null };
 		}
 		if (isInvalidSettingsRecordError(error)) {
-			return { record: null, usedBackup: false };
+			return { record: null, usedBackup: false, mtimeMs: null };
 		}
 		throw error;
 	}
 
-	return { record: null, usedBackup: false };
+	return { record: null, usedBackup: false, mtimeMs: null };
 }
 
 async function readSettingsRecordAsync(): Promise<JsonRecord | null> {
@@ -522,8 +543,7 @@ export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
  */
 export async function saveUnifiedPluginConfig(pluginConfig: JsonRecord): Promise<void> {
 	await enqueueSettingsWrite(async () => {
-		let { record, usedBackup } = await readSettingsRecordAsyncInternal();
-		let expectedMtimeMs = await getUnifiedSettingsMtimeMs();
+		let { record, usedBackup, mtimeMs: expectedMtimeMs } = await readSettingsRecordAsyncInternal();
 		for (let attempt = 0; attempt < 3; attempt += 1) {
 			const nextRecord = record ?? {};
 			nextRecord.pluginConfig = { ...pluginConfig };
@@ -537,8 +557,7 @@ export async function saveUnifiedPluginConfig(pluginConfig: JsonRecord): Promise
 				if ((error as NodeJS.ErrnoException).code !== "ESTALE" || attempt >= 2) {
 					throw error;
 				}
-				({ record, usedBackup } = await readSettingsRecordAsyncInternal());
-				expectedMtimeMs = await getUnifiedSettingsMtimeMs();
+				({ record, usedBackup, mtimeMs: expectedMtimeMs } = await readSettingsRecordAsyncInternal());
 			}
 		}
 	});
@@ -581,8 +600,7 @@ export async function saveUnifiedDashboardSettings(
 	dashboardDisplaySettings: JsonRecord,
 ): Promise<void> {
 	await enqueueSettingsWrite(async () => {
-		let { record, usedBackup } = await readSettingsRecordAsyncInternal();
-		let expectedMtimeMs = await getUnifiedSettingsMtimeMs();
+		let { record, usedBackup, mtimeMs: expectedMtimeMs } = await readSettingsRecordAsyncInternal();
 		for (let attempt = 0; attempt < 3; attempt += 1) {
 			const nextRecord = record ?? {};
 			nextRecord.dashboardDisplaySettings = { ...dashboardDisplaySettings };
@@ -596,8 +614,7 @@ export async function saveUnifiedDashboardSettings(
 				if ((error as NodeJS.ErrnoException).code !== "ESTALE" || attempt >= 2) {
 					throw error;
 				}
-				({ record, usedBackup } = await readSettingsRecordAsyncInternal());
-				expectedMtimeMs = await getUnifiedSettingsMtimeMs();
+				({ record, usedBackup, mtimeMs: expectedMtimeMs } = await readSettingsRecordAsyncInternal());
 			}
 		}
 	});
