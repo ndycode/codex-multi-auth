@@ -85,8 +85,8 @@ const CACHE_FILES: Record<ModelFamily, string> = {
 /**
  * Determine the prompt family based on the effective model name.
  *
- * GPT-5.4-era general-purpose models intentionally stay on the GPT-5.2 prompt
- * family until upstream Codex releases a newer general prompt file.
+ * GPT-5.4/5.5-era general-purpose models intentionally stay on the GPT-5.2
+ * prompt family until upstream Codex releases a newer general prompt file.
  *
  * @param normalizedModel - The normalized model name (e.g., "gpt-5-codex", "gpt-5.4", "gpt-5-mini")
  * @returns The model family for prompt selection

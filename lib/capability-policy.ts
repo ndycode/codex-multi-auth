@@ -1,4 +1,7 @@
-import { getNormalizedModel } from "./request/helpers/model-map.js";
+import {
+	getNormalizedModel,
+	resolveNormalizedModel,
+} from "./request/helpers/model-map.js";
 
 export interface CapabilityPolicySnapshot {
 	successes: number;
@@ -33,7 +36,13 @@ function normalizeModel(model: string | undefined): string | null {
 	const withoutProvider = trimmedInput.includes("/")
 		? (trimmedInput.split("/").pop() ?? trimmedInput)
 		: trimmedInput;
-	const mapped = getNormalizedModel(withoutProvider) ?? withoutProvider;
+	const exactMatch = getNormalizedModel(withoutProvider);
+	const shouldUseFallbackCatalog = /gpt[-_\s]?5|codex/i.test(withoutProvider);
+	const mapped =
+		exactMatch ??
+		(shouldUseFallbackCatalog
+			? resolveNormalizedModel(withoutProvider)
+			: withoutProvider);
 	const trimmed = mapped.trim().toLowerCase();
 	if (!trimmed) return null;
 	return trimmed.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");

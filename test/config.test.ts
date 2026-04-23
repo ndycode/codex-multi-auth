@@ -140,6 +140,11 @@ describe('Configuration Parsing', () => {
 			expect(gpt54Reasoning.effort).toBe('none');
 		});
 
+		it('should default the GPT-5.5 release alias to none reasoning', () => {
+			const gpt55Reasoning = getReasoningConfig('gpt-5.5', {});
+			expect(gpt55Reasoning.effort).toBe('none');
+		});
+
 		it('should handle high effort setting', () => {
 			const highConfig = { reasoningEffort: 'high' as const };
 			const highReasoning = getReasoningConfig('gpt-5', highConfig);
@@ -216,6 +221,13 @@ describe('Configuration Parsing', () => {
 				reasoningEffort: 'low',
 			});
 			expect(gpt54ProReasoning.effort).toBe('medium');
+		});
+
+		it('should clamp unsupported low effort on GPT-5.5-pro up to medium', () => {
+			const gpt55ProReasoning = getReasoningConfig('gpt-5.5-pro', {
+				reasoningEffort: 'low',
+			});
+			expect(gpt55ProReasoning.effort).toBe('medium');
 		});
 	});
 });

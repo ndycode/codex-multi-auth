@@ -201,12 +201,15 @@ function hasCliAuthCredentialsStoreOverride(args) {
 }
 
 // IMPORTANT: Keep this mapping in sync with
-// `lib/request/helpers/model-map.ts` `MODEL_PROFILES`.
+// `lib/request/helpers/model-map.ts` `MODEL_PROFILES`
+// and its GPT-5 normalization helpers.
 // This wrapper runs before the TypeScript build, so it cannot import that source.
 const SUPPORTED_REASONING_EFFORTS_BY_MODEL = {
 	"gpt-5-codex": ["low", "medium", "high", "xhigh"],
 	"gpt-5.1-codex-max": ["medium", "high", "xhigh"],
 	"gpt-5.1-codex-mini": ["medium", "high"],
+	"gpt-5.5-20260423": ["none", "low", "medium", "high", "xhigh"],
+	"gpt-5.5-pro-20260423": ["medium", "high", "xhigh"],
 	"gpt-5.4": ["none", "low", "medium", "high", "xhigh"],
 	"gpt-5.4-pro": ["medium", "high", "xhigh"],
 	"gpt-5.2-pro": ["medium", "high", "xhigh"],
@@ -229,6 +232,37 @@ const REASONING_FALLBACKS = {
 
 const KNOWN_REASONING_EFFORTS = new Set(Object.keys(REASONING_FALLBACKS));
 const REQUESTED_MODEL_ALIASES = new Map();
+const DEFAULT_GENERAL_GPT5_MODEL = "gpt-5.4";
+const GPT_5_5_RELEASE_MODEL = "gpt-5.5-20260423";
+const GPT_5_5_PRO_RELEASE_MODEL = "gpt-5.5-pro-20260423";
+const GENERAL_GPT5_VERSION_CATALOG = {
+	1: {
+		base: "gpt-5.1",
+	},
+	2: {
+		base: "gpt-5.2",
+		pro: "gpt-5.2-pro",
+	},
+	4: {
+		base: DEFAULT_GENERAL_GPT5_MODEL,
+		pro: "gpt-5.4-pro",
+		mini: "gpt-5-mini",
+		nano: "gpt-5-nano",
+	},
+	5: {
+		base: GPT_5_5_RELEASE_MODEL,
+		pro: GPT_5_5_PRO_RELEASE_MODEL,
+		mini: "gpt-5-mini",
+		nano: "gpt-5-nano",
+	},
+};
+const GENERAL_GPT5_STABLE_VARIANTS = GENERAL_GPT5_VERSION_CATALOG[4];
+const GENERAL_GPT5_GENERIC_VARIANTS = {
+	base: DEFAULT_GENERAL_GPT5_MODEL,
+	pro: "gpt-5-pro",
+	mini: "gpt-5-mini",
+	nano: "gpt-5-nano",
+};
 
 function addRequestedModelAlias(alias, normalizedModel) {
 	REQUESTED_MODEL_ALIASES.set(alias, normalizedModel);
@@ -316,6 +350,13 @@ function renameFileWithRetry(sourcePath, destinationPath, expectedDestinationSta
 }
 
 function seedRequestedModelAliases() {
+	addRequestedModelReasoningAliases("gpt-5.5", GPT_5_5_RELEASE_MODEL);
+	addRequestedModelReasoningAliases(GPT_5_5_RELEASE_MODEL, GPT_5_5_RELEASE_MODEL);
+	addRequestedModelReasoningAliases("gpt-5.5-pro", GPT_5_5_PRO_RELEASE_MODEL);
+	addRequestedModelReasoningAliases(
+		GPT_5_5_PRO_RELEASE_MODEL,
+		GPT_5_5_PRO_RELEASE_MODEL,
+	);
 	addRequestedModelReasoningAliases("gpt-5.4", "gpt-5.4");
 	addRequestedModelReasoningAliases("gpt-5.4-pro", "gpt-5.4-pro");
 	addRequestedModelReasoningAliases("gpt-5.2-pro", "gpt-5.2-pro");
@@ -350,15 +391,37 @@ function stripProviderPrefix(model) {
 		: model;
 }
 
-function normalizeRequestedModel(model) {
-	const stripped = stripProviderPrefix(model ?? "");
-	const normalized = stripped.trim().toLowerCase();
-	if (normalized.length === 0) return "";
-	const exactMatch = REQUESTED_MODEL_ALIASES.get(normalized);
-	if (exactMatch) {
-		return exactMatch;
-	}
+function tokenizeRequestedModel(model) {
+	return String(model ?? "")
+		.toLowerCase()
+		.split(/[^a-z0-9]+/)
+		.filter(Boolean);
+}
 
+function getGeneralGpt5CatalogForMinor(minor) {
+	switch (minor) {
+		case 1:
+		case 2:
+		case 4:
+		case 5:
+			return GENERAL_GPT5_VERSION_CATALOG[minor];
+		default:
+			return undefined;
+	}
+}
+
+function resolveGeneralGpt5CatalogVariant(catalog, variant) {
+	return catalog?.[variant] ?? catalog?.base;
+}
+
+function resolveStableGeneralGpt5Variant(variant) {
+	return (
+		GENERAL_GPT5_STABLE_VARIANTS[variant] ??
+		GENERAL_GPT5_STABLE_VARIANTS.base
+	);
+}
+
+function resolveCodexRequestedModel(normalized) {
 	if (
 		normalized.includes("gpt-5.1-codex-max") ||
 		normalized.includes("gpt 5.1 codex max") ||
@@ -390,51 +453,63 @@ function normalizeRequestedModel(model) {
 	) {
 		return "gpt-5-codex";
 	}
-	if (normalized.includes("gpt-5.4-pro") || normalized.includes("gpt 5.4 pro")) {
-		return "gpt-5.4-pro";
+
+	return "";
+}
+
+function resolveGeneralGpt5RequestedModel(stripped) {
+	const tokens = tokenizeRequestedModel(stripped);
+	const gptIndex = tokens.indexOf("gpt");
+	const isGpt5 = gptIndex !== -1 && tokens[gptIndex + 1] === "5";
+	if (!isGpt5 || tokens.includes("codex")) {
+		return "";
 	}
-	if (normalized.includes("gpt-5.2-pro") || normalized.includes("gpt 5.2 pro")) {
-		return "gpt-5.2-pro";
+
+	const rawMinor = tokens[gptIndex + 2];
+	const minor =
+		typeof rawMinor === "string" && /^\d+$/.test(rawMinor)
+			? Number(rawMinor)
+			: undefined;
+	const variant = tokens.includes("mini")
+		? "mini"
+		: tokens.includes("nano")
+			? "nano"
+			: tokens.includes("pro")
+				? "pro"
+				: "base";
+
+	if (minor === undefined) {
+		return GENERAL_GPT5_GENERIC_VARIANTS[variant];
 	}
-	if (normalized.includes("gpt-5-pro") || normalized.includes("gpt 5 pro")) {
-		return "gpt-5-pro";
+
+	const exactCatalog = getGeneralGpt5CatalogForMinor(minor);
+	const exactMatch = resolveGeneralGpt5CatalogVariant(exactCatalog, variant);
+	if (exactMatch) {
+		return exactMatch;
 	}
-	if (
-		normalized.includes("gpt-5.4-mini") ||
-		normalized.includes("gpt 5.4 mini") ||
-		normalized.includes("gpt-5-mini") ||
-		normalized.includes("gpt 5 mini")
-	) {
-		return "gpt-5-mini";
+
+	return resolveStableGeneralGpt5Variant(variant);
+}
+
+function normalizeRequestedModel(model) {
+	const stripped = stripProviderPrefix(model ?? "");
+	const normalized = stripped.trim().toLowerCase();
+	if (normalized.length === 0) return "";
+	const exactMatch = REQUESTED_MODEL_ALIASES.get(normalized);
+	if (exactMatch) {
+		return exactMatch;
 	}
-	if (
-		normalized.includes("gpt-5.4-nano") ||
-		normalized.includes("gpt 5.4 nano") ||
-		normalized.includes("gpt-5-nano") ||
-		normalized.includes("gpt 5 nano")
-	) {
-		return "gpt-5-nano";
+
+	const codexModel = resolveCodexRequestedModel(normalized);
+	if (codexModel) {
+		return codexModel;
 	}
-	if (normalized.includes("gpt-5.4") || normalized.includes("gpt 5.4")) {
-		return "gpt-5.4";
+
+	const generalModel = resolveGeneralGpt5RequestedModel(stripped);
+	if (generalModel) {
+		return generalModel;
 	}
-	if (normalized.includes("gpt-5.2") || normalized.includes("gpt 5.2")) {
-		return "gpt-5.2";
-	}
-	if (
-		normalized.includes("gpt-5.1-chat-latest") ||
-		normalized.includes("gpt-5.1") ||
-		normalized.includes("gpt 5.1")
-	) {
-		return "gpt-5.1";
-	}
-	if (
-		normalized === "gpt-5-chat-latest" ||
-		normalized === "gpt-5" ||
-		normalized.includes("gpt 5")
-	) {
-		return "gpt-5";
-	}
+
 	return "";
 }
 

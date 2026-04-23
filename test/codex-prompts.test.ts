@@ -93,7 +93,9 @@ describe("Codex Prompts Module", () => {
 				expect(getModelFamily("gpt-5.1-codex-mini-low")).toBe("gpt-5-codex");
 			});
 
-			it("should route GPT-5.4 era general models through the latest available general prompt family", () => {
+			it("should route GPT-5.4/5.5 era general models through the latest available general prompt family", () => {
+				expect(getModelFamily("gpt-5.5")).toBe("gpt-5.2");
+				expect(getModelFamily("gpt-5.5-pro-20260423")).toBe("gpt-5.2");
 				expect(getModelFamily("gpt-5.4")).toBe("gpt-5.2");
 				expect(getModelFamily("gpt-5.4-pro")).toBe("gpt-5.2");
 				expect(getModelFamily("gpt-5-mini")).toBe("gpt-5.2");
