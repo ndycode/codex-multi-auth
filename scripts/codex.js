@@ -415,10 +415,14 @@ function resolveGeneralGpt5CatalogVariant(catalog, variant) {
 }
 
 function resolveStableGeneralGpt5Variant(variant) {
-	return (
+	const fallback = (
 		GENERAL_GPT5_STABLE_VARIANTS[variant] ??
 		GENERAL_GPT5_STABLE_VARIANTS.base
 	);
+	if (!fallback) {
+		throw new Error(`Stable GPT-5 fallback is missing for variant ${variant}`);
+	}
+	return fallback;
 }
 
 function resolveCodexRequestedModel(normalized) {
