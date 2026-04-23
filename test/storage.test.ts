@@ -2836,20 +2836,20 @@ describe("storage", () => {
 		it("sets path to null when projectPath is null", () => {
 			setStoragePath(null);
 			const path = getStoragePath();
-			expect(path).toContain(".codex");
+			expect(path).toContain("multi-auth");
 		});
 
 		it("sets path to null when no project root found", () => {
 			setStoragePath("/nonexistent/path/that/does/not/exist");
 			const path = getStoragePath();
-			expect(path).toContain(".codex");
+			expect(path).toContain("multi-auth");
 		});
 
-		it("sets project-scoped path under global .codex when project root found", () => {
+		it("sets project-scoped path under the global multi-auth projects directory when project root found", () => {
 			setStoragePath(process.cwd());
 			const path = getStoragePath();
 			expect(path).toContain("openai-codex-accounts.json");
-			expect(path).toContain(".codex");
+			expect(path).toContain(getConfigDir());
 			expect(path).toContain("projects");
 		});
 

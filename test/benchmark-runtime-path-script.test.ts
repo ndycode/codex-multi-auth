@@ -38,6 +38,11 @@ function createRuntimeBenchmarkFixture(): {
 	mkdirSync(scriptsDir, { recursive: true });
 	mkdirSync(distRequestHelpersDir, { recursive: true });
 	mkdirSync(distLibDir, { recursive: true });
+	writeFileSync(
+		join(root, "package.json"),
+		`${JSON.stringify({ type: "module" }, null, 2)}\n`,
+		"utf8",
+	);
 
 	const scriptCopy = join(scriptsDir, "benchmark-runtime-path.mjs");
 	copyFileSync(join(process.cwd(), scriptPath), scriptCopy);

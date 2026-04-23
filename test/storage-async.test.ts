@@ -291,7 +291,7 @@ describe("Storage Module - Async Operations", () => {
 
     it("returns path containing .codex directory", () => {
       const path = getStoragePath();
-      expect(path).toContain(".codex");
+      expect(path).toContain("multi-auth");
     });
   });
 

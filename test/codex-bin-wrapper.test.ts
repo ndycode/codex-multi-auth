@@ -54,6 +54,11 @@ function createWrapperFixture(): string {
 	createdDirs.push(fixtureRoot);
 	const scriptDir = join(fixtureRoot, "scripts");
 	mkdirSync(scriptDir, { recursive: true });
+	writeFileSync(
+		join(fixtureRoot, "package.json"),
+		`${JSON.stringify({ type: "module" }, null, 2)}\n`,
+		"utf8",
+	);
 	copyFileSync(
 		join(repoRootDir, "scripts", "codex.js"),
 		join(scriptDir, "codex.js"),
@@ -167,7 +172,7 @@ function createFakeCodexBin(rootDir: string): string {
 }
 
 function createCustomFakeCodexBin(rootDir: string, lines: string[]): string {
-	const fakeBin = join(rootDir, `fake-codex-${createdDirs.length}.js`);
+	const fakeBin = join(rootDir, `fake-codex-${createdDirs.length}.cjs`);
 	writeFileSync(fakeBin, lines.join("\n"), "utf8");
 	return fakeBin;
 }

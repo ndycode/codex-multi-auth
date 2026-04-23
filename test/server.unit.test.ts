@@ -27,11 +27,19 @@ vi.mock('node:http', () => {
 	};
 });
 
-vi.mock('node:fs', () => ({
-	default: {
-		readFileSync: vi.fn(() => '<html>Success</html>'),
-	},
-}));
+vi.mock('node:fs', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('node:fs')>();
+	const readFileSync = vi.fn(() => '<html>Success</html>');
+
+	return {
+		...actual,
+		readFileSync,
+		default: {
+			...actual,
+			readFileSync,
+		},
+	};
+});
 
 vi.mock('../lib/logger.js', () => ({
 	logError: vi.fn(),
