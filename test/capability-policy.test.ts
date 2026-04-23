@@ -44,6 +44,17 @@ describe("capability policy store", () => {
 		const boostFromCanonical = store.getBoost("id:acc_alias", "gpt-5-codex", 1_500);
 		expect(boostFromCanonical).toBeGreaterThan(0);
 	});
+
+	it("shares capability buckets with the stable general fallback for unknown future GPT-5.x aliases", () => {
+		const store = new CapabilityPolicyStore();
+		store.recordUnsupported("id:acc_future", "gpt-5.5-pro", 1_000);
+
+		expect(store.getSnapshot("id:acc_future", "gpt-5.4-pro")).toMatchObject({
+			failures: 1,
+			unsupported: 1,
+		});
+	});
+
 	it("returns zero boost/null snapshot for missing or invalid keys", () => {
 		const store = new CapabilityPolicyStore();
 		expect(store.getBoost("", "gpt-5-codex")).toBe(0);

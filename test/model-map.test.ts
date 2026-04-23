@@ -51,6 +51,7 @@ describe("model map", () => {
 		it("returns undefined for unknown exact identifiers", () => {
 			expect(getNormalizedModel("unknown-model")).toBeUndefined();
 			expect(getNormalizedModel("gpt-6")).toBeUndefined();
+			expect(getNormalizedModel("gpt-5.5")).toBeUndefined();
 			expect(getNormalizedModel("")).toBeUndefined();
 		});
 	});
@@ -66,6 +67,14 @@ describe("model map", () => {
 		it("defaults unknown GPT-5-ish requests to GPT-5.4 instead of GPT-5.1", () => {
 			expect(resolveNormalizedModel("gpt-5-unknown-preview")).toBe("gpt-5.4");
 			expect(resolveNormalizedModel("gpt 5 experimental build")).toBe("gpt-5.4");
+		});
+
+		it("routes unknown future GPT-5.x variants through the stable general catalog", () => {
+			expect(resolveNormalizedModel("gpt-5.5")).toBe("gpt-5.4");
+			expect(resolveNormalizedModel("gpt-5.5-high")).toBe("gpt-5.4");
+			expect(resolveNormalizedModel("openai/gpt-5.5-pro-high")).toBe(
+				"gpt-5.4-pro",
+			);
 		});
 
 		it("uses the current default model when the request is missing or unrelated", () => {
@@ -108,6 +117,11 @@ describe("model map", () => {
 				computerUse: false,
 				compaction: true,
 			});
+			expect(getModelCapabilities("gpt-5.5-pro")).toEqual({
+				toolSearch: false,
+				computerUse: true,
+				compaction: true,
+			});
 		});
 	});
 
@@ -120,6 +134,7 @@ describe("model map", () => {
 
 		it("returns false for unknown names even though fallback routing exists", () => {
 			expect(isKnownModel("gpt-5-unknown-preview")).toBe(false);
+			expect(isKnownModel("gpt-5.5-pro")).toBe(false);
 			expect(isKnownModel("claude-3")).toBe(false);
 			expect(isKnownModel("")).toBe(false);
 		});

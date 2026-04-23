@@ -1122,6 +1122,57 @@ describe("codex bin wrapper", () => {
 		}
 	});
 
+	it("coerces future GPT-5.x aliases using the stable general catalog", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
+		writeFileSync(join(originalHome, "config.toml"), "", "utf8");
+
+		const baseResult = runWrapper(
+			fixtureRoot,
+			[
+				"exec",
+				"status",
+				"--model",
+				"gpt-5.5-high",
+				"-c",
+				'model_reasoning_effort="minimal"',
+			],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+			},
+		);
+
+		expect(baseResult.status).toBe(0);
+		expect(baseResult.stdout).toContain(
+			'FORWARDED:exec status --model gpt-5.5-high -c model_reasoning_effort="low" -c cli_auth_credentials_store="file"',
+		);
+
+		const proResult = runWrapper(
+			fixtureRoot,
+			[
+				"exec",
+				"status",
+				"--model",
+				"gpt-5.5-pro",
+				"-c",
+				'model_reasoning_effort="low"',
+			],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+			},
+		);
+
+		expect(proResult.status).toBe(0);
+		expect(proResult.stdout).toContain(
+			'FORWARDED:exec status --model gpt-5.5-pro -c model_reasoning_effort="medium" -c cli_auth_credentials_store="file"',
+		);
+	});
+
 	it("preserves explicit xhigh overrides for models that support them", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
