@@ -42,6 +42,7 @@ Canonical governance for repository documentation quality and consistency.
 | IA/findability audit (2026-03-01) | `docs/development/IA_FINDABILITY_AUDIT_2026-03-01.md` |
 | Config fields internals | `docs/development/CONFIG_FIELDS.md` |
 | Config flow internals | `docs/development/CONFIG_FLOW.md` |
+| GPT-5.5 activation playbook | `docs/development/RUNBOOK_ENABLE_GPT_5_5_ON_CONFIRMATION.md` |
 | Repository ownership map | `docs/development/REPOSITORY_SCOPE.md` |
 | Testing and release gates | `docs/development/TESTING.md` |
 | TUI parity checklist | `docs/development/TUI_PARITY_CHECKLIST.md` |

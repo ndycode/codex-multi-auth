@@ -83,6 +83,7 @@ Public documentation for `codex-multi-auth`.
 | [development/RUNBOOK_ADD_AUTH_COMMAND.md](development/RUNBOOK_ADD_AUTH_COMMAND.md) | Safe workflow for adding a new `codex auth ...` command |
 | [development/RUNBOOK_ADD_CONFIG_FIELD.md](development/RUNBOOK_ADD_CONFIG_FIELD.md) | Safe workflow for introducing a new config field |
 | [development/RUNBOOK_CHANGE_ROUTING_POLICY.md](development/RUNBOOK_CHANGE_ROUTING_POLICY.md) | Safe workflow for changing routing, retry, or fallback policy |
+| [development/RUNBOOK_ENABLE_GPT_5_5_ON_CONFIRMATION.md](development/RUNBOOK_ENABLE_GPT_5_5_ON_CONFIRMATION.md) | Launch-day checklist for enabling public GPT-5.5 support after official confirmation |
 | [development/REPOSITORY_SCOPE.md](development/REPOSITORY_SCOPE.md) | Ownership map by repository path |
 | [development/RUNBOOK_ADD_AUTH_MANAGER_COMMAND.md](development/RUNBOOK_ADD_AUTH_MANAGER_COMMAND.md) | Safe workflow for adding a new `codex auth` command |
 | [development/RUNBOOK_ADD_CONFIG_FIELD_SAFELY.md](development/RUNBOOK_ADD_CONFIG_FIELD_SAFELY.md) | Safe workflow for introducing a new config/settings field |
