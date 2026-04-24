@@ -21,7 +21,7 @@ import {
 	OPENAI_HEADER_VALUES,
 	URL_PATHS,
 } from "./constants.js";
-import { getModelFamily, type ModelFamily } from "./prompts/codex.js";
+import { getModelFamily, MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import { queuedRefresh } from "./refresh-queue.js";
 import { mutateRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import { SessionAffinityStore } from "./session-affinity.js";
@@ -188,6 +188,22 @@ function recordLastRuntimeAccount(
 		snapshot.lastAccountId = identity.accountId;
 		snapshot.lastAccountUpdatedAt = identity.updatedAt;
 	});
+}
+
+async function persistRuntimeActiveAccount(
+	accountManager: AccountManager,
+	account: ManagedAccount,
+): Promise<void> {
+	try {
+		for (const family of MODEL_FAMILIES) {
+			accountManager.markSwitched(account, "rotation", family);
+		}
+		await accountManager.saveToDisk();
+		await accountManager.syncCodexCliActiveSelectionForIndex(account.index);
+	} catch {
+		// Runtime forwarding must not fail after a valid upstream response just
+		// because the local status mirrors are temporarily locked.
+	}
 }
 
 function responseHeadersForClient(upstreamHeaders: Headers): Record<string, string> {
@@ -803,6 +819,7 @@ export async function startRuntimeRotationProxy(
 						now(),
 					);
 				}
+				await persistRuntimeActiveAccount(accountManager, refreshed.account);
 
 				await forwardStreamingResponse(
 					upstream,

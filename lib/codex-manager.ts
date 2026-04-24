@@ -1204,6 +1204,55 @@ function toExistingAccountInfo(
 	}));
 }
 
+function activeAccountMatchesCodexCliState(
+	account: AccountMetadataV3,
+	state: Awaited<ReturnType<typeof loadCodexCliState>>,
+): boolean {
+	if (!state) return true;
+	const accountId = account.accountId?.trim();
+	const activeAccountId = state.activeAccountId?.trim();
+	if (accountId && activeAccountId) {
+		return accountId === activeAccountId;
+	}
+
+	const email = sanitizeEmail(account.email);
+	const activeEmail = sanitizeEmail(state.activeEmail);
+	if (email && activeEmail) {
+		return email === activeEmail;
+	}
+
+	return false;
+}
+
+async function syncCodexCliActiveSelectionIfDrifted(
+	storage: AccountStorageV3,
+): Promise<boolean> {
+	const activeIndex = resolveActiveIndex(storage, "codex");
+	if (activeIndex < 0 || activeIndex >= storage.accounts.length) {
+		return false;
+	}
+	const account = storage.accounts[activeIndex];
+	if (!account) {
+		return false;
+	}
+
+	try {
+		const cliState = await loadCodexCliState({ forceRefresh: true });
+		if (!cliState || activeAccountMatchesCodexCliState(account, cliState)) {
+			return false;
+		}
+		return setCodexCliActiveSelection({
+			accountId: account.accountId,
+			email: account.email,
+			accessToken: account.accessToken,
+			refreshToken: account.refreshToken,
+			expiresAt: account.expiresAt,
+		});
+	} catch {
+		return false;
+	}
+}
+
 function resolveAccountSelection(
 	tokens: TokenSuccess,
 ): TokenSuccessWithAccount {
@@ -2737,6 +2786,7 @@ async function runAuthLogin(args: string[]): Promise<number> {
 					}
 				}
 				const flaggedStorage = await loadFlaggedAccounts();
+				await syncCodexCliActiveSelectionIfDrifted(currentStorage);
 
 				const menuResult = await promptLoginMode(
 					toExistingAccountInfo(currentStorage, quotaCache, displaySettings),

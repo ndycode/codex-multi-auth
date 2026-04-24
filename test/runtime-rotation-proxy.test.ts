@@ -214,6 +214,50 @@ describe("runtime rotation proxy", () => {
 		expect(JSON.parse(calls[0]?.bodyText ?? "{}")).toEqual(requestBody);
 	});
 
+	it("persists the actually served account as the realtime active selection", async () => {
+		const previousSync = process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI;
+		process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = "0";
+		const persisted: AccountStorageV3[] = [];
+		withAccountStorageTransactionMock.mockImplementation(async (handler) =>
+			handler(null, async (storage: AccountStorageV3) => {
+				persisted.push(structuredClone(storage));
+			}),
+		);
+		try {
+			const now = Date.now();
+			const storage = createStorage(now, 2);
+			const firstAccount = storage.accounts[0];
+			if (firstAccount) {
+				firstAccount.rateLimitResetTimes = { "gpt-5-codex": now + 60_000 };
+			}
+			const accountManager = new AccountManager(undefined, storage);
+			const { calls, fetchImpl } = createRecordingFetch(() =>
+				textEventStream("data: served\n\n"),
+			);
+			const proxy = await startProxy({ accountManager, fetchImpl });
+
+			const response = await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+			});
+
+			expect(response.status).toBe(HTTP_STATUS.OK);
+			expect(await response.text()).toBe("data: served\n\n");
+			expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_2");
+			expect(persisted.at(-1)).toMatchObject({
+				activeIndex: 1,
+				activeIndexByFamily: { codex: 1 },
+			});
+			expect(persisted.at(-1)?.accounts[1]?.lastSwitchReason).toBe("rotation");
+		} finally {
+			if (previousSync === undefined) {
+				delete process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI;
+			} else {
+				process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI = previousSync;
+			}
+		}
+	});
+
 	it("preserves caller headers except credentials and hop-by-hop values", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now));

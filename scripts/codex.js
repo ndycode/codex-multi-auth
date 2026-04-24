@@ -5,13 +5,16 @@ import { randomBytes } from "node:crypto";
 import {
 	chmodSync,
 	copyFileSync,
+	cpSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	renameSync,
 	readFileSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
@@ -29,11 +32,15 @@ import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.j
 const RETRYABLE_SHADOW_HOME_CLEANUP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
 const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];
 const SHADOW_HOME_STATE_FILES = ["auth.json", "accounts.json", ".codex-global-state.json"];
+const SHADOW_HOME_STATE_FILE_SET = new Set(SHADOW_HOME_STATE_FILES);
+const SHADOW_HOME_CONFIG_FILE = "config.toml";
 const RUNTIME_ROTATION_PROXY_PROVIDER_ID = "codex-multi-auth-runtime-proxy";
 const APP_SERVER_ACCOUNT_DISPLAY_NAME = "codex-multi-auth";
 const APP_SERVER_ACCOUNT_LABEL_ENV = "CODEX_MULTI_AUTH_APP_SERVER_ACCOUNT_LABEL";
 const INTERNAL_RUNTIME_ROTATION_APP_HELPER_ARG =
 	"--codex-multi-auth-runtime-app-helper";
+const APP_RUNTIME_HELPER_OWNER_PID_ENV =
+	"CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID";
 const APP_RUNTIME_HELPER_STATUS_FILE = "runtime-rotation-app-helper.json";
 const DEFAULT_APP_RUNTIME_HELPER_IDLE_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_APP_RUNTIME_HELPER_DETACH_GRACE_MS = 5_000;
@@ -1223,6 +1230,127 @@ function syncShadowHomeStateFile(
 	}
 }
 
+function isDirectoryLike(path) {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+function isFileLike(path) {
+	try {
+		return statSync(path).isFile();
+	} catch {
+		return false;
+	}
+}
+
+function mirrorDirectoryIntoShadowHome(sourcePath, destinationPath) {
+	try {
+		symlinkSync(
+			sourcePath,
+			destinationPath,
+			process.platform === "win32" ? "junction" : "dir",
+		);
+		return;
+	} catch {
+		// Fall back to a copy when links are unavailable. Directory links are
+		// preferred because they keep sessions, plugins, and skills live.
+	}
+	cpSync(sourcePath, destinationPath, {
+		recursive: true,
+		dereference: false,
+	});
+}
+
+function createShadowHomeMirror(originalCodexHome, shadowCodexHome, tightenFile) {
+	const syncFileNames = new Set(SHADOW_HOME_STATE_FILES);
+	const originalFileStates = new Map();
+	const rememberSyncFile = (name) => {
+		if (!originalFileStates.has(name)) {
+			originalFileStates.set(
+				name,
+				captureShadowHomeState(join(originalCodexHome, name)),
+			);
+		}
+		syncFileNames.add(name);
+	};
+	for (const name of SHADOW_HOME_STATE_FILES) {
+		rememberSyncFile(name);
+	}
+
+	if (existsSync(originalCodexHome)) {
+		for (const entry of readdirSync(originalCodexHome, { withFileTypes: true })) {
+			const name = entry.name;
+			if (name === SHADOW_HOME_CONFIG_FILE) {
+				continue;
+			}
+			const isKnownStateFile = SHADOW_HOME_STATE_FILE_SET.has(name);
+			const sourcePath = join(originalCodexHome, name);
+			const destinationPath = join(shadowCodexHome, name);
+			if (existsSync(destinationPath)) {
+				continue;
+			}
+
+			let directoryLike = entry.isDirectory();
+			let fileLike = entry.isFile();
+			if (entry.isSymbolicLink()) {
+				directoryLike = isDirectoryLike(sourcePath);
+				fileLike = !directoryLike && isFileLike(sourcePath);
+			}
+
+			try {
+				if (isKnownStateFile && !fileLike) {
+					throw new Error(`Expected ${name} to be a file`);
+				}
+				if (directoryLike) {
+					mirrorDirectoryIntoShadowHome(sourcePath, destinationPath);
+					continue;
+				}
+				if (fileLike) {
+					rememberSyncFile(name);
+					copyFileSync(sourcePath, destinationPath);
+					tightenFile(destinationPath);
+				}
+			} catch (error) {
+				if (isKnownStateFile) {
+					throw error;
+				}
+				// A missing or locked optional home entry should not block runtime
+				// launch; auth/config files still get handled explicitly.
+			}
+		}
+	}
+
+	return () => {
+		for (const name of syncFileNames) {
+			const shadowPath = join(shadowCodexHome, name);
+			const shadowState = captureShadowHomeState(shadowPath);
+			if (!shadowState.exists || shadowState.unreadable) {
+				continue;
+			}
+
+			try {
+				const originalPath = join(originalCodexHome, name);
+				const originalSnapshot =
+					originalFileStates.get(name) ?? { exists: false, content: null };
+				const currentOriginalState = captureShadowHomeState(originalPath);
+				if (!shadowHomeStateMatches(currentOriginalState, originalSnapshot)) {
+					continue;
+				}
+				if (shadowHomeStateMatches(shadowState, originalSnapshot)) {
+					continue;
+				}
+				syncShadowHomeStateFile(shadowPath, originalPath, originalSnapshot);
+				tightenFile(originalPath);
+			} catch {
+				// Best-effort only; runtime auth refreshes should not fail cleanup.
+			}
+		}
+	};
+}
+
 function rewriteConfigTomlReasoningEffort(rawConfig, requestedModel) {
 	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
 	let changed = false;
@@ -1393,6 +1521,7 @@ function createRuntimeRotationProxyClientApiKey() {
 function createRuntimeRotationProxyCodexHome(baseEnv, proxyBaseUrl, clientApiKey) {
 	const originalCodexHome = resolveCodexHomeDir(baseEnv);
 	const shadowCodexHome = mkdtempSync(join(tmpdir(), "codex-multi-auth-runtime-home-"));
+	let syncShadowHomeStateBack = () => {};
 	const cleanup = () => {
 		try {
 			removeDirectoryWithRetry(shadowCodexHome);
@@ -1407,40 +1536,13 @@ function createRuntimeRotationProxyCodexHome(baseEnv, proxyBaseUrl, clientApiKey
 			// Best-effort only; permission semantics vary by platform.
 		}
 	};
-	const originalShadowHomeState = new Map(
-		SHADOW_HOME_STATE_FILES.map((name) => [
-			name,
-			captureShadowHomeState(join(originalCodexHome, name)),
-		]),
-	);
-	const syncShadowHomeStateBack = () => {
-		for (const name of SHADOW_HOME_STATE_FILES) {
-			const shadowPath = join(shadowCodexHome, name);
-			const shadowState = captureShadowHomeState(shadowPath);
-			if (!shadowState.exists || shadowState.unreadable) {
-				continue;
-			}
-
-			try {
-				const originalPath = join(originalCodexHome, name);
-				const originalSnapshot =
-					originalShadowHomeState.get(name) ?? { exists: false, content: null };
-				const currentOriginalState = captureShadowHomeState(originalPath);
-				if (!shadowHomeStateMatches(currentOriginalState, originalSnapshot)) {
-					continue;
-				}
-				if (shadowHomeStateMatches(shadowState, originalSnapshot)) {
-					continue;
-				}
-				syncShadowHomeStateFile(shadowPath, originalPath, originalSnapshot);
-				tightenShadowHomePermissions(originalPath);
-			} catch {
-				// Best-effort only; runtime auth refreshes should not fail cleanup.
-			}
-		}
-	};
 
 	try {
+		syncShadowHomeStateBack = createShadowHomeMirror(
+			originalCodexHome,
+			shadowCodexHome,
+			tightenShadowHomePermissions,
+		);
 		const originalConfigPath = join(originalCodexHome, "config.toml");
 		const rawConfig = existsSync(originalConfigPath)
 			? readFileSync(originalConfigPath, "utf8")
@@ -1453,15 +1555,6 @@ function createRuntimeRotationProxyCodexHome(baseEnv, proxyBaseUrl, clientApiKey
 		const runtimeConfigPath = join(shadowCodexHome, "config.toml");
 		writeFileSync(runtimeConfigPath, runtimeConfig, "utf8");
 		tightenShadowHomePermissions(runtimeConfigPath);
-
-		for (const name of SHADOW_HOME_STATE_FILES) {
-			const sourcePath = join(originalCodexHome, name);
-			if (existsSync(sourcePath)) {
-				const destinationPath = join(shadowCodexHome, name);
-				copyFileSync(sourcePath, destinationPath);
-				tightenShadowHomePermissions(destinationPath);
-			}
-		}
 	} catch (error) {
 		cleanup();
 		throw error;
@@ -1574,6 +1667,20 @@ function resolveRuntimeRotationAppHelperIdleMs(env = process.env) {
 		: DEFAULT_APP_RUNTIME_HELPER_IDLE_MS;
 }
 
+function resolveRuntimeRotationAppHelperOwnerPid(env = process.env) {
+	const parsed = Number.parseInt(env[APP_RUNTIME_HELPER_OWNER_PID_ENV] ?? "", 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function isProcessAlive(pid) {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return error && typeof error === "object" && error.code === "EPERM";
+	}
+}
+
 function resolveRuntimeRotationAppHelperDetachGraceMs(env = process.env) {
 	const parsed = Number.parseInt(
 		env.CODEX_MULTI_AUTH_APP_ROTATION_DETACH_GRACE_MS ?? "",
@@ -1655,6 +1762,7 @@ async function runRuntimeRotationAppHelper() {
 	let closing = false;
 	const startedAt = Date.now();
 	const idleTimeoutMs = resolveRuntimeRotationAppHelperIdleMs();
+	const ownerPid = resolveRuntimeRotationAppHelperOwnerPid();
 	let lastActivityAt = startedAt;
 	let lastRequestCount = 0;
 
@@ -1723,13 +1831,17 @@ async function runRuntimeRotationAppHelper() {
 		);
 
 		statusTimer = setInterval(() => {
+			const currentTime = Date.now();
 			const requestCount = proxyServer?.getStatus?.().totalRequests ?? 0;
 			if (requestCount !== lastRequestCount) {
 				lastRequestCount = requestCount;
-				lastActivityAt = Date.now();
+				lastActivityAt = currentTime;
+			}
+			if (ownerPid && isProcessAlive(ownerPid)) {
+				lastActivityAt = currentTime;
 			}
 			publishStatus("running");
-			if (Date.now() - lastActivityAt >= idleTimeoutMs) {
+			if (currentTime - lastActivityAt >= idleTimeoutMs) {
 				exitAfterCleanup("idle-timeout", 0);
 			}
 		}, Math.min(1_000, Math.max(50, Math.floor(idleTimeoutMs / 2))));
@@ -1784,7 +1896,10 @@ function startRuntimeRotationAppHelper(baseContext) {
 			process.execPath,
 			[fileURLToPath(import.meta.url), INTERNAL_RUNTIME_ROTATION_APP_HELPER_ARG],
 			{
-				env: baseContext.env,
+				env: {
+					...baseContext.env,
+					[APP_RUNTIME_HELPER_OWNER_PID_ENV]: String(process.pid),
+				},
 				stdio: ["ignore", "pipe", "pipe"],
 				detached: true,
 			},
@@ -2233,12 +2348,6 @@ function createCompatibilityCodexHome(
 	if (!existsSync(configPath)) {
 		return { args: processedArgs, env: baseEnv, cleanup: undefined };
 	}
-	const originalShadowHomeState = new Map(
-		SHADOW_HOME_STATE_FILES.map((name) => [
-			name,
-			captureShadowHomeState(join(originalCodexHome, name)),
-		]),
-	);
 
 	const rawConfig = readFileSync(configPath, "utf8");
 	const compatConfig = rewriteConfigTomlReasoningEffort(
@@ -2250,6 +2359,7 @@ function createCompatibilityCodexHome(
 	}
 
 	const shadowCodexHome = mkdtempSync(join(tmpdir(), "codex-multi-auth-home-"));
+	let syncShadowHomeStateBack = () => {};
 	const cleanup = () => {
 		try {
 			removeDirectoryWithRetry(shadowCodexHome);
@@ -2264,44 +2374,15 @@ function createCompatibilityCodexHome(
 			// Best-effort only; permission semantics vary by platform.
 		}
 	};
-	const syncShadowHomeStateBack = () => {
-		for (const name of SHADOW_HOME_STATE_FILES) {
-			const shadowPath = join(shadowCodexHome, name);
-			const shadowState = captureShadowHomeState(shadowPath);
-			if (!shadowState.exists || shadowState.unreadable) {
-				continue;
-			}
-
-			try {
-				const originalPath = join(originalCodexHome, name);
-				const originalSnapshot =
-					originalShadowHomeState.get(name) ?? { exists: false, content: null };
-				const currentOriginalState = captureShadowHomeState(originalPath);
-				if (!shadowHomeStateMatches(currentOriginalState, originalSnapshot)) {
-					continue;
-				}
-				if (shadowHomeStateMatches(shadowState, originalSnapshot)) {
-					continue;
-				}
-				syncShadowHomeStateFile(shadowPath, originalPath, originalSnapshot);
-				tightenShadowHomePermissions(originalPath);
-			} catch {
-				// Best-effort only; runtime auth refreshes should not fail cleanup.
-			}
-		}
-	};
 	try {
+		syncShadowHomeStateBack = createShadowHomeMirror(
+			originalCodexHome,
+			shadowCodexHome,
+			tightenShadowHomePermissions,
+		);
 		const compatConfigPath = join(shadowCodexHome, "config.toml");
 		writeFileSync(compatConfigPath, compatConfig, "utf8");
 		tightenShadowHomePermissions(compatConfigPath);
-		for (const name of SHADOW_HOME_STATE_FILES) {
-			const sourcePath = join(originalCodexHome, name);
-			if (existsSync(sourcePath)) {
-				const destinationPath = join(shadowCodexHome, name);
-				copyFileSync(sourcePath, destinationPath);
-				tightenShadowHomePermissions(destinationPath);
-			}
-		}
 	} catch (error) {
 		cleanup();
 		throw error;

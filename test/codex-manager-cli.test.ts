@@ -6880,6 +6880,73 @@ describe("codex manager cli commands", () => {
 		expect(firstCallAccounts[1]?.isCurrentAccount).toBe(true);
 	});
 
+	it("syncs Codex CLI active account before rendering the login account list", async () => {
+		const now = Date.now();
+		const storage = {
+			version: 3,
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+			accounts: [
+				{
+					email: "a@example.com",
+					accountId: "acc_a",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "b@example.com",
+					accountId: "acc_b",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockResolvedValue(storage);
+		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
+			menuAutoFetchLimits: false,
+			menuSortEnabled: false,
+		});
+		loadCodexCliStateMock.mockResolvedValue({
+			path: "/mock/.codex/accounts.json",
+			accounts: [],
+			activeAccountId: "acc_a",
+			activeEmail: "a@example.com",
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValue(true);
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith({
+			accountId: "acc_b",
+			email: "b@example.com",
+			accessToken: "access-b",
+			refreshToken: "refresh-b",
+			expiresAt: now + 3_600_000,
+		});
+		const firstCallAccounts = promptLoginModeMock.mock.calls[0]?.[0] as Array<{
+			email?: string;
+			isCurrentAccount?: boolean;
+		}>;
+		expect(firstCallAccounts[1]?.email).toBe("b@example.com");
+		expect(firstCallAccounts[1]?.isCurrentAccount).toBe(true);
+	});
+
 	it("keeps ready accounts ahead of degraded limit rows in ready-first sorting", async () => {
 		const now = Date.now();
 		loadAccountsMock.mockResolvedValue({

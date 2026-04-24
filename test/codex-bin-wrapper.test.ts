@@ -614,6 +614,10 @@ describe("codex bin wrapper", () => {
 			'console.log(`CODEX_HOME:${process.env.CODEX_HOME ?? ""}`);',
 			'console.log(`CODEX_HOME_IS_ORIGINAL:${process.env.CODEX_HOME === process.env.ORIGINAL_CODEX_HOME}`);',
 			'console.log(`OPENAI_API_KEY:${process.env.OPENAI_API_KEY ?? ""}`);',
+			'console.log(`SESSION_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "sessions", "resume.jsonl"))}`);',
+			'console.log(`PLUGIN_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "plugins", "plugin.txt"))}`);',
+			'console.log(`SKILL_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "skills", "skill.txt"))}`);',
+			'fs.writeFileSync(path.join(process.env.CODEX_HOME ?? "", "sessions", "runtime-session.jsonl"), "runtime\\n", "utf8");',
 			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
 			'console.log("CONFIG_START");',
 			'console.log(fs.readFileSync(configPath, "utf8").trim());',
@@ -623,6 +627,12 @@ describe("codex bin wrapper", () => {
 		const originalHome = join(fixtureRoot, "codex-home");
 		const markerPath = join(fixtureRoot, "proxy-marker.txt");
 		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(join(originalHome, "sessions"), { recursive: true });
+		mkdirSync(join(originalHome, "plugins"), { recursive: true });
+		mkdirSync(join(originalHome, "skills"), { recursive: true });
+		writeFileSync(join(originalHome, "sessions", "resume.jsonl"), "resume\n", "utf8");
+		writeFileSync(join(originalHome, "plugins", "plugin.txt"), "plugin\n", "utf8");
+		writeFileSync(join(originalHome, "skills", "skill.txt"), "skill\n", "utf8");
 		writeFileSync(
 			join(originalHome, "config.toml"),
 			[
@@ -656,6 +666,9 @@ describe("codex bin wrapper", () => {
 			'FORWARDED:exec status -c cli_auth_credentials_store="file" -c model_provider="codex-multi-auth-runtime-proxy"',
 		);
 		expect(output).toContain("CODEX_HOME_IS_ORIGINAL:false");
+		expect(output).toContain("SESSION_EXISTS:true");
+		expect(output).toContain("PLUGIN_EXISTS:true");
+		expect(output).toContain("SKILL_EXISTS:true");
 		const apiKeyMatch = output.match(/^OPENAI_API_KEY:([0-9a-f]{64})$/m);
 		expect(apiKeyMatch?.[1]).toBeTruthy();
 		expect(output).toContain(
@@ -685,6 +698,9 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(join(originalHome, "config.toml"), "utf8")).toContain(
 			'model_provider = "openai"',
 		);
+		expect(
+			readFileSync(join(originalHome, "sessions", "runtime-session.jsonl"), "utf8"),
+		).toBe("runtime\n");
 	});
 
 	it("starts the opt-in runtime rotation proxy for app-server without capturing protocol stdio", () => {
@@ -842,6 +858,7 @@ describe("codex bin wrapper", () => {
 			'console.log(`APP_SERVER_LABEL:${process.env.CODEX_MULTI_AUTH_APP_SERVER_ACCOUNT_LABEL ?? ""}`);',
 			'console.log(`RUNTIME_PROXY_ENV:${process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY ?? ""}`);',
 			'console.log(`NODE_OPTIONS_HAS_APP_SERVER_PRELOAD:${(process.env.NODE_OPTIONS ?? "").includes("codex-multi-auth-app-server-preload.mjs")}`);',
+			"Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1200);",
 			'const shimExe = path.join(process.env.CODEX_CLI_PATH ?? "", process.platform === "win32" ? "codex.exe" : "codex");',
 			'const shimResult = spawnSync(shimExe, ["app-server", "--shim-probe"], { encoding: "utf8", env: process.env });',
 			'console.log(`APP_SERVER_SHIM_STATUS:${shimResult.status}`);',
