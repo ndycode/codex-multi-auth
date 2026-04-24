@@ -165,14 +165,16 @@ codex auth rotation status
 
 Behavior:
 
-- `enable` persists `codexRuntimeRotationProxy=true` and installs a user-level Codex app launcher when possible.
+- `enable` persists `codexRuntimeRotationProxy=true` and routes supported user-level app shortcuts when possible.
 - `disable` persists `codexRuntimeRotationProxy=false`.
 - `status` prints the effective setting, environment override state, automatic Codex app helper state, account count, current account, disabled accounts, cooldowns, and rate-limit waits.
 - `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1` enables the proxy for the current process without changing settings.
 
 When enabled, the wrapper creates a temporary shadow `CODEX_HOME/config.toml` with a custom provider named `codex-multi-auth-runtime-proxy`, starts a `127.0.0.1` proxy on a random port, and forwards official Codex Responses traffic through that provider. This applies to CLI request commands plus `codex app-server` and `codex app` when they are launched through the wrapper. Existing behavior is unchanged while the setting and env override are off.
 
-The managed app launcher is also available directly as `codex-multi-auth-app-launcher`. Use `codex-multi-auth-app-launcher --remove` to remove it.
+The app launcher routing helper is also available directly as `codex-multi-auth-app-launcher`. On Windows, it retargets existing user-level `Codex` shortcuts and taskbar pins to the wrapper while backing up their original target for restore. On macOS, it creates or removes a user-level `Codex Multi Auth.app` wrapper because Dock entries cannot safely launch a shell command directly. It does not patch the official app files. Use `codex-multi-auth-app-launcher --remove` to restore backed-up Windows shortcuts or remove the managed macOS wrapper.
+
+If Windows exposes Codex only as a packaged `shell:AppsFolder` entry, the helper reports it but does not retarget it. Packaged app entries require a persistent background router instead of shortcut rewriting.
 
 ---
 

@@ -198,7 +198,7 @@ describe("install-codex-auth script", () => {
 });
 
 describe("codex app launcher installer", () => {
-	it("resolves a Windows Start Menu launcher that points at the wrapper app command", () => {
+	it("resolves Windows shortcut routing that points existing Codex icons at the wrapper app command", () => {
 		const home = "C:\\Users\\test";
 		const appData = path.join(home, "AppData", "Roaming");
 		const plan = resolveAppLauncherPlan({
@@ -209,15 +209,59 @@ describe("codex app launcher installer", () => {
 		});
 
 		expect(plan.launcherPath).toBe(
-			path.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Codex.lnk"),
+			path.join(
+				appData,
+				"Microsoft",
+				"Windows",
+				"Start Menu",
+				"Programs",
+				"Codex.lnk",
+			),
+		);
+		expect(plan.mode).toBe("route-existing");
+		expect(plan.backupPath).toBe(
+			path.join(home, ".codex", "multi-auth", "app-shortcuts.json"),
+		);
+		expect(plan.shortcutRoots).toEqual(
+			expect.arrayContaining([
+				path.join(appData, "Microsoft", "Windows", "Start Menu", "Programs"),
+				path.join(
+					appData,
+					"Microsoft",
+					"Internet Explorer",
+					"Quick Launch",
+					"User Pinned",
+					"TaskBar",
+				),
+				path.join(home, "Desktop"),
+			]),
 		);
 		expect(plan.commandPath).toBe(process.execPath);
 		expect(plan.commandArgs).toContain("scripts\\codex.js");
 		expect(plan.commandArgs).toContain(" app");
 
 		const psScript = createWindowsShortcutPowerShellScript(plan);
+		expect(psScript).toContain("$Candidates");
+		expect(psScript).toContain("$BackupPath");
+		expect(psScript).toContain("shell:AppsFolder");
 		expect(psScript).toContain("$Shortcut.TargetPath = $TargetPath");
 		expect(psScript).toContain("Launch Codex through codex-multi-auth");
+	});
+
+	it("resolves a macOS managed app wrapper without patching the official app bundle", () => {
+		const home = "/Users/test";
+		const plan = resolveAppLauncherPlan({
+			platform: "darwin",
+			home,
+			env: {},
+			moduleUrl: pathToFileURL(path.resolve(appLauncherScriptPath)).href,
+		});
+
+		expect(plan.mode).toBe("create-managed");
+		expect(plan.launcherPath).toBe(path.join(home, "Applications", "Codex Multi Auth.app"));
+		expect(plan.commandPath).toBe(process.execPath);
+		expect(plan.commandArgs).toContain("codex.js");
+		expect(plan.commandArgs).toContain(" app");
 	});
 
 	it("resolves a Linux desktop launcher under XDG_DATA_HOME", () => {
@@ -230,7 +274,9 @@ describe("codex app launcher installer", () => {
 			moduleUrl: pathToFileURL(path.resolve(appLauncherScriptPath)).href,
 		});
 
-		expect(plan.launcherPath).toBe(path.join(dataHome, "applications", "codex.desktop"));
+		expect(plan.launcherPath).toBe(
+			path.join(dataHome, "applications", "codex-multi-auth.desktop"),
+		);
 		expect(plan.commandPath).toBe(process.execPath);
 		expect(plan.commandArgs).toContain("codex.js");
 		expect(plan.commandArgs).toContain(" app %F");
@@ -254,7 +300,12 @@ describe("codex app launcher installer", () => {
 		);
 
 		expect(result.status).toBe(0);
-		expect(result.stdout).toContain("[dry-run] Would install Codex app launcher");
-		expect(existsSync(path.join(dataHome, "applications", "codex.desktop"))).toBe(false);
+		expect(result.stdout).toContain("[dry-run]");
+		if (process.platform !== "win32") {
+			expect(result.stdout).toContain("Codex Multi Auth app launcher");
+			expect(existsSync(path.join(dataHome, "applications", "codex-multi-auth.desktop"))).toBe(
+				false,
+			);
+		}
 	});
 });

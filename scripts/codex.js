@@ -115,7 +115,7 @@ async function maybeInstallCodexAppLauncherAfterRotationEnable(args, exitCode) {
 		});
 	} catch (error) {
 		console.error(
-			`codex-multi-auth: could not install Codex app launcher: ${error instanceof Error ? error.message : String(error)}`,
+			`codex-multi-auth: could not route Codex app launchers: ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
 }
