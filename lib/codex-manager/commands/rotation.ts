@@ -192,9 +192,11 @@ async function printCodexAppBindStatus(deps: RotationCommandDeps): Promise<void>
 
 async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 	const logInfo = deps.logInfo ?? console.log;
+	// Rotation status reports the shared Codex account pool, not a project-scoped override.
 	deps.setStoragePath(null);
 	const config = deps.loadPluginConfig();
-	const enabled = deps.getCodexRuntimeRotationProxy(config);
+	const envOverride = parseBooleanEnv(process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY);
+	const enabled = envOverride ?? deps.getCodexRuntimeRotationProxy(config);
 	const storage = await deps.loadAccounts();
 	const now = deps.getNow?.() ?? Date.now();
 

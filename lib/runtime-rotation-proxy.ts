@@ -95,6 +95,12 @@ const HOP_BY_HOP_HEADERS = new Set([
 	"transfer-encoding",
 	"upgrade",
 ]);
+const PRIVATE_CLIENT_RESPONSE_HEADERS = new Set([
+	"x-codex-multi-auth-account-index",
+	"x-codex-multi-auth-account-label",
+	"x-codex-multi-auth-account-email",
+	"x-codex-multi-auth-account-id",
+]);
 
 function isResponsesPath(pathname: string): boolean {
 	return (
@@ -136,9 +142,6 @@ function createOutboundHeaders(
 	headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
 	headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES);
 	headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
-	if (account.accountId && account.accountId !== accountId) {
-		headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
-	}
 	return headers;
 }
 
@@ -154,12 +157,6 @@ function readTrimmedString(value: string | undefined): string | null {
 	if (typeof value !== "string") return null;
 	const trimmed = value.trim();
 	return trimmed.length > 0 ? trimmed : null;
-}
-
-function sanitizeHeaderValue(value: string | null): string | null {
-	if (!value) return null;
-	const sanitized = value.replace(/[^\t\x20-\x7e]/g, "").trim();
-	return sanitized.length > 0 ? sanitized : null;
 }
 
 function accountIdentityFromAccount(
@@ -193,23 +190,13 @@ function recordLastRuntimeAccount(
 	});
 }
 
-function responseHeadersForClient(
-	upstreamHeaders: Headers,
-	accountIdentity?: RuntimeRotationAccountIdentity,
-): Record<string, string> {
+function responseHeadersForClient(upstreamHeaders: Headers): Record<string, string> {
 	const headers: Record<string, string> = {};
 	for (const [key, value] of upstreamHeaders.entries()) {
-		if (HOP_BY_HOP_HEADERS.has(key.toLowerCase())) continue;
+		const normalizedKey = key.toLowerCase();
+		if (HOP_BY_HOP_HEADERS.has(normalizedKey)) continue;
+		if (PRIVATE_CLIENT_RESPONSE_HEADERS.has(normalizedKey)) continue;
 		headers[key] = value;
-	}
-	if (accountIdentity) {
-		headers["x-codex-multi-auth-account-index"] = String(accountIdentity.index + 1);
-		const label = sanitizeHeaderValue(accountIdentity.label);
-		if (label) headers["x-codex-multi-auth-account-label"] = label;
-		const email = sanitizeHeaderValue(accountIdentity.email);
-		if (email) headers["x-codex-multi-auth-account-email"] = email;
-		const accountId = sanitizeHeaderValue(accountIdentity.accountId);
-		if (accountId) headers["x-codex-multi-auth-account-id"] = accountId;
 	}
 	return headers;
 }
@@ -558,13 +545,12 @@ async function forwardStreamingResponse(
 	upstream: Response,
 	res: ServerResponse,
 	status: RuntimeRotationProxyStatus,
-	accountIdentity: RuntimeRotationAccountIdentity,
 	onStreamError: () => void,
 ): Promise<void> {
 	status.streamsStarted += 1;
 	res.writeHead(
 		upstream.status,
-		responseHeadersForClient(upstream.headers, accountIdentity),
+		responseHeadersForClient(upstream.headers),
 	);
 	if (!upstream.body) {
 		res.end();
@@ -822,7 +808,6 @@ export async function startRuntimeRotationProxy(
 					upstream,
 					res,
 					status,
-					accountIdentity,
 					() => {
 						accountManager.recordFailure(
 							refreshed.account,

@@ -10,6 +10,19 @@ import { fileURLToPath } from "node:url";
 
 const TRUE_VALUES = new Set(["1", "true", "yes"]);
 const FALSE_VALUES = new Set(["0", "false", "no"]);
+const CI_ENV_KEYS = [
+	"CI",
+	"GITHUB_ACTIONS",
+	"GITLAB_CI",
+	"CIRCLECI",
+	"BUILDKITE",
+	"TF_BUILD",
+	"TEAMCITY_VERSION",
+	"JENKINS_URL",
+	"TRAVIS",
+	"APPVEYOR",
+	"BITBUCKET_BUILD_NUMBER",
+];
 
 /**
  * @param {string | undefined} value
@@ -29,6 +42,25 @@ export function isGlobalNpmInstall(env = process.env) {
 	const globalFlag = readOptionalBoolean(env.npm_config_global);
 	if (globalFlag === true) return true;
 	return (env.npm_config_location ?? "").trim().toLowerCase() === "global";
+}
+
+/**
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string} key
+ */
+function isEnabledEnvFlag(env, key) {
+	const value = env[key];
+	if (value === undefined || value.trim().length === 0) return false;
+	const parsed = readOptionalBoolean(value);
+	return parsed !== false;
+}
+
+/**
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+export function isCiEnvironment(env = process.env) {
+	if (readOptionalBoolean(env.npm_config_ignore_scripts) === true) return true;
+	return CI_ENV_KEYS.some((key) => isEnabledEnvFlag(env, key));
 }
 
 /**
@@ -91,6 +123,8 @@ export function hasCodexDesktopApp(options = {}) {
  */
 export function shouldAutoBindCodexAppOnInstall(options) {
 	const env = options.env ?? process.env;
+	if (isCiEnvironment(env)) return false;
+
 	const bindOverride = readOptionalBoolean(env.CODEX_MULTI_AUTH_APP_BIND);
 	if (bindOverride !== null) return bindOverride;
 

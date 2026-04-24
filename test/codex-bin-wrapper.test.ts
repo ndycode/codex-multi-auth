@@ -433,6 +433,23 @@ function runWrapper(
 	);
 }
 
+function runWrapperWithInput(
+	fixtureRoot: string,
+	args: string[],
+	input: string,
+	extraEnv: NodeJS.ProcessEnv = {},
+): SpawnSyncReturns<string> {
+	return spawnSync(
+		process.execPath,
+		[join(fixtureRoot, "scripts", "codex.js"), ...args],
+		{
+			encoding: "utf8",
+			env: buildWrapperEnv(extraEnv),
+			input,
+		},
+	);
+}
+
 function runWrapperScript(
 	scriptPath: string,
 	args: string[],
@@ -639,15 +656,23 @@ describe("codex bin wrapper", () => {
 			'FORWARDED:exec status -c cli_auth_credentials_store="file" -c model_provider="codex-multi-auth-runtime-proxy"',
 		);
 		expect(output).toContain("CODEX_HOME_IS_ORIGINAL:false");
-		expect(output).toMatch(/^OPENAI_API_KEY:[0-9a-f]{64}$/m);
+		const apiKeyMatch = output.match(/^OPENAI_API_KEY:([0-9a-f]{64})$/m);
+		expect(apiKeyMatch?.[1]).toBeTruthy();
 		expect(output).toContain(
 			'model_provider = "codex-multi-auth-runtime-proxy"',
 		);
 		expect(output).toContain(
 			"[model_providers.codex-multi-auth-runtime-proxy]",
 		);
+		expect(output).toContain('name = "codex-multi-auth"');
 		expect(output).toContain('base_url = "http://127.0.0.1:4567"');
+		expect(output).toContain("requires_openai_auth = false");
+		expect(output).toContain('name = "codex-multi-auth"');
+		expect(output).toContain(
+			`experimental_bearer_token = "${apiKeyMatch?.[1]}"`,
+		);
 		expect(output).toContain('wire_api = "responses"');
+		expect(output).not.toContain("env_key");
 		expect(output).not.toContain('base_url = "http://127.0.0.1:1"');
 		const shadowHomeMatch = output.match(/^CODEX_HOME:(.+)$/m);
 		expect(shadowHomeMatch?.[1]).toBeTruthy();
@@ -672,6 +697,10 @@ describe("codex bin wrapper", () => {
 			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
 			'console.log(`CODEX_HOME:${process.env.CODEX_HOME ?? ""}`);',
 			'console.log(`OPENAI_API_KEY:${process.env.OPENAI_API_KEY ?? ""}`);',
+			'console.log(`CODEX_CLI_PATH:${process.env.CODEX_CLI_PATH ?? ""}`);',
+			'console.log(`APP_SERVER_LABEL:${process.env.CODEX_MULTI_AUTH_APP_SERVER_ACCOUNT_LABEL ?? ""}`);',
+			'console.log(`RUNTIME_PROXY_ENV:${process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY ?? ""}`);',
+			'console.log(`NODE_OPTIONS_HAS_APP_SERVER_PRELOAD:${(process.env.NODE_OPTIONS ?? "").includes("codex-multi-auth-app-server-preload.mjs")}`);',
 			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
 			'console.log(fs.readFileSync(configPath, "utf8"));',
 			"process.exit(0);",
@@ -694,11 +723,81 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain(
 			'FORWARDED:app-server --listen stdio:// -c cli_auth_credentials_store="file" -c model_provider="codex-multi-auth-runtime-proxy"',
 		);
-		expect(output).toMatch(/^OPENAI_API_KEY:[0-9a-f]{64}$/m);
+		const apiKeyMatch = output.match(/^OPENAI_API_KEY:([0-9a-f]{64})$/m);
+		expect(apiKeyMatch?.[1]).toBeTruthy();
+		expect(output).toContain("requires_openai_auth = false");
+		expect(output).toContain('name = "codex-multi-auth"');
+		expect(output).toContain(
+			`experimental_bearer_token = "${apiKeyMatch?.[1]}"`,
+		);
 		expect(output).toContain('wire_api = "responses"');
+		expect(output).not.toContain("env_key");
 		expect(readFileSync(markerPath, "utf8")).toBe(
 			"start:http://127.0.0.1:4567\nclose\n",
 		);
+	});
+
+	it("rewrites app-server account/read responses to the codex-multi-auth display name", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const readline = require("node:readline");',
+			'const rl = readline.createInterface({ input: process.stdin });',
+			'rl.on("line", (line) => {',
+			"  const message = JSON.parse(line);",
+			'  if (message.method === "account/read") {',
+			"    console.log(JSON.stringify({",
+			'      jsonrpc: "2.0",',
+			"      id: message.id,",
+			"      result: {",
+			'        account: { type: "chatgpt", email: "real-user@example.com", planType: "plus" },',
+			"        requiresOpenaiAuth: true,",
+			"      },",
+			"    }));",
+			"    return;",
+			"  }",
+			'  console.log(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { ok: true } }));',
+			"});",
+			'rl.on("close", () => process.exit(0));',
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+		const input = [
+			JSON.stringify({
+				jsonrpc: "2.0",
+				id: 7,
+				method: "account/read",
+				params: { refreshToken: false },
+			}),
+			JSON.stringify({
+				jsonrpc: "2.0",
+				id: 8,
+				method: "thread/list",
+				params: {},
+			}),
+			"",
+		].join("\n");
+
+		const result = runWrapperWithInput(
+			fixtureRoot,
+			["app-server", "--listen", "stdio://"],
+			input,
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				OPENAI_API_KEY: undefined,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("codex-multi-auth");
+		expect(result.stdout).not.toContain("real-user@example.com");
+		expect(result.stdout).toContain('"requiresOpenaiAuth":false');
+		expect(result.stdout).toContain('"id":8');
+		expect(result.stdout).toContain('"ok":true');
 	});
 
 	it.each([
@@ -728,11 +827,26 @@ describe("codex bin wrapper", () => {
 		createRuntimeRotationProxyFixtureModule(fixtureRoot);
 		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
 			"#!/usr/bin/env node",
+			'const { spawnSync } = require("node:child_process");',
 			'const fs = require("node:fs");',
 			'const path = require("node:path");',
+			'if (process.argv.slice(2)[0] === "app-server") {',
+			'  console.log(`APP_SERVER_FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			'  console.log(`APP_SERVER_LABEL_ENV:${process.env.CODEX_MULTI_AUTH_APP_SERVER_ACCOUNT_LABEL ?? ""}`);',
+			"  process.exit(0);",
+			"}",
 			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
 			'console.log(`CODEX_HOME:${process.env.CODEX_HOME ?? ""}`);',
 			'console.log(`OPENAI_API_KEY:${process.env.OPENAI_API_KEY ?? ""}`);',
+			'console.log(`CODEX_CLI_PATH:${process.env.CODEX_CLI_PATH ?? ""}`);',
+			'console.log(`APP_SERVER_LABEL:${process.env.CODEX_MULTI_AUTH_APP_SERVER_ACCOUNT_LABEL ?? ""}`);',
+			'console.log(`RUNTIME_PROXY_ENV:${process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY ?? ""}`);',
+			'console.log(`NODE_OPTIONS_HAS_APP_SERVER_PRELOAD:${(process.env.NODE_OPTIONS ?? "").includes("codex-multi-auth-app-server-preload.mjs")}`);',
+			'const shimExe = path.join(process.env.CODEX_CLI_PATH ?? "", process.platform === "win32" ? "codex.exe" : "codex");',
+			'const shimResult = spawnSync(shimExe, ["app-server", "--shim-probe"], { encoding: "utf8", env: process.env });',
+			'console.log(`APP_SERVER_SHIM_STATUS:${shimResult.status}`);',
+			'console.log(`APP_SERVER_SHIM_STDOUT:${(shimResult.stdout ?? "").trim()}`);',
+			'console.log(`APP_SERVER_SHIM_STDERR:${(shimResult.stderr ?? "").trim()}`);',
 			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
 			'console.log(fs.readFileSync(configPath, "utf8"));',
 			"process.exit(0);",
@@ -748,7 +862,7 @@ describe("codex bin wrapper", () => {
 			CODEX_HOME: originalHome,
 			CODEX_MULTI_AUTH_DIR: multiAuthDir,
 			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
-			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "80",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "1000",
 			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
 			CODEX_MULTI_AUTH_TEST_PROXY_LAST_ACCOUNT_INDEX: "1",
 			CODEX_MULTI_AUTH_TEST_PROXY_LAST_ACCOUNT_LABEL:
@@ -760,16 +874,33 @@ describe("codex bin wrapper", () => {
 		});
 
 		const output = combinedOutput(result);
-		expect(result.status).toBe(0);
+		if (result.status !== 0) {
+			throw new Error(output);
+		}
 		expect(output).toContain(
 			'FORWARDED:app . -c cli_auth_credentials_store="file" -c model_provider="codex-multi-auth-runtime-proxy"',
 		);
-		expect(output).toMatch(/^OPENAI_API_KEY:[0-9a-f]{64}$/m);
+		const apiKeyMatch = output.match(/^OPENAI_API_KEY:([0-9a-f]{64})$/m);
+		expect(apiKeyMatch?.[1]).toBeTruthy();
+		expect(output).toMatch(/^CODEX_CLI_PATH:.+app-server-shim$/m);
+		expect(output).toContain("APP_SERVER_LABEL:1");
+		expect(output).toContain("RUNTIME_PROXY_ENV:0");
+		expect(output).toContain("NODE_OPTIONS_HAS_APP_SERVER_PRELOAD:true");
+		expect(output).toContain("APP_SERVER_SHIM_STATUS:0");
+		expect(output).toContain(
+			"APP_SERVER_SHIM_STDOUT:APP_SERVER_FORWARDED:app-server --shim-probe",
+		);
+		expect(output).toContain("APP_SERVER_LABEL_ENV:1");
+		expect(output).toContain("requires_openai_auth = false");
+		expect(output).toContain(
+			`experimental_bearer_token = "${apiKeyMatch?.[1]}"`,
+		);
 		expect(output).toContain('wire_api = "responses"');
+		expect(output).not.toContain("env_key");
 		const shadowHomeMatch = output.match(/^CODEX_HOME:(.+)$/m);
 		expect(shadowHomeMatch?.[1]).toBeTruthy();
 
-		await sleep(250);
+		await sleep(1300);
 
 		expect(readFileSync(markerPath, "utf8")).toBe(
 			"start:http://127.0.0.1:4567\nclose\n",

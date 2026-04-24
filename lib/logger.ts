@@ -46,6 +46,7 @@ const SENSITIVE_KEYS = new Set([
 	"authorization",
 	"apikey",
 	"api_key",
+	"experimentalbearertoken",
 	"secret",
 	"password",
 	"credential",

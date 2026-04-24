@@ -13,6 +13,17 @@ if (forcePlainTestOutput) {
 }
 
 export default defineConfig({
+  plugins: [
+    {
+      name: 'strip-script-shebangs-for-vitest',
+      enforce: 'pre',
+      transform(code, id) {
+        if (!id.includes('/scripts/') && !id.includes('\\scripts\\')) return null;
+        if (!code.startsWith('#!')) return null;
+        return code.replace(/^#!.*(?:\r?\n|$)/, '');
+      },
+    },
+  ],
   test: {
     globals: true,
     environment: 'node',

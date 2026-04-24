@@ -46,6 +46,13 @@ function readState(path) {
 	}
 }
 
+function readTrimmedString(record, key) {
+	const value = record?.[key];
+	return typeof value === "string" && value.trim().length > 0
+		? value.trim()
+		: undefined;
+}
+
 function writeStatus(statusPath, payload) {
 	if (!statusPath) return;
 	try {
@@ -79,6 +86,20 @@ function createStatusPayload({ state, proxyServer, error, stateRecord }) {
 	};
 }
 
+function isLoopbackHost(host) {
+	if (typeof host !== "string") return false;
+	const normalized = host.trim().toLowerCase();
+	const unbracketed =
+		normalized.startsWith("[") && normalized.endsWith("]")
+			? normalized.slice(1, -1)
+			: normalized;
+	return (
+		unbracketed === "127.0.0.1" ||
+		unbracketed === "::1" ||
+		unbracketed === "localhost"
+	);
+}
+
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
 	const stateRecord = readState(args.statePath);
@@ -90,8 +111,14 @@ async function main() {
 		typeof stateRecord?.port === "number" && Number.isFinite(stateRecord.port)
 			? stateRecord.port
 			: args.port;
-	if (!Number.isFinite(port) || port <= 0) {
-		throw new Error("A positive --port is required for the Codex app runtime router.");
+	const clientApiKey = readTrimmedString(stateRecord, "clientApiKey");
+	if (!Number.isFinite(port) || port < 0) {
+		throw new Error("A non-negative --port is required for the Codex app runtime router.");
+	}
+	if (!isLoopbackHost(host)) {
+		throw new Error(
+			"Codex app runtime router host must be loopback-only (127.0.0.1, ::1, or localhost).",
+		);
 	}
 
 	let proxyServer = null;
@@ -104,7 +131,11 @@ async function main() {
 
 	try {
 		const proxyModule = await import("../dist/lib/runtime-rotation-proxy.js");
-		proxyServer = await proxyModule.startRuntimeRotationProxy({ host, port });
+		proxyServer = await proxyModule.startRuntimeRotationProxy({
+			host,
+			port,
+			clientApiKey,
+		});
 		writeCurrentStatus("running");
 		const timer = setInterval(() => writeCurrentStatus("running"), 1000);
 		const cleanup = async (state) => {

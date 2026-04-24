@@ -18,6 +18,7 @@ import {
 } from "../scripts/codex-app-launcher.js";
 import {
 	hasCodexDesktopApp,
+	isCiEnvironment,
 	shouldAutoBindCodexAppOnInstall,
 } from "../scripts/postinstall.js";
 
@@ -247,9 +248,33 @@ describe("codex app launcher installer", () => {
 		const psScript = createWindowsShortcutPowerShellScript(plan);
 		expect(psScript).toContain("$Candidates");
 		expect(psScript).toContain("$BackupPath");
+		expect(psScript).toContain("[Environment]::GetFolderPath('Desktop')");
 		expect(psScript).toContain("shell:AppsFolder");
+		expect(psScript).toContain("$AlreadyManaged");
 		expect(psScript).toContain("$Shortcut.TargetPath = $TargetPath");
 		expect(psScript).toContain("Launch Codex through codex-multi-auth");
+	});
+
+	it("includes redirected Windows desktop roots when routing app shortcuts", () => {
+		const home = "C:\\Users\\test";
+		const appData = path.join(home, "AppData", "Roaming");
+		const oneDrive = path.join(home, "OneDrive - Example");
+		const plan = resolveAppLauncherPlan({
+			platform: "win32",
+			home,
+			env: {
+				APPDATA: appData,
+				OneDrive: oneDrive,
+			},
+			moduleUrl: pathToFileURL(path.resolve(appLauncherScriptPath)).href,
+		});
+
+		expect(plan.shortcutRoots).toEqual(
+			expect.arrayContaining([
+				path.join(oneDrive, "Desktop"),
+				path.join(home, "Desktop"),
+			]),
+		);
 	});
 
 	it("resolves a macOS managed app wrapper without patching the official app bundle", () => {
@@ -366,6 +391,43 @@ describe("codex app bind postinstall gate", () => {
 				env: {
 					npm_config_global: "true",
 					CODEX_MULTI_AUTH_APP_BIND: "0",
+				},
+				rotationEnabled: true,
+				appDetected: true,
+			}),
+		).toBe(false);
+	});
+
+	it("skips desktop app auto-bind in CI and when npm scripts are ignored", () => {
+		expect(isCiEnvironment({ CI: "true" })).toBe(true);
+		expect(isCiEnvironment({ GITHUB_ACTIONS: "true" })).toBe(true);
+		expect(isCiEnvironment({ npm_config_ignore_scripts: "true" })).toBe(true);
+		expect(
+			shouldAutoBindCodexAppOnInstall({
+				env: {
+					CI: "true",
+					CODEX_MULTI_AUTH_APP_BIND_INSTALL: "1",
+					npm_config_global: "true",
+				},
+				rotationEnabled: true,
+				appDetected: true,
+			}),
+		).toBe(false);
+		expect(
+			shouldAutoBindCodexAppOnInstall({
+				env: {
+					GITHUB_ACTIONS: "true",
+					CODEX_MULTI_AUTH_APP_BIND: "1",
+				},
+				rotationEnabled: true,
+				appDetected: true,
+			}),
+		).toBe(false);
+		expect(
+			shouldAutoBindCodexAppOnInstall({
+				env: {
+					npm_config_ignore_scripts: "true",
+					CODEX_MULTI_AUTH_APP_BIND_INSTALL: "1",
 				},
 				rotationEnabled: true,
 				appDetected: true,

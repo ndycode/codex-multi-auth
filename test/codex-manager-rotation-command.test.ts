@@ -100,6 +100,7 @@ function createDeps(params: {
 					logPath: "/mock/.codex/multi-auth/app-bind/runtime-rotation-app-router.log",
 					nodePath: "node",
 					routerScriptPath: "/mock/scripts/codex-app-router.js",
+					clientApiKey: "app-secret",
 					startupPath: null,
 					launchAgentPath: null,
 					boundConfigHash: "hash",

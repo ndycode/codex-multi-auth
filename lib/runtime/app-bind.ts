@@ -1,8 +1,7 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
@@ -16,6 +15,10 @@ const APP_BIND_BACKUP_FILE = "codex-config-backup.json";
 const APP_BIND_STATUS_FILE = "runtime-rotation-app-bind-status.json";
 const WINDOWS_STARTUP_FILE = "Codex Multi Auth Runtime Router.cmd";
 const MACOS_LAUNCH_AGENT_ID = "com.ndycode.codex-multi-auth.runtime-router";
+const FILE_RETRY_CODES = new Set(["EBUSY", "EPERM", "EAGAIN", "ENOTEMPTY", "EACCES"]);
+const FILE_RETRY_MAX_ATTEMPTS = 6;
+const FILE_RETRY_BASE_DELAY_MS = 25;
+const FILE_RETRY_JITTER_MS = 20;
 
 export interface AppBindPaths {
 	codexHome: string;
@@ -51,6 +54,7 @@ export interface AppBindState {
 	logPath: string;
 	nodePath: string;
 	routerScriptPath: string;
+	clientApiKey: string;
 	startupPath: string | null;
 	launchAgentPath: string | null;
 	boundConfigHash: string;
@@ -67,6 +71,7 @@ export interface AppBindRouterStatus {
 	lastAccountEmail: string | null;
 	lastAccountId: string | null;
 	updatedAt: number | null;
+	lastError: string | null;
 }
 
 export interface AppBindStatus {
@@ -174,16 +179,29 @@ function ensureTrailingNewline(value: string): string {
 	return value.replace(/[\r\n]*$/, "\n");
 }
 
-function createRuntimeRotationProviderBlock(baseUrl: string): string[] {
-	return [
+function createRuntimeRotationProviderBlock(baseUrl: string, clientApiKey: string): string[] {
+	const lines = [
 		`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
-		'name = "Codex Multi-Auth Runtime Proxy"',
+		'name = "codex-multi-auth"',
 		`base_url = ${tomlStringLiteral(baseUrl)}`,
+		"requires_openai_auth = false",
 		'wire_api = "responses"',
 	];
+	if (clientApiKey.trim().length > 0) {
+		lines.splice(
+			4,
+			0,
+			`experimental_bearer_token = ${tomlStringLiteral(clientApiKey)}`,
+		);
+	}
+	return lines;
 }
 
-export function rewriteConfigTomlForAppBind(rawConfig: string, baseUrl: string): string {
+export function rewriteConfigTomlForAppBind(
+	rawConfig: string,
+	baseUrl: string,
+	clientApiKey = "",
+): string {
 	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
 	const withoutOldProvider = removeRuntimeRotationProviderBlock(rawConfig).replace(
 		/[\r\n]*$/,
@@ -193,7 +211,11 @@ export function rewriteConfigTomlForAppBind(rawConfig: string, baseUrl: string):
 		/[\r\n]*$/,
 		"",
 	);
-	return `${withModelProvider}${lineEnding}${lineEnding}${createRuntimeRotationProviderBlock(baseUrl).join(lineEnding)}${lineEnding}`;
+	const providerBlock = createRuntimeRotationProviderBlock(
+		baseUrl,
+		clientApiKey,
+	).join(lineEnding);
+	return `${withModelProvider}${lineEnding}${lineEnding}${providerBlock}${lineEnding}`;
 }
 
 export function restoreConfigTomlFromAppBind(currentConfig: string, originalConfig: string): string {
@@ -205,6 +227,10 @@ export function restoreConfigTomlFromAppBind(currentConfig: string, originalConf
 
 function sha256(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
+}
+
+function createAppBindClientApiKey(): string {
+	return randomBytes(32).toString("hex");
 }
 
 function parseJsonRecord(value: string): Record<string, unknown> | null {
@@ -230,6 +256,46 @@ function readNumber(record: Record<string, unknown>, key: string): number | null
 	return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldRetryFileOperation(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		"code" in error &&
+		typeof error.code === "string" &&
+		FILE_RETRY_CODES.has(error.code)
+	);
+}
+
+async function withFileOperationRetry<T>(operation: () => Promise<T>): Promise<T> {
+	for (let attempt = 1; ; attempt += 1) {
+		try {
+			return await operation();
+		} catch (error) {
+			if (!shouldRetryFileOperation(error) || attempt >= FILE_RETRY_MAX_ATTEMPTS) {
+				throw error;
+			}
+			const delayMs =
+				FILE_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1) +
+				Math.floor(Math.random() * FILE_RETRY_JITTER_MS);
+			await sleep(delayMs);
+		}
+	}
+}
+
+async function unlinkIfExists(path: string): Promise<void> {
+	try {
+		await withFileOperationRetry(() => unlink(path));
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+			return;
+		}
+		throw error;
+	}
+}
+
 function readAppBindStateRecord(record: Record<string, unknown>): AppBindState | null {
 	const port = readNumber(record, "port");
 	const host = readString(record, "host");
@@ -241,6 +307,7 @@ function readAppBindStateRecord(record: Record<string, unknown>): AppBindState |
 	const logPath = readString(record, "logPath");
 	const nodePath = readString(record, "nodePath");
 	const routerScriptPath = readString(record, "routerScriptPath");
+	const clientApiKey = readString(record, "clientApiKey");
 	const boundConfigHash = readString(record, "boundConfigHash");
 	const updatedAt = readNumber(record, "updatedAt");
 	const platformValue = readString(record, "platform");
@@ -273,6 +340,7 @@ function readAppBindStateRecord(record: Record<string, unknown>): AppBindState |
 		logPath,
 		nodePath,
 		routerScriptPath,
+		clientApiKey: clientApiKey ?? "",
 		startupPath: readString(record, "startupPath"),
 		launchAgentPath: readString(record, "launchAgentPath"),
 		boundConfigHash,
@@ -323,6 +391,7 @@ async function readRouterStatus(path: string): Promise<AppBindRouterStatus | nul
 		lastAccountEmail: readString(record, "lastAccountEmail"),
 		lastAccountId: readString(record, "lastAccountId"),
 		updatedAt: readNumber(record, "updatedAt"),
+		lastError: readString(record, "lastError"),
 	};
 }
 
@@ -390,19 +459,20 @@ export function resolveAppBindPaths(options: AppBindOptions = {}): AppBindPaths 
 	};
 }
 
-async function findAvailablePort(host = "127.0.0.1"): Promise<number> {
-	return new Promise((resolve, reject) => {
-		const server = createServer();
-		server.once("error", reject);
-		server.listen(0, host, () => {
-			const address = server.address();
-			const port = typeof address === "object" && address ? address.port : 0;
-			server.close((error) => {
-				if (error) reject(error);
-				else resolve(port);
-			});
-		});
-	});
+function formatBaseUrl(host: string, port: number): string {
+	const normalizedHost =
+		host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+	return `http://${normalizedHost}:${port}`;
+}
+
+function readPortFromBaseUrl(baseUrl: string | null, fallback: number): number {
+	if (!baseUrl) return fallback;
+	try {
+		const port = Number.parseInt(new URL(baseUrl).port, 10);
+		return Number.isFinite(port) && port > 0 ? port : fallback;
+	} catch {
+		return fallback;
+	}
 }
 
 function createWindowsStartupCommand(state: AppBindState): string {
@@ -474,7 +544,7 @@ async function removeAppBindStartup(state: AppBindState): Promise<void> {
 	);
 	for (const candidate of candidates) {
 		try {
-			await unlink(candidate);
+			await unlinkIfExists(candidate);
 		} catch {
 			// Best-effort cleanup.
 		}
@@ -510,12 +580,19 @@ async function maybeStartRouter(state: AppBindState, options: AppBindOptions): P
 	return true;
 }
 
-async function waitForRouterStatus(statusPath: string): Promise<void> {
+async function waitForRouterStatus(statusPath: string): Promise<AppBindRouterStatus | null> {
+	let latest: AppBindRouterStatus | null = null;
 	for (let attempt = 0; attempt < 20; attempt += 1) {
 		const router = await readRouterStatus(statusPath);
-		if (router?.state === "running" && isProcessAlive(router.pid)) return;
+		latest = router ?? latest;
+		if (router?.state === "error") {
+			const suffix = router.lastError ? `: ${router.lastError}` : "";
+			throw new Error(`Codex app runtime router failed to start${suffix}`);
+		}
+		if (router?.state === "running" && isProcessAlive(router.pid)) return router;
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
+	return latest;
 }
 
 async function stopRouter(router: AppBindRouterStatus | null): Promise<void> {
@@ -559,9 +636,13 @@ export async function bindCodexAppRuntimeRotation(
 	const now = options.now?.() ?? Date.now();
 	const paths = resolveAppBindPaths(options);
 	const existingState = await readAppBindState(paths.statePath);
-	const port = existingState?.port ?? (await findAvailablePort());
 	const host = existingState?.host ?? "127.0.0.1";
-	const baseUrl = `http://${host}:${port}`;
+	let port = existingState && existingState.port > 0 ? existingState.port : 0;
+	let baseUrl = existingState?.baseUrl ?? formatBaseUrl(host, port);
+	const clientApiKey =
+		existingState && existingState.clientApiKey.length > 0
+			? existingState.clientApiKey
+			: createAppBindClientApiKey();
 	const { existed, content } = await readConfigIfExists(paths.configPath);
 	const backup = (await readAppBindBackup(paths.backupPath)) ?? {
 		version: 1,
@@ -570,8 +651,8 @@ export async function bindCodexAppRuntimeRotation(
 		content,
 		createdAt: now,
 	};
-	const boundConfig = rewriteConfigTomlForAppBind(content, baseUrl);
-	const state: AppBindState = {
+	let boundConfig = rewriteConfigTomlForAppBind(content, baseUrl, clientApiKey);
+	let state: AppBindState = {
 		version: 1,
 		platform,
 		host,
@@ -584,6 +665,7 @@ export async function bindCodexAppRuntimeRotation(
 		logPath: paths.logPath,
 		nodePath: options.nodePath ?? process.execPath,
 		routerScriptPath: paths.routerScriptPath,
+		clientApiKey,
 		startupPath: paths.startupPath,
 		launchAgentPath: paths.launchAgentPath,
 		boundConfigHash: sha256(boundConfig),
@@ -593,13 +675,24 @@ export async function bindCodexAppRuntimeRotation(
 	await mkdir(paths.bindDir, { recursive: true });
 	await mkdir(dirname(paths.configPath), { recursive: true });
 	await writeFile(paths.backupPath, `${JSON.stringify(backup, null, 2)}\n`, "utf8");
+	await writeFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+	const startedRouter = await maybeStartRouter(state, options);
+	if (startedRouter) {
+		const router = await waitForRouterStatus(state.statusPath);
+		port = readPortFromBaseUrl(router?.baseUrl ?? null, port);
+		baseUrl = router?.baseUrl ?? formatBaseUrl(host, port);
+		boundConfig = rewriteConfigTomlForAppBind(content, baseUrl, clientApiKey);
+		state = {
+			...state,
+			port,
+			baseUrl,
+			boundConfigHash: sha256(boundConfig),
+			updatedAt: options.now?.() ?? Date.now(),
+		};
+	}
 	await writeFile(paths.configPath, boundConfig, "utf8");
 	await writeFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 	await writeAppBindStartup(state);
-	const startedRouter = await maybeStartRouter(state, options);
-	if (startedRouter) {
-		await waitForRouterStatus(state.statusPath);
-	}
 	const status = await getAppBindStatus(options);
 	return {
 		status,
@@ -631,11 +724,7 @@ export async function unbindCodexAppRuntimeRotation(
 			await mkdir(dirname(backup.configPath), { recursive: true });
 			await writeFile(backup.configPath, backup.content, "utf8");
 		} else {
-			try {
-				await unlink(backup.configPath);
-			} catch {
-				// Missing config is already restored.
-			}
+			await unlinkIfExists(backup.configPath);
 		}
 	} else if (state) {
 		const current = await readConfigIfExists(state.configPath);
@@ -654,7 +743,7 @@ export async function unbindCodexAppRuntimeRotation(
 		paths.statusPath,
 	]) {
 		try {
-			await unlink(candidate);
+			await unlinkIfExists(candidate);
 		} catch {
 			// Best-effort cleanup.
 		}

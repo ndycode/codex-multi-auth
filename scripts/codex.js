@@ -18,7 +18,8 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { StringDecoder } from "node:string_decoder";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
 	resolveRealCodexBin as resolveRealCodexBinFromEnvironment,
 	splitPathEntries,
@@ -29,6 +30,8 @@ const RETRYABLE_SHADOW_HOME_CLEANUP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPT
 const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];
 const SHADOW_HOME_STATE_FILES = ["auth.json", "accounts.json", ".codex-global-state.json"];
 const RUNTIME_ROTATION_PROXY_PROVIDER_ID = "codex-multi-auth-runtime-proxy";
+const APP_SERVER_ACCOUNT_DISPLAY_NAME = "codex-multi-auth";
+const APP_SERVER_ACCOUNT_LABEL_ENV = "CODEX_MULTI_AUTH_APP_SERVER_ACCOUNT_LABEL";
 const INTERNAL_RUNTIME_ROTATION_APP_HELPER_ARG =
 	"--codex-multi-auth-runtime-app-helper";
 const APP_RUNTIME_HELPER_STATUS_FILE = "runtime-rotation-app-helper.json";
@@ -346,6 +349,130 @@ function shouldCaptureForwardedCodexOutput(env = process.env) {
 	return process.stdout.isTTY !== true || process.stderr.isTTY !== true;
 }
 
+function jsonRpcIdKey(id) {
+	if (
+		typeof id === "string" ||
+		typeof id === "number" ||
+		typeof id === "boolean" ||
+		id === null
+	) {
+		return `${typeof id}:${JSON.stringify(id)}`;
+	}
+	return null;
+}
+
+function parseJsonObjectLine(line) {
+	const trimmed = line.trim();
+	if (!trimmed.startsWith("{")) {
+		return null;
+	}
+	try {
+		const parsed = JSON.parse(trimmed);
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+			? parsed
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+function splitProtocolLineEnding(line) {
+	if (line.endsWith("\r\n")) {
+		return { body: line.slice(0, -2), lineEnding: "\r\n" };
+	}
+	if (line.endsWith("\n")) {
+		return { body: line.slice(0, -1), lineEnding: "\n" };
+	}
+	return { body: line, lineEnding: "" };
+}
+
+function createProtocolLineAccumulator(onLine) {
+	const decoder = new StringDecoder("utf8");
+	let buffer = "";
+	const drain = () => {
+		let newlineIndex = buffer.indexOf("\n");
+		while (newlineIndex >= 0) {
+			const line = buffer.slice(0, newlineIndex + 1);
+			buffer = buffer.slice(newlineIndex + 1);
+			onLine(line);
+			newlineIndex = buffer.indexOf("\n");
+		}
+	};
+
+	return {
+		write(chunk) {
+			buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
+			drain();
+		},
+		end() {
+			buffer += decoder.end();
+			if (buffer.length > 0) {
+				onLine(buffer);
+				buffer = "";
+			}
+		},
+	};
+}
+
+function createAppServerAccountReadProtocolProxy() {
+	const pendingAccountReadIds = new Set();
+	const inputLines = createProtocolLineAccumulator((line) => {
+		const { body } = splitProtocolLineEnding(line);
+		const message = parseJsonObjectLine(body);
+		if (message?.method !== "account/read" || !Object.hasOwn(message, "id")) {
+			return;
+		}
+		const key = jsonRpcIdKey(message.id);
+		if (key) {
+			pendingAccountReadIds.add(key);
+		}
+	});
+	const outputLines = createProtocolLineAccumulator((line) => {
+		process.stdout.write(
+			rewriteAppServerAccountReadResponseLine(line, pendingAccountReadIds),
+		);
+	});
+
+	return {
+		observeInput(chunk) {
+			inputLines.write(chunk);
+		},
+		flushInput() {
+			inputLines.end();
+		},
+		writeOutput(chunk) {
+			outputLines.write(chunk);
+		},
+		flushOutput() {
+			outputLines.end();
+		},
+	};
+}
+
+function rewriteAppServerAccountReadResponseLine(line, pendingAccountReadIds) {
+	const { body, lineEnding } = splitProtocolLineEnding(line);
+	const message = parseJsonObjectLine(body);
+	if (!message || !Object.hasOwn(message, "id") || !Object.hasOwn(message, "result")) {
+		return line;
+	}
+	const key = jsonRpcIdKey(message.id);
+	if (!key || !pendingAccountReadIds.has(key)) {
+		return line;
+	}
+	pendingAccountReadIds.delete(key);
+	return `${JSON.stringify({
+		...message,
+		result: {
+			account: {
+				type: "chatgpt",
+				email: APP_SERVER_ACCOUNT_DISPLAY_NAME,
+				planType: "unknown",
+			},
+			requiresOpenaiAuth: false,
+		},
+	})}${lineEnding}`;
+}
+
 function forwardToRealCodexOnce(
 	codexBin,
 	args,
@@ -358,11 +485,19 @@ function forwardToRealCodexOnce(
 		let stdout = "";
 		let stderr = "";
 		const captureOutput = options.captureOutput === true;
+		const proxyAppServerAccountRead =
+			options.proxyAppServerAccountRead === true;
+		const protocolProxy = proxyAppServerAccountRead
+			? createAppServerAccountReadProtocolProxy()
+			: null;
+		let cleanupProtocolProxy = () => {};
 		const finalize = async (exitCode) => {
 			if (settled) {
 				return;
 			}
 			settled = true;
+			cleanupProtocolProxy();
+			protocolProxy?.flushOutput();
 			try {
 				await cleanup?.();
 			} catch {
@@ -387,7 +522,11 @@ function forwardToRealCodexOnce(
 		};
 		try {
 			child = spawn(command, commandArgs, {
-				stdio: captureOutput ? ["inherit", "pipe", "pipe"] : "inherit",
+				stdio: proxyAppServerAccountRead
+					? ["pipe", "pipe", "pipe"]
+					: captureOutput
+						? ["inherit", "pipe", "pipe"]
+						: "inherit",
 				env,
 			});
 		} catch (error) {
@@ -395,7 +534,60 @@ function forwardToRealCodexOnce(
 			return;
 		}
 
-		if (captureOutput) {
+		if (proxyAppServerAccountRead && protocolProxy) {
+			let stdinClosed = false;
+			let stdoutClosed = false;
+			const closeChildStdin = () => {
+				if (stdinClosed) return;
+				stdinClosed = true;
+				protocolProxy.flushInput();
+				child.stdin?.end();
+			};
+			const onProcessStdinData = (chunk) => {
+				protocolProxy.observeInput(chunk);
+				if (child.stdin && !child.stdin.destroyed && !child.stdin.write(chunk)) {
+					process.stdin.pause();
+				}
+			};
+			const onProcessStdinEnd = () => {
+				closeChildStdin();
+			};
+			const onProcessStdinError = () => {
+				closeChildStdin();
+			};
+			const onChildStdinDrain = () => {
+				process.stdin.resume();
+			};
+			const onChildStdoutData = (chunk) => {
+				protocolProxy.writeOutput(chunk);
+			};
+			const onChildStdoutEnd = () => {
+				if (stdoutClosed) return;
+				stdoutClosed = true;
+				protocolProxy.flushOutput();
+			};
+			const onChildStderrData = (chunk) => {
+				process.stderr.write(chunk);
+			};
+			cleanupProtocolProxy = () => {
+				process.stdin.removeListener("data", onProcessStdinData);
+				process.stdin.removeListener("end", onProcessStdinEnd);
+				process.stdin.removeListener("close", onProcessStdinEnd);
+				process.stdin.removeListener("error", onProcessStdinError);
+				child.stdin?.removeListener("drain", onChildStdinDrain);
+				child.stdout?.removeListener("data", onChildStdoutData);
+				child.stdout?.removeListener("end", onChildStdoutEnd);
+				child.stderr?.removeListener("data", onChildStderrData);
+			};
+			process.stdin.on("data", onProcessStdinData);
+			process.stdin.once("end", onProcessStdinEnd);
+			process.stdin.once("close", onProcessStdinEnd);
+			process.stdin.once("error", onProcessStdinError);
+			child.stdin?.on("drain", onChildStdinDrain);
+			child.stdout?.on("data", onChildStdoutData);
+			child.stdout?.on("end", onChildStdoutEnd);
+			child.stderr?.on("data", onChildStderrData);
+		} else if (captureOutput) {
 			child.stdout?.on("data", (chunk) => {
 				const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
 				stdout += text;
@@ -458,6 +650,11 @@ async function forwardToRealCodex(codexBin, rawArgs, baseEnv = process.env) {
 					rawArgs,
 					runtimeProxyContext.env,
 				),
+				proxyAppServerAccountRead:
+					isCodexAppServerCommand(rawArgs) &&
+					(runtimeProxyContext.proxyAppServerAccountRead === true ||
+						(runtimeProxyContext.env[APP_SERVER_ACCOUNT_LABEL_ENV] ?? "").trim() ===
+							"1"),
 			},
 		);
 		lastExitCode = result.exitCode;
@@ -1164,7 +1361,11 @@ function rewriteTopLevelModelProvider(rawConfig) {
 	return output.join(lineEnding);
 }
 
-function rewriteConfigTomlForRuntimeRotationProxy(rawConfig, proxyBaseUrl) {
+function rewriteConfigTomlForRuntimeRotationProxy(
+	rawConfig,
+	proxyBaseUrl,
+	clientApiKey,
+) {
 	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
 	const withoutOldProvider = removeRuntimeRotationProviderBlock(rawConfig).replace(
 		/[\r\n]*$/,
@@ -1176,9 +1377,10 @@ function rewriteConfigTomlForRuntimeRotationProxy(rawConfig, proxyBaseUrl) {
 	);
 	const providerBlock = [
 		`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
-		'name = "Codex Multi-Auth Runtime Proxy"',
+		'name = "codex-multi-auth"',
 		`base_url = ${tomlStringLiteral(proxyBaseUrl)}`,
-		'env_key = "OPENAI_API_KEY"',
+		"requires_openai_auth = false",
+		`experimental_bearer_token = ${tomlStringLiteral(clientApiKey)}`,
 		'wire_api = "responses"',
 	];
 	return `${withModelProvider}${lineEnding}${lineEnding}${providerBlock.join(lineEnding)}${lineEnding}`;
@@ -1246,6 +1448,7 @@ function createRuntimeRotationProxyCodexHome(baseEnv, proxyBaseUrl, clientApiKey
 		const runtimeConfig = rewriteConfigTomlForRuntimeRotationProxy(
 			rawConfig,
 			proxyBaseUrl,
+			clientApiKey,
 		);
 		const runtimeConfigPath = join(shadowCodexHome, "config.toml");
 		writeFileSync(runtimeConfigPath, runtimeConfig, "utf8");
@@ -1283,6 +1486,78 @@ function createRuntimeRotationProxyCodexHome(baseEnv, proxyBaseUrl, clientApiKey
 	};
 }
 
+function appendNodeImportOption(nodeOptions, preloadPath) {
+	const importOption = `--import=${pathToFileURL(preloadPath).href}`;
+	const trimmed = (nodeOptions ?? "").trim();
+	return trimmed.length > 0 ? `${trimmed} ${importOption}` : importOption;
+}
+
+function createRuntimeRotationAppServerPreloadSource(wrapperScriptPath) {
+	return [
+		'import { spawn } from "node:child_process";',
+		'import { basename } from "node:path";',
+		'import process from "node:process";',
+		"",
+		`const wrapperScriptPath = ${JSON.stringify(wrapperScriptPath)};`,
+		`const accountLabelEnv = ${JSON.stringify(APP_SERVER_ACCOUNT_LABEL_ENV)};`,
+		"const rawArgs = process.argv.slice(1);",
+		"const firstArg = rawArgs[0] ?? \"\";",
+		'if (basename(firstArg).toLowerCase() === "app-server") {',
+		'  const args = ["app-server", ...rawArgs.slice(1)];',
+		"  const env = {",
+		"    ...process.env,",
+		'    CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",',
+		"    [accountLabelEnv]: \"1\",",
+		"  };",
+		"  const child = spawn(process.execPath, [wrapperScriptPath, ...args], {",
+		"    stdio: \"inherit\",",
+		"    env,",
+		"  });",
+		"  child.once(\"error\", (error) => {",
+		'    console.error(`codex-multi-auth app-server shim failed: ${error instanceof Error ? error.message : String(error)}`);',
+		"    process.exit(1);",
+		"  });",
+		"  child.once(\"exit\", (code, signal) => {",
+		"    if (signal) {",
+		'      process.exit(signal === "SIGINT" ? 130 : 1);',
+		"      return;",
+		"    }",
+		"    process.exit(typeof code === \"number\" ? code : 1);",
+		"  });",
+		"  await new Promise(() => undefined);",
+		"}",
+		"",
+	].join("\n");
+}
+
+function installRuntimeRotationAppServerCliShim(forwardedEnv) {
+	const shadowCodexHome = forwardedEnv.CODEX_HOME;
+	if (!shadowCodexHome) {
+		throw new Error("runtime app-server shim requires CODEX_HOME");
+	}
+	const shimDir = join(shadowCodexHome, "app-server-shim");
+	mkdirSync(shimDir, { recursive: true });
+	const executableName = process.platform === "win32" ? "codex.exe" : "codex";
+	const executablePath = join(shimDir, executableName);
+	const preloadPath = join(shimDir, "codex-multi-auth-app-server-preload.mjs");
+	copyFileSync(process.execPath, executablePath);
+	if (process.platform !== "win32") {
+		chmodSync(executablePath, 0o755);
+	}
+	writeFileSync(
+		preloadPath,
+		createRuntimeRotationAppServerPreloadSource(fileURLToPath(import.meta.url)),
+		"utf8",
+	);
+	forwardedEnv.CODEX_CLI_PATH = shimDir;
+	forwardedEnv.NODE_OPTIONS = appendNodeImportOption(
+		forwardedEnv.NODE_OPTIONS,
+		preloadPath,
+	);
+	forwardedEnv.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY = "0";
+	forwardedEnv[APP_SERVER_ACCOUNT_LABEL_ENV] = "1";
+}
+
 function resolveRuntimeRotationAppHelperStatusPath(env = process.env) {
 	const multiAuthDir =
 		resolveOriginalMultiAuthDir(env) ?? join(resolveCodexHomeDir(env), "multi-auth");
@@ -1314,6 +1589,17 @@ function pickRuntimeRotationAppHelperEnv(env) {
 		CODEX_HOME: env.CODEX_HOME,
 		OPENAI_API_KEY: env.OPENAI_API_KEY,
 	};
+	for (const name of [
+		"CODEX_CLI_PATH",
+		"NODE_OPTIONS",
+		"CODEX_MULTI_AUTH_REAL_CODEX_BIN",
+		"CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY",
+		APP_SERVER_ACCOUNT_LABEL_ENV,
+	]) {
+		if (env[name]) {
+			picked[name] = env[name];
+		}
+	}
 	if (env.CODEX_MULTI_AUTH_DIR) {
 		picked.CODEX_MULTI_AUTH_DIR = env.CODEX_MULTI_AUTH_DIR;
 	}
@@ -1423,6 +1709,7 @@ async function runRuntimeRotationAppHelper() {
 			proxyServer.baseUrl,
 			clientApiKey,
 		);
+		installRuntimeRotationAppServerCliShim(shadowContext.env);
 		lastRequestCount = proxyServer.getStatus?.().totalRequests ?? 0;
 		publishStatus("running");
 		process.stdout.write(
@@ -1659,6 +1946,7 @@ async function createRuntimeRotationProxyContextIfEnabled(
 		],
 		env: shadowContext.env,
 		cleanup,
+		proxyAppServerAccountRead: isCodexAppServerCommand(rawArgs),
 	};
 }
 

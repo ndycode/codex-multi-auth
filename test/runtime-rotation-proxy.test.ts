@@ -140,7 +140,13 @@ describe("runtime rotation proxy", () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now));
 		const { calls, fetchImpl } = createRecordingFetch(() =>
-			textEventStream("data: forwarded\n\n"),
+			textEventStream("data: forwarded\n\n", {
+				"x-codex-multi-auth-account-index": "1",
+				"x-codex-multi-auth-account-email": "account-1@example.com",
+				"x-codex-multi-auth-account-label":
+					"Account 1 (account-1@example.com, id:acc_1)",
+				"x-codex-multi-auth-account-id": "acc_1",
+			}),
 		);
 		const proxy = await startRuntimeRotationProxy({
 			accountManager,
@@ -195,13 +201,10 @@ describe("runtime rotation proxy", () => {
 		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-1");
 		expect(calls[0]?.headers.get("x-api-key")).toBeNull();
 		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
-		expect(response.headers.get("x-codex-multi-auth-account-index")).toBe("1");
-		expect(response.headers.get("x-codex-multi-auth-account-email")).toBe(
-			"account-1@example.com",
-		);
-		expect(response.headers.get("x-codex-multi-auth-account-label")).toBe(
-			"Account 1 (account-1@example.com, id:acc_1)",
-		);
+		expect(response.headers.get("x-codex-multi-auth-account-index")).toBeNull();
+		expect(response.headers.get("x-codex-multi-auth-account-email")).toBeNull();
+		expect(response.headers.get("x-codex-multi-auth-account-label")).toBeNull();
+		expect(response.headers.get("x-codex-multi-auth-account-id")).toBeNull();
 		expect(proxy.getStatus()).toMatchObject({
 			lastAccountIndex: 0,
 			lastAccountEmail: "account-1@example.com",

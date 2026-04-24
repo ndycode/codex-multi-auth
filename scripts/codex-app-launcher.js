@@ -16,6 +16,8 @@ const WINDOWS_SHORTCUT_NAME = `${OFFICIAL_LAUNCHER_NAME}.lnk`;
 const LINUX_DESKTOP_FILE_NAME = "codex-multi-auth.desktop";
 const MACOS_APP_NAME = `${MANAGED_LAUNCHER_NAME}.app`;
 const WINDOWS_BACKUP_FILE_NAME = "app-shortcuts.json";
+const MANAGED_SHORTCUT_DESCRIPTION =
+	"Launch Codex through codex-multi-auth runtime rotation";
 
 /**
  * @param {string} value
@@ -49,6 +51,20 @@ function quoteDesktopExec(value) {
 }
 
 /**
+ * @param {string} value
+ */
+function quotePosixShell(value) {
+	return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * @param {string[]} values
+ */
+function uniqueStrings(values) {
+	return [...new Set(values.filter((value) => value.trim().length > 0))];
+}
+
+/**
  * @param {NodeJS.ProcessEnv} env
  * @param {string} home
  */
@@ -74,10 +90,21 @@ function resolveWindowsTaskbarPinnedDir(env, home) {
 }
 
 /**
+ * @param {NodeJS.ProcessEnv} env
  * @param {string} home
  */
-function resolveWindowsDesktopDir(home) {
-	return join(home, "Desktop");
+function resolveWindowsDesktopDirs(env, home) {
+	const configured = (env.CODEX_MULTI_AUTH_APP_LAUNCHER_WINDOWS_DESKTOP_DIR ?? "").trim();
+	const onedriveRoots = [
+		env.OneDrive,
+		env.OneDriveConsumer,
+		env.OneDriveCommercial,
+	].filter((value) => typeof value === "string" && value.trim().length > 0);
+	return uniqueStrings([
+		configured,
+		...onedriveRoots.map((root) => join(String(root), "Desktop")),
+		join(home, "Desktop"),
+	]);
 }
 
 /**
@@ -128,6 +155,7 @@ export function resolveAppLauncherPlan(options = {}) {
 	const scriptPath = resolveCurrentScriptPath(moduleUrl);
 	const codexScriptPath = join(dirname(scriptPath), "codex.js");
 	const nodePath = process.execPath;
+	const commandArgv = [codexScriptPath, "app"];
 
 	if (platform === "win32") {
 		const startMenuDir = resolveWindowsStartMenuDir(env, home);
@@ -138,11 +166,12 @@ export function resolveAppLauncherPlan(options = {}) {
 			shortcutRoots: [
 				startMenuDir,
 				resolveWindowsTaskbarPinnedDir(env, home),
-				resolveWindowsDesktopDir(home),
+				...resolveWindowsDesktopDirs(env, home),
 			],
 			backupPath: join(resolveCodexMultiAuthDir(env, home), WINDOWS_BACKUP_FILE_NAME),
 			commandPath: nodePath,
 			commandArgs: `"${codexScriptPath}" app`,
+			commandArgv,
 			workingDirectory: home,
 			iconPath: nodePath,
 		};
@@ -156,6 +185,7 @@ export function resolveAppLauncherPlan(options = {}) {
 			launcherPath: appPath,
 			commandPath: nodePath,
 			commandArgs: `"${codexScriptPath}" app`,
+			commandArgv,
 			workingDirectory: home,
 			iconPath: nodePath,
 		};
@@ -168,6 +198,7 @@ export function resolveAppLauncherPlan(options = {}) {
 		launcherPath: desktopPath,
 		commandPath: nodePath,
 		commandArgs: `"${codexScriptPath}" app %F`,
+		commandArgv: [codexScriptPath, "app", "%F"],
 		workingDirectory: home,
 		iconPath: "utilities-terminal",
 	};
@@ -221,11 +252,14 @@ export function createWindowsShortcutPowerShellScript(plan, options = {}) {
 		"$ErrorActionPreference = 'Stop'",
 		`$DryRun = ${quotePowerShellBoolean(dryRun)}`,
 		`$ShortcutRoots = ${quotePowerShellArray(shortcutRoots)}`,
+		"$ShellDesktop = [Environment]::GetFolderPath('Desktop')",
+		"if (-not [string]::IsNullOrWhiteSpace($ShellDesktop)) { $ShortcutRoots = @($ShortcutRoots + $ShellDesktop) | Sort-Object -Unique }",
 		`$BackupPath = ${quotePowerShellSingle(backupPath)}`,
 		`$ShortcutName = ${quotePowerShellSingle(OFFICIAL_LAUNCHER_NAME)}`,
 		`$TargetPath = ${quotePowerShellSingle(plan.commandPath)}`,
 		`$Arguments = ${quotePowerShellSingle(plan.commandArgs)}`,
 		`$WorkingDirectory = ${quotePowerShellSingle(plan.workingDirectory)}`,
+		`$ManagedDescription = ${quotePowerShellSingle(MANAGED_SHORTCUT_DESCRIPTION)}`,
 		"$Candidates = @()",
 		"$PackagedApps = @()",
 		"foreach ($Root in $ShortcutRoots) {",
@@ -263,7 +297,8 @@ export function createWindowsShortcutPowerShellScript(plan, options = {}) {
 		"    $Skipped += $Path",
 		"    continue",
 		"  }",
-		"  if (-not $BackupByPath.ContainsKey($Path)) {",
+		"  $AlreadyManaged = (([string]$Shortcut.Description) -eq $ManagedDescription) -or ((([string]$Shortcut.TargetPath) -ieq $TargetPath) -and (([string]$Shortcut.Arguments) -ieq $Arguments))",
+		"  if (-not $BackupByPath.ContainsKey($Path) -and -not $AlreadyManaged) {",
 		"    $IconLocation = [string]$Shortcut.IconLocation",
 		"    if ([string]::IsNullOrWhiteSpace($IconLocation)) { $IconLocation = [string]$Shortcut.TargetPath }",
 		"    $Backup = [ordered]@{",
@@ -282,8 +317,8 @@ export function createWindowsShortcutPowerShellScript(plan, options = {}) {
 		"    $Shortcut.TargetPath = $TargetPath",
 		"    $Shortcut.Arguments = $Arguments",
 		"    $Shortcut.WorkingDirectory = $WorkingDirectory",
-		"    $Shortcut.IconLocation = [string]$Backup.IconLocation",
-		"    $Shortcut.Description = 'Launch Codex through codex-multi-auth runtime rotation'",
+		"    if ($null -ne $Backup -and $null -ne $Backup.IconLocation) { $Shortcut.IconLocation = [string]$Backup.IconLocation }",
+		"    $Shortcut.Description = $ManagedDescription",
 		"    $Shortcut.Save()",
 		"  }",
 		"  $Routed += $Path",
@@ -343,10 +378,13 @@ function createMacInfoPlist(plan) {
  * @param {ReturnType<typeof resolveAppLauncherPlan>} plan
  */
 function createMacLauncherScript(plan) {
+	const args = Array.isArray(plan.commandArgv)
+		? plan.commandArgv.map(quotePosixShell).join(" ")
+		: plan.commandArgs;
 	return [
 		"#!/bin/sh",
-		`cd ${JSON.stringify(plan.workingDirectory)}`,
-		`exec ${JSON.stringify(plan.commandPath)} ${plan.commandArgs}`,
+		`cd ${quotePosixShell(plan.workingDirectory)}`,
+		`exec ${quotePosixShell(plan.commandPath)} ${args}`,
 		"",
 	].join("\n");
 }
@@ -411,7 +449,14 @@ async function installWindowsShortcut(plan, options) {
 	if (!output) {
 		return { action: options.remove ? "restore" : "route", routed: [], restored: [], skipped: [] };
 	}
-	return JSON.parse(output);
+	try {
+		return JSON.parse(output);
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		throw new Error(
+			`codex-multi-auth-app-launcher: unexpected powershell output (${detail}): ${result.stdout.trim().slice(-512)}`,
+		);
+	}
 }
 
 /**

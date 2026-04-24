@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	bindCodexAppRuntimeRotation,
@@ -39,10 +40,17 @@ describe("Codex app runtime rotation bind", () => {
 			"",
 		].join("\n");
 
-		const bound = rewriteConfigTomlForAppBind(original, "http://127.0.0.1:32123");
+		const bound = rewriteConfigTomlForAppBind(
+			original,
+			"http://127.0.0.1:32123",
+			"app-secret",
+		);
 		expect(bound).toContain('model_provider = "codex-multi-auth-runtime-proxy"');
 		expect(bound).toContain("[model_providers.codex-multi-auth-runtime-proxy]");
+		expect(bound).toContain('name = "codex-multi-auth"');
 		expect(bound).toContain('base_url = "http://127.0.0.1:32123"');
+		expect(bound).toContain("requires_openai_auth = false");
+		expect(bound).toContain('experimental_bearer_token = "app-secret"');
 		expect(bound).toContain('wire_api = "responses"');
 		expect(bound).not.toContain("env_key");
 		expect(bound).toContain("[profiles.default]");
@@ -118,10 +126,15 @@ describe("Codex app runtime rotation bind", () => {
 		const config = await readFile(join(codexHome, "config.toml"), "utf8");
 		expect(config).toContain("[model_providers.codex-multi-auth-runtime-proxy]");
 		expect(config).toContain(result.status.state?.baseUrl);
+		expect(config).toContain("requires_openai_auth = false");
+		expect(config).toContain(
+			`experimental_bearer_token = "${result.status.state?.clientApiKey}"`,
+		);
 		expect(config).not.toContain("env_key");
 		const startup = await readFile(result.status.paths.startupPath ?? "", "utf8");
 		expect(startup).toContain("--state");
 		expect(startup).toContain("runtime-rotation-app-bind.json");
+		expect(startup).not.toContain(result.status.state?.clientApiKey ?? "");
 
 		const unbound = await unbindCodexAppRuntimeRotation({
 			platform: "win32",
@@ -135,6 +148,56 @@ describe("Codex app runtime rotation bind", () => {
 			'model_provider = "openai"\n',
 		);
 		expect(existsSync(result.status.paths.startupPath ?? "")).toBe(false);
+	});
+
+	it("resolves the router assigned port before writing app config", async () => {
+		const root = await createTempRoot("codex-app-bind-router-port-");
+		const multiAuthDir = join(root, "multi-auth");
+		const codexHome = join(root, "codex-home");
+		const routerScriptPath = join(root, "fake-router.mjs");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		await writeFile(
+			routerScriptPath,
+			[
+				"#!/usr/bin/env node",
+				"import { mkdirSync, writeFileSync } from 'node:fs';",
+				"import { dirname } from 'node:path';",
+				"const args = process.argv.slice(2);",
+				"const statusPath = args[args.indexOf('--status') + 1];",
+				"mkdirSync(dirname(statusPath), { recursive: true });",
+				"writeFileSync(statusPath, JSON.stringify({ version: 1, state: 'running', pid: process.pid, baseUrl: 'http://127.0.0.1:54321', updatedAt: Date.now() }) + '\\n', 'utf8');",
+				"process.on('SIGTERM', () => process.exit(0));",
+				"setInterval(() => undefined, 1000);",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = await bindCodexAppRuntimeRotation({
+			platform: "linux",
+			home: root,
+			env,
+			nodePath: process.execPath,
+			routerScriptPath,
+			now: () => 789,
+		});
+
+		expect(result.status.state?.port).toBe(54321);
+		expect(result.status.state?.baseUrl).toBe("http://127.0.0.1:54321");
+		const config = await readFile(join(codexHome, "config.toml"), "utf8");
+		expect(config).toContain('base_url = "http://127.0.0.1:54321"');
+		expect(config).toContain(
+			`experimental_bearer_token = "${result.status.state?.clientApiKey}"`,
+		);
+
+		await unbindCodexAppRuntimeRotation({
+			platform: "linux",
+			home: root,
+			env,
+		});
 	});
 
 	it("writes a macOS LaunchAgent for login-time router startup", async () => {
@@ -162,5 +225,31 @@ describe("Codex app runtime rotation bind", () => {
 		expect(plist).toContain("<key>KeepAlive</key>");
 		expect(plist).toContain("--state");
 		expect(plist).toContain("runtime-rotation-app-bind.json");
+		expect(plist).not.toContain(result.status.state?.clientApiKey ?? "");
+	});
+
+	it("rejects non-loopback router hosts before binding", async () => {
+		const root = await createTempRoot("codex-app-router-host-");
+		const statusPath = join(root, "router-status.json");
+		const result = spawnSync(
+			process.execPath,
+			[
+				"scripts/codex-app-router.js",
+				"--host",
+				"0.0.0.0",
+				"--port",
+				"4567",
+				"--status",
+				statusPath,
+			],
+			{
+				encoding: "utf8",
+				windowsHide: true,
+			},
+		);
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain("loopback-only");
+		expect(existsSync(statusPath)).toBe(false);
 	});
 });
