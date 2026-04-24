@@ -72,6 +72,14 @@ function createWrapperFixture(): string {
 		join(repoRootDir, "scripts", "codex-bin-resolver.js"),
 		join(scriptDir, "codex-bin-resolver.js"),
 	);
+	copyFileSync(
+		join(repoRootDir, "scripts", "codex-app-launcher.js"),
+		join(scriptDir, "codex-app-launcher.js"),
+	);
+	copyFileSync(
+		join(repoRootDir, "scripts", "install-codex-auth-utils.js"),
+		join(scriptDir, "install-codex-auth-utils.js"),
+	);
 	return fixtureRoot;
 }
 

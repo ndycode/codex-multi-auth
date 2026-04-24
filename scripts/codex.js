@@ -89,6 +89,37 @@ function hydrateCliVersionEnv() {
 	}
 }
 
+function isRotationEnableCommand(args) {
+	return args[0] === "auth" && args[1] === "rotation" && args[2] === "enable";
+}
+
+function shouldAutoInstallCodexAppLauncher(env = process.env) {
+	const override = (env.CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL ?? "1").trim().toLowerCase();
+	return !new Set(["0", "false", "no"]).has(override);
+}
+
+async function maybeInstallCodexAppLauncherAfterRotationEnable(args, exitCode) {
+	if (exitCode !== 0 || !isRotationEnableCommand(args)) {
+		return;
+	}
+	if (!shouldAutoInstallCodexAppLauncher()) {
+		return;
+	}
+	try {
+		const mod = await import("./codex-app-launcher.js");
+		if (typeof mod.installCodexAppLauncher !== "function") {
+			return;
+		}
+		await mod.installCodexAppLauncher({
+			log: (message) => console.error(`codex-multi-auth: ${message}`),
+		});
+	} catch (error) {
+		console.error(
+			`codex-multi-auth: could not install Codex app launcher: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+}
+
 async function loadRunCodexMultiAuthCli() {
 	try {
 		const mod = await import("../dist/lib/codex-manager.js");
@@ -2359,6 +2390,10 @@ async function main() {
 				return 1;
 			}
 			const exitCode = await runCodexMultiAuthCli(normalizedArgs);
+			await maybeInstallCodexAppLauncherAfterRotationEnable(
+				normalizedArgs,
+				normalizeExitCode(exitCode),
+			);
 			return normalizeExitCode(exitCode);
 		} catch (error) {
 			console.error(

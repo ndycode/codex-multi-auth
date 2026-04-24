@@ -109,6 +109,8 @@ The proxy preserves request bodies and streaming responses, replaces outbound au
 
 For `codex app`, the wrapper automatically starts a small internal helper so rotation can keep working if the desktop app launcher detaches. The helper stores only local runtime status, uses the same per-session proxy client key as the CLI path, and exits after an idle timeout.
 
+`codex auth rotation enable` also installs a user-level Codex app launcher where the platform supports it. That launcher points normal app opens at `codex app` through `codex-multi-auth`, so the app loads the same runtime rotation path instead of bypassing the wrapper. Set `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0` before enabling rotation to skip this best-effort launcher install, or run `codex-multi-auth-app-launcher --remove` to remove the managed launcher later.
+
 ---
 
 ## Shipped Templates

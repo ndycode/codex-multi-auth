@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync, readdirSy
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync, execFile } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
 	FILE_RETRY_BASE_DELAY_MS,
@@ -11,8 +12,13 @@ import {
 	resolveInstallPaths,
 	withFileOperationRetry,
 } from "../scripts/install-codex-auth-utils.js";
+import {
+	createWindowsShortcutPowerShellScript,
+	resolveAppLauncherPlan,
+} from "../scripts/codex-app-launcher.js";
 
 const scriptPath = "scripts/install-codex-auth.js";
+const appLauncherScriptPath = "scripts/codex-app-launcher.js";
 const tempRoots: string[] = [];
 const execFileAsync = promisify(execFile);
 
@@ -188,5 +194,67 @@ describe("install-codex-auth script", () => {
 
 		await expect(withFileOperationRetry(operation)).rejects.toMatchObject({ code: "ENOENT" });
 		expect(operation).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("codex app launcher installer", () => {
+	it("resolves a Windows Start Menu launcher that points at the wrapper app command", () => {
+		const home = "C:\\Users\\test";
+		const appData = path.join(home, "AppData", "Roaming");
+		const plan = resolveAppLauncherPlan({
+			platform: "win32",
+			home,
+			env: { APPDATA: appData },
+			moduleUrl: pathToFileURL(path.resolve(appLauncherScriptPath)).href,
+		});
+
+		expect(plan.launcherPath).toBe(
+			path.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Codex.lnk"),
+		);
+		expect(plan.commandPath).toBe(process.execPath);
+		expect(plan.commandArgs).toContain("scripts\\codex.js");
+		expect(plan.commandArgs).toContain(" app");
+
+		const psScript = createWindowsShortcutPowerShellScript(plan);
+		expect(psScript).toContain("$Shortcut.TargetPath = $TargetPath");
+		expect(psScript).toContain("Launch Codex through codex-multi-auth");
+	});
+
+	it("resolves a Linux desktop launcher under XDG_DATA_HOME", () => {
+		const home = "/home/test";
+		const dataHome = "/tmp/test-data";
+		const plan = resolveAppLauncherPlan({
+			platform: "linux",
+			home,
+			env: { XDG_DATA_HOME: dataHome },
+			moduleUrl: pathToFileURL(path.resolve(appLauncherScriptPath)).href,
+		});
+
+		expect(plan.launcherPath).toBe(path.join(dataHome, "applications", "codex.desktop"));
+		expect(plan.commandPath).toBe(process.execPath);
+		expect(plan.commandArgs).toContain("codex.js");
+		expect(plan.commandArgs).toContain(" app %F");
+	});
+
+	it("dry-run reports the launcher path without writing it", () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-app-launcher-dryrun-"));
+		tempRoots.push(home);
+		const dataHome = path.join(home, "data");
+		const result = spawnSync(
+			process.execPath,
+			[appLauncherScriptPath, "--dry-run"],
+			{
+				env: {
+					...process.env,
+					XDG_DATA_HOME: dataHome,
+				},
+				encoding: "utf8",
+				windowsHide: true,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("[dry-run] Would install Codex app launcher");
+		expect(existsSync(path.join(dataHome, "applications", "codex.desktop"))).toBe(false);
 	});
 });

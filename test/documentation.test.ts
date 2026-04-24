@@ -547,6 +547,7 @@ describe("Documentation Integrity", () => {
 		});
 		expect(packageJson.bin).toEqual({
 			codex: "scripts/codex.js",
+			"codex-multi-auth-app-launcher": "scripts/codex-app-launcher.js",
 			"codex-multi-auth": "scripts/codex-multi-auth.js",
 		});
 	});
