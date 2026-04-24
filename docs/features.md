@@ -24,6 +24,7 @@ User-facing capability map for `codex-multi-auth`.
 | Readiness and risk forecast | Suggests the best next account | `codex auth forecast` |
 | Live quota probe mode | Uses live headers for stronger decisions | `codex auth forecast --live` |
 | JSON report output | Lets you inspect account state in automation or support workflows | `codex auth report --live --json` |
+| Runtime rotation proxy | Lets forwarded official Codex sessions rotate managed accounts between Responses requests without restarting the session | `codex auth rotation enable` |
 
 ---
 

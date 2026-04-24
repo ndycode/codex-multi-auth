@@ -29,6 +29,7 @@ Runtime configuration is resolved from unified settings, optional override files
   },
   "pluginConfig": {
     "codexMode": true,
+    "codexRuntimeRotationProxy": false,
     "liveAccountSync": true,
     "sessionAffinity": true,
     "proactiveRefreshGuardian": true,
@@ -63,6 +64,7 @@ These are safe for most operators and frequently used in day-to-day workflows.
 | `CODEX_MULTI_AUTH_DIR` | Override root directory for plugin-managed runtime files |
 | `CODEX_MULTI_AUTH_CONFIG_PATH` | Load configuration from alternate path |
 | `CODEX_MODE=0/1` | Disable or enable Codex mode |
+| `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0/1` | Opt in to live Codex Responses routing through the localhost account-rotation proxy |
 | `CODEX_TUI_V2=0/1` | Disable or enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | Color profile selection |
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | Glyph mode selection |
@@ -96,6 +98,14 @@ Keep these enabled for most environments:
 - `sessionAffinity`
 - `proactiveRefreshGuardian`
 - `preemptiveQuotaEnabled`
+
+---
+
+## Runtime Rotation Proxy
+
+`codexRuntimeRotationProxy` is disabled by default. When enabled through settings, `codex auth rotation enable`, or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1`, the `codex` wrapper starts a localhost-only Responses proxy for forwarded official Codex sessions. The wrapper writes a temporary shadow `CODEX_HOME/config.toml` that selects a custom provider named `codex-multi-auth-runtime-proxy`, launches the official CLI against that provider, and removes the shadow home after the child process exits.
+
+The proxy preserves request bodies and streaming responses, replaces outbound auth headers with the selected managed account, and rotates to another account before response bytes are streamed when it sees rate limits, server errors, network failures, or refresh failures. If every account is unavailable, the proxy returns a structured pool-exhaustion error that points to `codex auth rotation status`.
 
 ---
 

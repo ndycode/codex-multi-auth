@@ -44,6 +44,7 @@ Used only for host plugin mode through the host runtime config file.
 | Key | Default |
 | --- | --- |
 | `codexMode` | `true` |
+| `codexRuntimeRotationProxy` | `false` |
 | `codexTuiV2` | `true` |
 | `codexTuiColorProfile` | `truecolor` |
 | `codexTuiGlyphMode` | `ascii` |
@@ -200,6 +201,7 @@ Upgrade note:
 | `CODEX_MULTI_AUTH_DIR` | Custom root for settings/accounts/cache/logs |
 | `CODEX_MULTI_AUTH_CONFIG_PATH` | Alternate config file input |
 | `CODEX_MODE` | Toggle Codex mode |
+| `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY` | Toggle opt-in localhost Responses proxy for forwarded Codex sessions |
 | `CODEX_TUI_V2` | Toggle TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE` | TUI color profile |
 | `CODEX_TUI_GLYPHS` | TUI glyph mode |

@@ -58,6 +58,7 @@ Compatibility aliases are supported:
 | `codex auth features` | Print implemented feature summary |
 | `codex auth report` | Generate full health report |
 | `codex auth why-selected [--now|--last]` | Explain which account the selector picks now or via the last persisted runtime snapshot |
+| `codex auth rotation enable|disable|status` | Manage the opt-in runtime Responses proxy for live Codex account rotation |
 
 ---
 
@@ -147,6 +148,29 @@ JSON output shape:
 
 The `runtimeSnapshot` field is present only with `--last`. `selected` is
 `null` when `ok` is `false`.
+
+---
+
+## `codex auth rotation`
+
+Manages the opt-in runtime Responses proxy used by forwarded official Codex sessions. This is separate from normal `codex auth switch`: the proxy can rotate managed accounts between backend Responses requests while a Codex session stays open.
+
+Usage:
+
+```bash
+codex auth rotation enable
+codex auth rotation disable
+codex auth rotation status
+```
+
+Behavior:
+
+- `enable` persists `codexRuntimeRotationProxy=true`.
+- `disable` persists `codexRuntimeRotationProxy=false`.
+- `status` prints the effective setting, environment override state, account count, current account, disabled accounts, cooldowns, and rate-limit waits.
+- `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1` enables the proxy for the current process without changing settings.
+
+When enabled, the wrapper creates a temporary shadow `CODEX_HOME/config.toml` with a custom provider named `codex-multi-auth-runtime-proxy`, starts a `127.0.0.1` proxy on a random port, and forwards official Codex Responses traffic through that provider. Existing behavior is unchanged while the setting and env override are off.
 
 ---
 
