@@ -9,6 +9,15 @@ This top-level changelog preserves the foundational `0.x` milestones and points 
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-04-24
+
+Patch release for the GPT-5.5 rollout and runtime compatibility cleanup.
+
+- keep `gpt-5.5` and `gpt-5.5-pro` as first-attempt models
+- fall back to `gpt-5.4` only after real unsupported-model responses on ChatGPT Codex surfaces
+- harden the wrapper retry path for both unsupported-model and no-access error shapes
+- validate native `gpt-5.5` on official Codex `0.124.0` while preserving deterministic fallback on older or non-entitled runtimes
+
 ## [1.3.0] - 2026-04-17
 
 Phase 1 post-audit hardening: 20 focused PRs + 7 audit-fix commits + 1 follow-up PR (#413). 3527 tests (+182 from v1.2.7). Zero breaking changes, one opt-in flag (`routingMutex`). See [docs/releases/v1.3.0.md](docs/releases/v1.3.0.md) for full details.
@@ -221,3 +230,4 @@ Historical entries from pre-`0.1.0` internal iteration cycles are preserved in:
 [0.1.6]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.6
 [0.1.7]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.7
 [1.3.0]: https://github.com/ndycode/codex-multi-auth/releases/tag/v1.3.0
+[1.3.1]: https://github.com/ndycode/codex-multi-auth/releases/tag/v1.3.1
