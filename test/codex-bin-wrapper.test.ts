@@ -606,7 +606,7 @@ describe("codex bin wrapper", () => {
 			'FORWARDED:exec status -c cli_auth_credentials_store="file" -c model_provider="codex-multi-auth-runtime-proxy"',
 		);
 		expect(output).toContain("CODEX_HOME_IS_ORIGINAL:false");
-		expect(output).toContain("OPENAI_API_KEY:codex-multi-auth-runtime-proxy");
+		expect(output).toMatch(/^OPENAI_API_KEY:[0-9a-f]{64}$/m);
 		expect(output).toContain(
 			'model_provider = "codex-multi-auth-runtime-proxy"',
 		);

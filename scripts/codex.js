@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
 	chmodSync,
 	copyFileSync,
@@ -1143,7 +1144,11 @@ function rewriteConfigTomlForRuntimeRotationProxy(rawConfig, proxyBaseUrl) {
 	return `${withModelProvider}${lineEnding}${lineEnding}${providerBlock.join(lineEnding)}${lineEnding}`;
 }
 
-function createRuntimeRotationProxyCodexHome(baseEnv, proxyBaseUrl) {
+function createRuntimeRotationProxyClientApiKey() {
+	return randomBytes(32).toString("hex");
+}
+
+function createRuntimeRotationProxyCodexHome(baseEnv, proxyBaseUrl, clientApiKey) {
 	const originalCodexHome = resolveCodexHomeDir(baseEnv);
 	const shadowCodexHome = mkdtempSync(join(tmpdir(), "codex-multi-auth-runtime-home-"));
 	const cleanup = () => {
@@ -1222,10 +1227,7 @@ function createRuntimeRotationProxyCodexHome(baseEnv, proxyBaseUrl) {
 	const forwardedEnv = {
 		...baseEnv,
 		CODEX_HOME: shadowCodexHome,
-		OPENAI_API_KEY:
-			(baseEnv.OPENAI_API_KEY ?? "").trim().length > 0
-				? baseEnv.OPENAI_API_KEY
-				: "codex-multi-auth-runtime-proxy",
+		OPENAI_API_KEY: clientApiKey,
 	};
 	const originalMultiAuthDir = resolveOriginalMultiAuthDir(baseEnv);
 	if (originalMultiAuthDir) {
@@ -1259,10 +1261,12 @@ async function createRuntimeRotationProxyContextIfEnabled(
 	let proxyServer;
 	let shadowContext;
 	try {
-		proxyServer = await proxyModule.startRuntimeRotationProxy();
+		const clientApiKey = createRuntimeRotationProxyClientApiKey();
+		proxyServer = await proxyModule.startRuntimeRotationProxy({ clientApiKey });
 		shadowContext = createRuntimeRotationProxyCodexHome(
 			baseContext.env,
 			proxyServer.baseUrl,
+			clientApiKey,
 		);
 	} catch (error) {
 		try {

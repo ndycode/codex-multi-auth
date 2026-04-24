@@ -45,6 +45,7 @@ export interface RuntimeRotationProxyOptions {
 	host?: string;
 	port?: number;
 	upstreamBaseUrl?: string;
+	clientApiKey?: string;
 	accountManager?: AccountManager;
 	fetchImpl?: typeof fetch;
 	now?: () => number;
@@ -121,6 +122,14 @@ function createOutboundHeaders(
 		headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
 	}
 	return headers;
+}
+
+function isAuthorizedClient(headers: Headers, clientApiKey: string | null): boolean {
+	if (!clientApiKey) return true;
+	const authorization = headers.get("authorization") ?? "";
+	const bearerMatch = authorization.match(/^Bearer\s+(.+)$/i);
+	if (bearerMatch?.[1]?.trim() === clientApiKey) return true;
+	return headers.get("x-api-key") === clientApiKey;
 }
 
 function responseHeadersForClient(upstreamHeaders: Headers): Record<string, string> {
@@ -438,6 +447,15 @@ function writeMethodOrPathError(res: ServerResponse): void {
 	});
 }
 
+function writeUnauthorized(res: ServerResponse): void {
+	writeJson(res, HTTP_STATUS.UNAUTHORIZED, {
+		error: {
+			message: "Runtime rotation proxy rejected an unauthenticated local request.",
+			code: "runtime_rotation_proxy_unauthorized",
+		},
+	});
+}
+
 function normalizeExhaustionStatus(reason: ExhaustionReason): number {
 	return reason === "rate-limit" ? HTTP_STATUS.TOO_MANY_REQUESTS : 503;
 }
@@ -509,6 +527,11 @@ export async function startRuntimeRotationProxy(
 	const host = options.host ?? DEFAULT_HOST;
 	const port = options.port ?? 0;
 	const upstreamBaseUrl = options.upstreamBaseUrl ?? CODEX_BASE_URL;
+	const clientApiKey =
+		typeof options.clientApiKey === "string" &&
+		options.clientApiKey.trim().length > 0
+			? options.clientApiKey.trim()
+			: null;
 	const now = options.now ?? Date.now;
 	const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
 	const networkErrorCooldownMs = getNetworkErrorCooldownMs(pluginConfig);
@@ -540,6 +563,12 @@ export async function startRuntimeRotationProxy(
 			const incomingUrl = new URL(req.url ?? "/", "http://127.0.0.1");
 			if (req.method !== "POST" || !isResponsesPath(incomingUrl.pathname)) {
 				writeMethodOrPathError(res);
+				return;
+			}
+
+			const incomingHeaders = headersFromIncoming(req);
+			if (!isAuthorizedClient(incomingHeaders, clientApiKey)) {
+				writeUnauthorized(res);
 				return;
 			}
 

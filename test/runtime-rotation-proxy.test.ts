@@ -136,6 +136,37 @@ afterEach(async () => {
 });
 
 describe("runtime rotation proxy", () => {
+	it("rejects unauthenticated local clients when a wrapper token is configured", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: forwarded\n\n"),
+		);
+		const proxy = await startRuntimeRotationProxy({
+			accountManager,
+			fetchImpl,
+			upstreamBaseUrl: "https://example.test/backend-api",
+			clientApiKey: "runtime-secret",
+		});
+		openServers.push(proxy);
+
+		const rejected = await postResponses(proxy, { model: "gpt-5-codex" });
+
+		expect(rejected.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		expect(calls).toHaveLength(0);
+
+		const accepted = await postResponses(
+			proxy,
+			{ model: "gpt-5-codex" },
+			"/responses",
+			{ authorization: "Bearer runtime-secret" },
+		);
+
+		expect(accepted.status).toBe(HTTP_STATUS.OK);
+		expect(await accepted.text()).toBe("data: forwarded\n\n");
+		expect(calls).toHaveLength(1);
+	});
+
 	it("forwards Responses requests unchanged while replacing caller auth", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now));
