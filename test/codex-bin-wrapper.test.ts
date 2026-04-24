@@ -183,6 +183,31 @@ function createRuntimeRotationProxyFixtureModule(fixtureRoot: string): string {
 			"  appendFileSync(marker, `${line}\\n`, 'utf8');",
 			"}",
 			"",
+			"function readOptionalNumberEnv(name) {",
+			"  const parsed = Number.parseInt(process.env[name] ?? '', 10);",
+			"  return Number.isFinite(parsed) ? parsed : null;",
+			"}",
+			"",
+			"function readOptionalStringEnv(name) {",
+			"  const value = (process.env[name] ?? '').trim();",
+			"  return value.length > 0 ? value : null;",
+			"}",
+			"",
+			"function buildStatus() {",
+			"  return {",
+			"    totalRequests: readOptionalNumberEnv('CODEX_MULTI_AUTH_TEST_PROXY_REQUESTS') ?? 0,",
+			"    upstreamRequests: 0,",
+			"    retries: 0,",
+			"    rotations: readOptionalNumberEnv('CODEX_MULTI_AUTH_TEST_PROXY_ROTATIONS') ?? 0,",
+			"    lastAccountIndex: readOptionalNumberEnv('CODEX_MULTI_AUTH_TEST_PROXY_LAST_ACCOUNT_INDEX'),",
+			"    lastAccountLabel: readOptionalStringEnv('CODEX_MULTI_AUTH_TEST_PROXY_LAST_ACCOUNT_LABEL'),",
+			"    lastAccountEmail: readOptionalStringEnv('CODEX_MULTI_AUTH_TEST_PROXY_LAST_ACCOUNT_EMAIL'),",
+			"    lastAccountId: readOptionalStringEnv('CODEX_MULTI_AUTH_TEST_PROXY_LAST_ACCOUNT_ID'),",
+			"    lastAccountUpdatedAt: readOptionalNumberEnv('CODEX_MULTI_AUTH_TEST_PROXY_LAST_ACCOUNT_UPDATED_AT'),",
+			"    lastError: null,",
+			"  };",
+			"}",
+			"",
 			"export async function startRuntimeRotationProxy() {",
 			"  const baseUrl = process.env.CODEX_MULTI_AUTH_TEST_PROXY_BASE_URL ?? 'http://127.0.0.1:4567';",
 			"  appendMarker(`start:${baseUrl}`);",
@@ -191,7 +216,7 @@ function createRuntimeRotationProxyFixtureModule(fixtureRoot: string): string {
 			"    port: 4567,",
 			"    baseUrl,",
 			"    close: async () => appendMarker('close'),",
-			"    getStatus: () => ({}),",
+			"    getStatus: () => buildStatus(),",
 			"  };",
 			"}",
 		].join("\n"),
@@ -725,6 +750,12 @@ describe("codex bin wrapper", () => {
 			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
 			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "80",
 			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			CODEX_MULTI_AUTH_TEST_PROXY_LAST_ACCOUNT_INDEX: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_LAST_ACCOUNT_LABEL:
+				"Account 2 (second@example.com, id:second)",
+			CODEX_MULTI_AUTH_TEST_PROXY_LAST_ACCOUNT_EMAIL: "second@example.com",
+			CODEX_MULTI_AUTH_TEST_PROXY_LAST_ACCOUNT_ID: "acc_second",
+			CODEX_MULTI_AUTH_TEST_PROXY_LAST_ACCOUNT_UPDATED_AT: "12345",
 			OPENAI_API_KEY: undefined,
 		});
 
@@ -745,9 +776,24 @@ describe("codex bin wrapper", () => {
 		);
 		const helperStatus = JSON.parse(
 			readFileSync(join(multiAuthDir, "runtime-rotation-app-helper.json"), "utf8"),
-		) as { state: string; totalRequests: number };
+		) as {
+			state: string;
+			totalRequests: number;
+			lastAccountIndex: number | null;
+			lastAccountLabel: string | null;
+			lastAccountEmail: string | null;
+			lastAccountId: string | null;
+			lastAccountUpdatedAt: number | null;
+		};
 		expect(helperStatus.state).toBe("idle-timeout");
 		expect(helperStatus.totalRequests).toBe(0);
+		expect(helperStatus.lastAccountIndex).toBe(1);
+		expect(helperStatus.lastAccountLabel).toBe(
+			"Account 2 (second@example.com, id:second)",
+		);
+		expect(helperStatus.lastAccountEmail).toBe("second@example.com");
+		expect(helperStatus.lastAccountId).toBe("acc_second");
+		expect(helperStatus.lastAccountUpdatedAt).toBe(12345);
 		if (shadowHomeMatch?.[1]) {
 			expect(existsSync(shadowHomeMatch[1])).toBe(false);
 		}

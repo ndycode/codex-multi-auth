@@ -42,6 +42,11 @@ export interface RuntimeObservabilitySnapshot {
 	diagnosticProbeRequests: number;
 	poolExhaustionCooldownUntil: number | null;
 	serverBurstCooldownUntil: number | null;
+	lastAccountIndex?: number | null;
+	lastAccountLabel?: string | null;
+	lastAccountEmail?: string | null;
+	lastAccountId?: string | null;
+	lastAccountUpdatedAt?: number | null;
 	runtimeMetrics: RuntimeMetricsSnapshot;
 }
 
@@ -67,6 +72,11 @@ function createDefaultSnapshot(): RuntimeObservabilitySnapshot {
 		diagnosticProbeRequests: 0,
 		poolExhaustionCooldownUntil: null,
 		serverBurstCooldownUntil: null,
+		lastAccountIndex: null,
+		lastAccountLabel: null,
+		lastAccountEmail: null,
+		lastAccountId: null,
+		lastAccountUpdatedAt: null,
 		runtimeMetrics: {
 			startedAt: 0,
 			totalRequests: 0,

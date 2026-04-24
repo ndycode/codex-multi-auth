@@ -195,6 +195,19 @@ describe("runtime rotation proxy", () => {
 		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-1");
 		expect(calls[0]?.headers.get("x-api-key")).toBeNull();
 		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
+		expect(response.headers.get("x-codex-multi-auth-account-index")).toBe("1");
+		expect(response.headers.get("x-codex-multi-auth-account-email")).toBe(
+			"account-1@example.com",
+		);
+		expect(response.headers.get("x-codex-multi-auth-account-label")).toBe(
+			"Account 1 (account-1@example.com, id:acc_1)",
+		);
+		expect(proxy.getStatus()).toMatchObject({
+			lastAccountIndex: 0,
+			lastAccountEmail: "account-1@example.com",
+			lastAccountLabel: "Account 1 (account-1@example.com, id:acc_1)",
+			lastAccountId: "acc_1",
+		});
 		expect(JSON.parse(calls[0]?.bodyText ?? "{}")).toEqual(requestBody);
 	});
 
@@ -245,6 +258,10 @@ describe("runtime rotation proxy", () => {
 			"acc_1",
 			"acc_2",
 		]);
+		expect(proxy.getStatus()).toMatchObject({
+			lastAccountIndex: 1,
+			lastAccountEmail: "account-2@example.com",
+		});
 		expect(
 			accountManager.getAccountByIndex(0)?.rateLimitResetTimes["gpt-5-codex"],
 		).toBeTypeOf("number");

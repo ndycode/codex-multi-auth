@@ -1,5 +1,10 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { AccountManager, extractAccountId, type ManagedAccount } from "./accounts.js";
+import {
+	AccountManager,
+	extractAccountId,
+	formatAccountLabel,
+	type ManagedAccount,
+} from "./accounts.js";
 import {
 	getNetworkErrorCooldownMs,
 	getServerErrorCooldownMs,
@@ -18,6 +23,7 @@ import {
 } from "./constants.js";
 import { getModelFamily, type ModelFamily } from "./prompts/codex.js";
 import { queuedRefresh } from "./refresh-queue.js";
+import { mutateRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import { SessionAffinityStore } from "./session-affinity.js";
 import type { OAuthAuthDetails, RequestBody, TokenResult } from "./types.js";
 import { isRecord } from "./utils.js";
@@ -39,6 +45,10 @@ export interface RuntimeRotationProxyStatus {
 	streamsStarted: number;
 	lastError: string | null;
 	lastAccountIndex: number | null;
+	lastAccountLabel: string | null;
+	lastAccountEmail: string | null;
+	lastAccountId: string | null;
+	lastAccountUpdatedAt: number | null;
 }
 
 export interface RuntimeRotationProxyOptions {
@@ -62,6 +72,14 @@ interface RequestContext {
 }
 
 type ExhaustionReason = "rate-limit" | "server-error" | "network-error" | "auth-failure" | "no-account";
+
+interface RuntimeRotationAccountIdentity {
+	index: number;
+	label: string;
+	email: string | null;
+	accountId: string | null;
+	updatedAt: number;
+}
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_QUOTA_REMAINING_THRESHOLD = 10;
@@ -132,11 +150,66 @@ function isAuthorizedClient(headers: Headers, clientApiKey: string | null): bool
 	return headers.get("x-api-key") === clientApiKey;
 }
 
-function responseHeadersForClient(upstreamHeaders: Headers): Record<string, string> {
+function readTrimmedString(value: string | undefined): string | null {
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : null;
+}
+
+function sanitizeHeaderValue(value: string | null): string | null {
+	if (!value) return null;
+	const sanitized = value.replace(/[^\t\x20-\x7e]/g, "").trim();
+	return sanitized.length > 0 ? sanitized : null;
+}
+
+function accountIdentityFromAccount(
+	account: ManagedAccount,
+	updatedAt: number,
+): RuntimeRotationAccountIdentity {
+	return {
+		index: account.index,
+		label: formatAccountLabel(account, account.index),
+		email: readTrimmedString(account.email),
+		accountId: readTrimmedString(account.accountId),
+		updatedAt,
+	};
+}
+
+function recordLastRuntimeAccount(
+	status: RuntimeRotationProxyStatus,
+	identity: RuntimeRotationAccountIdentity,
+): void {
+	status.lastAccountIndex = identity.index;
+	status.lastAccountLabel = identity.label;
+	status.lastAccountEmail = identity.email;
+	status.lastAccountId = identity.accountId;
+	status.lastAccountUpdatedAt = identity.updatedAt;
+	mutateRuntimeObservabilitySnapshot((snapshot) => {
+		snapshot.lastAccountIndex = identity.index;
+		snapshot.lastAccountLabel = identity.label;
+		snapshot.lastAccountEmail = identity.email;
+		snapshot.lastAccountId = identity.accountId;
+		snapshot.lastAccountUpdatedAt = identity.updatedAt;
+	});
+}
+
+function responseHeadersForClient(
+	upstreamHeaders: Headers,
+	accountIdentity?: RuntimeRotationAccountIdentity,
+): Record<string, string> {
 	const headers: Record<string, string> = {};
 	for (const [key, value] of upstreamHeaders.entries()) {
 		if (HOP_BY_HOP_HEADERS.has(key.toLowerCase())) continue;
 		headers[key] = value;
+	}
+	if (accountIdentity) {
+		headers["x-codex-multi-auth-account-index"] = String(accountIdentity.index + 1);
+		const label = sanitizeHeaderValue(accountIdentity.label);
+		if (label) headers["x-codex-multi-auth-account-label"] = label;
+		const email = sanitizeHeaderValue(accountIdentity.email);
+		if (email) headers["x-codex-multi-auth-account-email"] = email;
+		const accountId = sanitizeHeaderValue(accountIdentity.accountId);
+		if (accountId) headers["x-codex-multi-auth-account-id"] = accountId;
 	}
 	return headers;
 }
@@ -485,10 +558,14 @@ async function forwardStreamingResponse(
 	upstream: Response,
 	res: ServerResponse,
 	status: RuntimeRotationProxyStatus,
+	accountIdentity: RuntimeRotationAccountIdentity,
 	onStreamError: () => void,
 ): Promise<void> {
 	status.streamsStarted += 1;
-	res.writeHead(upstream.status, responseHeadersForClient(upstream.headers));
+	res.writeHead(
+		upstream.status,
+		responseHeadersForClient(upstream.headers, accountIdentity),
+	);
 	if (!upstream.body) {
 		res.end();
 		return;
@@ -553,6 +630,10 @@ export async function startRuntimeRotationProxy(
 		streamsStarted: 0,
 		lastError: null,
 		lastAccountIndex: null,
+		lastAccountLabel: null,
+		lastAccountEmail: null,
+		lastAccountId: null,
+		lastAccountUpdatedAt: null,
 	};
 
 	const handleRequest = async (
@@ -590,7 +671,6 @@ export async function startRuntimeRotationProxy(
 				});
 				if (!selected) break;
 				attemptedIndexes.add(selected.index);
-				status.lastAccountIndex = selected.index;
 
 				if (!accountManager.consumeToken(selected, context.family, context.model)) {
 					exhaustionReason = "rate-limit";
@@ -628,6 +708,9 @@ export async function startRuntimeRotationProxy(
 					status.rotations += 1;
 					continue;
 				}
+
+				const accountIdentity = accountIdentityFromAccount(refreshed.account, now());
+				recordLastRuntimeAccount(status, accountIdentity);
 
 				const outboundHeaders = createOutboundHeaders(
 					context.headers,
@@ -735,16 +818,26 @@ export async function startRuntimeRotationProxy(
 					);
 				}
 
-				await forwardStreamingResponse(upstream, res, status, () => {
-					accountManager.recordFailure(refreshed.account, context.family, context.model);
-					accountManager.markAccountCoolingDown(
-						refreshed.account,
-						networkErrorCooldownMs,
-						"network-error",
-					);
-					sessionAffinityStore?.forgetSession(context.sessionKey);
-					accountManager.saveToDiskDebounced();
-				});
+				await forwardStreamingResponse(
+					upstream,
+					res,
+					status,
+					accountIdentity,
+					() => {
+						accountManager.recordFailure(
+							refreshed.account,
+							context.family,
+							context.model,
+						);
+						accountManager.markAccountCoolingDown(
+							refreshed.account,
+							networkErrorCooldownMs,
+							"network-error",
+						);
+						sessionAffinityStore?.forgetSession(context.sessionKey);
+						accountManager.saveToDiskDebounced();
+					},
+				);
 				return;
 			}
 

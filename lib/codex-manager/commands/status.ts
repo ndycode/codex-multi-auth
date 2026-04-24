@@ -48,6 +48,26 @@ function readRestoreReason(storage: AccountStorageV3): RestoreReason | undefined
 		: undefined;
 }
 
+function formatRuntimeLastAccount(
+	runtimeSnapshot: RuntimeObservabilitySnapshot,
+): string | null {
+	if (runtimeSnapshot.lastAccountLabel) return runtimeSnapshot.lastAccountLabel;
+	if (runtimeSnapshot.lastAccountEmail) {
+		return typeof runtimeSnapshot.lastAccountIndex === "number"
+			? `Account ${runtimeSnapshot.lastAccountIndex + 1} (${runtimeSnapshot.lastAccountEmail})`
+			: runtimeSnapshot.lastAccountEmail;
+	}
+	if (runtimeSnapshot.lastAccountId) {
+		return typeof runtimeSnapshot.lastAccountIndex === "number"
+			? `Account ${runtimeSnapshot.lastAccountIndex + 1} (${runtimeSnapshot.lastAccountId})`
+			: runtimeSnapshot.lastAccountId;
+	}
+	if (typeof runtimeSnapshot.lastAccountIndex === "number") {
+		return `Account ${runtimeSnapshot.lastAccountIndex + 1}`;
+	}
+	return null;
+}
+
 export async function runStatusCommand(
 	deps: StatusCommandDeps,
 ): Promise<number> {
@@ -119,6 +139,10 @@ export async function runStatusCommand(
 		logInfo(
 			`Runtime: responses=${runtimeSnapshot.responsesRequests}, refresh=${runtimeSnapshot.authRefreshRequests}, probes=${runtimeSnapshot.diagnosticProbeRequests}, budgetExhaustions=${runtimeMetrics.requestAttemptBudgetExhaustions}`,
 		);
+		const lastRuntimeAccount = formatRuntimeLastAccount(runtimeSnapshot);
+		if (lastRuntimeAccount) {
+			logInfo(`Last runtime account: ${lastRuntimeAccount}`);
+		}
 		if (poolCooldown || serverCooldown) {
 			logInfo(
 				`Cooldowns: pool=${poolCooldown ?? "none"}, server-burst=${serverCooldown ?? "none"}`,

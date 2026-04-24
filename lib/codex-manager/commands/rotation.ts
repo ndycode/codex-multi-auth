@@ -15,6 +15,10 @@ interface AppRuntimeHelperStatus {
 	totalRequests: number | null;
 	rotations: number | null;
 	lastAccountIndex: number | null;
+	lastAccountLabel: string | null;
+	lastAccountEmail: string | null;
+	lastAccountId: string | null;
+	lastAccountUpdatedAt: number | null;
 	updatedAt: number | null;
 }
 
@@ -95,6 +99,10 @@ function readAppRuntimeHelperStatus(): AppRuntimeHelperStatus | null {
 			totalRequests: readOptionalNumber(parsed, "totalRequests"),
 			rotations: readOptionalNumber(parsed, "rotations"),
 			lastAccountIndex: readOptionalNumber(parsed, "lastAccountIndex"),
+			lastAccountLabel: readOptionalString(parsed, "lastAccountLabel"),
+			lastAccountEmail: readOptionalString(parsed, "lastAccountEmail"),
+			lastAccountId: readOptionalString(parsed, "lastAccountId"),
+			lastAccountUpdatedAt: readOptionalNumber(parsed, "lastAccountUpdatedAt"),
 			updatedAt: readOptionalNumber(parsed, "updatedAt"),
 		};
 	} catch {
@@ -114,6 +122,24 @@ function isProcessAlive(pid: number | null): boolean {
 	}
 }
 
+function formatHelperLastAccount(status: AppRuntimeHelperStatus): string | null {
+	if (status.lastAccountLabel) return status.lastAccountLabel;
+	if (status.lastAccountEmail) {
+		return status.lastAccountIndex !== null
+			? `Account ${status.lastAccountIndex + 1} (${status.lastAccountEmail})`
+			: status.lastAccountEmail;
+	}
+	if (status.lastAccountId) {
+		return status.lastAccountIndex !== null
+			? `Account ${status.lastAccountIndex + 1} (${status.lastAccountId})`
+			: status.lastAccountId;
+	}
+	if (status.lastAccountIndex !== null) {
+		return `Account ${status.lastAccountIndex + 1}`;
+	}
+	return null;
+}
+
 function formatAppRuntimeHelperStatus(now: number): string {
 	const status = readAppRuntimeHelperStatus();
 	if (!status) return "Codex app helper: not running";
@@ -124,9 +150,8 @@ function formatAppRuntimeHelperStatus(now: number): string {
 	const parts = [`running${status.pid ? ` pid=${status.pid}` : ""}`];
 	if (status.totalRequests !== null) parts.push(`requests=${status.totalRequests}`);
 	if (status.rotations !== null) parts.push(`rotations=${status.rotations}`);
-	if (status.lastAccountIndex !== null) {
-		parts.push(`lastAccount=${status.lastAccountIndex + 1}`);
-	}
+	const lastAccount = formatHelperLastAccount(status);
+	if (lastAccount) parts.push(`lastAccount=${lastAccount}`);
 	if (status.idleExpiresAt !== null && status.idleExpiresAt > now) {
 		parts.push(`idle-expires=${formatWaitTime(status.idleExpiresAt - now)}`);
 	}

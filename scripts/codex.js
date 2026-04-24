@@ -1354,6 +1354,10 @@ function createRuntimeRotationAppHelperStatus({
 		retries: proxyStatus.retries ?? 0,
 		rotations: proxyStatus.rotations ?? 0,
 		lastAccountIndex: proxyStatus.lastAccountIndex ?? null,
+		lastAccountLabel: proxyStatus.lastAccountLabel ?? null,
+		lastAccountEmail: proxyStatus.lastAccountEmail ?? null,
+		lastAccountId: proxyStatus.lastAccountId ?? null,
+		lastAccountUpdatedAt: proxyStatus.lastAccountUpdatedAt ?? null,
 		lastError: proxyStatus.lastError ?? null,
 	};
 }
@@ -1860,7 +1864,6 @@ function shouldCaptureForwardedOutputForArgs(rawArgs, env) {
 
 function createRuntimeSnapshotChangeToken(snapshot) {
 	return JSON.stringify({
-		updatedAt: snapshot?.updatedAt ?? null,
 		responsesRequests: snapshot?.responsesRequests ?? null,
 		authRefreshRequests: snapshot?.authRefreshRequests ?? null,
 		diagnosticProbeRequests: snapshot?.diagnosticProbeRequests ?? null,

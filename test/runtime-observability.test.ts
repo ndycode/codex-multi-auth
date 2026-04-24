@@ -60,6 +60,8 @@ describe("runtime observability snapshot versioning", () => {
 
 		expect(snapshot?.version).toBe(1);
 		expect(snapshot?.responsesRequests).toBe(2);
+		expect(snapshot?.lastAccountIndex).toBeNull();
+		expect(snapshot?.lastAccountEmail).toBeNull();
 		expect(snapshot?.runtimeMetrics.totalRequests).toBe(3);
 		expect(snapshot?.runtimeMetrics.failedRequests).toBe(0);
 	});
