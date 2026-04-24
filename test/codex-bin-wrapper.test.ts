@@ -2,6 +2,7 @@ import { type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
 import {
 	chmodSync,
 	copyFileSync,
+	existsSync,
 	linkSync,
 	mkdirSync,
 	mkdtempSync,
@@ -150,6 +151,40 @@ function createRuntimeObservabilityFixtureModule(fixtureRoot: string): string {
 			"  const snapshotPath = getSnapshotPath();",
 			"  mkdirSync(dirname(snapshotPath), { recursive: true });",
 			"  writeFileSync(snapshotPath, JSON.stringify(snapshot), 'utf8');",
+			"}",
+		].join("\n"),
+		"utf8",
+	);
+	return modulePath;
+}
+
+function createRuntimeRotationProxyFixtureModule(fixtureRoot: string): string {
+	const distLibDir = join(fixtureRoot, "dist", "lib");
+	mkdirSync(distLibDir, { recursive: true });
+	const modulePath = join(distLibDir, "runtime-rotation-proxy.js");
+	writeFileSync(
+		modulePath,
+		[
+			'import { appendFileSync, mkdirSync } from "node:fs";',
+			'import { dirname } from "node:path";',
+			"",
+			"function appendMarker(line) {",
+			"  const marker = (process.env.CODEX_MULTI_AUTH_TEST_PROXY_MARKER ?? '').trim();",
+			"  if (marker.length === 0) return;",
+			"  mkdirSync(dirname(marker), { recursive: true });",
+			"  appendFileSync(marker, `${line}\\n`, 'utf8');",
+			"}",
+			"",
+			"export async function startRuntimeRotationProxy() {",
+			"  const baseUrl = process.env.CODEX_MULTI_AUTH_TEST_PROXY_BASE_URL ?? 'http://127.0.0.1:4567';",
+			"  appendMarker(`start:${baseUrl}`);",
+			"  return {",
+			"    host: '127.0.0.1',",
+			"    port: 4567,",
+			"    baseUrl,",
+			"    close: async () => appendMarker('close'),",
+			"    getStatus: () => ({}),",
+			"  };",
 			"}",
 		].join("\n"),
 		"utf8",
@@ -515,6 +550,82 @@ describe("codex bin wrapper", () => {
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain(
 			'FORWARDED:exec status -c cli_auth_credentials_store="file"',
+		);
+	});
+
+	it("starts the opt-in runtime rotation proxy with a shadow CODEX_HOME provider", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			'console.log(`CODEX_HOME:${process.env.CODEX_HOME ?? ""}`);',
+			'console.log(`CODEX_HOME_IS_ORIGINAL:${process.env.CODEX_HOME === process.env.ORIGINAL_CODEX_HOME}`);',
+			'console.log(`OPENAI_API_KEY:${process.env.OPENAI_API_KEY ?? ""}`);',
+			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
+			'console.log("CONFIG_START");',
+			'console.log(fs.readFileSync(configPath, "utf8").trim());',
+			'console.log("CONFIG_END");',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			[
+				'model = "gpt-5-codex"',
+				'model_provider = "openai"',
+				"",
+				"[model_providers.existing]",
+				'name = "Existing"',
+				'base_url = "https://example.invalid"',
+				"",
+				"[model_providers.codex-multi-auth-runtime-proxy]",
+				'name = "Stale Runtime Proxy"',
+				'base_url = "http://127.0.0.1:1"',
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_BASE_URL: "http://127.0.0.1:4567",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(0);
+		expect(output).toContain(
+			'FORWARDED:exec status -c cli_auth_credentials_store="file" -c model_provider="codex-multi-auth-runtime-proxy"',
+		);
+		expect(output).toContain("CODEX_HOME_IS_ORIGINAL:false");
+		expect(output).toContain("OPENAI_API_KEY:codex-multi-auth-runtime-proxy");
+		expect(output).toContain(
+			'model_provider = "codex-multi-auth-runtime-proxy"',
+		);
+		expect(output).toContain(
+			"[model_providers.codex-multi-auth-runtime-proxy]",
+		);
+		expect(output).toContain('base_url = "http://127.0.0.1:4567"');
+		expect(output).toContain('wire_api = "responses"');
+		expect(output).not.toContain('base_url = "http://127.0.0.1:1"');
+		const shadowHomeMatch = output.match(/^CODEX_HOME:(.+)$/m);
+		expect(shadowHomeMatch?.[1]).toBeTruthy();
+		if (shadowHomeMatch?.[1]) {
+			expect(existsSync(shadowHomeMatch[1])).toBe(false);
+		}
+		expect(readFileSync(markerPath, "utf8")).toBe(
+			"start:http://127.0.0.1:4567\nclose\n",
+		);
+		expect(readFileSync(join(originalHome, "config.toml"), "utf8")).toContain(
+			'model_provider = "openai"',
 		);
 	});
 

@@ -27,6 +27,7 @@ import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.j
 const RETRYABLE_SHADOW_HOME_CLEANUP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
 const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];
 const SHADOW_HOME_STATE_FILES = ["auth.json", "accounts.json", ".codex-global-state.json"];
+const RUNTIME_ROTATION_PROXY_PROVIDER_ID = "codex-multi-auth-runtime-proxy";
 let shadowHomeCleanupBusyFailuresRemaining = Number.parseInt(
 	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_CLEANUP_BUSY_FAILURES ?? "0",
 	10,
@@ -99,6 +100,48 @@ async function loadRunCodexMultiAuthCli() {
 					"Run: npm run build",
 				].join("\n"),
 			);
+			return null;
+		}
+		throw error;
+	}
+}
+
+async function loadRuntimeRotationProxyModule() {
+	try {
+		const mod = await import("../dist/lib/runtime-rotation-proxy.js");
+		if (typeof mod.startRuntimeRotationProxy !== "function") {
+			console.error(
+				"dist/lib/runtime-rotation-proxy.js is missing required export: startRuntimeRotationProxy",
+			);
+			return null;
+		}
+		return mod;
+	} catch (error) {
+		if (error && typeof error === "object" && "code" in error && error.code === "ERR_MODULE_NOT_FOUND") {
+			console.error(
+				[
+					"codex-multi-auth runtime rotation proxy requires built runtime files, but dist output is missing.",
+					"Run: npm run build",
+				].join("\n"),
+			);
+			return null;
+		}
+		throw error;
+	}
+}
+
+async function loadRuntimeRotationConfigModule() {
+	try {
+		const mod = await import("../dist/lib/config.js");
+		if (
+			typeof mod.loadPluginConfig !== "function" ||
+			typeof mod.getCodexRuntimeRotationProxy !== "function"
+		) {
+			return null;
+		}
+		return mod;
+	} catch (error) {
+		if (error && typeof error === "object" && "code" in error && error.code === "ERR_MODULE_NOT_FOUND") {
 			return null;
 		}
 		throw error;
@@ -277,13 +320,13 @@ function forwardToRealCodexOnce(
 		let stdout = "";
 		let stderr = "";
 		const captureOutput = options.captureOutput === true;
-		const finalize = (exitCode) => {
+		const finalize = async (exitCode) => {
 			if (settled) {
 				return;
 			}
 			settled = true;
 			try {
-				cleanup?.();
+				await cleanup?.();
 			} catch {
 				// Best-effort cleanup only.
 			}
@@ -360,13 +403,20 @@ async function forwardToRealCodex(codexBin, rawArgs, baseEnv = process.env) {
 			compatibilityRequestedModel,
 			baseEnv,
 		);
+		const runtimeProxyContext = await createRuntimeRotationProxyContextIfEnabled(
+			compatibility,
+			rawArgs,
+		);
+		if (!runtimeProxyContext) {
+			return 1;
+		}
 		const result = await forwardToRealCodexOnce(
 			codexBin,
-			compatibility.args,
-			compatibility.env,
-			compatibility.cleanup,
+			runtimeProxyContext.args,
+			runtimeProxyContext.env,
+			runtimeProxyContext.cleanup,
 			{
-				captureOutput: shouldCaptureForwardedCodexOutput(compatibility.env),
+				captureOutput: shouldCaptureForwardedCodexOutput(runtimeProxyContext.env),
 			},
 		);
 		lastExitCode = result.exitCode;
@@ -980,6 +1030,274 @@ function resolveOriginalMultiAuthDir(env) {
 		return explicit;
 	}
 	return undefined;
+}
+
+function parseRuntimeRotationProxyEnv(value) {
+	if (value === undefined) return undefined;
+	const normalized = value.trim().toLowerCase();
+	if (normalized.length === 0) return undefined;
+	if (normalized === "1" || normalized === "true" || normalized === "yes") {
+		return true;
+	}
+	if (normalized === "0" || normalized === "false" || normalized === "no") {
+		return false;
+	}
+	console.error(
+		"codex-multi-auth: ignoring invalid CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY value. Expected 0/1, true/false, or yes/no.",
+	);
+	return undefined;
+}
+
+async function isRuntimeRotationProxyEnabled(rawArgs, baseEnv = process.env) {
+	if ((baseEnv.CODEX_MULTI_AUTH_BYPASS ?? "").trim() === "1") {
+		return false;
+	}
+	if (!shouldTrackForwardedRuntimeObservability(rawArgs)) {
+		return false;
+	}
+
+	const envOverride = parseRuntimeRotationProxyEnv(
+		baseEnv.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY,
+	);
+	if (envOverride !== undefined) {
+		return envOverride;
+	}
+
+	const configModule = await loadRuntimeRotationConfigModule();
+	if (!configModule) {
+		return false;
+	}
+	const pluginConfig = configModule.loadPluginConfig();
+	return configModule.getCodexRuntimeRotationProxy(pluginConfig) === true;
+}
+
+function tomlStringLiteral(value) {
+	return `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function removeRuntimeRotationProviderBlock(rawConfig) {
+	const lines = rawConfig.split(/\r?\n/);
+	const output = [];
+	let skipping = false;
+	for (const line of lines) {
+		const trimmed = line.trim();
+		if (trimmed === `[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`) {
+			skipping = true;
+			continue;
+		}
+		if (skipping && /^\s*\[[^\]]+\]\s*$/.test(line)) {
+			skipping = false;
+		}
+		if (!skipping) {
+			output.push(line);
+		}
+	}
+	return output.join(rawConfig.includes("\r\n") ? "\r\n" : "\n");
+}
+
+function rewriteTopLevelModelProvider(rawConfig) {
+	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
+	const lines = rawConfig.length > 0 ? rawConfig.split(/\r?\n/) : [];
+	const rewrittenLine = `model_provider = ${tomlStringLiteral(RUNTIME_ROTATION_PROXY_PROVIDER_ID)}`;
+	let replaced = false;
+	const output = [];
+
+	for (const line of lines) {
+		const isTable = /^\s*\[[^\]]+\]\s*$/.test(line);
+		if (!replaced && isTable) {
+			output.push(rewrittenLine);
+			replaced = true;
+		}
+		if (!replaced && /^\s*model_provider\s*=/.test(line)) {
+			output.push(rewrittenLine);
+			replaced = true;
+			continue;
+		}
+		output.push(line);
+	}
+
+	if (!replaced) {
+		output.push(rewrittenLine);
+	}
+
+	return output.join(lineEnding);
+}
+
+function rewriteConfigTomlForRuntimeRotationProxy(rawConfig, proxyBaseUrl) {
+	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
+	const withoutOldProvider = removeRuntimeRotationProviderBlock(rawConfig).replace(
+		/[\r\n]*$/,
+		"",
+	);
+	const withModelProvider = rewriteTopLevelModelProvider(withoutOldProvider).replace(
+		/[\r\n]*$/,
+		"",
+	);
+	const providerBlock = [
+		`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
+		'name = "Codex Multi-Auth Runtime Proxy"',
+		`base_url = ${tomlStringLiteral(proxyBaseUrl)}`,
+		'env_key = "OPENAI_API_KEY"',
+		'wire_api = "responses"',
+	];
+	return `${withModelProvider}${lineEnding}${lineEnding}${providerBlock.join(lineEnding)}${lineEnding}`;
+}
+
+function createRuntimeRotationProxyCodexHome(baseEnv, proxyBaseUrl) {
+	const originalCodexHome = resolveCodexHomeDir(baseEnv);
+	const shadowCodexHome = mkdtempSync(join(tmpdir(), "codex-multi-auth-runtime-home-"));
+	const cleanup = () => {
+		try {
+			removeDirectoryWithRetry(shadowCodexHome);
+		} catch {
+			// Best-effort cleanup only.
+		}
+	};
+	const tightenShadowHomePermissions = (path) => {
+		try {
+			chmodSync(path, 0o600);
+		} catch {
+			// Best-effort only; permission semantics vary by platform.
+		}
+	};
+	const originalShadowHomeState = new Map(
+		SHADOW_HOME_STATE_FILES.map((name) => [
+			name,
+			captureShadowHomeState(join(originalCodexHome, name)),
+		]),
+	);
+	const syncShadowHomeStateBack = () => {
+		for (const name of SHADOW_HOME_STATE_FILES) {
+			const shadowPath = join(shadowCodexHome, name);
+			const shadowState = captureShadowHomeState(shadowPath);
+			if (!shadowState.exists || shadowState.unreadable) {
+				continue;
+			}
+
+			try {
+				const originalPath = join(originalCodexHome, name);
+				const originalSnapshot =
+					originalShadowHomeState.get(name) ?? { exists: false, content: null };
+				const currentOriginalState = captureShadowHomeState(originalPath);
+				if (!shadowHomeStateMatches(currentOriginalState, originalSnapshot)) {
+					continue;
+				}
+				if (shadowHomeStateMatches(shadowState, originalSnapshot)) {
+					continue;
+				}
+				syncShadowHomeStateFile(shadowPath, originalPath, originalSnapshot);
+				tightenShadowHomePermissions(originalPath);
+			} catch {
+				// Best-effort only; runtime auth refreshes should not fail cleanup.
+			}
+		}
+	};
+
+	try {
+		const originalConfigPath = join(originalCodexHome, "config.toml");
+		const rawConfig = existsSync(originalConfigPath)
+			? readFileSync(originalConfigPath, "utf8")
+			: "";
+		const runtimeConfig = rewriteConfigTomlForRuntimeRotationProxy(
+			rawConfig,
+			proxyBaseUrl,
+		);
+		const runtimeConfigPath = join(shadowCodexHome, "config.toml");
+		writeFileSync(runtimeConfigPath, runtimeConfig, "utf8");
+		tightenShadowHomePermissions(runtimeConfigPath);
+
+		for (const name of SHADOW_HOME_STATE_FILES) {
+			const sourcePath = join(originalCodexHome, name);
+			if (existsSync(sourcePath)) {
+				const destinationPath = join(shadowCodexHome, name);
+				copyFileSync(sourcePath, destinationPath);
+				tightenShadowHomePermissions(destinationPath);
+			}
+		}
+	} catch (error) {
+		cleanup();
+		throw error;
+	}
+
+	const forwardedEnv = {
+		...baseEnv,
+		CODEX_HOME: shadowCodexHome,
+		OPENAI_API_KEY:
+			(baseEnv.OPENAI_API_KEY ?? "").trim().length > 0
+				? baseEnv.OPENAI_API_KEY
+				: "codex-multi-auth-runtime-proxy",
+	};
+	const originalMultiAuthDir = resolveOriginalMultiAuthDir(baseEnv);
+	if (originalMultiAuthDir) {
+		forwardedEnv.CODEX_MULTI_AUTH_DIR = originalMultiAuthDir;
+	}
+
+	return {
+		env: forwardedEnv,
+		cleanup: () => {
+			syncShadowHomeStateBack();
+			cleanup();
+		},
+	};
+}
+
+async function createRuntimeRotationProxyContextIfEnabled(
+	baseContext,
+	rawArgs,
+) {
+	const enabled = await isRuntimeRotationProxyEnabled(rawArgs, baseContext.env);
+	if (!enabled) {
+		return baseContext;
+	}
+
+	const proxyModule = await loadRuntimeRotationProxyModule();
+	if (!proxyModule) {
+		baseContext.cleanup?.();
+		return null;
+	}
+
+	let proxyServer;
+	let shadowContext;
+	try {
+		proxyServer = await proxyModule.startRuntimeRotationProxy();
+		shadowContext = createRuntimeRotationProxyCodexHome(
+			baseContext.env,
+			proxyServer.baseUrl,
+		);
+	} catch (error) {
+		try {
+			await proxyServer?.close?.();
+		} catch {
+			// Best-effort cleanup only.
+		}
+		baseContext.cleanup?.();
+		console.error(
+			`codex-multi-auth runtime rotation proxy failed to start: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return null;
+	}
+
+	const cleanup = async () => {
+		try {
+			shadowContext.cleanup?.();
+		} finally {
+			try {
+				await proxyServer.close();
+			} finally {
+				baseContext.cleanup?.();
+			}
+		}
+	};
+
+	return {
+		args: [
+			...baseContext.args,
+			"-c",
+			`model_provider=${tomlStringLiteral(RUNTIME_ROTATION_PROXY_PROVIDER_ID)}`,
+		],
+		env: shadowContext.env,
+		cleanup,
+	};
 }
 
 async function loadRuntimeObservabilityModule() {
