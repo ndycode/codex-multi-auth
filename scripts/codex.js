@@ -289,6 +289,8 @@ function forwardToRealCodexOnce(
 			}
 			resolve({
 				exitCode,
+				// No-capture output stays empty by design so retry parsing cannot
+				// reintroduce pipes that break terminal passthrough.
 				output: `${stdout}\n${stderr}`.trim(),
 			});
 		};
