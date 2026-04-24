@@ -6,6 +6,7 @@ const saveAccountsMock = vi.fn();
 const saveFlaggedAccountsMock = vi.fn();
 const setStoragePathMock = vi.fn();
 const getStoragePathMock = vi.fn(() => "/mock/openai-codex-accounts.json");
+const inspectStorageHealthMock = vi.fn();
 const getNamedBackupsMock = vi.fn();
 const restoreAccountsFromBackupMock = vi.fn();
 const queuedRefreshMock = vi.fn();
@@ -179,6 +180,7 @@ vi.mock("../lib/storage.js", async () => {
 		withAccountStorageTransaction: withAccountStorageTransactionMock,
 		setStoragePath: setStoragePathMock,
 		getStoragePath: getStoragePathMock,
+		inspectStorageHealth: inspectStorageHealthMock,
 		getNamedBackups: getNamedBackupsMock,
 		restoreAccountsFromBackup: restoreAccountsFromBackupMock,
 		exportNamedBackup: exportNamedBackupMock,
@@ -656,6 +658,7 @@ describe("codex manager cli commands", () => {
 		withAccountAndFlaggedStorageTransactionMock.mockReset();
 		withAccountStorageTransactionMock.mockReset();
 		withFlaggedStorageTransactionMock.mockReset();
+		inspectStorageHealthMock.mockReset();
 		queuedRefreshMock.mockReset();
 		setCodexCliActiveSelectionMock.mockReset();
 		loadCodexCliStateMock.mockReset();
@@ -822,6 +825,15 @@ describe("codex manager cli commands", () => {
 		setOpenStdinState();
 		setStoragePathMock.mockReset();
 		getStoragePathMock.mockReturnValue("/mock/openai-codex-accounts.json");
+		inspectStorageHealthMock.mockResolvedValue({
+			state: "empty",
+			path: "/mock/openai-codex-accounts.json",
+			resetMarkerPath: "/mock/openai-codex-accounts.json.intentional-reset",
+			walPath: "/mock/openai-codex-accounts.json.wal",
+			hasResetMarker: false,
+			hasWal: false,
+			details: "storage file is missing",
+		});
 		normalizeAccountStorageMock.mockImplementation((value) => value);
 
 		const authModule = await import("../lib/auth/auth.js");
@@ -931,6 +943,15 @@ describe("codex manager cli commands", () => {
 
 	it("prints empty account status for auth list", async () => {
 		loadAccountsMock.mockResolvedValueOnce(null);
+		inspectStorageHealthMock.mockResolvedValueOnce({
+			state: "intentional-reset",
+			path: "/mock/openai-codex-accounts.json",
+			resetMarkerPath: "/mock/openai-codex-accounts.json.intentional-reset",
+			walPath: "/mock/openai-codex-accounts.json.wal",
+			hasResetMarker: true,
+			hasWal: false,
+			details: "intentional reset marker present",
+		});
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 

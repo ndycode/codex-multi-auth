@@ -66,6 +66,27 @@ describe("runStatusCommand", () => {
 		expect(deps.logInfo).toHaveBeenCalledWith("Storage health: healthy");
 	});
 
+	it("prints intentional reset state from empty storage metadata", async () => {
+		const deps = createStatusDeps({
+			loadAccounts: vi.fn(async () => ({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				accounts: [],
+				restoreReason: "intentional-reset",
+			})),
+		});
+
+		await runStatusCommand(deps);
+
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			"No accounts configured. Storage was intentionally reset.",
+		);
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			"Storage health: intentional-reset",
+		);
+	});
+
 	it("prints explicit corrupt storage state for empty result cases", async () => {
 		const deps = createStatusDeps({
 			loadAccounts: vi.fn(async () => null),

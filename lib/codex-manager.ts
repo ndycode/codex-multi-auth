@@ -71,6 +71,7 @@ import {
 import { runForecastCommand } from "./codex-manager/commands/forecast.js";
 import { runInitConfigCommand } from "./codex-manager/commands/init-config.js";
 import { runReportCommand } from "./codex-manager/commands/report.js";
+import { runRotationCommand } from "./codex-manager/commands/rotation.js";
 import {
 	runFeaturesCommand,
 	runStatusCommand,
@@ -83,7 +84,12 @@ import {
 	configureUnifiedSettings,
 	resolveMenuLayoutMode,
 } from "./codex-manager/settings-hub.js";
-import { getPluginConfigExplainReport } from "./config.js";
+import {
+	getCodexRuntimeRotationProxy,
+	getPluginConfigExplainReport,
+	loadPluginConfig,
+	savePluginConfig,
+} from "./config.js";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import {
 	type DashboardAccountSortMode,
@@ -3376,6 +3382,17 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			normalizeFailureDetail,
 			loadRuntimeObservabilitySnapshot:
 				loadPersistedRuntimeObservabilitySnapshot,
+		});
+	}
+	if (command === "rotation") {
+		return runRotationCommand(rest, {
+			loadPluginConfig,
+			savePluginConfig,
+			getCodexRuntimeRotationProxy,
+			setStoragePath,
+			getStoragePath,
+			loadAccounts,
+			resolveActiveIndex,
 		});
 	}
 	if (command === "why-selected") {

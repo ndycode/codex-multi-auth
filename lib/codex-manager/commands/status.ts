@@ -12,6 +12,7 @@ import type { RuntimeObservabilitySnapshot } from "../../runtime/runtime-observa
 import type { AccountStorageV3, StorageHealthSummary } from "../../storage.js";
 
 type LoadedStorage = AccountStorageV3 | null;
+type RestoreReason = "empty-storage" | "intentional-reset" | "missing-storage";
 
 export interface StatusCommandDeps {
 	setStoragePath: (path: string | null) => void;
@@ -32,6 +33,21 @@ export interface StatusCommandDeps {
 	logInfo?: (message: string) => void;
 }
 
+function isRestoreReason(value: unknown): value is RestoreReason {
+	return (
+		value === "empty-storage" ||
+		value === "intentional-reset" ||
+		value === "missing-storage"
+	);
+}
+
+function readRestoreReason(storage: AccountStorageV3): RestoreReason | undefined {
+	if (!("restoreReason" in storage)) return undefined;
+	return isRestoreReason(storage.restoreReason)
+		? storage.restoreReason
+		: undefined;
+}
+
 export async function runStatusCommand(
 	deps: StatusCommandDeps,
 ): Promise<number> {
@@ -41,15 +57,15 @@ export async function runStatusCommand(
 	const storageHealth = await deps.inspectStorageHealth?.();
 	const logInfo = deps.logInfo ?? console.log;
 	if (!storage || storage.accounts.length === 0) {
-		// When loadAccounts() returns null, the caller has detected an intentional
-		// reset (e.g. via the reset-intent marker) that inspectStorageHealth() may
-		// not see if the storage path has already been cleared or redirected. Treat
-		// the null return as a stronger "reset" signal than the filesystem probe's
-		// "empty" fallback so the output message is accurate.
+		const restoreReason = storage ? readRestoreReason(storage) : undefined;
 		const effectiveState: StorageHealthSummary["state"] | undefined =
-			storage === null && (!storageHealth || storageHealth.state === "empty")
+			restoreReason === "intentional-reset"
 				? "intentional-reset"
-				: storageHealth?.state;
+				: storageHealth?.state ??
+					(restoreReason === "empty-storage" ||
+					restoreReason === "missing-storage"
+						? "empty"
+						: undefined);
 		logInfo(
 			effectiveState === "intentional-reset"
 				? "No accounts configured. Storage was intentionally reset."

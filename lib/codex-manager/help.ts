@@ -21,6 +21,7 @@ export function printUsage(): void {
 			"  codex auth doctor [--json] [--fix] [--dry-run]",
 			"",
 			"Diagnostics:",
+			"  codex auth rotation status",
 			"  codex auth why-selected [--now | --last] [--json]",
 			"",
 			"Advanced:",
