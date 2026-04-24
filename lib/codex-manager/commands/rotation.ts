@@ -2,6 +2,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { formatAccountLabel, formatCooldown, formatWaitTime } from "../../accounts.js";
 import { getCodexMultiAuthDir } from "../../runtime-paths.js";
+import {
+	formatAppBindStatus,
+	type AppBindResult,
+	type AppBindStatus,
+} from "../../runtime/app-bind.js";
 import type { PluginConfig } from "../../types.js";
 import type { AccountStorageV3 } from "../../storage.js";
 
@@ -30,6 +35,9 @@ export interface RotationCommandDeps {
 	resolveActiveIndex: (storage: AccountStorageV3) => number;
 	getStoragePath: () => string | null;
 	setStoragePath: (path: string | null) => void;
+	bindCodexApp?: () => Promise<AppBindResult>;
+	unbindCodexApp?: () => Promise<AppBindResult>;
+	getCodexAppBindStatus?: () => Promise<AppBindStatus>;
 	getNow?: () => number;
 	logInfo?: (message: string) => void;
 	logError?: (message: string) => void;
@@ -42,9 +50,12 @@ function printRotationUsage(logInfo: (message: string) => void): void {
 			"  codex auth rotation enable",
 			"  codex auth rotation disable",
 			"  codex auth rotation status",
+			"  codex auth rotation bind-app",
+			"  codex auth rotation unbind-app",
 			"",
 			"Behavior:",
 			"  - Enables an opt-in localhost Responses proxy for live Codex runtime account rotation",
+			"  - Binds the packaged Codex desktop app to the same localhost router when enabled",
 			"  - Env override: CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1",
 		].join("\n"),
 	);
@@ -158,6 +169,27 @@ function formatAppRuntimeHelperStatus(now: number): string {
 	return `Codex app helper: ${parts.join(", ")}`;
 }
 
+function shouldAutoBindCodexApp(env: NodeJS.ProcessEnv = process.env): boolean {
+	const override = (env.CODEX_MULTI_AUTH_APP_BIND_INSTALL ?? "1")
+		.trim()
+		.toLowerCase();
+	return !new Set(["0", "false", "no"]).has(override);
+}
+
+async function printCodexAppBindStatus(deps: RotationCommandDeps): Promise<void> {
+	const logInfo = deps.logInfo ?? console.log;
+	if (!deps.getCodexAppBindStatus) {
+		logInfo("Codex app bind: unavailable");
+		return;
+	}
+	try {
+		logInfo(formatAppBindStatus(await deps.getCodexAppBindStatus()));
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		logInfo(`Codex app bind: unavailable (${message})`);
+	}
+}
+
 async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 	const logInfo = deps.logInfo ?? console.log;
 	deps.setStoragePath(null);
@@ -172,6 +204,7 @@ async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 	);
 	logInfo(`Env override: ${formatEnvOverride()}`);
 	logInfo(formatAppRuntimeHelperStatus(now));
+	await printCodexAppBindStatus(deps);
 	logInfo(`Storage: ${deps.getStoragePath()}`);
 
 	if (!storage || storage.accounts.length === 0) {
@@ -229,11 +262,53 @@ export async function runRotationCommand(
 		await deps.savePluginConfig({ codexRuntimeRotationProxy: true });
 		logInfo("Runtime rotation proxy enabled.");
 		logInfo("New Codex sessions will route Responses traffic through the localhost proxy.");
+		if (deps.bindCodexApp && shouldAutoBindCodexApp()) {
+			try {
+				const result = await deps.bindCodexApp();
+				logInfo(result.message);
+				logInfo(formatAppBindStatus(result.status));
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				logError(`Codex app bind failed: ${message}`);
+				logInfo("Wrapper-launched CLI and app sessions still use runtime rotation.");
+			}
+		}
 		return 0;
 	}
 	if (subcommand === "disable") {
 		await deps.savePluginConfig({ codexRuntimeRotationProxy: false });
 		logInfo("Runtime rotation proxy disabled.");
+		if (deps.unbindCodexApp) {
+			try {
+				const result = await deps.unbindCodexApp();
+				logInfo(result.message);
+				logInfo(formatAppBindStatus(result.status));
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				logError(`Codex app unbind failed: ${message}`);
+				return 1;
+			}
+		}
+		return 0;
+	}
+	if (subcommand === "bind-app") {
+		if (!deps.bindCodexApp) {
+			logError("Codex app bind is unavailable in this build.");
+			return 1;
+		}
+		const result = await deps.bindCodexApp();
+		logInfo(result.message);
+		logInfo(formatAppBindStatus(result.status));
+		return 0;
+	}
+	if (subcommand === "unbind-app") {
+		if (!deps.unbindCodexApp) {
+			logError("Codex app bind is unavailable in this build.");
+			return 1;
+		}
+		const result = await deps.unbindCodexApp();
+		logInfo(result.message);
+		logInfo(formatAppBindStatus(result.status));
 		return 0;
 	}
 

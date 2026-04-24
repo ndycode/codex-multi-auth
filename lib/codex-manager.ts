@@ -90,6 +90,11 @@ import {
 	loadPluginConfig,
 	savePluginConfig,
 } from "./config.js";
+import {
+	bindCodexAppRuntimeRotation,
+	getAppBindStatus,
+	unbindCodexAppRuntimeRotation,
+} from "./runtime/app-bind.js";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import {
 	type DashboardAccountSortMode,
@@ -3393,6 +3398,9 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			getStoragePath,
 			loadAccounts,
 			resolveActiveIndex,
+			bindCodexApp: bindCodexAppRuntimeRotation,
+			unbindCodexApp: unbindCodexAppRuntimeRotation,
+			getCodexAppBindStatus: getAppBindStatus,
 		});
 	}
 	if (command === "why-selected") {

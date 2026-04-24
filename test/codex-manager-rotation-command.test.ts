@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runRotationCommand } from "../lib/codex-manager/commands/rotation.js";
 import type { RotationCommandDeps } from "../lib/codex-manager/commands/rotation.js";
+import type { AppBindResult, AppBindStatus } from "../lib/runtime/app-bind.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 import type { PluginConfig } from "../lib/types.js";
 
@@ -33,16 +34,45 @@ function createStorage(now: number): AccountStorageV3 {
 	};
 }
 
+function createAppBindStatus(params: Partial<AppBindStatus> = {}): AppBindStatus {
+	const status: AppBindStatus = {
+		bound: false,
+		running: false,
+		state: null,
+		router: null,
+		paths: {
+			codexHome: "/mock/.codex",
+			configPath: "/mock/.codex/config.toml",
+			bindDir: "/mock/.codex/multi-auth/app-bind",
+			statePath: "/mock/.codex/multi-auth/app-bind/runtime-rotation-app-bind.json",
+			backupPath: "/mock/.codex/multi-auth/app-bind/codex-config-backup.json",
+			statusPath: "/mock/.codex/multi-auth/app-bind/runtime-rotation-app-bind-status.json",
+			logPath: "/mock/.codex/multi-auth/app-bind/runtime-rotation-app-router.log",
+			routerScriptPath: "/mock/scripts/codex-app-router.js",
+			startupPath: null,
+			launchAgentPath: null,
+		},
+	};
+	return { ...status, ...params };
+}
+
+function createAppBindResult(message: string, status = createAppBindStatus()): AppBindResult {
+	return { message, status };
+}
+
 function createDeps(params: {
 	config?: PluginConfig;
 	storage?: AccountStorageV3 | null;
 	now?: number;
+	appBindStatus?: AppBindStatus;
 } = {}): {
 	deps: RotationCommandDeps;
 	errors: string[];
 	infos: string[];
 	savePluginConfigMock: ReturnType<typeof vi.fn>;
 	setStoragePathMock: ReturnType<typeof vi.fn>;
+	bindCodexAppMock: ReturnType<typeof vi.fn>;
+	unbindCodexAppMock: ReturnType<typeof vi.fn>;
 } {
 	const config = params.config ?? {};
 	const storage = params.storage ?? null;
@@ -50,11 +80,44 @@ function createDeps(params: {
 	const errors: string[] = [];
 	const savePluginConfigMock = vi.fn(async () => undefined);
 	const setStoragePathMock = vi.fn();
+	const bindCodexAppMock = vi.fn(async () =>
+		createAppBindResult(
+			"Bound Codex app config /mock/.codex/config.toml to http://127.0.0.1:4567",
+			createAppBindStatus({
+				bound: true,
+				running: true,
+				state: {
+					version: 1,
+					platform: "linux",
+					host: "127.0.0.1",
+					port: 4567,
+					baseUrl: "http://127.0.0.1:4567",
+					configPath: "/mock/.codex/config.toml",
+					statePath: "/mock/.codex/multi-auth/app-bind/runtime-rotation-app-bind.json",
+					backupPath: "/mock/.codex/multi-auth/app-bind/codex-config-backup.json",
+					statusPath:
+						"/mock/.codex/multi-auth/app-bind/runtime-rotation-app-bind-status.json",
+					logPath: "/mock/.codex/multi-auth/app-bind/runtime-rotation-app-router.log",
+					nodePath: "node",
+					routerScriptPath: "/mock/scripts/codex-app-router.js",
+					startupPath: null,
+					launchAgentPath: null,
+					boundConfigHash: "hash",
+					updatedAt: 1,
+				},
+			}),
+		),
+	);
+	const unbindCodexAppMock = vi.fn(async () =>
+		createAppBindResult("Unbound Codex app config /mock/.codex/config.toml"),
+	);
 	return {
 		infos,
 		errors,
 		savePluginConfigMock,
 		setStoragePathMock,
+		bindCodexAppMock,
+		unbindCodexAppMock,
 		deps: {
 			loadPluginConfig: () => config,
 			savePluginConfig: savePluginConfigMock,
@@ -68,6 +131,10 @@ function createDeps(params: {
 			resolveActiveIndex: (loadedStorage) => loadedStorage.activeIndex,
 			getStoragePath: () => "/mock/openai-codex-accounts.json",
 			setStoragePath: setStoragePathMock,
+			bindCodexApp: bindCodexAppMock,
+			unbindCodexApp: unbindCodexAppMock,
+			getCodexAppBindStatus: async () =>
+				params.appBindStatus ?? createAppBindStatus(),
 			getNow: () => params.now ?? Date.now(),
 			logInfo: (message) => infos.push(message),
 			logError: (message) => errors.push(message),
@@ -121,6 +188,7 @@ describe("codex auth rotation command", () => {
 		expect(output).toContain("Runtime rotation proxy: enabled");
 		expect(output).toContain("Stored setting: disabled");
 		expect(output).toContain("Env override: enabled");
+		expect(output).toContain("Codex app bind: not configured");
 		expect(output).toContain("Accounts: 2");
 		expect(output).toContain("Account 1 (first@example.com, id:_first) [disabled]");
 		expect(output).toContain("Account 2 (second@example.com, id:second)");
@@ -134,5 +202,41 @@ describe("codex auth rotation command", () => {
 
 		expect(errors).toEqual(["Unknown rotation command: maybe"]);
 		expect(infos.join("\n")).toContain("codex auth rotation enable");
+	});
+
+	it("binds and unbinds the Codex app with rotation enable and disable", async () => {
+		const {
+			deps,
+			savePluginConfigMock,
+			bindCodexAppMock,
+			unbindCodexAppMock,
+			infos,
+		} = createDeps();
+
+		await expect(runRotationCommand(["enable"], deps)).resolves.toBe(0);
+		await expect(runRotationCommand(["disable"], deps)).resolves.toBe(0);
+
+		expect(savePluginConfigMock).toHaveBeenNthCalledWith(1, {
+			codexRuntimeRotationProxy: true,
+		});
+		expect(savePluginConfigMock).toHaveBeenNthCalledWith(2, {
+			codexRuntimeRotationProxy: false,
+		});
+		expect(bindCodexAppMock).toHaveBeenCalledTimes(1);
+		expect(unbindCodexAppMock).toHaveBeenCalledTimes(1);
+		expect(infos.join("\n")).toContain("Codex app bind: running, port=4567");
+		expect(infos.join("\n")).toContain("Unbound Codex app config");
+	});
+
+	it("supports explicit app bind repair commands", async () => {
+		const { deps, bindCodexAppMock, unbindCodexAppMock, infos } = createDeps();
+
+		await expect(runRotationCommand(["bind-app"], deps)).resolves.toBe(0);
+		await expect(runRotationCommand(["unbind-app"], deps)).resolves.toBe(0);
+
+		expect(bindCodexAppMock).toHaveBeenCalledTimes(1);
+		expect(unbindCodexAppMock).toHaveBeenCalledTimes(1);
+		expect(infos.join("\n")).toContain("Bound Codex app config");
+		expect(infos.join("\n")).toContain("Unbound Codex app config");
 	});
 });

@@ -16,6 +16,10 @@ import {
 	createWindowsShortcutPowerShellScript,
 	resolveAppLauncherPlan,
 } from "../scripts/codex-app-launcher.js";
+import {
+	hasCodexDesktopApp,
+	shouldAutoBindCodexAppOnInstall,
+} from "../scripts/postinstall.js";
 
 const scriptPath = "scripts/install-codex-auth.js";
 const appLauncherScriptPath = "scripts/codex-app-launcher.js";
@@ -307,5 +311,65 @@ describe("codex app launcher installer", () => {
 				false,
 			);
 		}
+	});
+});
+
+describe("codex app bind postinstall gate", () => {
+	it("detects the packaged Windows Codex app from LOCALAPPDATA packages", () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-app-bind-detect-"));
+		tempRoots.push(home);
+		const localAppData = path.join(home, "AppData", "Local");
+		mkdirSync(path.join(localAppData, "Packages", "OpenAI.Codex_test"), {
+			recursive: true,
+		});
+
+		expect(
+			hasCodexDesktopApp({
+				platform: "win32",
+				home,
+				env: { LOCALAPPDATA: localAppData },
+			}),
+		).toBe(true);
+	});
+
+	it("only auto-binds on install when opted in or globally installed with rotation enabled", () => {
+		expect(
+			shouldAutoBindCodexAppOnInstall({
+				env: {},
+				rotationEnabled: true,
+				appDetected: true,
+			}),
+		).toBe(false);
+		expect(
+			shouldAutoBindCodexAppOnInstall({
+				env: { npm_config_global: "true" },
+				rotationEnabled: false,
+				appDetected: true,
+			}),
+		).toBe(false);
+		expect(
+			shouldAutoBindCodexAppOnInstall({
+				env: { npm_config_global: "true" },
+				rotationEnabled: true,
+				appDetected: true,
+			}),
+		).toBe(true);
+		expect(
+			shouldAutoBindCodexAppOnInstall({
+				env: { CODEX_MULTI_AUTH_APP_BIND_INSTALL: "1" },
+				rotationEnabled: false,
+				appDetected: false,
+			}),
+		).toBe(true);
+		expect(
+			shouldAutoBindCodexAppOnInstall({
+				env: {
+					npm_config_global: "true",
+					CODEX_MULTI_AUTH_APP_BIND: "0",
+				},
+				rotationEnabled: true,
+				appDetected: true,
+			}),
+		).toBe(false);
 	});
 });

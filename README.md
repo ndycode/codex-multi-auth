@@ -235,6 +235,7 @@ Selected runtime/environment overrides:
 | `CODEX_MODE=0/1` | Disable/enable Codex mode |
 | `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0/1` | Opt in/out of live Responses proxy rotation for forwarded Codex CLI/app sessions |
 | `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS=<ms>` | Override automatic Codex app helper idle shutdown |
+| `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0/1` | Opt out/in of packaged Codex app bind self-heal during install/update or rotation enable |
 | `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0/1` | Opt out/in of routing supported app shortcuts during rotation enable |
 | `CODEX_TUI_V2=0/1` | Disable/enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | TUI color profile |
