@@ -103,9 +103,11 @@ Keep these enabled for most environments:
 
 ## Runtime Rotation Proxy
 
-`codexRuntimeRotationProxy` is disabled by default. When enabled through settings, `codex auth rotation enable`, or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1`, the `codex` wrapper starts a localhost-only Responses proxy for forwarded official Codex sessions. The wrapper writes a temporary shadow `CODEX_HOME/config.toml` that selects a custom provider named `codex-multi-auth-runtime-proxy`, launches the official CLI against that provider, and removes the shadow home after the child process exits.
+`codexRuntimeRotationProxy` is disabled by default. When enabled through settings, `codex auth rotation enable`, or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1`, the `codex` wrapper starts a localhost-only Responses proxy for forwarded official Codex sessions, including CLI request commands, `codex app-server`, and `codex app` launches through the wrapper. The wrapper writes a temporary shadow `CODEX_HOME/config.toml` that selects a custom provider named `codex-multi-auth-runtime-proxy`, launches the official Codex surface against that provider, and removes the shadow home after the owning process exits.
 
 The proxy preserves request bodies and streaming responses, replaces outbound auth headers with the selected managed account, and rotates to another account before response bytes are streamed when it sees rate limits, server errors, network failures, or refresh failures. If every account is unavailable, the proxy returns a structured pool-exhaustion error that points to `codex auth rotation status`.
+
+For `codex app`, the wrapper automatically starts a small internal helper so rotation can keep working if the desktop app launcher detaches. The helper stores only local runtime status, uses the same per-session proxy client key as the CLI path, and exits after an idle timeout.
 
 ---
 

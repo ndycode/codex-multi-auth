@@ -167,10 +167,10 @@ Behavior:
 
 - `enable` persists `codexRuntimeRotationProxy=true`.
 - `disable` persists `codexRuntimeRotationProxy=false`.
-- `status` prints the effective setting, environment override state, account count, current account, disabled accounts, cooldowns, and rate-limit waits.
+- `status` prints the effective setting, environment override state, automatic Codex app helper state, account count, current account, disabled accounts, cooldowns, and rate-limit waits.
 - `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1` enables the proxy for the current process without changing settings.
 
-When enabled, the wrapper creates a temporary shadow `CODEX_HOME/config.toml` with a custom provider named `codex-multi-auth-runtime-proxy`, starts a `127.0.0.1` proxy on a random port, and forwards official Codex Responses traffic through that provider. Existing behavior is unchanged while the setting and env override are off.
+When enabled, the wrapper creates a temporary shadow `CODEX_HOME/config.toml` with a custom provider named `codex-multi-auth-runtime-proxy`, starts a `127.0.0.1` proxy on a random port, and forwards official Codex Responses traffic through that provider. This applies to CLI request commands plus `codex app-server` and `codex app` when they are launched through the wrapper. Existing behavior is unchanged while the setting and env override are off.
 
 ---
 

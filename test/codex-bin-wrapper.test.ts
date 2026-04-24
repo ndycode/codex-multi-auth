@@ -629,6 +629,122 @@ describe("codex bin wrapper", () => {
 		);
 	});
 
+	it("starts the opt-in runtime rotation proxy for app-server without capturing protocol stdio", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			'console.log(`CODEX_HOME:${process.env.CODEX_HOME ?? ""}`);',
+			'console.log(`OPENAI_API_KEY:${process.env.OPENAI_API_KEY ?? ""}`);',
+			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
+			'console.log(fs.readFileSync(configPath, "utf8"));',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+		const result = runWrapper(fixtureRoot, ["app-server", "--listen", "stdio://"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(0);
+		expect(output).toContain(
+			'FORWARDED:app-server --listen stdio:// -c cli_auth_credentials_store="file" -c model_provider="codex-multi-auth-runtime-proxy"',
+		);
+		expect(output).toMatch(/^OPENAI_API_KEY:[0-9a-f]{64}$/m);
+		expect(output).toContain('wire_api = "responses"');
+		expect(readFileSync(markerPath, "utf8")).toBe(
+			"start:http://127.0.0.1:4567\nclose\n",
+		);
+	});
+
+	it.each([
+		["app help", ["app", "--help"]],
+		["app-server help", ["app-server", "--help"]],
+		["app-server TypeScript generation", ["app-server", "generate-ts"]],
+		["app-server JSON schema generation", ["app-server", "generate-json-schema"]],
+	])("does not start runtime rotation proxy for %s", (_label, args) => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+
+		const result = runWrapper(fixtureRoot, args, {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(`FORWARDED:${args.join(" ")}`);
+		expect(existsSync(markerPath)).toBe(false);
+	});
+
+	it("starts an automatic runtime rotation helper for codex app launches", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			'console.log(`CODEX_HOME:${process.env.CODEX_HOME ?? ""}`);',
+			'console.log(`OPENAI_API_KEY:${process.env.OPENAI_API_KEY ?? ""}`);',
+			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
+			'console.log(fs.readFileSync(configPath, "utf8"));',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const multiAuthDir = join(fixtureRoot, "multi-auth");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+		const result = runWrapper(fixtureRoot, ["app", "."], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "80",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(0);
+		expect(output).toContain(
+			'FORWARDED:app . -c cli_auth_credentials_store="file" -c model_provider="codex-multi-auth-runtime-proxy"',
+		);
+		expect(output).toMatch(/^OPENAI_API_KEY:[0-9a-f]{64}$/m);
+		expect(output).toContain('wire_api = "responses"');
+		const shadowHomeMatch = output.match(/^CODEX_HOME:(.+)$/m);
+		expect(shadowHomeMatch?.[1]).toBeTruthy();
+
+		await sleep(250);
+
+		expect(readFileSync(markerPath, "utf8")).toBe(
+			"start:http://127.0.0.1:4567\nclose\n",
+		);
+		const helperStatus = JSON.parse(
+			readFileSync(join(multiAuthDir, "runtime-rotation-app-helper.json"), "utf8"),
+		) as { state: string; totalRequests: number };
+		expect(helperStatus.state).toBe("idle-timeout");
+		expect(helperStatus.totalRequests).toBe(0);
+		if (shadowHomeMatch?.[1]) {
+			expect(existsSync(shadowHomeMatch[1])).toBe(false);
+		}
+	});
+
 	it("records forwarded exec traffic in runtime observability when the child process does not update it", () => {
 		const fixtureRoot = createWrapperFixture();
 		createRuntimeObservabilityFixtureModule(fixtureRoot);

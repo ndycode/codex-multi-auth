@@ -29,6 +29,12 @@ const RETRYABLE_SHADOW_HOME_CLEANUP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPT
 const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];
 const SHADOW_HOME_STATE_FILES = ["auth.json", "accounts.json", ".codex-global-state.json"];
 const RUNTIME_ROTATION_PROXY_PROVIDER_ID = "codex-multi-auth-runtime-proxy";
+const INTERNAL_RUNTIME_ROTATION_APP_HELPER_ARG =
+	"--codex-multi-auth-runtime-app-helper";
+const APP_RUNTIME_HELPER_STATUS_FILE = "runtime-rotation-app-helper.json";
+const DEFAULT_APP_RUNTIME_HELPER_IDLE_MS = 12 * 60 * 60 * 1000;
+const DEFAULT_APP_RUNTIME_HELPER_DETACH_GRACE_MS = 5_000;
+const APP_RUNTIME_HELPER_LAUNCH_TIMEOUT_MS = 15_000;
 let shadowHomeCleanupBusyFailuresRemaining = Number.parseInt(
 	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_CLEANUP_BUSY_FAILURES ?? "0",
 	10,
@@ -417,7 +423,10 @@ async function forwardToRealCodex(codexBin, rawArgs, baseEnv = process.env) {
 			runtimeProxyContext.env,
 			runtimeProxyContext.cleanup,
 			{
-				captureOutput: shouldCaptureForwardedCodexOutput(runtimeProxyContext.env),
+				captureOutput: shouldCaptureForwardedOutputForArgs(
+					rawArgs,
+					runtimeProxyContext.env,
+				),
 			},
 		);
 		lastExitCode = result.exitCode;
@@ -1053,7 +1062,7 @@ async function isRuntimeRotationProxyEnabled(rawArgs, baseEnv = process.env) {
 	if ((baseEnv.CODEX_MULTI_AUTH_BYPASS ?? "").trim() === "1") {
 		return false;
 	}
-	if (!shouldTrackForwardedRuntimeObservability(rawArgs)) {
+	if (!shouldUseRuntimeRoutingForForwardedArgs(rawArgs)) {
 		return false;
 	}
 
@@ -1243,6 +1252,316 @@ function createRuntimeRotationProxyCodexHome(baseEnv, proxyBaseUrl, clientApiKey
 	};
 }
 
+function resolveRuntimeRotationAppHelperStatusPath(env = process.env) {
+	const multiAuthDir =
+		resolveOriginalMultiAuthDir(env) ?? join(resolveCodexHomeDir(env), "multi-auth");
+	return join(multiAuthDir, APP_RUNTIME_HELPER_STATUS_FILE);
+}
+
+function resolveRuntimeRotationAppHelperIdleMs(env = process.env) {
+	const parsed = Number.parseInt(
+		env.CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS ?? "",
+		10,
+	);
+	return Number.isFinite(parsed) && parsed > 0
+		? Math.max(50, parsed)
+		: DEFAULT_APP_RUNTIME_HELPER_IDLE_MS;
+}
+
+function resolveRuntimeRotationAppHelperDetachGraceMs(env = process.env) {
+	const parsed = Number.parseInt(
+		env.CODEX_MULTI_AUTH_APP_ROTATION_DETACH_GRACE_MS ?? "",
+		10,
+	);
+	return Number.isFinite(parsed) && parsed >= 0
+		? parsed
+		: DEFAULT_APP_RUNTIME_HELPER_DETACH_GRACE_MS;
+}
+
+function pickRuntimeRotationAppHelperEnv(env) {
+	const picked = {
+		CODEX_HOME: env.CODEX_HOME,
+		OPENAI_API_KEY: env.OPENAI_API_KEY,
+	};
+	if (env.CODEX_MULTI_AUTH_DIR) {
+		picked.CODEX_MULTI_AUTH_DIR = env.CODEX_MULTI_AUTH_DIR;
+	}
+	return picked;
+}
+
+function writeRuntimeRotationAppHelperStatus(payload, env = process.env) {
+	try {
+		const statusPath = resolveRuntimeRotationAppHelperStatusPath(env);
+		mkdirSync(dirname(statusPath), { recursive: true });
+		writeFileSync(statusPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+	} catch {
+		// Best-effort status only; the helper must not fail because telemetry is unavailable.
+	}
+}
+
+function createRuntimeRotationAppHelperStatus({
+	proxyServer,
+	startedAt,
+	idleTimeoutMs,
+	lastActivityAt,
+	state,
+}) {
+	const proxyStatus =
+		typeof proxyServer?.getStatus === "function" ? proxyServer.getStatus() : {};
+	return {
+		version: 1,
+		kind: "codex-app-runtime-rotation-helper",
+		state,
+		pid: process.pid,
+		startedAt,
+		updatedAt: Date.now(),
+		baseUrl: proxyServer?.baseUrl ?? null,
+		idleTimeoutMs,
+		idleExpiresAt: lastActivityAt + idleTimeoutMs,
+		totalRequests: proxyStatus.totalRequests ?? 0,
+		upstreamRequests: proxyStatus.upstreamRequests ?? 0,
+		retries: proxyStatus.retries ?? 0,
+		rotations: proxyStatus.rotations ?? 0,
+		lastAccountIndex: proxyStatus.lastAccountIndex ?? null,
+		lastError: proxyStatus.lastError ?? null,
+	};
+}
+
+async function runRuntimeRotationAppHelper() {
+	let proxyServer = null;
+	let shadowContext = null;
+	let statusTimer = null;
+	let closing = false;
+	const startedAt = Date.now();
+	const idleTimeoutMs = resolveRuntimeRotationAppHelperIdleMs();
+	let lastActivityAt = startedAt;
+	let lastRequestCount = 0;
+
+	const publishStatus = (state) => {
+		writeRuntimeRotationAppHelperStatus(
+			createRuntimeRotationAppHelperStatus({
+				proxyServer,
+				startedAt,
+				idleTimeoutMs,
+				lastActivityAt,
+				state,
+			}),
+		);
+	};
+
+	const cleanup = async (state = "stopped") => {
+		if (closing) return;
+		closing = true;
+		if (statusTimer) {
+			clearInterval(statusTimer);
+		}
+		try {
+			shadowContext?.cleanup?.();
+		} finally {
+			try {
+				await proxyServer?.close?.();
+			} finally {
+				publishStatus(state);
+			}
+		}
+	};
+
+	const exitAfterCleanup = (state, exitCode) => {
+		void cleanup(state).finally(() => {
+			process.exit(exitCode);
+		});
+	};
+
+	process.once("SIGINT", () => exitAfterCleanup("stopped", 130));
+	process.once("SIGTERM", () => exitAfterCleanup("stopped", 0));
+	process.once("SIGHUP", () => exitAfterCleanup("stopped", 0));
+
+	try {
+		const proxyModule = await loadRuntimeRotationProxyModule();
+		if (!proxyModule) {
+			throw new Error("runtime rotation proxy module is unavailable");
+		}
+		const clientApiKey = createRuntimeRotationProxyClientApiKey();
+		proxyServer = await proxyModule.startRuntimeRotationProxy({ clientApiKey });
+		shadowContext = createRuntimeRotationProxyCodexHome(
+			process.env,
+			proxyServer.baseUrl,
+			clientApiKey,
+		);
+		lastRequestCount = proxyServer.getStatus?.().totalRequests ?? 0;
+		publishStatus("running");
+		process.stdout.write(
+			`${JSON.stringify({
+				type: "ready",
+				pid: process.pid,
+				baseUrl: proxyServer.baseUrl,
+				statusPath: resolveRuntimeRotationAppHelperStatusPath(),
+				env: pickRuntimeRotationAppHelperEnv(shadowContext.env),
+			})}\n`,
+		);
+
+		statusTimer = setInterval(() => {
+			const requestCount = proxyServer?.getStatus?.().totalRequests ?? 0;
+			if (requestCount !== lastRequestCount) {
+				lastRequestCount = requestCount;
+				lastActivityAt = Date.now();
+			}
+			publishStatus("running");
+			if (Date.now() - lastActivityAt >= idleTimeoutMs) {
+				exitAfterCleanup("idle-timeout", 0);
+			}
+		}, Math.min(1_000, Math.max(50, Math.floor(idleTimeoutMs / 2))));
+	} catch (error) {
+		process.stdout.write(
+			`${JSON.stringify({
+				type: "error",
+				message: error instanceof Error ? error.message : String(error),
+			})}\n`,
+		);
+		await cleanup("error");
+		return 1;
+	}
+
+	await new Promise(() => undefined);
+	return 0;
+}
+
+function waitForRuntimeRotationAppHelperExit(helper, timeoutMs = 2_000) {
+	return new Promise((resolve) => {
+		let settled = false;
+		let timer = null;
+		const finish = () => {
+			if (settled) return;
+			settled = true;
+			if (timer) clearTimeout(timer);
+			resolve();
+		};
+		timer = setTimeout(finish, timeoutMs);
+		helper.once("close", finish);
+	});
+}
+
+function stopRuntimeRotationAppHelper(helper) {
+	if (!helper || helper.killed) {
+		return Promise.resolve();
+	}
+	try {
+		helper.kill("SIGTERM");
+	} catch {
+		return Promise.resolve();
+	}
+	return waitForRuntimeRotationAppHelperExit(helper);
+}
+
+function startRuntimeRotationAppHelper(baseContext) {
+	return new Promise((resolve, reject) => {
+		let stdoutBuffer = "";
+		let stderrBuffer = "";
+		let settled = false;
+		const helper = spawn(
+			process.execPath,
+			[fileURLToPath(import.meta.url), INTERNAL_RUNTIME_ROTATION_APP_HELPER_ARG],
+			{
+				env: baseContext.env,
+				stdio: ["ignore", "pipe", "pipe"],
+				detached: true,
+			},
+		);
+		let timeout = null;
+		const finish = (result) => {
+			if (settled) return;
+			settled = true;
+			if (timeout) clearTimeout(timeout);
+			resolve(result);
+		};
+		const fail = (error) => {
+			if (settled) return;
+			settled = true;
+			if (timeout) clearTimeout(timeout);
+			void stopRuntimeRotationAppHelper(helper).finally(() => reject(error));
+		};
+		timeout = setTimeout(() => {
+			fail(new Error("timed out waiting for runtime rotation app helper"));
+		}, APP_RUNTIME_HELPER_LAUNCH_TIMEOUT_MS);
+		helper.stdout?.setEncoding("utf8");
+		helper.stdout?.on("data", (chunk) => {
+			stdoutBuffer += chunk;
+			const newlineIndex = stdoutBuffer.indexOf("\n");
+			if (newlineIndex < 0) return;
+			const line = stdoutBuffer.slice(0, newlineIndex).trim();
+			try {
+				const message = JSON.parse(line);
+				if (message?.type === "ready" && message.env && message.pid) {
+					finish({ helper, message });
+					return;
+				}
+				fail(
+					new Error(
+						message?.message ??
+							"runtime rotation app helper returned an invalid startup response",
+					),
+				);
+			} catch (error) {
+				fail(error);
+			}
+		});
+		helper.stderr?.setEncoding("utf8");
+		helper.stderr?.on("data", (chunk) => {
+			stderrBuffer += chunk;
+		});
+		helper.once("error", fail);
+		helper.once("close", (code) => {
+			if (settled) return;
+			fail(
+				new Error(
+					`runtime rotation app helper exited before startup (code ${code ?? "unknown"}): ${stderrBuffer.trim()}`,
+				),
+			);
+		});
+	});
+}
+
+async function createRuntimeRotationAppHelperContext(baseContext) {
+	const startedAt = Date.now();
+	const { helper, message } = await startRuntimeRotationAppHelper(baseContext);
+	const helperEnv = message.env ?? {};
+	const detachGraceMs = resolveRuntimeRotationAppHelperDetachGraceMs(baseContext.env);
+	let helperDetached = false;
+
+	const cleanup = async () => {
+		const livedMs = Date.now() - startedAt;
+		if (livedMs < detachGraceMs) {
+			helperDetached = true;
+			helper.stdout?.destroy();
+			helper.stderr?.destroy();
+			helper.unref();
+			return;
+		}
+		await stopRuntimeRotationAppHelper(helper);
+	};
+
+	return {
+		args: [
+			...baseContext.args,
+			"-c",
+			`model_provider=${tomlStringLiteral(RUNTIME_ROTATION_PROXY_PROVIDER_ID)}`,
+		],
+		env: {
+			...baseContext.env,
+			...helperEnv,
+		},
+		cleanup: async () => {
+			try {
+				await cleanup();
+			} finally {
+				if (!helperDetached) {
+					baseContext.cleanup?.();
+				}
+			}
+		},
+	};
+}
+
 async function createRuntimeRotationProxyContextIfEnabled(
 	baseContext,
 	rawArgs,
@@ -1250,6 +1569,10 @@ async function createRuntimeRotationProxyContextIfEnabled(
 	const enabled = await isRuntimeRotationProxyEnabled(rawArgs, baseContext.env);
 	if (!enabled) {
 		return baseContext;
+	}
+
+	if (isCodexAppCommand(rawArgs)) {
+		return createRuntimeRotationAppHelperContext(baseContext);
 	}
 
 	const proxyModule = await loadRuntimeRotationProxyModule();
@@ -1342,8 +1665,17 @@ function consumesNextArg(arg) {
 		"--config",
 		"--enable",
 		"--disable",
+		"--listen",
 		"--remote",
 		"--remote-auth-token-env",
+		"--ws-auth",
+		"--ws-token-file",
+		"--ws-token-sha256",
+		"--ws-shared-secret-file",
+		"--ws-issuer",
+		"--ws-audience",
+		"--ws-max-clock-skew-seconds",
+		"--download-url",
 		"-i",
 		"--image",
 		"-m",
@@ -1365,36 +1697,17 @@ function consumesNextArg(arg) {
 	]).has(arg);
 }
 
-function shouldTrackForwardedRuntimeObservability(rawArgs) {
+function findForwardedCommand(rawArgs) {
 	if (!Array.isArray(rawArgs) || rawArgs.length === 0) {
-		return true;
+		return null;
 	}
-	if (isPureHelpOrVersionArgs(rawArgs)) {
-		return false;
-	}
-
-	const requestCommands = new Set(["exec", "review", "resume", "fork"]);
-	const nonRequestCommands = new Set([
-		"help",
-		"completion",
-		"login",
-		"logout",
-		"mcp",
-		"mcp-server",
-		"app-server",
-		"sandbox",
-		"debug",
-		"apply",
-		"cloud",
-		"features",
-		"auth",
-	]);
-
 	for (let i = 0; i < rawArgs.length; i += 1) {
 		const arg = rawArgs[i];
 		if (typeof arg !== "string" || arg.length === 0) continue;
 		if (arg === "--") {
-			return i + 1 < rawArgs.length;
+			return i + 1 < rawArgs.length
+				? { command: rawArgs[i + 1], index: i + 1 }
+				: null;
 		}
 		if (arg.startsWith("--config=")) {
 			continue;
@@ -1405,16 +1718,113 @@ function shouldTrackForwardedRuntimeObservability(rawArgs) {
 			}
 			continue;
 		}
-		if (requestCommands.has(arg)) {
-			return true;
+		return { command: arg, index: i };
+	}
+
+	return null;
+}
+
+function findForwardedSubcommand(rawArgs, commandIndex) {
+	for (let i = commandIndex + 1; i < rawArgs.length; i += 1) {
+		const arg = rawArgs[i];
+		if (typeof arg !== "string" || arg.length === 0) continue;
+		if (arg === "--") {
+			return i + 1 < rawArgs.length ? rawArgs[i + 1] : null;
 		}
-		if (nonRequestCommands.has(arg)) {
-			return false;
+		if (arg.startsWith("--config=")) {
+			continue;
 		}
+		if (arg.startsWith("--") || (arg.startsWith("-") && arg !== "-")) {
+			if (consumesNextArg(arg)) {
+				i += 1;
+			}
+			continue;
+		}
+		return arg;
+	}
+	return null;
+}
+
+function hasHelpFlagAfterCommand(rawArgs, commandIndex) {
+	for (let i = commandIndex + 1; i < rawArgs.length; i += 1) {
+		const arg = rawArgs[i];
+		if (arg === "--") return false;
+		if (arg === "--help" || arg === "-h" || arg === "help") return true;
+		if (typeof arg === "string" && consumesNextArg(arg)) {
+			i += 1;
+		}
+	}
+	return false;
+}
+
+function isCodexAppCommand(rawArgs) {
+	return findForwardedCommand(rawArgs)?.command === "app";
+}
+
+function isCodexAppServerCommand(rawArgs) {
+	return findForwardedCommand(rawArgs)?.command === "app-server";
+}
+
+function shouldUseRuntimeRoutingForForwardedArgs(rawArgs) {
+	if (!Array.isArray(rawArgs) || rawArgs.length === 0) {
+		return true;
+	}
+	if (isPureHelpOrVersionArgs(rawArgs)) {
+		return false;
+	}
+
+	const command = findForwardedCommand(rawArgs);
+	if (!command) {
 		return true;
 	}
 
+	const requestCommands = new Set(["exec", "review", "resume", "fork", "app"]);
+	const nonRequestCommands = new Set([
+		"help",
+		"completion",
+		"login",
+		"logout",
+		"mcp",
+		"mcp-server",
+		"sandbox",
+		"debug",
+		"apply",
+		"cloud",
+		"features",
+		"auth",
+	]);
+
+	if (command.command === "app-server") {
+		if (hasHelpFlagAfterCommand(rawArgs, command.index)) {
+			return false;
+		}
+		const subcommand = findForwardedSubcommand(rawArgs, command.index);
+		return !new Set(["help", "generate-ts", "generate-json-schema"]).has(
+			subcommand ?? "",
+		);
+	}
+
+	if (command.command === "app" && hasHelpFlagAfterCommand(rawArgs, command.index)) {
+		return false;
+	}
+	if (requestCommands.has(command.command)) {
+		return true;
+	}
+	if (nonRequestCommands.has(command.command)) {
+		return false;
+	}
 	return true;
+}
+
+function shouldTrackForwardedRuntimeObservability(rawArgs) {
+	return shouldUseRuntimeRoutingForForwardedArgs(rawArgs);
+}
+
+function shouldCaptureForwardedOutputForArgs(rawArgs, env) {
+	if (isCodexAppServerCommand(rawArgs)) {
+		return false;
+	}
+	return shouldCaptureForwardedCodexOutput(env);
 }
 
 function createRuntimeSnapshotChangeToken(snapshot) {
@@ -1931,9 +2341,14 @@ function ensureWindowsShellShimGuards() {
 
 async function main() {
 	hydrateCliVersionEnv();
-	ensureWindowsShellShimGuards();
 
 	const rawArgs = process.argv.slice(2);
+	if (rawArgs[0] === INTERNAL_RUNTIME_ROTATION_APP_HELPER_ARG) {
+		return runRuntimeRotationAppHelper();
+	}
+
+	ensureWindowsShellShimGuards();
+
 	const normalizedArgs = normalizeAuthAlias(rawArgs);
 	const bypass = (process.env.CODEX_MULTI_AUTH_BYPASS ?? "").trim() === "1";
 

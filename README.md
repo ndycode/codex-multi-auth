@@ -233,7 +233,8 @@ Selected runtime/environment overrides:
 | `CODEX_MULTI_AUTH_DIR` | Override settings/accounts root |
 | `CODEX_MULTI_AUTH_CONFIG_PATH` | Alternate config file path |
 | `CODEX_MODE=0/1` | Disable/enable Codex mode |
-| `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0/1` | Opt in/out of live Responses proxy rotation for forwarded Codex sessions |
+| `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0/1` | Opt in/out of live Responses proxy rotation for forwarded Codex CLI/app sessions |
+| `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS=<ms>` | Override automatic Codex app helper idle shutdown |
 | `CODEX_TUI_V2=0/1` | Disable/enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | TUI color profile |
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | TUI glyph style |
