@@ -479,6 +479,20 @@ describe('Logger Module', () => {
 			expect(data.access_token).toBe('this-i...alue');
 		});
 
+		it('should mask experimental bearer token key variants', () => {
+			const mockLog = vi.fn();
+			initLogger({ app: { log: mockLog } });
+			logError('test', {
+				experimental_bearer_token: 'runtime-router-secret-value',
+				experimentalBearerToken: 'runtime-router-secret-value',
+				'experimental-bearer-token': 'runtime-router-secret-value',
+			});
+			const data = mockLog.mock.calls[0][0].body.extra?.data;
+			expect(data.experimental_bearer_token).toBe('runtim...alue');
+			expect(data.experimentalBearerToken).toBe('runtim...alue');
+			expect(data['experimental-bearer-token']).toBe('runtim...alue');
+		});
+
 		it('should handle arrays in sanitization', () => {
 			const mockLog = vi.fn();
 			initLogger({ app: { log: mockLog } });

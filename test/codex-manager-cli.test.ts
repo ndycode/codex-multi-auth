@@ -6,6 +6,7 @@ const saveAccountsMock = vi.fn();
 const saveFlaggedAccountsMock = vi.fn();
 const setStoragePathMock = vi.fn();
 const getStoragePathMock = vi.fn(() => "/mock/openai-codex-accounts.json");
+const inspectStorageHealthMock = vi.fn();
 const getNamedBackupsMock = vi.fn();
 const restoreAccountsFromBackupMock = vi.fn();
 const queuedRefreshMock = vi.fn();
@@ -179,6 +180,7 @@ vi.mock("../lib/storage.js", async () => {
 		withAccountStorageTransaction: withAccountStorageTransactionMock,
 		setStoragePath: setStoragePathMock,
 		getStoragePath: getStoragePathMock,
+		inspectStorageHealth: inspectStorageHealthMock,
 		getNamedBackups: getNamedBackupsMock,
 		restoreAccountsFromBackup: restoreAccountsFromBackupMock,
 		exportNamedBackup: exportNamedBackupMock,
@@ -656,6 +658,7 @@ describe("codex manager cli commands", () => {
 		withAccountAndFlaggedStorageTransactionMock.mockReset();
 		withAccountStorageTransactionMock.mockReset();
 		withFlaggedStorageTransactionMock.mockReset();
+		inspectStorageHealthMock.mockReset();
 		queuedRefreshMock.mockReset();
 		setCodexCliActiveSelectionMock.mockReset();
 		loadCodexCliStateMock.mockReset();
@@ -822,6 +825,15 @@ describe("codex manager cli commands", () => {
 		setOpenStdinState();
 		setStoragePathMock.mockReset();
 		getStoragePathMock.mockReturnValue("/mock/openai-codex-accounts.json");
+		inspectStorageHealthMock.mockResolvedValue({
+			state: "empty",
+			path: "/mock/openai-codex-accounts.json",
+			resetMarkerPath: "/mock/openai-codex-accounts.json.intentional-reset",
+			walPath: "/mock/openai-codex-accounts.json.wal",
+			hasResetMarker: false,
+			hasWal: false,
+			details: "storage file is missing",
+		});
 		normalizeAccountStorageMock.mockImplementation((value) => value);
 
 		const authModule = await import("../lib/auth/auth.js");
@@ -931,6 +943,15 @@ describe("codex manager cli commands", () => {
 
 	it("prints empty account status for auth list", async () => {
 		loadAccountsMock.mockResolvedValueOnce(null);
+		inspectStorageHealthMock.mockResolvedValueOnce({
+			state: "intentional-reset",
+			path: "/mock/openai-codex-accounts.json",
+			resetMarkerPath: "/mock/openai-codex-accounts.json.intentional-reset",
+			walPath: "/mock/openai-codex-accounts.json.wal",
+			hasResetMarker: true,
+			hasWal: false,
+			details: "intentional reset marker present",
+		});
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
@@ -945,6 +966,30 @@ describe("codex manager cli commands", () => {
 		);
 		expect(logSpy).toHaveBeenCalledWith("Storage health: intentional-reset");
 		expect(setStoragePathMock).toHaveBeenCalledWith(null);
+	});
+
+	it("prints intentional-reset status with windows-style storage paths", async () => {
+		loadAccountsMock.mockResolvedValueOnce(null);
+		getStoragePathMock.mockReturnValueOnce("C:\\mock\\openai-codex-accounts.json");
+		inspectStorageHealthMock.mockResolvedValueOnce({
+			state: "intentional-reset",
+			path: "C:\\mock\\openai-codex-accounts.json",
+			resetMarkerPath: "C:\\mock\\openai-codex-accounts.json.intentional-reset",
+			walPath: "C:\\mock\\openai-codex-accounts.json.wal",
+			hasResetMarker: true,
+			hasWal: false,
+			details: "intentional reset marker present",
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "list"]);
+
+		expect(exitCode).toBe(0);
+		expect(logSpy).toHaveBeenCalledWith(
+			"Storage: C:\\mock\\openai-codex-accounts.json",
+		);
+		expect(logSpy).toHaveBeenCalledWith("Storage health: intentional-reset");
 	});
 
 	it("prints config explain output in json mode", async () => {
@@ -6856,6 +6901,79 @@ describe("codex manager cli commands", () => {
 			firstCallAccounts.map((account) => account.quickSwitchNumber),
 		).toEqual([1, 2, 3]);
 		expect(firstCallAccounts[0]?.isCurrentAccount).toBe(false);
+		expect(firstCallAccounts[1]?.isCurrentAccount).toBe(true);
+	});
+
+	it("syncs Codex CLI active account before rendering the login account list", async () => {
+		const now = Date.now();
+		const storage = {
+			version: 3,
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+			accounts: [
+				{
+					email: "a@example.com",
+					accountId: "acc_a",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					enabled: true,
+				},
+				{
+					email: "b@example.com",
+					accountId: "acc_b",
+					refreshToken: "refresh-b",
+					accessToken: "access-b",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockResolvedValue(storage);
+		loadDashboardDisplaySettingsMock.mockResolvedValue({
+			showPerAccountRows: true,
+			showQuotaDetails: true,
+			showForecastReasons: true,
+			showRecommendations: true,
+			showLiveProbeNotes: true,
+			menuAutoFetchLimits: false,
+			menuSortEnabled: false,
+		});
+		loadCodexCliStateMock.mockResolvedValue({
+			path: "/mock/.codex/accounts.json",
+			accounts: [],
+			activeAccountId: "acc_a",
+			activeEmail: "a@example.com",
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValue(true);
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+
+		expect(exitCode).toBe(0);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "acc_b",
+				email: "b@example.com",
+				accessToken: "access-b",
+				refreshToken: "refresh-b",
+				expiresAt: now + 3_600_000,
+			}),
+		);
+		const syncCallOrder =
+			setCodexCliActiveSelectionMock.mock.invocationCallOrder[0];
+		const renderCallOrder = promptLoginModeMock.mock.invocationCallOrder[0];
+		expect(syncCallOrder).toBeLessThan(renderCallOrder);
+		const firstCallAccounts = promptLoginModeMock.mock.calls[0]?.[0] as Array<{
+			email?: string;
+			isCurrentAccount?: boolean;
+		}>;
+		expect(firstCallAccounts[1]?.email).toBe("b@example.com");
 		expect(firstCallAccounts[1]?.isCurrentAccount).toBe(true);
 	});
 

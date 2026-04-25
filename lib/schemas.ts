@@ -24,6 +24,7 @@ function schemaLog(): ScopedLogger | null {
 
 export const PluginConfigSchema = z.object({
 	codexMode: z.boolean().optional(),
+	codexRuntimeRotationProxy: z.boolean().optional(),
 	codexTuiV2: z.boolean().optional(),
 	codexTuiColorProfile: z.enum(["truecolor", "ansi16", "ansi256"]).optional(),
 	codexTuiGlyphMode: z.enum(["ascii", "unicode", "auto"]).optional(),

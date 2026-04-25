@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync, readdirSy
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync, execFile } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
 	FILE_RETRY_BASE_DELAY_MS,
@@ -11,8 +12,18 @@ import {
 	resolveInstallPaths,
 	withFileOperationRetry,
 } from "../scripts/install-codex-auth-utils.js";
+import {
+	createWindowsShortcutPowerShellScript,
+	resolveAppLauncherPlan,
+} from "../scripts/codex-app-launcher.js";
+import {
+	hasCodexDesktopApp,
+	isCiEnvironment,
+	shouldAutoBindCodexAppOnInstall,
+} from "../scripts/postinstall.js";
 
 const scriptPath = "scripts/install-codex-auth.js";
+const appLauncherScriptPath = "scripts/codex-app-launcher.js";
 const tempRoots: string[] = [];
 const execFileAsync = promisify(execFile);
 
@@ -31,6 +42,12 @@ function retryableError(code: string): Error & { code: string } {
 	const error = new Error(`transient ${code}`) as Error & { code: string };
 	error.code = code;
 	return error;
+}
+
+function decodeWindowsEncodedCommand(commandArgs: string): string {
+	const marker = "-EncodedCommand ";
+	const encoded = commandArgs.slice(commandArgs.indexOf(marker) + marker.length).trim();
+	return Buffer.from(encoded, "base64").toString("utf16le");
 }
 
 describe("install-codex-auth script", () => {
@@ -188,5 +205,271 @@ describe("install-codex-auth script", () => {
 
 		await expect(withFileOperationRetry(operation)).rejects.toMatchObject({ code: "ENOENT" });
 		expect(operation).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("codex app launcher installer", () => {
+	it("resolves Windows shortcut routing that points existing Codex icons at the wrapper app command", () => {
+		const home = "C:\\Users\\test";
+		const appData = path.join(home, "AppData", "Roaming");
+		const plan = resolveAppLauncherPlan({
+			platform: "win32",
+			home,
+			env: { APPDATA: appData },
+			moduleUrl: pathToFileURL(path.resolve(appLauncherScriptPath)).href,
+		});
+
+		expect(plan.launcherPath).toBe(
+			path.join(
+				appData,
+				"Microsoft",
+				"Windows",
+				"Start Menu",
+				"Programs",
+				"Codex.lnk",
+			),
+		);
+		expect(plan.mode).toBe("route-existing");
+		expect(plan.backupPath).toBe(
+			path.join(home, ".codex", "multi-auth", "app-shortcuts.json"),
+		);
+		expect(plan.shortcutRoots).toEqual(
+			expect.arrayContaining([
+				path.join(appData, "Microsoft", "Windows", "Start Menu", "Programs"),
+				path.join(
+					appData,
+					"Microsoft",
+					"Internet Explorer",
+					"Quick Launch",
+					"User Pinned",
+					"TaskBar",
+				),
+				path.join(home, "Desktop"),
+			]),
+		);
+		expect(plan.commandPath).toBe(
+			path.join(
+				"C:\\Windows",
+				"System32",
+				"WindowsPowerShell",
+				"v1.0",
+				"powershell.exe",
+			),
+		);
+		expect(plan.commandArgs).toContain("-EncodedCommand ");
+		const decodedCommand = decodeWindowsEncodedCommand(plan.commandArgs);
+		expect(decodedCommand).toContain(process.execPath);
+		expect(decodedCommand).toContain("scripts\\codex.js");
+		expect(decodedCommand).toContain(" app");
+
+		const psScript = createWindowsShortcutPowerShellScript(plan);
+		expect(psScript).toContain("$Candidates");
+		expect(psScript).toContain("$BackupPath");
+		expect(psScript).toContain("[Environment]::GetFolderPath('Desktop')");
+		expect(psScript).toContain("shell:AppsFolder");
+		expect(psScript).toContain("$AlreadyManaged");
+		expect(psScript).toContain("$Shortcut.TargetPath = $TargetPath");
+		expect(psScript).toContain("Launch Codex through codex-multi-auth");
+	});
+
+	it("keeps Windows shortcut arguments free of raw percent paths", () => {
+		const home = "C:\\Users\\percent%home";
+		const appData = path.join(home, "App%Data", "Roaming");
+		const moduleUrl = pathToFileURL(
+			path.join(home, "pkg%root", "scripts", "codex-app-launcher.js"),
+		).href;
+		const plan = resolveAppLauncherPlan({
+			platform: "win32",
+			home,
+			env: { APPDATA: appData },
+			moduleUrl,
+		});
+
+		expect(plan.commandArgs).not.toContain(home);
+		expect(plan.commandArgs).not.toContain("pkg%root");
+		const decodedCommand = decodeWindowsEncodedCommand(plan.commandArgs);
+		expect(decodedCommand).toContain(home);
+		expect(decodedCommand).toContain("pkg%root");
+		expect(decodedCommand).toContain("codex.js");
+	});
+
+	it("includes redirected Windows desktop roots when routing app shortcuts", () => {
+		const home = "C:\\Users\\test";
+		const appData = path.join(home, "AppData", "Roaming");
+		const oneDrive = path.join(home, "OneDrive - Example");
+		const plan = resolveAppLauncherPlan({
+			platform: "win32",
+			home,
+			env: {
+				APPDATA: appData,
+				OneDrive: oneDrive,
+			},
+			moduleUrl: pathToFileURL(path.resolve(appLauncherScriptPath)).href,
+		});
+
+		expect(plan.shortcutRoots).toEqual(
+			expect.arrayContaining([
+				path.join(oneDrive, "Desktop"),
+				path.join(home, "Desktop"),
+			]),
+		);
+	});
+
+	it("resolves a macOS managed app wrapper without patching the official app bundle", () => {
+		const home = "/Users/test";
+		const plan = resolveAppLauncherPlan({
+			platform: "darwin",
+			home,
+			env: {},
+			moduleUrl: pathToFileURL(path.resolve(appLauncherScriptPath)).href,
+		});
+
+		expect(plan.mode).toBe("create-managed");
+		expect(plan.launcherPath).toBe(path.join(home, "Applications", "Codex Multi Auth.app"));
+		expect(plan.commandPath).toBe(process.execPath);
+		expect(plan.commandArgs).toContain("codex.js");
+		expect(plan.commandArgs).toContain(" app");
+	});
+
+	it("resolves a Linux desktop launcher under XDG_DATA_HOME", () => {
+		const home = "/home/test";
+		const dataHome = "/tmp/test-data";
+		const plan = resolveAppLauncherPlan({
+			platform: "linux",
+			home,
+			env: { XDG_DATA_HOME: dataHome },
+			moduleUrl: pathToFileURL(path.resolve(appLauncherScriptPath)).href,
+		});
+
+		expect(plan.launcherPath).toBe(
+			path.join(dataHome, "applications", "codex-multi-auth.desktop"),
+		);
+		expect(plan.commandPath).toBe(process.execPath);
+		expect(plan.commandArgs).toContain("codex.js");
+		expect(plan.commandArgs).toContain(" app %F");
+	});
+
+	it("dry-run reports the launcher path without writing it", () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-app-launcher-dryrun-"));
+		tempRoots.push(home);
+		const dataHome = path.join(home, "data");
+		const result = spawnSync(
+			process.execPath,
+			[appLauncherScriptPath, "--dry-run"],
+			{
+				env: {
+					...process.env,
+					XDG_DATA_HOME: dataHome,
+				},
+				encoding: "utf8",
+				windowsHide: true,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("[dry-run]");
+		if (process.platform !== "win32") {
+			expect(result.stdout).toContain("Codex Multi Auth app launcher");
+			expect(existsSync(path.join(dataHome, "applications", "codex-multi-auth.desktop"))).toBe(
+				false,
+			);
+		}
+	});
+});
+
+describe("codex app bind postinstall gate", () => {
+	it("detects the packaged Windows Codex app from LOCALAPPDATA packages", () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-app-bind-detect-"));
+		tempRoots.push(home);
+		const localAppData = path.join(home, "AppData", "Local");
+		mkdirSync(path.join(localAppData, "Packages", "OpenAI.Codex_test"), {
+			recursive: true,
+		});
+
+		expect(
+			hasCodexDesktopApp({
+				platform: "win32",
+				home,
+				env: { LOCALAPPDATA: localAppData },
+			}),
+		).toBe(true);
+	});
+
+	it("only auto-binds on install when opted in or globally installed with rotation enabled", () => {
+		expect(
+			shouldAutoBindCodexAppOnInstall({
+				env: {},
+				rotationEnabled: true,
+				appDetected: true,
+			}),
+		).toBe(false);
+		expect(
+			shouldAutoBindCodexAppOnInstall({
+				env: { npm_config_global: "true" },
+				rotationEnabled: false,
+				appDetected: true,
+			}),
+		).toBe(false);
+		expect(
+			shouldAutoBindCodexAppOnInstall({
+				env: { npm_config_global: "true" },
+				rotationEnabled: true,
+				appDetected: true,
+			}),
+		).toBe(true);
+		expect(
+			shouldAutoBindCodexAppOnInstall({
+				env: { CODEX_MULTI_AUTH_APP_BIND_INSTALL: "1" },
+				rotationEnabled: false,
+				appDetected: false,
+			}),
+		).toBe(true);
+		expect(
+			shouldAutoBindCodexAppOnInstall({
+				env: {
+					npm_config_global: "true",
+					CODEX_MULTI_AUTH_APP_BIND: "0",
+				},
+				rotationEnabled: true,
+				appDetected: true,
+			}),
+		).toBe(false);
+	});
+
+	it("skips desktop app auto-bind in CI and when npm scripts are ignored", () => {
+		expect(isCiEnvironment({ CI: "true" })).toBe(true);
+		expect(isCiEnvironment({ GITHUB_ACTIONS: "true" })).toBe(true);
+		expect(isCiEnvironment({ npm_config_ignore_scripts: "true" })).toBe(true);
+		expect(
+			shouldAutoBindCodexAppOnInstall({
+				env: {
+					CI: "true",
+					CODEX_MULTI_AUTH_APP_BIND_INSTALL: "1",
+					npm_config_global: "true",
+				},
+				rotationEnabled: true,
+				appDetected: true,
+			}),
+		).toBe(false);
+		expect(
+			shouldAutoBindCodexAppOnInstall({
+				env: {
+					GITHUB_ACTIONS: "true",
+					CODEX_MULTI_AUTH_APP_BIND: "1",
+				},
+				rotationEnabled: true,
+				appDetected: true,
+			}),
+		).toBe(false);
+		expect(
+			shouldAutoBindCodexAppOnInstall({
+				env: {
+					npm_config_ignore_scripts: "true",
+					CODEX_MULTI_AUTH_APP_BIND_INSTALL: "1",
+				},
+				rotationEnabled: true,
+				appDetected: true,
+			}),
+		).toBe(false);
 	});
 });

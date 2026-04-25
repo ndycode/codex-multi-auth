@@ -169,6 +169,7 @@ If browser launch is blocked, use the alternate login paths in [docs/getting-sta
 | `codex auth report --live --json` | How do I get the full machine-readable health report? |
 | `codex auth fix --live --model gpt-5-codex` | How do I run live repair probes with a chosen model? |
 | `codex auth why-selected --json` | Which account does the selector pick now, and why? |
+| `codex auth rotation status` | Is live runtime account rotation enabled for forwarded Codex sessions? |
 
 ### Reliability behavior
 
@@ -233,6 +234,10 @@ Selected runtime/environment overrides:
 | `CODEX_MULTI_AUTH_DIR` | Override settings/accounts root |
 | `CODEX_MULTI_AUTH_CONFIG_PATH` | Alternate config file path |
 | `CODEX_MODE=0/1` | Disable/enable Codex mode |
+| `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0/1` | Opt in/out of live Responses proxy rotation for forwarded Codex CLI/app sessions |
+| `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS=<ms>` | Override automatic Codex app helper idle shutdown |
+| `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0/1` | Opt out/in of packaged Codex app bind self-heal during install/update or rotation enable |
+| `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0/1` | Opt out/in of routing supported app shortcuts during rotation enable |
 | `CODEX_TUI_V2=0/1` | Disable/enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | TUI color profile |
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | TUI glyph style |

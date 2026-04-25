@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { resolve } from 'node:path';
 
 const forcePlainTestOutput =
   process.env.CODEX_PLAIN_LOGS === '1' ||
@@ -13,6 +14,19 @@ if (forcePlainTestOutput) {
 }
 
 export default defineConfig({
+  plugins: [
+    {
+      name: 'strip-script-shebangs-for-vitest',
+      enforce: 'pre',
+      transform(code, id) {
+        const scriptsRoot = `${resolve(process.cwd(), 'scripts').replace(/\\/g, '/')}/`;
+        const normalizedId = id.replace(/\\/g, '/');
+        if (!normalizedId.startsWith(scriptsRoot)) return null;
+        if (!code.startsWith('#!')) return null;
+        return code.replace(/^#!.*(?:\r?\n|$)/, '');
+      },
+    },
+  ],
   test: {
     globals: true,
     environment: 'node',

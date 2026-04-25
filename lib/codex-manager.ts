@@ -71,6 +71,7 @@ import {
 import { runForecastCommand } from "./codex-manager/commands/forecast.js";
 import { runInitConfigCommand } from "./codex-manager/commands/init-config.js";
 import { runReportCommand } from "./codex-manager/commands/report.js";
+import { runRotationCommand } from "./codex-manager/commands/rotation.js";
 import {
 	runFeaturesCommand,
 	runStatusCommand,
@@ -83,7 +84,17 @@ import {
 	configureUnifiedSettings,
 	resolveMenuLayoutMode,
 } from "./codex-manager/settings-hub.js";
-import { getPluginConfigExplainReport } from "./config.js";
+import {
+	getCodexRuntimeRotationProxy,
+	getPluginConfigExplainReport,
+	loadPluginConfig,
+	savePluginConfig,
+} from "./config.js";
+import {
+	bindCodexAppRuntimeRotation,
+	getAppBindStatus,
+	unbindCodexAppRuntimeRotation,
+} from "./runtime/app-bind.js";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import {
 	type DashboardAccountSortMode,
@@ -1191,6 +1202,55 @@ function toExistingAccountInfo(
 			? displayIndex + 1
 			: (account.sourceIndex ?? displayIndex) + 1,
 	}));
+}
+
+function activeAccountMatchesCodexCliState(
+	account: AccountMetadataV3,
+	state: Awaited<ReturnType<typeof loadCodexCliState>>,
+): boolean {
+	if (!state) return true;
+	const accountId = account.accountId?.trim();
+	const activeAccountId = state.activeAccountId?.trim();
+	if (accountId && activeAccountId) {
+		return accountId === activeAccountId;
+	}
+
+	const email = sanitizeEmail(account.email);
+	const activeEmail = sanitizeEmail(state.activeEmail);
+	if (email && activeEmail) {
+		return email === activeEmail;
+	}
+
+	return false;
+}
+
+async function syncCodexCliActiveSelectionIfDrifted(
+	storage: AccountStorageV3,
+): Promise<boolean> {
+	const activeIndex = resolveActiveIndex(storage, "codex");
+	if (activeIndex < 0 || activeIndex >= storage.accounts.length) {
+		return false;
+	}
+	const account = storage.accounts[activeIndex];
+	if (!account) {
+		return false;
+	}
+
+	try {
+		const cliState = await loadCodexCliState({ forceRefresh: true });
+		if (!cliState || activeAccountMatchesCodexCliState(account, cliState)) {
+			return false;
+		}
+		return setCodexCliActiveSelection({
+			accountId: account.accountId,
+			email: account.email,
+			accessToken: account.accessToken,
+			refreshToken: account.refreshToken,
+			expiresAt: account.expiresAt,
+		});
+	} catch {
+		return false;
+	}
 }
 
 function resolveAccountSelection(
@@ -2726,6 +2786,7 @@ async function runAuthLogin(args: string[]): Promise<number> {
 					}
 				}
 				const flaggedStorage = await loadFlaggedAccounts();
+				await syncCodexCliActiveSelectionIfDrifted(currentStorage);
 
 				const menuResult = await promptLoginMode(
 					toExistingAccountInfo(currentStorage, quotaCache, displaySettings),
@@ -3376,6 +3437,20 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			normalizeFailureDetail,
 			loadRuntimeObservabilitySnapshot:
 				loadPersistedRuntimeObservabilitySnapshot,
+		});
+	}
+	if (command === "rotation") {
+		return runRotationCommand(rest, {
+			loadPluginConfig,
+			savePluginConfig,
+			getCodexRuntimeRotationProxy,
+			setStoragePath,
+			getStoragePath,
+			loadAccounts,
+			resolveActiveIndex,
+			bindCodexApp: bindCodexAppRuntimeRotation,
+			unbindCodexApp: unbindCodexAppRuntimeRotation,
+			getCodexAppBindStatus: getAppBindStatus,
 		});
 	}
 	if (command === "why-selected") {

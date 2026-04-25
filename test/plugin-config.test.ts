@@ -27,6 +27,7 @@ import {
 	getPreemptiveQuotaMaxDeferralMs,
 	getResponseContinuation,
 	getBackgroundResponses,
+	getCodexRuntimeRotationProxy,
 } from "../lib/config.js";
 import type { PluginConfig } from "../lib/types.js";
 import * as fs from "node:fs";
@@ -63,6 +64,7 @@ describe("Plugin Configuration", () => {
 		"CODEX_HOME",
 		"CODEX_MULTI_AUTH_DIR",
 		"CODEX_MODE",
+		"CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY",
 		"CODEX_TUI_V2",
 		"CODEX_TUI_COLOR_PROFILE",
 		"CODEX_TUI_GLYPHS",
@@ -114,6 +116,7 @@ describe("Plugin Configuration", () => {
 
 			expect(config).toEqual({
 				codexMode: true,
+				codexRuntimeRotationProxy: false,
 				codexTuiV2: true,
 				codexTuiColorProfile: "truecolor",
 				codexTuiGlyphMode: "ascii",
@@ -184,6 +187,7 @@ describe("Plugin Configuration", () => {
 
 			expect(config).toEqual({
 				codexMode: false,
+				codexRuntimeRotationProxy: false,
 				codexTuiV2: true,
 				codexTuiColorProfile: "truecolor",
 				codexTuiGlyphMode: "ascii",
@@ -498,6 +502,7 @@ describe("Plugin Configuration", () => {
 
 			expect(config).toEqual({
 				codexMode: true,
+				codexRuntimeRotationProxy: false,
 				codexTuiV2: true,
 				codexTuiColorProfile: "truecolor",
 				codexTuiGlyphMode: "ascii",
@@ -569,6 +574,7 @@ describe("Plugin Configuration", () => {
 
 			expect(config).toEqual({
 				codexMode: true,
+				codexRuntimeRotationProxy: false,
 				codexTuiV2: true,
 				codexTuiColorProfile: "truecolor",
 				codexTuiGlyphMode: "ascii",
@@ -634,6 +640,7 @@ describe("Plugin Configuration", () => {
 
 			expect(config).toEqual({
 				codexMode: true,
+				codexRuntimeRotationProxy: false,
 				codexTuiV2: true,
 				codexTuiColorProfile: "truecolor",
 				codexTuiGlyphMode: "ascii",
@@ -1105,6 +1112,22 @@ describe("Plugin Configuration", () => {
 
 			// Test 3: default when neither set
 			expect(getCodexMode({})).toBe(true);
+		});
+
+		it("resolves runtime rotation proxy from env over config over default", () => {
+			delete process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY;
+			expect(getCodexRuntimeRotationProxy({})).toBe(false);
+			expect(
+				getCodexRuntimeRotationProxy({ codexRuntimeRotationProxy: true }),
+			).toBe(true);
+
+			process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY = "0";
+			expect(
+				getCodexRuntimeRotationProxy({ codexRuntimeRotationProxy: true }),
+			).toBe(false);
+
+			process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY = "1";
+			expect(getCodexRuntimeRotationProxy({})).toBe(true);
 		});
 	});
 

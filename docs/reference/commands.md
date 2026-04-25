@@ -58,6 +58,7 @@ Compatibility aliases are supported:
 | `codex auth features` | Print implemented feature summary |
 | `codex auth report` | Generate full health report |
 | `codex auth why-selected [--now|--last]` | Explain which account the selector picks now or via the last persisted runtime snapshot |
+| `codex auth rotation enable\|disable\|status\|bind-app\|unbind-app` | Manage the opt-in runtime Responses proxy for live Codex account rotation |
 
 ---
 
@@ -147,6 +148,39 @@ JSON output shape:
 
 The `runtimeSnapshot` field is present only with `--last`. `selected` is
 `null` when `ok` is `false`.
+
+---
+
+## `codex auth rotation`
+
+Manages the opt-in runtime Responses proxy used by forwarded official Codex sessions. This is separate from normal `codex auth switch`: the proxy can rotate managed accounts between backend Responses requests while a Codex session stays open.
+
+Usage:
+
+```bash
+codex auth rotation enable
+codex auth rotation disable
+codex auth rotation status
+codex auth rotation bind-app
+codex auth rotation unbind-app
+```
+
+Behavior:
+
+- `enable` persists `codexRuntimeRotationProxy=true`, binds the packaged desktop app to the same persistent localhost router, and routes supported user-level app shortcuts when possible.
+- `disable` persists `codexRuntimeRotationProxy=false` and removes the persistent packaged-app bind.
+- `status` prints the effective setting, environment override state, automatic Codex app helper state, persistent Codex app bind state, account count, current account, disabled accounts, cooldowns, and rate-limit waits.
+- `bind-app` repairs or installs the persistent packaged-app bind without changing the stored rotation setting.
+- `unbind-app` removes the persistent packaged-app bind and restores the backed-up Codex config.
+- `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1` enables the proxy for the current process without changing settings.
+
+When enabled, the wrapper creates a temporary shadow `CODEX_HOME/config.toml` with a custom provider named `codex-multi-auth-runtime-proxy`, starts a `127.0.0.1` proxy on a random port, and forwards official Codex Responses traffic through that provider. This applies to CLI request commands plus `codex app-server` and `codex app` when they are launched through the wrapper. Existing behavior is unchanged while the setting and env override are off.
+
+Packaged desktop app support uses a reversible bind instead of patching app files. It backs up the real Codex `config.toml`, writes the same custom provider to the real Codex home, starts a localhost-only router, and installs a user login startup entry: a Startup `.cmd` on Windows or a LaunchAgent on macOS. The provider uses a local app-bind client token and `requires_openai_auth=false`, which keeps the selected multi-auth account out of the runtime composer while preserving router last-account telemetry for codex-multi-auth status and quota views. Package install/update runs the same bind only when runtime rotation was already enabled and a Codex desktop app is detected; set `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0` to skip that self-heal or `CODEX_MULTI_AUTH_APP_BIND_INSTALL=1` to force it.
+
+The app launcher routing helper is also available directly as `codex-multi-auth-app-launcher`. On Windows, it retargets existing user-level `Codex` shortcuts and taskbar pins to the wrapper while backing up their original target for restore. On macOS, it creates or removes a user-level `Codex Multi Auth.app` wrapper because Dock entries cannot safely launch a shell command directly. It does not patch the official app files. Use `codex-multi-auth-app-launcher --remove` to restore backed-up Windows shortcuts or remove the managed macOS wrapper.
+
+If Windows exposes Codex only as a packaged `shell:AppsFolder` entry, shortcut routing may still report that there is no retargetable `.lnk`. The persistent app bind is the path that makes those packaged entries use rotation when the official app is opened directly.
 
 ---
 

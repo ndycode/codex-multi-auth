@@ -33,6 +33,7 @@ describe("PluginConfigSchema", () => {
 	it("accepts valid full config", () => {
 		const config = {
 			codexMode: true,
+			codexRuntimeRotationProxy: true,
 			fastSession: true,
 			retryAllAccountsRateLimited: true,
 			retryAllAccountsMaxWaitMs: 5000,

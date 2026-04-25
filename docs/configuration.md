@@ -29,6 +29,7 @@ Runtime configuration is resolved from unified settings, optional override files
   },
   "pluginConfig": {
     "codexMode": true,
+    "codexRuntimeRotationProxy": false,
     "liveAccountSync": true,
     "sessionAffinity": true,
     "proactiveRefreshGuardian": true,
@@ -63,6 +64,7 @@ These are safe for most operators and frequently used in day-to-day workflows.
 | `CODEX_MULTI_AUTH_DIR` | Override root directory for plugin-managed runtime files |
 | `CODEX_MULTI_AUTH_CONFIG_PATH` | Load configuration from alternate path |
 | `CODEX_MODE=0/1` | Disable or enable Codex mode |
+| `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0/1` | Opt in to live Codex Responses routing through the localhost account-rotation proxy |
 | `CODEX_TUI_V2=0/1` | Disable or enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | Color profile selection |
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | Glyph mode selection |
@@ -96,6 +98,22 @@ Keep these enabled for most environments:
 - `sessionAffinity`
 - `proactiveRefreshGuardian`
 - `preemptiveQuotaEnabled`
+
+---
+
+## Runtime Rotation Proxy
+
+`codexRuntimeRotationProxy` is disabled by default. When enabled through settings, `codex auth rotation enable`, or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1`, the `codex` wrapper starts a localhost-only Responses proxy for forwarded official Codex sessions, including CLI request commands, `codex app-server`, and `codex app` launches through the wrapper. The wrapper writes a temporary shadow `CODEX_HOME/config.toml` that selects a custom provider named `codex-multi-auth-runtime-proxy`, launches the official Codex surface against that provider, and removes the shadow home after the owning process exits.
+
+The proxy preserves request bodies and streaming responses, replaces outbound auth headers with the selected managed account, and rotates to another account before response bytes are streamed when it sees rate limits, server errors, network failures, or refresh failures. If every account is unavailable, the proxy returns a structured pool-exhaustion error that points to `codex auth rotation status`.
+
+For `codex app` launches that go through the wrapper, the wrapper automatically starts a small internal helper so rotation can keep working if the desktop app launcher detaches. The helper stores only local runtime status, uses the same per-session proxy client key as the CLI path, and exits after an idle timeout.
+
+`codex auth rotation enable` also binds the packaged desktop app to a persistent localhost router. This backs up the real Codex `config.toml`, writes the `codex-multi-auth-runtime-proxy` provider into the real Codex home, starts the router immediately, and installs a user login startup entry: a Startup `.cmd` on Windows or a LaunchAgent on macOS. The persistent provider is marked as not requiring OpenAI auth and uses a local app-bind client token, so the desktop runtime does not display the selected multi-auth account while codex-multi-auth status and quota views still read the router's last-account telemetry. `codex auth rotation disable` and `codex auth rotation unbind-app` stop that router, remove the startup entry, and restore the backed-up Codex config. The official app files are not patched.
+
+Package install/update also self-heals this bind when runtime rotation was already enabled and a Codex desktop app is detected. Set `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0` to skip install/update self-heal, or `CODEX_MULTI_AUTH_APP_BIND_INSTALL=1` to force it. Supported user-level launcher routing remains available for `.lnk` and managed wrapper app cases; set `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0` before enabling rotation to skip that shortcut routing, or run `codex-multi-auth-app-launcher --remove` to restore backed-up Windows shortcuts or remove the managed macOS wrapper later.
+
+Some Windows installs expose Codex only as a packaged `shell:AppsFolder` app entry. Those entries cannot be retargeted like `.lnk` files, so the persistent app bind is the supported path for making the pinned packaged app use rotation automatically.
 
 ---
 

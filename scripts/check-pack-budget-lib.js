@@ -1,6 +1,15 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 
+/**
+ * @typedef {{ packageSize: number, paths: string[] }} ParsedPackMetadata
+ * @typedef {{ windowsHide: boolean, maxBuffer: number }} ExecOptions
+ * @typedef {{ stdout: string | Buffer, stderr?: string | Buffer }} ExecResult
+ * @typedef {(command: string, options: ExecOptions) => Promise<ExecResult>} ExecAsync
+ * @typedef {{ execAsync?: ExecAsync, log?: (message: string) => void }} RunPackBudgetDeps
+ */
+
+/** @type {ExecAsync} */
 const execAsync = promisify(exec);
 
 export const MAX_PACKAGE_SIZE = 8 * 1024 * 1024;
@@ -25,18 +34,35 @@ export const FORBIDDEN_PREFIXES = [
 	".codex/",
 ];
 
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isRecord(value) {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * @param {string} filePath
+ * @returns {string}
+ */
 export function normalizePackPath(filePath) {
 	return filePath.replaceAll("\\", "/");
 }
 
+/**
+ * @param {string} stdout
+ * @returns {ParsedPackMetadata}
+ */
 export function parsePackMetadata(stdout) {
+	/** @type {unknown} */
 	const packs = JSON.parse(stdout);
 	if (!Array.isArray(packs) || packs.length === 0) {
 		throw new Error("npm pack --dry-run --json returned no package metadata");
 	}
 
 	const pack = packs[0];
-	if (!pack || !Array.isArray(pack.files)) {
+	if (!isRecord(pack) || !Array.isArray(pack.files)) {
 		throw new Error("npm pack metadata did not include file list");
 	}
 
@@ -46,13 +72,17 @@ export function parsePackMetadata(stdout) {
 	}
 
 	const paths = pack.files
-		.map((file) => file?.path)
+		.map((file) => (isRecord(file) ? file.path : undefined))
 		.filter((value) => typeof value === "string")
 		.map((value) => normalizePackPath(value));
 
 	return { packageSize, paths };
 }
 
+/**
+ * @param {ParsedPackMetadata} metadata
+ * @returns {string}
+ */
 export function validatePackMetadata({ packageSize, paths }) {
 	if (packageSize > MAX_PACKAGE_SIZE) {
 		throw new Error(
@@ -83,20 +113,33 @@ export function validatePackMetadata({ packageSize, paths }) {
 	return `Pack budget ok: ${packageSize} bytes across ${paths.length} files`;
 }
 
+/**
+ * @param {RunPackBudgetDeps} [deps]
+ * @returns {Promise<string>}
+ */
 export async function runPackBudgetCheck(deps = {}) {
 	const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 	const runExec = deps.execAsync ?? execAsync;
 	const log = deps.log ?? console.log;
 	let stdout = "";
 	try {
-		({ stdout } = await runExec(`${npmCommand} pack --dry-run --json`, {
+		const result = await runExec(`${npmCommand} pack --dry-run --json`, {
 			windowsHide: true,
 			maxBuffer: 10 * 1024 * 1024,
-		}));
+		});
+		if (result.stdout === null || result.stdout === undefined) {
+			throw new Error("npm pack --dry-run --json returned no stdout");
+		}
+		stdout =
+			typeof result.stdout === "string"
+				? result.stdout
+				: result.stdout.toString("utf8");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		const stdoutText = typeof error === "object" && error && "stdout" in error ? String(error.stdout ?? "") : "";
-		const stderrText = typeof error === "object" && error && "stderr" in error ? String(error.stderr ?? "") : "";
+		const stdoutText =
+			isRecord(error) && "stdout" in error ? String(error.stdout ?? "") : "";
+		const stderrText =
+			isRecord(error) && "stderr" in error ? String(error.stderr ?? "") : "";
 		throw new Error(`npm pack --dry-run --json failed via ${npmCommand}: ${message}${stdoutText ? `
 stdout: ${stdoutText.slice(0, 500)}` : ""}${stderrText ? `
 stderr: ${stderrText.slice(0, 500)}` : ""}`);

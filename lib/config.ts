@@ -153,6 +153,7 @@ function resolvePluginConfigPath(): string | null {
  */
 export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	codexMode: true,
+	codexRuntimeRotationProxy: false,
 	codexTuiV2: true,
 	codexTuiColorProfile: "truecolor",
 	codexTuiGlyphMode: "ascii",
@@ -800,6 +801,16 @@ function resolveStringSetting<T extends string>(
 
 export function getCodexMode(pluginConfig: PluginConfig): boolean {
 	return resolveBooleanSetting("CODEX_MODE", pluginConfig.codexMode, true);
+}
+
+export function getCodexRuntimeRotationProxy(
+	pluginConfig: PluginConfig,
+): boolean {
+	return resolveBooleanSetting(
+		"CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY",
+		pluginConfig.codexRuntimeRotationProxy,
+		false,
+	);
 }
 
 export function getCodexTuiV2(pluginConfig: PluginConfig): boolean {
@@ -1614,6 +1625,11 @@ function normalizeConfigExplainValue(value: unknown): unknown {
 
 const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
 	{ key: "codexMode", envNames: ["CODEX_MODE"], getValue: getCodexMode },
+	{
+		key: "codexRuntimeRotationProxy",
+		envNames: ["CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY"],
+		getValue: getCodexRuntimeRotationProxy,
+	},
 	{ key: "codexTuiV2", envNames: ["CODEX_TUI_V2"], getValue: getCodexTuiV2 },
 	{
 		key: "codexTuiColorProfile",

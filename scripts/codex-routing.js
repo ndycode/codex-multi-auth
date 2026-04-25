@@ -7,10 +7,16 @@ const AUTH_SUBCOMMANDS = new Set([
 	"check",
 	"features",
 	"verify-flagged",
+	"verify",
 	"forecast",
 	"report",
 	"fix",
 	"doctor",
+	"rotation",
+	"why-selected",
+	"config",
+	"init-config",
+	"debug",
 ]);
 
 export function normalizeAuthAlias(args) {

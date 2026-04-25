@@ -101,11 +101,13 @@
 		"audit:ci": "npm run audit:prod && npm run audit:dev:allowlist",
 		"vendor:verify": "node scripts/verify-vendor-provenance.mjs",
 		"vendor:update-manifest": "node scripts/update-vendor-provenance.mjs",
+		"postinstall": "node scripts/postinstall.js",
 		"prepublishOnly": "npm run build",
 		"prepare": "husky"
 	},
 	"bin": {
 		"codex": "scripts/codex.js",
+		"codex-multi-auth-app-launcher": "scripts/codex-app-launcher.js",
 		"codex-multi-auth": "scripts/codex-multi-auth.js"
 	},
 	"files": [
