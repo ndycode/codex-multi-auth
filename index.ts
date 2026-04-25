@@ -3862,7 +3862,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							storage.accounts,
 						);
 						const quotaStatuses: string[] = [];
-						if (rateLimit !== "None" || quotaEntry?.status === 429) {
+						if (rateLimit === "None" && quotaEntry?.status === 429) {
 							quotaStatuses.push("rate-limited");
 						}
 						if (isQuotaCacheEntryExhausted(quotaEntry, now)) {

@@ -1214,7 +1214,37 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await plugin.tool["codex-status"].execute();
 
 			expect(result).toContain("quota-exhausted");
-			expect(result).toContain("rate-limited");
+			expect(result).toContain("60s, quota-exhausted");
+			expect(result).not.toContain("60s, rate-limited");
+		});
+
+		it("does not duplicate rate-limited label when a wait time is already shown", async () => {
+			const now = Date.now();
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "user@example.com",
+					accountId: "acc-rate-limited",
+					rateLimitResetTimes: { codex: now + 60_000 },
+				},
+			];
+			loadQuotaCacheMock.mockResolvedValueOnce({
+				byAccountId: {
+					"acc-rate-limited": {
+						updatedAt: now,
+						status: 429,
+						model: "gpt-5-codex",
+						primary: { usedPercent: 20, windowMinutes: 300 },
+						secondary: { usedPercent: 30, windowMinutes: 10080 },
+					},
+				},
+				byEmail: {},
+			});
+
+			const result = await plugin.tool["codex-status"].execute();
+
+			expect(result).toContain("60s");
+			expect(result).not.toContain("60s, rate-limited");
 		});
 	});
 
