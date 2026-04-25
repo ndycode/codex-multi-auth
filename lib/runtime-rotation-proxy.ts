@@ -174,8 +174,12 @@ function isAuthorizedClient(headers: Headers, clientApiKey: string): boolean {
 function safeEqual(left: string, right: string): boolean {
 	const leftBuffer = Buffer.from(left, "utf8");
 	const rightBuffer = Buffer.from(right, "utf8");
-	if (leftBuffer.length !== rightBuffer.length) return false;
-	return timingSafeEqual(leftBuffer, rightBuffer);
+	const compareLength = Math.max(leftBuffer.length, rightBuffer.length, 1);
+	const paddedLeft = Buffer.alloc(compareLength);
+	const paddedRight = Buffer.alloc(compareLength);
+	leftBuffer.copy(paddedLeft);
+	rightBuffer.copy(paddedRight);
+	return timingSafeEqual(paddedLeft, paddedRight) && leftBuffer.length === rightBuffer.length;
 }
 
 function readTrimmedString(value: string | undefined): string | null {

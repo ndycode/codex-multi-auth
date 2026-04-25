@@ -32,7 +32,7 @@ import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.j
 
 const RETRYABLE_SHADOW_HOME_CLEANUP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
 const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];
-const SHADOW_HOME_ORPHAN_LOCK_STALE_AGE_MS = 100;
+const SHADOW_HOME_ORPHAN_LOCK_STALE_AGE_MS = 2_000;
 const SHADOW_HOME_STATE_FILES = ["auth.json", "accounts.json", ".codex-global-state.json"];
 const SHADOW_HOME_STATE_FILE_SET = new Set(SHADOW_HOME_STATE_FILES);
 const SHADOW_HOME_CONFIG_FILE = "config.toml";
