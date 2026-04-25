@@ -37,14 +37,16 @@ const SHADOW_HOME_STATE_FILE_SET = new Set(SHADOW_HOME_STATE_FILES);
 const SHADOW_HOME_CONFIG_FILE = "config.toml";
 const SHADOW_HOME_SYNC_LOCK_DIR = ".codex-multi-auth-shadow-sync.lock";
 const APP_SERVER_ACCOUNT_DISPLAY_NAME = "codex-multi-auth";
+const RUNTIME_CONSTANTS = await loadRuntimeConstants();
 const RUNTIME_ROTATION_PROXY_PROVIDER_ID =
-	await loadRuntimeRotationProxyProviderId();
+	RUNTIME_CONSTANTS.RUNTIME_ROTATION_PROXY_PROVIDER_ID;
 const APP_SERVER_ACCOUNT_LABEL_ENV = "CODEX_MULTI_AUTH_APP_SERVER_ACCOUNT_LABEL";
 const INTERNAL_RUNTIME_ROTATION_APP_HELPER_ARG =
 	"--codex-multi-auth-runtime-app-helper";
 const APP_RUNTIME_HELPER_OWNER_PID_ENV =
 	"CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID";
-const APP_RUNTIME_HELPER_STATUS_FILE = "runtime-rotation-app-helper.json";
+const APP_RUNTIME_HELPER_STATUS_FILE =
+	RUNTIME_CONSTANTS.APP_RUNTIME_HELPER_STATUS_FILE;
 const DEFAULT_APP_RUNTIME_HELPER_IDLE_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_APP_RUNTIME_HELPER_DETACH_GRACE_MS = 5_000;
 const APP_RUNTIME_HELPER_LAUNCH_TIMEOUT_MS = 15_000;
@@ -61,16 +63,27 @@ const shadowHomeCleanupRetryMarkerDir =
 let warnedInvalidRuntimeRotationProxyEnv = false;
 let warnedPendingAccountReadIdOverflow = false;
 
-async function loadRuntimeRotationProxyProviderId() {
+async function loadRuntimeConstants() {
+	const fallback = {
+		RUNTIME_ROTATION_PROXY_PROVIDER_ID: `${APP_SERVER_ACCOUNT_DISPLAY_NAME}-runtime-proxy`,
+		APP_RUNTIME_HELPER_STATUS_FILE: "runtime-rotation-app-helper.json",
+	};
 	try {
 		const mod = await import("../dist/lib/runtime-constants.js");
-		if (typeof mod.RUNTIME_ROTATION_PROXY_PROVIDER_ID === "string") {
-			return mod.RUNTIME_ROTATION_PROXY_PROVIDER_ID;
-		}
+		return {
+			RUNTIME_ROTATION_PROXY_PROVIDER_ID:
+				typeof mod.RUNTIME_ROTATION_PROXY_PROVIDER_ID === "string"
+					? mod.RUNTIME_ROTATION_PROXY_PROVIDER_ID
+					: fallback.RUNTIME_ROTATION_PROXY_PROVIDER_ID,
+			APP_RUNTIME_HELPER_STATUS_FILE:
+				typeof mod.APP_RUNTIME_HELPER_STATUS_FILE === "string"
+					? mod.APP_RUNTIME_HELPER_STATUS_FILE
+					: fallback.APP_RUNTIME_HELPER_STATUS_FILE,
+		};
 	} catch {
 		// Keep wrapper startup resilient when dist has not been built yet.
 	}
-	return `${APP_SERVER_ACCOUNT_DISPLAY_NAME}-runtime-proxy`;
+	return fallback;
 }
 
 function isRetryableShadowHomeCleanupError(error) {

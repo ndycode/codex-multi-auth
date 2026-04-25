@@ -7,11 +7,11 @@ import {
 	type AppBindResult,
 	type AppBindStatus,
 } from "../../runtime/app-bind.js";
+import { APP_RUNTIME_HELPER_STATUS_FILE } from "../../runtime-constants.js";
 import type { PluginConfig } from "../../types.js";
 import type { AccountStorageV3 } from "../../storage.js";
 
 type LoadedStorage = AccountStorageV3 | null;
-const APP_RUNTIME_HELPER_STATUS_FILE = "runtime-rotation-app-helper.json";
 
 interface AppRuntimeHelperStatus {
 	kind: string | null;
