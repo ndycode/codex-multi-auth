@@ -174,7 +174,74 @@ function createRuntimeObservabilityFixtureModule(fixtureRoot: string): string {
 	return modulePath;
 }
 
+function createRuntimeConfigTomlFixtureModule(fixtureRoot: string): string {
+	const runtimeDir = join(fixtureRoot, "dist", "lib", "runtime");
+	mkdirSync(runtimeDir, { recursive: true });
+	const modulePath = join(runtimeDir, "config-toml.js");
+	writeFileSync(
+		modulePath,
+		[
+			`const providerId = ${JSON.stringify(RUNTIME_ROTATION_PROXY_PROVIDER_ID)};`,
+			"export function tomlStringLiteral(value) {",
+			"  return `\"${String(value).replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"')}\"`;",
+			"}",
+			"function readTomlTableName(line) {",
+			"  const match = /^\\s*\\[{1,2}\\s*([^\\]]+?)\\s*\\]{1,2}\\s*$/.exec(line);",
+			"  return match?.[1]?.trim() ?? null;",
+			"}",
+			"function removeProviderBlock(rawConfig) {",
+			"  const lines = rawConfig.split(/\\r?\\n/);",
+			"  const output = [];",
+			"  let skipping = false;",
+			"  const providerTable = `model_providers.${providerId}`;",
+			"  for (const line of lines) {",
+			"    if (line.trim() === `[model_providers.${providerId}]`) { skipping = true; continue; }",
+			"    const tableName = readTomlTableName(line);",
+			"    if (skipping && tableName) {",
+			"      if (tableName === providerTable || tableName.startsWith(`${providerTable}.`)) continue;",
+			"      skipping = false;",
+			"    }",
+			"    if (!skipping) output.push(line);",
+			"  }",
+			"  return output.join(rawConfig.includes('\\r\\n') ? '\\r\\n' : '\\n');",
+			"}",
+			"function rewriteModelProvider(rawConfig) {",
+			"  const lineEnding = rawConfig.includes('\\r\\n') ? '\\r\\n' : '\\n';",
+			"  const lines = rawConfig.length > 0 ? rawConfig.split(/\\r?\\n/) : [];",
+			"  const rewrittenLine = `model_provider = ${tomlStringLiteral(providerId)}`;",
+			"  let replaced = false;",
+			"  const output = [];",
+			"  for (const line of lines) {",
+			"    const isTable = readTomlTableName(line) !== null;",
+			"    if (!replaced && isTable) { output.push(rewrittenLine); replaced = true; }",
+			"    if (!replaced && /^\\s*model_provider\\s*=/.test(line)) { output.push(rewrittenLine); replaced = true; continue; }",
+			"    output.push(line);",
+			"  }",
+			"  if (!replaced) output.push(rewrittenLine);",
+			"  return output.join(lineEnding);",
+			"}",
+			"export function rewriteConfigTomlForRuntimeRotationProvider(rawConfig, baseUrl, clientApiKey = '') {",
+			"  const lineEnding = rawConfig.includes('\\r\\n') ? '\\r\\n' : '\\n';",
+			"  const withoutOldProvider = removeProviderBlock(rawConfig).replace(/[\\r\\n]*$/, '');",
+			"  const withModelProvider = rewriteModelProvider(withoutOldProvider).replace(/[\\r\\n]*$/, '');",
+			"  const providerBlock = [",
+			"    `[model_providers.${providerId}]`,",
+			"    'name = \"codex-multi-auth\"',",
+			"    `base_url = ${tomlStringLiteral(baseUrl)}`,",
+			"    'requires_openai_auth = false',",
+			"    `experimental_bearer_token = ${tomlStringLiteral(clientApiKey)}`,",
+			"    'wire_api = \"responses\"',",
+			"  ];",
+			"  return `${withModelProvider}${lineEnding}${lineEnding}${providerBlock.join(lineEnding)}${lineEnding}`;",
+			"}",
+		].join("\n"),
+		"utf8",
+	);
+	return modulePath;
+}
+
 function createRuntimeRotationProxyFixtureModule(fixtureRoot: string): string {
+	createRuntimeConfigTomlFixtureModule(fixtureRoot);
 	const distLibDir = join(fixtureRoot, "dist", "lib");
 	mkdirSync(distLibDir, { recursive: true });
 	const modulePath = join(distLibDir, "runtime-rotation-proxy.js");
@@ -1051,6 +1118,7 @@ describe("codex bin wrapper", () => {
 			'const { spawnSync } = require("node:child_process");',
 			'const fs = require("node:fs");',
 			'const path = require("node:path");',
+			'const { fileURLToPath } = require("node:url");',
 			'if (process.argv.slice(2)[0] === "app-server") {',
 			'  console.log(`APP_SERVER_FORWARDED:${process.argv.slice(2).join(" ")}`);',
 			'  console.log(`APP_SERVER_LABEL_ENV:${process.env.CODEX_MULTI_AUTH_APP_SERVER_ACCOUNT_LABEL ?? ""}`);',
@@ -1063,6 +1131,10 @@ describe("codex bin wrapper", () => {
 			'console.log(`APP_SERVER_LABEL:${process.env.CODEX_MULTI_AUTH_APP_SERVER_ACCOUNT_LABEL ?? ""}`);',
 			'console.log(`RUNTIME_PROXY_ENV:${process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY ?? ""}`);',
 			'console.log(`NODE_OPTIONS_HAS_APP_SERVER_PRELOAD:${(process.env.NODE_OPTIONS ?? "").includes("codex-multi-auth-app-server-preload.mjs")}`);',
+			'const preloadMatch = (process.env.NODE_OPTIONS ?? "").match(/--import=(\\S*codex-multi-auth-app-server-preload\\.mjs)/);',
+			"const preloadCheck = preloadMatch ? spawnSync(process.execPath, ['--check', fileURLToPath(preloadMatch[1])], { encoding: 'utf8' }) : null;",
+			'console.log(`APP_SERVER_PRELOAD_CHECK_STATUS:${preloadCheck?.status ?? "missing"}`);',
+			'console.log(`APP_SERVER_PRELOAD_CHECK_STDERR:${(preloadCheck?.stderr ?? "").trim()}`);',
 			'console.log(`SHADOW_AUTH_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "auth.json"))}`);',
 			'console.log(`SHADOW_ACCOUNTS_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "accounts.json"))}`);',
 			'console.log(`SHADOW_SESSIONS_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "sessions"))}`);',
@@ -1132,6 +1204,8 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("APP_SERVER_LABEL:1");
 		expect(output).toContain("RUNTIME_PROXY_ENV:0");
 		expect(output).toContain("NODE_OPTIONS_HAS_APP_SERVER_PRELOAD:true");
+		expect(output).toContain("APP_SERVER_PRELOAD_CHECK_STATUS:0");
+		expect(output).toContain("APP_SERVER_PRELOAD_CHECK_STDERR:");
 		expect(output).toContain("SHADOW_AUTH_EXISTS:false");
 		expect(output).toContain("SHADOW_ACCOUNTS_EXISTS:false");
 		expect(output).toContain("SHADOW_SESSIONS_EXISTS:true");
@@ -1991,6 +2065,53 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe('{"accounts":["shadow"]}');
 		expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"shadow"}');
 		expect(existsSync(lockDir)).toBe(false);
+	});
+
+	it("writes shadow sync lock owner metadata with owner-only permissions", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const controlledTmp = join(fixtureRoot, "tmp");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(controlledTmp, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
+		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+		const lockDir = join(originalHome, ".codex-multi-auth-shadow-sync.lock");
+		mkdirSync(lockDir, { recursive: true });
+		writeFileSync(
+			join(lockDir, "owner.json"),
+			`${JSON.stringify({ pid: 2_147_483_647, createdAt: 1 })}\n`,
+			"utf8",
+		);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.1"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				TMP: controlledTmp,
+				TEMP: controlledTmp,
+				TMPDIR: controlledTmp,
+				...injectShadowLockRecreatedStaleCount(99),
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(existsSync(lockDir)).toBe(true);
+		const ownerPath = join(lockDir, "owner.json");
+		expect(JSON.parse(readFileSync(ownerPath, "utf8"))).toMatchObject({
+			pid: 2_147_483_647,
+			createdAt: 1,
+		});
+		if (process.platform !== "win32") {
+			expect(statSync(ownerPath).mode & 0o777).toBe(0o600);
+		}
 	});
 
 	it("does not steal fresh orphaned shadow sync locks", () => {

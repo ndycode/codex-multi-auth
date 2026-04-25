@@ -237,6 +237,24 @@ async function loadRuntimeRotationConfigModule() {
 	}
 }
 
+async function loadRuntimeConfigTomlModule() {
+	try {
+		const mod = await import("../dist/lib/runtime/config-toml.js");
+		if (
+			typeof mod.rewriteConfigTomlForRuntimeRotationProvider !== "function" ||
+			typeof mod.tomlStringLiteral !== "function"
+		) {
+			return null;
+		}
+		return mod;
+	} catch (error) {
+		if (error && typeof error === "object" && "code" in error && error.code === "ERR_MODULE_NOT_FOUND") {
+			return null;
+		}
+		throw error;
+	}
+}
+
 async function autoSyncManagerActiveSelectionIfEnabled() {
 	const enabled = (process.env.CODEX_MULTI_AUTH_AUTO_SYNC_ON_STARTUP ?? "1").trim() !== "0";
 	if (!enabled) return;
@@ -1335,15 +1353,27 @@ function removeStaleShadowHomeSyncLock(lockPath) {
 		if (shadowHomeSyncLockRecreateStaleCount > 0) {
 			shadowHomeSyncLockRecreateStaleCount -= 1;
 			mkdirSync(lockPath, { recursive: true });
-			writeFileSync(
-				join(lockPath, "owner.json"),
-				`${JSON.stringify({ pid: 2_147_483_647, createdAt: 1 })}\n`,
-				"utf8",
-			);
+			writeShadowHomeSyncLockOwner(lockPath, {
+				pid: 2_147_483_647,
+				createdAt: 1,
+			});
 		}
 		return true;
 	} catch {
 		return false;
+	}
+}
+
+function writeShadowHomeSyncLockOwner(lockPath, owner) {
+	const ownerPath = join(lockPath, "owner.json");
+	writeFileSync(ownerPath, `${JSON.stringify(owner)}\n`, {
+		encoding: "utf8",
+		mode: 0o600,
+	});
+	try {
+		chmodSync(ownerPath, 0o600);
+	} catch {
+		// Best-effort only; permission semantics vary by platform.
 	}
 }
 
@@ -1357,11 +1387,10 @@ function acquireShadowHomeSyncLock(originalCodexHome) {
 	while (attempt <= lastRetryAttempt) {
 		try {
 			mkdirSync(lockPath);
-			writeFileSync(
-				join(lockPath, "owner.json"),
-				`${JSON.stringify({ pid: process.pid, createdAt: Date.now() })}\n`,
-				"utf8",
-			);
+			writeShadowHomeSyncLockOwner(lockPath, {
+				pid: process.pid,
+				createdAt: Date.now(),
+			});
 			return () => {
 				try {
 					removeDirectoryWithRetry(lockPath);
@@ -1763,93 +1792,6 @@ async function isRuntimeRotationProxyEnabled(rawArgs, baseEnv = process.env) {
 	return configModule.getCodexRuntimeRotationProxy(pluginConfig) === true;
 }
 
-function tomlStringLiteral(value) {
-	return `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-}
-
-function readTomlTableName(line) {
-	const match = /^\s*\[{1,2}\s*([^\]]+?)\s*\]{1,2}\s*$/.exec(line);
-	return match?.[1]?.trim() ?? null;
-}
-
-function removeRuntimeRotationProviderBlock(rawConfig) {
-	const lines = rawConfig.split(/\r?\n/);
-	const output = [];
-	let skipping = false;
-	const providerTable = `model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}`;
-	for (const line of lines) {
-		const trimmed = line.trim();
-		if (trimmed === `[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`) {
-			skipping = true;
-			continue;
-		}
-		const tableName = readTomlTableName(line);
-		if (skipping && tableName) {
-			if (tableName === providerTable || tableName.startsWith(`${providerTable}.`)) {
-				continue;
-			}
-			skipping = false;
-		}
-		if (!skipping) {
-			output.push(line);
-		}
-	}
-	return output.join(rawConfig.includes("\r\n") ? "\r\n" : "\n");
-}
-
-function rewriteTopLevelModelProvider(rawConfig) {
-	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
-	const lines = rawConfig.length > 0 ? rawConfig.split(/\r?\n/) : [];
-	const rewrittenLine = `model_provider = ${tomlStringLiteral(RUNTIME_ROTATION_PROXY_PROVIDER_ID)}`;
-	let replaced = false;
-	const output = [];
-
-	for (const line of lines) {
-		const isTable = readTomlTableName(line) !== null;
-		if (!replaced && isTable) {
-			output.push(rewrittenLine);
-			replaced = true;
-		}
-		if (!replaced && /^\s*model_provider\s*=/.test(line)) {
-			output.push(rewrittenLine);
-			replaced = true;
-			continue;
-		}
-		output.push(line);
-	}
-
-	if (!replaced) {
-		output.push(rewrittenLine);
-	}
-
-	return output.join(lineEnding);
-}
-
-function rewriteConfigTomlForRuntimeRotationProxy(
-	rawConfig,
-	proxyBaseUrl,
-	clientApiKey,
-) {
-	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
-	const withoutOldProvider = removeRuntimeRotationProviderBlock(rawConfig).replace(
-		/[\r\n]*$/,
-		"",
-	);
-	const withModelProvider = rewriteTopLevelModelProvider(withoutOldProvider).replace(
-		/[\r\n]*$/,
-		"",
-	);
-	const providerBlock = [
-		`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
-		'name = "codex-multi-auth"',
-		`base_url = ${tomlStringLiteral(proxyBaseUrl)}`,
-		"requires_openai_auth = false",
-		`experimental_bearer_token = ${tomlStringLiteral(clientApiKey)}`,
-		'wire_api = "responses"',
-	];
-	return `${withModelProvider}${lineEnding}${lineEnding}${providerBlock.join(lineEnding)}${lineEnding}`;
-}
-
 function createRuntimeRotationProxyClientApiKey() {
 	return randomBytes(32).toString("hex");
 }
@@ -1877,7 +1819,12 @@ function resolveRuntimeRotationProxyOriginalCodexHome(baseEnv) {
 	return override || resolveCodexHomeDir(baseEnv);
 }
 
-function createRuntimeRotationProxyCodexHome(baseEnv, proxyBaseUrl, clientApiKey) {
+function createRuntimeRotationProxyCodexHome(
+	baseEnv,
+	proxyBaseUrl,
+	clientApiKey,
+	configTomlModule,
+) {
 	const originalCodexHome = resolveRuntimeRotationProxyOriginalCodexHome(baseEnv);
 	const shadowCodexHome = mkdtempSync(join(tmpdir(), "codex-multi-auth-runtime-home-"));
 	let syncShadowHomeStateBack = () => {};
@@ -1907,7 +1854,7 @@ function createRuntimeRotationProxyCodexHome(baseEnv, proxyBaseUrl, clientApiKey
 		const rawConfig = existsSync(originalConfigPath)
 			? readFileSync(originalConfigPath, "utf8")
 			: "";
-		const runtimeConfig = rewriteConfigTomlForRuntimeRotationProxy(
+		const runtimeConfig = configTomlModule.rewriteConfigTomlForRuntimeRotationProvider(
 			rawConfig,
 			proxyBaseUrl,
 			clientApiKey,
@@ -2251,12 +2198,17 @@ async function runRuntimeRotationAppHelper() {
 		if (!proxyModule) {
 			throw new Error("runtime rotation proxy module is unavailable");
 		}
+		const configTomlModule = await loadRuntimeConfigTomlModule();
+		if (!configTomlModule) {
+			throw new Error("runtime rotation config helpers are unavailable");
+		}
 		const clientApiKey = createRuntimeRotationProxyClientApiKey();
 		proxyServer = await proxyModule.startRuntimeRotationProxy({ clientApiKey });
 		shadowContext = createRuntimeRotationProxyCodexHome(
 			process.env,
 			proxyServer.baseUrl,
 			clientApiKey,
+			configTomlModule,
 		);
 		appServerShimDir = installRuntimeRotationAppServerCliShim(shadowContext.env);
 		lastRequestCount = proxyServer.getStatus?.().totalRequests ?? 0;
@@ -2403,7 +2355,7 @@ function startRuntimeRotationAppHelper(baseContext) {
 	});
 }
 
-async function createRuntimeRotationAppHelperContext(baseContext) {
+async function createRuntimeRotationAppHelperContext(baseContext, configTomlModule) {
 	const startedAt = Date.now();
 	const { helper, message } = await startRuntimeRotationAppHelper(baseContext);
 	const helperEnv = message.env ?? {};
@@ -2424,7 +2376,7 @@ async function createRuntimeRotationAppHelperContext(baseContext) {
 		args: [
 			...baseContext.args,
 			"-c",
-			`model_provider=${tomlStringLiteral(RUNTIME_ROTATION_PROXY_PROVIDER_ID)}`,
+			`model_provider=${configTomlModule.tomlStringLiteral(RUNTIME_ROTATION_PROXY_PROVIDER_ID)}`,
 		],
 		env: {
 			...baseContext.env,
@@ -2449,8 +2401,16 @@ async function createRuntimeRotationProxyContextIfEnabled(
 		return baseContext;
 	}
 
+	const configTomlModule = await loadRuntimeConfigTomlModule();
+	if (!configTomlModule) {
+		console.error(
+			"codex-multi-auth runtime rotation config helpers are unavailable; continuing without runtime rotation.",
+		);
+		return baseContext;
+	}
+
 	if (isCodexAppCommand(rawArgs)) {
-		return createRuntimeRotationAppHelperContext(baseContext);
+		return createRuntimeRotationAppHelperContext(baseContext, configTomlModule);
 	}
 
 	const proxyModule = await loadRuntimeRotationProxyModule();
@@ -2470,6 +2430,7 @@ async function createRuntimeRotationProxyContextIfEnabled(
 			baseContext.env,
 			proxyServer.baseUrl,
 			clientApiKey,
+			configTomlModule,
 		);
 	} catch (error) {
 		try {
@@ -2499,7 +2460,7 @@ async function createRuntimeRotationProxyContextIfEnabled(
 		args: [
 			...baseContext.args,
 			"-c",
-			`model_provider=${tomlStringLiteral(RUNTIME_ROTATION_PROXY_PROVIDER_ID)}`,
+			`model_provider=${configTomlModule.tomlStringLiteral(RUNTIME_ROTATION_PROXY_PROVIDER_ID)}`,
 		],
 		env: shadowContext.env,
 		cleanup,
