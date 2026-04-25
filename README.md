@@ -340,8 +340,8 @@ codex auth doctor --json
 ## Release Notes
 
 - Current stable: [docs/releases/v2.0.0.md](docs/releases/v2.0.0.md)
-- Previous stable: [docs/releases/v1.3.1.md](docs/releases/v1.3.1.md)
-- Earlier stable: [docs/releases/v1.3.0.md](docs/releases/v1.3.0.md)
+- Previous stable: [docs/releases/v1.3.2.md](docs/releases/v1.3.2.md)
+- Earlier stable: [docs/releases/v1.3.1.md](docs/releases/v1.3.1.md)
 - Full release archive: [docs/README.md#release-history](docs/README.md#release-history)
 - Archived prerelease: [docs/releases/v0.1.0-beta.0.md](docs/releases/v0.1.0-beta.0.md)
 
