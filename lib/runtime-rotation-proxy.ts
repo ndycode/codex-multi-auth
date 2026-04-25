@@ -104,6 +104,7 @@ const MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024;
 const HOP_BY_HOP_HEADERS = new Set([
 	"connection",
 	"content-length",
+	"expect",
 	"keep-alive",
 	"proxy-authenticate",
 	"proxy-authorization",

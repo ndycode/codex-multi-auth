@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { request } from "node:http";
 import { AccountManager } from "../lib/accounts.js";
 import { HTTP_STATUS, OPENAI_HEADERS } from "../lib/constants.js";
 import {
@@ -145,6 +146,45 @@ async function postRawResponses(
 			...headers,
 		},
 		body,
+	});
+}
+
+async function postResponsesWithHttp(
+	proxy: RuntimeRotationProxyServer,
+	body: Record<string, unknown>,
+	headers: Record<string, string> = {},
+): Promise<{ status: number; text: string }> {
+	const url = new URL(`${proxy.baseUrl}/responses`);
+	const payload = JSON.stringify(body);
+	return new Promise((resolve, reject) => {
+		const req = request(
+			{
+				host: url.hostname,
+				port: Number(url.port),
+				path: url.pathname,
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${DEFAULT_CLIENT_API_KEY}`,
+					"content-type": "application/json",
+					"content-length": Buffer.byteLength(payload).toString(),
+					...headers,
+				},
+			},
+			(res) => {
+				const chunks: Buffer[] = [];
+				res.on("data", (chunk) =>
+					chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
+				);
+				res.on("end", () =>
+					resolve({
+						status: res.statusCode ?? 0,
+						text: Buffer.concat(chunks).toString("utf8"),
+					}),
+				);
+			},
+		);
+		req.on("error", reject);
+		req.end(payload);
 	});
 }
 
@@ -497,6 +537,25 @@ describe("runtime rotation proxy", () => {
 		expect(calls[0]?.headers.get("connection")).toBeNull();
 		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-1");
 		expect(calls[0]?.headers.get("x-api-key")).toBeNull();
+	});
+
+	it("strips expect before forwarding to fetch", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: forwarded\n\n"),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponsesWithHttp(
+			proxy,
+			{ model: "gpt-5-codex", stream: false },
+			{ expect: "100-continue" },
+		);
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.headers.get("expect")).toBeNull();
 	});
 
 	it("rotates the next request when quota headers leave less than ten percent", async () => {
