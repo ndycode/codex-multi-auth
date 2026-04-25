@@ -616,6 +616,36 @@ function runWrapperAsync(
 	});
 }
 
+async function waitForPath(path: string, timeoutMs = 3_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (existsSync(path)) return;
+		await sleep(20);
+	}
+	throw new Error(`timed out waiting for ${path}`);
+}
+
+async function waitForFileText(
+	path: string,
+	expected: string,
+	timeoutMs = 5_000,
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	let lastContent = "";
+	while (Date.now() < deadline) {
+		try {
+			lastContent = readFileSync(path, "utf8");
+			if (lastContent === expected) return;
+		} catch {
+			// Keep polling until the file appears or the timeout expires.
+		}
+		await sleep(20);
+	}
+	throw new Error(
+		`timed out waiting for ${path} to equal ${JSON.stringify(expected)}; last content: ${JSON.stringify(lastContent)}`,
+	);
+}
+
 function combinedOutput(
 	result: SpawnSyncReturns<string> | WrapperAsyncResult,
 ): string {
@@ -1290,6 +1320,56 @@ describe("codex bin wrapper", () => {
 		}
 	});
 
+	it("sweeps stale app-server shim directories when a helper starts", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'console.log(`STALE_SHIM_EXISTS:${fs.existsSync(process.env.CODEX_MULTI_AUTH_TEST_STALE_SHIM_DIR ?? "")}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const multiAuthDir = join(fixtureRoot, "multi-auth");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		const staleShimDir = join(
+			multiAuthDir,
+			"app-server-shims",
+			"helper-2147483647",
+		);
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(staleShimDir, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+		writeFileSync(
+			join(staleShimDir, process.platform === "win32" ? "codex.exe" : "codex"),
+			"stale\n",
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["app", "."], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			CODEX_MULTI_AUTH_TEST_STALE_SHIM_DIR: staleShimDir,
+			OPENAI_API_KEY: undefined,
+		});
+
+		expect(result.status).toBe(0);
+		expect(combinedOutput(result)).toContain("STALE_SHIM_EXISTS:false");
+		expect(existsSync(staleShimDir)).toBe(false);
+		await waitForFileText(
+			markerPath,
+			"start:http://127.0.0.1:4567\nclose\n",
+		);
+	});
+
 	it("keeps app helpers alive when owner liveness probes return EPERM", async () => {
 		const fixtureRoot = createWrapperFixture();
 		createRuntimeRotationProxyFixtureModule(fixtureRoot);
@@ -1887,6 +1967,84 @@ describe("codex bin wrapper", () => {
 			entry.startsWith("codex-multi-auth-home-"),
 		),
 		).toEqual([]);
+	});
+
+	it("preserves the later auth sync-back from concurrent compatibility shadow homes", async () => {
+		const fixtureRoot = createWrapperFixture();
+		const markerDir = join(fixtureRoot, "markers");
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const id = process.env.CODEX_MULTI_AUTH_TEST_SESSION_ID ?? "missing";',
+			'const home = process.env.CODEX_HOME ?? "";',
+			'const markerDir = process.env.CODEX_MULTI_AUTH_TEST_MARKER_DIR ?? "";',
+			'fs.mkdirSync(markerDir, { recursive: true });',
+			'fs.writeFileSync(path.join(home, "auth.json"), JSON.stringify({ token: id }) + "\\n", "utf8");',
+			'fs.writeFileSync(path.join(home, "accounts.json"), JSON.stringify({ accounts: [id] }) + "\\n", "utf8");',
+			'fs.writeFileSync(path.join(home, ".codex-global-state.json"), JSON.stringify({ last: id }) + "\\n", "utf8");',
+			'fs.writeFileSync(path.join(markerDir, `${id}.ready`), "ready\\n", "utf8");',
+			'const releasePath = path.join(markerDir, `${id}.release`);',
+			"const waitForRelease = () => {",
+			"  if (fs.existsSync(releasePath)) process.exit(0);",
+			"  setTimeout(waitForRelease, 10);",
+			"};",
+			"waitForRelease();",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const controlledTmp = join(fixtureRoot, "tmp");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(controlledTmp, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
+		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+
+		const commonEnv = {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_TEST_MARKER_DIR: markerDir,
+			TMP: controlledTmp,
+			TEMP: controlledTmp,
+			TMPDIR: controlledTmp,
+		};
+		const first = runWrapperAsync(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.1"],
+			{
+				...commonEnv,
+				CODEX_MULTI_AUTH_TEST_SESSION_ID: "first",
+			},
+		);
+		const second = runWrapperAsync(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.1"],
+			{
+				...commonEnv,
+				CODEX_MULTI_AUTH_TEST_SESSION_ID: "second",
+			},
+		);
+
+		await waitForPath(join(markerDir, "first.ready"));
+		await waitForPath(join(markerDir, "second.ready"));
+
+		writeFileSync(join(markerDir, "first.release"), "release\n", "utf8");
+		expect((await first).status).toBe(0);
+		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe(
+			'{"token":"first"}',
+		);
+
+		writeFileSync(join(markerDir, "second.release"), "release\n", "utf8");
+		expect((await second).status).toBe(0);
+		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe(
+			'{"token":"second"}',
+		);
+		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe(
+			'{"accounts":["second"]}',
+		);
+		expect(
+			readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim(),
+		).toBe('{"last":"second"}');
 	});
 
 	it("continues shadow-home state sync after one state file remains locked", () => {

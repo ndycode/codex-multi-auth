@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
 	chmodSync,
 	copyFileSync,
@@ -41,6 +41,7 @@ const RUNTIME_ROTATION_SHADOW_HOME_OMIT_STATE_FILES = new Set([
 const SHADOW_HOME_STATE_FILE_SET = new Set(SHADOW_HOME_STATE_FILES);
 const SHADOW_HOME_CONFIG_FILE = "config.toml";
 const SHADOW_HOME_SYNC_LOCK_DIR = ".codex-multi-auth-shadow-sync.lock";
+const SHADOW_HOME_SYNC_STATE_FILE = ".codex-multi-auth-shadow-sync-state.json";
 const APP_SERVER_ACCOUNT_DISPLAY_NAME = "codex-multi-auth";
 const RUNTIME_CONSTANTS = await loadRuntimeConstants();
 const RUNTIME_ROTATION_PROXY_PROVIDER_ID =
@@ -57,6 +58,8 @@ const APP_RUNTIME_HELPER_STATUS_FILE =
 const DEFAULT_APP_RUNTIME_HELPER_IDLE_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_APP_RUNTIME_HELPER_DETACH_GRACE_MS = 5_000;
 const APP_RUNTIME_HELPER_LAUNCH_TIMEOUT_MS = 15_000;
+const APP_SERVER_SHIM_DIR_NAME = "app-server-shims";
+const APP_SERVER_SHIM_HELPER_PREFIX = "helper-";
 let shadowHomeCleanupBusyFailuresRemaining = Number.parseInt(
 	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_CLEANUP_BUSY_FAILURES ?? "0",
 	10,
@@ -1320,6 +1323,79 @@ function shadowHomeStateMatches(left, right) {
 	);
 }
 
+function hashShadowHomeState(state) {
+	if (state.unreadable) {
+		return null;
+	}
+	if (!state.exists) {
+		return "missing";
+	}
+	if (typeof state.content !== "string") {
+		return null;
+	}
+	return `sha256:${createHash("sha256").update(state.content).digest("hex")}`;
+}
+
+function readShadowHomeSyncState(originalCodexHome) {
+	try {
+		const parsed = JSON.parse(
+			readFileSync(join(originalCodexHome, SHADOW_HOME_SYNC_STATE_FILE), "utf8"),
+		);
+		if (
+			!parsed ||
+			typeof parsed !== "object" ||
+			parsed.version !== 1 ||
+			!parsed.files ||
+			typeof parsed.files !== "object"
+		) {
+			return { version: 1, files: {} };
+		}
+		return parsed;
+	} catch {
+		return { version: 1, files: {} };
+	}
+}
+
+function rememberShadowHomeSyncState(
+	originalCodexHome,
+	syncState,
+	name,
+	baseState,
+	syncedState,
+) {
+	const baseHash = hashShadowHomeState(baseState);
+	const syncedHash = hashShadowHomeState(syncedState);
+	if (!baseHash || !syncedHash) {
+		return;
+	}
+	syncState.files[name] = {
+		baseHash,
+		syncedHash,
+		updatedAt: Date.now(),
+	};
+	try {
+		writeOwnerOnlyJsonFileAtomicSync(
+			join(originalCodexHome, SHADOW_HOME_SYNC_STATE_FILE),
+			syncState,
+		);
+	} catch {
+		// Best-effort metadata; failed metadata must not fail auth cleanup.
+	}
+}
+
+function canRebaseShadowHomeSyncState(syncState, name, baseState, currentState) {
+	const entry = syncState.files?.[name];
+	if (!entry || typeof entry !== "object") {
+		return false;
+	}
+	// Permit a later shadow session to write over an earlier shadow sync from
+	// the same launch snapshot, while still refusing unrelated external edits.
+	return (
+		entry.baseHash === hashShadowHomeState(baseState) &&
+		entry.syncedHash === hashShadowHomeState(currentState)
+	);
+}
+
 function readShadowHomeSyncLockOwnerPid(lockPath) {
 	try {
 		const rawOwner = JSON.parse(readFileSync(join(lockPath, "owner.json"), "utf8"));
@@ -1529,7 +1605,11 @@ function collectShadowHomeSyncFileNames(shadowCodexHome, syncFileNames) {
 	try {
 		for (const entry of readdirSync(shadowCodexHome, { withFileTypes: true })) {
 			const name = entry.name;
-			if (name === SHADOW_HOME_CONFIG_FILE || syncFileNames.has(name)) {
+			if (
+				name === SHADOW_HOME_CONFIG_FILE ||
+				name === SHADOW_HOME_SYNC_STATE_FILE ||
+				syncFileNames.has(name)
+			) {
 				continue;
 			}
 			const shadowPath = join(shadowCodexHome, name);
@@ -1554,6 +1634,7 @@ function syncShadowHomeAuthBundle(
 	tightenFile,
 	skipSyncBackNames = new Set(),
 ) {
+	const syncState = readShadowHomeSyncState(originalCodexHome);
 	for (const name of SHADOW_HOME_STATE_FILES) {
 		if (skipSyncBackNames.has(name)) {
 			continue;
@@ -1567,18 +1648,40 @@ function syncShadowHomeAuthBundle(
 		const originalSnapshot =
 			originalFileStates.get(name) ?? { exists: false, content: null };
 		const currentOriginalState = captureShadowHomeState(originalPath);
+		let expectedDestinationState = originalSnapshot;
 		if (!shadowHomeStateMatches(currentOriginalState, originalSnapshot)) {
+			if (
+				!canRebaseShadowHomeSyncState(
+					syncState,
+					name,
+					originalSnapshot,
+					currentOriginalState,
+				)
+			) {
+				continue;
+			}
+			expectedDestinationState = currentOriginalState;
+		}
+		if (
+			expectedDestinationState.unreadable ||
+			shadowHomeStateMatches(shadowState, expectedDestinationState)
+		) {
 			continue;
 		}
-		if (shadowHomeStateMatches(shadowState, originalSnapshot)) {
-			continue;
-		}
-		syncShadowHomeStateFileBestEffort(
+		if (syncShadowHomeStateFileBestEffort(
 			shadowPath,
 			originalPath,
-			originalSnapshot,
+			expectedDestinationState,
 			tightenFile,
-		);
+		)) {
+			rememberShadowHomeSyncState(
+				originalCodexHome,
+				syncState,
+				name,
+				originalSnapshot,
+				shadowState,
+			);
+		}
 	}
 }
 
@@ -1644,7 +1747,11 @@ function createShadowHomeMirror(
 	if (existsSync(originalCodexHome)) {
 		for (const entry of readdirSync(originalCodexHome, { withFileTypes: true })) {
 			const name = entry.name;
-			if (name === SHADOW_HOME_CONFIG_FILE) {
+			if (
+				name === SHADOW_HOME_CONFIG_FILE ||
+				name === SHADOW_HOME_SYNC_STATE_FILE ||
+				name === SHADOW_HOME_SYNC_LOCK_DIR
+			) {
 				continue;
 			}
 			const isKnownStateFile = SHADOW_HOME_STATE_FILE_SET.has(name);
@@ -1946,6 +2053,30 @@ function createRuntimeRotationAppServerPreloadSource(wrapperScriptPath) {
 	].join("\n");
 }
 
+function sweepStaleRuntimeRotationAppServerShimDirs(shimRootDir) {
+	let entries = [];
+	try {
+		entries = readdirSync(shimRootDir, { withFileTypes: true });
+	} catch {
+		return;
+	}
+	for (const entry of entries) {
+		if (!entry.isDirectory() || !entry.name.startsWith(APP_SERVER_SHIM_HELPER_PREFIX)) {
+			continue;
+		}
+		const pidText = entry.name.slice(APP_SERVER_SHIM_HELPER_PREFIX.length);
+		const pid = Number.parseInt(pidText, 10);
+		if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid || isProcessAlive(pid)) {
+			continue;
+		}
+		try {
+			removeDirectoryWithRetry(join(shimRootDir, entry.name));
+		} catch {
+			// Best-effort stale shim cleanup only.
+		}
+	}
+}
+
 function installRuntimeRotationAppServerCliShim(forwardedEnv) {
 	const shadowCodexHome = forwardedEnv.CODEX_HOME;
 	if (!shadowCodexHome) {
@@ -1954,10 +2085,11 @@ function installRuntimeRotationAppServerCliShim(forwardedEnv) {
 	const multiAuthDir =
 		resolveOriginalMultiAuthDir(forwardedEnv) ??
 		join(resolveRuntimeRotationProxyOriginalCodexHome(forwardedEnv), "multi-auth");
+	const shimRootDir = join(multiAuthDir, APP_SERVER_SHIM_DIR_NAME);
+	sweepStaleRuntimeRotationAppServerShimDirs(shimRootDir);
 	const shimDir = join(
-		multiAuthDir,
-		"app-server-shims",
-		`helper-${process.pid}`,
+		shimRootDir,
+		`${APP_SERVER_SHIM_HELPER_PREFIX}${process.pid}`,
 	);
 	mkdirSync(shimDir, { recursive: true });
 	const executableName = process.platform === "win32" ? "codex.exe" : "codex";
