@@ -2883,6 +2883,36 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).toContain("FORWARDED:auth status");
 	});
 
+	it("syncs manager active selection before and after forwarded commands", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		const markerPath = join(fixtureRoot, "sync-marker.txt");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "codex-manager.js"),
+			[
+				'import { appendFileSync } from "node:fs";',
+				"export async function autoSyncActiveAccountToCodex() {",
+				'  appendFileSync(process.env.CODEX_MULTI_AUTH_TEST_SYNC_MARKER, "sync\\n", "utf8");',
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_TEST_SYNC_MARKER: markerPath,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED:exec status");
+		expect(readFileSync(markerPath, "utf8").trim().split(/\r?\n/)).toEqual([
+			"sync",
+			"sync",
+		]);
+	});
+
 	it("surfaces non-module-not-found loader failures", () => {
 		const fixtureRoot = createWrapperFixture();
 		const distLibDir = join(fixtureRoot, "dist", "lib");

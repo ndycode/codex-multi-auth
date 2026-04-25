@@ -3115,9 +3115,13 @@ async function main() {
 	}
 
 	await autoSyncManagerActiveSelectionIfEnabled();
-	return withForwardedRuntimeObservability(rawArgs, () =>
-		forwardToRealCodex(realCodexBin, rawArgs),
-	);
+	try {
+		return await withForwardedRuntimeObservability(rawArgs, () =>
+			forwardToRealCodex(realCodexBin, rawArgs),
+		);
+	} finally {
+		await autoSyncManagerActiveSelectionIfEnabled();
+	}
 }
 
 const exitCode = await main();
