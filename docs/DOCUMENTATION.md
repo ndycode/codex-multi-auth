@@ -56,7 +56,7 @@ Canonical governance for repository documentation quality and consistency.
 3. Canonical storage root: `~/.codex/multi-auth` unless explicitly overridden.
 4. Compatibility aliases (`codex multi auth`, `codex multi-auth`, `codex multiauth`) belong only in command reference, troubleshooting, or migration sections.
 5. Legacy paths/flows and scoped package references belong only in migration and compatibility sections.
-6. Current stable release line is `1.x`; foundational `0.x` and pre-`0.1.0` entries stay archived separately.
+6. Current stable release line is `2.x`; foundational `0.x` and pre-`0.1.0` entries stay archived separately.
 
 ---
 

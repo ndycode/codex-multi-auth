@@ -6,7 +6,7 @@ Security updates are provided for the current maintained release line.
 
 | Version line | Status |
 | --- | --- |
-| `1.x` latest | Supported |
+| `2.x` latest | Supported |
 | pre-`1.0` historical releases | Not supported |
 
 ---

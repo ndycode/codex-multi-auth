@@ -37,9 +37,12 @@ function readPackageVersion(): string {
 let packageVersion = "";
 let currentStableReleaseDoc = "";
 // These stay manual so the docs portal keeps an intentional short stable-history window.
-const previousStableReleaseDoc = "docs/releases/v1.2.6.md";
-const earlierStableReleaseDoc = "docs/releases/v1.2.5.md";
+const previousStableReleaseDoc = "docs/releases/v1.3.1.md";
+const earlierStableReleaseDoc = "docs/releases/v1.3.0.md";
 const stableArchiveReleaseDocs = [
+	"docs/releases/v1.2.7.md",
+	"docs/releases/v1.2.6.md",
+	"docs/releases/v1.2.5.md",
 	"docs/releases/v1.2.4.md",
 	"docs/releases/v1.2.2.md",
 	"docs/releases/v1.2.1.md",
@@ -435,21 +438,21 @@ describe("Documentation Integrity", () => {
 		expect(settingsRef).toContain("- `menuStatuslineFields`");
 	});
 
-	it("keeps release-line docs aligned with the current 1.x policy", () => {
+	it("keeps release-line docs aligned with the current 2.x policy", () => {
 		const changelog = read("CHANGELOG.md");
 		const security = read("SECURITY.md");
 		const docsGovernance = read("docs/DOCUMENTATION.md");
 		const upgradeGuide = read("docs/upgrade.md");
 		const publicApi = read("docs/reference/public-api.md");
 
-		expect(changelog).toContain("current stable release line is `1.x`");
+		expect(changelog).toContain("current stable release line is `2.x`");
 		expect(changelog).toContain("docs/releases/");
-		expect(security).toContain("`1.x` latest");
+		expect(security).toContain("`2.x` latest");
 		expect(security).toContain("pre-`1.0` historical releases");
-		expect(docsGovernance).toContain("Current stable release line is `1.x`");
-		expect(upgradeGuide).toContain("current `1.x` release line");
-		expect(publicApi).toContain("inside the current `1.x` line");
-		expect(publicApi).toContain("currently ships on a `1.x` line");
+		expect(docsGovernance).toContain("Current stable release line is `2.x`");
+		expect(upgradeGuide).toContain("current `2.x` release line");
+		expect(publicApi).toContain("inside the current `2.x` line");
+		expect(publicApi).toContain("currently ships on a `2.x` line");
 	});
 
 	it("keeps the historical changelog aligned with the archived 0.x release set", () => {

@@ -10,7 +10,7 @@ This project uses tiered API stability.
 
 ### Tier A: Stable APIs
 
-Stable APIs are covered by semver compatibility guarantees and must remain backward-compatible inside the current `1.x` line unless explicitly documented.
+Stable APIs are covered by semver compatibility guarantees and must remain backward-compatible inside the current `2.x` line unless explicitly documented.
 
 - Package root plugin entrypoint exports:
   - `OpenAIOAuthPlugin`
@@ -103,7 +103,7 @@ These behaviors are compatibility guarantees for the current release line becaus
 - Tier A bug fix or doc-only clarification: `PATCH`
 - Tier B additive compatibility improvement: usually `PATCH` or `MINOR` depending on caller impact
 
-This repository currently ships on a `1.x` line, and breaking changes still require explicit migration documentation and review sign-off.
+This repository currently ships on a `2.x` line, and breaking changes still require explicit migration documentation and review sign-off.
 
 ---
 

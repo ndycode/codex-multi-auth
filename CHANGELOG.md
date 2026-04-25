@@ -3,11 +3,27 @@
 All notable changes to this project are documented in this file.
 Dates use ISO format (`YYYY-MM-DD`).
 
-This repository's current stable release line is `1.x`.
+This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
 ## [Unreleased]
+
+## [2.0.0] - 2026-04-25
+
+Major release for the official Codex runtime rotation proxy and hardened app/shadow-home runtime path. See [docs/releases/v2.0.0.md](docs/releases/v2.0.0.md) for full details.
+
+### Added
+
+- loopback-only Responses API runtime rotation proxy for official Codex sessions
+- `codexRuntimeRotationProxy`, `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1`, and `codex auth rotation enable|disable|status`
+- runtime rotation support for wrapper-launched `codex app` and `codex app-server`
+
+### Fixed
+
+- stripped stale decoded upstream `content-encoding` metadata before proxy responses reach local Codex clients
+- retried and cleaned up shadow-home sync locks when owner metadata writes fail transiently or permanently
+- resumed `process.stdin` during app-server protocol cleanup so retry attempts cannot inherit paused stdin
 
 ## [1.3.1] - 2026-04-24
 
@@ -231,3 +247,4 @@ Historical entries from pre-`0.1.0` internal iteration cycles are preserved in:
 [0.1.7]: https://github.com/ndycode/codex-multi-auth/releases/tag/v0.1.7
 [1.3.0]: https://github.com/ndycode/codex-multi-auth/releases/tag/v1.3.0
 [1.3.1]: https://github.com/ndycode/codex-multi-auth/releases/tag/v1.3.1
+[2.0.0]: https://github.com/ndycode/codex-multi-auth/releases/tag/v2.0.0
