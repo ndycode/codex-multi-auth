@@ -24,17 +24,17 @@ User-facing capability map for `codex-multi-auth`.
 | Readiness and risk forecast | Suggests the best next account | `codex auth forecast` |
 | Live quota probe mode | Uses live headers for stronger decisions | `codex auth forecast --live` |
 | JSON report output | Lets you inspect account state in automation or support workflows | `codex auth report --live --json` |
-| Runtime rotation proxy (opt-in) | Lets forwarded official Codex CLI/app sessions rotate managed accounts between Responses requests without restarting the session. Disabled by default; enable per install. | `codex auth rotation enable` |
+| Runtime rotation proxy (default-on) | Lets forwarded official Codex CLI/app sessions rotate managed accounts between Responses requests without restarting the session. Disable per install when needed. | `codex auth rotation status` |
 
 ---
 
 ## Rotate Live Codex Runtime Requests
 
-Runtime rotation is the current 2.x architecture addition. It is opt-in and local-only.
+Runtime rotation is the current 2.x architecture addition. It is default-on and local-only.
 
 | Capability | What it gives you | Primary entry |
 | --- | --- | --- |
-| Local Responses proxy | Routes forwarded official Codex Responses/model traffic through a loopback provider named `codex-multi-auth-runtime-proxy` | `codex auth rotation enable` |
+| Local Responses proxy | Routes forwarded official Codex Responses/model traffic through a loopback provider named `codex-multi-auth-runtime-proxy` | default wrapper path |
 | Per-request account rotation | Moves to another managed account on quota, auth refresh, network, or server failure before streaming response bytes | runtime proxy |
 | Shadow `CODEX_HOME` launch | Keeps temporary provider config isolated from normal official Codex state for wrapper-launched CLI sessions | `codex` wrapper |
 | Runtime status telemetry | Shows setting state, app helper state, app bind state, account waits, cooldowns, and last-account proxy metadata | `codex auth rotation status` |

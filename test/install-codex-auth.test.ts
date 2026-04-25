@@ -19,7 +19,9 @@ import {
 import {
 	hasCodexDesktopApp,
 	isCiEnvironment,
+	resolveRotationEnabled,
 	shouldAutoBindCodexAppOnInstall,
+	shouldAutoInstallCodexAppLauncherOnInstall,
 } from "../scripts/postinstall.js";
 
 const scriptPath = "scripts/install-codex-auth.js";
@@ -470,6 +472,69 @@ describe("codex app bind postinstall gate", () => {
 				rotationEnabled: true,
 				appDetected: true,
 			}),
+			).toBe(false);
+	});
+
+	it("installs app launcher routing on global install when rotation is enabled", () => {
+		expect(
+			shouldAutoInstallCodexAppLauncherOnInstall({
+				env: {},
+				rotationEnabled: true,
+			}),
+		).toBe(false);
+		expect(
+			shouldAutoInstallCodexAppLauncherOnInstall({
+				env: { npm_config_global: "true" },
+				rotationEnabled: false,
+			}),
+		).toBe(false);
+		expect(
+			shouldAutoInstallCodexAppLauncherOnInstall({
+				env: { npm_config_global: "true" },
+				rotationEnabled: true,
+			}),
+		).toBe(true);
+		expect(
+			shouldAutoInstallCodexAppLauncherOnInstall({
+				env: {
+					npm_config_global: "true",
+					CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL: "0",
+				},
+				rotationEnabled: true,
+			}),
+		).toBe(false);
+		expect(
+			shouldAutoInstallCodexAppLauncherOnInstall({
+				env: { CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL: "1" },
+				rotationEnabled: false,
+			}),
+		).toBe(true);
+		expect(
+			shouldAutoInstallCodexAppLauncherOnInstall({
+				env: {
+					CI: "true",
+					CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL: "1",
+				},
+				rotationEnabled: true,
+			}),
+		).toBe(false);
+	});
+
+	it("resolves runtime rotation as default-on for install/update self-heal", () => {
+		expect(resolveRotationEnabled(null, {})).toBe(true);
+		expect(
+			resolveRotationEnabled(null, {
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+			}),
+		).toBe(false);
+		expect(
+			resolveRotationEnabled(
+				{
+					loadPluginConfig: () => ({ codexRuntimeRotationProxy: false }),
+					getCodexRuntimeRotationProxy: () => false,
+				},
+				{},
+			),
 		).toBe(false);
 	});
 });

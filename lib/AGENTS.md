@@ -5,7 +5,7 @@ Commit: a87e005
 
 ## OVERVIEW
 
-Core implementation for the Codex CLI wrapper, account manager, OAuth/storage/runtime services, optional plugin-host request bridge, and opt-in runtime Responses rotation proxy. The current architecture is wrapper-first: `scripts/codex.js` owns command forwarding and runtime proxy setup, while `lib/` owns account selection, storage, config, app bind, request compatibility, and diagnostics.
+Core implementation for the Codex CLI wrapper, account manager, OAuth/storage/runtime services, optional plugin-host request bridge, and default-on runtime Responses rotation proxy. The current architecture is wrapper-first: `scripts/codex.js` owns command forwarding and runtime proxy setup, while `lib/` owns account selection, storage, config, app bind, request compatibility, and diagnostics.
 
 ## STRUCTURE
 

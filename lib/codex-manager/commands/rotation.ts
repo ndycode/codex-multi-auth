@@ -55,9 +55,9 @@ function printRotationUsage(logInfo: (message: string) => void): void {
 			"  codex auth rotation unbind-app",
 			"",
 			"Behavior:",
-			"  - Enables an opt-in localhost Responses proxy for live Codex runtime account rotation",
-			"  - Binds the packaged Codex desktop app to the same localhost router when enabled",
-			"  - Env override: CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1",
+			"  - Runtime rotation is enabled by default for request-bearing Codex sessions",
+			"  - Binds the packaged Codex desktop app to the same localhost router when enabled or repaired",
+			"  - Env override: CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0 disables one process",
 		].join("\n"),
 	);
 }

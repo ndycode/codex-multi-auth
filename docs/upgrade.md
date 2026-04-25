@@ -79,12 +79,14 @@ For maintainer/debug flows, see advanced/internal controls in [development/CONFI
 
 ## Runtime Rotation Upgrade Note
 
-The 2.x line adds the runtime rotation proxy and packaged app bind, but both remain opt-in.
+The 2.0.1 line makes runtime rotation the default for request-bearing wrapper-launched Codex sessions and keeps the packaged app bind reversible.
 
-- Existing installs keep forwarding non-auth `codex` commands normally unless `codexRuntimeRotationProxy` or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1` is enabled.
-- `codex auth rotation enable` persists the setting and attempts to bind supported packaged Codex app installs through a reversible localhost router.
+- Existing installs route request-bearing non-auth `codex` commands through the localhost rotation proxy unless `codexRuntimeRotationProxy=false` or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` is set.
+- `codex auth rotation enable` persists the setting and repairs supported packaged Codex app binds through a reversible localhost router.
 - `codex auth rotation disable` turns the setting off and removes the persistent app bind.
-- Set `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0` before enabling rotation if you only want wrapper-launched CLI/app sessions routed and do not want the packaged app bind installed.
+- Set `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0` before install/update if you only want wrapper-launched CLI/app sessions routed and do not want the packaged app bind installed.
+- Set `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0` before install/update if you do not want supported user-level app launchers routed through the wrapper.
+- Set `CODEX_MULTI_AUTH_AUTO_UPDATE=0` if you do not want installed packages to run the best-effort daily `npm update -g codex-multi-auth` check.
 - Official Codex app binaries are not patched.
 
 Validate after enabling:

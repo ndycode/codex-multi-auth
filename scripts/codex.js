@@ -251,6 +251,36 @@ async function loadRuntimeRotationConfigModule() {
 	}
 }
 
+async function autoUpdatePackageIfEnabled() {
+	if ((process.env.CODEX_MULTI_AUTH_BYPASS ?? "").trim() === "1") {
+		return;
+	}
+	try {
+		const mod = await import("../dist/lib/auto-update-checker.js");
+		if (typeof mod.autoUpdateIfAvailable !== "function") {
+			return;
+		}
+		const result = await mod.autoUpdateIfAvailable();
+		if (result?.updated && result.latestVersion) {
+			console.error(
+				`codex-multi-auth: auto-updated to ${result.latestVersion}. New sessions will use the latest package.`,
+			);
+		}
+	} catch (error) {
+		if (
+			error &&
+			typeof error === "object" &&
+			"code" in error &&
+			error.code === "ERR_MODULE_NOT_FOUND"
+		) {
+			return;
+		}
+		console.error(
+			`codex-multi-auth: auto-update skipped: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+}
+
 async function loadRuntimeConfigTomlModule() {
 	try {
 		const mod = await import("../dist/lib/runtime/config-toml.js");
@@ -3422,6 +3452,7 @@ async function main() {
 		return runRuntimeRotationAppHelper();
 	}
 
+	await autoUpdatePackageIfEnabled();
 	ensureWindowsShellShimGuards();
 
 	const normalizedArgs = normalizeAuthAlias(rawArgs);

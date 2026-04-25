@@ -46,12 +46,12 @@ Used only for host plugin mode through the host runtime config file.
 | Key | Default |
 | --- | --- |
 | `codexMode` | `true` |
-| `codexRuntimeRotationProxy` | `false` |
+| `codexRuntimeRotationProxy` | `true` |
 | `codexTuiV2` | `true` |
 | `codexTuiColorProfile` | `truecolor` |
 | `codexTuiGlyphMode` | `ascii` |
 
-`codexRuntimeRotationProxy` enables the wrapper/app local Responses proxy path. It remains disabled by default and can also be overridden per process with `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY`.
+`codexRuntimeRotationProxy` enables the wrapper/app local Responses proxy path. It is enabled by default and can be overridden per process with `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY`.
 
 ### Fast Session
 
@@ -205,14 +205,15 @@ Upgrade note:
 | `CODEX_MULTI_AUTH_DIR` | Custom root for settings/accounts/cache/logs |
 | `CODEX_MULTI_AUTH_CONFIG_PATH` | Alternate config file input |
 | `CODEX_MODE` | Toggle Codex mode |
-| `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY` | Toggle opt-in localhost Responses proxy for forwarded Codex sessions (`1`/`true` to enable, `0`/`false` to disable) |
+| `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY` | Toggle localhost Responses proxy for forwarded Codex sessions (`1`/`true` to enable, `0`/`false` to disable) |
+| `CODEX_MULTI_AUTH_AUTO_UPDATE` | Toggle best-effort global package auto-update checks (`1`/`true` to enable, `0`/`false` to disable) |
 | `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS` | Override idle timeout for the wrapper-launched Codex app runtime helper |
 | `CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID` | Internal owner PID used by the wrapper-launched app helper |
 | `CODEX_MULTI_AUTH_REAL_CODEX_HOME` | Internal original Codex home pointer used by runtime rotation helpers |
 | `CODEX_MULTI_AUTH_APP_BIND_INSTALL` | Opt out/in of packaged Codex app bind self-heal during install/update or rotation enable |
 | `CODEX_MULTI_AUTH_APP_BIND` | Legacy/manual app-bind install override consumed by postinstall |
 | `CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME` | Override Codex home used by packaged app bind helpers |
-| `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL` | Opt out/in of user-level app launcher routing during rotation enable |
+| `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL` | Opt out/in of user-level app launcher routing during install/update or rotation enable |
 | `CODEX_MULTI_AUTH_APP_LAUNCHER_WINDOWS_DESKTOP_DIR` | Override Windows desktop shortcut search root for launcher routing |
 | `CODEX_MULTI_AUTH_APP_LAUNCHER_MACOS_DIR` | Override macOS managed wrapper app install directory |
 | `CODEX_TUI_V2` | Toggle TUI v2 |

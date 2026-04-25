@@ -70,13 +70,13 @@ npm i -g codex-multi-auth
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
-| `codex auth rotation status` says disabled | Stored setting or env override is off | Run `codex auth rotation enable` or set `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1` for one process |
+| `codex auth rotation status` says disabled | Stored setting or env override is off | Run `codex auth rotation enable`, remove `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`, or set `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1` for one process |
 | Forwarded Codex session does not show the local provider | Command is help/non-requesting, rotation is disabled, or the official CLI was not launched through the wrapper | Check `where codex`, then run `codex auth rotation status` |
 | Pool exhausted error from the proxy | Every managed account is unavailable for that model/family | Run `codex auth rotation status`, then `codex auth forecast --live` |
 | Packaged app still uses normal Codex routing | App bind was not installed or was removed | Run `codex auth rotation bind-app`, then reopen the app |
 | App bind needs to be removed | You want the official app config restored | Run `codex auth rotation unbind-app` or `codex auth rotation disable` |
 
-The runtime proxy is loopback-only and opt-in. It routes Responses traffic only for forwarded request-bearing official Codex sessions and supported app launches.
+The runtime proxy is loopback-only and default-on. It routes Responses traffic only for forwarded request-bearing official Codex sessions and supported app launches.
 
 ---
 

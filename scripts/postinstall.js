@@ -145,6 +145,25 @@ export function shouldAutoBindCodexAppOnInstall(options) {
 	);
 }
 
+/**
+ * @param {{
+ *   env?: NodeJS.ProcessEnv,
+ *   rotationEnabled: boolean,
+ * }} options
+ */
+export function shouldAutoInstallCodexAppLauncherOnInstall(options) {
+	const env = options.env ?? process.env;
+	if (isCiEnvironment(env)) return false;
+
+	const installOverride = readOptionalBoolean(
+		env.CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL,
+	);
+	if (installOverride !== null) return installOverride;
+
+	if (!isGlobalNpmInstall(env)) return false;
+	return options.rotationEnabled;
+}
+
 async function loadConfigModule() {
 	try {
 		return await import("../dist/lib/config.js");
@@ -177,9 +196,13 @@ async function loadAppBindModule() {
 	}
 }
 
-function resolveRotationEnabled(configModule) {
+/**
+ * @param {unknown} configModule
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+export function resolveRotationEnabled(configModule, env = process.env) {
 	const envOverride = readOptionalBoolean(
-		process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY,
+		env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY,
 	);
 	if (envOverride !== null) return envOverride;
 	if (
@@ -187,7 +210,7 @@ function resolveRotationEnabled(configModule) {
 		typeof configModule.loadPluginConfig !== "function" ||
 		typeof configModule.getCodexRuntimeRotationProxy !== "function"
 	) {
-		return false;
+		return true;
 	}
 	return (
 		configModule.getCodexRuntimeRotationProxy(configModule.loadPluginConfig()) ===
@@ -195,27 +218,52 @@ function resolveRotationEnabled(configModule) {
 	);
 }
 
-async function main() {
+/**
+ * @param {boolean} rotationEnabled
+ */
+async function maybeBindCodexAppOnInstall(rotationEnabled) {
 	const appBindModule = await loadAppBindModule();
 	if (!appBindModule || typeof appBindModule.bindCodexAppRuntimeRotation !== "function") {
-		return 0;
+		return;
 	}
 
-	const configModule = await loadConfigModule();
-	const rotationEnabled = resolveRotationEnabled(configModule);
 	const currentStatus =
 		typeof appBindModule.getAppBindStatus === "function"
 			? await appBindModule.getAppBindStatus().catch(() => null)
 			: null;
 	const appDetected = hasCodexDesktopApp() || currentStatus?.bound === true;
 	if (!shouldAutoBindCodexAppOnInstall({ rotationEnabled, appDetected })) {
-		return 0;
+		return;
 	}
 
 	const result = await appBindModule.bindCodexAppRuntimeRotation();
 	if (result?.message) {
 		console.error(`codex-multi-auth: ${result.message}`);
 	}
+}
+
+/**
+ * @param {boolean} rotationEnabled
+ */
+async function maybeInstallCodexAppLauncherOnInstall(rotationEnabled) {
+	if (!shouldAutoInstallCodexAppLauncherOnInstall({ rotationEnabled })) {
+		return;
+	}
+
+	const launcherModule = await import("./codex-app-launcher.js");
+	if (typeof launcherModule.installCodexAppLauncher !== "function") {
+		return;
+	}
+	await launcherModule.installCodexAppLauncher({
+		log: (message) => console.error(`codex-multi-auth: ${message}`),
+	});
+}
+
+async function main() {
+	const configModule = await loadConfigModule();
+	const rotationEnabled = resolveRotationEnabled(configModule);
+	await maybeBindCodexAppOnInstall(rotationEnabled);
+	await maybeInstallCodexAppLauncherOnInstall(rotationEnabled);
 	return 0;
 }
 

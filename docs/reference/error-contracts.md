@@ -66,7 +66,7 @@ Compatibility guarantees:
 
 ## Runtime Rotation Proxy Error Contract
 
-The opt-in localhost Responses proxy returns JSON error payloads with a stable `error.code` field.
+The default-on localhost Responses proxy returns JSON error payloads with a stable `error.code` field.
 
 | Code | HTTP status | Meaning |
 | --- | --- | --- |

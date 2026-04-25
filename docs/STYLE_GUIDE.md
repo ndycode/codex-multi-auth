@@ -41,7 +41,7 @@ Use short sections and scan-friendly tables where they improve clarity.
 
 1. Canonical command family is `codex auth ...`.
 2. Canonical runtime root is `~/.codex/multi-auth`.
-3. Runtime rotation must be described as opt-in unless the release policy changes.
+3. Runtime rotation must be described as default-on unless the release policy changes.
 4. Legacy command/path references belong only in migration contexts.
 5. Compatibility aliases (`codex multi auth`, `codex multi-auth`, `codex multiauth`) belong only in command reference, troubleshooting, or migration contexts.
 6. Keep command flags aligned with runtime usage text.

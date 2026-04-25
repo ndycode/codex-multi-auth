@@ -3,11 +3,11 @@
 Generated: 2026-04-25
 Commit: a87e005
 Branch: main
-Package version: 2.0.0
+Package version: 2.0.1
 
 ## OVERVIEW
 
-`codex-multi-auth` is a Codex CLI-first OAuth account manager and wrapper for the official Codex CLI. The installed `codex` entrypoint handles `codex auth ...` locally, forwards other Codex commands to the official runtime, and can optionally route live Responses traffic through a localhost account-rotation proxy. The plugin-host entrypoint remains exported for compatibility, but the primary product surface is the wrapper, account manager, storage, runtime proxy, and repair tooling.
+`codex-multi-auth` is a Codex CLI-first OAuth account manager and wrapper for the official Codex CLI. The installed `codex` entrypoint handles `codex auth ...` locally, forwards other Codex commands to the official runtime, and routes live Responses traffic through a localhost account-rotation proxy by default. The plugin-host entrypoint remains exported for compatibility, but the primary product surface is the wrapper, account manager, storage, runtime proxy, and repair tooling.
 
 ## STRUCTURE
 
@@ -77,7 +77,7 @@ Package version: 2.0.0
 - Canonical package name is `codex-multi-auth`.
 - Canonical command family is `codex auth ...`.
 - The `codex` bin is a wrapper: auth commands run locally, non-auth commands forward to official Codex.
-- Runtime rotation is opt-in through `codexRuntimeRotationProxy`, `codex auth rotation enable`, or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1`.
+- Runtime rotation is default-on through `codexRuntimeRotationProxy`; users can opt out with `codex auth rotation disable` or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`.
 - The runtime proxy is loopback-only and uses a per-process client token. It forwards only Responses API and model discovery requests.
 - The persistent desktop app bind is reversible and edits user config/startup metadata, not official app binaries.
 - OAuth callback port remains 1455.
@@ -92,7 +92,7 @@ Package version: 2.0.0
 - Do not use `as any`, `@ts-ignore`, or `@ts-expect-error`.
 - Do not hardcode OAuth ports; use existing constants/helpers.
 - Do not bypass the official Codex CLI by reimplementing general Codex commands in the wrapper.
-- Do not make runtime rotation default-on without explicit release and migration documentation.
+- Keep runtime rotation default-on behavior aligned with explicit release and migration documentation.
 - Do not patch official Codex app binaries; use app bind or launcher helpers.
 - Do not expose account emails or tokens in runtime proxy client response headers or logs.
 - Do not use bare recursive delete logic in Windows-sensitive scripts/tests without retry handling.

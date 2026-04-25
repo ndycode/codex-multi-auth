@@ -11,7 +11,7 @@ Public overview of how `codex-multi-auth` fits around the official Codex CLI.
 - `codex auth ...` commands are handled locally by the account manager.
 - All other `codex` commands are forwarded to the official Codex CLI.
 - Account, settings, quota, backup, and diagnostic state lives under `~/.codex/multi-auth`.
-- Runtime rotation is optional and disabled by default.
+- Runtime rotation is optional and enabled by default.
 - When runtime rotation is enabled, forwarded Codex sessions can send Responses traffic through a localhost-only proxy that selects managed accounts per request.
 - The plugin-host entrypoint remains available for advanced host integrations, but it is not required for normal CLI use.
 
@@ -128,7 +128,7 @@ codex-multi-auth wrapper
 Official Codex CLI
 ```
 
-Opt-in runtime rotation path:
+Default runtime rotation path:
 
 ```text
 Terminal user or Codex app
@@ -164,7 +164,7 @@ Codex or ChatGPT-backed request flow with refresh, retry, and failover
 - The official OAuth flow remains the source of authentication.
 - The canonical command family is `codex auth ...`.
 - The OAuth callback port remains `1455`.
-- Runtime rotation is opt-in and localhost-only.
+- Runtime rotation is default-on and localhost-only.
 - The desktop app bind is reversible and does not patch official app files.
 - Local storage and repair tooling are designed for personal operator workflows, not hosted multi-user services.
 

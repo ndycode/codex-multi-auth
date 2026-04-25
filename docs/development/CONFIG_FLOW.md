@@ -67,7 +67,7 @@ For dashboard display values:
 
 ## 6) Runtime Rotation Flow
 
-1. Resolve `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY`; if unset, read `pluginConfig.codexRuntimeRotationProxy`.
+1. Resolve `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY`; if unset, read `pluginConfig.codexRuntimeRotationProxy`, which defaults to enabled.
 2. If disabled or the forwarded command is help/non-requesting, forward directly to official Codex.
 3. If enabled, start a loopback Responses proxy with a per-process client token.
 4. Create a temporary shadow `CODEX_HOME` and rewrite `config.toml` to use `codex-multi-auth-runtime-proxy`.

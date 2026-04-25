@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { EventEmitter } from "node:events";
 
 vi.mock("node:fs", () => ({
 	readFileSync: vi.fn(),
@@ -8,12 +9,19 @@ vi.mock("node:fs", () => ({
 	renameSync: vi.fn(),
 	unlinkSync: vi.fn(),
 }));
+vi.mock("node:child_process", () => ({
+	spawn: vi.fn(),
+}));
 
 describe("auto-update-checker", () => {
 	let fs: typeof import("node:fs");
+	let childProcess: typeof import("node:child_process");
 	let checkForUpdates: typeof import("../lib/auto-update-checker.js").checkForUpdates;
 	let checkAndNotify: typeof import("../lib/auto-update-checker.js").checkAndNotify;
 	let clearUpdateCache: typeof import("../lib/auto-update-checker.js").clearUpdateCache;
+	let autoUpdateIfAvailable: typeof import("../lib/auto-update-checker.js").autoUpdateIfAvailable;
+	let isAutoUpdateEnabled: typeof import("../lib/auto-update-checker.js").isAutoUpdateEnabled;
+	let isUpdateablePackageInstall: typeof import("../lib/auto-update-checker.js").isUpdateablePackageInstall;
 	let logger: {
 		debug: ReturnType<typeof vi.fn>;
 		info: ReturnType<typeof vi.fn>;
@@ -37,6 +45,8 @@ describe("auto-update-checker", () => {
 		}));
 
 		fs = await import("node:fs");
+		childProcess = await import("node:child_process");
+		vi.mocked(childProcess.spawn).mockReset();
 		vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
 			if (String(path).includes("package.json")) {
 				return JSON.stringify(mockPackageJson);
@@ -51,6 +61,9 @@ describe("auto-update-checker", () => {
 		checkForUpdates = module.checkForUpdates;
 		checkAndNotify = module.checkAndNotify;
 		clearUpdateCache = module.clearUpdateCache;
+		autoUpdateIfAvailable = module.autoUpdateIfAvailable;
+		isAutoUpdateEnabled = module.isAutoUpdateEnabled;
+		isUpdateablePackageInstall = module.isUpdateablePackageInstall;
 	});
 
 	afterEach(() => {
@@ -594,6 +607,116 @@ describe("auto-update-checker", () => {
 			expect(showToast).toHaveBeenCalledWith(
 				expect.stringContaining("v5.0.0"),
 				"info",
+			);
+		});
+	});
+
+	describe("autoUpdateIfAvailable", () => {
+		function mockUpdateProcess(exitCode: number): EventEmitter & { kill: ReturnType<typeof vi.fn> } {
+			const child = new EventEmitter() as EventEmitter & {
+				kill: ReturnType<typeof vi.fn>;
+			};
+			child.kill = vi.fn();
+			const once = child.once.bind(child);
+			vi.spyOn(child, "once").mockImplementation((event, listener) => {
+				const result = once(event, listener);
+				if (event === "exit") {
+					void Promise.resolve().then(() => child.emit("exit", exitCode, null));
+				}
+				return result;
+			});
+			vi.mocked(childProcess.spawn).mockReturnValue(child as never);
+			return child;
+		}
+
+		it("defaults auto-update off in CI/test env and honors explicit opt-in", () => {
+			expect(isAutoUpdateEnabled({ CI: "true" })).toBe(false);
+			expect(isAutoUpdateEnabled({ VITEST: "true" })).toBe(false);
+			expect(isAutoUpdateEnabled({ CI: "true", CODEX_MULTI_AUTH_AUTO_UPDATE: "1" })).toBe(true);
+			expect(isAutoUpdateEnabled({ CODEX_MULTI_AUTH_AUTO_UPDATE: "0" })).toBe(false);
+		});
+
+		it("only treats installed node_modules packages as updateable by default", () => {
+			expect(
+				isUpdateablePackageInstall(
+					"/usr/local/lib/node_modules/codex-multi-auth",
+				),
+			).toBe(true);
+			expect(isUpdateablePackageInstall("C:/work/codex-multi-auth")).toBe(false);
+		});
+
+		it("skips without network work when disabled", async () => {
+			const result = await autoUpdateIfAvailable({
+				env: { CODEX_MULTI_AUTH_AUTO_UPDATE: "0" },
+				forceInstall: true,
+			});
+
+			expect(result.reason).toBe("disabled");
+			expect(globalThis.fetch).not.toHaveBeenCalled();
+			expect(childProcess.spawn).not.toHaveBeenCalled();
+		});
+
+		it("skips local worktrees unless forced", async () => {
+			const result = await autoUpdateIfAvailable({
+				env: { CODEX_MULTI_AUTH_AUTO_UPDATE: "1" },
+				packageRoot: "C:/work/codex-multi-auth",
+			});
+
+			expect(result.reason).toBe("not-updateable-install");
+			expect(globalThis.fetch).not.toHaveBeenCalled();
+			expect(childProcess.spawn).not.toHaveBeenCalled();
+		});
+
+		it("runs npm update when an update is available", async () => {
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+			mockUpdateProcess(0);
+
+			const result = await autoUpdateIfAvailable({
+				env: { CODEX_MULTI_AUTH_AUTO_UPDATE: "1" },
+				forceCheck: true,
+				forceInstall: true,
+				npmCommand: "npm",
+				platform: "linux",
+			});
+
+			expect(result.reason).toBe("updated");
+			expect(result.updated).toBe(true);
+			expect(childProcess.spawn).toHaveBeenCalledWith(
+				"npm",
+				["update", "-g", "codex-multi-auth"],
+				expect.objectContaining({
+					env: expect.objectContaining({
+						CODEX_MULTI_AUTH_AUTO_UPDATE: "0",
+					}),
+					stdio: "ignore",
+				}),
+			);
+		});
+
+		it("reports npm update failures without throwing", async () => {
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+			mockUpdateProcess(1);
+
+			const result = await autoUpdateIfAvailable({
+				env: { CODEX_MULTI_AUTH_AUTO_UPDATE: "1" },
+				forceCheck: true,
+				forceInstall: true,
+				npmCommand: "npm",
+				platform: "linux",
+			});
+
+			expect(result.reason).toBe("update-failed");
+			expect(result.updated).toBe(false);
+			expect(result.exitCode).toBe(1);
+			expect(logger.warn).toHaveBeenCalledWith(
+				"Auto-update failed",
+				expect.objectContaining({ error: expect.any(String) }),
 			);
 		});
 	});

@@ -88,7 +88,7 @@ Runtime rotation smoke:
 
 ```bash
 codex auth rotation status
-CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1 codex exec "say hello" --model gpt-5-codex
+codex exec "say hello" --model gpt-5-codex
 ```
 
 For live smoke evidence, confirm the official Codex startup/status output uses provider `codex-multi-auth-runtime-proxy` and a localhost Responses URL. Account/quota failures after that point can still prove routing if the provider and localhost path are visible.
@@ -125,7 +125,7 @@ npm test -- test/storage.test.ts test/storage-async.test.ts test/storage-recover
 Key guardrails to watch:
 
 - request invariants stay locked: `stream: true`, `store: false`, and `reasoning.encrypted_content`
-- runtime rotation stays opt-in, loopback-only, and authenticated with local client keys
+- runtime rotation stays default-on, loopback-only, and authenticated with local client keys
 - shadow-home cleanup and sync-back remain safe under Windows-style `EBUSY`/`EPERM` failures
 - storage failures still produce actionable `StorageError` hints
 - linked-worktree and forged-path protections remain covered by `test/paths.test.ts`

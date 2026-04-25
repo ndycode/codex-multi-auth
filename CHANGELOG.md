@@ -7,11 +7,14 @@ This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
-## [Unreleased]
+## [2.0.1] - 2026-04-25
 
 ### Changed
 
-- aligned active documentation with the 2.x wrapper-first architecture, opt-in runtime Responses proxy, reversible Codex app bind, and historical audit snapshot boundaries
+- runtime rotation now defaults on for request-bearing wrapper-launched Codex sessions
+- package install/update now self-heals supported packaged app binds and app launcher routing by default, with environment opt-outs
+- installed packages now run a best-effort daily auto-update check that runs `npm update -g codex-multi-auth` when a newer npm release is available
+- aligned active documentation with the 2.x wrapper-first architecture, default-on runtime Responses proxy, reversible Codex app bind, and historical audit snapshot boundaries
 
 ## [2.0.0] - 2026-04-25
 
@@ -262,4 +265,5 @@ Historical entries from pre-`0.1.0` internal iteration cycles are preserved in:
 [1.3.0]: https://github.com/ndycode/codex-multi-auth/releases/tag/v1.3.0
 [1.3.1]: https://github.com/ndycode/codex-multi-auth/releases/tag/v1.3.1
 [1.3.2]: https://github.com/ndycode/codex-multi-auth/releases/tag/v1.3.2
+[2.0.1]: https://github.com/ndycode/codex-multi-auth/releases/tag/v2.0.1
 [2.0.0]: https://github.com/ndycode/codex-multi-auth/releases/tag/v2.0.0

@@ -29,7 +29,7 @@ Change policy without breaking request flow, account safety, or diagnostics.
 
 - Do not break existing JSON contract shapes unless the contract is explicitly being revised.
 - Do not expose account emails/tokens or stale decoded upstream encoding headers from the runtime proxy.
-- Keep runtime rotation opt-in and loopback-only unless the release plan explicitly changes those invariants.
+- Keep runtime rotation default-on and loopback-only unless the release plan explicitly changes those invariants.
 - If recommendation or routing reasoning changes, update the explain/report output tests too.
 - Keep live-probe behavior and storage mutations covered by tests.
 

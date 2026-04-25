@@ -23,7 +23,7 @@ Codex CLI-first multi-account OAuth manager for the official Codex CLI. The inst
 - Experimental settings tab for staged sync, backup, and refresh-guard controls
 - Forecast, report, fix, and doctor commands for operational safety
 - Runtime counters, budget/cooldown state, and multi-auth probe visibility in `codex auth status` / `codex auth report`
-- Opt-in runtime Responses proxy for live account rotation inside forwarded Codex CLI/app sessions
+- Default-on runtime Responses proxy for live account rotation inside forwarded Codex CLI/app sessions
 - Reversible packaged Codex app bind and user-level launcher routing helpers
 - Flagged account verification and restore flow
 - Session affinity and live account sync controls
@@ -239,10 +239,11 @@ Selected runtime/environment overrides:
 | `CODEX_MULTI_AUTH_DIR` | Override settings/accounts root |
 | `CODEX_MULTI_AUTH_CONFIG_PATH` | Alternate config file path |
 | `CODEX_MODE=0/1` | Disable/enable Codex mode |
-| `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0/1` | Opt in/out of live Responses proxy rotation for forwarded Codex CLI/app sessions |
+| `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0/1` | Opt out/in of live Responses proxy rotation for forwarded Codex CLI/app sessions |
 | `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS=<ms>` | Override automatic Codex app helper idle shutdown |
 | `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0/1` | Opt out/in of packaged Codex app bind self-heal during install/update or rotation enable |
-| `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0/1` | Opt out/in of routing supported app shortcuts during rotation enable |
+| `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0/1` | Opt out/in of routing supported app shortcuts during install/update or rotation enable |
+| `CODEX_MULTI_AUTH_AUTO_UPDATE=0/1` | Opt out/in of best-effort global package auto-update checks |
 | `CODEX_TUI_V2=0/1` | Disable/enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | TUI color profile |
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | TUI glyph style |
@@ -260,7 +261,7 @@ codex auth forecast --live
 
 Responses background mode stays opt-in. Enable `backgroundResponses` in settings or `CODEX_AUTH_BACKGROUND_RESPONSES=1` only for callers that intentionally send `background: true`, because those requests switch from stateless `store=false` routing to stateful `store=true`. See [docs/upgrade.md](docs/upgrade.md) for rollout guidance.
 
-Runtime rotation also stays opt-in. `codex auth rotation enable` persists the setting, starts a localhost-only provider path for future wrapper-launched sessions, and binds supported packaged Codex app installs through a reversible local router. `codex auth rotation disable` turns the setting off and removes the persistent app bind.
+Runtime rotation is enabled by default for request-bearing wrapper-launched Codex sessions. Global install/update self-heals supported packaged Codex app binds and user-level launcher routing when possible, while `codex auth rotation enable` remains the explicit repair command. `codex auth rotation disable` turns the setting off and removes the persistent app bind. Set `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`, `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0`, `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0`, or `CODEX_MULTI_AUTH_AUTO_UPDATE=0` to opt out of the matching default behavior.
 
 ---
 
@@ -346,7 +347,7 @@ codex auth doctor --json
 
 ## Release Notes
 
-- Current stable: [docs/releases/v2.0.0.md](docs/releases/v2.0.0.md)
+- Current stable: [docs/releases/v2.0.1.md](docs/releases/v2.0.1.md)
 - Previous stable: [docs/releases/v1.3.2.md](docs/releases/v1.3.2.md)
 - Earlier stable: [docs/releases/v1.3.1.md](docs/releases/v1.3.1.md)
 - Full release archive: [docs/README.md#release-history](docs/README.md#release-history)

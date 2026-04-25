@@ -1,5 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createLogger } from "./logger.js";
 import { getCodexCacheDir } from "./runtime-paths.js";
 
@@ -10,6 +12,24 @@ const NPM_REGISTRY_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
 const CACHE_DIR = getCodexCacheDir();
 const CACHE_FILE = join(CACHE_DIR, "update-check-cache.json");
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const AUTO_UPDATE_TIMEOUT_MS = 2 * 60 * 1000;
+const AUTO_UPDATE_ENV_NAME = "CODEX_MULTI_AUTH_AUTO_UPDATE";
+const TRUE_VALUES = new Set(["1", "true", "yes"]);
+const FALSE_VALUES = new Set(["0", "false", "no"]);
+const CI_ENV_KEYS = [
+	"CI",
+	"GITHUB_ACTIONS",
+	"GITLAB_CI",
+	"CIRCLECI",
+	"BUILDKITE",
+	"TF_BUILD",
+	"TEAMCITY_VERSION",
+	"JENKINS_URL",
+	"TRAVIS",
+	"APPVEYOR",
+	"BITBUCKET_BUILD_NUMBER",
+	"VITEST",
+];
 
 interface UpdateCheckCache {
   lastCheck: number;
@@ -231,6 +251,131 @@ export interface UpdateCheckResult {
   updateCommand: string;
 }
 
+export interface AutoUpdateResult extends UpdateCheckResult {
+	checked: boolean;
+	updated: boolean;
+	reason:
+		| "disabled"
+		| "not-updateable-install"
+		| "current"
+		| "updated"
+		| "update-failed";
+	exitCode: number | null;
+	error: string | null;
+}
+
+export interface AutoUpdateOptions {
+	env?: NodeJS.ProcessEnv;
+	forceCheck?: boolean;
+	forceInstall?: boolean;
+	npmCommand?: string;
+	packageRoot?: string;
+	platform?: NodeJS.Platform;
+	timeoutMs?: number;
+}
+
+function readOptionalBoolean(value: string | undefined): boolean | null {
+	if (value === undefined || value.trim().length === 0) return null;
+	const normalized = value.trim().toLowerCase();
+	if (TRUE_VALUES.has(normalized)) return true;
+	if (FALSE_VALUES.has(normalized)) return false;
+	return null;
+}
+
+function isCiOrTestEnvironment(env: NodeJS.ProcessEnv): boolean {
+	return CI_ENV_KEYS.some((key) => {
+		const value = env[key];
+		if (value === undefined || value.trim().length === 0) return false;
+		const parsed = readOptionalBoolean(value);
+		return parsed !== false;
+	});
+}
+
+export function isAutoUpdateEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	const override = readOptionalBoolean(env[AUTO_UPDATE_ENV_NAME]);
+	if (override !== null) return override;
+	return !isCiOrTestEnvironment(env);
+}
+
+function getPackageRoot(): string {
+	const moduleDir =
+		typeof import.meta.dirname === "string"
+			? import.meta.dirname
+			: dirname(fileURLToPath(import.meta.url));
+	return join(moduleDir, "..");
+}
+
+export function isUpdateablePackageInstall(
+	packageRoot = getPackageRoot(),
+): boolean {
+	const normalized = packageRoot.replace(/\\/g, "/").toLowerCase();
+	return normalized.endsWith("/node_modules/codex-multi-auth");
+}
+
+function resolveNpmCommand(platform: NodeJS.Platform): string {
+	return platform === "win32" ? "npm.cmd" : "npm";
+}
+
+async function runUpdateCommand(options: {
+	command: string;
+	env: NodeJS.ProcessEnv;
+	platform: NodeJS.Platform;
+	timeoutMs: number;
+}): Promise<{ ok: boolean; exitCode: number | null; error: string | null }> {
+	const args = ["update", "-g", PACKAGE_NAME];
+	return new Promise((resolve) => {
+		let settled = false;
+		const child = spawn(options.command, args, {
+			env: {
+				...process.env,
+				...options.env,
+				[AUTO_UPDATE_ENV_NAME]: "0",
+			},
+			stdio: "ignore",
+			windowsHide: options.platform === "win32",
+		});
+		const finish = (result: {
+			ok: boolean;
+			exitCode: number | null;
+			error: string | null;
+		}) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			resolve(result);
+		};
+		const timeout = setTimeout(() => {
+			try {
+				child.kill();
+			} catch {
+				// Best effort timeout cleanup.
+			}
+			finish({
+				ok: false,
+				exitCode: null,
+				error: `Auto-update timed out after ${options.timeoutMs}ms`,
+			});
+		}, options.timeoutMs);
+		child.once("error", (error) => {
+			finish({
+				ok: false,
+				exitCode: null,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+		child.once("exit", (code, signal) => {
+			finish({
+				ok: code === 0,
+				exitCode: code,
+				error:
+					code === 0
+						? null
+						: `npm update exited with ${code ?? `signal ${signal ?? "unknown"}`}`,
+			});
+		});
+	});
+}
+
 export async function checkForUpdates(force = false): Promise<UpdateCheckResult> {
   const currentVersion = getCurrentVersion();
   const cache = loadCache();
@@ -262,6 +407,79 @@ export async function checkForUpdates(force = false): Promise<UpdateCheckResult>
     latestVersion,
     updateCommand: `npm update -g ${PACKAGE_NAME}`,
   };
+}
+
+export async function autoUpdateIfAvailable(
+	options: AutoUpdateOptions = {},
+): Promise<AutoUpdateResult> {
+	const env = options.env ?? process.env;
+	const currentVersion = getCurrentVersion();
+	const npmCommand =
+		options.npmCommand ?? resolveNpmCommand(options.platform ?? process.platform);
+	const skipped = (
+		reason: AutoUpdateResult["reason"],
+	): AutoUpdateResult => ({
+		checked: false,
+		updated: false,
+		reason,
+		exitCode: null,
+		error: null,
+		hasUpdate: false,
+		currentVersion,
+		latestVersion: null,
+		updateCommand: `npm update -g ${PACKAGE_NAME}`,
+	});
+
+	if (!isAutoUpdateEnabled(env)) {
+		return skipped("disabled");
+	}
+
+	if (
+		!options.forceInstall &&
+		!isUpdateablePackageInstall(options.packageRoot ?? getPackageRoot())
+	) {
+		return skipped("not-updateable-install");
+	}
+
+	const result = await checkForUpdates(options.forceCheck ?? false);
+	if (!result.hasUpdate || !result.latestVersion) {
+		return {
+			...result,
+			checked: true,
+			updated: false,
+			reason: "current",
+			exitCode: null,
+			error: null,
+		};
+	}
+
+	const updateResult = await runUpdateCommand({
+		command: npmCommand,
+		env,
+		platform: options.platform ?? process.platform,
+		timeoutMs: options.timeoutMs ?? AUTO_UPDATE_TIMEOUT_MS,
+	});
+	if (!updateResult.ok) {
+		log.warn("Auto-update failed", { error: updateResult.error });
+		return {
+			...result,
+			checked: true,
+			updated: false,
+			reason: "update-failed",
+			exitCode: updateResult.exitCode,
+			error: updateResult.error,
+		};
+	}
+
+	log.info(`Auto-updated ${PACKAGE_NAME} to v${result.latestVersion}`);
+	return {
+		...result,
+		checked: true,
+		updated: true,
+		reason: "updated",
+		exitCode: updateResult.exitCode,
+		error: null,
+	};
 }
 
 export async function checkAndNotify(

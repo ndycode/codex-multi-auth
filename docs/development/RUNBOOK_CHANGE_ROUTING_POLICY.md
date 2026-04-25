@@ -64,7 +64,7 @@ npm run build
 
 - policy delta is clearly stated
 - request invariants remain covered
-- runtime rotation stays opt-in, loopback-only, and authenticated
+- runtime rotation stays default-on, loopback-only, and authenticated unless the release plan explicitly changes that policy
 - retry or fallback changes have targeted regression tests
 - reviewers can tell whether behavior changed intentionally or accidentally
 - no storage or CLI refactor was mixed into the same change

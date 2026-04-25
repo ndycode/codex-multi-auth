@@ -30,7 +30,7 @@ No. Many users only need the wrapper and `codex auth ...` commands. The plugin-h
 
 ## Is runtime rotation required?
 
-No. Runtime rotation is opt-in. Enable it with `codex auth rotation enable` only when you want forwarded Codex CLI/app sessions to route Responses requests through the local account-rotation proxy.
+Runtime rotation is enabled by default for request-bearing forwarded Codex CLI/app sessions. Disable it with `codex auth rotation disable`, `codexRuntimeRotationProxy=false`, or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` when you need plain official Codex forwarding.
 
 ---
 
