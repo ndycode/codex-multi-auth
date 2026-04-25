@@ -1910,27 +1910,36 @@ function installRuntimeRotationAppServerCliShim(forwardedEnv) {
 	const executablePath = join(shimDir, executableName);
 	const preloadPath = join(shimDir, "codex-multi-auth-app-server-preload.mjs");
 	try {
-		rmSync(executablePath, { force: true });
-	} catch {
-		// Best-effort stale shim cleanup only.
-	}
-	try {
-		linkSync(process.execPath, executablePath);
-	} catch {
-		copyFileSync(process.execPath, executablePath);
-	}
-	if (process.platform !== "win32") {
-		chmodSync(executablePath, 0o755);
-	}
-	writeFileSync(
-		preloadPath,
-		createRuntimeRotationAppServerPreloadSource(fileURLToPath(import.meta.url)),
-		{ encoding: "utf8", mode: 0o600 },
-	);
-	try {
-		chmodSync(preloadPath, 0o600);
-	} catch {
-		// Best-effort only; permission semantics vary by platform.
+		try {
+			rmSync(executablePath, { force: true });
+		} catch {
+			// Best-effort stale shim cleanup only.
+		}
+		try {
+			linkSync(process.execPath, executablePath);
+		} catch {
+			copyFileSync(process.execPath, executablePath);
+		}
+		if (process.platform !== "win32") {
+			chmodSync(executablePath, 0o755);
+		}
+		writeFileSync(
+			preloadPath,
+			createRuntimeRotationAppServerPreloadSource(fileURLToPath(import.meta.url)),
+			{ encoding: "utf8", mode: 0o600 },
+		);
+		try {
+			chmodSync(preloadPath, 0o600);
+		} catch {
+			// Best-effort only; permission semantics vary by platform.
+		}
+	} catch (error) {
+		try {
+			removeDirectoryWithRetry(shimDir);
+		} catch {
+			// Preserve the original installation failure.
+		}
+		throw error;
 	}
 	forwardedEnv.CODEX_CLI_PATH = shimDir;
 	forwardedEnv.NODE_OPTIONS = appendNodeImportOption(
@@ -1939,6 +1948,7 @@ function installRuntimeRotationAppServerCliShim(forwardedEnv) {
 	);
 	forwardedEnv.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY = "0";
 	forwardedEnv[APP_SERVER_ACCOUNT_LABEL_ENV] = "1";
+	return shimDir;
 }
 
 function resolveRuntimeRotationAppHelperStatusPath(env = process.env) {
@@ -2063,6 +2073,7 @@ function createRuntimeRotationAppHelperStatus({
 async function runRuntimeRotationAppHelper() {
 	let proxyServer = null;
 	let shadowContext = null;
+	let appServerShimDir = null;
 	let statusTimer = null;
 	let closing = false;
 	const startedAt = Date.now();
@@ -2090,6 +2101,14 @@ async function runRuntimeRotationAppHelper() {
 			clearInterval(statusTimer);
 		}
 		try {
+			if (appServerShimDir) {
+				try {
+					removeDirectoryWithRetry(appServerShimDir);
+				} catch {
+					// Best-effort shim cleanup only.
+				}
+				appServerShimDir = null;
+			}
 			shadowContext?.cleanup?.();
 		} finally {
 			try {
@@ -2122,7 +2141,7 @@ async function runRuntimeRotationAppHelper() {
 			proxyServer.baseUrl,
 			clientApiKey,
 		);
-		installRuntimeRotationAppServerCliShim(shadowContext.env);
+		appServerShimDir = installRuntimeRotationAppServerCliShim(shadowContext.env);
 		lastRequestCount = proxyServer.getStatus?.().totalRequests ?? 0;
 		publishStatus("running");
 		process.stdout.write(

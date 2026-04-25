@@ -1098,19 +1098,7 @@ describe("codex bin wrapper", () => {
 			expect(existsSync(shadowHomeMatch[1])).toBe(false);
 		}
 		if (cliPathMatch?.[1]) {
-			expect(
-				existsSync(
-					join(
-						cliPathMatch[1],
-						process.platform === "win32" ? "codex.exe" : "codex",
-					),
-				),
-			).toBe(true);
-			expect(
-				existsSync(
-					join(cliPathMatch[1], "codex-multi-auth-app-server-preload.mjs"),
-				),
-			).toBe(true);
+			expect(existsSync(cliPathMatch[1])).toBe(false);
 		}
 	});
 
