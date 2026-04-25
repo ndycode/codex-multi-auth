@@ -1262,7 +1262,7 @@ function readShadowHomeSyncLockOwnerPid(lockPath) {
 
 function removeStaleShadowHomeSyncLock(lockPath) {
 	const ownerPid = readShadowHomeSyncLockOwnerPid(lockPath);
-	if (!ownerPid || isProcessAlive(ownerPid)) {
+	if (ownerPid !== null && isProcessAlive(ownerPid)) {
 		return false;
 	}
 	try {
