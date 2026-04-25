@@ -119,6 +119,10 @@ const PRIVATE_CLIENT_RESPONSE_HEADERS = new Set([
 	"x-codex-multi-auth-account-email",
 	"x-codex-multi-auth-account-id",
 ]);
+const DECODED_UPSTREAM_RESPONSE_HEADERS = new Set([
+	// Node fetch returns decoded bytes while preserving the upstream encoding header.
+	"content-encoding",
+]);
 const ALLOWED_RESPONSES_PATHS = new Set([
 	URL_PATHS.RESPONSES,
 	URL_PATHS.CODEX_RESPONSES,
@@ -240,6 +244,7 @@ function responseHeadersForClient(upstreamHeaders: Headers): Record<string, stri
 		const normalizedKey = key.toLowerCase();
 		if (HOP_BY_HOP_HEADERS.has(normalizedKey)) continue;
 		if (PRIVATE_CLIENT_RESPONSE_HEADERS.has(normalizedKey)) continue;
+		if (DECODED_UPSTREAM_RESPONSE_HEADERS.has(normalizedKey)) continue;
 		headers[key] = value;
 	}
 	return headers;

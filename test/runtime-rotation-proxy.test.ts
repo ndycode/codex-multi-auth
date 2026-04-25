@@ -427,6 +427,32 @@ describe("runtime rotation proxy", () => {
 		expect(JSON.parse(calls[0]?.bodyText ?? "{}")).toEqual(requestBody);
 	});
 
+	it("strips decoded upstream content encoding before forwarding to clients", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { fetchImpl } = createRecordingFetch(
+			() =>
+				new Response('{"ok":true}\n', {
+					status: HTTP_STATUS.OK,
+					headers: {
+						"content-type": "application/json",
+						"content-encoding": "gzip",
+						"content-length": "41",
+					},
+				}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+		});
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(response.headers.get("content-encoding")).toBeNull();
+		expect(response.headers.get("content-length")).toBeNull();
+		expect(await response.text()).toBe('{"ok":true}\n');
+	});
+
 	it("rejects arbitrary local paths that merely end with responses", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now));

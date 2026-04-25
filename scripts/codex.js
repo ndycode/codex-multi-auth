@@ -79,6 +79,10 @@ let shadowHomeSyncMetadataBusyFailuresRemaining = Number.parseInt(
 	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_SYNC_METADATA_BUSY_FAILURES ?? "0",
 	10,
 );
+let shadowHomeSyncLockOwnerWriteFailuresRemaining = Number.parseInt(
+	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_LOCK_OWNER_WRITE_FAILURES ?? "0",
+	10,
+);
 const shadowHomeCleanupRetryMarkerDir =
 	(process.env.CODEX_MULTI_AUTH_TEST_SHADOW_RETRY_MARKER_DIR ?? "").trim();
 let warnedInvalidRuntimeRotationProxyEnv = false;
@@ -945,6 +949,15 @@ function maybeThrowSimulatedShadowHomeSyncMetadataBusyError(targetPath) {
 	}
 }
 
+function maybeThrowSimulatedShadowHomeSyncLockOwnerWriteError() {
+	if (shadowHomeSyncLockOwnerWriteFailuresRemaining > 0) {
+		shadowHomeSyncLockOwnerWriteFailuresRemaining -= 1;
+		const error = new Error("simulated shadow sync lock owner write failure");
+		error.code = "EPERM";
+		throw error;
+	}
+}
+
 function writeShadowHomeCleanupRetryMarker(destinationPath, attempt) {
 	if (shadowHomeCleanupRetryMarkerDir.length === 0) {
 		return;
@@ -1461,6 +1474,7 @@ function removeStaleShadowHomeSyncLock(lockPath) {
 
 function writeShadowHomeSyncLockOwner(lockPath, owner) {
 	const ownerPath = join(lockPath, "owner.json");
+	maybeThrowSimulatedShadowHomeSyncLockOwnerWriteError();
 	writeFileSync(ownerPath, `${JSON.stringify(owner)}\n`, {
 		encoding: "utf8",
 		mode: 0o600,
@@ -1469,6 +1483,23 @@ function writeShadowHomeSyncLockOwner(lockPath, owner) {
 		chmodSync(ownerPath, 0o600);
 	} catch {
 		// Best-effort only; permission semantics vary by platform.
+	}
+}
+
+function writeShadowHomeSyncLockOwnerWithRetry(lockPath, owner) {
+	for (let attempt = 0; attempt <= SHADOW_HOME_CLEANUP_BACKOFF_MS.length; attempt += 1) {
+		try {
+			writeShadowHomeSyncLockOwner(lockPath, owner);
+			return;
+		} catch (error) {
+			if (
+				!isRetryableShadowHomeCleanupError(error) ||
+				attempt === SHADOW_HOME_CLEANUP_BACKOFF_MS.length
+			) {
+				throw error;
+			}
+			sleepSync(SHADOW_HOME_CLEANUP_BACKOFF_MS[attempt]);
+		}
 	}
 }
 
@@ -1482,10 +1513,19 @@ function acquireShadowHomeSyncLock(originalCodexHome) {
 	while (true) {
 		try {
 			mkdirSync(lockPath);
-			writeShadowHomeSyncLockOwner(lockPath, {
-				pid: process.pid,
-				createdAt: Date.now(),
-			});
+			try {
+				writeShadowHomeSyncLockOwnerWithRetry(lockPath, {
+					pid: process.pid,
+					createdAt: Date.now(),
+				});
+			} catch (error) {
+				try {
+					removeDirectoryWithRetry(lockPath);
+				} catch {
+					// Preserve the owner write failure while avoiding orphaned locks when possible.
+				}
+				throw error;
+			}
 			return () => {
 				try {
 					removeDirectoryWithRetry(lockPath);
