@@ -61,6 +61,10 @@ let shadowHomeCleanupPreflightReadBusyFailuresRemaining = Number.parseInt(
 	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_PREFLIGHT_READ_BUSY_FAILURES ?? "0",
 	10,
 );
+let shadowHomeSyncLockRecreateStaleCount = Number.parseInt(
+	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_LOCK_RECREATE_STALE_COUNT ?? "0",
+	10,
+);
 const shadowHomeCleanupRetryMarkerDir =
 	(process.env.CODEX_MULTI_AUTH_TEST_SHADOW_RETRY_MARKER_DIR ?? "").trim();
 let warnedInvalidRuntimeRotationProxyEnv = false;
@@ -1280,6 +1284,15 @@ function removeStaleShadowHomeSyncLock(lockPath) {
 	}
 	try {
 		removeDirectoryWithRetry(lockPath);
+		if (shadowHomeSyncLockRecreateStaleCount > 0) {
+			shadowHomeSyncLockRecreateStaleCount -= 1;
+			mkdirSync(lockPath, { recursive: true });
+			writeFileSync(
+				join(lockPath, "owner.json"),
+				`${JSON.stringify({ pid: 2_147_483_647, createdAt: 1 })}\n`,
+				"utf8",
+			);
+		}
 		return true;
 	} catch {
 		return false;
@@ -1290,7 +1303,10 @@ function acquireShadowHomeSyncLock(originalCodexHome) {
 	const lockPath = join(originalCodexHome, SHADOW_HOME_SYNC_LOCK_DIR);
 	mkdirSync(originalCodexHome, { recursive: true });
 	const lastRetryAttempt = SHADOW_HOME_CLEANUP_BACKOFF_MS.length;
-	for (let attempt = 0; attempt <= lastRetryAttempt + 1; attempt += 1) {
+	const maxStaleRecoveries = SHADOW_HOME_CLEANUP_BACKOFF_MS.length + 1;
+	let staleRecoveries = 0;
+	let attempt = 0;
+	while (attempt <= lastRetryAttempt) {
 		try {
 			mkdirSync(lockPath);
 			writeFileSync(
@@ -1314,15 +1330,21 @@ function acquireShadowHomeSyncLock(originalCodexHome) {
 				throw error;
 			}
 			if (attempt >= lastRetryAttempt) {
-				if (removeStaleShadowHomeSyncLock(lockPath)) {
+				if (
+					staleRecoveries < maxStaleRecoveries &&
+					removeStaleShadowHomeSyncLock(lockPath)
+				) {
+					staleRecoveries += 1;
+					attempt = 0;
 					continue;
 				}
 				throw error;
 			}
 			sleepSync(SHADOW_HOME_CLEANUP_BACKOFF_MS[attempt]);
+			attempt += 1;
 		}
 	}
-	return () => {};
+	throw new Error("Failed to acquire shadow home sync lock");
 }
 
 function syncShadowHomeStateFile(
