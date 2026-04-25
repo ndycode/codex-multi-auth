@@ -33,6 +33,9 @@ import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.j
 const RETRYABLE_SHADOW_HOME_CLEANUP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
 const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];
 const SHADOW_HOME_ORPHAN_LOCK_STALE_AGE_MS = 2_000;
+const SHADOW_HOME_SYNC_LOCK_WAIT_TIMEOUT_MS =
+	SHADOW_HOME_ORPHAN_LOCK_STALE_AGE_MS +
+	SHADOW_HOME_CLEANUP_BACKOFF_MS.reduce((total, value) => total + value, 0);
 const SHADOW_HOME_STATE_FILES = ["auth.json", "accounts.json", ".codex-global-state.json"];
 const RUNTIME_ROTATION_SHADOW_HOME_OMIT_STATE_FILES = new Set([
 	"auth.json",
@@ -1472,11 +1475,11 @@ function writeShadowHomeSyncLockOwner(lockPath, owner) {
 function acquireShadowHomeSyncLock(originalCodexHome) {
 	const lockPath = join(originalCodexHome, SHADOW_HOME_SYNC_LOCK_DIR);
 	mkdirSync(originalCodexHome, { recursive: true });
-	const lastRetryAttempt = SHADOW_HOME_CLEANUP_BACKOFF_MS.length;
 	const maxStaleRecoveries = SHADOW_HOME_CLEANUP_BACKOFF_MS.length + 1;
 	let staleRecoveries = 0;
 	let attempt = 0;
-	while (attempt <= lastRetryAttempt) {
+	const deadline = Date.now() + SHADOW_HOME_SYNC_LOCK_WAIT_TIMEOUT_MS;
+	while (true) {
 		try {
 			mkdirSync(lockPath);
 			writeShadowHomeSyncLockOwner(lockPath, {
@@ -1498,22 +1501,26 @@ function acquireShadowHomeSyncLock(originalCodexHome) {
 			if (code !== "EEXIST") {
 				throw error;
 			}
-			if (attempt >= lastRetryAttempt) {
-				if (
-					staleRecoveries < maxStaleRecoveries &&
-					removeStaleShadowHomeSyncLock(lockPath)
-				) {
-					staleRecoveries += 1;
-					attempt = 0;
-					continue;
-				}
+			if (
+				staleRecoveries < maxStaleRecoveries &&
+				removeStaleShadowHomeSyncLock(lockPath)
+			) {
+				staleRecoveries += 1;
+				attempt = 0;
+				continue;
+			}
+			const remainingMs = deadline - Date.now();
+			if (remainingMs <= 0) {
 				throw error;
 			}
-			sleepSync(SHADOW_HOME_CLEANUP_BACKOFF_MS[attempt]);
+			const backoffMs =
+				SHADOW_HOME_CLEANUP_BACKOFF_MS[
+					Math.min(attempt, SHADOW_HOME_CLEANUP_BACKOFF_MS.length - 1)
+				] ?? SHADOW_HOME_CLEANUP_BACKOFF_MS[0];
+			sleepSync(Math.min(backoffMs, remainingMs));
 			attempt += 1;
 		}
 	}
-	throw new Error("Failed to acquire shadow home sync lock");
 }
 
 function syncShadowHomeStateFile(

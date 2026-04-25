@@ -2354,7 +2354,7 @@ describe("codex bin wrapper", () => {
 		}
 	});
 
-	it("does not steal fresh orphaned shadow sync locks", () => {
+	it("waits for fresh orphaned shadow sync locks to become stale before stealing", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
 			"#!/usr/bin/env node",
@@ -2377,6 +2377,7 @@ describe("codex bin wrapper", () => {
 		const lockDir = join(originalHome, ".codex-multi-auth-shadow-sync.lock");
 		mkdirSync(lockDir, { recursive: true });
 
+		const startedAt = Date.now();
 		const result = runWrapper(
 			fixtureRoot,
 			["exec", "status", "--model", "gpt-5.1"],
@@ -2390,10 +2391,11 @@ describe("codex bin wrapper", () => {
 		);
 
 		expect(result.status).toBe(0);
-		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe('{"token":"original"}');
-		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe('{"accounts":["original"]}');
-		expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"original"}');
-		expect(existsSync(lockDir)).toBe(true);
+		expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_500);
+		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe('{"token":"shadow"}');
+		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe('{"accounts":["shadow"]}');
+		expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"shadow"}');
+		expect(existsSync(lockDir)).toBe(false);
 	});
 
 	it("syncs unchanged auth bundle files when a sibling changes during shadow use", () => {
