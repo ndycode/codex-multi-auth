@@ -1,5 +1,14 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	rmdirSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLogger } from "./logger.js";
@@ -11,11 +20,39 @@ const PACKAGE_NAME = "codex-multi-auth";
 const NPM_REGISTRY_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
 const CACHE_DIR = getCodexCacheDir();
 const CACHE_FILE = join(CACHE_DIR, "update-check-cache.json");
+const AUTO_UPDATE_LOCK_DIR = join(CACHE_DIR, "auto-update.lock");
+const AUTO_UPDATE_LOCK_OWNER_FILE = join(AUTO_UPDATE_LOCK_DIR, "owner.json");
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const AUTO_UPDATE_TIMEOUT_MS = 2 * 60 * 1000;
+const AUTO_UPDATE_LOCK_STALE_MS = 10 * 60 * 1000;
 const AUTO_UPDATE_ENV_NAME = "CODEX_MULTI_AUTH_AUTO_UPDATE";
 const TRUE_VALUES = new Set(["1", "true", "yes"]);
 const FALSE_VALUES = new Set(["0", "false", "no"]);
+const SAFE_SUBPROCESS_ENV_KEYS = new Set([
+	"APPDATA",
+	"COMSPEC",
+	"HOME",
+	"LANG",
+	"LC_ALL",
+	"LC_CTYPE",
+	"LOCALAPPDATA",
+	"NUMBER_OF_PROCESSORS",
+	"OS",
+	"PATH",
+	"PATHEXT",
+	"PROCESSOR_ARCHITECTURE",
+	"PROGRAMFILES",
+	"PROGRAMFILES(X86)",
+	"PROGRAMW6432",
+	"SYSTEMDRIVE",
+	"SYSTEMROOT",
+	"TEMP",
+	"TMP",
+	"USERPROFILE",
+	"WINDIR",
+]);
+const SENSITIVE_SUBPROCESS_ENV_KEY_PATTERN =
+	/(?:AUTH|COOKIE|CREDENTIAL|OPENAI|CHATGPT|PASSWORD|SECRET|SESSION|TOKEN)/i;
 const CI_ENV_KEYS = [
 	"CI",
 	"GITHUB_ACTIONS",
@@ -47,8 +84,9 @@ interface ParsedSemver {
   prerelease: string[];
 }
 
-const RETRYABLE_WRITE_ERRORS = new Set(["EBUSY", "EPERM"]);
+const RETRYABLE_WRITE_ERRORS = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
 let updateCacheWriteQueue: Promise<void> = Promise.resolve();
+let cachedPackageRoot: string | undefined;
 
 function enqueueUpdateCacheWrite(writeTask: () => void): Promise<void> {
 	const queued = updateCacheWriteQueue.catch(() => undefined).then(writeTask);
@@ -257,6 +295,7 @@ export interface AutoUpdateResult extends UpdateCheckResult {
 	reason:
 		| "disabled"
 		| "not-updateable-install"
+		| "already-running"
 		| "current"
 		| "updated"
 		| "update-failed";
@@ -272,6 +311,7 @@ export interface AutoUpdateOptions {
 	packageRoot?: string;
 	platform?: NodeJS.Platform;
 	timeoutMs?: number;
+	onUpdateStart?: (result: UpdateCheckResult) => void;
 }
 
 function readOptionalBoolean(value: string | undefined): boolean | null {
@@ -327,7 +367,8 @@ export function resolvePackageRootFromModuleDir(moduleDir: string): string {
 }
 
 function getPackageRoot(): string {
-	return resolvePackageRootFromModuleDir(getModuleDir());
+	cachedPackageRoot ??= resolvePackageRootFromModuleDir(getModuleDir());
+	return cachedPackageRoot;
 }
 
 export function isUpdateablePackageInstall(
@@ -342,7 +383,31 @@ function resolveNpmCommand(platform: NodeJS.Platform): string {
 }
 
 function quoteCmdArg(value: string): string {
+	if (!/[\s&|<>^"]/.test(value)) return value;
 	return `"${value.replace(/"/g, '""')}"`;
+}
+
+function isSensitiveSubprocessEnvKey(key: string): boolean {
+	return SENSITIVE_SUBPROCESS_ENV_KEY_PATTERN.test(key);
+}
+
+function isSafeSubprocessEnvKey(key: string): boolean {
+	const normalized = key.toUpperCase();
+	if (SAFE_SUBPROCESS_ENV_KEYS.has(normalized)) return true;
+	return normalized.startsWith("NPM_CONFIG_");
+}
+
+function buildAutoUpdateSubprocessEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const mergedEnv = { ...process.env, ...env };
+	const subprocessEnv: NodeJS.ProcessEnv = {};
+	for (const [key, value] of Object.entries(mergedEnv)) {
+		if (value === undefined) continue;
+		if (isSensitiveSubprocessEnvKey(key)) continue;
+		if (!isSafeSubprocessEnvKey(key)) continue;
+		subprocessEnv[key] = value;
+	}
+	subprocessEnv[AUTO_UPDATE_ENV_NAME] = "0";
+	return subprocessEnv;
 }
 
 function resolveUpdateSpawn(options: {
@@ -401,11 +466,7 @@ async function runUpdateCommand(options: {
 		}, options.timeoutMs);
 		try {
 			child = spawn(updateSpawn.command, updateSpawn.args, {
-				env: {
-					...process.env,
-					...options.env,
-					[AUTO_UPDATE_ENV_NAME]: "0",
-				},
+				env: buildAutoUpdateSubprocessEnv(options.env),
 				stdio: "ignore",
 				windowsHide: options.platform === "win32",
 			});
@@ -435,6 +496,115 @@ async function runUpdateCommand(options: {
 			});
 		});
 	});
+}
+
+function removeAutoUpdateLockDirectory(): void {
+	try {
+		unlinkSync(AUTO_UPDATE_LOCK_OWNER_FILE);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code ?? "";
+		if (code !== "ENOENT") {
+			log.debug("Failed to remove auto-update lock owner", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	let lastError: Error | null = null;
+	for (let attempt = 0; attempt < 4; attempt++) {
+		try {
+			rmdirSync(AUTO_UPDATE_LOCK_DIR);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code ?? "";
+			lastError = error as Error;
+			if (!RETRYABLE_WRITE_ERRORS.has(code) || attempt >= 3) {
+				break;
+			}
+			sleepSync(15 * (2 ** attempt));
+		}
+	}
+	if (lastError) {
+		log.debug("Failed to remove auto-update lock", { error: lastError.message });
+	}
+}
+
+function isAutoUpdateLockStale(now = Date.now()): boolean {
+	try {
+		const stats = statSync(AUTO_UPDATE_LOCK_DIR);
+		return now - stats.mtimeMs > AUTO_UPDATE_LOCK_STALE_MS;
+	} catch {
+		return true;
+	}
+}
+
+function writeAutoUpdateLockOwner(): void {
+	writeFileSync(
+		AUTO_UPDATE_LOCK_OWNER_FILE,
+		`${JSON.stringify({
+			pid: process.pid,
+			startedAt: new Date().toISOString(),
+		})}\n`,
+		"utf8",
+	);
+}
+
+function acquireAutoUpdateLock(): (() => void) | null {
+	try {
+		if (!existsSync(CACHE_DIR)) {
+			mkdirSync(CACHE_DIR, { recursive: true });
+		}
+	} catch (error) {
+		log.debug("Failed to prepare auto-update lock directory", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
+	}
+
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			mkdirSync(AUTO_UPDATE_LOCK_DIR);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code ?? "";
+			if (code === "EEXIST" && isAutoUpdateLockStale()) {
+				removeAutoUpdateLockDirectory();
+				continue;
+			}
+			if (code !== "EEXIST") {
+				log.debug("Failed to acquire auto-update lock", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+			return null;
+		}
+
+		try {
+			writeAutoUpdateLockOwner();
+			return removeAutoUpdateLockDirectory;
+		} catch (error) {
+			removeAutoUpdateLockDirectory();
+			log.debug("Failed to write auto-update lock owner", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return null;
+		}
+	}
+
+	return null;
+}
+
+function notifyUpdateStart(
+	callback: AutoUpdateOptions["onUpdateStart"],
+	result: UpdateCheckResult,
+): void {
+	if (!callback) return;
+	try {
+		callback(result);
+	} catch (error) {
+		log.debug("Auto-update start callback failed", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
 }
 
 export async function checkForUpdates(force = false): Promise<UpdateCheckResult> {
@@ -514,33 +684,50 @@ export async function autoUpdateIfAvailable(
 		};
 	}
 
-	const updateResult = await runUpdateCommand({
-		command: npmCommand,
-		env,
-		platform: options.platform ?? process.platform,
-		timeoutMs: options.timeoutMs ?? AUTO_UPDATE_TIMEOUT_MS,
-	});
-	if (!updateResult.ok) {
-		log.warn("Auto-update failed", { error: updateResult.error });
+	const releaseLock = acquireAutoUpdateLock();
+	if (!releaseLock) {
 		return {
 			...result,
 			checked: true,
 			updated: false,
-			reason: "update-failed",
-			exitCode: updateResult.exitCode,
-			error: updateResult.error,
+			reason: "already-running",
+			exitCode: null,
+			error: null,
 		};
 	}
 
-	log.info(`Auto-updated ${PACKAGE_NAME} to v${result.latestVersion}`);
-	return {
-		...result,
-		checked: true,
-		updated: true,
-		reason: "updated",
-		exitCode: updateResult.exitCode,
-		error: null,
-	};
+	try {
+		notifyUpdateStart(options.onUpdateStart, result);
+		const updateResult = await runUpdateCommand({
+			command: npmCommand,
+			env,
+			platform: options.platform ?? process.platform,
+			timeoutMs: options.timeoutMs ?? AUTO_UPDATE_TIMEOUT_MS,
+		});
+		if (!updateResult.ok) {
+			log.warn("Auto-update failed", { error: updateResult.error });
+			return {
+				...result,
+				checked: true,
+				updated: false,
+				reason: "update-failed",
+				exitCode: updateResult.exitCode,
+				error: updateResult.error,
+			};
+		}
+
+		log.info(`Auto-updated ${PACKAGE_NAME} to v${result.latestVersion}`);
+		return {
+			...result,
+			checked: true,
+			updated: true,
+			reason: "updated",
+			exitCode: updateResult.exitCode,
+			error: null,
+		};
+	} finally {
+		releaseLock();
+	}
 }
 
 export async function checkAndNotify(

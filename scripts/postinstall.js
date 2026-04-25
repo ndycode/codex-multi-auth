@@ -245,18 +245,24 @@ async function maybeBindCodexAppOnInstall(rotationEnabled) {
 /**
  * @param {boolean} rotationEnabled
  */
-async function maybeInstallCodexAppLauncherOnInstall(rotationEnabled) {
+export async function maybeInstallCodexAppLauncherOnInstall(rotationEnabled) {
 	if (!shouldAutoInstallCodexAppLauncherOnInstall({ rotationEnabled })) {
 		return;
 	}
 
-	const launcherModule = await import("./codex-app-launcher.js");
-	if (typeof launcherModule.installCodexAppLauncher !== "function") {
-		return;
+	try {
+		const launcherModule = await import("./codex-app-launcher.js");
+		if (typeof launcherModule.installCodexAppLauncher !== "function") {
+			return;
+		}
+		await launcherModule.installCodexAppLauncher({
+			log: (message) => console.error(`codex-multi-auth: ${message}`),
+		});
+	} catch (error) {
+		console.error(
+			`codex-multi-auth: app launcher postinstall skipped: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
-	await launcherModule.installCodexAppLauncher({
-		log: (message) => console.error(`codex-multi-auth: ${message}`),
-	});
 }
 
 async function main() {
@@ -278,7 +284,7 @@ const isDirectRun = (() => {
 if (isDirectRun) {
 	main().catch((error) => {
 		console.error(
-			`codex-multi-auth: app bind postinstall skipped: ${error instanceof Error ? error.message : String(error)}`,
+			`codex-multi-auth: postinstall self-heal skipped: ${error instanceof Error ? error.message : String(error)}`,
 		);
 		process.exitCode = 0;
 	});

@@ -13,7 +13,7 @@ This top-level changelog preserves the foundational `0.x` milestones and points 
 
 - runtime rotation now defaults on for request-bearing wrapper-launched Codex sessions
 - package install/update now self-heals supported packaged app binds and app launcher routing by default, with environment opt-outs
-- installed packages now run a best-effort daily auto-update check that runs `npm update -g codex-multi-auth` when a newer npm release is available
+- installed packages now run a best-effort daily auto-update check that runs `npm update -g codex-multi-auth` when a newer npm release is available; set `CODEX_MULTI_AUTH_AUTO_UPDATE=0` to disable it
 - aligned active documentation with the 2.x wrapper-first architecture, default-on runtime Responses proxy, reversible Codex app bind, and historical audit snapshot boundaries
 
 ## [2.0.0] - 2026-04-25

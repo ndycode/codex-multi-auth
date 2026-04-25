@@ -530,6 +530,26 @@ describe("codex app bind postinstall gate", () => {
 		expect(
 			resolveRotationEnabled(
 				{
+					loadPluginConfig: () => ({}),
+					getCodexRuntimeRotationProxy: () => true,
+				},
+				{},
+			),
+		).toBe(true);
+		expect(
+			resolveRotationEnabled(
+				{
+					loadPluginConfig: () => ({ codexRuntimeRotationProxy: true }),
+					getCodexRuntimeRotationProxy: () => true,
+				},
+				{
+					CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+				},
+			),
+		).toBe(false);
+		expect(
+			resolveRotationEnabled(
+				{
 					loadPluginConfig: () => ({ codexRuntimeRotationProxy: false }),
 					getCodexRuntimeRotationProxy: () => false,
 				},

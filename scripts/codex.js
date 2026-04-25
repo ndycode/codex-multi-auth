@@ -260,7 +260,15 @@ async function autoUpdatePackageIfEnabled() {
 		if (typeof mod.autoUpdateIfAvailable !== "function") {
 			return;
 		}
-		const result = await mod.autoUpdateIfAvailable();
+		const result = await mod.autoUpdateIfAvailable({
+			onUpdateStart: (update) => {
+				if (update?.latestVersion) {
+					console.error(
+						`codex-multi-auth: auto-update found ${update.latestVersion}; running npm update -g codex-multi-auth before startup.`,
+					);
+				}
+			},
+		});
 		if (result?.updated && result.latestVersion) {
 			console.error(
 				`codex-multi-auth: auto-updated to ${result.latestVersion}. New sessions will use the latest package.`,

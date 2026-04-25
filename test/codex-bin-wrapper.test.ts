@@ -3593,6 +3593,78 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).toContain("FORWARDED:auth status");
 	});
 
+	it("skips startup auto-update loading when bypass is set", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		const markerPath = join(fixtureRoot, "auto-update-loaded.txt");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "auto-update-checker.js"),
+			[
+				'import { writeFileSync } from "node:fs";',
+				"writeFileSync(process.env.CODEX_MULTI_AUTH_AUTO_UPDATE_MARKER, 'loaded', 'utf8');",
+				"export async function autoUpdateIfAvailable() {",
+				"\treturn { updated: false };",
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["--version"], {
+			CODEX_MULTI_AUTH_AUTO_UPDATE_MARKER: markerPath,
+			CODEX_MULTI_AUTH_BYPASS: "1",
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED:--version");
+		expect(existsSync(markerPath)).toBe(false);
+	});
+
+	it("ignores missing startup auto-update checker builds", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+
+		const result = runWrapper(fixtureRoot, ["--version"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED:--version");
+		expect(result.stderr).not.toContain("auto-update skipped");
+	});
+
+	it("logs startup auto-update progress and successful updates", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "auto-update-checker.js"),
+			[
+				"export async function autoUpdateIfAvailable(options) {",
+				"\toptions?.onUpdateStart?.({ latestVersion: '9.9.9' });",
+				"\treturn { updated: true, latestVersion: '9.9.9' };",
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["--version"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED:--version");
+		expect(result.stderr).toContain(
+			"codex-multi-auth: auto-update found 9.9.9; running npm update -g codex-multi-auth before startup.",
+		);
+		expect(result.stderr).toContain(
+			"codex-multi-auth: auto-updated to 9.9.9. New sessions will use the latest package.",
+		);
+	});
+
 	it("syncs manager active selection before and after forwarded commands", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
