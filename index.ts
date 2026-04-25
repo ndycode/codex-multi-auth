@@ -323,6 +323,7 @@ function currentMarkerLabel(marker: AccountCurrentMarker): string {
 function appendQuotaStatusMarkers(
 	statuses: string[],
 	quotaEntry: QuotaCacheEntry | null,
+	now = Date.now(),
 ): void {
 	if (
 		quotaEntry?.status === 429 &&
@@ -330,7 +331,7 @@ function appendQuotaStatusMarkers(
 	) {
 		statuses.push("rate-limited");
 	}
-	if (isQuotaCacheEntryExhausted(quotaEntry)) {
+	if (isQuotaCacheEntryExhausted(quotaEntry, now)) {
 		statuses.push("quota-exhausted");
 	}
 }
@@ -3496,7 +3497,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							if (quotaEntry?.status === 429 && !rateLimit) {
 								badges.push(formatUiBadge(ui, "rate-limited", "warning"));
 							}
-							if (isQuotaCacheEntryExhausted(quotaEntry)) {
+							if (isQuotaCacheEntryExhausted(quotaEntry, now)) {
 								badges.push(formatUiBadge(ui, "quota-exhausted", "warning"));
 							}
 							if (
@@ -3568,7 +3569,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							).map(currentMarkerLabel),
 						);
 						if (rateLimit) statuses.push("rate-limited");
-						appendQuotaStatusMarkers(statuses, quotaEntry);
+						appendQuotaStatusMarkers(statuses, quotaEntry, now);
 						if (
 							typeof account.coolingDownUntil === "number" &&
 							account.coolingDownUntil > now
@@ -3770,7 +3771,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								badges.push(formatUiBadge(ui, "rate-limited", "warning"));
 							if (quotaEntry?.status === 429 && rateLimit === "none")
 								badges.push(formatUiBadge(ui, "rate-limited", "warning"));
-							if (isQuotaCacheEntryExhausted(quotaEntry))
+							if (isQuotaCacheEntryExhausted(quotaEntry, now))
 								badges.push(formatUiBadge(ui, "quota-exhausted", "warning"));
 							if (cooldown !== "none")
 								badges.push(formatUiBadge(ui, "cooldown", "warning"));
@@ -3864,7 +3865,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						if (rateLimit !== "None" || quotaEntry?.status === 429) {
 							quotaStatuses.push("rate-limited");
 						}
-						if (isQuotaCacheEntryExhausted(quotaEntry)) {
+						if (isQuotaCacheEntryExhausted(quotaEntry, now)) {
 							quotaStatuses.push("quota-exhausted");
 						}
 						const rateLimitDisplay =

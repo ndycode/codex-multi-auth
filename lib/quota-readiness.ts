@@ -3,7 +3,7 @@ import type { AccountMetadataV3 } from "./storage.js";
 
 export type QuotaCacheAccountRef = Pick<AccountMetadataV3, "accountId" | "email">;
 
-type QuotaWindowLike = Pick<QuotaCacheWindow, "usedPercent">;
+type QuotaWindowLike = Pick<QuotaCacheWindow, "usedPercent" | "resetAtMs">;
 
 function normalizeAccountId(value: string | undefined): string | null {
 	const trimmed = value?.trim();
@@ -54,19 +54,26 @@ export function quotaLeftPercentFromUsed(
 	return Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
 }
 
-function quotaWindowIsExhausted(window: QuotaWindowLike | undefined): boolean {
+function quotaWindowIsExhausted(
+	window: QuotaWindowLike | undefined,
+	now = Date.now(),
+): boolean {
+	if (typeof window?.resetAtMs === "number" && now >= window.resetAtMs) {
+		return false;
+	}
 	const leftPercent = quotaLeftPercentFromUsed(window?.usedPercent);
 	return typeof leftPercent === "number" && leftPercent <= 0;
 }
 
 export function isQuotaCacheEntryExhausted(
 	entry: Pick<QuotaCacheEntry, "primary" | "secondary"> | null | undefined,
+	now = Date.now(),
 ): boolean {
 	// Codex quota windows are cumulative gates: a 0% remaining active window blocks use
 	// even if another window still has quota left.
 	return (
-		quotaWindowIsExhausted(entry?.primary) ||
-		quotaWindowIsExhausted(entry?.secondary)
+		quotaWindowIsExhausted(entry?.primary, now) ||
+		quotaWindowIsExhausted(entry?.secondary, now)
 	);
 }
 

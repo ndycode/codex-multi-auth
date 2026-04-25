@@ -273,6 +273,14 @@ function readStartupAutoUpdateBudgetMs() {
 		: DEFAULT_STARTUP_AUTO_UPDATE_BUDGET_MS;
 }
 
+function resolveStartupAutoUpdateTimeouts(budgetMs) {
+	const fetchTimeoutMs = Math.max(1, Math.floor(budgetMs * 0.4));
+	return {
+		fetchTimeoutMs,
+		updateTimeoutMs: Math.max(1, budgetMs - fetchTimeoutMs),
+	};
+}
+
 function isModuleNotFoundError(error) {
 	return (
 		error &&
@@ -321,18 +329,20 @@ function logStartupAutoUpdateDebug(message) {
 async function autoUpdatePackageIfEnabled(rawArgs, normalizedArgs) {
 	if (!shouldRunStartupAutoUpdate(rawArgs, normalizedArgs)) return;
 	const budgetMs = readStartupAutoUpdateBudgetMs();
+	const { fetchTimeoutMs, updateTimeoutMs } =
+		resolveStartupAutoUpdateTimeouts(budgetMs);
 	try {
 		const mod = await import("../dist/lib/auto-update-checker.js");
 		if (typeof mod.autoUpdateIfAvailable !== "function") {
 			return;
 		}
 		const updatePromise = mod.autoUpdateIfAvailable({
-			fetchTimeoutMs: budgetMs,
-			timeoutMs: budgetMs,
+			fetchTimeoutMs,
+			timeoutMs: updateTimeoutMs,
 			onUpdateStart: (update) => {
 				if (!update?.latestVersion) return;
 				console.error(
-					`codex-multi-auth: auto-update found ${update.latestVersion}; running npm update -g codex-multi-auth before startup.`,
+					`codex-multi-auth: auto-update found ${update.latestVersion}; starting npm update -g codex-multi-auth. Startup will continue if it exceeds ${budgetMs}ms.`,
 				);
 			},
 		});

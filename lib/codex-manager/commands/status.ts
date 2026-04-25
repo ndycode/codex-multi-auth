@@ -204,7 +204,7 @@ export async function runStatusCommand(
 		if (quotaEntry?.status === 429 && !markers.includes("rate-limited")) {
 			markers.push("rate-limited");
 		}
-		if (isQuotaCacheEntryExhausted(quotaEntry)) {
+		if (isQuotaCacheEntryExhausted(quotaEntry, now)) {
 			markers.push("quota-exhausted");
 		}
 		const cooldown = formatCooldown(account, now);

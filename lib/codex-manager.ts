@@ -624,7 +624,10 @@ function quotaLeftPercentFromUsed(
 	return Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
 }
 
-function formatCompactQuotaSnapshot(snapshot: CodexQuotaSnapshot): string {
+function formatCompactQuotaSnapshot(
+	snapshot: CodexQuotaSnapshot,
+	now = Date.now(),
+): string {
 	const parts = [
 		formatCompactQuotaPart(
 			snapshot.primary.windowMinutes,
@@ -640,7 +643,7 @@ function formatCompactQuotaSnapshot(snapshot: CodexQuotaSnapshot): string {
 	if (snapshot.status === 429) {
 		parts.push("rate-limited");
 	}
-	if (isQuotaCacheEntryExhausted(snapshot)) {
+	if (isQuotaCacheEntryExhausted(snapshot, now)) {
 		parts.push("quota-exhausted");
 	}
 	if (parts.length > 0) {
@@ -649,7 +652,10 @@ function formatCompactQuotaSnapshot(snapshot: CodexQuotaSnapshot): string {
 	return formatQuotaSnapshotLine(snapshot);
 }
 
-function formatAccountQuotaSummary(entry: QuotaCacheEntry): string {
+function formatAccountQuotaSummary(
+	entry: QuotaCacheEntry,
+	now = Date.now(),
+): string {
 	const parts = [
 		formatCompactQuotaPart(
 			entry.primary.windowMinutes,
@@ -665,7 +671,7 @@ function formatAccountQuotaSummary(entry: QuotaCacheEntry): string {
 	if (entry.status === 429) {
 		parts.push("rate-limited");
 	}
-	if (isQuotaCacheEntryExhausted(entry)) {
+	if (isQuotaCacheEntryExhausted(entry, now)) {
 		parts.push("quota-exhausted");
 	}
 	if (parts.length > 0) {
@@ -1014,7 +1020,7 @@ function mapAccountStatus(
 	) {
 		return "cooldown";
 	}
-	if (persistedQuotaEntry && isQuotaCacheEntryExhausted(persistedQuotaEntry)) {
+	if (persistedQuotaEntry && isQuotaCacheEntryExhausted(persistedQuotaEntry, now)) {
 		return "quota-exhausted";
 	}
 	if (persistedQuotaEntry?.status === 429) return "rate-limited";
@@ -1181,7 +1187,7 @@ function toExistingAccountInfo(
 			activeIndex,
 			runtimeCurrent,
 		);
-		const quotaExhausted = entry ? isQuotaCacheEntryExhausted(entry) : false;
+		const quotaExhausted = entry ? isQuotaCacheEntryExhausted(entry, now) : false;
 		return {
 			index,
 			sourceIndex: index,
@@ -1193,7 +1199,7 @@ function toExistingAccountInfo(
 			status: mapAccountStatus(account, isCurrentAccount, now, entry),
 			quotaSummary:
 				(displaySettings.menuShowQuotaSummary ?? true) && entry
-					? formatAccountQuotaSummary(entry)
+					? formatAccountQuotaSummary(entry, now)
 					: undefined,
 			quota5hLeftPercent: quotaLeftPercentFromUsed(entry?.primary.usedPercent),
 			quota5hResetAtMs: entry?.primary.resetAtMs,

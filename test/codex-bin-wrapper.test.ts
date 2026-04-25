@@ -3698,7 +3698,7 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).toContain("FORWARDED:exec status");
 		expect(result.stderr).not.toContain("auto-update skipped");
 		expect(result.stderr).not.toContain(
-			"codex-multi-auth: auto-update found 9.9.9; running npm update -g codex-multi-auth before startup.",
+			"codex-multi-auth: auto-update found 9.9.9; starting npm update -g codex-multi-auth.",
 		);
 		expect(result.stderr).not.toContain(
 			"codex-multi-auth: auto-updated to 9.9.9. New sessions will use the latest package.",
@@ -3709,11 +3709,14 @@ describe("codex bin wrapper", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
 		const distLibDir = join(fixtureRoot, "dist", "lib");
+		const optionsPath = join(fixtureRoot, "auto-update-options.json");
 		mkdirSync(distLibDir, { recursive: true });
 		writeFileSync(
 			join(distLibDir, "auto-update-checker.js"),
 			[
+				'import { writeFileSync } from "node:fs";',
 				"export async function autoUpdateIfAvailable(options) {",
+				"\twriteFileSync(process.env.CODEX_MULTI_AUTH_AUTO_UPDATE_OPTIONS, JSON.stringify({ fetchTimeoutMs: options.fetchTimeoutMs, timeoutMs: options.timeoutMs }), 'utf8');",
 				"\toptions?.onUpdateStart?.({ latestVersion: '9.9.9' });",
 				"\treturn { updated: true, latestVersion: '9.9.9' };",
 				"}",
@@ -3722,13 +3725,18 @@ describe("codex bin wrapper", () => {
 		);
 
 		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_AUTO_UPDATE_OPTIONS: optionsPath,
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 		});
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("FORWARDED:exec status");
+		expect(JSON.parse(readFileSync(optionsPath, "utf8"))).toEqual({
+			fetchTimeoutMs: 1200,
+			timeoutMs: 1800,
+		});
 		expect(result.stderr).toContain(
-			"codex-multi-auth: auto-update found 9.9.9; running npm update -g codex-multi-auth before startup.",
+			"codex-multi-auth: auto-update found 9.9.9; starting npm update -g codex-multi-auth. Startup will continue if it exceeds 3000ms.",
 		);
 		expect(result.stderr).toContain(
 			"codex-multi-auth: auto-updated to 9.9.9. New sessions will use the latest package.",

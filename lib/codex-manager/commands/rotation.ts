@@ -292,7 +292,7 @@ async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 		) {
 			markers.push("rate-limited");
 		}
-		if (isQuotaCacheEntryExhausted(quotaEntry)) {
+		if (isQuotaCacheEntryExhausted(quotaEntry, now)) {
 			markers.push("quota-exhausted");
 		}
 		const markerLabel = markers.length > 0 ? ` [${markers.join(", ")}]` : "";
