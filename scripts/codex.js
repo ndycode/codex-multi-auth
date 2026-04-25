@@ -715,6 +715,7 @@ function forwardToRealCodexOnce(
 				child.stdout?.removeListener("data", onChildStdoutData);
 				child.stdout?.removeListener("end", onChildStdoutEnd);
 				child.stderr?.removeListener("data", onChildStderrData);
+				process.stdin.resume();
 			};
 			process.stdin.on("data", onProcessStdinData);
 			process.stdin.once("end", onProcessStdinEnd);

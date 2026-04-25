@@ -1062,6 +1062,18 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).toContain('"ok":true');
 	});
 
+	it("resumes process stdin when cleaning up app-server protocol proxy listeners", () => {
+		const source = readFileSync(
+			join(repoRootDir, "scripts", "codex.js"),
+			"utf8",
+		);
+		const cleanupMatch = source.match(
+			/cleanupProtocolProxy = \(\) => \{[\s\S]*?child\.stderr\?\.removeListener\("data", onChildStderrData\);[\s\S]*?\};/,
+		);
+
+		expect(cleanupMatch?.[0]).toContain("process.stdin.resume();");
+	});
+
 	it("suppresses app-server account/read errors with a synthetic multi-auth account", () => {
 		const fixtureRoot = createWrapperFixture();
 		createRuntimeRotationProxyFixtureModule(fixtureRoot);
