@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "../scripts/codex-routing.js";
+import {
+	AUTH_SUBCOMMANDS,
+	normalizeAuthAlias,
+	shouldHandleMultiAuthAuth,
+} from "../scripts/codex-routing.js";
 
 describe("codex routing helpers", () => {
 	it("normalizes supported auth aliases", () => {
@@ -15,5 +19,33 @@ describe("codex routing helpers", () => {
 		expect(shouldHandleMultiAuthAuth(["auth", "--help"])).toBe(true);
 		expect(shouldHandleMultiAuthAuth(["auth", "unknown-subcommand"])).toBe(false);
 		expect(shouldHandleMultiAuthAuth(["status"])).toBe(false);
+	});
+
+	it("keeps wrapper auth routing aligned with manager subcommands", () => {
+		const managerSubcommands = [
+			"login",
+			"list",
+			"status",
+			"switch",
+			"check",
+			"features",
+			"verify-flagged",
+			"forecast",
+			"best",
+			"report",
+			"rotation",
+			"why-selected",
+			"verify",
+			"fix",
+			"doctor",
+			"config",
+			"init-config",
+			"debug",
+		];
+
+		for (const subcommand of managerSubcommands) {
+			expect(AUTH_SUBCOMMANDS.has(subcommand), subcommand).toBe(true);
+			expect(shouldHandleMultiAuthAuth(["auth", subcommand]), subcommand).toBe(true);
+		}
 	});
 });
