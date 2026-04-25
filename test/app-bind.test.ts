@@ -449,6 +449,9 @@ describe("Codex app runtime rotation bind", () => {
 
 		expect(result.status.state?.port).toBe(54321);
 		expect(result.status.state?.baseUrl).toBe("http://127.0.0.1:54321");
+		if (process.platform !== "win32") {
+			expect(statSync(result.status.paths.logPath).mode & 0o777).toBe(0o600);
+		}
 		const config = await readFile(join(codexHome, "config.toml"), "utf8");
 		expect(config).toContain('base_url = "http://127.0.0.1:54321"');
 		expect(config).toContain(

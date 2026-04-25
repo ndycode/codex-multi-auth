@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import process from "node:process";
 
@@ -71,6 +71,7 @@ function writeStatus(statusPath, payload) {
 			encoding: "utf8",
 			mode: 0o600,
 		});
+		chmodSync(statusPath, 0o600);
 	} catch {
 		// Status is best-effort. The router should keep serving if telemetry is locked.
 	}

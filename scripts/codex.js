@@ -1875,20 +1875,41 @@ function installRuntimeRotationAppServerCliShim(forwardedEnv) {
 	if (!shadowCodexHome) {
 		throw new Error("runtime app-server shim requires CODEX_HOME");
 	}
-	const shimDir = join(shadowCodexHome, "app-server-shim");
+	const multiAuthDir =
+		resolveOriginalMultiAuthDir(forwardedEnv) ??
+		join(resolveRuntimeRotationProxyOriginalCodexHome(forwardedEnv), "multi-auth");
+	const shimDir = join(
+		multiAuthDir,
+		"app-server-shims",
+		`helper-${process.pid}`,
+	);
 	mkdirSync(shimDir, { recursive: true });
 	const executableName = process.platform === "win32" ? "codex.exe" : "codex";
 	const executablePath = join(shimDir, executableName);
 	const preloadPath = join(shimDir, "codex-multi-auth-app-server-preload.mjs");
-	copyFileSync(process.execPath, executablePath);
+	try {
+		rmSync(executablePath, { force: true });
+	} catch {
+		// Best-effort stale shim cleanup only.
+	}
+	try {
+		linkSync(process.execPath, executablePath);
+	} catch {
+		copyFileSync(process.execPath, executablePath);
+	}
 	if (process.platform !== "win32") {
 		chmodSync(executablePath, 0o755);
 	}
 	writeFileSync(
 		preloadPath,
 		createRuntimeRotationAppServerPreloadSource(fileURLToPath(import.meta.url)),
-		"utf8",
+		{ encoding: "utf8", mode: 0o600 },
 	);
+	try {
+		chmodSync(preloadPath, 0o600);
+	} catch {
+		// Best-effort only; permission semantics vary by platform.
+	}
 	forwardedEnv.CODEX_CLI_PATH = shimDir;
 	forwardedEnv.NODE_OPTIONS = appendNodeImportOption(
 		forwardedEnv.NODE_OPTIONS,

@@ -1037,7 +1037,7 @@ describe("codex bin wrapper", () => {
 		);
 		const apiKeyMatch = output.match(/^OPENAI_API_KEY:([0-9a-f]{64})$/m);
 		expect(apiKeyMatch?.[1]).toBeTruthy();
-		expect(output).toMatch(/^CODEX_CLI_PATH:.+app-server-shim$/m);
+		expect(output).toMatch(/^CODEX_CLI_PATH:.+app-server-shims.+helper-\d+$/m);
 		expect(output).toContain("APP_SERVER_LABEL:1");
 		expect(output).toContain("RUNTIME_PROXY_ENV:0");
 		expect(output).toContain("NODE_OPTIONS_HAS_APP_SERVER_PRELOAD:true");
@@ -1054,6 +1054,11 @@ describe("codex bin wrapper", () => {
 		expect(output).not.toContain("env_key");
 		const shadowHomeMatch = output.match(/^CODEX_HOME:(.+)$/m);
 		expect(shadowHomeMatch?.[1]).toBeTruthy();
+		const cliPathMatch = output.match(/^CODEX_CLI_PATH:(.+)$/m);
+		expect(cliPathMatch?.[1]).toBeTruthy();
+		if (cliPathMatch?.[1] && shadowHomeMatch?.[1]) {
+			expect(cliPathMatch[1].startsWith(shadowHomeMatch[1])).toBe(false);
+		}
 
 		await sleep(2200);
 
@@ -1085,6 +1090,21 @@ describe("codex bin wrapper", () => {
 		}
 		if (shadowHomeMatch?.[1]) {
 			expect(existsSync(shadowHomeMatch[1])).toBe(false);
+		}
+		if (cliPathMatch?.[1]) {
+			expect(
+				existsSync(
+					join(
+						cliPathMatch[1],
+						process.platform === "win32" ? "codex.exe" : "codex",
+					),
+				),
+			).toBe(true);
+			expect(
+				existsSync(
+					join(cliPathMatch[1], "codex-multi-auth-app-server-preload.mjs"),
+				),
+			).toBe(true);
 		}
 	});
 

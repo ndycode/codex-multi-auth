@@ -614,7 +614,7 @@ async function removeAppBindStartup(state: AppBindState): Promise<void> {
 
 function spawnRouter(state: AppBindState): void {
 	mkdirSync(dirname(state.logPath), { recursive: true });
-	const logFd = openSync(state.logPath, "a");
+	const logFd = openSync(state.logPath, "a", 0o600);
 	try {
 		const child = spawn(
 			state.nodePath,
