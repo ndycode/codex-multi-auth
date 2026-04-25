@@ -909,7 +909,7 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).toContain('"ok":true');
 	});
 
-	it("clears pending app-server account/read ids when the response is an error", () => {
+	it("suppresses app-server account/read errors with a synthetic multi-auth account", () => {
 		const fixtureRoot = createWrapperFixture();
 		createRuntimeRotationProxyFixtureModule(fixtureRoot);
 		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
@@ -919,15 +919,7 @@ describe("codex bin wrapper", () => {
 			'rl.on("line", (line) => {',
 			"  const message = JSON.parse(line);",
 			'  if (message.method === "account/read") {',
-			'    console.log(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "upstream failed" } }));',
-			"    console.log(JSON.stringify({",
-			'      jsonrpc: "2.0",',
-			"      id: message.id,",
-			"      result: {",
-			'        account: { type: "chatgpt", email: "real-user@example.com", planType: "plus" },',
-			"        requiresOpenaiAuth: true,",
-			"      },",
-			"    }));",
+			'    console.log(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "Your access token could not be refreshed because your refresh token was already used" } }));',
 			"  }",
 			"});",
 			'rl.on("close", () => process.exit(0));',
@@ -955,9 +947,78 @@ describe("codex bin wrapper", () => {
 		);
 
 		expect(result.status).toBe(0);
-		expect(result.stdout).toContain('"error":{"code":-32000');
-		expect(result.stdout).toContain("real-user@example.com");
-		expect(result.stdout).not.toContain("codex-multi-auth");
+		expect(result.stdout).toContain("codex-multi-auth");
+		expect(result.stdout).toContain('"requiresOpenaiAuth":false');
+		expect(result.stdout).not.toContain('"error"');
+		expect(result.stdout).not.toContain("refresh token was already used");
+	});
+
+	it("rewrites app-server auth status and rate-limit responses to avoid ChatGPT auth prompts", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const readline = require("node:readline");',
+			'const rl = readline.createInterface({ input: process.stdin });',
+			'rl.on("line", (line) => {',
+			"  const message = JSON.parse(line);",
+			'  if (message.method === "getAuthStatus") {',
+			'    console.log(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "chatgpt refresh failed" } }));',
+			"    return;",
+			"  }",
+			'  if (message.method === "account/rateLimits/read") {',
+			'    console.log(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "rate limits need chatgpt auth" } }));',
+			"    return;",
+			"  }",
+			'  console.log(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { ok: true } }));',
+			"});",
+			'rl.on("close", () => process.exit(0));',
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+		const input = [
+			JSON.stringify({
+				jsonrpc: "2.0",
+				id: "auth-status",
+				method: "getAuthStatus",
+				params: { includeToken: true, refreshToken: true },
+			}),
+			JSON.stringify({
+				jsonrpc: "2.0",
+				id: "rate-limits",
+				method: "account/rateLimits/read",
+			}),
+			JSON.stringify({
+				jsonrpc: "2.0",
+				id: "other",
+				method: "thread/list",
+				params: {},
+			}),
+			"",
+		].join("\n");
+
+		const result = runWrapperWithInput(
+			fixtureRoot,
+			["app-server", "--listen", "stdio://"],
+			input,
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				OPENAI_API_KEY: undefined,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain('"authMethod":"apikey"');
+		expect(result.stdout).toContain('"authToken":null');
+		expect(result.stdout).toContain('"requiresOpenaiAuth":false');
+		expect(result.stdout).toContain('"id":"rate-limits"');
+		expect(result.stdout).toContain('"rateLimitsByLimitId":null');
+		expect(result.stdout).not.toContain("chatgpt refresh failed");
+		expect(result.stdout).not.toContain("rate limits need chatgpt auth");
+		expect(result.stdout).toContain('"id":"other"');
 	});
 
 	it.each([
@@ -1002,6 +1063,12 @@ describe("codex bin wrapper", () => {
 			'console.log(`APP_SERVER_LABEL:${process.env.CODEX_MULTI_AUTH_APP_SERVER_ACCOUNT_LABEL ?? ""}`);',
 			'console.log(`RUNTIME_PROXY_ENV:${process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY ?? ""}`);',
 			'console.log(`NODE_OPTIONS_HAS_APP_SERVER_PRELOAD:${(process.env.NODE_OPTIONS ?? "").includes("codex-multi-auth-app-server-preload.mjs")}`);',
+			'console.log(`SHADOW_AUTH_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "auth.json"))}`);',
+			'console.log(`SHADOW_ACCOUNTS_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "accounts.json"))}`);',
+			'console.log(`SHADOW_SESSIONS_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "sessions"))}`);',
+			'console.log(`SHADOW_PLUGINS_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "plugins"))}`);',
+			'console.log(`SHADOW_SKILLS_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "skills"))}`);',
+			'console.log(`SHADOW_MEMORY_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "memory"))}`);',
 			"Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1200);",
 			'const shimExe = path.join(process.env.CODEX_CLI_PATH ?? "", process.platform === "win32" ? "codex.exe" : "codex");',
 			'const shimResult = spawnSync(shimExe, ["app-server", "--shim-probe"], { encoding: "utf8", env: process.env });',
@@ -1017,6 +1084,24 @@ describe("codex bin wrapper", () => {
 		const markerPath = join(fixtureRoot, "proxy-marker.txt");
 		mkdirSync(originalHome, { recursive: true });
 		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+		writeFileSync(
+			join(originalHome, "auth.json"),
+			'{"tokens":{"refresh_token":"stale-refresh-token"}}\n',
+			"utf8",
+		);
+		writeFileSync(
+			join(originalHome, "accounts.json"),
+			'{"accounts":[{"email":"real-user@example.com"}]}\n',
+			"utf8",
+		);
+		mkdirSync(join(originalHome, "sessions"), { recursive: true });
+		mkdirSync(join(originalHome, "plugins"), { recursive: true });
+		mkdirSync(join(originalHome, "skills"), { recursive: true });
+		mkdirSync(join(originalHome, "memory"), { recursive: true });
+		writeFileSync(join(originalHome, "sessions", "session.jsonl"), "{}\n", "utf8");
+		writeFileSync(join(originalHome, "plugins", "plugin.json"), "{}\n", "utf8");
+		writeFileSync(join(originalHome, "skills", "skill.md"), "# Skill\n", "utf8");
+		writeFileSync(join(originalHome, "memory", "memory.md"), "# Memory\n", "utf8");
 
 		const result = runWrapper(fixtureRoot, ["app", "."], {
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
@@ -1047,6 +1132,12 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("APP_SERVER_LABEL:1");
 		expect(output).toContain("RUNTIME_PROXY_ENV:0");
 		expect(output).toContain("NODE_OPTIONS_HAS_APP_SERVER_PRELOAD:true");
+		expect(output).toContain("SHADOW_AUTH_EXISTS:false");
+		expect(output).toContain("SHADOW_ACCOUNTS_EXISTS:false");
+		expect(output).toContain("SHADOW_SESSIONS_EXISTS:true");
+		expect(output).toContain("SHADOW_PLUGINS_EXISTS:true");
+		expect(output).toContain("SHADOW_SKILLS_EXISTS:true");
+		expect(output).toContain("SHADOW_MEMORY_EXISTS:true");
 		expect(output).toContain("APP_SERVER_SHIM_STATUS:0");
 		expect(output).toContain(
 			"APP_SERVER_SHIM_STDOUT:APP_SERVER_FORWARDED:app-server --shim-probe",

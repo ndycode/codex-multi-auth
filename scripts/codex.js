@@ -34,6 +34,10 @@ const RETRYABLE_SHADOW_HOME_CLEANUP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPT
 const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];
 const SHADOW_HOME_ORPHAN_LOCK_STALE_AGE_MS = 2_000;
 const SHADOW_HOME_STATE_FILES = ["auth.json", "accounts.json", ".codex-global-state.json"];
+const RUNTIME_ROTATION_SHADOW_HOME_OMIT_STATE_FILES = new Set([
+	"auth.json",
+	"accounts.json",
+]);
 const SHADOW_HOME_STATE_FILE_SET = new Set(SHADOW_HOME_STATE_FILES);
 const SHADOW_HOME_CONFIG_FILE = "config.toml";
 const SHADOW_HOME_SYNC_LOCK_DIR = ".codex-multi-auth-shadow-sync.lock";
@@ -458,32 +462,73 @@ function createProtocolLineAccumulator(onLine) {
 	};
 }
 
+function createSyntheticAppServerAccountReadResult() {
+	return {
+		account: {
+			type: "chatgpt",
+			email: APP_SERVER_ACCOUNT_DISPLAY_NAME,
+			planType: "unknown",
+		},
+		requiresOpenaiAuth: false,
+	};
+}
+
+function createSyntheticAppServerAuthStatusResult() {
+	return {
+		authMethod: "apikey",
+		authToken: null,
+		requiresOpenaiAuth: false,
+	};
+}
+
+function createSyntheticAppServerRateLimitsResult() {
+	return {
+		rateLimits: {
+			limitId: null,
+			limitName: null,
+			primary: null,
+			secondary: null,
+			credits: null,
+			planType: null,
+			rateLimitReachedType: null,
+		},
+		rateLimitsByLimitId: null,
+	};
+}
+
 function createAppServerAccountReadProtocolProxy() {
-	const maxPendingAccountReadIds = 4096;
-	const pendingAccountReadIds = new Set();
+	const maxPendingAuthRequestIds = 4096;
+	const pendingAuthRequestMethodsById = new Map();
 	const inputLines = createProtocolLineAccumulator((line) => {
 		const { body } = splitProtocolLineEnding(line);
 		const message = parseJsonObjectLine(body);
-		if (message?.method !== "account/read" || !Object.hasOwn(message, "id")) {
+		if (
+			![
+				"account/read",
+				"account/rateLimits/read",
+				"getAuthStatus",
+			].includes(message?.method) ||
+			!Object.hasOwn(message, "id")
+		) {
 			return;
 		}
 		const key = jsonRpcIdKey(message.id);
 		if (key) {
-			if (pendingAccountReadIds.size >= maxPendingAccountReadIds) {
-				pendingAccountReadIds.clear();
+			if (pendingAuthRequestMethodsById.size >= maxPendingAuthRequestIds) {
+				pendingAuthRequestMethodsById.clear();
 				if (!warnedPendingAccountReadIdOverflow) {
 					warnedPendingAccountReadIdOverflow = true;
 					console.error(
-						"codex-multi-auth: cleared pending app-server account/read ids after exceeding the safety cap.",
+						"codex-multi-auth: cleared pending app-server auth request ids after exceeding the safety cap.",
 					);
 				}
 			}
-			pendingAccountReadIds.add(key);
+			pendingAuthRequestMethodsById.set(key, message.method);
 		}
 	});
 	const outputLines = createProtocolLineAccumulator((line) => {
 		process.stdout.write(
-			rewriteAppServerAccountReadResponseLine(line, pendingAccountReadIds),
+			rewriteAppServerAccountReadResponseLine(line, pendingAuthRequestMethodsById),
 		);
 	});
 
@@ -503,30 +548,33 @@ function createAppServerAccountReadProtocolProxy() {
 	};
 }
 
-function rewriteAppServerAccountReadResponseLine(line, pendingAccountReadIds) {
+function rewriteAppServerAccountReadResponseLine(line, pendingAuthRequestMethodsById) {
 	const { body, lineEnding } = splitProtocolLineEnding(line);
 	const message = parseJsonObjectLine(body);
 	if (!message || !Object.hasOwn(message, "id")) {
 		return line;
 	}
 	const key = jsonRpcIdKey(message.id);
-	if (!key || !pendingAccountReadIds.has(key)) {
+	if (!key || !pendingAuthRequestMethodsById.has(key)) {
 		return line;
 	}
-	pendingAccountReadIds.delete(key);
-	if (!Object.hasOwn(message, "result")) {
+	const method = pendingAuthRequestMethodsById.get(key);
+	pendingAuthRequestMethodsById.delete(key);
+	const result =
+		method === "account/read"
+			? createSyntheticAppServerAccountReadResult()
+			: method === "account/rateLimits/read"
+				? createSyntheticAppServerRateLimitsResult()
+				: method === "getAuthStatus"
+					? createSyntheticAppServerAuthStatusResult()
+					: null;
+	if (!result) {
 		return line;
 	}
 	return `${JSON.stringify({
-		...message,
-		result: {
-			account: {
-				type: "chatgpt",
-				email: APP_SERVER_ACCOUNT_DISPLAY_NAME,
-				planType: "unknown",
-			},
-			requiresOpenaiAuth: false,
-		},
+		jsonrpc: typeof message.jsonrpc === "string" ? message.jsonrpc : "2.0",
+		id: message.id,
+		result,
 	})}${lineEnding}`;
 }
 
@@ -1782,6 +1830,24 @@ function createRuntimeRotationProxyClientApiKey() {
 	return randomBytes(32).toString("hex");
 }
 
+function omitRuntimeRotationShadowHomeStateFiles(shadowCodexHome) {
+	for (const name of RUNTIME_ROTATION_SHADOW_HOME_OMIT_STATE_FILES) {
+		const targetPath = join(shadowCodexHome, name);
+		try {
+			if (!existsSync(targetPath)) {
+				continue;
+			}
+			if (isDirectoryLike(targetPath)) {
+				removeDirectoryWithRetry(targetPath);
+			} else {
+				rmSync(targetPath, { force: true });
+			}
+		} catch {
+			// Best-effort: stale official auth state should not block runtime rotation.
+		}
+	}
+}
+
 function resolveRuntimeRotationProxyOriginalCodexHome(baseEnv) {
 	const override = (baseEnv[APP_RUNTIME_HELPER_REAL_CODEX_HOME_ENV] ?? "").trim();
 	return override || resolveCodexHomeDir(baseEnv);
@@ -1812,6 +1878,7 @@ function createRuntimeRotationProxyCodexHome(baseEnv, proxyBaseUrl, clientApiKey
 			shadowCodexHome,
 			tightenShadowHomePermissions,
 		);
+		omitRuntimeRotationShadowHomeStateFiles(shadowCodexHome);
 		const originalConfigPath = join(originalCodexHome, "config.toml");
 		const rawConfig = existsSync(originalConfigPath)
 			? readFileSync(originalConfigPath, "utf8")
@@ -1957,6 +2024,37 @@ function resolveRuntimeRotationAppHelperStatusPath(env = process.env) {
 	return join(multiAuthDir, APP_RUNTIME_HELPER_STATUS_FILE);
 }
 
+function writeOwnerOnlyJsonFileAtomicSync(targetPath, payload) {
+	const targetDir = dirname(targetPath);
+	mkdirSync(targetDir, { recursive: true });
+	const tempPath = join(
+		targetDir,
+		[
+			`.${basename(targetPath)}`,
+			String(process.pid),
+			String(Date.now()),
+			randomBytes(4).toString("hex"),
+			"tmp",
+		].join("."),
+	);
+	try {
+		writeFileSync(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+		});
+		chmodSync(tempPath, 0o600);
+		renameSync(tempPath, targetPath);
+		chmodSync(targetPath, 0o600);
+	} catch (error) {
+		try {
+			rmSync(tempPath, { force: true });
+		} catch {
+			// Preserve the original write failure.
+		}
+		throw error;
+	}
+}
+
 function resolveRuntimeRotationAppHelperIdleMs(env = process.env) {
 	const parsed = Number.parseInt(
 		env.CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS ?? "",
@@ -2020,12 +2118,7 @@ function pickRuntimeRotationAppHelperEnv(env) {
 function writeRuntimeRotationAppHelperStatus(payload, env = process.env) {
 	try {
 		const statusPath = resolveRuntimeRotationAppHelperStatusPath(env);
-		mkdirSync(dirname(statusPath), { recursive: true });
-		writeFileSync(statusPath, `${JSON.stringify(payload, null, 2)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
-		});
-		chmodSync(statusPath, 0o600);
+		writeOwnerOnlyJsonFileAtomicSync(statusPath, payload);
 	} catch {
 		// Best-effort status only; the helper must not fail because telemetry is unavailable.
 	}

@@ -189,9 +189,11 @@ describe("Codex app runtime rotation bind", () => {
 
 	it("binds and unbinds the Windows app config without spawning during tests", async () => {
 		const root = await createTempRoot("codex-app-bind-win-");
-		const multiAuthDir = join(root, "multi-auth");
-		const codexHome = join(root, "codex-home");
-		const appData = join(root, "AppData", "Roaming");
+		const multiAuthDir = join(root, "multi%auth");
+		const codexHome = join(root, "codex%home");
+		const appData = join(root, "App%20Data", "Roaming");
+		const nodePath = join(root, "Node%20", "node.exe");
+		const routerScriptPath = join(root, "router%dir", "codex-app-router.js");
 		const env = {
 			CODEX_MULTI_AUTH_DIR: multiAuthDir,
 			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
@@ -209,16 +211,16 @@ describe("Codex app runtime rotation bind", () => {
 			env,
 			port: 4567,
 			baseUrl: "http://127.0.0.1:4567",
-			nodePath: "node",
-			routerScriptPath: join(root, "codex-app-router.js"),
+			nodePath,
+			routerScriptPath,
 		});
 
 		const result = await bindCodexAppRuntimeRotation({
 			platform: "win32",
 			home: root,
 			env,
-			nodePath: "node",
-			routerScriptPath: join(root, "codex-app-router.js"),
+			nodePath,
+			routerScriptPath,
 			spawnDetached: false,
 			now: () => 123,
 		});
@@ -245,6 +247,12 @@ describe("Codex app runtime rotation bind", () => {
 		const startup = await readFile(result.status.paths.startupPath ?? "", "utf8");
 		expect(startup).toContain("--state");
 		expect(startup).toContain("runtime-rotation-app-bind.json");
+		expect(startup).toContain("Node%%20");
+		expect(startup).toContain("router%%dir");
+		expect(startup).toContain("multi%%auth");
+		expect(startup).not.toContain("Node%20");
+		expect(startup).not.toContain("router%dir");
+		expect(startup).not.toContain("multi%auth");
 		expect(startup).not.toContain(result.status.state?.clientApiKey ?? "");
 
 		const unbound = await unbindCodexAppRuntimeRotation({

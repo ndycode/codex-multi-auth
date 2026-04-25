@@ -536,10 +536,19 @@ function readPortFromBaseUrl(baseUrl: string | null, fallback: number): number {
 	}
 }
 
+function escapeWindowsBatchPath(value: string): string {
+	return value.replace(/%/g, "%%");
+}
+
 function createWindowsStartupCommand(state: AppBindState): string {
+	const nodePath = escapeWindowsBatchPath(state.nodePath);
+	const routerScriptPath = escapeWindowsBatchPath(state.routerScriptPath);
+	const statusPath = escapeWindowsBatchPath(state.statusPath);
+	const statePath = escapeWindowsBatchPath(state.statePath);
+	const logPath = escapeWindowsBatchPath(state.logPath);
 	return [
 		"@echo off",
-		`"${state.nodePath}" "${state.routerScriptPath}" --port ${state.port} --status "${state.statusPath}" --state "${state.statePath}" >> "${state.logPath}" 2>&1`,
+		`"${nodePath}" "${routerScriptPath}" --port ${state.port} --status "${statusPath}" --state "${statePath}" >> "${logPath}" 2>&1`,
 		"",
 	].join("\r\n");
 }
