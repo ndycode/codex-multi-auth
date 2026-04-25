@@ -142,6 +142,42 @@ async function postRawResponses(
 	});
 }
 
+interface ActiveHandleProcess {
+	_getActiveHandles?: () => unknown[];
+}
+
+interface ActiveServerHandle {
+	address?: () => unknown;
+	emit?: (event: "error", error: Error) => boolean;
+}
+
+function emitServerErrorForProxy(
+	proxy: RuntimeRotationProxyServer,
+	error: Error,
+): void {
+	const handles =
+		(process as unknown as ActiveHandleProcess)._getActiveHandles?.() ?? [];
+	for (const handle of handles) {
+		const candidate = handle as ActiveServerHandle;
+		if (
+			typeof candidate.address !== "function" ||
+			typeof candidate.emit !== "function"
+		) {
+			continue;
+		}
+		const address = candidate.address();
+		const port =
+			typeof address === "object" && address !== null && "port" in address
+				? (address as { port?: unknown }).port
+				: null;
+		if (port === proxy.port) {
+			candidate.emit("error", error);
+			return;
+		}
+	}
+	throw new Error(`runtime proxy server on port ${proxy.port} was not found`);
+}
+
 function textEventStream(body = "data: {}\n\n", headers?: HeadersInit): Response {
 	return new Response(body, {
 		status: HTTP_STATUS.OK,
@@ -190,6 +226,18 @@ describe("runtime rotation proxy", () => {
 				upstreamBaseUrl: "https://example.test/backend-api",
 			} as Parameters<typeof startRuntimeRotationProxy>[0]),
 		).rejects.toThrow("clientApiKey");
+	});
+
+	it("records post-startup server errors without throwing uncaught errors", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { fetchImpl } = createRecordingFetch(() => textEventStream());
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		expect(() =>
+			emitServerErrorForProxy(proxy, new Error("post-startup server boom")),
+		).not.toThrow();
+		expect(proxy.getStatus().lastError).toBe("post-startup server boom");
 	});
 
 	it("rejects unauthenticated local clients when a wrapper token is configured", async () => {

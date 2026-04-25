@@ -1038,6 +1038,9 @@ export async function startRuntimeRotationProxy(
 	const server = createServer((req, res) => {
 		void handleRequest(req, res);
 	});
+	const onPostStartupServerError = (error: Error): void => {
+		status.lastError = error.message;
+	};
 
 	await new Promise<void>((resolve, reject) => {
 		const onError = (error: Error): void => {
@@ -1052,6 +1055,7 @@ export async function startRuntimeRotationProxy(
 		server.once("listening", onListening);
 		server.listen(port, host);
 	});
+	server.on("error", onPostStartupServerError);
 
 	const address = server.address();
 	const resolvedPort =

@@ -1789,7 +1789,59 @@ describe("codex bin wrapper", () => {
 		readdirSync(controlledTmp).filter((entry) =>
 			entry.startsWith("codex-multi-auth-home-"),
 		),
-	).toEqual([]);
+		).toEqual([]);
+	});
+
+	it("continues shadow-home state sync after one state file remains locked", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const home = process.env.CODEX_HOME ?? "";',
+			'fs.writeFileSync(path.join(home, "auth.json"), \'{"token":"shadow"}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(home, "accounts.json"), \'{"accounts":["shadow"]}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(home, ".codex-global-state.json"), \'{"last":"shadow"}\\n\', "utf8");',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const controlledTmp = join(fixtureRoot, "tmp");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(controlledTmp, { recursive: true });
+		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
+		writeFileSync(
+			join(originalHome, "accounts.json"),
+			'{"accounts":["original"]}\n',
+			"utf8",
+		);
+		writeFileSync(
+			join(originalHome, ".codex-global-state.json"),
+			'{"last":"original"}\n',
+			"utf8",
+		);
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_reasoning_effort = "xhigh"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-5.1"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				TMP: controlledTmp,
+				TEMP: controlledTmp,
+				TMPDIR: controlledTmp,
+				...injectShadowCleanupBusyFailures(4),
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe('{"token":"original"}');
+		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe('{"accounts":["shadow"]}');
+		expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"shadow"}');
 	});
 
 	it("removes stale shadow sync locks before publishing refreshed auth state", () => {

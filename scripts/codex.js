@@ -1418,6 +1418,26 @@ function syncShadowHomeStateFile(
 	}
 }
 
+function syncShadowHomeStateFileBestEffort(
+	sourcePath,
+	destinationPath,
+	expectedDestinationState,
+	tightenFile,
+) {
+	try {
+		syncShadowHomeStateFile(
+			sourcePath,
+			destinationPath,
+			expectedDestinationState,
+		);
+		tightenFile(destinationPath);
+		return true;
+	} catch {
+		// Best-effort sync-back: keep attempting sibling files after Windows locks.
+		return false;
+	}
+}
+
 function isDirectoryLike(path) {
 	try {
 		return statSync(path).isDirectory();
@@ -1520,12 +1540,12 @@ function syncShadowHomeAuthBundle(
 		if (shadowHomeStateMatches(shadowState, originalSnapshot)) {
 			continue;
 		}
-		syncShadowHomeStateFile(
+		syncShadowHomeStateFileBestEffort(
 			shadowPath,
 			originalPath,
 			originalSnapshot,
+			tightenFile,
 		);
-		tightenFile(originalPath);
 	}
 }
 
@@ -1556,8 +1576,12 @@ function syncAdditionalShadowHomeFiles(
 		if (shadowHomeStateMatches(shadowState, originalSnapshot)) {
 			continue;
 		}
-		syncShadowHomeStateFile(shadowPath, originalPath, originalSnapshot);
-		tightenFile(originalPath);
+		syncShadowHomeStateFileBestEffort(
+			shadowPath,
+			originalPath,
+			originalSnapshot,
+			tightenFile,
+		);
 	}
 }
 
