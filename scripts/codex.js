@@ -35,6 +35,7 @@ const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];
 const SHADOW_HOME_STATE_FILES = ["auth.json", "accounts.json", ".codex-global-state.json"];
 const SHADOW_HOME_STATE_FILE_SET = new Set(SHADOW_HOME_STATE_FILES);
 const SHADOW_HOME_CONFIG_FILE = "config.toml";
+const SHADOW_HOME_SYNC_LOCK_DIR = ".codex-multi-auth-shadow-sync.lock";
 const APP_SERVER_ACCOUNT_DISPLAY_NAME = "codex-multi-auth";
 const RUNTIME_ROTATION_PROXY_PROVIDER_ID =
 	await loadRuntimeRotationProxyProviderId();
@@ -1236,6 +1237,38 @@ function shadowHomeStateMatches(left, right) {
 	);
 }
 
+function acquireShadowHomeSyncLock(originalCodexHome) {
+	const lockPath = join(originalCodexHome, SHADOW_HOME_SYNC_LOCK_DIR);
+	mkdirSync(originalCodexHome, { recursive: true });
+	for (let attempt = 0; attempt <= SHADOW_HOME_CLEANUP_BACKOFF_MS.length; attempt += 1) {
+		try {
+			mkdirSync(lockPath);
+			writeFileSync(
+				join(lockPath, "owner.json"),
+				`${JSON.stringify({ pid: process.pid, createdAt: Date.now() })}\n`,
+				"utf8",
+			);
+			return () => {
+				try {
+					removeDirectoryWithRetry(lockPath);
+				} catch {
+					// Best-effort lock cleanup only.
+				}
+			};
+		} catch (error) {
+			const code =
+				error && typeof error === "object" && "code" in error
+					? error.code
+					: undefined;
+			if (code !== "EEXIST" || attempt === SHADOW_HOME_CLEANUP_BACKOFF_MS.length) {
+				throw error;
+			}
+			sleepSync(SHADOW_HOME_CLEANUP_BACKOFF_MS[attempt]);
+		}
+	}
+	return () => {};
+}
+
 function syncShadowHomeStateFile(
 	sourcePath,
 	destinationPath,
@@ -1339,6 +1372,73 @@ function collectShadowHomeSyncFileNames(shadowCodexHome, syncFileNames) {
 	return syncFileNames;
 }
 
+function syncShadowHomeAuthBundle(
+	originalCodexHome,
+	shadowCodexHome,
+	originalFileStates,
+	tightenFile,
+) {
+	const plan = [];
+	for (const name of SHADOW_HOME_STATE_FILES) {
+		const shadowPath = join(shadowCodexHome, name);
+		const shadowState = captureShadowHomeState(shadowPath);
+		if (!shadowState.exists || shadowState.unreadable) {
+			continue;
+		}
+		const originalPath = join(originalCodexHome, name);
+		const originalSnapshot =
+			originalFileStates.get(name) ?? { exists: false, content: null };
+		const currentOriginalState = captureShadowHomeState(originalPath);
+		if (!shadowHomeStateMatches(currentOriginalState, originalSnapshot)) {
+			return;
+		}
+		if (!shadowHomeStateMatches(shadowState, originalSnapshot)) {
+			plan.push({ shadowPath, originalPath, originalSnapshot });
+		}
+	}
+
+	for (const entry of plan) {
+		syncShadowHomeStateFile(
+			entry.shadowPath,
+			entry.originalPath,
+			entry.originalSnapshot,
+		);
+		tightenFile(entry.originalPath);
+	}
+}
+
+function syncAdditionalShadowHomeFiles(
+	originalCodexHome,
+	shadowCodexHome,
+	names,
+	originalFileStates,
+	tightenFile,
+) {
+	for (const name of names) {
+		if (SHADOW_HOME_STATE_FILE_SET.has(name)) {
+			continue;
+		}
+		const shadowPath = join(shadowCodexHome, name);
+		const shadowState = captureShadowHomeState(shadowPath);
+		if (!shadowState.exists || shadowState.unreadable) {
+			continue;
+		}
+
+		const originalPath = join(originalCodexHome, name);
+		const originalSnapshot =
+			originalFileStates.get(name) ?? { exists: false, content: null };
+		const currentOriginalState = captureShadowHomeState(originalPath);
+		if (!shadowHomeStateMatches(currentOriginalState, originalSnapshot)) {
+			continue;
+		}
+		if (shadowHomeStateMatches(shadowState, originalSnapshot)) {
+			continue;
+		}
+		syncShadowHomeStateFile(shadowPath, originalPath, originalSnapshot);
+		tightenFile(originalPath);
+	}
+}
+
 function createShadowHomeMirror(originalCodexHome, shadowCodexHome, tightenFile) {
 	const syncFileNames = new Set(SHADOW_HOME_STATE_FILES);
 	const originalFileStates = new Map();
@@ -1403,32 +1503,27 @@ function createShadowHomeMirror(originalCodexHome, shadowCodexHome, tightenFile)
 	}
 
 	return () => {
-		for (const name of collectShadowHomeSyncFileNames(
-			shadowCodexHome,
-			syncFileNames,
-		)) {
-			const shadowPath = join(shadowCodexHome, name);
-			const shadowState = captureShadowHomeState(shadowPath);
-			if (!shadowState.exists || shadowState.unreadable) {
-				continue;
-			}
-
-			try {
-				const originalPath = join(originalCodexHome, name);
-				const originalSnapshot =
-					originalFileStates.get(name) ?? { exists: false, content: null };
-				const currentOriginalState = captureShadowHomeState(originalPath);
-				if (!shadowHomeStateMatches(currentOriginalState, originalSnapshot)) {
-					continue;
-				}
-				if (shadowHomeStateMatches(shadowState, originalSnapshot)) {
-					continue;
-				}
-				syncShadowHomeStateFile(shadowPath, originalPath, originalSnapshot);
-				tightenFile(originalPath);
-			} catch {
-				// Best-effort only; runtime auth refreshes should not fail cleanup.
-			}
+		let releaseLock = () => {};
+		try {
+			const names = collectShadowHomeSyncFileNames(shadowCodexHome, syncFileNames);
+			releaseLock = acquireShadowHomeSyncLock(originalCodexHome);
+			syncShadowHomeAuthBundle(
+				originalCodexHome,
+				shadowCodexHome,
+				originalFileStates,
+				tightenFile,
+			);
+			syncAdditionalShadowHomeFiles(
+				originalCodexHome,
+				shadowCodexHome,
+				names,
+				originalFileStates,
+				tightenFile,
+			);
+		} catch {
+			// Best-effort only; runtime auth refreshes should not fail cleanup.
+		} finally {
+			releaseLock();
 		}
 	};
 }

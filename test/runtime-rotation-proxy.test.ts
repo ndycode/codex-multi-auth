@@ -608,7 +608,7 @@ describe("runtime rotation proxy", () => {
 		const payload = (await response.json()) as { error: { reason: string } };
 
 		expect(response.status).toBe(503);
-		expect(payload.error.reason).toBe("server-error");
+		expect(payload.error.reason).toBe("budget");
 		expect(calls).toHaveLength(4);
 	});
 

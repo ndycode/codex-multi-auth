@@ -1351,7 +1351,7 @@ describe("codex bin wrapper", () => {
 	).toEqual([]);
 	});
 
-	it("does not clobber original auth state that changed while the compatibility shadow was active", () => {
+	it("does not publish a partial auth bundle when original auth changes during shadow use", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
 			"#!/usr/bin/env node",
@@ -1392,8 +1392,8 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(0);
 		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe('{"token":"external"}');
-		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe('{"accounts":["shadow"]}');
-		expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"shadow"}');
+		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe('{"accounts":["original"]}');
+		expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"original"}');
 	});
 
 	it("does not clobber sync-back files that change during rename retry backoff", () => {

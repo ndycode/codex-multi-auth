@@ -76,7 +76,13 @@ interface RequestContext {
 	sessionKey: string | null;
 }
 
-type ExhaustionReason = "rate-limit" | "server-error" | "network-error" | "auth-failure" | "no-account";
+type ExhaustionReason =
+	| "rate-limit"
+	| "server-error"
+	| "network-error"
+	| "auth-failure"
+	| "budget"
+	| "no-account";
 type RuntimeProxyHttpError = Error & {
 	statusCode: number;
 	code: string;
@@ -985,6 +991,13 @@ export async function startRuntimeRotationProxy(
 					streamStallTimeoutMs,
 				);
 				return;
+			}
+
+			if (
+				attemptedIndexes.size >= accountAttemptLimit &&
+				accountAttemptLimit < accountManager.getAccountCount()
+			) {
+				exhaustionReason = "budget";
 			}
 
 			writePoolExhausted({
