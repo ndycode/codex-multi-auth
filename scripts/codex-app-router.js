@@ -3,15 +3,23 @@
 import {
 	chmodSync,
 	closeSync,
+	fstatSync,
+	ftruncateSync,
 	mkdirSync,
 	openSync,
 	readFileSync,
 	renameSync,
 	rmSync,
+	statSync,
+	truncateSync,
+	writeSync,
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import process from "node:process";
+
+const DEFAULT_MAX_LOG_BYTES = 1024 * 1024;
+const LOG_SIZE_CHECK_INTERVAL_MS = 60_000;
 
 function parsePort(value) {
 	if (typeof value !== "string" && typeof value !== "number") return Number.NaN;
@@ -29,6 +37,8 @@ function parseArgs(argv) {
 		port: 0,
 		statusPath: "",
 		statePath: "",
+		logPath: "",
+		maxLogBytes: DEFAULT_MAX_LOG_BYTES,
 	};
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
@@ -50,6 +60,20 @@ function parseArgs(argv) {
 		}
 		if (arg === "--state") {
 			result.statePath = next;
+			index += 1;
+			continue;
+		}
+		if (arg === "--max-log-bytes") {
+			const parsed = Number.parseInt(next, 10);
+			result.maxLogBytes =
+				Number.isFinite(parsed) && parsed > 0
+					? parsed
+					: DEFAULT_MAX_LOG_BYTES;
+			index += 1;
+			continue;
+		}
+		if (arg === "--log") {
+			result.logPath = next;
 			index += 1;
 		}
 	}
@@ -153,9 +177,74 @@ function isLoopbackHost(host) {
 	);
 }
 
+function truncateLogFdIfTooLarge(fd, maxBytes) {
+	if (!Number.isFinite(maxBytes) || maxBytes <= 0) return;
+	try {
+		const stats = fstatSync(fd);
+		if (!stats.isFile() || stats.size <= maxBytes) return;
+		ftruncateSync(fd, 0);
+		writeSync(
+			fd,
+			`codex-multi-auth app router log truncated after exceeding ${maxBytes} bytes\n`,
+		);
+	} catch {
+		// stdout/stderr may be pipes or otherwise unavailable; logging must not fail startup.
+	}
+}
+
+function truncateLogPathIfTooLarge(logPath, maxBytes) {
+	if (!logPath || !Number.isFinite(maxBytes) || maxBytes <= 0) return false;
+	try {
+		const stats = statSync(logPath);
+		if (!stats.isFile() || stats.size <= maxBytes) return false;
+		truncateSync(logPath, 0);
+		return true;
+	} catch {
+		// Log path may not exist yet or may be locked; fd-level checks can still work.
+		return false;
+	}
+}
+
+function writeLogTruncatedMarker(maxBytes) {
+	try {
+		writeSync(
+			1,
+			`codex-multi-auth app router log truncated after exceeding ${maxBytes} bytes\n`,
+		);
+	} catch {
+		// A closed stdout/stderr should not crash the router while enforcing log bounds.
+	}
+}
+
+function installLogBounds(maxBytes, logPath) {
+	if (truncateLogPathIfTooLarge(logPath, maxBytes)) {
+		writeLogTruncatedMarker(maxBytes);
+	}
+	truncateLogFdIfTooLarge(1, maxBytes);
+	truncateLogFdIfTooLarge(2, maxBytes);
+	return setInterval(() => {
+		if (truncateLogPathIfTooLarge(logPath, maxBytes)) {
+			writeLogTruncatedMarker(maxBytes);
+		}
+		truncateLogFdIfTooLarge(1, maxBytes);
+		truncateLogFdIfTooLarge(2, maxBytes);
+	}, LOG_SIZE_CHECK_INTERVAL_MS);
+}
+
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
+	installLogBounds(args.maxLogBytes, args.logPath).unref?.();
 	const stateRecord = readState(args.statePath);
+	if (args.statePath && stateRecord === null) {
+		const error = new Error(
+			"Codex app runtime router state is unreadable; refusing to bind an ephemeral port.",
+		);
+		writeStatus(
+			args.statusPath,
+			createStatusPayload({ state: "error", proxyServer: null, error, stateRecord: null }),
+		);
+		throw error;
+	}
 	const host =
 		typeof stateRecord?.host === "string" && stateRecord.host.trim().length > 0
 			? stateRecord.host.trim()

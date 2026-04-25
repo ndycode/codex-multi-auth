@@ -1,7 +1,26 @@
 import { RUNTIME_ROTATION_PROXY_PROVIDER_ID } from "../runtime-constants.js";
 
 export function tomlStringLiteral(value: string): string {
-	return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+	return `"${value.replace(/[\u0000-\u001f\u007f\\"]/g, (character) => {
+		switch (character) {
+			case "\b":
+				return "\\b";
+			case "\t":
+				return "\\t";
+			case "\n":
+				return "\\n";
+			case "\f":
+				return "\\f";
+			case "\r":
+				return "\\r";
+			case '"':
+				return '\\"';
+			case "\\":
+				return "\\\\";
+			default:
+				return `\\u${character.charCodeAt(0).toString(16).padStart(4, "0").toUpperCase()}`;
+		}
+	})}"`;
 }
 
 export function readTomlTableName(line: string): string | null {

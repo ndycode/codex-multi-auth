@@ -72,6 +72,10 @@ let shadowHomeSyncLockRecreateStaleCount = Number.parseInt(
 	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_LOCK_RECREATE_STALE_COUNT ?? "0",
 	10,
 );
+let shadowHomeSyncMetadataBusyFailuresRemaining = Number.parseInt(
+	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_SYNC_METADATA_BUSY_FAILURES ?? "0",
+	10,
+);
 const shadowHomeCleanupRetryMarkerDir =
 	(process.env.CODEX_MULTI_AUTH_TEST_SHADOW_RETRY_MARKER_DIR ?? "").trim();
 let warnedInvalidRuntimeRotationProxyEnv = false;
@@ -921,6 +925,18 @@ function maybeThrowSimulatedShadowHomePreflightReadBusyError() {
 	if (shadowHomeCleanupPreflightReadBusyFailuresRemaining > 0) {
 		shadowHomeCleanupPreflightReadBusyFailuresRemaining -= 1;
 		const error = new Error("simulated busy shadow-home preflight read");
+		error.code = "EBUSY";
+		throw error;
+	}
+}
+
+function maybeThrowSimulatedShadowHomeSyncMetadataBusyError(targetPath) {
+	if (
+		basename(targetPath) === SHADOW_HOME_SYNC_STATE_FILE &&
+		shadowHomeSyncMetadataBusyFailuresRemaining > 0
+	) {
+		shadowHomeSyncMetadataBusyFailuresRemaining -= 1;
+		const error = new Error("simulated busy shadow-home sync metadata write");
 		error.code = "EBUSY";
 		throw error;
 	}
@@ -2176,31 +2192,42 @@ function resolveRuntimeRotationAppHelperStatusPath(env = process.env) {
 function writeOwnerOnlyJsonFileAtomicSync(targetPath, payload) {
 	const targetDir = dirname(targetPath);
 	mkdirSync(targetDir, { recursive: true });
-	const tempPath = join(
-		targetDir,
-		[
-			`.${basename(targetPath)}`,
-			String(process.pid),
-			String(Date.now()),
-			randomBytes(4).toString("hex"),
-			"tmp",
-		].join("."),
-	);
-	try {
-		writeFileSync(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
-		});
-		chmodSync(tempPath, 0o600);
-		renameSync(tempPath, targetPath);
-		chmodSync(targetPath, 0o600);
-	} catch (error) {
+	for (let attempt = 0; attempt <= SHADOW_HOME_CLEANUP_BACKOFF_MS.length; attempt += 1) {
+		const tempPath = join(
+			targetDir,
+			[
+				`.${basename(targetPath)}`,
+				String(process.pid),
+				String(Date.now()),
+				randomBytes(4).toString("hex"),
+				"tmp",
+			].join("."),
+		);
 		try {
-			rmSync(tempPath, { force: true });
-		} catch {
-			// Preserve the original write failure.
+			writeFileSync(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
+				encoding: "utf8",
+				mode: 0o600,
+			});
+			chmodSync(tempPath, 0o600);
+			maybeThrowSimulatedShadowHomeSyncMetadataBusyError(targetPath);
+			renameSync(tempPath, targetPath);
+			chmodSync(targetPath, 0o600);
+			return;
+		} catch (error) {
+			try {
+				rmSync(tempPath, { force: true });
+			} catch {
+				// Preserve the original write failure.
+			}
+			if (
+				isRetryableShadowHomeCleanupError(error) &&
+				attempt < SHADOW_HOME_CLEANUP_BACKOFF_MS.length
+			) {
+				sleepSync(SHADOW_HOME_CLEANUP_BACKOFF_MS[attempt]);
+				continue;
+			}
+			throw error;
 		}
-		throw error;
 	}
 }
 

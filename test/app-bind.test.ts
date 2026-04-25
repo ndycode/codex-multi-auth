@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,6 +13,7 @@ import {
 	rewriteConfigTomlForAppBind,
 	unbindCodexAppRuntimeRotation,
 } from "../lib/runtime/app-bind.js";
+import { tomlStringLiteral } from "../lib/runtime/config-toml.js";
 import { withFileOperationRetry } from "../lib/fs-retry.js";
 import { RUNTIME_ROTATION_PROXY_PROVIDER_ID } from "../lib/runtime-constants.js";
 
@@ -155,6 +156,16 @@ describe("Codex app runtime rotation bind", () => {
 		expect(restored).toContain("[profiles.default]");
 	});
 
+	it("escapes TOML basic-string control characters", () => {
+		expect(
+			tomlStringLiteral(
+				"line\ncarriage\rtab\tbackspace\bform\fquote\"slash\\nul\u0000unit\u001fdel\u007f",
+			),
+		).toBe(
+			'"line\\ncarriage\\rtab\\tbackspace\\bform\\fquote\\"slash\\\\nul\\u0000unit\\u001Fdel\\u007F"',
+		);
+	});
+
 	it("resolves app bind paths from the provided environment", async () => {
 		const root = await createTempRoot("codex-app-bind-paths-");
 		const multiAuthDir = join(root, "multi-auth");
@@ -246,6 +257,8 @@ describe("Codex app runtime rotation bind", () => {
 		}
 		const startup = await readFile(result.status.paths.startupPath ?? "", "utf8");
 		expect(startup).toContain("--state");
+		expect(startup).toContain("--log");
+		expect(startup).toContain("--max-log-bytes 1048576");
 		expect(startup).toContain("runtime-rotation-app-bind.json");
 		expect(startup).toContain("Node%%20");
 		expect(startup).toContain("router%%dir");
@@ -594,6 +607,9 @@ describe("Codex app runtime rotation bind", () => {
 		expect(plist).toContain("com.ndycode.codex-multi-auth.runtime-router");
 		expect(plist).toContain("<key>KeepAlive</key>");
 		expect(plist).toContain("--state");
+		expect(plist).toContain("--log");
+		expect(plist).toContain("--max-log-bytes");
+		expect(plist).toContain("1048576");
 		expect(plist).toContain("runtime-rotation-app-bind.json");
 		expect(plist).not.toContain(result.status.state?.clientApiKey ?? "");
 	});
@@ -680,5 +696,72 @@ describe("Codex app runtime rotation bind", () => {
 		expect(result.status).not.toBe(0);
 		expect(result.stderr).toContain("missing its client token");
 		expect(existsSync(statusPath)).toBe(false);
+	});
+
+	it("rejects router startup when state is transiently unreadable instead of binding port 0", async () => {
+		const root = await createTempRoot("codex-app-router-missing-state-");
+		const statusPath = join(root, "router-status.json");
+		const statePath = join(root, "missing-state.json");
+		const result = spawnSync(
+			process.execPath,
+			[
+				join(thisDir, "..", "scripts", "codex-app-router.js"),
+				"--port",
+				"0",
+				"--status",
+				statusPath,
+				"--state",
+				statePath,
+			],
+			{
+				encoding: "utf8",
+				windowsHide: true,
+			},
+		);
+
+		expect(result.error).toBeUndefined();
+		expect(result.status).not.toBe(0);
+		expect(result.stderr).toContain("state is unreadable");
+		const status = JSON.parse(await readFile(statusPath, "utf8")) as {
+			state: string;
+			baseUrl: string | null;
+		};
+		expect(status.state).toBe("error");
+		expect(status.baseUrl).toBeNull();
+	});
+
+	it("bounds router stdout and stderr log growth", async () => {
+		const root = await createTempRoot("codex-app-router-log-bound-");
+		const statusPath = join(root, "router-status.json");
+		const logPath = join(root, "router.log");
+		await writeFile(logPath, "x".repeat(2048), "utf8");
+		const logFd = openSync(logPath, "a");
+		try {
+			const result = spawnSync(
+				process.execPath,
+				[
+					join(thisDir, "..", "scripts", "codex-app-router.js"),
+					"--port",
+					"4567",
+					"--status",
+					statusPath,
+					"--log",
+					logPath,
+					"--max-log-bytes",
+					"1024",
+				],
+				{
+					stdio: ["ignore", logFd, logFd],
+					windowsHide: true,
+				},
+			);
+			expect(result.error).toBeUndefined();
+			expect(result.status).not.toBe(0);
+		} finally {
+			closeSync(logFd);
+		}
+
+		expect(statSync(logPath).size).toBeLessThan(2048);
+		expect(await readFile(logPath, "utf8")).toContain("log truncated");
 	});
 });

@@ -21,6 +21,7 @@ const WINDOWS_STARTUP_FILE = "Codex Multi Auth Runtime Router.cmd";
 const MACOS_LAUNCH_AGENT_ID = "com.ndycode.codex-multi-auth.runtime-router";
 const DEFAULT_ROUTER_READY_TIMEOUT_MS = 15_000;
 const ROUTER_STATUS_POLL_INTERVAL_MS = 100;
+const APP_ROUTER_MAX_LOG_BYTES = 1024 * 1024;
 const appBindLocks = new Map<string, Promise<void>>();
 
 export interface AppBindPaths {
@@ -436,7 +437,7 @@ function createWindowsStartupCommand(state: AppBindState): string {
 	const logPath = escapeWindowsBatchPath(state.logPath);
 	return [
 		"@echo off",
-		`"${nodePath}" "${routerScriptPath}" --port ${state.port} --status "${statusPath}" --state "${statePath}" >> "${logPath}" 2>&1`,
+		`"${nodePath}" "${routerScriptPath}" --port ${state.port} --status "${statusPath}" --state "${statePath}" --log "${logPath}" --max-log-bytes ${APP_ROUTER_MAX_LOG_BYTES} >> "${logPath}" 2>&1`,
 		"",
 	].join("\r\n");
 }
@@ -458,6 +459,10 @@ function createMacLaunchAgentPlist(state: AppBindState): string {
 		state.statusPath,
 		"--state",
 		state.statePath,
+		"--log",
+		state.logPath,
+		"--max-log-bytes",
+		String(APP_ROUTER_MAX_LOG_BYTES),
 	];
 	return [
 		'<?xml version="1.0" encoding="UTF-8"?>',
@@ -523,6 +528,10 @@ function spawnRouter(state: AppBindState): void {
 				state.statusPath,
 				"--state",
 				state.statePath,
+				"--log",
+				state.logPath,
+				"--max-log-bytes",
+				String(APP_ROUTER_MAX_LOG_BYTES),
 			],
 			{
 				detached: true,

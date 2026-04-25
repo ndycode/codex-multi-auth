@@ -183,7 +183,19 @@ function createRuntimeConfigTomlFixtureModule(fixtureRoot: string): string {
 		[
 			`const providerId = ${JSON.stringify(RUNTIME_ROTATION_PROXY_PROVIDER_ID)};`,
 			"export function tomlStringLiteral(value) {",
-			"  return `\"${String(value).replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"')}\"`;",
+			"  const escaped = String(value).replace(/[\\u0000-\\u001f\\u007f\\\\\"]/g, (character) => {",
+			"    switch (character) {",
+			'      case "\\b": return "\\\\b";',
+			'      case "\\t": return "\\\\t";',
+			'      case "\\n": return "\\\\n";',
+			'      case "\\f": return "\\\\f";',
+			'      case "\\r": return "\\\\r";',
+			'      case "\\"": return "\\\\\\"";',
+			'      case "\\\\": return "\\\\\\\\";',
+			"      default: return `\\\\u${character.charCodeAt(0).toString(16).padStart(4, '0').toUpperCase()}`;",
+			"    }",
+			"  });",
+			"  return `\"${escaped}\"`;",
 			"}",
 			"function readTomlTableName(line) {",
 			"  const match = /^\\s*\\[{1,2}\\s*([^\\]]+?)\\s*\\]{1,2}\\s*$/.exec(line);",
@@ -418,6 +430,16 @@ function injectShadowPreflightReadBusyFailures(
 ): NodeJS.ProcessEnv {
 	return {
 		CODEX_MULTI_AUTH_TEST_SHADOW_PREFLIGHT_READ_BUSY_FAILURES: String(
+			failuresBeforeSuccess,
+		),
+	};
+}
+
+function injectShadowSyncMetadataBusyFailures(
+	failuresBeforeSuccess = 10,
+): NodeJS.ProcessEnv {
+	return {
+		CODEX_MULTI_AUTH_TEST_SHADOW_SYNC_METADATA_BUSY_FAILURES: String(
 			failuresBeforeSuccess,
 		),
 	};
@@ -2050,6 +2072,7 @@ describe("codex bin wrapper", () => {
 			{
 				...commonEnv,
 				CODEX_MULTI_AUTH_TEST_SESSION_ID: "first",
+				...injectShadowSyncMetadataBusyFailures(),
 			},
 		);
 		const second = runWrapperAsync(
