@@ -1434,7 +1434,6 @@ function syncShadowHomeAuthBundle(
 	originalFileStates,
 	tightenFile,
 ) {
-	const plan = [];
 	for (const name of SHADOW_HOME_STATE_FILES) {
 		const shadowPath = join(shadowCodexHome, name);
 		const shadowState = captureShadowHomeState(shadowPath);
@@ -1446,20 +1445,17 @@ function syncShadowHomeAuthBundle(
 			originalFileStates.get(name) ?? { exists: false, content: null };
 		const currentOriginalState = captureShadowHomeState(originalPath);
 		if (!shadowHomeStateMatches(currentOriginalState, originalSnapshot)) {
-			return;
+			continue;
 		}
-		if (!shadowHomeStateMatches(shadowState, originalSnapshot)) {
-			plan.push({ shadowPath, originalPath, originalSnapshot });
+		if (shadowHomeStateMatches(shadowState, originalSnapshot)) {
+			continue;
 		}
-	}
-
-	for (const entry of plan) {
 		syncShadowHomeStateFile(
-			entry.shadowPath,
-			entry.originalPath,
-			entry.originalSnapshot,
+			shadowPath,
+			originalPath,
+			originalSnapshot,
 		);
-		tightenFile(entry.originalPath);
+		tightenFile(originalPath);
 	}
 }
 

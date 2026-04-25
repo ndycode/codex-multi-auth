@@ -1720,7 +1720,7 @@ describe("codex bin wrapper", () => {
 		expect(existsSync(lockDir)).toBe(true);
 	});
 
-	it("does not publish a partial auth bundle when original auth changes during shadow use", () => {
+	it("syncs unchanged auth bundle files when a sibling changes during shadow use", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
 			"#!/usr/bin/env node",
@@ -1761,8 +1761,8 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(0);
 		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe('{"token":"external"}');
-		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe('{"accounts":["original"]}');
-		expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"original"}');
+		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe('{"accounts":["shadow"]}');
+		expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"shadow"}');
 	});
 
 	it("does not clobber sync-back files that change during rename retry backoff", () => {
