@@ -1972,12 +1972,7 @@ function isProcessAlive(pid) {
 }
 
 function isRuntimeRotationAppHelperOwnerAlive(pid) {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
+	return isProcessAlive(pid);
 }
 
 function resolveRuntimeRotationAppHelperDetachGraceMs(env = process.env) {

@@ -1114,6 +1114,111 @@ describe("codex bin wrapper", () => {
 		}
 	});
 
+	it("keeps app helpers alive when owner liveness probes return EPERM", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const multiAuthDir = join(fixtureRoot, "multi-auth");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		const preloadPath = join(fixtureRoot, "owner-eperm-preload.mjs");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+		writeFileSync(
+			preloadPath,
+			[
+				"const originalKill = process.kill.bind(process);",
+				"process.kill = (pid, signal) => {",
+				"  if (signal === 0 && String(pid) === process.env.CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID) {",
+				'    const error = new Error("operation not permitted");',
+				'    error.code = "EPERM";',
+				"    throw error;",
+				"  }",
+				"  return originalKill(pid, signal);",
+				"};",
+			].join("\n"),
+			"utf8",
+		);
+
+		const helper = spawn(
+			process.execPath,
+			[join(fixtureRoot, "scripts", "codex.js"), "--codex-multi-auth-runtime-app-helper"],
+			{
+				env: buildWrapperEnv({
+					CODEX_HOME: originalHome,
+					CODEX_MULTI_AUTH_DIR: multiAuthDir,
+					CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+					CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+					CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "250",
+					CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+					CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+					NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}`,
+				}),
+				stdio: ["ignore", "pipe", "pipe"],
+			},
+		);
+		let stdout = "";
+		let stderr = "";
+		const closed = new Promise<void>((resolve) => {
+			helper.once("close", () => resolve());
+		});
+		helper.stdout?.setEncoding("utf8");
+		helper.stderr?.setEncoding("utf8");
+		helper.stdout?.on("data", (chunk: string) => {
+			stdout += chunk;
+		});
+		helper.stderr?.on("data", (chunk: string) => {
+			stderr += chunk;
+		});
+
+		try {
+			const ready = await new Promise<{ statusPath: string }>((resolve, reject) => {
+				const timeout = setTimeout(() => {
+					reject(new Error(`helper did not become ready\n${stdout}\n${stderr}`));
+				}, 5_000);
+				helper.stdout?.on("data", () => {
+					const newlineIndex = stdout.indexOf("\n");
+					if (newlineIndex < 0) return;
+					try {
+						const message = JSON.parse(stdout.slice(0, newlineIndex)) as {
+							type?: string;
+							statusPath?: string;
+						};
+						if (message.type === "ready" && message.statusPath) {
+							clearTimeout(timeout);
+							resolve({ statusPath: message.statusPath });
+						}
+					} catch (error) {
+						clearTimeout(timeout);
+						reject(error);
+					}
+				});
+				helper.once("close", () => {
+					clearTimeout(timeout);
+					reject(new Error(`helper exited before ready\n${stdout}\n${stderr}`));
+				});
+			});
+
+			await sleep(750);
+
+			expect(helper.pid).toBeTruthy();
+			expect(isProcessAlive(helper.pid ?? -1)).toBe(true);
+			const status = JSON.parse(readFileSync(ready.statusPath, "utf8")) as {
+				state: string;
+			};
+			expect(status.state).toBe("running");
+			expect(readFileSync(markerPath, "utf8")).toBe("start:http://127.0.0.1:4567\n");
+		} finally {
+			if (helper.pid && isProcessAlive(helper.pid)) {
+				helper.kill("SIGTERM");
+			}
+			await Promise.race([closed, sleep(2_000)]);
+			if (helper.pid && isProcessAlive(helper.pid)) {
+				helper.kill("SIGKILL");
+				await Promise.race([closed, sleep(2_000)]);
+			}
+		}
+	});
+
 	it("stops failed app helpers before unsupported-model retries", async () => {
 		const fixtureRoot = createWrapperFixture();
 		createRuntimeRotationProxyFixtureModule(fixtureRoot);
