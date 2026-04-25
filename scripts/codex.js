@@ -35,8 +35,9 @@ const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];
 const SHADOW_HOME_STATE_FILES = ["auth.json", "accounts.json", ".codex-global-state.json"];
 const SHADOW_HOME_STATE_FILE_SET = new Set(SHADOW_HOME_STATE_FILES);
 const SHADOW_HOME_CONFIG_FILE = "config.toml";
-const RUNTIME_ROTATION_PROXY_PROVIDER_ID = "codex-multi-auth-runtime-proxy";
 const APP_SERVER_ACCOUNT_DISPLAY_NAME = "codex-multi-auth";
+const RUNTIME_ROTATION_PROXY_PROVIDER_ID =
+	await loadRuntimeRotationProxyProviderId();
 const APP_SERVER_ACCOUNT_LABEL_ENV = "CODEX_MULTI_AUTH_APP_SERVER_ACCOUNT_LABEL";
 const INTERNAL_RUNTIME_ROTATION_APP_HELPER_ARG =
 	"--codex-multi-auth-runtime-app-helper";
@@ -56,6 +57,20 @@ let shadowHomeCleanupPreflightReadBusyFailuresRemaining = Number.parseInt(
 );
 const shadowHomeCleanupRetryMarkerDir =
 	(process.env.CODEX_MULTI_AUTH_TEST_SHADOW_RETRY_MARKER_DIR ?? "").trim();
+let warnedInvalidRuntimeRotationProxyEnv = false;
+let warnedPendingAccountReadIdOverflow = false;
+
+async function loadRuntimeRotationProxyProviderId() {
+	try {
+		const mod = await import("../dist/lib/runtime-constants.js");
+		if (typeof mod.RUNTIME_ROTATION_PROXY_PROVIDER_ID === "string") {
+			return mod.RUNTIME_ROTATION_PROXY_PROVIDER_ID;
+		}
+	} catch {
+		// Keep wrapper startup resilient when dist has not been built yet.
+	}
+	return `${APP_SERVER_ACCOUNT_DISPLAY_NAME}-runtime-proxy`;
+}
 
 function isRetryableShadowHomeCleanupError(error) {
 	const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
@@ -423,6 +438,7 @@ function createProtocolLineAccumulator(onLine) {
 }
 
 function createAppServerAccountReadProtocolProxy() {
+	const maxPendingAccountReadIds = 4096;
 	const pendingAccountReadIds = new Set();
 	const inputLines = createProtocolLineAccumulator((line) => {
 		const { body } = splitProtocolLineEnding(line);
@@ -432,6 +448,15 @@ function createAppServerAccountReadProtocolProxy() {
 		}
 		const key = jsonRpcIdKey(message.id);
 		if (key) {
+			if (pendingAccountReadIds.size >= maxPendingAccountReadIds) {
+				pendingAccountReadIds.clear();
+				if (!warnedPendingAccountReadIdOverflow) {
+					warnedPendingAccountReadIdOverflow = true;
+					console.error(
+						"codex-multi-auth: cleared pending app-server account/read ids after exceeding the safety cap.",
+					);
+				}
+			}
 			pendingAccountReadIds.add(key);
 		}
 	});
@@ -460,7 +485,7 @@ function createAppServerAccountReadProtocolProxy() {
 function rewriteAppServerAccountReadResponseLine(line, pendingAccountReadIds) {
 	const { body, lineEnding } = splitProtocolLineEnding(line);
 	const message = parseJsonObjectLine(body);
-	if (!message || !Object.hasOwn(message, "id") || !Object.hasOwn(message, "result")) {
+	if (!message || !Object.hasOwn(message, "id")) {
 		return line;
 	}
 	const key = jsonRpcIdKey(message.id);
@@ -468,6 +493,9 @@ function rewriteAppServerAccountReadResponseLine(line, pendingAccountReadIds) {
 		return line;
 	}
 	pendingAccountReadIds.delete(key);
+	if (!Object.hasOwn(message, "result")) {
+		return line;
+	}
 	return `${JSON.stringify({
 		...message,
 		result: {
@@ -1462,9 +1490,12 @@ function parseRuntimeRotationProxyEnv(value) {
 	if (normalized === "0" || normalized === "false" || normalized === "no") {
 		return false;
 	}
-	console.error(
-		"codex-multi-auth: ignoring invalid CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY value. Expected 0/1, true/false, or yes/no.",
-	);
+	if (!warnedInvalidRuntimeRotationProxyEnv) {
+		warnedInvalidRuntimeRotationProxyEnv = true;
+		console.error(
+			"codex-multi-auth: ignoring invalid CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY value. Expected 0/1, true/false, or yes/no.",
+		);
+	}
 	return undefined;
 }
 
@@ -1495,17 +1526,27 @@ function tomlStringLiteral(value) {
 	return `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
+function readTomlTableName(line) {
+	const match = /^\s*\[{1,2}\s*([^\]]+?)\s*\]{1,2}\s*$/.exec(line);
+	return match?.[1]?.trim() ?? null;
+}
+
 function removeRuntimeRotationProviderBlock(rawConfig) {
 	const lines = rawConfig.split(/\r?\n/);
 	const output = [];
 	let skipping = false;
+	const providerTable = `model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}`;
 	for (const line of lines) {
 		const trimmed = line.trim();
 		if (trimmed === `[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`) {
 			skipping = true;
 			continue;
 		}
-		if (skipping && /^\s*\[[^\]]+\]\s*$/.test(line)) {
+		const tableName = readTomlTableName(line);
+		if (skipping && tableName) {
+			if (tableName === providerTable || tableName.startsWith(`${providerTable}.`)) {
+				continue;
+			}
 			skipping = false;
 		}
 		if (!skipping) {
@@ -1523,7 +1564,7 @@ function rewriteTopLevelModelProvider(rawConfig) {
 	const output = [];
 
 	for (const line of lines) {
-		const isTable = /^\s*\[[^\]]+\]\s*$/.test(line);
+		const isTable = readTomlTableName(line) !== null;
 		if (!replaced && isTable) {
 			output.push(rewrittenLine);
 			replaced = true;
@@ -1786,6 +1827,14 @@ function createRuntimeRotationAppHelperStatus({
 }) {
 	const proxyStatus =
 		typeof proxyServer?.getStatus === "function" ? proxyServer.getStatus() : {};
+	const lastAccountIndex = proxyStatus.lastAccountIndex ?? null;
+	const lastAccountLabel =
+		typeof proxyStatus.lastAccountLabel === "string" &&
+		!proxyStatus.lastAccountLabel.includes("@")
+			? proxyStatus.lastAccountLabel
+			: typeof lastAccountIndex === "number"
+				? `Account ${lastAccountIndex + 1}`
+				: null;
 	return {
 		version: 1,
 		kind: "codex-app-runtime-rotation-helper",
@@ -1800,9 +1849,8 @@ function createRuntimeRotationAppHelperStatus({
 		upstreamRequests: proxyStatus.upstreamRequests ?? 0,
 		retries: proxyStatus.retries ?? 0,
 		rotations: proxyStatus.rotations ?? 0,
-		lastAccountIndex: proxyStatus.lastAccountIndex ?? null,
-		lastAccountLabel: proxyStatus.lastAccountLabel ?? null,
-		lastAccountEmail: proxyStatus.lastAccountEmail ?? null,
+		lastAccountIndex,
+		lastAccountLabel,
 		lastAccountId: proxyStatus.lastAccountId ?? null,
 		lastAccountUpdatedAt: proxyStatus.lastAccountUpdatedAt ?? null,
 		lastError: proxyStatus.lastError ?? null,
@@ -2017,12 +2065,10 @@ async function createRuntimeRotationAppHelperContext(baseContext) {
 	const { helper, message } = await startRuntimeRotationAppHelper(baseContext);
 	const helperEnv = message.env ?? {};
 	const detachGraceMs = resolveRuntimeRotationAppHelperDetachGraceMs(baseContext.env);
-	let helperDetached = false;
 
 	const cleanup = async () => {
 		const livedMs = Date.now() - startedAt;
 		if (livedMs < detachGraceMs) {
-			helperDetached = true;
 			helper.stdout?.destroy();
 			helper.stderr?.destroy();
 			helper.unref();
@@ -2045,9 +2091,7 @@ async function createRuntimeRotationAppHelperContext(baseContext) {
 			try {
 				await cleanup();
 			} finally {
-				if (!helperDetached) {
-					baseContext.cleanup?.();
-				}
+				baseContext.cleanup?.();
 			}
 		},
 	};
@@ -2068,8 +2112,10 @@ async function createRuntimeRotationProxyContextIfEnabled(
 
 	const proxyModule = await loadRuntimeRotationProxyModule();
 	if (!proxyModule) {
-		baseContext.cleanup?.();
-		return null;
+		console.error(
+			"codex-multi-auth runtime rotation proxy is unavailable; continuing without runtime rotation.",
+		);
+		return baseContext;
 	}
 
 	let proxyServer;
@@ -2088,11 +2134,10 @@ async function createRuntimeRotationProxyContextIfEnabled(
 		} catch {
 			// Best-effort cleanup only.
 		}
-		baseContext.cleanup?.();
 		console.error(
-			`codex-multi-auth runtime rotation proxy failed to start: ${error instanceof Error ? error.message : String(error)}`,
+			`codex-multi-auth runtime rotation proxy failed to start; continuing without runtime rotation: ${error instanceof Error ? error.message : String(error)}`,
 		);
-		return null;
+		return baseContext;
 	}
 
 	const cleanup = async () => {

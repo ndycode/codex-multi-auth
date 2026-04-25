@@ -6,15 +6,29 @@ import {
 	type RuntimeRotationProxyServer,
 } from "../lib/runtime-rotation-proxy.js";
 import { clearCircuitBreakers } from "../lib/circuit-breaker.js";
+import { resetRefreshQueue } from "../lib/refresh-queue.js";
 import { resetTrackers } from "../lib/rotation.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 
-const { saveAccountsMock, withAccountStorageTransactionMock } = vi.hoisted(
+const {
+	refreshAccessTokenMock,
+	saveAccountsMock,
+	withAccountStorageTransactionMock,
+} = vi.hoisted(
 	() => ({
+		refreshAccessTokenMock: vi.fn(),
 		saveAccountsMock: vi.fn(),
 		withAccountStorageTransactionMock: vi.fn(),
 	}),
 );
+
+vi.mock("../lib/auth/auth.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../lib/auth/auth.js")>();
+	return {
+		...actual,
+		refreshAccessToken: refreshAccessTokenMock,
+	};
+});
 
 vi.mock("../lib/storage.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../lib/storage.js")>();
@@ -32,6 +46,7 @@ interface FetchCall {
 }
 
 const openServers: RuntimeRotationProxyServer[] = [];
+const openManagers: AccountManager[] = [];
 
 function createStorage(now: number, count = 2): AccountStorageV3 {
 	return {
@@ -77,12 +92,15 @@ function createRecordingFetch(
 async function startProxy(params: {
 	accountManager: AccountManager;
 	fetchImpl: typeof fetch;
+	options?: Partial<Parameters<typeof startRuntimeRotationProxy>[0]>;
 }): Promise<RuntimeRotationProxyServer> {
+	openManagers.push(params.accountManager);
 	const proxy = await startRuntimeRotationProxy({
 		accountManager: params.accountManager,
 		fetchImpl: params.fetchImpl,
 		upstreamBaseUrl: "https://example.test/backend-api",
 		quotaRemainingPercentThreshold: 10,
+		...params.options,
 	});
 	openServers.push(proxy);
 	return proxy;
@@ -106,6 +124,22 @@ async function postResponses(
 	});
 }
 
+async function postRawResponses(
+	proxy: RuntimeRotationProxyServer,
+	body: string,
+	headers: Record<string, string> = {},
+): Promise<Response> {
+	return fetch(`${proxy.baseUrl}/responses`, {
+		method: "POST",
+		headers: {
+			authorization: "Bearer caller-token",
+			"content-type": "application/json",
+			...headers,
+		},
+		body,
+	});
+}
+
 function textEventStream(body = "data: {}\n\n", headers?: HeadersInit): Response {
 	return new Response(body, {
 		status: HTTP_STATUS.OK,
@@ -119,6 +153,8 @@ function textEventStream(body = "data: {}\n\n", headers?: HeadersInit): Response
 beforeEach(() => {
 	resetTrackers();
 	clearCircuitBreakers();
+	resetRefreshQueue();
+	refreshAccessTokenMock.mockReset();
 	saveAccountsMock.mockReset();
 	saveAccountsMock.mockResolvedValue(undefined);
 	withAccountStorageTransactionMock.mockReset();
@@ -131,8 +167,12 @@ afterEach(async () => {
 	for (const proxy of openServers.splice(0, openServers.length)) {
 		await proxy.close();
 	}
+	for (const accountManager of openManagers.splice(0, openManagers.length)) {
+		await accountManager.flushPendingSave();
+	}
 	resetTrackers();
 	clearCircuitBreakers();
+	resetRefreshQueue();
 });
 
 describe("runtime rotation proxy", () => {
@@ -155,6 +195,7 @@ describe("runtime rotation proxy", () => {
 			clientApiKey: "runtime-secret",
 		});
 		openServers.push(proxy);
+		openManagers.push(accountManager);
 
 		const rejected = await postResponses(proxy, { model: "gpt-5-codex" });
 
@@ -171,6 +212,20 @@ describe("runtime rotation proxy", () => {
 		expect(accepted.status).toBe(HTTP_STATUS.OK);
 		expect(await accepted.text()).toBe("data: forwarded\n\n");
 		expect(calls).toHaveLength(1);
+
+		const acceptedWithApiKey = await postResponses(
+			proxy,
+			{ model: "gpt-5-codex" },
+			"/responses",
+			{
+				authorization: "Bearer wrong-token",
+				"x-api-key": "runtime-secret",
+			},
+		);
+
+		expect(acceptedWithApiKey.status).toBe(HTTP_STATUS.OK);
+		expect(await acceptedWithApiKey.text()).toBe("data: forwarded\n\n");
+		expect(calls).toHaveLength(2);
 	});
 
 	it("forwards Responses requests unchanged while replacing caller auth", async () => {
@@ -207,11 +262,31 @@ describe("runtime rotation proxy", () => {
 		expect(response.headers.get("x-codex-multi-auth-account-id")).toBeNull();
 		expect(proxy.getStatus()).toMatchObject({
 			lastAccountIndex: 0,
-			lastAccountEmail: "account-1@example.com",
-			lastAccountLabel: "Account 1 (account-1@example.com, id:acc_1)",
+			lastAccountLabel: "Account 1",
 			lastAccountId: "acc_1",
 		});
+		expect(proxy.getStatus()).not.toHaveProperty("lastAccountEmail");
 		expect(JSON.parse(calls[0]?.bodyText ?? "{}")).toEqual(requestBody);
+	});
+
+	it("rejects oversized request bodies before selecting an account", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: unreachable\n\n"),
+		);
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { maxRequestBodyBytes: 8 },
+		});
+
+		const response = await postRawResponses(proxy, '{"model":"gpt-5-codex"}');
+		const payload = (await response.json()) as { error: { code: string } };
+
+		expect(response.status).toBe(HTTP_STATUS.PAYLOAD_TOO_LARGE);
+		expect(payload.error.code).toBe("runtime_rotation_proxy_payload_too_large");
+		expect(calls).toHaveLength(0);
 	});
 
 	it("persists the actually served account as the realtime active selection", async () => {
@@ -243,10 +318,11 @@ describe("runtime rotation proxy", () => {
 
 			expect(response.status).toBe(HTTP_STATUS.OK);
 			expect(await response.text()).toBe("data: served\n\n");
+			await accountManager.flushPendingSave();
 			expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_2");
 			expect(persisted.at(-1)).toMatchObject({
-				activeIndex: 1,
-				activeIndexByFamily: { codex: 1 },
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0, "gpt-5-codex": 1 },
 			});
 			expect(persisted.at(-1)?.accounts[1]?.lastSwitchReason).toBe("rotation");
 		} finally {
@@ -307,11 +383,34 @@ describe("runtime rotation proxy", () => {
 		]);
 		expect(proxy.getStatus()).toMatchObject({
 			lastAccountIndex: 1,
-			lastAccountEmail: "account-2@example.com",
+			lastAccountLabel: "Account 2",
 		});
+		expect(proxy.getStatus()).not.toHaveProperty("lastAccountEmail");
 		expect(
 			accountManager.getAccountByIndex(0)?.rateLimitResetTimes["gpt-5-codex"],
 		).toBeTypeOf("number");
+	});
+
+	it("pins repeated session requests to the first served account", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			textEventStream(`data: session-${attempt}\n\n`),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const body = {
+			model: "gpt-5-codex",
+			stream: true,
+			metadata: { session_id: "thread-a" },
+		};
+
+		await (await postResponses(proxy, body)).text();
+		await (await postResponses(proxy, body)).text();
+
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_1",
+		]);
 	});
 
 	it("retries a 429 on another account before returning bytes to the client", async () => {
@@ -342,6 +441,55 @@ describe("runtime rotation proxy", () => {
 		expect(proxy.getStatus().retries).toBe(1);
 	});
 
+	it("persists cooldowns so a restarted proxy avoids limited accounts", async () => {
+		const now = Date.now();
+		const persisted: AccountStorageV3[] = [];
+		withAccountStorageTransactionMock.mockImplementation(async (handler) =>
+			handler(null, async (storage: AccountStorageV3) => {
+				persisted.push(structuredClone(storage));
+			}),
+		);
+		const firstManager = new AccountManager(undefined, createStorage(now, 2));
+		const firstFetch = createRecordingFetch((_call, attempt) => {
+			if (attempt === 1) {
+				return new Response(
+					JSON.stringify({ error: { retry_after_ms: 120_000 } }),
+					{
+						status: HTTP_STATUS.TOO_MANY_REQUESTS,
+						headers: { "content-type": "application/json" },
+					},
+				);
+			}
+			return textEventStream("data: recovered\n\n");
+		});
+		const firstProxy = await startProxy({
+			accountManager: firstManager,
+			fetchImpl: firstFetch.fetchImpl,
+		});
+
+		await (await postResponses(firstProxy, { model: "gpt-5-codex" })).text();
+		await firstManager.flushPendingSave();
+
+		const reloadedStorage = persisted.at(-1);
+		expect(reloadedStorage).toBeDefined();
+		if (!reloadedStorage) throw new Error("expected persisted storage");
+		expect(reloadedStorage?.accounts[0]?.rateLimitResetTimes["gpt-5-codex"]).toBeTypeOf(
+			"number",
+		);
+		const secondManager = new AccountManager(undefined, reloadedStorage);
+		const secondFetch = createRecordingFetch(() => textEventStream("data: restart\n\n"));
+		const secondProxy = await startProxy({
+			accountManager: secondManager,
+			fetchImpl: secondFetch.fetchImpl,
+		});
+
+		await (await postResponses(secondProxy, { model: "gpt-5-codex" })).text();
+
+		expect(secondFetch.calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_2",
+		]);
+	});
+
 	it("cools down server-error and network-failure accounts before retrying", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 3));
@@ -369,6 +517,60 @@ describe("runtime rotation proxy", () => {
 		expect(accountManager.getAccountByIndex(1)?.cooldownReason).toBe("network-error");
 	});
 
+	it("deduplicates concurrent expired-token refresh and persistence", async () => {
+		const now = Date.now();
+		const storage = createStorage(now, 1);
+		const account = storage.accounts[0];
+		if (!account) throw new Error("expected account");
+		account.accessToken = "expired-access";
+		account.expiresAt = now - 60_000;
+		const persisted: AccountStorageV3[] = [];
+		withAccountStorageTransactionMock.mockImplementation(async (handler) =>
+			handler(null, async (nextStorage: AccountStorageV3) => {
+				persisted.push(structuredClone(nextStorage));
+				await saveAccountsMock(nextStorage);
+			}),
+		);
+		let releaseRefresh: (() => void) | undefined;
+		const refreshBlocked = new Promise<void>((resolve) => {
+			releaseRefresh = resolve;
+		});
+		refreshAccessTokenMock.mockImplementation(async () => {
+			await refreshBlocked;
+			return {
+				type: "success",
+				access: "fresh-access",
+				refresh: "refresh-1",
+				expires: now + 3_600_000,
+			};
+		});
+		const accountManager = new AccountManager(undefined, storage);
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			textEventStream(`data: refreshed-${attempt}\n\n`),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const first = postResponses(proxy, { model: "gpt-5-codex" });
+		const second = postResponses(proxy, { model: "gpt-5-codex" });
+		await vi.waitFor(() => expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1));
+		releaseRefresh?.();
+		const responses = await Promise.all([first, second]);
+
+		expect(responses.map((response) => response.status)).toEqual([
+			HTTP_STATUS.OK,
+			HTTP_STATUS.OK,
+		]);
+		await Promise.all(responses.map((response) => response.text()));
+		expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+		expect(persisted[0]?.accounts[0]?.accessToken).toBe("fresh-access");
+		expect(calls.map((call) => call.headers.get("authorization"))).toEqual([
+			"Bearer fresh-access",
+			"Bearer fresh-access",
+		]);
+		await accountManager.flushPendingSave();
+	});
+
 	it("returns a structured pool exhaustion response when no account can satisfy the request", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 1));
@@ -392,6 +594,45 @@ describe("runtime rotation proxy", () => {
 			hint: "Run `codex auth rotation status` to inspect account state.",
 		});
 		expect(payload.error.retry_after_ms).toBeGreaterThan(0);
+	});
+
+	it("caps per-request upstream attempts instead of walking a large pool", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 6));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response("upstream failed", { status: 503 }),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex" });
+		const payload = (await response.json()) as { error: { reason: string } };
+
+		expect(response.status).toBe(503);
+		expect(payload.error.reason).toBe("server-error");
+		expect(calls).toHaveLength(4);
+	});
+
+	it("times out a hung upstream fetch and cools down the account", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const { calls, fetchImpl } = createRecordingFetch(
+			() => new Promise<Response>(() => undefined),
+		);
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { fetchTimeoutMs: 10 },
+		});
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex" });
+		const payload = (await response.json()) as { error: { reason: string } };
+
+		expect(response.status).toBe(503);
+		expect(payload.error.reason).toBe("network-error");
+		expect(calls).toHaveLength(1);
+		expect(accountManager.getAccountByIndex(0)?.cooldownReason).toBe(
+			"network-error",
+		);
 	});
 
 	it("does not replay a request after the upstream stream has started", async () => {

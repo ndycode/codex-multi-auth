@@ -1,14 +1,14 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
+import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { RUNTIME_ROTATION_PROXY_PROVIDER_ID } from "../runtime-constants.js";
 import { getCodexMultiAuthDir } from "../runtime-paths.js";
 
-const RUNTIME_ROTATION_PROXY_PROVIDER_ID = "codex-multi-auth-runtime-proxy";
 const APP_BIND_DIR_NAME = "app-bind";
 const APP_BIND_STATE_FILE = "runtime-rotation-app-bind.json";
 const APP_BIND_BACKUP_FILE = "codex-config-backup.json";
@@ -102,17 +102,27 @@ function tomlStringLiteral(value: string): string {
 	return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
+function readTomlTableName(line: string): string | null {
+	const match = /^\s*\[{1,2}\s*([^\]]+?)\s*\]{1,2}\s*$/.exec(line);
+	return match?.[1]?.trim() ?? null;
+}
+
 function removeRuntimeRotationProviderBlock(rawConfig: string): string {
 	const lines = rawConfig.split(/\r?\n/);
 	const output: string[] = [];
 	let skipping = false;
+	const providerTable = `model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}`;
 	for (const line of lines) {
 		const trimmed = line.trim();
 		if (trimmed === `[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`) {
 			skipping = true;
 			continue;
 		}
-		if (skipping && /^\s*\[[^\]]+\]\s*$/.test(line)) {
+		const tableName = readTomlTableName(line);
+		if (skipping && tableName) {
+			if (tableName === providerTable || tableName.startsWith(`${providerTable}.`)) {
+				continue;
+			}
 			skipping = false;
 		}
 		if (!skipping) output.push(line);
@@ -128,7 +138,7 @@ function rewriteTopLevelModelProvider(rawConfig: string): string {
 	const output: string[] = [];
 
 	for (const line of lines) {
-		const isTable = /^\s*\[[^\]]+\]\s*$/.test(line);
+		const isTable = readTomlTableName(line) !== null;
 		if (!replaced && isTable) {
 			output.push(rewrittenLine);
 			replaced = true;
@@ -147,7 +157,7 @@ function rewriteTopLevelModelProvider(rawConfig: string): string {
 
 function extractTopLevelModelProviderLine(rawConfig: string): string | null {
 	for (const line of rawConfig.split(/\r?\n/)) {
-		if (/^\s*\[[^\]]+\]\s*$/.test(line)) return null;
+		if (readTomlTableName(line) !== null) return null;
 		if (/^\s*model_provider\s*=/.test(line)) return line;
 	}
 	return null;
@@ -283,6 +293,51 @@ async function withFileOperationRetry<T>(operation: () => Promise<T>): Promise<T
 			await sleep(delayMs);
 		}
 	}
+}
+
+async function syncDirectoryBestEffort(path: string): Promise<void> {
+	let handle: Awaited<ReturnType<typeof open>> | null = null;
+	try {
+		handle = await open(path, "r");
+		await handle.sync();
+	} catch {
+		// Directory fsync is not portable; the file-level fsync still guards contents.
+	} finally {
+		await handle?.close().catch(() => undefined);
+	}
+}
+
+async function atomicWriteFile(target: string, content: string): Promise<void> {
+	await withFileOperationRetry(async () => {
+		await mkdir(dirname(target), { recursive: true });
+		const tempPath = join(
+			dirname(target),
+			[
+				`.${basename(target)}`,
+				String(process.pid),
+				String(Date.now()),
+				randomBytes(4).toString("hex"),
+				"tmp",
+			].join("."),
+		);
+		let moved = false;
+		let handle: Awaited<ReturnType<typeof open>> | null = null;
+		try {
+			handle = await open(tempPath, "w");
+			await handle.writeFile(content, "utf8");
+			await handle.sync();
+			await handle.close();
+			handle = null;
+			await rename(tempPath, target);
+			moved = true;
+			await syncDirectoryBestEffort(dirname(target));
+		} finally {
+			await handle?.close().catch(() => undefined);
+			if (!moved) {
+				await unlink(tempPath).catch(() => undefined);
+			}
+		}
+	});
 }
 
 async function unlinkIfExists(path: string): Promise<void> {
@@ -529,12 +584,12 @@ function createMacLaunchAgentPlist(state: AppBindState): string {
 async function writeAppBindStartup(state: AppBindState): Promise<void> {
 	if (state.platform === "win32" && state.startupPath) {
 		await mkdir(dirname(state.startupPath), { recursive: true });
-		await writeFile(state.startupPath, createWindowsStartupCommand(state), "utf8");
+		await atomicWriteFile(state.startupPath, createWindowsStartupCommand(state));
 		return;
 	}
 	if (state.platform === "darwin" && state.launchAgentPath) {
 		await mkdir(dirname(state.launchAgentPath), { recursive: true });
-		await writeFile(state.launchAgentPath, createMacLaunchAgentPlist(state), "utf8");
+		await atomicWriteFile(state.launchAgentPath, createMacLaunchAgentPlist(state));
 	}
 }
 
@@ -552,24 +607,30 @@ async function removeAppBindStartup(state: AppBindState): Promise<void> {
 }
 
 function spawnRouter(state: AppBindState): void {
-	const child = spawn(
-		state.nodePath,
-		[
-			state.routerScriptPath,
-			"--port",
-			String(state.port),
-			"--status",
-			state.statusPath,
-			"--state",
-			state.statePath,
-		],
-		{
-			detached: true,
-			stdio: "ignore",
-			windowsHide: true,
-		},
-	);
-	child.unref();
+	mkdirSync(dirname(state.logPath), { recursive: true });
+	const logFd = openSync(state.logPath, "a");
+	try {
+		const child = spawn(
+			state.nodePath,
+			[
+				state.routerScriptPath,
+				"--port",
+				String(state.port),
+				"--status",
+				state.statusPath,
+				"--state",
+				state.statePath,
+			],
+			{
+				detached: true,
+				stdio: ["ignore", logFd, logFd],
+				windowsHide: true,
+			},
+		);
+		child.unref();
+	} finally {
+		closeSync(logFd);
+	}
 }
 
 async function maybeStartRouter(state: AppBindState, options: AppBindOptions): Promise<boolean> {
@@ -592,7 +653,8 @@ async function waitForRouterStatus(statusPath: string): Promise<AppBindRouterSta
 		if (router?.state === "running" && isProcessAlive(router.pid)) return router;
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
-	return latest;
+	const suffix = latest?.lastError ? `: ${latest.lastError}` : "";
+	throw new Error(`Codex app runtime router did not report ready${suffix}`);
 }
 
 async function stopRouter(router: AppBindRouterStatus | null): Promise<void> {
@@ -674,24 +736,42 @@ export async function bindCodexAppRuntimeRotation(
 
 	await mkdir(paths.bindDir, { recursive: true });
 	await mkdir(dirname(paths.configPath), { recursive: true });
-	await writeFile(paths.backupPath, `${JSON.stringify(backup, null, 2)}\n`, "utf8");
-	await writeFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+	await atomicWriteFile(paths.backupPath, `${JSON.stringify(backup, null, 2)}\n`);
+	await atomicWriteFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`);
 	const startedRouter = await maybeStartRouter(state, options);
-	if (startedRouter) {
-		const router = await waitForRouterStatus(state.statusPath);
-		port = readPortFromBaseUrl(router?.baseUrl ?? null, port);
-		baseUrl = router?.baseUrl ?? formatBaseUrl(host, port);
-		boundConfig = rewriteConfigTomlForAppBind(content, baseUrl, clientApiKey);
-		state = {
-			...state,
-			port,
-			baseUrl,
-			boundConfigHash: sha256(boundConfig),
-			updatedAt: options.now?.() ?? Date.now(),
-		};
+	const router = startedRouter
+		? await waitForRouterStatus(state.statusPath)
+		: await readRouterStatus(state.statusPath);
+	const routerBaseUrl = router?.baseUrl ?? null;
+	const routerIsUsable =
+		!!routerBaseUrl &&
+		router !== null &&
+		(startedRouter || (router.state === "running" && isProcessAlive(router.pid)));
+	if (routerIsUsable) {
+		port = readPortFromBaseUrl(routerBaseUrl, port);
+		baseUrl = routerBaseUrl;
+	} else if (existingState && existingState.port > 0) {
+		port = existingState.port;
+		baseUrl = existingState.baseUrl;
 	}
-	await writeFile(paths.configPath, boundConfig, "utf8");
-	await writeFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+	if (port <= 0) {
+		throw new Error(
+			"Codex app bind could not resolve a runtime router port; refusing to write config.toml with port=0.",
+		);
+	}
+	boundConfig = rewriteConfigTomlForAppBind(content, baseUrl, clientApiKey);
+	state = {
+		...state,
+		port,
+		baseUrl,
+		boundConfigHash: sha256(boundConfig),
+		updatedAt: options.now?.() ?? Date.now(),
+	};
+	if (startedRouter) {
+		options.log?.(`Codex app runtime router started on ${baseUrl}`);
+	}
+	await atomicWriteFile(paths.configPath, boundConfig);
+	await atomicWriteFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`);
 	await writeAppBindStartup(state);
 	const status = await getAppBindStatus(options);
 	return {
@@ -715,24 +795,22 @@ export async function unbindCodexAppRuntimeRotation(
 	if (backup) {
 		const current = await readConfigIfExists(backup.configPath);
 		if (state && current.existed && sha256(current.content) !== state.boundConfigHash) {
-			await writeFile(
+			await atomicWriteFile(
 				backup.configPath,
 				restoreConfigTomlFromAppBind(current.content, backup.content),
-				"utf8",
 			);
 		} else if (backup.existed) {
 			await mkdir(dirname(backup.configPath), { recursive: true });
-			await writeFile(backup.configPath, backup.content, "utf8");
+			await atomicWriteFile(backup.configPath, backup.content);
 		} else {
 			await unlinkIfExists(backup.configPath);
 		}
 	} else if (state) {
 		const current = await readConfigIfExists(state.configPath);
 		if (current.existed) {
-			await writeFile(
+			await atomicWriteFile(
 				state.configPath,
 				restoreConfigTomlFromAppBind(current.content, ""),
-				"utf8",
 			);
 		}
 	}
@@ -765,7 +843,7 @@ export function formatAppBindStatus(status: AppBindStatus): string {
 		`port=${status.state.port}`,
 		`config=${status.state.configPath}`,
 	];
-	if (status.router?.lastAccountLabel) {
+	if (status.router?.lastAccountLabel && !status.router.lastAccountLabel.includes("@")) {
 		parts.push(`lastAccount=${status.router.lastAccountLabel}`);
 	} else if (status.router?.lastAccountIndex !== null && status.router?.lastAccountIndex !== undefined) {
 		parts.push(`lastAccount=Account ${status.router.lastAccountIndex + 1}`);

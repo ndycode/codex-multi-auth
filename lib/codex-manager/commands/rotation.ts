@@ -14,6 +14,7 @@ type LoadedStorage = AccountStorageV3 | null;
 const APP_RUNTIME_HELPER_STATUS_FILE = "runtime-rotation-app-helper.json";
 
 interface AppRuntimeHelperStatus {
+	kind: string | null;
 	state: string | null;
 	pid: number | null;
 	idleExpiresAt: number | null;
@@ -105,13 +106,14 @@ function readAppRuntimeHelperStatus(): AppRuntimeHelperStatus | null {
 		if (!isRecord(parsed)) return null;
 		return {
 			state: readOptionalString(parsed, "state"),
+			kind: readOptionalString(parsed, "kind"),
 			pid: readOptionalNumber(parsed, "pid"),
 			idleExpiresAt: readOptionalNumber(parsed, "idleExpiresAt"),
 			totalRequests: readOptionalNumber(parsed, "totalRequests"),
 			rotations: readOptionalNumber(parsed, "rotations"),
 			lastAccountIndex: readOptionalNumber(parsed, "lastAccountIndex"),
 			lastAccountLabel: readOptionalString(parsed, "lastAccountLabel"),
-			lastAccountEmail: readOptionalString(parsed, "lastAccountEmail"),
+			lastAccountEmail: null,
 			lastAccountId: readOptionalString(parsed, "lastAccountId"),
 			lastAccountUpdatedAt: readOptionalNumber(parsed, "lastAccountUpdatedAt"),
 			updatedAt: readOptionalNumber(parsed, "updatedAt"),
@@ -134,11 +136,8 @@ function isProcessAlive(pid: number | null): boolean {
 }
 
 function formatHelperLastAccount(status: AppRuntimeHelperStatus): string | null {
-	if (status.lastAccountLabel) return status.lastAccountLabel;
-	if (status.lastAccountEmail) {
-		return status.lastAccountIndex !== null
-			? `Account ${status.lastAccountIndex + 1} (${status.lastAccountEmail})`
-			: status.lastAccountEmail;
+	if (status.lastAccountLabel && !status.lastAccountLabel.includes("@")) {
+		return status.lastAccountLabel;
 	}
 	if (status.lastAccountId) {
 		return status.lastAccountIndex !== null
@@ -154,6 +153,9 @@ function formatHelperLastAccount(status: AppRuntimeHelperStatus): string | null 
 function formatAppRuntimeHelperStatus(now: number): string {
 	const status = readAppRuntimeHelperStatus();
 	if (!status) return "Codex app helper: not running";
+	if (status.kind !== "codex-app-runtime-rotation-helper") {
+		return "Codex app helper: not running";
+	}
 	const alive = isProcessAlive(status.pid);
 	if (!alive || status.state === "stopped" || status.state === "idle-timeout") {
 		return "Codex app helper: not running";
@@ -192,13 +194,23 @@ async function printCodexAppBindStatus(deps: RotationCommandDeps): Promise<void>
 
 async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 	const logInfo = deps.logInfo ?? console.log;
-	// Rotation status reports the shared Codex account pool, not a project-scoped override.
-	deps.setStoragePath(null);
-	const config = deps.loadPluginConfig();
-	const envOverride = parseBooleanEnv(process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY);
-	const enabled = envOverride ?? deps.getCodexRuntimeRotationProxy(config);
-	const storage = await deps.loadAccounts();
+	const previousStoragePath = deps.getStoragePath();
+	let config!: PluginConfig;
+	let enabled!: boolean;
+	let storage!: LoadedStorage;
+	let storagePath!: string | null;
 	const now = deps.getNow?.() ?? Date.now();
+	try {
+		// Rotation status reports the shared Codex account pool, not a project-scoped override.
+		deps.setStoragePath(null);
+		config = deps.loadPluginConfig();
+		const envOverride = parseBooleanEnv(process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY);
+		enabled = envOverride ?? deps.getCodexRuntimeRotationProxy(config);
+		storage = await deps.loadAccounts();
+		storagePath = deps.getStoragePath();
+	} finally {
+		deps.setStoragePath(previousStoragePath);
+	}
 
 	logInfo(`Runtime rotation proxy: ${enabled ? "enabled" : "disabled"}`);
 	logInfo(
@@ -207,7 +219,7 @@ async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 	logInfo(`Env override: ${formatEnvOverride()}`);
 	logInfo(formatAppRuntimeHelperStatus(now));
 	await printCodexAppBindStatus(deps);
-	logInfo(`Storage: ${deps.getStoragePath()}`);
+	logInfo(`Storage: ${storagePath}`);
 
 	if (!storage || storage.accounts.length === 0) {
 		logInfo("Accounts: none configured");

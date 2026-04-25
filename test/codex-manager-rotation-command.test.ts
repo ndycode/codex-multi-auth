@@ -1,12 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runRotationCommand } from "../lib/codex-manager/commands/rotation.js";
 import type { RotationCommandDeps } from "../lib/codex-manager/commands/rotation.js";
 import type { AppBindResult, AppBindStatus } from "../lib/runtime/app-bind.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 import type { PluginConfig } from "../lib/types.js";
+import { withFileOperationRetry } from "../scripts/install-codex-auth-utils.js";
 
 const originalRuntimeRotationProxyEnv =
 	process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY;
+const originalMultiAuthDir = process.env.CODEX_MULTI_AUTH_DIR;
+const tempRoots: string[] = [];
 
 function createStorage(now: number): AccountStorageV3 {
 	return {
@@ -58,6 +64,12 @@ function createAppBindStatus(params: Partial<AppBindStatus> = {}): AppBindStatus
 
 function createAppBindResult(message: string, status = createAppBindStatus()): AppBindResult {
 	return { message, status };
+}
+
+async function createTempRoot(prefix: string): Promise<string> {
+	const root = await mkdtemp(join(tmpdir(), prefix));
+	tempRoots.push(root);
+	return root;
 }
 
 function createDeps(params: {
@@ -150,10 +162,23 @@ beforeEach(() => {
 afterEach(() => {
 	if (originalRuntimeRotationProxyEnv === undefined) {
 		delete process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY;
-		return;
+	} else {
+		process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY =
+			originalRuntimeRotationProxyEnv;
 	}
-	process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY =
-		originalRuntimeRotationProxyEnv;
+	if (originalMultiAuthDir === undefined) {
+		delete process.env.CODEX_MULTI_AUTH_DIR;
+	} else {
+		process.env.CODEX_MULTI_AUTH_DIR = originalMultiAuthDir;
+	}
+});
+
+afterEach(async () => {
+	await Promise.all(
+		tempRoots.splice(0).map((root) =>
+			withFileOperationRetry(() => rm(root, { recursive: true, force: true })),
+		),
+	);
 });
 
 describe("codex auth rotation command", () => {
@@ -194,6 +219,84 @@ describe("codex auth rotation command", () => {
 		expect(output).toContain("Account 1 (first@example.com, id:_first) [disabled]");
 		expect(output).toContain("Account 2 (second@example.com, id:second)");
 		expect(output).toContain("rate-limited:30s");
+		expect(setStoragePathMock).toHaveBeenNthCalledWith(1, null);
+		expect(setStoragePathMock).toHaveBeenNthCalledWith(
+			2,
+			"/mock/openai-codex-accounts.json",
+		);
+	});
+
+	it("prints invalid env override values without coercing them", async () => {
+		process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY = "whatever";
+		const { deps, infos } = createDeps({
+			config: { codexRuntimeRotationProxy: true },
+			storage: null,
+		});
+
+		await expect(runRotationCommand(["status"], deps)).resolves.toBe(0);
+
+		const output = infos.join("\n");
+		expect(output).toContain("Runtime rotation proxy: enabled");
+		expect(output).toContain("Env override: invalid (whatever)");
+	});
+
+	it("ignores stale helper status files with reused process ids", async () => {
+		const root = await createTempRoot("codex-rotation-helper-status-");
+		process.env.CODEX_MULTI_AUTH_DIR = root;
+		await mkdir(root, { recursive: true });
+		await writeFile(
+			join(root, "runtime-rotation-app-helper.json"),
+			`${JSON.stringify({
+				version: 1,
+				kind: "unrelated-process",
+				state: "running",
+				pid: process.pid,
+				totalRequests: 12,
+				rotations: 3,
+				updatedAt: Date.now(),
+			})}\n`,
+			"utf8",
+		);
+		const { deps, infos } = createDeps({ storage: null });
+
+		await expect(runRotationCommand(["status"], deps)).resolves.toBe(0);
+
+		expect(infos.join("\n")).toContain("Codex app helper: not running");
+	});
+
+	it("handles overlapping enable commands without dropping saves or app binds", async () => {
+		const {
+			deps,
+			savePluginConfigMock,
+			bindCodexAppMock,
+			infos,
+		} = createDeps();
+		let releaseFirstSave: (() => void) | undefined;
+		const firstSave = new Promise<void>((resolve) => {
+			releaseFirstSave = resolve;
+		});
+		savePluginConfigMock
+			.mockImplementationOnce(async () => {
+				await firstSave;
+			})
+			.mockResolvedValue(undefined);
+
+		const first = runRotationCommand(["enable"], deps);
+		const second = runRotationCommand(["enable"], deps);
+		await vi.waitFor(() => expect(savePluginConfigMock).toHaveBeenCalledTimes(2));
+		releaseFirstSave?.();
+
+		await expect(Promise.all([first, second])).resolves.toEqual([0, 0]);
+		expect(savePluginConfigMock).toHaveBeenNthCalledWith(1, {
+			codexRuntimeRotationProxy: true,
+		});
+		expect(savePluginConfigMock).toHaveBeenNthCalledWith(2, {
+			codexRuntimeRotationProxy: true,
+		});
+		expect(bindCodexAppMock).toHaveBeenCalledTimes(2);
+		expect(infos.filter((line) => line === "Runtime rotation proxy enabled.")).toHaveLength(
+			2,
+		);
 	});
 
 	it("rejects unknown subcommands with usage", async () => {

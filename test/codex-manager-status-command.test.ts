@@ -124,14 +124,37 @@ describe("runStatusCommand", () => {
 			})),
 		});
 
-		await runStatusCommand(deps);
+		const result = await runStatusCommand(deps);
 
+		expect(result).toBe(0);
 		expect(deps.logInfo).toHaveBeenCalledWith(
 			"No accounts configured. Storage was intentionally reset.",
 		);
 		expect(deps.logInfo).toHaveBeenCalledWith(
 			"Storage health: intentional-reset",
 		);
+	});
+
+	it.each([
+		["empty-storage" as const, "empty"],
+		["missing-storage" as const, "empty"],
+	])("maps restore reason %s to empty storage health", async (restoreReason, health) => {
+		const deps = createStatusDeps({
+			inspectStorageHealth: undefined,
+			loadAccounts: vi.fn(async () => ({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				accounts: [],
+				restoreReason,
+			})),
+		});
+
+		const result = await runStatusCommand(deps);
+
+		expect(result).toBe(0);
+		expect(deps.logInfo).toHaveBeenCalledWith("No accounts configured.");
+		expect(deps.logInfo).toHaveBeenCalledWith(`Storage health: ${health}`);
 	});
 
 	it("prints explicit corrupt storage state for empty result cases", async () => {
@@ -201,7 +224,7 @@ describe("runStatusCommand", () => {
 		await runStatusCommand(deps);
 
 		expect(deps.logInfo).toHaveBeenCalledWith(
-			"Last runtime account: Account 2 (two@example.com, id:acct_2)",
+			"Last runtime account: Account 2 (acct_2)",
 		);
 	});
 });

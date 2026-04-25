@@ -51,11 +51,11 @@ function readRestoreReason(storage: AccountStorageV3): RestoreReason | undefined
 function formatRuntimeLastAccount(
 	runtimeSnapshot: RuntimeObservabilitySnapshot,
 ): string | null {
-	if (runtimeSnapshot.lastAccountLabel) return runtimeSnapshot.lastAccountLabel;
-	if (runtimeSnapshot.lastAccountEmail) {
-		return typeof runtimeSnapshot.lastAccountIndex === "number"
-			? `Account ${runtimeSnapshot.lastAccountIndex + 1} (${runtimeSnapshot.lastAccountEmail})`
-			: runtimeSnapshot.lastAccountEmail;
+	if (
+		runtimeSnapshot.lastAccountLabel &&
+		!runtimeSnapshot.lastAccountLabel.includes("@")
+	) {
+		return runtimeSnapshot.lastAccountLabel;
 	}
 	if (runtimeSnapshot.lastAccountId) {
 		return typeof runtimeSnapshot.lastAccountIndex === "number"

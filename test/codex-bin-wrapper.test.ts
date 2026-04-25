@@ -727,6 +727,36 @@ describe("codex bin wrapper", () => {
 		);
 	});
 
+	it("inserts the runtime model provider before TOML array tables", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'console.log(fs.readFileSync(path.join(process.env.CODEX_HOME, "config.toml"), "utf8"));',
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			['[[profiles.experimental]]', 'model = "gpt-5-codex"', ""].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			OPENAI_API_KEY: undefined,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout.indexOf('model_provider = "codex-multi-auth-runtime-proxy"')).toBeLessThan(
+			result.stdout.indexOf("[[profiles.experimental]]"),
+		);
+	});
+
 	it("starts the opt-in runtime rotation proxy for app-server without capturing protocol stdio", () => {
 		const fixtureRoot = createWrapperFixture();
 		createRuntimeRotationProxyFixtureModule(fixtureRoot);
@@ -838,6 +868,57 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).toContain('"requiresOpenaiAuth":false');
 		expect(result.stdout).toContain('"id":8');
 		expect(result.stdout).toContain('"ok":true');
+	});
+
+	it("clears pending app-server account/read ids when the response is an error", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const readline = require("node:readline");',
+			'const rl = readline.createInterface({ input: process.stdin });',
+			'rl.on("line", (line) => {',
+			"  const message = JSON.parse(line);",
+			'  if (message.method === "account/read") {',
+			'    console.log(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "upstream failed" } }));',
+			"    console.log(JSON.stringify({",
+			'      jsonrpc: "2.0",',
+			"      id: message.id,",
+			"      result: {",
+			'        account: { type: "chatgpt", email: "real-user@example.com", planType: "plus" },',
+			"        requiresOpenaiAuth: true,",
+			"      },",
+			"    }));",
+			"  }",
+			"});",
+			'rl.on("close", () => process.exit(0));',
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+		const input = `${JSON.stringify({
+			jsonrpc: "2.0",
+			id: 7,
+			method: "account/read",
+			params: { refreshToken: false },
+		})}\n`;
+
+		const result = runWrapperWithInput(
+			fixtureRoot,
+			["app-server", "--listen", "stdio://"],
+			input,
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				OPENAI_API_KEY: undefined,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain('"error":{"code":-32000');
+		expect(result.stdout).toContain("real-user@example.com");
+		expect(result.stdout).not.toContain("codex-multi-auth");
 	});
 
 	it.each([
@@ -953,17 +1034,14 @@ describe("codex bin wrapper", () => {
 			totalRequests: number;
 			lastAccountIndex: number | null;
 			lastAccountLabel: string | null;
-			lastAccountEmail: string | null;
 			lastAccountId: string | null;
 			lastAccountUpdatedAt: number | null;
 		};
 		expect(helperStatus.state).toBe("idle-timeout");
 		expect(helperStatus.totalRequests).toBe(0);
 		expect(helperStatus.lastAccountIndex).toBe(1);
-		expect(helperStatus.lastAccountLabel).toBe(
-			"Account 2 (second@example.com, id:second)",
-		);
-		expect(helperStatus.lastAccountEmail).toBe("second@example.com");
+		expect(helperStatus.lastAccountLabel).toBe("Account 2");
+		expect(helperStatus).not.toHaveProperty("lastAccountEmail");
 		expect(helperStatus.lastAccountId).toBe("acc_second");
 		expect(helperStatus.lastAccountUpdatedAt).toBe(12345);
 		if (shadowHomeMatch?.[1]) {

@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	bindCodexAppRuntimeRotation,
@@ -14,11 +15,52 @@ import {
 import { withFileOperationRetry } from "../scripts/install-codex-auth-utils.js";
 
 const tempRoots: string[] = [];
+const thisDir = dirname(fileURLToPath(import.meta.url));
 
 async function createTempRoot(prefix: string): Promise<string> {
 	const root = await mkdtemp(join(tmpdir(), prefix));
 	tempRoots.push(root);
 	return root;
+}
+
+async function seedExistingAppBindState(params: {
+	platform: NodeJS.Platform;
+	home: string;
+	env: NodeJS.ProcessEnv;
+	port: number;
+	baseUrl: string;
+	nodePath: string;
+	routerScriptPath: string;
+}): Promise<void> {
+	const paths = resolveAppBindPaths(params);
+	await mkdir(paths.bindDir, { recursive: true });
+	await writeFile(
+		paths.statePath,
+		`${JSON.stringify(
+			{
+				version: 1,
+				platform: params.platform,
+				host: "127.0.0.1",
+				port: params.port,
+				baseUrl: params.baseUrl,
+				configPath: paths.configPath,
+				statePath: paths.statePath,
+				backupPath: paths.backupPath,
+				statusPath: paths.statusPath,
+				logPath: paths.logPath,
+				nodePath: params.nodePath,
+				routerScriptPath: params.routerScriptPath,
+				clientApiKey: "existing-secret",
+				startupPath: paths.startupPath,
+				launchAgentPath: paths.launchAgentPath,
+				boundConfigHash: "existing-hash",
+				updatedAt: 1,
+			},
+			null,
+			2,
+		)}\n`,
+		"utf8",
+	);
 }
 
 afterEach(async () => {
@@ -57,6 +99,48 @@ describe("Codex app runtime rotation bind", () => {
 
 		const restored = restoreConfigTomlFromAppBind(bound, original);
 		expect(restored).toBe(original);
+	});
+
+	it("keeps model_provider top-level before TOML array tables", () => {
+		const original = [
+			"[[profiles.experimental]]",
+			'model = "gpt-5.4"',
+			"",
+		].join("\n");
+
+		const bound = rewriteConfigTomlForAppBind(
+			original,
+			"http://127.0.0.1:32123",
+			"app-secret",
+		);
+
+		expect(bound.startsWith('model_provider = "codex-multi-auth-runtime-proxy"')).toBe(
+			true,
+		);
+		expect(bound.indexOf('model_provider = "codex-multi-auth-runtime-proxy"')).toBeLessThan(
+			bound.indexOf("[[profiles.experimental]]"),
+		);
+	});
+
+	it("removes runtime provider subtables when restoring Codex config TOML", () => {
+		const bound = [
+			'model_provider = "codex-multi-auth-runtime-proxy"',
+			"",
+			"[model_providers.codex-multi-auth-runtime-proxy]",
+			'name = "codex-multi-auth"',
+			'base_url = "http://127.0.0.1:32123"',
+			"[model_providers.codex-multi-auth-runtime-proxy.http_headers]",
+			'authorization = "Bearer secret"',
+			"[profiles.default]",
+			'model = "gpt-5.4"',
+			"",
+		].join("\n");
+
+		const restored = restoreConfigTomlFromAppBind(bound, 'model_provider = "openai"\n');
+
+		expect(restored).not.toContain("codex-multi-auth-runtime-proxy");
+		expect(restored).not.toContain("Bearer secret");
+		expect(restored).toContain("[profiles.default]");
 	});
 
 	it("resolves app bind paths from the provided environment", async () => {
@@ -107,6 +191,15 @@ describe("Codex app runtime rotation bind", () => {
 			'model_provider = "openai"\n',
 			"utf8",
 		);
+		await seedExistingAppBindState({
+			platform: "win32",
+			home: root,
+			env,
+			port: 4567,
+			baseUrl: "http://127.0.0.1:4567",
+			nodePath: "node",
+			routerScriptPath: join(root, "codex-app-router.js"),
+		});
 
 		const result = await bindCodexAppRuntimeRotation({
 			platform: "win32",
@@ -148,6 +241,28 @@ describe("Codex app runtime rotation bind", () => {
 			'model_provider = "openai"\n',
 		);
 		expect(existsSync(result.status.paths.startupPath ?? "")).toBe(false);
+	});
+
+	it("refuses to bind without spawning when no router port is known", async () => {
+		const root = await createTempRoot("codex-app-bind-no-port-");
+		const multiAuthDir = join(root, "multi-auth");
+		const codexHome = join(root, "codex-home");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		await mkdir(codexHome, { recursive: true });
+
+		await expect(
+			bindCodexAppRuntimeRotation({
+				platform: "linux",
+				home: root,
+				env,
+				nodePath: "node",
+				routerScriptPath: join(root, "codex-app-router.js"),
+				spawnDetached: false,
+			}),
+		).rejects.toThrow("port=0");
 	});
 
 	it("resolves the router assigned port before writing app config", async () => {
@@ -208,6 +323,15 @@ describe("Codex app runtime rotation bind", () => {
 			CODEX_MULTI_AUTH_DIR: multiAuthDir,
 			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
 		};
+		await seedExistingAppBindState({
+			platform: "darwin",
+			home: root,
+			env,
+			port: 4568,
+			baseUrl: "http://127.0.0.1:4568",
+			nodePath: "/usr/local/bin/node",
+			routerScriptPath: join(root, "codex-app-router.js"),
+		});
 
 		const result = await bindCodexAppRuntimeRotation({
 			platform: "darwin",
@@ -234,7 +358,7 @@ describe("Codex app runtime rotation bind", () => {
 		const result = spawnSync(
 			process.execPath,
 			[
-				"scripts/codex-app-router.js",
+				join(thisDir, "..", "scripts", "codex-app-router.js"),
 				"--host",
 				"0.0.0.0",
 				"--port",
@@ -248,8 +372,37 @@ describe("Codex app runtime rotation bind", () => {
 			},
 		);
 
-		expect(result.status).toBe(1);
+		expect(result.error).toBeUndefined();
+		expect(result.status).not.toBe(0);
 		expect(result.stderr).toContain("loopback-only");
+		expect(existsSync(statusPath)).toBe(false);
+	});
+
+	it.each([
+		["fractional", "12.5"],
+		["suffix", "123abc"],
+		["out of range", "70000"],
+	])("rejects %s router port values", async (_label, port) => {
+		const root = await createTempRoot("codex-app-router-port-");
+		const statusPath = join(root, "router-status.json");
+		const result = spawnSync(
+			process.execPath,
+			[
+				join(thisDir, "..", "scripts", "codex-app-router.js"),
+				"--port",
+				port,
+				"--status",
+				statusPath,
+			],
+			{
+				encoding: "utf8",
+				windowsHide: true,
+			},
+		);
+
+		expect(result.error).toBeUndefined();
+		expect(result.status).not.toBe(0);
+		expect(result.stderr).toContain("valid --port");
 		expect(existsSync(statusPath)).toBe(false);
 	});
 });

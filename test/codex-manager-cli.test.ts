@@ -968,6 +968,30 @@ describe("codex manager cli commands", () => {
 		expect(setStoragePathMock).toHaveBeenCalledWith(null);
 	});
 
+	it("prints intentional-reset status with windows-style storage paths", async () => {
+		loadAccountsMock.mockResolvedValueOnce(null);
+		getStoragePathMock.mockReturnValueOnce("C:\\mock\\openai-codex-accounts.json");
+		inspectStorageHealthMock.mockResolvedValueOnce({
+			state: "intentional-reset",
+			path: "C:\\mock\\openai-codex-accounts.json",
+			resetMarkerPath: "C:\\mock\\openai-codex-accounts.json.intentional-reset",
+			walPath: "C:\\mock\\openai-codex-accounts.json.wal",
+			hasResetMarker: true,
+			hasWal: false,
+			details: "intentional reset marker present",
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "list"]);
+
+		expect(exitCode).toBe(0);
+		expect(logSpy).toHaveBeenCalledWith(
+			"Storage: C:\\mock\\openai-codex-accounts.json",
+		);
+		expect(logSpy).toHaveBeenCalledWith("Storage health: intentional-reset");
+	});
+
 	it("prints config explain output in json mode", async () => {
 		getPluginConfigExplainReportMock.mockReturnValueOnce({
 			configPath: "/mock/settings.json",
@@ -6932,13 +6956,19 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
 		expect(exitCode).toBe(0);
-		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith({
-			accountId: "acc_b",
-			email: "b@example.com",
-			accessToken: "access-b",
-			refreshToken: "refresh-b",
-			expiresAt: now + 3_600_000,
-		});
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accountId: "acc_b",
+				email: "b@example.com",
+				accessToken: "access-b",
+				refreshToken: "refresh-b",
+				expiresAt: now + 3_600_000,
+			}),
+		);
+		const syncCallOrder =
+			setCodexCliActiveSelectionMock.mock.invocationCallOrder[0];
+		const renderCallOrder = promptLoginModeMock.mock.invocationCallOrder[0];
+		expect(syncCallOrder).toBeLessThan(renderCallOrder);
 		const firstCallAccounts = promptLoginModeMock.mock.calls[0]?.[0] as Array<{
 			email?: string;
 			isCurrentAccount?: boolean;

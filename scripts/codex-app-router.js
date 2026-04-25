@@ -4,6 +4,16 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import process from "node:process";
 
+function parsePort(value) {
+	if (typeof value !== "string" && typeof value !== "number") return Number.NaN;
+	const text = String(value).trim();
+	if (!/^\d+$/.test(text)) return Number.NaN;
+	const port = Number(text);
+	return Number.isInteger(port) && port >= 0 && port <= 65535
+		? port
+		: Number.NaN;
+}
+
 function parseArgs(argv) {
 	const result = {
 		host: "127.0.0.1",
@@ -20,7 +30,7 @@ function parseArgs(argv) {
 			continue;
 		}
 		if (arg === "--port") {
-			result.port = Number.parseInt(next, 10);
+			result.port = parsePort(next);
 			index += 1;
 			continue;
 		}
@@ -66,6 +76,14 @@ function writeStatus(statusPath, payload) {
 function createStatusPayload({ state, proxyServer, error, stateRecord }) {
 	const proxyStatus =
 		typeof proxyServer?.getStatus === "function" ? proxyServer.getStatus() : {};
+	const lastAccountIndex = proxyStatus.lastAccountIndex ?? null;
+	const lastAccountLabel =
+		typeof proxyStatus.lastAccountLabel === "string" &&
+		!proxyStatus.lastAccountLabel.includes("@")
+			? proxyStatus.lastAccountLabel
+			: typeof lastAccountIndex === "number"
+				? `Account ${lastAccountIndex + 1}`
+				: null;
 	return {
 		version: 1,
 		kind: "codex-app-runtime-rotation-router",
@@ -77,9 +95,8 @@ function createStatusPayload({ state, proxyServer, error, stateRecord }) {
 		upstreamRequests: proxyStatus.upstreamRequests ?? 0,
 		retries: proxyStatus.retries ?? 0,
 		rotations: proxyStatus.rotations ?? 0,
-		lastAccountIndex: proxyStatus.lastAccountIndex ?? null,
-		lastAccountLabel: proxyStatus.lastAccountLabel ?? null,
-		lastAccountEmail: proxyStatus.lastAccountEmail ?? null,
+		lastAccountIndex,
+		lastAccountLabel,
 		lastAccountId: proxyStatus.lastAccountId ?? null,
 		lastAccountUpdatedAt: proxyStatus.lastAccountUpdatedAt ?? null,
 		lastError: error ? (error instanceof Error ? error.message : String(error)) : proxyStatus.lastError ?? null,
@@ -107,13 +124,13 @@ async function main() {
 		typeof stateRecord?.host === "string" && stateRecord.host.trim().length > 0
 			? stateRecord.host.trim()
 			: args.host;
-	const port =
-		typeof stateRecord?.port === "number" && Number.isFinite(stateRecord.port)
-			? stateRecord.port
-			: args.port;
+	const statePort = parsePort(stateRecord?.port);
+	const port = Number.isFinite(statePort) ? statePort : args.port;
 	const clientApiKey = readTrimmedString(stateRecord, "clientApiKey");
-	if (!Number.isFinite(port) || port < 0) {
-		throw new Error("A non-negative --port is required for the Codex app runtime router.");
+	if (!Number.isInteger(port) || port < 0 || port > 65535) {
+		throw new Error(
+			"A valid --port in the range 0-65535 is required for the Codex app runtime router.",
+		);
 	}
 	if (!isLoopbackHost(host)) {
 		throw new Error(
@@ -138,6 +155,7 @@ async function main() {
 		});
 		writeCurrentStatus("running");
 		const timer = setInterval(() => writeCurrentStatus("running"), 1000);
+		let cleanupPromise = null;
 		const cleanup = async (state) => {
 			clearInterval(timer);
 			try {
@@ -146,14 +164,18 @@ async function main() {
 				writeCurrentStatus(state);
 			}
 		};
+		const cleanupOnce = (state) => {
+			cleanupPromise ??= cleanup(state);
+			return cleanupPromise;
+		};
 		process.once("SIGINT", () => {
-			void cleanup("stopped").finally(() => process.exit(130));
+			void cleanupOnce("stopped").finally(() => process.exit(130));
 		});
 		process.once("SIGTERM", () => {
-			void cleanup("stopped").finally(() => process.exit(0));
+			void cleanupOnce("stopped").finally(() => process.exit(0));
 		});
 		process.once("SIGHUP", () => {
-			void cleanup("stopped").finally(() => process.exit(0));
+			void cleanupOnce("stopped").finally(() => process.exit(0));
 		});
 		await new Promise(() => undefined);
 	} catch (error) {

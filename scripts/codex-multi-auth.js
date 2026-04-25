@@ -27,7 +27,9 @@ if (version.length > 0) {
 	process.env.CODEX_MULTI_AUTH_CLI_VERSION = version;
 }
 
-if (args.length === 1 && versionFlags.has(args[0])) {
+const firstArg = args[0] ?? "";
+
+if (args.length === 1 && versionFlags.has(firstArg)) {
 	if (version.length > 0) {
 		process.stdout.write(`${version}\n`);
 		process.exitCode = 0;

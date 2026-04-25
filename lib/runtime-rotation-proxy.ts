@@ -1,16 +1,19 @@
+import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
 	AccountManager,
 	extractAccountId,
-	formatAccountLabel,
 	type ManagedAccount,
 } from "./accounts.js";
 import {
+	getFetchTimeoutMs,
 	getNetworkErrorCooldownMs,
+	getRetryAllAccountsMaxRetries,
 	getServerErrorCooldownMs,
 	getSessionAffinity,
 	getSessionAffinityMaxEntries,
 	getSessionAffinityTtlMs,
+	getStreamStallTimeoutMs,
 	getTokenRefreshSkewMs,
 	loadPluginConfig,
 } from "./config.js";
@@ -21,7 +24,7 @@ import {
 	OPENAI_HEADER_VALUES,
 	URL_PATHS,
 } from "./constants.js";
-import { getModelFamily, MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
+import { getModelFamily, type ModelFamily } from "./prompts/codex.js";
 import { queuedRefresh } from "./refresh-queue.js";
 import { mutateRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import { SessionAffinityStore } from "./session-affinity.js";
@@ -46,7 +49,6 @@ export interface RuntimeRotationProxyStatus {
 	lastError: string | null;
 	lastAccountIndex: number | null;
 	lastAccountLabel: string | null;
-	lastAccountEmail: string | null;
 	lastAccountId: string | null;
 	lastAccountUpdatedAt: number | null;
 }
@@ -60,6 +62,9 @@ export interface RuntimeRotationProxyOptions {
 	fetchImpl?: typeof fetch;
 	now?: () => number;
 	quotaRemainingPercentThreshold?: number;
+	maxRequestBodyBytes?: number;
+	fetchTimeoutMs?: number;
+	streamStallTimeoutMs?: number;
 }
 
 interface RequestContext {
@@ -72,11 +77,14 @@ interface RequestContext {
 }
 
 type ExhaustionReason = "rate-limit" | "server-error" | "network-error" | "auth-failure" | "no-account";
+type RuntimeProxyHttpError = Error & {
+	statusCode: number;
+	code: string;
+};
 
 interface RuntimeRotationAccountIdentity {
 	index: number;
 	label: string;
-	email: string | null;
 	accountId: string | null;
 	updatedAt: number;
 }
@@ -84,6 +92,8 @@ interface RuntimeRotationAccountIdentity {
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_QUOTA_REMAINING_THRESHOLD = 10;
 const DEFAULT_AUTH_FAILURE_COOLDOWN_MS = 30_000;
+const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
+const MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024;
 const HOP_BY_HOP_HEADERS = new Set([
 	"connection",
 	"content-length",
@@ -149,8 +159,17 @@ function isAuthorizedClient(headers: Headers, clientApiKey: string | null): bool
 	if (!clientApiKey) return true;
 	const authorization = headers.get("authorization") ?? "";
 	const bearerMatch = authorization.match(/^Bearer\s+(.+)$/i);
-	if (bearerMatch?.[1]?.trim() === clientApiKey) return true;
-	return headers.get("x-api-key") === clientApiKey;
+	const bearer = bearerMatch?.[1]?.trim();
+	if (bearer && safeEqual(bearer, clientApiKey)) return true;
+	const apiKey = headers.get("x-api-key");
+	return typeof apiKey === "string" && safeEqual(apiKey, clientApiKey);
+}
+
+function safeEqual(left: string, right: string): boolean {
+	const leftBuffer = Buffer.from(left, "utf8");
+	const rightBuffer = Buffer.from(right, "utf8");
+	if (leftBuffer.length !== rightBuffer.length) return false;
+	return timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function readTrimmedString(value: string | undefined): string | null {
@@ -165,8 +184,7 @@ function accountIdentityFromAccount(
 ): RuntimeRotationAccountIdentity {
 	return {
 		index: account.index,
-		label: formatAccountLabel(account, account.index),
-		email: readTrimmedString(account.email),
+		label: `Account ${account.index + 1}`,
 		accountId: readTrimmedString(account.accountId),
 		updatedAt,
 	};
@@ -178,13 +196,12 @@ function recordLastRuntimeAccount(
 ): void {
 	status.lastAccountIndex = identity.index;
 	status.lastAccountLabel = identity.label;
-	status.lastAccountEmail = identity.email;
 	status.lastAccountId = identity.accountId;
 	status.lastAccountUpdatedAt = identity.updatedAt;
 	mutateRuntimeObservabilitySnapshot((snapshot) => {
 		snapshot.lastAccountIndex = identity.index;
 		snapshot.lastAccountLabel = identity.label;
-		snapshot.lastAccountEmail = identity.email;
+		snapshot.lastAccountEmail = null;
 		snapshot.lastAccountId = identity.accountId;
 		snapshot.lastAccountUpdatedAt = identity.updatedAt;
 	});
@@ -193,12 +210,11 @@ function recordLastRuntimeAccount(
 async function persistRuntimeActiveAccount(
 	accountManager: AccountManager,
 	account: ManagedAccount,
+	family: ModelFamily,
 ): Promise<void> {
 	try {
-		for (const family of MODEL_FAMILIES) {
-			accountManager.markSwitched(account, "rotation", family);
-		}
-		await accountManager.saveToDisk();
+		accountManager.markSwitched(account, "rotation", family);
+		accountManager.saveToDiskDebounced();
 		await accountManager.syncCodexCliActiveSelectionForIndex(account.index);
 	} catch {
 		// Runtime forwarding must not fail after a valid upstream response just
@@ -217,10 +233,41 @@ function responseHeadersForClient(upstreamHeaders: Headers): Record<string, stri
 	return headers;
 }
 
-async function readRequestBody(req: IncomingMessage): Promise<Buffer> {
+function createRuntimeProxyHttpError(
+	message: string,
+	statusCode: number,
+	code: string,
+): RuntimeProxyHttpError {
+	return Object.assign(new Error(message), { statusCode, code });
+}
+
+function isRuntimeProxyHttpError(error: unknown): error is RuntimeProxyHttpError {
+	return (
+		error instanceof Error &&
+		"statusCode" in error &&
+		typeof error.statusCode === "number" &&
+		"code" in error &&
+		typeof error.code === "string"
+	);
+}
+
+async function readRequestBody(
+	req: IncomingMessage,
+	maxBytes = MAX_REQUEST_BODY_BYTES,
+): Promise<Buffer> {
 	const chunks: Buffer[] = [];
+	let totalBytes = 0;
 	for await (const chunk of req) {
-		chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+		const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+		totalBytes += buffer.byteLength;
+		if (totalBytes > maxBytes) {
+			throw createRuntimeProxyHttpError(
+				"Runtime rotation proxy request body is too large.",
+				HTTP_STATUS.PAYLOAD_TOO_LARGE,
+				"runtime_rotation_proxy_payload_too_large",
+			);
+		}
+		chunks.push(buffer);
 	}
 	return Buffer.concat(chunks);
 }
@@ -320,6 +367,39 @@ function isTokenRefreshRetryable(result: Extract<TokenResult, { type: "failed" }
 	return false;
 }
 
+const runtimeRefreshCommitQueues = new WeakMap<
+	AccountManager,
+	Map<string, Promise<ManagedAccount | null>>
+>();
+
+async function commitRefreshedAuthOnce(
+	accountManager: AccountManager,
+	account: ManagedAccount,
+	auth: OAuthAuthDetails,
+): Promise<ManagedAccount | null> {
+	const key = [
+		account.index,
+		account.accountId ?? "",
+		account.email ?? "",
+		account.refreshToken,
+		auth.access,
+		auth.refresh,
+		String(auth.expires),
+	].join("\0");
+	let queue = runtimeRefreshCommitQueues.get(accountManager);
+	if (!queue) {
+		queue = new Map();
+		runtimeRefreshCommitQueues.set(accountManager, queue);
+	}
+	const existing = queue.get(key);
+	if (existing) return existing;
+	const pending = accountManager
+		.commitRefreshedAuth(account, auth)
+		.finally(() => queue?.delete(key));
+	queue.set(key, pending);
+	return pending;
+}
+
 async function ensureFreshAccessToken(params: {
 	accountManager: AccountManager;
 	account: ManagedAccount;
@@ -353,8 +433,11 @@ async function ensureFreshAccessToken(params: {
 		expires: refreshResult.expires,
 	};
 	try {
-		const updatedAccount =
-			(await accountManager.commitRefreshedAuth(account, auth)) ?? account;
+		const updatedAccount = (await commitRefreshedAuthOnce(
+			accountManager,
+			account,
+			auth,
+		)) ?? account;
 		return {
 			ok: true,
 			accessToken: updatedAccount.access ?? refreshResult.access,
@@ -557,11 +640,34 @@ function writePoolExhausted(params: {
 	});
 }
 
+async function withTimeout<T>(
+	promise: Promise<T>,
+	timeoutMs: number,
+	onTimeout: () => void,
+	message: string,
+): Promise<T> {
+	let timeout: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			promise,
+			new Promise<T>((_resolve, reject) => {
+				timeout = setTimeout(() => {
+					onTimeout();
+					reject(new Error(message));
+				}, Math.max(1, timeoutMs));
+			}),
+		]);
+	} finally {
+		if (timeout) clearTimeout(timeout);
+	}
+}
+
 async function forwardStreamingResponse(
 	upstream: Response,
 	res: ServerResponse,
 	status: RuntimeRotationProxyStatus,
 	onStreamError: () => void,
+	streamStallTimeoutMs: number,
 ): Promise<void> {
 	status.streamsStarted += 1;
 	res.writeHead(
@@ -581,7 +687,14 @@ async function forwardStreamingResponse(
 	});
 	try {
 		while (true) {
-			const { done, value } = await reader.read();
+			const { done, value } = await withTimeout(
+				reader.read(),
+				streamStallTimeoutMs,
+				() => {
+					void reader.cancel().catch(() => undefined);
+				},
+				`upstream stream stalled after ${streamStallTimeoutMs}ms`,
+			);
 			if (done) break;
 			if (value && value.byteLength > 0) {
 				res.write(Buffer.from(value));
@@ -615,6 +728,16 @@ export async function startRuntimeRotationProxy(
 	const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
 	const networkErrorCooldownMs = getNetworkErrorCooldownMs(pluginConfig);
 	const serverErrorCooldownMs = getServerErrorCooldownMs(pluginConfig);
+	const fetchTimeoutMs = options.fetchTimeoutMs ?? getFetchTimeoutMs(pluginConfig);
+	const streamStallTimeoutMs =
+		options.streamStallTimeoutMs ?? getStreamStallTimeoutMs(pluginConfig);
+	const configuredMaxRetries = getRetryAllAccountsMaxRetries(pluginConfig);
+	const maxRuntimeAccountAttempts =
+		configuredMaxRetries > 0
+			? configuredMaxRetries + 1
+			: DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS;
+	const maxRequestBodyBytes =
+		options.maxRequestBodyBytes ?? MAX_REQUEST_BODY_BYTES;
 	const quotaRemainingPercentThreshold =
 		options.quotaRemainingPercentThreshold ?? DEFAULT_QUOTA_REMAINING_THRESHOLD;
 	const sessionAffinityStore = getSessionAffinity(pluginConfig)
@@ -633,7 +756,6 @@ export async function startRuntimeRotationProxy(
 		lastError: null,
 		lastAccountIndex: null,
 		lastAccountLabel: null,
-		lastAccountEmail: null,
 		lastAccountId: null,
 		lastAccountUpdatedAt: null,
 	};
@@ -656,12 +778,19 @@ export async function startRuntimeRotationProxy(
 			}
 
 			status.totalRequests += 1;
-			const context = buildRequestContext(req, await readRequestBody(req));
+			const context = buildRequestContext(
+				req,
+				await readRequestBody(req, maxRequestBodyBytes),
+			);
 			const upstreamUrl = buildUpstreamUrl(req, upstreamBaseUrl);
 			const attemptedIndexes = new Set<number>();
 			let exhaustionReason: ExhaustionReason = "no-account";
+			const accountAttemptLimit = Math.max(
+				1,
+				Math.min(accountManager.getAccountCount(), maxRuntimeAccountAttempts),
+			);
 
-			while (attemptedIndexes.size < Math.max(1, accountManager.getAccountCount())) {
+			while (attemptedIndexes.size < accountAttemptLimit) {
 				const selected = chooseAccount({
 					accountManager,
 					sessionAffinityStore,
@@ -724,11 +853,18 @@ export async function startRuntimeRotationProxy(
 				let upstream: Response;
 				try {
 					status.upstreamRequests += 1;
-					upstream = await fetchImpl(upstreamUrl, {
-						method: "POST",
-						headers: outboundHeaders,
-						body: context.body,
-					});
+					const fetchAbortController = new AbortController();
+					upstream = await withTimeout(
+						fetchImpl(upstreamUrl, {
+							method: "POST",
+							headers: outboundHeaders,
+							body: context.body,
+							signal: fetchAbortController.signal,
+						}),
+						fetchTimeoutMs,
+						() => fetchAbortController.abort(),
+						`upstream fetch timed out after ${fetchTimeoutMs}ms`,
+					);
 				} catch (error) {
 					status.lastError = error instanceof Error ? error.message : String(error);
 					accountManager.refundToken(refreshed.account, context.family, context.model);
@@ -750,6 +886,8 @@ export async function startRuntimeRotationProxy(
 						parseRetryAfterHeaderMs(upstream.headers, now()) ??
 						parseRetryAfterBodyMs(bodyText, now()) ??
 						60_000;
+					// A 429 is the upstream quota signal for the attempted account, so
+					// keep the consumed runtime token drained.
 					accountManager.recordRateLimit(refreshed.account, context.family, context.model);
 					accountManager.markRateLimitedWithReason(
 						refreshed.account,
@@ -767,6 +905,7 @@ export async function startRuntimeRotationProxy(
 
 				if (upstream.status === HTTP_STATUS.UNAUTHORIZED) {
 					await readErrorBody(upstream);
+					accountManager.refundToken(refreshed.account, context.family, context.model);
 					accountManager.recordFailure(refreshed.account, context.family, context.model);
 					accountManager.markAccountCoolingDown(
 						refreshed.account,
@@ -819,7 +958,11 @@ export async function startRuntimeRotationProxy(
 						now(),
 					);
 				}
-				await persistRuntimeActiveAccount(accountManager, refreshed.account);
+				await persistRuntimeActiveAccount(
+					accountManager,
+					refreshed.account,
+					context.family,
+				);
 
 				await forwardStreamingResponse(
 					upstream,
@@ -839,6 +982,7 @@ export async function startRuntimeRotationProxy(
 						sessionAffinityStore?.forgetSession(context.sessionKey);
 						accountManager.saveToDiskDebounced();
 					},
+					streamStallTimeoutMs,
 				);
 				return;
 			}
@@ -853,6 +997,15 @@ export async function startRuntimeRotationProxy(
 		} catch (error) {
 			status.lastError = error instanceof Error ? error.message : String(error);
 			if (!res.headersSent) {
+				if (isRuntimeProxyHttpError(error)) {
+					writeJson(res, error.statusCode, {
+						error: {
+							message: error.message,
+							code: error.code,
+						},
+					});
+					return;
+				}
 				writeJson(res, 500, {
 					error: {
 						message: "Runtime rotation proxy failed before forwarding the request.",
