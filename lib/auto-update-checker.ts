@@ -27,6 +27,7 @@ const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_CHECK_TIMEOUT_MS = 5_000;
 const AUTO_UPDATE_TIMEOUT_MS = 2 * 60 * 1000;
 const AUTO_UPDATE_LOCK_STALE_MS = 10 * 60 * 1000;
+const TASKKILL_TIMEOUT_MS = 5_000;
 const AUTO_UPDATE_ENV_NAME = "CODEX_MULTI_AUTH_AUTO_UPDATE";
 const TRUE_VALUES = new Set(["1", "true", "yes"]);
 const FALSE_VALUES = new Set(["0", "false", "no"]);
@@ -457,17 +458,18 @@ async function runUpdateCommand(options: {
 			clearTimeout(timeout);
 			resolve(result);
 		}
+		let timeoutStarted = false;
 		const timeout = setTimeout(() => {
-			try {
-				killUpdateProcessTree(child, options.platform);
-			} catch {
-				// Best effort timeout cleanup.
-			}
-			finish({
-				ok: false,
-				exitCode: null,
-				error: `Auto-update timed out after ${options.timeoutMs}ms`,
-			});
+			timeoutStarted = true;
+			void killUpdateProcessTree(child, options.platform)
+				.catch(() => undefined)
+				.finally(() => {
+					finish({
+						ok: false,
+						exitCode: null,
+						error: `Auto-update timed out after ${options.timeoutMs}ms`,
+					});
+				});
 		}, options.timeoutMs);
 		timeout.unref?.();
 		try {
@@ -493,6 +495,7 @@ async function runUpdateCommand(options: {
 			});
 		});
 		child.once("exit", (code, signal) => {
+			if (timeoutStarted) return;
 			finish({
 				ok: code === 0,
 				exitCode: code,
@@ -505,29 +508,49 @@ async function runUpdateCommand(options: {
 	});
 }
 
-function killUpdateProcessTree(
+async function killUpdateProcessTree(
 	child: ReturnType<typeof spawn> | null,
 	platform: NodeJS.Platform,
-): void {
+): Promise<void> {
 	if (!child) return;
 	if (platform === "win32" && child.pid) {
-		try {
-			const killer = spawn("taskkill", [
-				"/PID",
-				String(child.pid),
-				"/T",
-				"/F",
-			], {
-				stdio: "ignore",
-				windowsHide: true,
-			});
-			killer.unref?.();
-			return;
-		} catch {
-			// Fall back to the direct child if taskkill is unavailable.
+		const killed = await taskkillProcessTree(child.pid);
+		if (!killed) {
+			child.kill();
 		}
+		return;
 	}
 	child.kill();
+}
+
+function taskkillProcessTree(pid: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		let settled = false;
+		function finish(killed: boolean): void {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			resolve(killed);
+		}
+
+		const timeout = setTimeout(() => finish(false), TASKKILL_TIMEOUT_MS);
+		timeout.unref?.();
+		try {
+			const killer = spawn(
+				"taskkill",
+				["/PID", String(pid), "/T", "/F"],
+				{
+					stdio: "ignore",
+					windowsHide: true,
+				},
+			);
+			killer.once("error", () => finish(false));
+			killer.once("exit", (code) => finish(code === 0));
+		} catch {
+			finish(false);
+			return;
+		}
+	});
 }
 
 function removeAutoUpdateLockDirectory(): void {

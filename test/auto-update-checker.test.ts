@@ -873,10 +873,7 @@ describe("auto-update-checker", () => {
 			child.kill = vi.fn();
 			child.unref = vi.fn();
 			child.pid = 1234;
-			const killer = new EventEmitter() as EventEmitter & {
-				unref: ReturnType<typeof vi.fn>;
-			};
-			killer.unref = vi.fn();
+			const killer = new EventEmitter();
 			vi.mocked(childProcess.spawn)
 				.mockReturnValueOnce(child as never)
 				.mockReturnValueOnce(killer as never);
@@ -891,15 +888,50 @@ describe("auto-update-checker", () => {
 			});
 			await flushUpdateStartup();
 			await vi.advanceTimersByTimeAsync(25);
-			const result = await resultPromise;
-
-			expect(child.kill).not.toHaveBeenCalled();
 			expect(childProcess.spawn).toHaveBeenLastCalledWith(
 				"taskkill",
 				["/PID", "1234", "/T", "/F"],
 				expect.objectContaining({ stdio: "ignore", windowsHide: true }),
 			);
-			expect(killer.unref).toHaveBeenCalledTimes(1);
+			killer.emit("exit", 0, null);
+			const result = await resultPromise;
+
+			expect(child.kill).not.toHaveBeenCalled();
+			expect(result.reason).toBe("update-failed");
+		});
+
+		it("falls back to killing the child when Windows taskkill fails", async () => {
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+			const child = new EventEmitter() as EventEmitter & {
+				kill: ReturnType<typeof vi.fn>;
+				unref: ReturnType<typeof vi.fn>;
+				pid: number;
+			};
+			child.kill = vi.fn();
+			child.unref = vi.fn();
+			child.pid = 1234;
+			const killer = new EventEmitter();
+			vi.mocked(childProcess.spawn)
+				.mockReturnValueOnce(child as never)
+				.mockReturnValueOnce(killer as never);
+
+			const resultPromise = autoUpdateIfAvailable({
+				env: { CODEX_MULTI_AUTH_AUTO_UPDATE: "1" },
+				forceCheck: true,
+				forceInstall: true,
+				npmCommand: "npm.cmd",
+				platform: "win32",
+				timeoutMs: 25,
+			});
+			await flushUpdateStartup();
+			await vi.advanceTimersByTimeAsync(25);
+			killer.emit("exit", 1, null);
+			const result = await resultPromise;
+
+			expect(child.kill).toHaveBeenCalledTimes(1);
 			expect(result.reason).toBe("update-failed");
 		});
 
