@@ -9,6 +9,7 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -76,6 +77,10 @@ function createWrapperFixture(): string {
 	copyFileSync(
 		join(repoRootDir, "scripts", "codex-app-launcher.js"),
 		join(scriptDir, "codex-app-launcher.js"),
+	);
+	copyFileSync(
+		join(repoRootDir, "scripts", "codex-app-router.js"),
+		join(scriptDir, "codex-app-router.js"),
 	);
 	copyFileSync(
 		join(repoRootDir, "scripts", "install-codex-auth-utils.js"),
@@ -211,6 +216,10 @@ function createRuntimeRotationProxyFixtureModule(fixtureRoot: string): string {
 			"",
 			"export async function startRuntimeRotationProxy() {",
 			"  const baseUrl = process.env.CODEX_MULTI_AUTH_TEST_PROXY_BASE_URL ?? 'http://127.0.0.1:4567';",
+			"  if ((process.env.CODEX_MULTI_AUTH_TEST_PROXY_MARKER_ENV ?? '').trim() === '1') {",
+			"    appendMarker(`codex-home-env:${process.env.CODEX_HOME ?? ''}`);",
+			"    appendMarker(`real-home-env:${process.env.CODEX_MULTI_AUTH_REAL_CODEX_HOME ?? ''}`);",
+			"  }",
 			"  appendMarker(`start:${baseUrl}`);",
 			"  return {",
 			"    host: '127.0.0.1',",
@@ -1051,6 +1060,111 @@ describe("codex bin wrapper", () => {
 		expect(helperStatus.lastAccountUpdatedAt).toBe(12345);
 		if (shadowHomeMatch?.[1]) {
 			expect(existsSync(shadowHomeMatch[1])).toBe(false);
+		}
+	});
+
+	it("starts detached app helpers against the real Codex home instead of a compatibility shadow", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			'console.log(`CODEX_HOME:${process.env.CODEX_HOME ?? ""}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_reasoning_effort = "xhigh"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["app", ".", "--model", "gpt-5.1"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "1000",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER_ENV: "1",
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		if (result.status !== 0) {
+			throw new Error(output);
+		}
+		expect(output).toContain("FORWARDED:app . --model gpt-5.1");
+
+		await sleep(1300);
+
+		const marker = readFileSync(markerPath, "utf8");
+		expect(marker).toContain(`real-home-env:${originalHome}\n`);
+		const compatibilityHomeMatch = marker.match(/^codex-home-env:(.+)$/m);
+		expect(compatibilityHomeMatch?.[1]).toBeTruthy();
+		expect(compatibilityHomeMatch?.[1]).not.toBe(originalHome);
+		expect(marker).toContain("close\n");
+	});
+
+	it("writes app router status files with owner-only permissions", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const bindDir = join(fixtureRoot, "app-bind");
+		const statePath = join(bindDir, "state.json");
+		const statusPath = join(bindDir, "status.json");
+		mkdirSync(bindDir, { recursive: true });
+		writeFileSync(
+			statePath,
+			`${JSON.stringify({
+				clientApiKey: "router-secret",
+				host: "127.0.0.1",
+				port: 0,
+				baseUrl: "http://127.0.0.1:0",
+				statusPath,
+			})}\n`,
+			"utf8",
+		);
+		let stderr = "";
+		const child = spawn(
+			process.execPath,
+			[
+				join(fixtureRoot, "scripts", "codex-app-router.js"),
+				"--port",
+				"0",
+				"--status",
+				statusPath,
+				"--state",
+				statePath,
+			],
+			{
+				cwd: fixtureRoot,
+				env: { ...process.env },
+				stdio: ["ignore", "ignore", "pipe"],
+				windowsHide: true,
+			},
+		);
+		child.stderr?.setEncoding("utf8");
+		child.stderr?.on("data", (chunk) => {
+			stderr += chunk;
+		});
+		try {
+			for (let attempt = 0; attempt < 40 && !existsSync(statusPath); attempt += 1) {
+				await sleep(50);
+			}
+			if (!existsSync(statusPath)) {
+				throw new Error(stderr || "router status file was not written");
+			}
+			expect(existsSync(statusPath)).toBe(true);
+			if (process.platform !== "win32") {
+				expect(statSync(statusPath).mode & 0o777).toBe(0o600);
+			}
+		} finally {
+			child.kill("SIGTERM");
+			await new Promise<void>((resolve) => {
+				child.once("close", () => resolve());
+				setTimeout(resolve, 1000);
+			});
 		}
 	});
 

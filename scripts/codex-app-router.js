@@ -67,7 +67,10 @@ function writeStatus(statusPath, payload) {
 	if (!statusPath) return;
 	try {
 		mkdirSync(dirname(statusPath), { recursive: true });
-		writeFileSync(statusPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+		writeFileSync(statusPath, `${JSON.stringify(payload, null, 2)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+		});
 	} catch {
 		// Status is best-effort. The router should keep serving if telemetry is locked.
 	}

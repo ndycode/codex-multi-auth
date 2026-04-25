@@ -46,6 +46,8 @@ const INTERNAL_RUNTIME_ROTATION_APP_HELPER_ARG =
 	"--codex-multi-auth-runtime-app-helper";
 const APP_RUNTIME_HELPER_OWNER_PID_ENV =
 	"CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID";
+const APP_RUNTIME_HELPER_REAL_CODEX_HOME_ENV =
+	"CODEX_MULTI_AUTH_REAL_CODEX_HOME";
 const APP_RUNTIME_HELPER_STATUS_FILE =
 	RUNTIME_CONSTANTS.APP_RUNTIME_HELPER_STATUS_FILE;
 const DEFAULT_APP_RUNTIME_HELPER_IDLE_MS = 12 * 60 * 60 * 1000;
@@ -1765,8 +1767,13 @@ function createRuntimeRotationProxyClientApiKey() {
 	return randomBytes(32).toString("hex");
 }
 
+function resolveRuntimeRotationProxyOriginalCodexHome(baseEnv) {
+	const override = (baseEnv[APP_RUNTIME_HELPER_REAL_CODEX_HOME_ENV] ?? "").trim();
+	return override || resolveCodexHomeDir(baseEnv);
+}
+
 function createRuntimeRotationProxyCodexHome(baseEnv, proxyBaseUrl, clientApiKey) {
-	const originalCodexHome = resolveCodexHomeDir(baseEnv);
+	const originalCodexHome = resolveRuntimeRotationProxyOriginalCodexHome(baseEnv);
 	const shadowCodexHome = mkdtempSync(join(tmpdir(), "codex-multi-auth-runtime-home-"));
 	let syncShadowHomeStateBack = () => {};
 	const cleanup = () => {
@@ -2142,6 +2149,9 @@ function stopRuntimeRotationAppHelper(helper) {
 }
 
 function startRuntimeRotationAppHelper(baseContext) {
+	const realCodexHome =
+		baseContext.originalCodexHome ??
+		resolveRuntimeRotationProxyOriginalCodexHome(baseContext.env);
 	return new Promise((resolve, reject) => {
 		let stdoutBuffer = "";
 		let stderrBuffer = "";
@@ -2153,6 +2163,7 @@ function startRuntimeRotationAppHelper(baseContext) {
 				env: {
 					...baseContext.env,
 					[APP_RUNTIME_HELPER_OWNER_PID_ENV]: String(process.pid),
+					[APP_RUNTIME_HELPER_REAL_CODEX_HOME_ENV]: realCodexHome,
 				},
 				stdio: ["ignore", "pipe", "pipe"],
 				detached: true,
@@ -2590,14 +2601,24 @@ function createCompatibilityCodexHome(
 	requestedModel,
 	baseEnv = process.env,
 ) {
+	const originalCodexHome = resolveCodexHomeDir(baseEnv);
 	if (!requestedModel) {
-		return { args: processedArgs, env: baseEnv, cleanup: undefined };
+		return {
+			args: processedArgs,
+			env: baseEnv,
+			cleanup: undefined,
+			originalCodexHome,
+		};
 	}
 
-	const originalCodexHome = resolveCodexHomeDir(baseEnv);
 	const configPath = join(originalCodexHome, "config.toml");
 	if (!existsSync(configPath)) {
-		return { args: processedArgs, env: baseEnv, cleanup: undefined };
+		return {
+			args: processedArgs,
+			env: baseEnv,
+			cleanup: undefined,
+			originalCodexHome,
+		};
 	}
 
 	const rawConfig = readFileSync(configPath, "utf8");
@@ -2606,7 +2627,12 @@ function createCompatibilityCodexHome(
 		requestedModel,
 	);
 	if (compatConfig === rawConfig) {
-		return { args: processedArgs, env: baseEnv, cleanup: undefined };
+		return {
+			args: processedArgs,
+			env: baseEnv,
+			cleanup: undefined,
+			originalCodexHome,
+		};
 	}
 
 	const shadowCodexHome = mkdtempSync(join(tmpdir(), "codex-multi-auth-home-"));
@@ -2656,6 +2682,7 @@ function createCompatibilityCodexHome(
 		args: processedArgs,
 		env: forwardedEnv,
 		cleanup: cleanupWithSync,
+		originalCodexHome,
 	};
 }
 
