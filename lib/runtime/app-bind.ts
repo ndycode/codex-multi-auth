@@ -307,7 +307,11 @@ async function syncDirectoryBestEffort(path: string): Promise<void> {
 	}
 }
 
-async function atomicWriteFile(target: string, content: string): Promise<void> {
+async function atomicWriteFile(
+	target: string,
+	content: string,
+	mode = 0o600,
+): Promise<void> {
 	await withFileOperationRetry(async () => {
 		await mkdir(dirname(target), { recursive: true });
 		const tempPath = join(
@@ -323,7 +327,7 @@ async function atomicWriteFile(target: string, content: string): Promise<void> {
 		let moved = false;
 		let handle: Awaited<ReturnType<typeof open>> | null = null;
 		try {
-			handle = await open(tempPath, "w");
+			handle = await open(tempPath, "w", mode);
 			await handle.writeFile(content, "utf8");
 			await handle.sync();
 			await handle.close();
@@ -377,6 +381,7 @@ function readAppBindStateRecord(record: Record<string, unknown>): AppBindState |
 		!logPath ||
 		!nodePath ||
 		!routerScriptPath ||
+		!clientApiKey ||
 		!boundConfigHash ||
 		updatedAt === null
 	) {
@@ -395,7 +400,7 @@ function readAppBindStateRecord(record: Record<string, unknown>): AppBindState |
 		logPath,
 		nodePath,
 		routerScriptPath,
-		clientApiKey: clientApiKey ?? "",
+		clientApiKey,
 		startupPath: readString(record, "startupPath"),
 		launchAgentPath: readString(record, "launchAgentPath"),
 		boundConfigHash,

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -224,6 +224,10 @@ describe("Codex app runtime rotation bind", () => {
 			`experimental_bearer_token = "${result.status.state?.clientApiKey}"`,
 		);
 		expect(config).not.toContain("env_key");
+		if (process.platform !== "win32") {
+			expect(statSync(join(codexHome, "config.toml")).mode & 0o777).toBe(0o600);
+			expect(statSync(result.status.paths.statePath).mode & 0o777).toBe(0o600);
+		}
 		const startup = await readFile(result.status.paths.startupPath ?? "", "utf8");
 		expect(startup).toContain("--state");
 		expect(startup).toContain("runtime-rotation-app-bind.json");
@@ -252,6 +256,53 @@ describe("Codex app runtime rotation bind", () => {
 			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
 		};
 		await mkdir(codexHome, { recursive: true });
+
+		await expect(
+			bindCodexAppRuntimeRotation({
+				platform: "linux",
+				home: root,
+				env,
+				nodePath: "node",
+				routerScriptPath: join(root, "codex-app-router.js"),
+				spawnDetached: false,
+			}),
+		).rejects.toThrow("port=0");
+	});
+
+	it("rejects corrupt app bind state without a client token", async () => {
+		const root = await createTempRoot("codex-app-bind-missing-token-");
+		const multiAuthDir = join(root, "multi-auth");
+		const codexHome = join(root, "codex-home");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		const paths = resolveAppBindPaths({ platform: "linux", home: root, env });
+		await mkdir(paths.bindDir, { recursive: true });
+		await writeFile(
+			paths.statePath,
+			`${JSON.stringify(
+				{
+					version: 1,
+					platform: "linux",
+					host: "127.0.0.1",
+					port: 4567,
+					baseUrl: "http://127.0.0.1:4567",
+					configPath: paths.configPath,
+					statePath: paths.statePath,
+					backupPath: paths.backupPath,
+					statusPath: paths.statusPath,
+					logPath: paths.logPath,
+					nodePath: "node",
+					routerScriptPath: join(root, "codex-app-router.js"),
+					boundConfigHash: "hash",
+					updatedAt: 1,
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
 
 		await expect(
 			bindCodexAppRuntimeRotation({
@@ -313,6 +364,46 @@ describe("Codex app runtime rotation bind", () => {
 			home: root,
 			env,
 		});
+	});
+
+	it("fails bind when a spawned router never reports ready for an existing port", async () => {
+		const root = await createTempRoot("codex-app-bind-router-stale-port-");
+		const multiAuthDir = join(root, "multi-auth");
+		const codexHome = join(root, "codex-home");
+		const routerScriptPath = join(root, "silent-router.mjs");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		await mkdir(codexHome, { recursive: true });
+		await writeFile(
+			join(codexHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+		await writeFile(routerScriptPath, "process.exit(0);\n", "utf8");
+		await seedExistingAppBindState({
+			platform: "linux",
+			home: root,
+			env,
+			port: 4567,
+			baseUrl: "http://127.0.0.1:4567",
+			nodePath: process.execPath,
+			routerScriptPath,
+		});
+
+		await expect(
+			bindCodexAppRuntimeRotation({
+				platform: "linux",
+				home: root,
+				env,
+				nodePath: process.execPath,
+				routerScriptPath,
+			}),
+		).rejects.toThrow("did not report ready");
+		await expect(readFile(join(codexHome, "config.toml"), "utf8")).resolves.toBe(
+			'model_provider = "openai"\n',
+		);
 	});
 
 	it("writes a macOS LaunchAgent for login-time router startup", async () => {
@@ -403,6 +494,36 @@ describe("Codex app runtime rotation bind", () => {
 		expect(result.error).toBeUndefined();
 		expect(result.status).not.toBe(0);
 		expect(result.stderr).toContain("valid --port");
+		expect(existsSync(statusPath)).toBe(false);
+	});
+
+	it("rejects router startup when state is missing its client token", async () => {
+		const root = await createTempRoot("codex-app-router-token-");
+		const statusPath = join(root, "router-status.json");
+		const statePath = join(root, "router-state.json");
+		await writeFile(
+			statePath,
+			`${JSON.stringify({ host: "127.0.0.1", port: 0 })}\n`,
+			"utf8",
+		);
+		const result = spawnSync(
+			process.execPath,
+			[
+				join(thisDir, "..", "scripts", "codex-app-router.js"),
+				"--status",
+				statusPath,
+				"--state",
+				statePath,
+			],
+			{
+				encoding: "utf8",
+				windowsHide: true,
+			},
+		);
+
+		expect(result.error).toBeUndefined();
+		expect(result.status).not.toBe(0);
+		expect(result.stderr).toContain("missing its client token");
 		expect(existsSync(statusPath)).toBe(false);
 	});
 });

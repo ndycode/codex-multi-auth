@@ -137,6 +137,11 @@ async function main() {
 			"Codex app runtime router host must be loopback-only (127.0.0.1, ::1, or localhost).",
 		);
 	}
+	if (!clientApiKey) {
+		throw new Error(
+			"Codex app runtime router state is missing its client token.",
+		);
+	}
 
 	let proxyServer = null;
 	const writeCurrentStatus = (state, error) => {
