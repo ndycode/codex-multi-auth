@@ -195,8 +195,8 @@ function createRuntimeConfigTomlFixtureModule(fixtureRoot: string): string {
 			"  let skipping = false;",
 			"  const providerTable = `model_providers.${providerId}`;",
 			"  for (const line of lines) {",
-			"    if (line.trim() === `[model_providers.${providerId}]`) { skipping = true; continue; }",
 			"    const tableName = readTomlTableName(line);",
+			"    if (tableName === providerTable) { skipping = true; continue; }",
 			"    if (skipping && tableName) {",
 			"      if (tableName === providerTable || tableName.startsWith(`${providerTable}.`)) continue;",
 			"      skipping = false;",
@@ -804,7 +804,7 @@ describe("codex bin wrapper", () => {
 				'name = "Existing"',
 				'base_url = "https://example.invalid"',
 				"",
-				`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
+				`[ model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID} ]`,
 				'name = "Stale Runtime Proxy"',
 				'base_url = "http://127.0.0.1:1"',
 			].join("\n"),
@@ -851,6 +851,7 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain('wire_api = "responses"');
 		expect(output).not.toContain("env_key");
 		expect(output).not.toContain('base_url = "http://127.0.0.1:1"');
+		expect((output.match(/\[model_providers\.codex-multi-auth-runtime-proxy\]/g) ?? []).length).toBe(1);
 		const shadowHomeMatch = output.match(/^CODEX_HOME:(.+)$/m);
 		expect(shadowHomeMatch?.[1]).toBeTruthy();
 		if (shadowHomeMatch?.[1]) {
@@ -1922,6 +1923,41 @@ describe("codex bin wrapper", () => {
 			entry.startsWith("codex-multi-auth-home-"),
 			),
 		).toEqual([]);
+	});
+
+	it("syncs copied shadow directories back before cleanup", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const home = process.env.CODEX_HOME ?? "";',
+			'fs.mkdirSync(path.join(home, "sessions"), { recursive: true });',
+			'fs.writeFileSync(path.join(home, "sessions", "new.jsonl"), "new-session\\n", "utf8");',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const controlledTmp = join(fixtureRoot, "tmp");
+		const fakeLinkPath = join(fixtureRoot, "fake-link");
+		mkdirSync(join(originalHome, "sessions"), { recursive: true });
+		mkdirSync(controlledTmp, { recursive: true });
+		writeFileSync(join(originalHome, "sessions", "existing.jsonl"), "existing\n", "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+
+		const result = runWrapper(fixtureRoot, ["exec", "status", "--model", "gpt-5.1"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			TMP: controlledTmp,
+			TEMP: controlledTmp,
+			TMPDIR: controlledTmp,
+			PATH: `${fakeLinkPath}${delimiter}${process.env.PATH ?? ""}`,
+			npm_config_prefix: fixtureRoot,
+			CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_DIR_COPY: "1",
+		});
+
+		expect(result.status).toBe(0);
+		expect(readFileSync(join(originalHome, "sessions", "existing.jsonl"), "utf8")).toBe("existing\n");
+		expect(readFileSync(join(originalHome, "sessions", "new.jsonl"), "utf8")).toBe("new-session\n");
 	});
 
 	it("syncs refreshed auth state back from compatibility shadow homes before cleanup", () => {

@@ -629,6 +629,7 @@ describe("runtime rotation proxy", () => {
 	it("cools down server-error and network-failure accounts before retrying", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 3));
+		const saveToDiskDebouncedSpy = vi.spyOn(accountManager, "saveToDiskDebounced");
 		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) => {
 			if (attempt === 1) {
 				return new Response("upstream failed", { status: 503 });
@@ -651,6 +652,7 @@ describe("runtime rotation proxy", () => {
 		]);
 		expect(accountManager.getAccountByIndex(0)?.cooldownReason).toBe("server-error");
 		expect(accountManager.getAccountByIndex(1)?.cooldownReason).toBe("network-error");
+		expect(saveToDiskDebouncedSpy).toHaveBeenCalled();
 	});
 
 	it("deduplicates concurrent expired-token refresh and persistence", async () => {

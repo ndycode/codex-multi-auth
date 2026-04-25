@@ -885,6 +885,7 @@ export async function startRuntimeRotationProxy(
 						networkErrorCooldownMs,
 						"network-error",
 					);
+					accountManager.saveToDiskDebounced();
 					exhaustionReason = "network-error";
 					status.retries += 1;
 					status.rotations += 1;

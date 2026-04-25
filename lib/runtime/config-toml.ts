@@ -15,12 +15,11 @@ export function removeRuntimeRotationProviderBlock(rawConfig: string): string {
 	let skipping = false;
 	const providerTable = `model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}`;
 	for (const line of lines) {
-		const trimmed = line.trim();
-		if (trimmed === `[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`) {
+		const tableName = readTomlTableName(line);
+		if (tableName === providerTable) {
 			skipping = true;
 			continue;
 		}
-		const tableName = readTomlTableName(line);
 		if (skipping && tableName) {
 			if (tableName === providerTable || tableName.startsWith(`${providerTable}.`)) {
 				continue;

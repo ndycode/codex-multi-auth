@@ -1561,12 +1561,15 @@ function isFileLike(path) {
 
 function mirrorDirectoryIntoShadowHome(sourcePath, destinationPath) {
 	try {
+		if ((process.env.CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_DIR_COPY ?? "").trim() === "1") {
+			throw new Error("simulated directory link failure");
+		}
 		symlinkSync(
 			sourcePath,
 			destinationPath,
 			process.platform === "win32" ? "junction" : "dir",
 		);
-		return;
+		return "linked";
 	} catch {
 		// Fall back to a copy when links are unavailable. Directory links are
 		// preferred because they keep sessions, plugins, and skills live.
@@ -1575,6 +1578,7 @@ function mirrorDirectoryIntoShadowHome(sourcePath, destinationPath) {
 		recursive: true,
 		dereference: false,
 	});
+	return "copied";
 }
 
 function linkFileIntoShadowHome(sourcePath, destinationPath) {
@@ -1625,6 +1629,24 @@ function collectShadowHomeSyncFileNames(shadowCodexHome, syncFileNames) {
 		// Best-effort; cleanup still syncs the known state files.
 	}
 	return syncFileNames;
+}
+
+function syncCopiedShadowHomeDirectories(originalCodexHome, shadowCodexHome, names) {
+	for (const name of names) {
+		const shadowPath = join(shadowCodexHome, name);
+		if (!isDirectoryLike(shadowPath)) {
+			continue;
+		}
+		try {
+			cpSync(shadowPath, join(originalCodexHome, name), {
+				recursive: true,
+				dereference: false,
+				force: true,
+			});
+		} catch {
+			// Best-effort sync-back; sibling directories and state files still run.
+		}
+	}
 }
 
 function syncShadowHomeAuthBundle(
@@ -1731,6 +1753,7 @@ function createShadowHomeMirror(
 	const syncFileNames = new Set(SHADOW_HOME_STATE_FILES);
 	const skipSyncBackNames = new Set(options.skipSyncBackNames ?? []);
 	const originalFileStates = new Map();
+	const copiedDirectoryNames = new Set();
 	const rememberSyncFile = (name) => {
 		if (!originalFileStates.has(name)) {
 			originalFileStates.set(
@@ -1773,7 +1796,9 @@ function createShadowHomeMirror(
 					throw new Error(`Expected ${name} to be a file`);
 				}
 				if (directoryLike) {
-					mirrorDirectoryIntoShadowHome(sourcePath, destinationPath);
+					if (mirrorDirectoryIntoShadowHome(sourcePath, destinationPath) === "copied") {
+						copiedDirectoryNames.add(name);
+					}
 					continue;
 				}
 				if (fileLike) {
@@ -1806,6 +1831,11 @@ function createShadowHomeMirror(
 				originalFileStates,
 				tightenFile,
 				skipSyncBackNames,
+			);
+			syncCopiedShadowHomeDirectories(
+				originalCodexHome,
+				shadowCodexHome,
+				copiedDirectoryNames,
 			);
 			syncAdditionalShadowHomeFiles(
 				originalCodexHome,
