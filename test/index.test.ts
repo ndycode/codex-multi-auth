@@ -1091,17 +1091,19 @@ describe("OpenAIOAuthPlugin", () => {
 		});
 
 		it("shows cached quota exhaustion instead of ok", async () => {
+			const now = Date.now();
 			mockStorage.accounts = [
 				{
 					refreshToken: "r1",
 					email: "user@example.com",
 					accountId: "acc-exhausted",
+					rateLimitResetTimes: { codex: now + 60_000 },
 				},
 			];
 			loadQuotaCacheMock.mockResolvedValueOnce({
 				byAccountId: {
 					"acc-exhausted": {
-						updatedAt: Date.now(),
+						updatedAt: now,
 						status: 200,
 						model: "gpt-5-codex",
 						primary: { usedPercent: 100, windowMinutes: 300 },
@@ -1114,6 +1116,7 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await plugin.tool["codex-list"].execute();
 
 			expect(result).toContain("quota-exhausted");
+			expect(result).toContain("rate-limited");
 			expect(result).not.toMatch(/\bok\b/);
 		});
 	});
@@ -1186,17 +1189,19 @@ describe("OpenAIOAuthPlugin", () => {
 		});
 
 		it("shows cached quota exhaustion in status details", async () => {
+			const now = Date.now();
 			mockStorage.accounts = [
 				{
 					refreshToken: "r1",
 					email: "user@example.com",
 					accountId: "acc-exhausted",
+					rateLimitResetTimes: { codex: now + 60_000 },
 				},
 			];
 			loadQuotaCacheMock.mockResolvedValueOnce({
 				byAccountId: {
 					"acc-exhausted": {
-						updatedAt: Date.now(),
+						updatedAt: now,
 						status: 200,
 						model: "gpt-5-codex",
 						primary: { usedPercent: 100, windowMinutes: 300 },
@@ -1209,6 +1214,7 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await plugin.tool["codex-status"].execute();
 
 			expect(result).toContain("quota-exhausted");
+			expect(result).toContain("rate-limited");
 		});
 	});
 

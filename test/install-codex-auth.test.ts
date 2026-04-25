@@ -20,6 +20,7 @@ import {
 	hasCodexDesktopApp,
 	isCiEnvironment,
 	resolveRotationEnabled,
+	runPostinstallSelfHeal,
 	shouldAutoBindCodexAppOnInstall,
 	shouldAutoInstallCodexAppLauncherOnInstall,
 } from "../scripts/postinstall.js";
@@ -557,5 +558,32 @@ describe("codex app bind postinstall gate", () => {
 				{},
 			),
 		).toBe(false);
+	});
+
+	it("still runs launcher repair when app bind self-heal fails", async () => {
+		const bindCodexApp = vi.fn(async () => {
+			throw new Error("bind failed");
+		});
+		const installLauncher = vi.fn(async () => undefined);
+		const log = vi.fn();
+
+		await expect(
+			runPostinstallSelfHeal({
+				loadConfigModule: async () => ({
+					loadPluginConfig: () => ({ codexRuntimeRotationProxy: true }),
+					getCodexRuntimeRotationProxy: () => true,
+				}),
+				bindCodexApp,
+				installLauncher,
+				log,
+				env: {},
+			}),
+		).resolves.toBe(0);
+
+		expect(bindCodexApp).toHaveBeenCalledWith(true);
+		expect(installLauncher).toHaveBeenCalledWith(true);
+		expect(log).toHaveBeenCalledWith(
+			"app bind postinstall skipped: bind failed",
+		);
 	});
 });

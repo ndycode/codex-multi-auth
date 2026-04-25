@@ -81,15 +81,19 @@ function normalizeIndex(value: number | null | undefined): number | null {
 	return index >= 0 ? index : null;
 }
 
+function normalizeTimestampValue(value: number | null | undefined): number | null {
+	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+		return null;
+	}
+	return value;
+}
+
 function normalizeTimestamp(signal: RuntimeAccountSignal): number | null {
-	const timestamp =
-		typeof signal.lastAccountUpdatedAt === "number" &&
-		Number.isFinite(signal.lastAccountUpdatedAt)
-			? signal.lastAccountUpdatedAt
-			: typeof signal.updatedAt === "number" && Number.isFinite(signal.updatedAt)
-				? signal.updatedAt
-				: null;
-	return timestamp !== null && timestamp > 0 ? timestamp : null;
+	const timestamps = [
+		normalizeTimestampValue(signal.lastAccountUpdatedAt),
+		normalizeTimestampValue(signal.updatedAt),
+	].filter((timestamp): timestamp is number => timestamp !== null);
+	return timestamps.length > 0 ? Math.max(...timestamps) : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -209,16 +213,30 @@ function findUniqueEmailIndex(
 	return matchIndex;
 }
 
+function findUniqueAccountIdIndex(
+	storage: AccountStorageV3,
+	accountId: string,
+): number | null {
+	let matchIndex: number | null = null;
+	for (let index = 0; index < storage.accounts.length; index += 1) {
+		const account = storage.accounts[index];
+		if (!account || normalizeAccountId(account.accountId) !== accountId) {
+			continue;
+		}
+		if (matchIndex !== null) return null;
+		matchIndex = index;
+	}
+	return matchIndex;
+}
+
 function matchSignalToAccount(
 	storage: AccountStorageV3,
 	signal: RuntimeAccountSignal,
 ): { index: number; matchedBy: RuntimeCurrentAccountMatch } | null {
 	const accountId = normalizeAccountId(signal.lastAccountId);
 	if (accountId) {
-		const idIndex = storage.accounts.findIndex(
-			(account) => normalizeAccountId(account.accountId) === accountId,
-		);
-		if (idIndex >= 0) return { index: idIndex, matchedBy: "account-id" };
+		const idIndex = findUniqueAccountIdIndex(storage, accountId);
+		if (idIndex !== null) return { index: idIndex, matchedBy: "account-id" };
 	}
 
 	const email = normalizeEmail(signal.lastAccountEmail);

@@ -3622,17 +3622,87 @@ describe("codex bin wrapper", () => {
 		expect(existsSync(markerPath)).toBe(false);
 	});
 
-	it("ignores missing startup auto-update checker builds", () => {
+	it("skips startup auto-update loading for pure help and version commands", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		const markerPath = join(fixtureRoot, "auto-update-loaded.txt");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "auto-update-checker.js"),
+			[
+				'import { writeFileSync } from "node:fs";',
+				"writeFileSync(process.env.CODEX_MULTI_AUTH_AUTO_UPDATE_MARKER, 'loaded', 'utf8');",
+				"export async function autoUpdateIfAvailable() {",
+				"\treturn { updated: false };",
+				"}",
+			].join("\n"),
+			"utf8",
+		);
 
 		const result = runWrapper(fixtureRoot, ["--version"], {
+			CODEX_MULTI_AUTH_AUTO_UPDATE_MARKER: markerPath,
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 		});
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("FORWARDED:--version");
+		expect(existsSync(markerPath)).toBe(false);
+	});
+
+	it("skips startup auto-update loading for local auth commands", () => {
+		const fixtureRoot = createWrapperFixture();
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		const markerPath = join(fixtureRoot, "auto-update-loaded.txt");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "auto-update-checker.js"),
+			[
+				'import { writeFileSync } from "node:fs";',
+				"writeFileSync(process.env.CODEX_MULTI_AUTH_AUTO_UPDATE_MARKER, 'loaded', 'utf8');",
+				"export async function autoUpdateIfAvailable() {",
+				"\treturn { updated: false };",
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+		writeFileSync(
+			join(distLibDir, "codex-manager.js"),
+			[
+				"export async function runCodexMultiAuthCli(args) {",
+				"\tconsole.log(`LOCAL:${args.join(' ')}`);",
+				"\treturn 0;",
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["auth", "status"], {
+			CODEX_MULTI_AUTH_AUTO_UPDATE_MARKER: markerPath,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("LOCAL:auth status");
+		expect(existsSync(markerPath)).toBe(false);
+	});
+
+	it("ignores missing startup auto-update checker builds", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED:exec status");
 		expect(result.stderr).not.toContain("auto-update skipped");
+		expect(result.stderr).not.toContain(
+			"codex-multi-auth: auto-update found 9.9.9; running npm update -g codex-multi-auth before startup.",
+		);
+		expect(result.stderr).not.toContain(
+			"codex-multi-auth: auto-updated to 9.9.9. New sessions will use the latest package.",
+		);
 	});
 
 	it("logs startup auto-update progress and successful updates", () => {
@@ -3651,18 +3721,76 @@ describe("codex bin wrapper", () => {
 			"utf8",
 		);
 
-		const result = runWrapper(fixtureRoot, ["--version"], {
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 		});
 
 		expect(result.status).toBe(0);
-		expect(result.stdout).toContain("FORWARDED:--version");
+		expect(result.stdout).toContain("FORWARDED:exec status");
 		expect(result.stderr).toContain(
 			"codex-multi-auth: auto-update found 9.9.9; running npm update -g codex-multi-auth before startup.",
 		);
 		expect(result.stderr).toContain(
 			"codex-multi-auth: auto-updated to 9.9.9. New sessions will use the latest package.",
 		);
+	});
+
+	it("suppresses startup auto-update failures unless debug logging is enabled", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "auto-update-checker.js"),
+			[
+				"export async function autoUpdateIfAvailable() {",
+				"\tthrow new Error('registry unavailable');",
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const quietResult = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+		const debugResult = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_DEBUG: "1",
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(quietResult.status).toBe(0);
+		expect(quietResult.stdout).toContain("FORWARDED:exec status");
+		expect(quietResult.stderr).not.toContain("registry unavailable");
+		expect(debugResult.status).toBe(0);
+		expect(debugResult.stdout).toContain("FORWARDED:exec status");
+		expect(debugResult.stderr).toContain(
+			"codex-multi-auth: auto-update skipped: registry unavailable",
+		);
+	});
+
+	it("continues forwarded startup when auto-update exceeds its startup budget", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "auto-update-checker.js"),
+			[
+				"export async function autoUpdateIfAvailable() {",
+				"\treturn new Promise(() => undefined);",
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_TEST_STARTUP_AUTO_UPDATE_BUDGET_MS: "25",
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED:exec status");
+		expect(result.stderr).not.toContain("auto-update skipped");
 	});
 
 	it("syncs manager active selection before and after forwarded commands", () => {

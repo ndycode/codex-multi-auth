@@ -68,7 +68,7 @@ These are safe for most operators and frequently used in day-to-day workflows.
 | `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS=<ms>` | Override idle shutdown for the wrapper-launched Codex app helper |
 | `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0/1` | Opt out/in of packaged Codex app bind self-heal during install/update or rotation enable |
 | `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0/1` | Opt out/in of supported user-level launcher routing during install/update or rotation enable |
-| `CODEX_MULTI_AUTH_AUTO_UPDATE=0/1` | Opt out/in of best-effort global package auto-update checks |
+| `CODEX_MULTI_AUTH_AUTO_UPDATE=0/1` | Opt out/in of best-effort global package auto-update checks; enabled by default outside CI/test environments |
 | `CODEX_TUI_V2=0/1` | Disable or enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | Color profile selection |
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | Glyph mode selection |
@@ -119,7 +119,7 @@ Package install/update self-heals these defaults when runtime rotation is enable
 
 - Packaged Codex app bind is repaired when a Codex desktop app is detected. Set `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0` to skip install/update self-heal, or `CODEX_MULTI_AUTH_APP_BIND_INSTALL=1` to force it.
 - Supported user-level launcher routing is installed for global installs. Set `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0` to skip shortcut routing, or run `codex-multi-auth-app-launcher --remove` to restore backed-up Windows shortcuts or remove the managed macOS wrapper later.
-- Installed packages run a best-effort daily auto-update check and run `npm update -g codex-multi-auth` when npm has a newer release. Set `CODEX_MULTI_AUTH_AUTO_UPDATE=0` to skip that behavior.
+- Installed packages outside CI/test environments run a best-effort daily auto-update check and run `npm update -g codex-multi-auth` when npm has a newer release. Set `CODEX_MULTI_AUTH_AUTO_UPDATE=0` to skip that behavior, or `CODEX_MULTI_AUTH_AUTO_UPDATE=1` to force it in controlled automation.
 
 Some Windows installs expose Codex only as a packaged `shell:AppsFolder` app entry. Those entries cannot be retargeted like `.lnk` files, so the persistent app bind is the supported path for making the pinned packaged app use rotation automatically.
 

@@ -137,10 +137,12 @@ export async function runStatusCommand(
 	if (storageHealth) {
 		logInfo(`Storage health: ${storageHealth.state}`);
 	}
-	const runtimeSnapshot = await deps.loadRuntimeObservabilitySnapshot?.();
-	const appBindStatus = await deps.loadAppBindStatus?.();
 	const appHelperStatus = deps.loadAppHelperStatus?.() ?? null;
-	const quotaCache = (await deps.loadQuotaCache?.()) ?? null;
+	const [runtimeSnapshot, appBindStatus, quotaCache] = await Promise.all([
+		deps.loadRuntimeObservabilitySnapshot?.() ?? Promise.resolve(null),
+		deps.loadAppBindStatus?.() ?? Promise.resolve(null),
+		deps.loadQuotaCache?.() ?? Promise.resolve(null),
+	]);
 	const runtimeCurrent = resolveRuntimeCurrentAccount(
 		storage,
 		{

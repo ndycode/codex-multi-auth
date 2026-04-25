@@ -3537,7 +3537,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						columns: [
 							{ header: "#", width: 3 },
 							{ header: "Label", width: 42 },
-							{ header: "Status", width: 32 },
+							{ header: "Status", width: 44 },
 						],
 					};
 
@@ -3835,7 +3835,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							{ header: "#", width: 3 },
 							{ header: "Label", width: 42 },
 							{ header: "Current", width: 10 },
-							{ header: "Rate Limit", width: 30 },
+							{ header: "Rate Limit", width: 48 },
 							{ header: "Cooldown", width: 16 },
 							{ header: "Last Used", width: 16 },
 						],
@@ -3861,7 +3861,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							storage.accounts,
 						);
 						const quotaStatuses: string[] = [];
-						if (quotaEntry?.status === 429 && rateLimit === "None") {
+						if (rateLimit !== "None" || quotaEntry?.status === 429) {
 							quotaStatuses.push("rate-limited");
 						}
 						if (isQuotaCacheEntryExhausted(quotaEntry)) {

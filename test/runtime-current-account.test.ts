@@ -122,6 +122,85 @@ describe("resolveRuntimeCurrentAccount", () => {
 		expect(result).toBeNull();
 	});
 
+	it("keeps live sessions current when heartbeat is newer than switch timestamp", () => {
+		const now = 100_000;
+		const result = resolveRuntimeCurrentAccount(
+			createStorage(),
+			{
+				appHelperStatus: {
+					source: "app-helper",
+					lastAccountIndex: 1,
+					lastAccountLabel: "Account 2",
+					lastAccountEmail: "runtime@example.com",
+					lastAccountId: "acc_runtime",
+					lastAccountUpdatedAt: now - 25 * 60 * 60 * 1000,
+					updatedAt: now,
+				},
+			},
+			{ now },
+		);
+
+		expect(result).toMatchObject({
+			index: 1,
+			source: "app-helper",
+			matchedBy: "account-id",
+			updatedAt: now,
+		});
+	});
+
+	it("does not accept ambiguous duplicate account-id matches", () => {
+		const now = 10_000;
+		const storage: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "first@example.com",
+					accountId: "acc_duplicate",
+					refreshToken: "refresh-first",
+				},
+				{
+					email: "second@example.com",
+					accountId: "acc_duplicate",
+					refreshToken: "refresh-second",
+				},
+			],
+		};
+
+		expect(
+			resolveRuntimeCurrentAccount(
+				storage,
+				{
+					appHelperStatus: {
+						source: "app-helper",
+						lastAccountId: "acc_duplicate",
+						updatedAt: now,
+					},
+				},
+				{ now },
+			),
+		).toBeNull();
+
+		expect(
+			resolveRuntimeCurrentAccount(
+				storage,
+				{
+					appHelperStatus: {
+						source: "app-helper",
+						lastAccountId: "acc_duplicate",
+						lastAccountEmail: "second@example.com",
+						updatedAt: now,
+					},
+				},
+				{ now },
+			),
+		).toMatchObject({
+			index: 1,
+			matchedBy: "email",
+		});
+	});
+
 	it("ignores app-bind router status that is not running", () => {
 		const now = 10_000;
 		const result = resolveRuntimeCurrentAccount(

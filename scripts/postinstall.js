@@ -265,12 +265,39 @@ export async function maybeInstallCodexAppLauncherOnInstall(rotationEnabled) {
 	}
 }
 
-async function main() {
-	const configModule = await loadConfigModule();
-	const rotationEnabled = resolveRotationEnabled(configModule);
-	await maybeBindCodexAppOnInstall(rotationEnabled);
-	await maybeInstallCodexAppLauncherOnInstall(rotationEnabled);
+/**
+ * @param {{
+ *   loadConfigModule?: () => Promise<unknown>,
+ *   bindCodexApp?: (rotationEnabled: boolean) => Promise<void>,
+ *   installLauncher?: (rotationEnabled: boolean) => Promise<void>,
+ *   log?: (message: string) => void,
+ *   env?: NodeJS.ProcessEnv,
+ * }} [deps]
+ */
+export async function runPostinstallSelfHeal(deps = {}) {
+	const loadConfig = deps.loadConfigModule ?? loadConfigModule;
+	const bindCodexApp = deps.bindCodexApp ?? maybeBindCodexAppOnInstall;
+	const installLauncher =
+		deps.installLauncher ?? maybeInstallCodexAppLauncherOnInstall;
+	const log =
+		deps.log ?? ((message) => console.error(`codex-multi-auth: ${message}`));
+	const configModule = await loadConfig();
+	const rotationEnabled = resolveRotationEnabled(configModule, deps.env);
+
+	try {
+		await bindCodexApp(rotationEnabled);
+	} catch (error) {
+		log(
+			`app bind postinstall skipped: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+
+	await installLauncher(rotationEnabled);
 	return 0;
+}
+
+async function main() {
+	return runPostinstallSelfHeal();
 }
 
 const isDirectRun = (() => {

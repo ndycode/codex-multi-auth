@@ -23,6 +23,7 @@ const CACHE_FILE = join(CACHE_DIR, "update-check-cache.json");
 const AUTO_UPDATE_LOCK_DIR = join(CACHE_DIR, "auto-update.lock");
 const AUTO_UPDATE_LOCK_OWNER_FILE = join(AUTO_UPDATE_LOCK_DIR, "owner.json");
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const UPDATE_CHECK_TIMEOUT_MS = 5_000;
 const AUTO_UPDATE_TIMEOUT_MS = 2 * 60 * 1000;
 const AUTO_UPDATE_LOCK_STALE_MS = 10 * 60 * 1000;
 const AUTO_UPDATE_ENV_NAME = "CODEX_MULTI_AUTH_AUTO_UPDATE";
@@ -257,10 +258,12 @@ function compareVersions(current: string, latest: string): number {
   return comparePrerelease(parsedCurrent.prerelease, parsedLatest.prerelease);
 }
 
-async function fetchLatestVersion(): Promise<string | null> {
+async function fetchLatestVersion(
+	timeoutMs = UPDATE_CHECK_TIMEOUT_MS,
+): Promise<string | null> {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     const response = await fetch(NPM_REGISTRY_URL, {
       signal: controller.signal,
@@ -310,6 +313,7 @@ export interface AutoUpdateOptions {
 	npmCommand?: string;
 	packageRoot?: string;
 	platform?: NodeJS.Platform;
+	fetchTimeoutMs?: number;
 	timeoutMs?: number;
 	onUpdateStart?: (result: UpdateCheckResult) => void;
 }
@@ -607,7 +611,10 @@ function notifyUpdateStart(
 	}
 }
 
-export async function checkForUpdates(force = false): Promise<UpdateCheckResult> {
+export async function checkForUpdates(
+	force = false,
+	fetchTimeoutMs = UPDATE_CHECK_TIMEOUT_MS,
+): Promise<UpdateCheckResult> {
   const currentVersion = getCurrentVersion();
   const cache = loadCache();
   const now = Date.now();
@@ -622,7 +629,7 @@ export async function checkForUpdates(force = false): Promise<UpdateCheckResult>
     };
   }
 
-  const latestVersion = await fetchLatestVersion();
+  const latestVersion = await fetchLatestVersion(fetchTimeoutMs);
 
 	await saveCache({
 		lastCheck: now,
@@ -672,7 +679,10 @@ export async function autoUpdateIfAvailable(
 		return skipped("not-updateable-install");
 	}
 
-	const result = await checkForUpdates(options.forceCheck ?? false);
+	const result = await checkForUpdates(
+		options.forceCheck ?? false,
+		options.fetchTimeoutMs,
+	);
 	if (!result.hasUpdate || !result.latestVersion) {
 		return {
 			...result,
