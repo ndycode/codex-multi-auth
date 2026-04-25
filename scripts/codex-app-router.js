@@ -1,7 +1,16 @@
 #!/usr/bin/env node
 
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import {
+	chmodSync,
+	closeSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 import process from "node:process";
 
 function parsePort(value) {
@@ -65,15 +74,38 @@ function readTrimmedString(record, key) {
 
 function writeStatus(statusPath, payload) {
 	if (!statusPath) return;
+	const statusDir = dirname(statusPath);
+	const tempPath = join(
+		statusDir,
+		[
+			`.${basename(statusPath)}`,
+			String(process.pid),
+			String(Date.now()),
+			"tmp",
+		].join("."),
+	);
+	let fd = null;
 	try {
-		mkdirSync(dirname(statusPath), { recursive: true });
-		writeFileSync(statusPath, `${JSON.stringify(payload, null, 2)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
-		});
+		mkdirSync(statusDir, { recursive: true });
+		fd = openSync(tempPath, "w", 0o600);
+		writeFileSync(fd, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+		closeSync(fd);
+		fd = null;
+		chmodSync(tempPath, 0o600);
+		renameSync(tempPath, statusPath);
 		chmodSync(statusPath, 0o600);
 	} catch {
 		// Status is best-effort. The router should keep serving if telemetry is locked.
+		try {
+			if (fd !== null) closeSync(fd);
+		} catch {
+			// Preserve the original status-write failure.
+		}
+		try {
+			rmSync(tempPath, { force: true });
+		} catch {
+			// Preserve the original status-write failure.
+		}
 	}
 }
 

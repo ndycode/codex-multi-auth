@@ -44,6 +44,12 @@ function retryableError(code: string): Error & { code: string } {
 	return error;
 }
 
+function decodeWindowsEncodedCommand(commandArgs: string): string {
+	const marker = "-EncodedCommand ";
+	const encoded = commandArgs.slice(commandArgs.indexOf(marker) + marker.length).trim();
+	return Buffer.from(encoded, "base64").toString("utf16le");
+}
+
 describe("install-codex-auth script", () => {
   it("uses lowercase config template filenames", () => {
     const content = readFileSync(scriptPath, "utf8");
@@ -241,9 +247,20 @@ describe("codex app launcher installer", () => {
 				path.join(home, "Desktop"),
 			]),
 		);
-		expect(plan.commandPath).toBe(process.execPath);
-		expect(plan.commandArgs).toContain("scripts\\codex.js");
-		expect(plan.commandArgs).toContain(" app");
+		expect(plan.commandPath).toBe(
+			path.join(
+				"C:\\Windows",
+				"System32",
+				"WindowsPowerShell",
+				"v1.0",
+				"powershell.exe",
+			),
+		);
+		expect(plan.commandArgs).toContain("-EncodedCommand ");
+		const decodedCommand = decodeWindowsEncodedCommand(plan.commandArgs);
+		expect(decodedCommand).toContain(process.execPath);
+		expect(decodedCommand).toContain("scripts\\codex.js");
+		expect(decodedCommand).toContain(" app");
 
 		const psScript = createWindowsShortcutPowerShellScript(plan);
 		expect(psScript).toContain("$Candidates");
@@ -253,6 +270,27 @@ describe("codex app launcher installer", () => {
 		expect(psScript).toContain("$AlreadyManaged");
 		expect(psScript).toContain("$Shortcut.TargetPath = $TargetPath");
 		expect(psScript).toContain("Launch Codex through codex-multi-auth");
+	});
+
+	it("keeps Windows shortcut arguments free of raw percent paths", () => {
+		const home = "C:\\Users\\percent%home";
+		const appData = path.join(home, "App%Data", "Roaming");
+		const moduleUrl = pathToFileURL(
+			path.join(home, "pkg%root", "scripts", "codex-app-launcher.js"),
+		).href;
+		const plan = resolveAppLauncherPlan({
+			platform: "win32",
+			home,
+			env: { APPDATA: appData },
+			moduleUrl,
+		});
+
+		expect(plan.commandArgs).not.toContain(home);
+		expect(plan.commandArgs).not.toContain("pkg%root");
+		const decodedCommand = decodeWindowsEncodedCommand(plan.commandArgs);
+		expect(decodedCommand).toContain(home);
+		expect(decodedCommand).toContain("pkg%root");
+		expect(decodedCommand).toContain("codex.js");
 	});
 
 	it("includes redirected Windows desktop roots when routing app shortcuts", () => {

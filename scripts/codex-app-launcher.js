@@ -27,6 +27,13 @@ function quotePowerShellSingle(value) {
 }
 
 /**
+ * @param {string} value
+ */
+function encodePowerShellCommand(value) {
+	return Buffer.from(value, "utf16le").toString("base64");
+}
+
+/**
  * @param {boolean} value
  */
 function quotePowerShellBoolean(value) {
@@ -71,6 +78,15 @@ function uniqueStrings(values) {
 function resolveWindowsStartMenuDir(env, home) {
 	const appData = (env.APPDATA ?? "").trim() || join(home, "AppData", "Roaming");
 	return join(appData, "Microsoft", "Windows", "Start Menu", "Programs");
+}
+
+/**
+ * @param {NodeJS.ProcessEnv} env
+ */
+function resolveWindowsPowerShellPath(env) {
+	const systemRoot =
+		(env.SystemRoot ?? env.SYSTEMROOT ?? "").trim() || "C:\\Windows";
+	return join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 }
 
 /**
@@ -141,6 +157,22 @@ function resolveCurrentScriptPath(moduleUrl) {
 
 /**
  * @param {{
+ *   nodePath: string,
+ *   codexScriptPath: string,
+ *   workingDirectory: string,
+ * }} params
+ */
+function createWindowsLauncherCommandArgs(params) {
+	const command = [
+		"$ErrorActionPreference = 'Stop'",
+		`Set-Location -LiteralPath ${quotePowerShellSingle(params.workingDirectory)}`,
+		`& ${quotePowerShellSingle(params.nodePath)} ${quotePowerShellSingle(params.codexScriptPath)} app`,
+	].join("; ");
+	return `-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodePowerShellCommand(command)}`;
+}
+
+/**
+ * @param {{
  *   env?: NodeJS.ProcessEnv,
  *   platform?: NodeJS.Platform,
  *   home?: string,
@@ -169,8 +201,12 @@ export function resolveAppLauncherPlan(options = {}) {
 				...resolveWindowsDesktopDirs(env, home),
 			],
 			backupPath: join(resolveCodexMultiAuthDir(env, home), WINDOWS_BACKUP_FILE_NAME),
-			commandPath: nodePath,
-			commandArgs: `"${codexScriptPath}" app`,
+			commandPath: resolveWindowsPowerShellPath(env),
+			commandArgs: createWindowsLauncherCommandArgs({
+				nodePath,
+				codexScriptPath,
+				workingDirectory: home,
+			}),
 			commandArgv,
 			workingDirectory: home,
 			iconPath: nodePath,

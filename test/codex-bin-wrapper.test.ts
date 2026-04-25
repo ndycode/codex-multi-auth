@@ -1483,6 +1483,11 @@ describe("codex bin wrapper", () => {
 				setTimeout(resolve, 1000);
 			});
 		}
+		expect(
+			readdirSync(bindDir).filter((entry) =>
+				entry.startsWith(".status.json.") && entry.endsWith(".tmp"),
+			),
+		).toEqual([]);
 	});
 
 	it("records forwarded exec traffic in runtime observability when the child process does not update it", () => {
