@@ -473,6 +473,53 @@ describe("Codex app runtime rotation bind", () => {
 		});
 	});
 
+	it("waits past cold Windows Node startup before declaring router startup failed", async () => {
+		const root = await createTempRoot("codex-app-bind-router-slow-port-");
+		const multiAuthDir = join(root, "multi-auth");
+		const codexHome = join(root, "codex-home");
+		const routerScriptPath = join(root, "slow-router.mjs");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		await writeFile(
+			routerScriptPath,
+			[
+				"#!/usr/bin/env node",
+				"import { mkdirSync, writeFileSync } from 'node:fs';",
+				"import { dirname } from 'node:path';",
+				"const args = process.argv.slice(2);",
+				"const statusPath = args[args.indexOf('--status') + 1];",
+				"setTimeout(() => {",
+				"  mkdirSync(dirname(statusPath), { recursive: true });",
+				"  writeFileSync(statusPath, JSON.stringify({ version: 1, state: 'running', pid: process.pid, baseUrl: 'http://127.0.0.1:54322', updatedAt: Date.now() }) + '\\n', 'utf8');",
+				"}, 2300);",
+				"process.on('SIGTERM', () => process.exit(0));",
+				"setInterval(() => undefined, 1000);",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = await bindCodexAppRuntimeRotation({
+			platform: "win32",
+			home: root,
+			env,
+			nodePath: process.execPath,
+			routerScriptPath,
+			now: () => 789,
+		});
+
+		expect(result.status.state?.port).toBe(54322);
+		expect(result.status.running).toBe(true);
+
+		await unbindCodexAppRuntimeRotation({
+			platform: "win32",
+			home: root,
+			env,
+		});
+	});
+
 	it("fails bind when a spawned router never reports ready for an existing port", async () => {
 		const root = await createTempRoot("codex-app-bind-router-stale-port-");
 		const multiAuthDir = join(root, "multi-auth");
@@ -506,6 +553,7 @@ describe("Codex app runtime rotation bind", () => {
 				env,
 				nodePath: process.execPath,
 				routerScriptPath,
+				routerReadyTimeoutMs: 500,
 			}),
 		).rejects.toThrow("did not report ready");
 		await expect(readFile(join(codexHome, "config.toml"), "utf8")).resolves.toBe(

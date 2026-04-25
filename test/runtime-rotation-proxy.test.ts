@@ -90,6 +90,12 @@ function createRecordingFetch(
 	return { calls, fetchImpl };
 }
 
+function timeoutResult(ms: number): Promise<"timeout"> {
+	return new Promise((resolve) => {
+		setTimeout(() => resolve("timeout"), ms);
+	});
+}
+
 async function startProxy(params: {
 	accountManager: AccountManager;
 	fetchImpl: typeof fetch;
@@ -238,6 +244,46 @@ describe("runtime rotation proxy", () => {
 			emitServerErrorForProxy(proxy, new Error("post-startup server boom")),
 		).not.toThrow();
 		expect(proxy.getStatus().lastError).toBe("post-startup server boom");
+	});
+
+	it("closes active streaming clients during shutdown", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const encoder = new TextEncoder();
+		const { fetchImpl } = createRecordingFetch(
+			() =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(encoder.encode("data: still-open\n\n"));
+						},
+					}),
+					{
+						status: HTTP_STATUS.OK,
+						headers: { "content-type": "text/event-stream" },
+					},
+				),
+		);
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { streamStallTimeoutMs: 60_000 },
+		});
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+		});
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		const reader = response.body?.getReader();
+		if (!reader) throw new Error("expected streaming response body");
+		const first = await reader.read();
+		expect(new TextDecoder().decode(first.value)).toBe("data: still-open\n\n");
+
+		await expect(
+			Promise.race([proxy.close().then(() => "closed" as const), timeoutResult(500)]),
+		).resolves.toBe("closed");
+		await reader.cancel().catch(() => undefined);
 	});
 
 	it("rejects unauthenticated local clients when a wrapper token is configured", async () => {

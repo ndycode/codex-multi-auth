@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { Socket } from "node:net";
 import {
 	AccountManager,
 	extractAccountId,
@@ -1038,6 +1039,13 @@ export async function startRuntimeRotationProxy(
 	const server = createServer((req, res) => {
 		void handleRequest(req, res);
 	});
+	const sockets = new Set<Socket>();
+	server.on("connection", (socket) => {
+		sockets.add(socket);
+		socket.once("close", () => {
+			sockets.delete(socket);
+		});
+	});
 	const onPostStartupServerError = (error: Error): void => {
 		status.lastError = error.message;
 	};
@@ -1066,16 +1074,16 @@ export async function startRuntimeRotationProxy(
 		port: resolvedPort,
 		baseUrl: `http://${host}:${resolvedPort}`,
 		close: async () => {
+			await closeServer(server, sockets);
 			await accountManager.flushPendingSave();
-			await closeServer(server);
 		},
 		getStatus: () => ({ ...status }),
 	};
 }
 
-async function closeServer(server: Server): Promise<void> {
+async function closeServer(server: Server, sockets: Set<Socket>): Promise<void> {
 	if (!server.listening) return;
-	await new Promise<void>((resolve, reject) => {
+	const closed = new Promise<void>((resolve, reject) => {
 		server.close((error) => {
 			if (error) {
 				reject(error);
@@ -1084,4 +1092,9 @@ async function closeServer(server: Server): Promise<void> {
 			resolve();
 		});
 	});
+	server.closeIdleConnections?.();
+	for (const socket of sockets) {
+		socket.destroy();
+	}
+	await closed;
 }

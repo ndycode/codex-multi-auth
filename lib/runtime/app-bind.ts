@@ -19,6 +19,8 @@ const APP_BIND_BACKUP_FILE = "codex-config-backup.json";
 const APP_BIND_STATUS_FILE = "runtime-rotation-app-bind-status.json";
 const WINDOWS_STARTUP_FILE = "Codex Multi Auth Runtime Router.cmd";
 const MACOS_LAUNCH_AGENT_ID = "com.ndycode.codex-multi-auth.runtime-router";
+const DEFAULT_ROUTER_READY_TIMEOUT_MS = 15_000;
+const ROUTER_STATUS_POLL_INTERVAL_MS = 100;
 const appBindLocks = new Map<string, Promise<void>>();
 
 export interface AppBindPaths {
@@ -97,6 +99,7 @@ export interface AppBindOptions {
 	routerScriptPath?: string;
 	routerScriptCandidates?: string[];
 	spawnDetached?: boolean;
+	routerReadyTimeoutMs?: number;
 	log?: (message: string) => void;
 }
 
@@ -541,9 +544,20 @@ async function maybeStartRouter(state: AppBindState, options: AppBindOptions): P
 	return true;
 }
 
-async function waitForRouterStatus(statusPath: string): Promise<AppBindRouterStatus | null> {
+function resolveRouterReadyTimeoutMs(options: AppBindOptions): number {
+	const value = options.routerReadyTimeoutMs;
+	return typeof value === "number" && Number.isFinite(value) && value > 0
+		? value
+		: DEFAULT_ROUTER_READY_TIMEOUT_MS;
+}
+
+async function waitForRouterStatus(
+	statusPath: string,
+	timeoutMs: number,
+): Promise<AppBindRouterStatus | null> {
 	let latest: AppBindRouterStatus | null = null;
-	for (let attempt = 0; attempt < 20; attempt += 1) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
 		const router = await readRouterStatus(statusPath);
 		latest = router ?? latest;
 		if (router?.state === "error") {
@@ -551,7 +565,7 @@ async function waitForRouterStatus(statusPath: string): Promise<AppBindRouterSta
 			throw new Error(`Codex app runtime router failed to start${suffix}`);
 		}
 		if (router?.state === "running" && isProcessAlive(router.pid)) return router;
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await new Promise((resolve) => setTimeout(resolve, ROUTER_STATUS_POLL_INTERVAL_MS));
 	}
 	const suffix = latest?.lastError ? `: ${latest.lastError}` : "";
 	throw new Error(`Codex app runtime router did not report ready${suffix}`);
@@ -649,7 +663,10 @@ async function bindCodexAppRuntimeRotationLocked(
 	await atomicWriteFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`);
 	const startedRouter = await maybeStartRouter(state, options);
 	const router = startedRouter
-		? await waitForRouterStatus(state.statusPath)
+		? await waitForRouterStatus(
+				state.statusPath,
+				resolveRouterReadyTimeoutMs(options),
+			)
 		: await readRouterStatus(state.statusPath);
 	const routerBaseUrl = router?.baseUrl ?? null;
 	const routerIsUsable =

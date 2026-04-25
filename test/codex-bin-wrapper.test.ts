@@ -726,6 +726,9 @@ describe("codex bin wrapper", () => {
 			'console.log(`ROOT_STATE_REALTIME:${fs.readFileSync(path.join(process.env.ORIGINAL_CODEX_HOME ?? "", "state_5.sqlite"), "utf8").includes("shadow")}`);',
 			'fs.writeFileSync(path.join(process.env.CODEX_HOME ?? "", "new-root-state.json"), "new\\n", "utf8");',
 			'fs.writeFileSync(path.join(process.env.CODEX_HOME ?? "", "sessions", "runtime-session.jsonl"), "runtime\\n", "utf8");',
+			'fs.writeFileSync(path.join(process.env.CODEX_HOME ?? "", "auth.json"), \'{"token":"proxy-scoped"}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(process.env.CODEX_HOME ?? "", "accounts.json"), \'{"accounts":["proxy-scoped"]}\\n\', "utf8");',
+			'fs.writeFileSync(path.join(process.env.CODEX_HOME ?? "", ".codex-global-state.json"), \'{"last":"runtime"}\\n\', "utf8");',
 			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
 			'console.log("CONFIG_START");',
 			'console.log(fs.readFileSync(configPath, "utf8").trim());',
@@ -744,6 +747,17 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "plugins", "plugin.txt"), "plugin\n", "utf8");
 		writeFileSync(join(originalHome, "skills", "skill.txt"), "skill\n", "utf8");
 		writeFileSync(join(originalHome, "memories", "user.md"), "memory\n", "utf8");
+		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
+		writeFileSync(
+			join(originalHome, "accounts.json"),
+			'{"accounts":["original"]}\n',
+			"utf8",
+		);
+		writeFileSync(
+			join(originalHome, ".codex-global-state.json"),
+			'{"last":"original"}\n',
+			"utf8",
+		);
 		writeFileSync(
 			join(originalHome, "instructions", "profile.md"),
 			"instruction\n",
@@ -827,6 +841,15 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(join(originalHome, "new-root-state.json"), "utf8")).toBe(
 			"new\n",
 		);
+		expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe(
+			'{"token":"original"}',
+		);
+		expect(readFileSync(join(originalHome, "accounts.json"), "utf8").trim()).toBe(
+			'{"accounts":["original"]}',
+		);
+		expect(
+			readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim(),
+		).toBe('{"last":"runtime"}');
 	});
 
 	it("inserts the runtime model provider before TOML array tables", () => {

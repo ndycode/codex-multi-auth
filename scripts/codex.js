@@ -1552,8 +1552,12 @@ function syncShadowHomeAuthBundle(
 	shadowCodexHome,
 	originalFileStates,
 	tightenFile,
+	skipSyncBackNames = new Set(),
 ) {
 	for (const name of SHADOW_HOME_STATE_FILES) {
+		if (skipSyncBackNames.has(name)) {
+			continue;
+		}
 		const shadowPath = join(shadowCodexHome, name);
 		const shadowState = captureShadowHomeState(shadowPath);
 		if (!shadowState.exists || shadowState.unreadable) {
@@ -1584,9 +1588,10 @@ function syncAdditionalShadowHomeFiles(
 	names,
 	originalFileStates,
 	tightenFile,
+	skipSyncBackNames = new Set(),
 ) {
 	for (const name of names) {
-		if (SHADOW_HOME_STATE_FILE_SET.has(name)) {
+		if (SHADOW_HOME_STATE_FILE_SET.has(name) || skipSyncBackNames.has(name)) {
 			continue;
 		}
 		const shadowPath = join(shadowCodexHome, name);
@@ -1614,8 +1619,14 @@ function syncAdditionalShadowHomeFiles(
 	}
 }
 
-function createShadowHomeMirror(originalCodexHome, shadowCodexHome, tightenFile) {
+function createShadowHomeMirror(
+	originalCodexHome,
+	shadowCodexHome,
+	tightenFile,
+	options = {},
+) {
 	const syncFileNames = new Set(SHADOW_HOME_STATE_FILES);
+	const skipSyncBackNames = new Set(options.skipSyncBackNames ?? []);
 	const originalFileStates = new Map();
 	const rememberSyncFile = (name) => {
 		if (!originalFileStates.has(name)) {
@@ -1687,6 +1698,7 @@ function createShadowHomeMirror(originalCodexHome, shadowCodexHome, tightenFile)
 				shadowCodexHome,
 				originalFileStates,
 				tightenFile,
+				skipSyncBackNames,
 			);
 			syncAdditionalShadowHomeFiles(
 				originalCodexHome,
@@ -1694,6 +1706,7 @@ function createShadowHomeMirror(originalCodexHome, shadowCodexHome, tightenFile)
 				names,
 				originalFileStates,
 				tightenFile,
+				skipSyncBackNames,
 			);
 		} catch {
 			// Best-effort only; runtime auth refreshes should not fail cleanup.
@@ -1848,6 +1861,9 @@ function createRuntimeRotationProxyCodexHome(
 			originalCodexHome,
 			shadowCodexHome,
 			tightenShadowHomePermissions,
+			{
+				skipSyncBackNames: RUNTIME_ROTATION_SHADOW_HOME_OMIT_STATE_FILES,
+			},
 		);
 		omitRuntimeRotationShadowHomeStateFiles(shadowCodexHome);
 		const originalConfigPath = join(originalCodexHome, "config.toml");
