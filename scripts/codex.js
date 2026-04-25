@@ -1237,10 +1237,34 @@ function shadowHomeStateMatches(left, right) {
 	);
 }
 
+function readShadowHomeSyncLockOwnerPid(lockPath) {
+	try {
+		const rawOwner = JSON.parse(readFileSync(join(lockPath, "owner.json"), "utf8"));
+		const pid = Number(rawOwner?.pid);
+		return Number.isInteger(pid) && pid > 0 ? pid : null;
+	} catch {
+		return null;
+	}
+}
+
+function removeStaleShadowHomeSyncLock(lockPath) {
+	const ownerPid = readShadowHomeSyncLockOwnerPid(lockPath);
+	if (!ownerPid || isProcessAlive(ownerPid)) {
+		return false;
+	}
+	try {
+		removeDirectoryWithRetry(lockPath);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function acquireShadowHomeSyncLock(originalCodexHome) {
 	const lockPath = join(originalCodexHome, SHADOW_HOME_SYNC_LOCK_DIR);
 	mkdirSync(originalCodexHome, { recursive: true });
-	for (let attempt = 0; attempt <= SHADOW_HOME_CLEANUP_BACKOFF_MS.length; attempt += 1) {
+	const lastRetryAttempt = SHADOW_HOME_CLEANUP_BACKOFF_MS.length;
+	for (let attempt = 0; attempt <= lastRetryAttempt + 1; attempt += 1) {
 		try {
 			mkdirSync(lockPath);
 			writeFileSync(
@@ -1260,7 +1284,13 @@ function acquireShadowHomeSyncLock(originalCodexHome) {
 				error && typeof error === "object" && "code" in error
 					? error.code
 					: undefined;
-			if (code !== "EEXIST" || attempt === SHADOW_HOME_CLEANUP_BACKOFF_MS.length) {
+			if (code !== "EEXIST") {
+				throw error;
+			}
+			if (attempt >= lastRetryAttempt) {
+				if (removeStaleShadowHomeSyncLock(lockPath)) {
+					continue;
+				}
 				throw error;
 			}
 			sleepSync(SHADOW_HOME_CLEANUP_BACKOFF_MS[attempt]);
