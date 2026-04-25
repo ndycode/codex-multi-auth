@@ -7,6 +7,7 @@ import {
 	copyFileSync,
 	cpSync,
 	existsSync,
+	linkSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -1264,6 +1265,52 @@ function mirrorDirectoryIntoShadowHome(sourcePath, destinationPath) {
 	});
 }
 
+function linkFileIntoShadowHome(sourcePath, destinationPath) {
+	try {
+		symlinkSync(sourcePath, destinationPath, "file");
+		return true;
+	} catch {
+		// File symlinks keep SQLite/cache-style root files realtime when allowed.
+	}
+	try {
+		linkSync(sourcePath, destinationPath);
+		return true;
+	} catch {
+		// Hard links cover platforms where file symlinks require extra privileges.
+	}
+	return false;
+}
+
+function mirrorFileIntoShadowHome(sourcePath, destinationPath, tightenFile) {
+	if (linkFileIntoShadowHome(sourcePath, destinationPath)) {
+		return;
+	}
+	copyFileSync(sourcePath, destinationPath);
+	tightenFile(destinationPath);
+}
+
+function collectShadowHomeSyncFileNames(shadowCodexHome, syncFileNames) {
+	try {
+		for (const entry of readdirSync(shadowCodexHome, { withFileTypes: true })) {
+			const name = entry.name;
+			if (name === SHADOW_HOME_CONFIG_FILE || syncFileNames.has(name)) {
+				continue;
+			}
+			const shadowPath = join(shadowCodexHome, name);
+			let fileLike = entry.isFile();
+			if (entry.isSymbolicLink()) {
+				fileLike = isFileLike(shadowPath);
+			}
+			if (fileLike) {
+				syncFileNames.add(name);
+			}
+		}
+	} catch {
+		// Best-effort; cleanup still syncs the known state files.
+	}
+	return syncFileNames;
+}
+
 function createShadowHomeMirror(originalCodexHome, shadowCodexHome, tightenFile) {
 	const syncFileNames = new Set(SHADOW_HOME_STATE_FILES);
 	const originalFileStates = new Map();
@@ -1310,8 +1357,12 @@ function createShadowHomeMirror(originalCodexHome, shadowCodexHome, tightenFile)
 				}
 				if (fileLike) {
 					rememberSyncFile(name);
-					copyFileSync(sourcePath, destinationPath);
-					tightenFile(destinationPath);
+					if (isKnownStateFile) {
+						copyFileSync(sourcePath, destinationPath);
+						tightenFile(destinationPath);
+					} else {
+						mirrorFileIntoShadowHome(sourcePath, destinationPath, tightenFile);
+					}
 				}
 			} catch (error) {
 				if (isKnownStateFile) {
@@ -1324,7 +1375,10 @@ function createShadowHomeMirror(originalCodexHome, shadowCodexHome, tightenFile)
 	}
 
 	return () => {
-		for (const name of syncFileNames) {
+		for (const name of collectShadowHomeSyncFileNames(
+			shadowCodexHome,
+			syncFileNames,
+		)) {
 			const shadowPath = join(shadowCodexHome, name);
 			const shadowState = captureShadowHomeState(shadowPath);
 			if (!shadowState.exists || shadowState.unreadable) {

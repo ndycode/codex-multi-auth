@@ -617,6 +617,12 @@ describe("codex bin wrapper", () => {
 			'console.log(`SESSION_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "sessions", "resume.jsonl"))}`);',
 			'console.log(`PLUGIN_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "plugins", "plugin.txt"))}`);',
 			'console.log(`SKILL_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "skills", "skill.txt"))}`);',
+			'console.log(`MEMORY_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "memories", "user.md"))}`);',
+			'console.log(`INSTRUCTION_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "instructions", "profile.md"))}`);',
+			'const statePath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite");',
+			'fs.appendFileSync(statePath, "shadow\\n", "utf8");',
+			'console.log(`ROOT_STATE_REALTIME:${fs.readFileSync(path.join(process.env.ORIGINAL_CODEX_HOME ?? "", "state_5.sqlite"), "utf8").includes("shadow")}`);',
+			'fs.writeFileSync(path.join(process.env.CODEX_HOME ?? "", "new-root-state.json"), "new\\n", "utf8");',
 			'fs.writeFileSync(path.join(process.env.CODEX_HOME ?? "", "sessions", "runtime-session.jsonl"), "runtime\\n", "utf8");',
 			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
 			'console.log("CONFIG_START");',
@@ -630,9 +636,18 @@ describe("codex bin wrapper", () => {
 		mkdirSync(join(originalHome, "sessions"), { recursive: true });
 		mkdirSync(join(originalHome, "plugins"), { recursive: true });
 		mkdirSync(join(originalHome, "skills"), { recursive: true });
+		mkdirSync(join(originalHome, "memories"), { recursive: true });
+		mkdirSync(join(originalHome, "instructions"), { recursive: true });
 		writeFileSync(join(originalHome, "sessions", "resume.jsonl"), "resume\n", "utf8");
 		writeFileSync(join(originalHome, "plugins", "plugin.txt"), "plugin\n", "utf8");
 		writeFileSync(join(originalHome, "skills", "skill.txt"), "skill\n", "utf8");
+		writeFileSync(join(originalHome, "memories", "user.md"), "memory\n", "utf8");
+		writeFileSync(
+			join(originalHome, "instructions", "profile.md"),
+			"instruction\n",
+			"utf8",
+		);
+		writeFileSync(join(originalHome, "state_5.sqlite"), "state\n", "utf8");
 		writeFileSync(
 			join(originalHome, "config.toml"),
 			[
@@ -669,6 +684,9 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("SESSION_EXISTS:true");
 		expect(output).toContain("PLUGIN_EXISTS:true");
 		expect(output).toContain("SKILL_EXISTS:true");
+		expect(output).toContain("MEMORY_EXISTS:true");
+		expect(output).toContain("INSTRUCTION_EXISTS:true");
+		expect(output).toContain("ROOT_STATE_REALTIME:true");
 		const apiKeyMatch = output.match(/^OPENAI_API_KEY:([0-9a-f]{64})$/m);
 		expect(apiKeyMatch?.[1]).toBeTruthy();
 		expect(output).toContain(
@@ -701,6 +719,12 @@ describe("codex bin wrapper", () => {
 		expect(
 			readFileSync(join(originalHome, "sessions", "runtime-session.jsonl"), "utf8"),
 		).toBe("runtime\n");
+		expect(readFileSync(join(originalHome, "state_5.sqlite"), "utf8")).toContain(
+			"shadow",
+		);
+		expect(readFileSync(join(originalHome, "new-root-state.json"), "utf8")).toBe(
+			"new\n",
+		);
 	});
 
 	it("starts the opt-in runtime rotation proxy for app-server without capturing protocol stdio", () => {
