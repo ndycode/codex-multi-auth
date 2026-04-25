@@ -522,6 +522,7 @@ describe("codex app bind postinstall gate", () => {
 
 	it("resolves runtime rotation as default-on for install/update self-heal", () => {
 		expect(resolveRotationEnabled(null, {})).toBe(true);
+		expect(resolveRotationEnabled({}, {})).toBe(true);
 		expect(
 			resolveRotationEnabled(null, {
 				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",

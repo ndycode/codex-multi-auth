@@ -18,7 +18,6 @@ import {
 	appRuntimeHelperStatusToSignal as appRuntimeHelperStatusToRuntimeSignal,
 	resolveAccountCurrentMarkers,
 	resolveRuntimeCurrentAccount,
-	type RuntimeAccountSignal,
 } from "../../runtime/runtime-current-account.js";
 import type { PluginConfig } from "../../types.js";
 import type { AccountStorageV3 } from "../../storage.js";
@@ -213,12 +212,6 @@ async function printCodexAppBindStatus(
 	}
 }
 
-function appRuntimeHelperStatusToSignal(
-	status: AppRuntimeHelperStatus | null,
-): RuntimeAccountSignal | null {
-	return appRuntimeHelperStatusToRuntimeSignal(status);
-}
-
 async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 	const logInfo = deps.logInfo ?? console.log;
 	const previousStoragePath = deps.getStoragePath();
@@ -268,7 +261,7 @@ async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 		{
 			runtimeSnapshot,
 			appBindStatus: appBindStatus?.running ? appBindStatus.router : null,
-			appHelperStatus: appRuntimeHelperStatusToSignal(helperStatus),
+			appHelperStatus: appRuntimeHelperStatusToRuntimeSignal(helperStatus),
 		},
 		{ now },
 	);

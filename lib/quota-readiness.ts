@@ -62,6 +62,8 @@ function quotaWindowIsExhausted(window: QuotaWindowLike | undefined): boolean {
 export function isQuotaCacheEntryExhausted(
 	entry: Pick<QuotaCacheEntry, "primary" | "secondary"> | null | undefined,
 ): boolean {
+	// Codex quota windows are cumulative gates: a 0% remaining active window blocks use
+	// even if another window still has quota left.
 	return (
 		quotaWindowIsExhausted(entry?.primary) ||
 		quotaWindowIsExhausted(entry?.secondary)
