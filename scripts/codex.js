@@ -264,8 +264,14 @@ function isStartupAutoUpdateDebugEnabled() {
 	return readBooleanEnvFlag("CODEX_MULTI_AUTH_DEBUG") === true;
 }
 
+function shouldLogStartupAutoUpdateProgress() {
+	return process.stderr.isTTY === true || isStartupAutoUpdateDebugEnabled();
+}
+
 function readStartupAutoUpdateBudgetMs() {
-	const raw = process.env.CODEX_MULTI_AUTH_TEST_STARTUP_AUTO_UPDATE_BUDGET_MS;
+	const raw =
+		process.env.CODEX_MULTI_AUTH_AUTO_UPDATE_STARTUP_BUDGET_MS ??
+		process.env.CODEX_MULTI_AUTH_TEST_STARTUP_AUTO_UPDATE_BUDGET_MS;
 	if (!raw) return DEFAULT_STARTUP_AUTO_UPDATE_BUDGET_MS;
 	const parsed = Number.parseInt(raw, 10);
 	return Number.isFinite(parsed) && parsed > 0
@@ -310,7 +316,10 @@ async function withStartupAutoUpdateBudget(promise, budgetMs) {
 			promise,
 			new Promise((resolve) => {
 				timeout = setTimeout(
-					() => resolve(STARTUP_AUTO_UPDATE_TIMED_OUT),
+					() => {
+						timeout?.unref?.();
+						resolve(STARTUP_AUTO_UPDATE_TIMED_OUT);
+					},
 					budgetMs,
 				);
 			}),
@@ -341,6 +350,7 @@ async function autoUpdatePackageIfEnabled(rawArgs, normalizedArgs) {
 			timeoutMs: updateTimeoutMs,
 			onUpdateStart: (update) => {
 				if (!update?.latestVersion) return;
+				if (!shouldLogStartupAutoUpdateProgress()) return;
 				console.error(
 					`codex-multi-auth: auto-update found ${update.latestVersion}; starting npm update -g codex-multi-auth. Startup will continue if it exceeds ${budgetMs}ms.`,
 				);
@@ -354,9 +364,11 @@ async function autoUpdatePackageIfEnabled(rawArgs, normalizedArgs) {
 			return;
 		}
 		if (result?.updated && result.latestVersion) {
-			console.error(
-				`codex-multi-auth: auto-updated to ${result.latestVersion}. New sessions will use the latest package.`,
-			);
+			if (shouldLogStartupAutoUpdateProgress()) {
+				console.error(
+					`codex-multi-auth: auto-updated to ${result.latestVersion}. New sessions will use the latest package.`,
+				);
+			}
 		}
 	} catch (error) {
 		if (isModuleNotFoundError(error)) return;

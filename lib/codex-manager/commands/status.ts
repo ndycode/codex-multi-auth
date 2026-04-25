@@ -19,6 +19,7 @@ import {
 	resolveRuntimeCurrentAccount,
 	type RuntimeAccountSignal,
 } from "../../runtime/runtime-current-account.js";
+import { isRateLimitedMarker } from "../rate-limit-markers.js";
 import type { RuntimeObservabilitySnapshot } from "../../runtime/runtime-observability.js";
 import type { AccountStorageV3, StorageHealthSummary } from "../../storage.js";
 
@@ -201,7 +202,10 @@ export async function runStatusCommand(
 			account,
 			storage.accounts,
 		);
-		if (quotaEntry?.status === 429 && !markers.includes("rate-limited")) {
+		if (
+			quotaEntry?.status === 429 &&
+			!markers.some((marker) => isRateLimitedMarker(marker))
+		) {
 			markers.push("rate-limited");
 		}
 		if (isQuotaCacheEntryExhausted(quotaEntry, now)) {

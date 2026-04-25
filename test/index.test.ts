@@ -11,6 +11,14 @@ const { loadQuotaCacheMock } = vi.hoisted(() => ({
 }));
 
 const {
+	getAppBindStatusMock,
+	readAppRuntimeHelperAccountSignalMock,
+} = vi.hoisted(() => ({
+	getAppBindStatusMock: vi.fn(async () => ({ running: false, router: null })),
+	readAppRuntimeHelperAccountSignalMock: vi.fn(() => null),
+}));
+
+const {
 	configureRateLimitBackoffMock,
 	getRateLimitBackoffMock,
 	getRateLimitShortRetryThresholdMock,
@@ -203,6 +211,20 @@ vi.mock("../lib/auto-update-checker.js", () => ({
 	checkAndNotify: vi.fn(async () => {}),
 }));
 
+vi.mock("../lib/runtime/app-bind.js", () => ({
+	getAppBindStatus: getAppBindStatusMock,
+}));
+
+vi.mock("../lib/runtime/runtime-current-account.js", async () => {
+	const actual = await vi.importActual<
+		typeof import("../lib/runtime/runtime-current-account.js")
+	>("../lib/runtime/runtime-current-account.js");
+	return {
+		...actual,
+		readAppRuntimeHelperAccountSignal: readAppRuntimeHelperAccountSignalMock,
+	};
+});
+
 vi.mock("../lib/quota-cache.js", () => ({
 	loadQuotaCache: loadQuotaCacheMock,
 }));
@@ -265,6 +287,14 @@ beforeEach(() => {
 	getRateLimitShortRetryThresholdConfigMock.mockImplementation(() => 5000);
 	loadQuotaCacheMock.mockReset();
 	loadQuotaCacheMock.mockResolvedValue({ byAccountId: {}, byEmail: {} });
+	getAppBindStatusMock.mockReset();
+	getAppBindStatusMock.mockResolvedValue({ running: false, router: null });
+	readAppRuntimeHelperAccountSignalMock.mockReset();
+	readAppRuntimeHelperAccountSignalMock.mockReturnValue(null);
+});
+
+afterEach(() => {
+	vi.useRealTimers();
 });
 
 vi.mock("../lib/runtime/toast.js", async () => {
@@ -1066,6 +1096,46 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result).toContain("Account 2");
 		});
 
+		it("uses app-bind telemetry for runtime in-use badges", async () => {
+			const now = 1_700_000_000_000;
+			vi.useFakeTimers();
+			vi.setSystemTime(now);
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "selected@example.com",
+					accountId: "acc-selected",
+				},
+				{
+					refreshToken: "r2",
+					email: "runtime@example.com",
+					accountId: "acc-runtime",
+				},
+			];
+			mockStorage.activeIndexByFamily = { codex: 0 };
+			getAppBindStatusMock.mockResolvedValueOnce({
+				running: true,
+				router: {
+					state: "running",
+					pid: process.pid,
+					baseUrl: "http://127.0.0.1:1234",
+					totalRequests: 1,
+					lastAccountIndex: 1,
+					lastAccountLabel: "Account 2",
+					lastAccountEmail: "runtime@example.com",
+					lastAccountId: "acc-runtime",
+					updatedAt: now,
+					lastError: null,
+				},
+			});
+
+			const result = await plugin.tool["codex-list"].execute();
+
+			expect(result).toContain("selected");
+			expect(result).toContain("in use");
+			expect(result).not.toContain("runtime@example.com                            ok");
+		});
+
 		it("shows rate-limited status", async () => {
 			mockStorage.accounts = [
 				{
@@ -1219,7 +1289,9 @@ describe("OpenAIOAuthPlugin", () => {
 		});
 
 		it("does not duplicate rate-limited label when a wait time is already shown", async () => {
-			const now = Date.now();
+			const now = 1_700_000_000_000;
+			vi.useFakeTimers();
+			vi.setSystemTime(now);
 			mockStorage.accounts = [
 				{
 					refreshToken: "r1",
@@ -1245,6 +1317,42 @@ describe("OpenAIOAuthPlugin", () => {
 
 			expect(result).toContain("60s");
 			expect(result).not.toContain("60s, rate-limited");
+		});
+
+		it("falls back to app-helper telemetry when app-bind is transiently running without router status", async () => {
+			const now = 1_700_000_000_000;
+			vi.useFakeTimers();
+			vi.setSystemTime(now);
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "selected@example.com",
+					accountId: "acc-selected",
+				},
+				{
+					refreshToken: "r2",
+					email: "runtime@example.com",
+					accountId: "acc-runtime",
+				},
+			];
+			mockStorage.activeIndexByFamily = { codex: 0 };
+			getAppBindStatusMock.mockResolvedValueOnce({
+				running: true,
+				router: null,
+			});
+			readAppRuntimeHelperAccountSignalMock.mockReturnValueOnce({
+				source: "app-helper",
+				lastAccountIndex: 1,
+				lastAccountEmail: "runtime@example.com",
+				lastAccountId: "acc-runtime",
+				updatedAt: now,
+			});
+
+			const result = await plugin.tool["codex-status"].execute();
+
+			expect(result).toContain("selected");
+			expect(result).toContain("in use");
+			expect(result).not.toContain("runtime@example.com                            No");
 		});
 	});
 

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
@@ -458,7 +459,7 @@ async function runUpdateCommand(options: {
 		}
 		const timeout = setTimeout(() => {
 			try {
-				child?.kill();
+				killUpdateProcessTree(child, options.platform);
 			} catch {
 				// Best effort timeout cleanup.
 			}
@@ -468,12 +469,14 @@ async function runUpdateCommand(options: {
 				error: `Auto-update timed out after ${options.timeoutMs}ms`,
 			});
 		}, options.timeoutMs);
+		timeout.unref?.();
 		try {
 			child = spawn(updateSpawn.command, updateSpawn.args, {
 				env: buildAutoUpdateSubprocessEnv(options.env),
 				stdio: "ignore",
 				windowsHide: options.platform === "win32",
 			});
+			child.unref?.();
 		} catch (error) {
 			finish({
 				ok: false,
@@ -500,6 +503,31 @@ async function runUpdateCommand(options: {
 			});
 		});
 	});
+}
+
+function killUpdateProcessTree(
+	child: ReturnType<typeof spawn> | null,
+	platform: NodeJS.Platform,
+): void {
+	if (!child) return;
+	if (platform === "win32" && child.pid) {
+		try {
+			const killer = spawn("taskkill", [
+				"/PID",
+				String(child.pid),
+				"/T",
+				"/F",
+			], {
+				stdio: "ignore",
+				windowsHide: true,
+			});
+			killer.unref?.();
+			return;
+		} catch {
+			// Fall back to the direct child if taskkill is unavailable.
+		}
+	}
+	child.kill();
 }
 
 function removeAutoUpdateLockDirectory(): void {
@@ -536,9 +564,41 @@ function removeAutoUpdateLockDirectory(): void {
 function isAutoUpdateLockStale(now = Date.now()): boolean {
 	try {
 		const stats = statSync(AUTO_UPDATE_LOCK_DIR);
+		const ownerPid = readAutoUpdateLockOwnerPid();
+		if (ownerPid !== null) {
+			return !isProcessAlive(ownerPid);
+		}
 		return now - stats.mtimeMs > AUTO_UPDATE_LOCK_STALE_MS;
 	} catch {
 		return true;
+	}
+}
+
+function readAutoUpdateLockOwnerPid(): number | null {
+	try {
+		const parsed = JSON.parse(
+			readFileSync(AUTO_UPDATE_LOCK_OWNER_FILE, "utf8"),
+		) as unknown;
+		if (!parsed || typeof parsed !== "object" || !("pid" in parsed)) {
+			return null;
+		}
+		const pid = (parsed as { pid?: unknown }).pid;
+		return typeof pid === "number" && Number.isInteger(pid) && pid > 0
+			? pid
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+function isProcessAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		const code =
+			error && typeof error === "object" && "code" in error ? error.code : null;
+		return code === "EPERM";
 	}
 }
 
@@ -549,8 +609,13 @@ function writeAutoUpdateLockOwner(): void {
 			pid: process.pid,
 			startedAt: new Date().toISOString(),
 		})}\n`,
-		"utf8",
+		{ encoding: "utf8", mode: 0o600 },
 	);
+	try {
+		chmodSync(AUTO_UPDATE_LOCK_OWNER_FILE, 0o600);
+	} catch {
+		// Best-effort only; permissions vary by platform and filesystem.
+	}
 }
 
 function acquireAutoUpdateLock(): (() => void) | null {

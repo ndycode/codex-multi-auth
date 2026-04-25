@@ -240,15 +240,18 @@ import {
 	runRuntimeOAuthFlow,
 } from "./lib/runtime/auth-facade.js";
 import { applyAccountStorageScopeEntry } from "./lib/runtime/account-storage-scope-entry.js";
+import { getAppBindStatus } from "./lib/runtime/app-bind.js";
 import { runBrowserOAuthFlow } from "./lib/runtime/browser-oauth-flow.js";
 import { handleRuntimeEvent } from "./lib/runtime/event-handler.js";
 import { hydrateRuntimeEmails } from "./lib/runtime/hydrate-emails.js";
 import { buildLoginMenuAccounts } from "./lib/runtime/login-menu-accounts.js";
 import {
+	readAppRuntimeHelperAccountSignal,
 	resolveAccountCurrentMarkers,
 	resolveRuntimeCurrentAccount,
 	type AccountCurrentMarker,
 } from "./lib/runtime/runtime-current-account.js";
+import { isRateLimitedMarker } from "./lib/codex-manager/rate-limit-markers.js";
 import { ensureLiveAccountSyncEntry } from "./lib/runtime/live-sync-entry.js";
 import { applyLoaderRuntimeSetup } from "./lib/runtime/loader-setup.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
@@ -320,6 +323,29 @@ function currentMarkerLabel(marker: AccountCurrentMarker): string {
 	return marker === "in-use" ? "in use" : marker;
 }
 
+async function resolveRuntimeCurrentForStorage(
+	storage: AccountStorageV3,
+	now: number,
+) {
+	const [appBindStatus, appHelperStatus] = await Promise.all([
+		getAppBindStatus()
+			.then((status) => (status.running ? status.router : null))
+			.catch(() => null),
+		Promise.resolve()
+			.then(() => readAppRuntimeHelperAccountSignal())
+			.catch(() => null),
+	]);
+	return resolveRuntimeCurrentAccount(
+		storage,
+		{
+			runtimeSnapshot: getRuntimeObservabilitySnapshot(),
+			appBindStatus,
+			appHelperStatus,
+		},
+		{ now },
+	);
+}
+
 function appendQuotaStatusMarkers(
 	statuses: string[],
 	quotaEntry: QuotaCacheEntry | null,
@@ -327,7 +353,7 @@ function appendQuotaStatusMarkers(
 ): void {
 	if (
 		quotaEntry?.status === 429 &&
-		!statuses.some((status) => status.startsWith("rate-limited"))
+		!statuses.some((status) => isRateLimitedMarker(status))
 	) {
 		statuses.push("rate-limited");
 	}
@@ -2923,10 +2949,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 								const now = Date.now();
 								const activeIndex = resolveActiveIndex(workingStorage, "codex");
-								const runtimeCurrent = resolveRuntimeCurrentAccount(
+								const runtimeCurrent = await resolveRuntimeCurrentForStorage(
 									workingStorage,
-									{ runtimeSnapshot: getRuntimeObservabilitySnapshot() },
-									{ now },
+									now,
 								);
 								const existingAccounts = buildLoginMenuAccounts(
 									workingStorage.accounts,
@@ -3449,11 +3474,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 					const now = Date.now();
 					const activeIndex = resolveActiveIndex(storage, "codex");
-					const runtimeCurrent = resolveRuntimeCurrentAccount(
-						storage,
-						{ runtimeSnapshot: getRuntimeObservabilitySnapshot() },
-						{ now },
-					);
+					const runtimeCurrent = await resolveRuntimeCurrentForStorage(storage, now);
 					const quotaCache = await loadQuotaCache().catch(() => null);
 					if (ui.v2Enabled) {
 						const lines: string[] = [
@@ -3727,11 +3748,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 					const now = Date.now();
 					const activeIndex = resolveActiveIndex(storage, "codex");
-					const runtimeCurrent = resolveRuntimeCurrentAccount(
-						storage,
-						{ runtimeSnapshot: getRuntimeObservabilitySnapshot() },
-						{ now },
-					);
+					const runtimeCurrent = await resolveRuntimeCurrentForStorage(storage, now);
 					const quotaCache = await loadQuotaCache().catch(() => null);
 					if (ui.v2Enabled) {
 						const lines: string[] = [
@@ -3835,7 +3852,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						columns: [
 							{ header: "#", width: 3 },
 							{ header: "Label", width: 42 },
-							{ header: "Current", width: 10 },
+							{ header: "Current", width: 18 },
 							{ header: "Rate Limit", width: 48 },
 							{ header: "Cooldown", width: 16 },
 							{ header: "Last Used", width: 16 },

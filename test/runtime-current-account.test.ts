@@ -26,6 +26,52 @@ function createStorage(): AccountStorageV3 {
 	};
 }
 
+function createRuntimeSnapshot(now: number, accountId: string, index: number) {
+	return {
+		version: 1,
+		updatedAt: now,
+		currentRequestId: null,
+		responsesRequests: 1,
+		authRefreshRequests: 0,
+		diagnosticProbeRequests: 0,
+		poolExhaustionCooldownUntil: null,
+		serverBurstCooldownUntil: null,
+		lastAccountIndex: index,
+		lastAccountId: accountId,
+		lastAccountUpdatedAt: now,
+		runtimeMetrics: {
+			startedAt: now - 1_000,
+			totalRequests: 1,
+			successfulRequests: 1,
+			failedRequests: 0,
+			responsesRequests: 1,
+			authRefreshRequests: 0,
+			diagnosticProbeRequests: 0,
+			outboundRequestAttemptBudget: null,
+			outboundRequestAttemptsConsumed: 0,
+			requestAttemptBudgetExhaustions: 0,
+			poolExhaustionFastFails: 0,
+			serverBurstFastFails: 0,
+			rateLimitedResponses: 0,
+			serverErrors: 0,
+			networkErrors: 0,
+			userAborts: 0,
+			authRefreshFailures: 0,
+			emptyResponseRetries: 0,
+			accountRotations: 1,
+			sameAccountRetries: 0,
+			streamFailoverAttempts: 0,
+			streamFailoverCandidatesConsidered: 0,
+			lastStreamFailoverCandidateCount: 0,
+			streamFailoverRecoveries: 0,
+			streamFailoverCrossAccountRecoveries: 0,
+			cumulativeLatencyMs: 10,
+			lastRequestAt: now,
+			lastError: null,
+		},
+	};
+}
+
 describe("resolveRuntimeCurrentAccount", () => {
 	it("uses the freshest runtime source and matches by account id", () => {
 		const now = 10_000;
@@ -85,6 +131,35 @@ describe("resolveRuntimeCurrentAccount", () => {
 					lastAccountEmail: "selected@example.com",
 					lastAccountId: "acc_selected",
 					updatedAt: now - 1_000,
+					lastError: null,
+				},
+			},
+			{ now },
+		);
+
+		expect(result).toMatchObject({
+			index: 1,
+			source: "runtime-observability",
+			matchedBy: "account-id",
+		});
+	});
+
+	it("uses deterministic source precedence for equal timestamp signals", () => {
+		const now = 10_000;
+		const result = resolveRuntimeCurrentAccount(
+			createStorage(),
+			{
+				runtimeSnapshot: createRuntimeSnapshot(now, "acc_runtime", 1),
+				appBindStatus: {
+					state: "running",
+					pid: 123,
+					baseUrl: "http://127.0.0.1:1234",
+					totalRequests: 1,
+					lastAccountIndex: 0,
+					lastAccountLabel: "Account 1",
+					lastAccountEmail: "selected@example.com",
+					lastAccountId: "acc_selected",
+					updatedAt: now,
 					lastError: null,
 				},
 			},

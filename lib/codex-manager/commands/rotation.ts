@@ -19,6 +19,7 @@ import {
 	resolveAccountCurrentMarkers,
 	resolveRuntimeCurrentAccount,
 } from "../../runtime/runtime-current-account.js";
+import { isRateLimitedMarker } from "../rate-limit-markers.js";
 import type { PluginConfig } from "../../types.js";
 import type { AccountStorageV3 } from "../../storage.js";
 
@@ -70,7 +71,7 @@ function printRotationUsage(logInfo: (message: string) => void): void {
 			"Behavior:",
 			"  - Runtime rotation is enabled by default for request-bearing Codex sessions",
 			"  - Binds the packaged Codex desktop app to the same localhost router when enabled or repaired",
-			"  - Env override: CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0 disables one process",
+			"  - Use CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0 to disable the proxy for the current process without changing persistent settings",
 		].join("\n"),
 	);
 }
@@ -288,7 +289,7 @@ async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 		);
 		if (
 			quotaEntry?.status === 429 &&
-			!markers.some((marker) => marker.startsWith("rate-limited"))
+			!markers.some((marker) => isRateLimitedMarker(marker))
 		) {
 			markers.push("rate-limited");
 		}

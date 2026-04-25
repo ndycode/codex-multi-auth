@@ -5,44 +5,64 @@ export type QuotaCacheAccountRef = Pick<AccountMetadataV3, "accountId" | "email"
 
 type QuotaWindowLike = Pick<QuotaCacheWindow, "usedPercent" | "resetAtMs">;
 
-function normalizeAccountId(value: string | undefined): string | null {
+export function normalizeQuotaAccountId(value: string | undefined): string | null {
 	const trimmed = value?.trim();
 	return trimmed && trimmed.length > 0 ? trimmed : null;
 }
 
-function normalizeEmail(value: string | undefined): string | null {
+export function normalizeQuotaEmail(value: string | undefined): string | null {
 	const trimmed = value?.trim().toLowerCase();
 	return trimmed && trimmed.length > 0 ? trimmed : null;
 }
 
-function accountIdIsUnique(
+export function hasUniqueQuotaAccountId(
 	accounts: readonly QuotaCacheAccountRef[],
 	account: QuotaCacheAccountRef,
 ): boolean {
-	const accountId = normalizeAccountId(account.accountId);
+	const accountId = normalizeQuotaAccountId(account.accountId);
 	if (!accountId) return false;
 	let count = 0;
 	for (const candidate of accounts) {
-		if (normalizeAccountId(candidate.accountId) === accountId) count += 1;
+		if (normalizeQuotaAccountId(candidate.accountId) === accountId) count += 1;
 	}
 	return count === 1;
 }
 
-function emailIsSafeFallback(
+export type QuotaEmailFallbackState = {
+	matchingCount: number;
+	distinctAccountIds: Set<string>;
+};
+
+export function buildQuotaEmailFallbackState(
 	accounts: readonly QuotaCacheAccountRef[],
+): ReadonlyMap<string, QuotaEmailFallbackState> {
+	const stateByEmail = new Map<string, QuotaEmailFallbackState>();
+	for (const account of accounts) {
+		const email = normalizeQuotaEmail(account.email);
+		if (!email) continue;
+		const existing = stateByEmail.get(email);
+		const accountId = normalizeQuotaAccountId(account.accountId);
+		if (existing) {
+			existing.matchingCount += 1;
+			if (accountId) existing.distinctAccountIds.add(accountId);
+			continue;
+		}
+		const distinctAccountIds = new Set<string>();
+		if (accountId) distinctAccountIds.add(accountId);
+		stateByEmail.set(email, { matchingCount: 1, distinctAccountIds });
+	}
+	return stateByEmail;
+}
+
+export function hasSafeQuotaEmailFallback(
+	emailFallbackState: ReadonlyMap<string, QuotaEmailFallbackState>,
 	account: QuotaCacheAccountRef,
 ): boolean {
-	const email = normalizeEmail(account.email);
+	const email = normalizeQuotaEmail(account.email);
 	if (!email) return false;
-	const distinctIds = new Set<string>();
-	let matches = 0;
-	for (const candidate of accounts) {
-		if (normalizeEmail(candidate.email) !== email) continue;
-		matches += 1;
-		const candidateId = normalizeAccountId(candidate.accountId);
-		if (candidateId) distinctIds.add(candidateId);
-	}
-	return matches === 1 && distinctIds.size <= 1;
+	const state = emailFallbackState.get(email);
+	if (!state) return false;
+	return state.matchingCount === 1 && state.distinctAccountIds.size <= 1;
 }
 
 export function quotaLeftPercentFromUsed(
@@ -81,14 +101,15 @@ export function findQuotaCacheEntryForAccount(
 	cache: QuotaCacheData | null | undefined,
 	account: QuotaCacheAccountRef,
 	accounts: readonly QuotaCacheAccountRef[],
+	emailFallbackState = buildQuotaEmailFallbackState(accounts),
 ): QuotaCacheEntry | null {
 	if (!cache) return null;
-	const accountId = normalizeAccountId(account.accountId);
-	if (accountId && accountIdIsUnique(accounts, account) && cache.byAccountId[accountId]) {
+	const accountId = normalizeQuotaAccountId(account.accountId);
+	if (accountId && hasUniqueQuotaAccountId(accounts, account) && cache.byAccountId[accountId]) {
 		return cache.byAccountId[accountId] ?? null;
 	}
-	const email = normalizeEmail(account.email);
-	if (email && emailIsSafeFallback(accounts, account) && cache.byEmail[email]) {
+	const email = normalizeQuotaEmail(account.email);
+	if (email && hasSafeQuotaEmailFallback(emailFallbackState, account) && cache.byEmail[email]) {
 		return cache.byEmail[email] ?? null;
 	}
 	return null;

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 
 vi.mock("node:fs", () => ({
+	chmodSync: vi.fn(),
 	readFileSync: vi.fn(),
 	writeFileSync: vi.fn(),
 	existsSync: vi.fn(),
@@ -55,6 +56,7 @@ describe("auto-update-checker", () => {
 		vi.mocked(fs.rmdirSync).mockReset();
 		vi.mocked(fs.statSync).mockReset();
 		vi.mocked(fs.unlinkSync).mockReset();
+		vi.mocked(fs.chmodSync).mockReset();
 		vi.mocked(fs.writeFileSync).mockReset();
 		vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
 			if (String(path).includes("package.json")) {
@@ -626,8 +628,10 @@ describe("auto-update-checker", () => {
 		function mockUpdateProcess(exitCode: number): EventEmitter & { kill: ReturnType<typeof vi.fn> } {
 			const child = new EventEmitter() as EventEmitter & {
 				kill: ReturnType<typeof vi.fn>;
+				unref: ReturnType<typeof vi.fn>;
 			};
 			child.kill = vi.fn();
+			child.unref = vi.fn();
 			const once = child.once.bind(child);
 			vi.spyOn(child, "once").mockImplementation((event, listener) => {
 				const result = once(event, listener);
@@ -640,11 +644,13 @@ describe("auto-update-checker", () => {
 			return child;
 		}
 
-		function mockHangingUpdateProcess(): EventEmitter & { kill: ReturnType<typeof vi.fn> } {
+		function mockHangingUpdateProcess(): EventEmitter & { kill: ReturnType<typeof vi.fn>; unref: ReturnType<typeof vi.fn> } {
 			const child = new EventEmitter() as EventEmitter & {
 				kill: ReturnType<typeof vi.fn>;
+				unref: ReturnType<typeof vi.fn>;
 			};
 			child.kill = vi.fn();
+			child.unref = vi.fn();
 			vi.mocked(childProcess.spawn).mockReturnValue(child as never);
 			return child;
 		}
@@ -712,7 +718,7 @@ describe("auto-update-checker", () => {
 				ok: true,
 				json: async () => ({ version: "5.0.0" }),
 			} as Response);
-			mockUpdateProcess(0);
+			const child = mockUpdateProcess(0);
 
 			const result = await autoUpdateIfAvailable({
 				env: { CODEX_MULTI_AUTH_AUTO_UPDATE: "1" },
@@ -733,6 +739,16 @@ describe("auto-update-checker", () => {
 					}),
 					stdio: "ignore",
 				}),
+			);
+			expect(child.unref).toHaveBeenCalledTimes(1);
+			expect(fs.writeFileSync).toHaveBeenCalledWith(
+				expect.stringContaining("owner.json"),
+				expect.stringContaining(`"pid":${process.pid}`),
+				expect.objectContaining({ encoding: "utf8", mode: 0o600 }),
+			);
+			expect(fs.chmodSync).toHaveBeenCalledWith(
+				expect.stringContaining("owner.json"),
+				0o600,
 			);
 		});
 
@@ -844,6 +860,49 @@ describe("auto-update-checker", () => {
 			expect(result.error).toContain("Auto-update timed out after 25ms");
 		});
 
+		it("uses taskkill to clean up hung Windows update process trees", async () => {
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+			const child = new EventEmitter() as EventEmitter & {
+				kill: ReturnType<typeof vi.fn>;
+				unref: ReturnType<typeof vi.fn>;
+				pid: number;
+			};
+			child.kill = vi.fn();
+			child.unref = vi.fn();
+			child.pid = 1234;
+			const killer = new EventEmitter() as EventEmitter & {
+				unref: ReturnType<typeof vi.fn>;
+			};
+			killer.unref = vi.fn();
+			vi.mocked(childProcess.spawn)
+				.mockReturnValueOnce(child as never)
+				.mockReturnValueOnce(killer as never);
+
+			const resultPromise = autoUpdateIfAvailable({
+				env: { CODEX_MULTI_AUTH_AUTO_UPDATE: "1" },
+				forceCheck: true,
+				forceInstall: true,
+				npmCommand: "npm.cmd",
+				platform: "win32",
+				timeoutMs: 25,
+			});
+			await flushUpdateStartup();
+			await vi.advanceTimersByTimeAsync(25);
+			const result = await resultPromise;
+
+			expect(child.kill).not.toHaveBeenCalled();
+			expect(childProcess.spawn).toHaveBeenLastCalledWith(
+				"taskkill",
+				["/PID", "1234", "/T", "/F"],
+				expect.objectContaining({ stdio: "ignore", windowsHide: true }),
+			);
+			expect(killer.unref).toHaveBeenCalledTimes(1);
+			expect(result.reason).toBe("update-failed");
+		});
+
 		it("passes a least-privilege environment to npm update", async () => {
 			vi.mocked(globalThis.fetch).mockResolvedValue({
 				ok: true,
@@ -933,6 +992,46 @@ describe("auto-update-checker", () => {
 				"already-running",
 				"updated",
 			]);
+		});
+
+		it("does not steal stale-looking locks while the owner pid is alive", async () => {
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+			vi.mocked(fs.mkdirSync).mockImplementation((path: unknown) => {
+				if (String(path).includes("auto-update.lock")) {
+					const error = new Error("lock exists") as NodeJS.ErrnoException;
+					error.code = "EEXIST";
+					throw error;
+				}
+				return undefined as never;
+			});
+			vi.mocked(fs.statSync).mockReturnValue({
+				mtimeMs: Date.now() - 20 * 60_000,
+			} as never);
+			vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
+				const value = String(path);
+				if (value.includes("owner.json")) {
+					return JSON.stringify({ pid: process.pid });
+				}
+				if (value.includes("package.json")) {
+					return JSON.stringify(mockPackageJson);
+				}
+				throw new Error("File not found");
+			});
+
+			const result = await autoUpdateIfAvailable({
+				env: { CODEX_MULTI_AUTH_AUTO_UPDATE: "1" },
+				forceCheck: true,
+				forceInstall: true,
+				npmCommand: "npm",
+				platform: "linux",
+			});
+
+			expect(result.reason).toBe("already-running");
+			expect(childProcess.spawn).not.toHaveBeenCalled();
+			expect(fs.rmdirSync).not.toHaveBeenCalled();
 		});
 
 		it("reports npm update failures without throwing", async () => {

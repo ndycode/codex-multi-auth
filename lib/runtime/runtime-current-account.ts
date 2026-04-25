@@ -112,6 +112,8 @@ function readOptionalString(record: Record<string, unknown>, key: string): strin
 		: null;
 }
 
+// Best-effort liveness probe: process.kill(pid, 0) can report permission
+// failures for live processes and cannot protect against rare PID reuse.
 function isProcessAlive(pid: number | null): boolean {
 	if (!pid) return false;
 	try {
@@ -269,6 +271,11 @@ export function resolveRuntimeCurrentAccount(
 	if (storage.accounts.length === 0) return null;
 	const now = options.now ?? Date.now();
 	const maxAgeMs = options.maxAgeMs ?? RUNTIME_CURRENT_ACCOUNT_MAX_AGE_MS;
+	const sourceRank: Record<RuntimeAccountSignal["source"], number> = {
+		"runtime-observability": 0,
+		"app-bind": 1,
+		"app-helper": 2,
+	};
 	const signals = [
 		runtimeSnapshotToSignal(sources.runtimeSnapshot),
 		appBindStatusToSignal(sources.appBindStatus),
@@ -282,7 +289,11 @@ export function resolveRuntimeCurrentAccount(
 				Number.isFinite(item.updatedAt) &&
 				now - item.updatedAt <= maxAgeMs,
 		)
-		.sort((left, right) => right.updatedAt - left.updatedAt);
+		.sort(
+			(left, right) =>
+				right.updatedAt - left.updatedAt ||
+				sourceRank[left.signal.source] - sourceRank[right.signal.source],
+		);
 
 	for (const { signal, updatedAt } of signals) {
 		const match = matchSignalToAccount(storage, signal);

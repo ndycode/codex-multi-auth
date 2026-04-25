@@ -207,6 +207,7 @@ Upgrade note:
 | `CODEX_MODE` | Toggle Codex mode |
 | `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY` | Toggle localhost Responses proxy for forwarded Codex sessions (`1`/`true` to enable, `0`/`false` to disable) |
 | `CODEX_MULTI_AUTH_AUTO_UPDATE` | Toggle best-effort global package auto-update checks (`1`/`true` to enable, `0`/`false` to disable) |
+| `CODEX_MULTI_AUTH_AUTO_UPDATE_STARTUP_BUDGET_MS` | Stable wrapper startup budget override for auto-update checks before forwarded Codex commands continue |
 | `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS` | Override idle timeout for the wrapper-launched Codex app runtime helper |
 | `CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID` | Internal owner PID used by the wrapper-launched app helper |
 | `CODEX_MULTI_AUTH_REAL_CODEX_HOME` | Internal original Codex home pointer used by runtime rotation helpers |

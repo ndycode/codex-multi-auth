@@ -120,7 +120,15 @@ import {
 	getRateLimitResetTimeForFamily,
 	resolveActiveIndex,
 } from "./runtime/account-status.js";
-import { isQuotaCacheEntryExhausted } from "./quota-readiness.js";
+import {
+	buildQuotaEmailFallbackState,
+	hasSafeQuotaEmailFallback,
+	hasUniqueQuotaAccountId,
+	isQuotaCacheEntryExhausted,
+	normalizeQuotaAccountId,
+	normalizeQuotaEmail,
+	quotaLeftPercentFromUsed,
+} from "./quota-readiness.js";
 import {
 	loadQuotaCache,
 	type QuotaCacheData,
@@ -500,80 +508,6 @@ function formatRateLimitEntry(
 	return formatAccountRateLimitEntry(account, now, formatWaitTime, family);
 }
 
-function normalizeQuotaEmail(email: string | undefined): string | null {
-	const normalized = sanitizeEmail(email);
-	return normalized && normalized.length > 0 ? normalized : null;
-}
-
-function normalizeQuotaAccountId(accountId: string | undefined): string | null {
-	if (typeof accountId !== "string") return null;
-	const trimmed = accountId.trim();
-	return trimmed.length > 0 ? trimmed : null;
-}
-
-function hasUniqueQuotaAccountId(
-	accounts: readonly Pick<AccountMetadataV3, "accountId">[],
-	account: Pick<AccountMetadataV3, "accountId">,
-): boolean {
-	const accountId = normalizeQuotaAccountId(account.accountId);
-	if (!accountId) return false;
-	let matchCount = 0;
-	for (const candidate of accounts) {
-		if (normalizeQuotaAccountId(candidate.accountId) !== accountId) continue;
-		matchCount += 1;
-		if (matchCount > 1) return false;
-	}
-	return matchCount === 1;
-}
-
-type QuotaEmailFallbackState = {
-	matchingCount: number;
-	distinctAccountIds: Set<string>;
-};
-
-function buildQuotaEmailFallbackState(
-	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
-): ReadonlyMap<string, QuotaEmailFallbackState> {
-	const stateByEmail = new Map<string, QuotaEmailFallbackState>();
-	for (const account of accounts) {
-		const email = normalizeQuotaEmail(account.email);
-		if (!email) continue;
-		const existing = stateByEmail.get(email);
-		if (existing) {
-			existing.matchingCount += 1;
-			const accountId = normalizeQuotaAccountId(account.accountId);
-			if (accountId) {
-				existing.distinctAccountIds.add(accountId);
-			}
-			continue;
-		}
-		const distinctAccountIds = new Set<string>();
-		const accountId = normalizeQuotaAccountId(account.accountId);
-		if (accountId) {
-			distinctAccountIds.add(accountId);
-		}
-		stateByEmail.set(email, {
-			matchingCount: 1,
-			distinctAccountIds,
-		});
-	}
-	return stateByEmail;
-}
-
-function hasSafeQuotaEmailFallback(
-	emailFallbackState: ReadonlyMap<string, QuotaEmailFallbackState>,
-	account: Pick<AccountMetadataV3, "email">,
-): boolean {
-	const email = normalizeQuotaEmail(account.email);
-	if (!email) return false;
-	const state = emailFallbackState.get(email);
-	if (!state) return false;
-	// size > 1 only matters when multiple accounts share the same email but
-	// disagree on accountId; a single matching account already implies size <= 1.
-	if (state.distinctAccountIds.size > 1) return false;
-	return state.matchingCount === 1;
-}
-
 function quotaCacheEntryToSnapshot(entry: QuotaCacheEntry): CodexQuotaSnapshot {
 	return {
 		status: entry.status,
@@ -613,15 +547,6 @@ function formatCompactQuotaPart(
 	}
 	const left = quotaLeftPercentFromUsed(usedPercent);
 	return `${label} ${left}%`;
-}
-
-function quotaLeftPercentFromUsed(
-	usedPercent: number | undefined,
-): number | undefined {
-	if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) {
-		return undefined;
-	}
-	return Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
 }
 
 function formatCompactQuotaSnapshot(

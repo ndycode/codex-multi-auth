@@ -218,6 +218,10 @@ export function resolveRotationEnabled(configModule, env = process.env) {
 	);
 }
 
+function defaultPostinstallLog(message) {
+	console.error(`codex-multi-auth: ${message}`);
+}
+
 /**
  * @param {boolean} rotationEnabled
  */
@@ -244,8 +248,12 @@ async function maybeBindCodexAppOnInstall(rotationEnabled) {
 
 /**
  * @param {boolean} rotationEnabled
+ * @param {(message: string) => void} [log]
  */
-export async function maybeInstallCodexAppLauncherOnInstall(rotationEnabled) {
+export async function maybeInstallCodexAppLauncherOnInstall(
+	rotationEnabled,
+	log = defaultPostinstallLog,
+) {
 	if (!shouldAutoInstallCodexAppLauncherOnInstall({ rotationEnabled })) {
 		return;
 	}
@@ -256,11 +264,11 @@ export async function maybeInstallCodexAppLauncherOnInstall(rotationEnabled) {
 			return;
 		}
 		await launcherModule.installCodexAppLauncher({
-			log: (message) => console.error(`codex-multi-auth: ${message}`),
+			log,
 		});
 	} catch (error) {
-		console.error(
-			`codex-multi-auth: app launcher postinstall skipped: ${error instanceof Error ? error.message : String(error)}`,
+		log(
+			`app launcher postinstall skipped: ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
 }
@@ -277,10 +285,11 @@ export async function maybeInstallCodexAppLauncherOnInstall(rotationEnabled) {
 export async function runPostinstallSelfHeal(deps = {}) {
 	const loadConfig = deps.loadConfigModule ?? loadConfigModule;
 	const bindCodexApp = deps.bindCodexApp ?? maybeBindCodexAppOnInstall;
+	const log = deps.log ?? defaultPostinstallLog;
 	const installLauncher =
-		deps.installLauncher ?? maybeInstallCodexAppLauncherOnInstall;
-	const log =
-		deps.log ?? ((message) => console.error(`codex-multi-auth: ${message}`));
+		deps.installLauncher ??
+		((rotationEnabled) =>
+			maybeInstallCodexAppLauncherOnInstall(rotationEnabled, log));
 	const configModule = await loadConfig();
 	const rotationEnabled = resolveRotationEnabled(configModule, deps.env);
 
@@ -292,12 +301,24 @@ export async function runPostinstallSelfHeal(deps = {}) {
 		);
 	}
 
-	await installLauncher(rotationEnabled);
+	try {
+		await installLauncher(rotationEnabled);
+	} catch (error) {
+		log(
+			`app launcher postinstall skipped: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 	return 0;
 }
 
 async function main() {
 	return runPostinstallSelfHeal();
+}
+
+function normalizePostinstallExitCode(exitCode) {
+	return Number.isInteger(exitCode) && exitCode >= 0 && exitCode <= 255
+		? exitCode
+		: 0;
 }
 
 const isDirectRun = (() => {
@@ -309,10 +330,14 @@ const isDirectRun = (() => {
 })();
 
 if (isDirectRun) {
-	main().catch((error) => {
-		console.error(
-			`codex-multi-auth: postinstall self-heal skipped: ${error instanceof Error ? error.message : String(error)}`,
-		);
-		process.exitCode = 0;
-	});
+	main()
+		.then((exitCode) => {
+			process.exitCode = normalizePostinstallExitCode(exitCode);
+		})
+		.catch((error) => {
+			defaultPostinstallLog(
+				`postinstall self-heal skipped: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			process.exitCode = 0;
+		});
 }

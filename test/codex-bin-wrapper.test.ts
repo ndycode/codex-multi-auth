@@ -3622,7 +3622,13 @@ describe("codex bin wrapper", () => {
 		expect(existsSync(markerPath)).toBe(false);
 	});
 
-	it("skips startup auto-update loading for pure help and version commands", () => {
+	it.each([
+		["long version", ["--version"]],
+		["short version", ["-V"]],
+		["long help", ["--help"]],
+		["short help", ["-h"]],
+		["combined help/version", ["--help", "--version"]],
+	] as const)("skips startup auto-update loading for pure %s commands", (_label, args) => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
 		const distLibDir = join(fixtureRoot, "dist", "lib");
@@ -3640,13 +3646,13 @@ describe("codex bin wrapper", () => {
 			"utf8",
 		);
 
-		const result = runWrapper(fixtureRoot, ["--version"], {
+		const result = runWrapper(fixtureRoot, [...args], {
 			CODEX_MULTI_AUTH_AUTO_UPDATE_MARKER: markerPath,
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 		});
 
 		expect(result.status).toBe(0);
-		expect(result.stdout).toContain("FORWARDED:--version");
+		expect(result.stdout).toContain(`FORWARDED:${args.join(" ")}`);
 		expect(existsSync(markerPath)).toBe(false);
 	});
 
@@ -3705,7 +3711,7 @@ describe("codex bin wrapper", () => {
 		);
 	});
 
-	it("logs startup auto-update progress and successful updates", () => {
+	it("logs startup auto-update progress and successful updates in debug mode", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
 		const distLibDir = join(fixtureRoot, "dist", "lib");
@@ -3726,6 +3732,7 @@ describe("codex bin wrapper", () => {
 
 		const result = runWrapper(fixtureRoot, ["exec", "status"], {
 			CODEX_MULTI_AUTH_AUTO_UPDATE_OPTIONS: optionsPath,
+			CODEX_MULTI_AUTH_DEBUG: "1",
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 		});
 
@@ -3741,6 +3748,32 @@ describe("codex bin wrapper", () => {
 		expect(result.stderr).toContain(
 			"codex-multi-auth: auto-updated to 9.9.9. New sessions will use the latest package.",
 		);
+	});
+
+	it("suppresses startup auto-update progress in captured non-TTY output", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "auto-update-checker.js"),
+			[
+				"export async function autoUpdateIfAvailable(options) {",
+				"\toptions?.onUpdateStart?.({ latestVersion: '9.9.9' });",
+				"\treturn { updated: true, latestVersion: '9.9.9' };",
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED:exec status");
+		expect(result.stderr).not.toContain("auto-update found 9.9.9");
+		expect(result.stderr).not.toContain("auto-updated to 9.9.9");
 	});
 
 	it("suppresses startup auto-update failures unless debug logging is enabled", () => {
@@ -3776,7 +3809,7 @@ describe("codex bin wrapper", () => {
 		);
 	});
 
-	it("continues forwarded startup when auto-update exceeds its startup budget", () => {
+	it("continues forwarded startup within the stable auto-update startup budget", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
 		const distLibDir = join(fixtureRoot, "dist", "lib");
@@ -3791,14 +3824,17 @@ describe("codex bin wrapper", () => {
 			"utf8",
 		);
 
+		const startedAt = Date.now();
 		const result = runWrapper(fixtureRoot, ["exec", "status"], {
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
-			CODEX_MULTI_AUTH_TEST_STARTUP_AUTO_UPDATE_BUDGET_MS: "25",
+			CODEX_MULTI_AUTH_AUTO_UPDATE_STARTUP_BUDGET_MS: "25",
 		});
+		const elapsedMs = Date.now() - startedAt;
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("FORWARDED:exec status");
 		expect(result.stderr).not.toContain("auto-update skipped");
+		expect(elapsedMs).toBeLessThan(2_000);
 	});
 
 	it("syncs manager active selection before and after forwarded commands", () => {

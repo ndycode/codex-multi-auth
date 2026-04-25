@@ -519,6 +519,8 @@ describe("codex app bind postinstall gate", () => {
 				rotationEnabled: true,
 			}),
 		).toBe(false);
+		// CI and ignored-scripts guards win over explicit launcher opt-in so
+		// package installs stay side-effect-free in automation.
 	});
 
 	it("resolves runtime rotation as default-on for install/update self-heal", () => {
@@ -584,6 +586,39 @@ describe("codex app bind postinstall gate", () => {
 		expect(installLauncher).toHaveBeenCalledWith(true);
 		expect(log).toHaveBeenCalledWith(
 			"app bind postinstall skipped: bind failed",
+		);
+	});
+
+	it("keeps postinstall self-heal successful when launcher repair fails", async () => {
+		const bindCodexApp = vi.fn(async () => undefined);
+		const installLauncher = vi.fn(async () => {
+			throw new Error("launcher failed");
+		});
+		const log = vi.fn();
+
+		await expect(
+			runPostinstallSelfHeal({
+				loadConfigModule: async () => null,
+				bindCodexApp,
+				installLauncher,
+				log,
+				env: {},
+			}),
+		).resolves.toBe(0);
+
+		expect(bindCodexApp).toHaveBeenCalledWith(true);
+		expect(installLauncher).toHaveBeenCalledWith(true);
+		expect(log).toHaveBeenCalledWith(
+			"app launcher postinstall skipped: launcher failed",
+		);
+	});
+
+	it("preserves explicit postinstall return codes for direct runs", () => {
+		const content = readFileSync("scripts/postinstall.js", "utf8");
+
+		expect(content).toContain(".then((exitCode) => {");
+		expect(content).toContain(
+			"process.exitCode = normalizePostinstallExitCode(exitCode);",
 		);
 	});
 });

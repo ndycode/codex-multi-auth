@@ -190,6 +190,7 @@ Common operator overrides:
 - `CODEX_MODE`
 - `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY`
 - `CODEX_MULTI_AUTH_AUTO_UPDATE` controls the best-effort daily installed-package update check. It defaults on outside CI/test environments, runs `npm update -g codex-multi-auth` when npm has a newer release, and is disabled with `CODEX_MULTI_AUTH_AUTO_UPDATE=0`.
+- `CODEX_MULTI_AUTH_AUTO_UPDATE_STARTUP_BUDGET_MS` controls how long startup waits for that check before forwarding the Codex command.
 - `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS`
 - `CODEX_MULTI_AUTH_APP_BIND_INSTALL`
 - `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL`
