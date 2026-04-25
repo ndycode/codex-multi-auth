@@ -552,7 +552,7 @@ function forwardToRealCodexOnce(
 			cleanupProtocolProxy();
 			protocolProxy?.flushOutput();
 			try {
-				await cleanup?.();
+				await cleanup?.({ exitCode });
 			} catch {
 				// Best-effort cleanup only.
 			}
@@ -690,9 +690,6 @@ async function forwardToRealCodex(codexBin, rawArgs, baseEnv = process.env) {
 			compatibility,
 			rawArgs,
 		);
-		if (!runtimeProxyContext) {
-			return 1;
-		}
 		const result = await forwardToRealCodexOnce(
 			codexBin,
 			runtimeProxyContext.args,
@@ -1935,6 +1932,15 @@ function isProcessAlive(pid) {
 	}
 }
 
+function isRuntimeRotationAppHelperOwnerAlive(pid) {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function resolveRuntimeRotationAppHelperDetachGraceMs(env = process.env) {
 	const parsed = Number.parseInt(
 		env.CODEX_MULTI_AUTH_APP_ROTATION_DETACH_GRACE_MS ?? "",
@@ -1971,7 +1977,11 @@ function writeRuntimeRotationAppHelperStatus(payload, env = process.env) {
 	try {
 		const statusPath = resolveRuntimeRotationAppHelperStatusPath(env);
 		mkdirSync(dirname(statusPath), { recursive: true });
-		writeFileSync(statusPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+		writeFileSync(statusPath, `${JSON.stringify(payload, null, 2)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+		});
+		chmodSync(statusPath, 0o600);
 	} catch {
 		// Best-effort status only; the helper must not fail because telemetry is unavailable.
 	}
@@ -2098,7 +2108,7 @@ async function runRuntimeRotationAppHelper() {
 				lastRequestCount = requestCount;
 				lastActivityAt = currentTime;
 			}
-			if (ownerPid && isProcessAlive(ownerPid)) {
+			if (ownerPid && isRuntimeRotationAppHelperOwnerAlive(ownerPid)) {
 				lastActivityAt = currentTime;
 			}
 			publishStatus("running");
@@ -2229,9 +2239,9 @@ async function createRuntimeRotationAppHelperContext(baseContext) {
 	const helperEnv = message.env ?? {};
 	const detachGraceMs = resolveRuntimeRotationAppHelperDetachGraceMs(baseContext.env);
 
-	const cleanup = async () => {
+	const cleanup = async ({ exitCode } = {}) => {
 		const livedMs = Date.now() - startedAt;
-		if (livedMs < detachGraceMs) {
+		if (exitCode === 0 && livedMs < detachGraceMs) {
 			helper.stdout?.destroy();
 			helper.stderr?.destroy();
 			helper.unref();
@@ -2250,9 +2260,9 @@ async function createRuntimeRotationAppHelperContext(baseContext) {
 			...baseContext.env,
 			...helperEnv,
 		},
-		cleanup: async () => {
+		cleanup: async (details) => {
 			try {
-				await cleanup();
+				await cleanup(details);
 			} finally {
 				baseContext.cleanup?.();
 			}

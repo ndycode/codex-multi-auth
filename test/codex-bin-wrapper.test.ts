@@ -222,7 +222,7 @@ function createRuntimeRotationProxyFixtureModule(fixtureRoot: string): string {
 			"    appendMarker(`codex-home-env:${process.env.CODEX_HOME ?? ''}`);",
 			"    appendMarker(`real-home-env:${process.env.CODEX_MULTI_AUTH_REAL_CODEX_HOME ?? ''}`);",
 			"  }",
-			"  appendMarker(`start:${baseUrl}`);",
+			"  appendMarker((process.env.CODEX_MULTI_AUTH_TEST_PROXY_MARKER_PID ?? '').trim() === '1' ? `start:${baseUrl}:pid=${process.pid}` : `start:${baseUrl}`);",
 			"  return {",
 			"    host: '127.0.0.1',",
 			"    port: 4567,",
@@ -443,6 +443,17 @@ function runWrapper(
 			env: buildWrapperEnv(extraEnv),
 		},
 	);
+}
+
+function isProcessAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return error && typeof error === "object" && "code" in error
+			? error.code === "EPERM"
+			: false;
+	}
 }
 
 async function ageShadowSyncLockForSteal(lockDir: string): Promise<void> {
@@ -1044,7 +1055,7 @@ describe("codex bin wrapper", () => {
 		const shadowHomeMatch = output.match(/^CODEX_HOME:(.+)$/m);
 		expect(shadowHomeMatch?.[1]).toBeTruthy();
 
-		await sleep(1300);
+		await sleep(2200);
 
 		expect(readFileSync(markerPath, "utf8")).toBe(
 			"start:http://127.0.0.1:4567\nclose\n",
@@ -1066,9 +1077,97 @@ describe("codex bin wrapper", () => {
 		expect(helperStatus).not.toHaveProperty("lastAccountEmail");
 		expect(helperStatus.lastAccountId).toBe("acc_second");
 		expect(helperStatus.lastAccountUpdatedAt).toBe(12345);
+		if (process.platform !== "win32") {
+			expect(
+				statSync(join(multiAuthDir, "runtime-rotation-app-helper.json")).mode &
+					0o777,
+			).toBe(0o600);
+		}
 		if (shadowHomeMatch?.[1]) {
 			expect(existsSync(shadowHomeMatch[1])).toBe(false);
 		}
+	});
+
+	it("stops failed app helpers before unsupported-model retries", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const stateDir = join(fixtureRoot, "retry-state-app-helper");
+		mkdirSync(stateDir, { recursive: true });
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"const fs = require('node:fs');",
+			"const path = require('node:path');",
+			"const counterPath = path.join(process.env.CODEX_MULTI_AUTH_TEST_STATE_DIR, 'attempt.txt');",
+			"const attempt = fs.existsSync(counterPath) ? Number(fs.readFileSync(counterPath, 'utf8')) : 0;",
+			"fs.writeFileSync(counterPath, String(attempt + 1), 'utf8');",
+			"const args = process.argv.slice(2);",
+			"const modelIndex = args.indexOf('--model');",
+			"const requestedModel = modelIndex >= 0 ? args[modelIndex + 1] : 'unknown-model';",
+			"if (attempt === 0) {",
+			`  console.error("ERROR: {\\\"type\\\":\\\"error\\\",\\\"status\\\":400,\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"The '" + requestedModel + "' model is not supported when using Codex with a ChatGPT account.\\\"}}");`,
+			"  process.exit(1);",
+			"}",
+			"console.log(`FORWARDED:${args.join(' ')}`);",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["app", ".", "--model", "gpt-5.5"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_DETACH_GRACE_MS: "10000",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "600",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER_PID: "1",
+				CODEX_MULTI_AUTH_TEST_STATE_DIR: stateDir,
+				CODEX_MULTI_AUTH_CAPTURE_FORWARD_OUTPUT: "1",
+				OPENAI_API_KEY: undefined,
+			},
+		);
+
+		const output = combinedOutput(result);
+		if (result.status !== 0) {
+			throw new Error(output);
+		}
+		expect(output).toContain("Retrying with gpt-5.4");
+		expect(output).toContain("FORWARDED:app . --model gpt-5.4");
+		const markerAfterRetry = readFileSync(markerPath, "utf8")
+			.trim()
+			.split(/\r?\n/);
+		const firstStart = markerAfterRetry[0] ?? "";
+		const secondStart = markerAfterRetry.find(
+			(line, index) =>
+				index > 0 && line.startsWith("start:http://127.0.0.1:4567:pid="),
+		);
+		const firstPid = Number(firstStart.match(/:pid=(\d+)$/)?.[1] ?? NaN);
+		expect(firstStart).toMatch(/^start:http:\/\/127\.0\.0\.1:4567:pid=\d+$/);
+		expect(secondStart).toMatch(
+			/^start:http:\/\/127\.0\.0\.1:4567:pid=\d+$/,
+		);
+		expect(Number.isFinite(firstPid)).toBe(true);
+		expect(isProcessAlive(firstPid)).toBe(false);
+		if (process.platform !== "win32") {
+			expect(markerAfterRetry.slice(0, 3)).toEqual([
+				firstStart,
+				"close",
+				secondStart,
+			]);
+		}
+
+		await sleep(2200);
+
+		expect(readFileSync(markerPath, "utf8")).toContain("close\n");
 	});
 
 	it("starts detached app helpers against the real Codex home instead of a compatibility shadow", async () => {
@@ -1105,7 +1204,7 @@ describe("codex bin wrapper", () => {
 		}
 		expect(output).toContain("FORWARDED:app . --model gpt-5.1");
 
-		await sleep(1300);
+		await sleep(2200);
 
 		const marker = readFileSync(markerPath, "utf8");
 		expect(marker).toContain(`real-home-env:${originalHome}\n`);
