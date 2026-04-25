@@ -57,7 +57,7 @@ export interface RuntimeRotationProxyOptions {
 	host?: string;
 	port?: number;
 	upstreamBaseUrl?: string;
-	clientApiKey?: string;
+	clientApiKey: string;
 	accountManager?: AccountManager;
 	fetchImpl?: typeof fetch;
 	now?: () => number;
@@ -117,14 +117,15 @@ const PRIVATE_CLIENT_RESPONSE_HEADERS = new Set([
 	"x-codex-multi-auth-account-email",
 	"x-codex-multi-auth-account-id",
 ]);
+const ALLOWED_RESPONSES_PATHS = new Set([
+	URL_PATHS.RESPONSES,
+	URL_PATHS.CODEX_RESPONSES,
+	`/v1${URL_PATHS.RESPONSES}`,
+	`/v1${URL_PATHS.CODEX_RESPONSES}`,
+]);
 
 function isResponsesPath(pathname: string): boolean {
-	return (
-		pathname === URL_PATHS.RESPONSES ||
-		pathname === URL_PATHS.CODEX_RESPONSES ||
-		pathname.endsWith(URL_PATHS.RESPONSES) ||
-		pathname.endsWith(URL_PATHS.CODEX_RESPONSES)
-	);
+	return ALLOWED_RESPONSES_PATHS.has(pathname);
 }
 
 function headersFromIncoming(req: IncomingMessage): Headers {
@@ -161,8 +162,7 @@ function createOutboundHeaders(
 	return headers;
 }
 
-function isAuthorizedClient(headers: Headers, clientApiKey: string | null): boolean {
-	if (!clientApiKey) return true;
+function isAuthorizedClient(headers: Headers, clientApiKey: string): boolean {
 	const authorization = headers.get("authorization") ?? "";
 	const bearerMatch = authorization.match(/^Bearer\s+(.+)$/i);
 	const bearer = bearerMatch?.[1]?.trim();
@@ -388,9 +388,6 @@ async function commitRefreshedAuthOnce(
 		account.accountId ?? "",
 		account.email ?? "",
 		account.refreshToken,
-		auth.access,
-		auth.refresh,
-		String(auth.expires),
 	].join("\0");
 	let queue = runtimeRefreshCommitQueues.get(accountManager);
 	if (!queue) {
@@ -717,7 +714,7 @@ async function forwardStreamingResponse(
 }
 
 export async function startRuntimeRotationProxy(
-	options: RuntimeRotationProxyOptions = {},
+	options: RuntimeRotationProxyOptions,
 ): Promise<RuntimeRotationProxyServer> {
 	const pluginConfig = loadPluginConfig();
 	const accountManager = options.accountManager ?? (await AccountManager.loadFromDisk());
@@ -730,6 +727,9 @@ export async function startRuntimeRotationProxy(
 		options.clientApiKey.trim().length > 0
 			? options.clientApiKey.trim()
 			: null;
+	if (!clientApiKey) {
+		throw new Error("Runtime rotation proxy requires a clientApiKey.");
+	}
 	const now = options.now ?? Date.now;
 	const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
 	const networkErrorCooldownMs = getNetworkErrorCooldownMs(pluginConfig);
@@ -1025,10 +1025,10 @@ export async function startRuntimeRotationProxy(
 						code: "codex_runtime_rotation_proxy_error",
 					},
 				});
-		} else if (!res.destroyed) {
-			res.destroy(error instanceof Error ? error : undefined);
+			} else if (!res.destroyed) {
+				res.destroy(error instanceof Error ? error : undefined);
+			}
 		}
-	}
 	};
 
 	const server = createServer((req, res) => {

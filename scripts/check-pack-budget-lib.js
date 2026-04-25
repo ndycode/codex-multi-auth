@@ -39,7 +39,7 @@ export const FORBIDDEN_PREFIXES = [
  * @returns {value is Record<string, unknown>}
  */
 function isRecord(value) {
-	return typeof value === "object" && value !== null;
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -127,7 +127,13 @@ export async function runPackBudgetCheck(deps = {}) {
 			windowsHide: true,
 			maxBuffer: 10 * 1024 * 1024,
 		});
-		stdout = String(result.stdout);
+		if (result.stdout === null || result.stdout === undefined) {
+			throw new Error("npm pack --dry-run --json returned no stdout");
+		}
+		stdout =
+			typeof result.stdout === "string"
+				? result.stdout
+				: result.stdout.toString("utf8");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		const stdoutText =

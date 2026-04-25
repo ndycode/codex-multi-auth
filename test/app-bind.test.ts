@@ -1,4 +1,5 @@
 import { existsSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -12,7 +13,8 @@ import {
 	rewriteConfigTomlForAppBind,
 	unbindCodexAppRuntimeRotation,
 } from "../lib/runtime/app-bind.js";
-import { withFileOperationRetry } from "../scripts/install-codex-auth-utils.js";
+import { withFileOperationRetry } from "../lib/fs-retry.js";
+import { RUNTIME_ROTATION_PROXY_PROVIDER_ID } from "../lib/runtime-constants.js";
 
 const tempRoots: string[] = [];
 const thisDir = dirname(fileURLToPath(import.meta.url));
@@ -21,6 +23,10 @@ async function createTempRoot(prefix: string): Promise<string> {
 	const root = await mkdtemp(join(tmpdir(), prefix));
 	tempRoots.push(root);
 	return root;
+}
+
+function sha256(content: string): string {
+	return createHash("sha256").update(content).digest("hex");
 }
 
 async function seedExistingAppBindState(params: {
@@ -87,8 +93,12 @@ describe("Codex app runtime rotation bind", () => {
 			"http://127.0.0.1:32123",
 			"app-secret",
 		);
-		expect(bound).toContain('model_provider = "codex-multi-auth-runtime-proxy"');
-		expect(bound).toContain("[model_providers.codex-multi-auth-runtime-proxy]");
+		expect(bound).toContain(
+			`model_provider = "${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
+		);
+		expect(bound).toContain(
+			`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
+		);
 		expect(bound).toContain('name = "codex-multi-auth"');
 		expect(bound).toContain('base_url = "http://127.0.0.1:32123"');
 		expect(bound).toContain("requires_openai_auth = false");
@@ -114,22 +124,24 @@ describe("Codex app runtime rotation bind", () => {
 			"app-secret",
 		);
 
-		expect(bound.startsWith('model_provider = "codex-multi-auth-runtime-proxy"')).toBe(
-			true,
-		);
-		expect(bound.indexOf('model_provider = "codex-multi-auth-runtime-proxy"')).toBeLessThan(
-			bound.indexOf("[[profiles.experimental]]"),
-		);
+		expect(
+			bound.startsWith(
+				`model_provider = "${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
+			),
+		).toBe(true);
+		expect(
+			bound.indexOf(`model_provider = "${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`),
+		).toBeLessThan(bound.indexOf("[[profiles.experimental]]"));
 	});
 
 	it("removes runtime provider subtables when restoring Codex config TOML", () => {
 		const bound = [
-			'model_provider = "codex-multi-auth-runtime-proxy"',
+			`model_provider = "${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
 			"",
-			"[model_providers.codex-multi-auth-runtime-proxy]",
+			`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
 			'name = "codex-multi-auth"',
 			'base_url = "http://127.0.0.1:32123"',
-			"[model_providers.codex-multi-auth-runtime-proxy.http_headers]",
+			`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}.http_headers]`,
 			'authorization = "Bearer secret"',
 			"[profiles.default]",
 			'model = "gpt-5.4"',
@@ -138,7 +150,7 @@ describe("Codex app runtime rotation bind", () => {
 
 		const restored = restoreConfigTomlFromAppBind(bound, 'model_provider = "openai"\n');
 
-		expect(restored).not.toContain("codex-multi-auth-runtime-proxy");
+		expect(restored).not.toContain(RUNTIME_ROTATION_PROXY_PROVIDER_ID);
 		expect(restored).not.toContain("Bearer secret");
 		expect(restored).toContain("[profiles.default]");
 	});
@@ -217,7 +229,9 @@ describe("Codex app runtime rotation bind", () => {
 			join(multiAuthDir, "app-bind", "runtime-rotation-app-bind.json"),
 		);
 		const config = await readFile(join(codexHome, "config.toml"), "utf8");
-		expect(config).toContain("[model_providers.codex-multi-auth-runtime-proxy]");
+		expect(config).toContain(
+			`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
+		);
 		expect(config).toContain(result.status.state?.baseUrl);
 		expect(config).toContain("requires_openai_auth = false");
 		expect(config).toContain(
@@ -245,6 +259,88 @@ describe("Codex app runtime rotation bind", () => {
 			'model_provider = "openai"\n',
 		);
 		expect(existsSync(result.status.paths.startupPath ?? "")).toBe(false);
+	});
+
+	it("fails fast when the router script cannot be resolved", async () => {
+		const root = await createTempRoot("codex-app-bind-missing-router-");
+		const multiAuthDir = join(root, "multi-auth");
+		const codexHome = join(root, "codex-home");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+
+		await expect(
+			bindCodexAppRuntimeRotation({
+				platform: "linux",
+				home: root,
+				env,
+				nodePath: "node",
+				routerScriptCandidates: [
+					join(root, "missing-router-a.js"),
+					join(root, "missing-router-b.js"),
+				],
+				spawnDetached: false,
+			}),
+		).rejects.toThrow(/codex-app-router\.js not found/);
+	});
+
+	it("serializes concurrent binds so state and config stay coherent", async () => {
+		const root = await createTempRoot("codex-app-bind-concurrent-");
+		const multiAuthDir = join(root, "multi-auth");
+		const codexHome = join(root, "codex-home");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		await mkdir(codexHome, { recursive: true });
+		await writeFile(
+			join(codexHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+		await seedExistingAppBindState({
+			platform: "linux",
+			home: root,
+			env,
+			port: 4567,
+			baseUrl: "http://127.0.0.1:4567",
+			nodePath: "node",
+			routerScriptPath: join(root, "codex-app-router.js"),
+		});
+		const options = {
+			platform: "linux" as const,
+			home: root,
+			env,
+			nodePath: "node",
+			routerScriptPath: join(root, "codex-app-router.js"),
+			spawnDetached: false,
+		};
+
+		const [first, second] = await Promise.all([
+			bindCodexAppRuntimeRotation(options),
+			bindCodexAppRuntimeRotation(options),
+		]);
+
+		expect(first.status.bound).toBe(true);
+		expect(second.status.bound).toBe(true);
+		const paths = resolveAppBindPaths(options);
+		const config = await readFile(paths.configPath, "utf8");
+		const state = JSON.parse(await readFile(paths.statePath, "utf8")) as {
+			clientApiKey: string;
+			boundConfigHash: string;
+		};
+		const backup = JSON.parse(await readFile(paths.backupPath, "utf8")) as {
+			content: string;
+		};
+		expect(config).toContain(
+			`model_provider = "${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
+		);
+		expect(config).toContain(
+			`experimental_bearer_token = "${state.clientApiKey}"`,
+		);
+		expect(state.boundConfigHash).toBe(sha256(config));
+		expect(backup.content).toBe('model_provider = "openai"\n');
 	});
 
 	it("refuses to bind without spawning when no router port is known", async () => {

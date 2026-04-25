@@ -33,6 +33,13 @@ describe("parsePackMetadata", () => {
 			parsePackMetadata(JSON.stringify([{ size: 0, files: [] }])),
 		).toThrow(/valid package size/);
 	});
+
+	it("rejects array-shaped package metadata records", () => {
+		expect(() =>
+			parsePackMetadata(JSON.stringify([[{ size: 1, files: [] }]])),
+		).toThrow(/file list/);
+	});
+
 	it("wraps npm pack execution errors with command context", async () => {
 		await expect(
 			runPackBudgetCheck({
@@ -51,6 +58,15 @@ describe("parsePackMetadata", () => {
 				log: vi.fn(),
 			}),
 		).rejects.toThrow(/stdout: not-json/);
+	});
+
+	it("reports missing npm pack stdout clearly", async () => {
+		await expect(
+			runPackBudgetCheck({
+				execAsync: vi.fn(async () => ({}) as { stdout: string }),
+				log: vi.fn(),
+			}),
+		).rejects.toThrow(/returned no stdout/);
 	});
 
 });

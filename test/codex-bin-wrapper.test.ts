@@ -16,6 +16,7 @@ import { delimiter, dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { RUNTIME_ROTATION_PROXY_PROVIDER_ID } from "../lib/runtime-constants.js";
 import { sleep } from "../lib/utils.js";
 import { resolveRealCodexBin } from "../scripts/codex-bin-resolver.js";
 
@@ -658,7 +659,7 @@ describe("codex bin wrapper", () => {
 				'name = "Existing"',
 				'base_url = "https://example.invalid"',
 				"",
-				"[model_providers.codex-multi-auth-runtime-proxy]",
+				`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
 				'name = "Stale Runtime Proxy"',
 				'base_url = "http://127.0.0.1:1"',
 			].join("\n"),
@@ -678,7 +679,7 @@ describe("codex bin wrapper", () => {
 		const output = combinedOutput(result);
 		expect(result.status).toBe(0);
 		expect(output).toContain(
-			'FORWARDED:exec status -c cli_auth_credentials_store="file" -c model_provider="codex-multi-auth-runtime-proxy"',
+			`FORWARDED:exec status -c cli_auth_credentials_store="file" -c model_provider="${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
 		);
 		expect(output).toContain("CODEX_HOME_IS_ORIGINAL:false");
 		expect(output).toContain("SESSION_EXISTS:true");
@@ -690,10 +691,10 @@ describe("codex bin wrapper", () => {
 		const apiKeyMatch = output.match(/^OPENAI_API_KEY:([0-9a-f]{64})$/m);
 		expect(apiKeyMatch?.[1]).toBeTruthy();
 		expect(output).toContain(
-			'model_provider = "codex-multi-auth-runtime-proxy"',
+			`model_provider = "${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
 		);
 		expect(output).toContain(
-			"[model_providers.codex-multi-auth-runtime-proxy]",
+			`[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
 		);
 		expect(output).toContain('name = "codex-multi-auth"');
 		expect(output).toContain('base_url = "http://127.0.0.1:4567"');
@@ -752,7 +753,11 @@ describe("codex bin wrapper", () => {
 		});
 
 		expect(result.status).toBe(0);
-		expect(result.stdout.indexOf('model_provider = "codex-multi-auth-runtime-proxy"')).toBeLessThan(
+		expect(
+			result.stdout.indexOf(
+				`model_provider = "${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
+			),
+		).toBeLessThan(
 			result.stdout.indexOf("[[profiles.experimental]]"),
 		);
 	});
@@ -791,7 +796,7 @@ describe("codex bin wrapper", () => {
 		const output = combinedOutput(result);
 		expect(result.status).toBe(0);
 		expect(output).toContain(
-			'FORWARDED:app-server --listen stdio:// -c cli_auth_credentials_store="file" -c model_provider="codex-multi-auth-runtime-proxy"',
+			`FORWARDED:app-server --listen stdio:// -c cli_auth_credentials_store="file" -c model_provider="${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
 		);
 		const apiKeyMatch = output.match(/^OPENAI_API_KEY:([0-9a-f]{64})$/m);
 		expect(apiKeyMatch?.[1]).toBeTruthy();
@@ -1000,7 +1005,7 @@ describe("codex bin wrapper", () => {
 			throw new Error(output);
 		}
 		expect(output).toContain(
-			'FORWARDED:app . -c cli_auth_credentials_store="file" -c model_provider="codex-multi-auth-runtime-proxy"',
+			`FORWARDED:app . -c cli_auth_credentials_store="file" -c model_provider="${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
 		);
 		const apiKeyMatch = output.match(/^OPENAI_API_KEY:([0-9a-f]{64})$/m);
 		expect(apiKeyMatch?.[1]).toBeTruthy();

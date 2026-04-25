@@ -3,11 +3,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withFileOperationRetry } from "../lib/fs-retry.js";
 import type { AppBindPaths } from "../lib/runtime/app-bind.js";
-import { withFileOperationRetry } from "../scripts/install-codex-auth-utils.js";
 
 const fsFaults = vi.hoisted(() => ({
 	renameFailures: 0,
+	unlinkFailures: 0,
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -20,6 +21,13 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 				throw Object.assign(new Error("busy"), { code: "EBUSY" });
 			}
 			return actual.rename(...args);
+		}),
+		unlink: vi.fn(async (...args: Parameters<typeof actual.unlink>) => {
+			if (fsFaults.unlinkFailures > 0) {
+				fsFaults.unlinkFailures -= 1;
+				throw Object.assign(new Error("permission"), { code: "EPERM" });
+			}
+			return actual.unlink(...args);
 		}),
 	};
 });
@@ -34,6 +42,7 @@ async function createTempRoot(prefix: string): Promise<string> {
 
 afterEach(async () => {
 	fsFaults.renameFailures = 0;
+	fsFaults.unlinkFailures = 0;
 	await Promise.all(
 		tempRoots.splice(0).map((root) =>
 			withFileOperationRetry(() => rm(root, { recursive: true, force: true })),
@@ -168,5 +177,44 @@ describe("Codex app bind filesystem retry behavior", () => {
 		expect(await readFile(paths.configPath, "utf8")).toBe(
 			'model_provider = "openai"\n',
 		);
+	});
+
+	it("retries transient EPERM during unbind cleanup unlinks", async () => {
+		const { bindCodexAppRuntimeRotation, unbindCodexAppRuntimeRotation } =
+			await import("../lib/runtime/app-bind.js");
+		const root = await createTempRoot("codex-app-bind-io-unlink-");
+		const codexHome = join(root, "codex-home");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: join(root, "multi-auth"),
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		const paths = await seedExistingState({
+			home: root,
+			env,
+			nodePath: "node",
+			routerScriptPath: join(root, "codex-app-router.js"),
+		});
+		await mkdir(codexHome, { recursive: true });
+		await writeFile(paths.configPath, 'model_provider = "openai"\n', "utf8");
+		await bindCodexAppRuntimeRotation({
+			platform: "linux",
+			home: root,
+			env,
+			nodePath: "node",
+			routerScriptPath: join(root, "codex-app-router.js"),
+			spawnDetached: false,
+		});
+
+		fsFaults.unlinkFailures = 2;
+		await expect(
+			unbindCodexAppRuntimeRotation({
+				platform: "linux",
+				home: root,
+				env,
+				spawnDetached: false,
+			}),
+		).resolves.toMatchObject({ status: { bound: false } });
+		expect(existsSync(paths.statePath)).toBe(false);
+		expect(existsSync(paths.backupPath)).toBe(false);
 	});
 });

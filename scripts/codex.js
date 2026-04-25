@@ -32,6 +32,7 @@ import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.j
 
 const RETRYABLE_SHADOW_HOME_CLEANUP_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
 const SHADOW_HOME_CLEANUP_BACKOFF_MS = [20, 60, 120];
+const SHADOW_HOME_ORPHAN_LOCK_STALE_AGE_MS = 100;
 const SHADOW_HOME_STATE_FILES = ["auth.json", "accounts.json", ".codex-global-state.json"];
 const SHADOW_HOME_STATE_FILE_SET = new Set(SHADOW_HOME_STATE_FILES);
 const SHADOW_HOME_CONFIG_FILE = "config.toml";
@@ -1260,9 +1261,22 @@ function readShadowHomeSyncLockOwnerPid(lockPath) {
 	}
 }
 
+function isShadowHomeSyncLockOldEnoughToSteal(lockPath) {
+	try {
+		const stats = statSync(lockPath);
+		const newestTimestamp = Math.max(stats.mtimeMs, stats.ctimeMs);
+		return Date.now() - newestTimestamp >= SHADOW_HOME_ORPHAN_LOCK_STALE_AGE_MS;
+	} catch {
+		return true;
+	}
+}
+
 function removeStaleShadowHomeSyncLock(lockPath) {
 	const ownerPid = readShadowHomeSyncLockOwnerPid(lockPath);
 	if (ownerPid !== null && isProcessAlive(ownerPid)) {
+		return false;
+	}
+	if (ownerPid === null && !isShadowHomeSyncLockOldEnoughToSteal(lockPath)) {
 		return false;
 	}
 	try {

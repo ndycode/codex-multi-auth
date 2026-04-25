@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { withFileOperationRetry } from "../fs-retry.js";
 import { RUNTIME_ROTATION_PROXY_PROVIDER_ID } from "../runtime-constants.js";
 import { getCodexMultiAuthDir } from "../runtime-paths.js";
 
@@ -15,10 +16,7 @@ const APP_BIND_BACKUP_FILE = "codex-config-backup.json";
 const APP_BIND_STATUS_FILE = "runtime-rotation-app-bind-status.json";
 const WINDOWS_STARTUP_FILE = "Codex Multi Auth Runtime Router.cmd";
 const MACOS_LAUNCH_AGENT_ID = "com.ndycode.codex-multi-auth.runtime-router";
-const FILE_RETRY_CODES = new Set(["EBUSY", "EPERM", "EAGAIN", "ENOTEMPTY", "EACCES"]);
-const FILE_RETRY_MAX_ATTEMPTS = 6;
-const FILE_RETRY_BASE_DELAY_MS = 25;
-const FILE_RETRY_JITTER_MS = 20;
+const appBindLocks = new Map<string, Promise<void>>();
 
 export interface AppBindPaths {
 	codexHome: string;
@@ -94,8 +92,31 @@ export interface AppBindOptions {
 	now?: () => number;
 	nodePath?: string;
 	routerScriptPath?: string;
+	routerScriptCandidates?: string[];
 	spawnDetached?: boolean;
 	log?: (message: string) => void;
+}
+
+async function withAppBindLock<T>(
+	key: string,
+	operation: () => Promise<T>,
+): Promise<T> {
+	const previous = appBindLocks.get(key) ?? Promise.resolve();
+	let releaseCurrent: () => void = () => undefined;
+	const current = new Promise<void>((resolve) => {
+		releaseCurrent = resolve;
+	});
+	const tail = previous.catch(() => undefined).then(() => current);
+	appBindLocks.set(key, tail);
+	await previous.catch(() => undefined);
+	try {
+		return await operation();
+	} finally {
+		releaseCurrent();
+		if (appBindLocks.get(key) === tail) {
+			appBindLocks.delete(key);
+		}
+	}
 }
 
 function tomlStringLiteral(value: string): string {
@@ -264,35 +285,6 @@ function readString(record: Record<string, unknown>, key: string): string | null
 function readNumber(record: Record<string, unknown>, key: string): number | null {
 	const value = record[key];
 	return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function shouldRetryFileOperation(error: unknown): boolean {
-	return (
-		error instanceof Error &&
-		"code" in error &&
-		typeof error.code === "string" &&
-		FILE_RETRY_CODES.has(error.code)
-	);
-}
-
-async function withFileOperationRetry<T>(operation: () => Promise<T>): Promise<T> {
-	for (let attempt = 1; ; attempt += 1) {
-		try {
-			return await operation();
-		} catch (error) {
-			if (!shouldRetryFileOperation(error) || attempt >= FILE_RETRY_MAX_ATTEMPTS) {
-				throw error;
-			}
-			const delayMs =
-				FILE_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1) +
-				Math.floor(Math.random() * FILE_RETRY_JITTER_MS);
-			await sleep(delayMs);
-		}
-	}
 }
 
 async function syncDirectoryBestEffort(path: string): Promise<void> {
@@ -484,16 +476,22 @@ function resolveMacLaunchAgentPath(home: string): string {
 	return join(home, "Library", "LaunchAgents", `${MACOS_LAUNCH_AGENT_ID}.plist`);
 }
 
-function resolveRouterScriptPath(override?: string): string {
+function resolveRouterScriptPath(
+	override?: string,
+	candidateOverride?: string[],
+): string {
 	if (override) return override;
-	const candidates = [
-		fileURLToPath(new URL("../../../scripts/codex-app-router.js", import.meta.url)),
-		fileURLToPath(new URL("../../scripts/codex-app-router.js", import.meta.url)),
-	];
+	const candidates =
+		candidateOverride ?? [
+			fileURLToPath(new URL("../../../scripts/codex-app-router.js", import.meta.url)),
+			fileURLToPath(new URL("../../scripts/codex-app-router.js", import.meta.url)),
+		];
 	for (const candidate of candidates) {
 		if (existsSync(candidate)) return candidate;
 	}
-	return candidates[0] ?? "codex-app-router.js";
+	throw new Error(
+		`codex-app-router.js not found; checked: ${candidates.join(", ")}`,
+	);
 }
 
 export function resolveAppBindPaths(options: AppBindOptions = {}): AppBindPaths {
@@ -512,7 +510,10 @@ export function resolveAppBindPaths(options: AppBindOptions = {}): AppBindPaths 
 		backupPath: join(bindDir, APP_BIND_BACKUP_FILE),
 		statusPath: join(bindDir, APP_BIND_STATUS_FILE),
 		logPath: join(bindDir, "runtime-rotation-app-router.log"),
-		routerScriptPath: resolveRouterScriptPath(options.routerScriptPath),
+		routerScriptPath: resolveRouterScriptPath(
+			options.routerScriptPath,
+			options.routerScriptCandidates,
+		),
 		startupPath:
 			platform === "win32" ? resolveWindowsStartupPath(env, home) : null,
 		launchAgentPath: platform === "darwin" ? resolveMacLaunchAgentPath(home) : null,
@@ -699,9 +700,18 @@ export async function getAppBindStatus(options: AppBindOptions = {}): Promise<Ap
 export async function bindCodexAppRuntimeRotation(
 	options: AppBindOptions = {},
 ): Promise<AppBindResult> {
+	const paths = resolveAppBindPaths(options);
+	return withAppBindLock(paths.bindDir, () =>
+		bindCodexAppRuntimeRotationLocked(options, paths),
+	);
+}
+
+async function bindCodexAppRuntimeRotationLocked(
+	options: AppBindOptions,
+	paths: AppBindPaths,
+): Promise<AppBindResult> {
 	const platform = options.platform ?? process.platform;
 	const now = options.now?.() ?? Date.now();
-	const paths = resolveAppBindPaths(options);
 	const existingState = await readAppBindState(paths.statePath);
 	const host = existingState?.host ?? "127.0.0.1";
 	let port = existingState && existingState.port > 0 ? existingState.port : 0;
@@ -789,6 +799,15 @@ export async function unbindCodexAppRuntimeRotation(
 	options: AppBindOptions = {},
 ): Promise<AppBindResult> {
 	const paths = resolveAppBindPaths(options);
+	return withAppBindLock(paths.bindDir, () =>
+		unbindCodexAppRuntimeRotationLocked(options, paths),
+	);
+}
+
+async function unbindCodexAppRuntimeRotationLocked(
+	options: AppBindOptions,
+	paths: AppBindPaths,
+): Promise<AppBindResult> {
 	const state = await readAppBindState(paths.statePath);
 	const router = await readRouterStatus(paths.statusPath);
 	if (state) {
