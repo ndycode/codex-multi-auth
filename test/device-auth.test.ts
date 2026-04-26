@@ -267,10 +267,8 @@ describe("device auth flow", () => {
 			},
 			{ signal: controller.signal, timeoutMs: 10_000 },
 		);
-		for (let i = 0; i < 10 && fetchMock.mock.calls.length === 0; i += 1) {
-			await Promise.resolve();
-		}
 
+		await Promise.resolve();
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		controller.abort();
 		await expect(resultPromise).resolves.toEqual({

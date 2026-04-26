@@ -1982,6 +1982,7 @@ async function runSignInFlow(
 	if (signInMode === "device") {
 		// OpenAI owns the device-code account picker; there is no force-new-login
 		// equivalent to pass through for this mode.
+		// TODO: Thread a manager-level AbortSignal when login cancellation exists.
 		return runDeviceAuthFlow({ log: console.log });
 	}
 	return runOAuthFlow(forceNewLogin, signInMode);
