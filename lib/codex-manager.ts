@@ -1980,7 +1980,7 @@ async function runSignInFlow(
 	signInMode: Extract<OAuthSignInMode, "browser" | "manual" | "device">,
 ): Promise<TokenResult> {
 	if (signInMode === "device") {
-		return runDeviceAuthFlow();
+		return runDeviceAuthFlow({ log: (message) => console.log(message) });
 	}
 	return runOAuthFlow(forceNewLogin, signInMode);
 }

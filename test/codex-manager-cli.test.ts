@@ -4631,86 +4631,97 @@ describe("codex manager cli commands", () => {
 		expect(storageState.accounts).toHaveLength(1);
 	});
 
-	it("supports non-TTY --device-auth without browser or local callback", async () => {
-		setInteractiveTTY(false);
-		const now = Date.now();
-		let storageState = {
-			version: 3 as const,
-			activeIndex: 0,
-			activeIndexByFamily: { codex: 0 },
-			accounts: [] as Array<Record<string, unknown>>,
-		};
-		loadAccountsMock.mockImplementation(async () =>
-			structuredClone(storageState),
-		);
-		saveAccountsMock.mockImplementation(async (nextStorage) => {
-			storageState = structuredClone(nextStorage);
-		});
-		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
-		promptAddAnotherAccountMock.mockResolvedValue(false);
-
-		const fetchMock = vi
-			.fn<typeof fetch>()
-			.mockResolvedValueOnce(
-				new Response(
-					JSON.stringify({
-						device_auth_id: "device-auth-1",
-						user_code: "ABCD-1234",
-						interval: "1",
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				),
-			)
-			.mockResolvedValueOnce(
-				new Response(
-					JSON.stringify({
-						authorization_code: "authorization-code",
-						code_verifier: "code-verifier",
-						code_challenge: "code-challenge",
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				),
+	it.each([
+		{ label: "non-TTY", interactive: false },
+		{ label: "TTY", interactive: true },
+	])(
+		"supports $label --device-auth without browser or local callback",
+		async ({ interactive }) => {
+			setInteractiveTTY(interactive);
+			const now = Date.now();
+			let storageState = {
+				version: 3 as const,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [] as Array<Record<string, unknown>>,
+			};
+			loadAccountsMock.mockImplementation(async () =>
+				structuredClone(storageState),
 			);
-		vi.stubGlobal("fetch", fetchMock);
+			saveAccountsMock.mockImplementation(async (nextStorage) => {
+				storageState = structuredClone(nextStorage);
+			});
+			promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+			promptAddAnotherAccountMock.mockResolvedValue(false);
 
-		const authModule = await import("../lib/auth/auth.js");
-		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
-			type: "success",
-			access: "access-device",
-			refresh: "refresh-device",
-			expires: now + 7_200_000,
-			idToken: "id-token-device",
-			multiAccount: true,
-		});
+			const fetchMock = vi
+				.fn<typeof fetch>()
+				.mockResolvedValueOnce(
+					new Response(
+						JSON.stringify({
+							device_auth_id: "device-auth-1",
+							user_code: "ABCD-1234",
+							interval: "1",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					),
+				)
+				.mockResolvedValueOnce(
+					new Response(
+						JSON.stringify({
+							authorization_code: "authorization-code",
+							code_verifier: "code-verifier",
+							code_challenge: "code-challenge",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					),
+				);
+			vi.stubGlobal("fetch", fetchMock);
 
-		const browserModule = await import("../lib/auth/browser.js");
-		const serverModule = await import("../lib/auth/server.js");
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+			const authModule = await import("../lib/auth/auth.js");
+			vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+				type: "success",
+				access: "access-device",
+				refresh: "refresh-device",
+				expires: now + 7_200_000,
+				idToken: "id-token-device",
+				multiAccount: true,
+			});
 
-		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
-		const exitCode = await runCodexMultiAuthCli([
-			"auth",
-			"login",
-			"--device-auth",
-		]);
-		const renderedLogs = logSpy.mock.calls.flat().map((entry) => String(entry));
+			const browserModule = await import("../lib/auth/browser.js");
+			const serverModule = await import("../lib/auth/server.js");
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-		expect(exitCode).toBe(0);
-		expect(renderedLogs).toContain("Device auth login");
-		expect(renderedLogs).toContain("Open: https://auth.openai.com/codex/device");
-		expect(renderedLogs).toContain("Code: ABCD-1234");
-		expect(browserModule.openBrowserUrl).not.toHaveBeenCalled();
-		expect(
-			vi.mocked(serverModule.startLocalOAuthServer),
-		).not.toHaveBeenCalled();
-		expect(authModule.exchangeAuthorizationCode).toHaveBeenCalledWith(
-			"authorization-code",
-			"code-verifier",
-			"https://auth.openai.com/deviceauth/callback",
-		);
-		expect(storageState.accounts).toHaveLength(1);
-		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
-	});
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCode = await runCodexMultiAuthCli([
+				"auth",
+				"login",
+				"--device-auth",
+			]);
+			const renderedLogs = logSpy.mock.calls
+				.flat()
+				.map((entry) => String(entry));
+
+			expect(exitCode).toBe(0);
+			expect(renderedLogs).toContain("Device auth login");
+			expect(renderedLogs).toContain(
+				"Open: https://auth.openai.com/codex/device",
+			);
+			expect(renderedLogs).toContain("Code: ABCD-1234");
+			expect(browserModule.openBrowserUrl).not.toHaveBeenCalled();
+			expect(
+				vi.mocked(serverModule.startLocalOAuthServer),
+			).not.toHaveBeenCalled();
+			expect(promptQuestionMock).not.toHaveBeenCalled();
+			expect(authModule.exchangeAuthorizationCode).toHaveBeenCalledWith(
+				"authorization-code",
+				"code-verifier",
+				"https://auth.openai.com/deviceauth/callback",
+			);
+			expect(storageState.accounts).toHaveLength(1);
+			expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+		},
+	);
 
 	it("restores the latest named backup from onboarding when no accounts exist", async () => {
 		const now = Date.now();

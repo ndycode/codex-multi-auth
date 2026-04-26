@@ -182,7 +182,7 @@ describe("device auth flow", () => {
 		expect(result).toEqual({
 			type: "failed",
 			reason: "unknown",
-			message: "Device auth timed out after 15 minutes",
+			message: "Device auth timed out after 10 seconds",
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(3);
 		expect(sleepMock).toHaveBeenCalledTimes(2);
@@ -250,6 +250,9 @@ describe("device auth flow", () => {
 		expect(logMock).toHaveBeenCalledWith("Device auth login");
 		expect(logMock).toHaveBeenCalledWith(`Open: ${DEVICE_AUTH_VERIFICATION_URL}`);
 		expect(logMock).toHaveBeenCalledWith("Code: ABCD-1234");
+		expect(logMock).toHaveBeenCalledWith(
+			"This code expires in 15 minutes. Never share it.",
+		);
 		const tokenExchangeCall = fetchMock.mock.calls[2];
 		expect(tokenExchangeCall?.[0]).toBe("https://auth.openai.com/oauth/token");
 		const tokenExchangeBody = tokenExchangeCall?.[1]?.body;

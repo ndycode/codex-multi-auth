@@ -73,6 +73,15 @@ function failedResult(
 	};
 }
 
+function formatWaitBudget(timeoutMs: number): string {
+	const totalSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+	if (totalSeconds < 60) {
+		return `${totalSeconds} second${totalSeconds === 1 ? "" : "s"}`;
+	}
+	const totalMinutes = Math.ceil(totalSeconds / 60);
+	return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) {
 		return null;
@@ -197,11 +206,12 @@ export async function requestDeviceAuthorization(
 export function printDeviceAuthorizationPrompt(
 	deviceCode: DeviceAuthCode,
 	log: (message: string) => void = console.log,
+	timeoutMs = DEVICE_AUTH_TIMEOUT_MS,
 ): void {
 	log("Device auth login");
 	log(`Open: ${deviceCode.verificationUrl}`);
 	log(`Code: ${deviceCode.userCode}`);
-	log("This code expires in 15 minutes. Never share it.");
+	log(`This code expires in ${formatWaitBudget(timeoutMs)}. Never share it.`);
 }
 
 export async function pollDeviceAuthorization(
@@ -244,7 +254,7 @@ export async function pollDeviceAuthorization(
 				if (remainingMs <= 0) {
 					return failedResult(
 						"unknown",
-						"Device auth timed out after 15 minutes",
+						`Device auth timed out after ${formatWaitBudget(timeoutMs)}`,
 					);
 				}
 				await sleep(Math.min(deviceCode.intervalMs, remainingMs));
@@ -277,6 +287,7 @@ export async function runDeviceAuthFlow(
 	printDeviceAuthorizationPrompt(
 		deviceCodeResult.deviceCode,
 		options.log ?? console.log,
+		options.timeoutMs ?? DEVICE_AUTH_TIMEOUT_MS,
 	);
 
 	const completionResult = await pollDeviceAuthorization(
