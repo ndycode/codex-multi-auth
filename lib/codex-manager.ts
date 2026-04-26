@@ -1982,7 +1982,7 @@ async function runSignInFlow(
 	if (signInMode === "device") {
 		// OpenAI owns the device-code account picker; there is no force-new-login
 		// equivalent to pass through for this mode.
-		return runDeviceAuthFlow();
+		return runDeviceAuthFlow({ log: console.log });
 	}
 	return runOAuthFlow(forceNewLogin, signInMode);
 }
