@@ -66,6 +66,7 @@ Compatibility aliases are supported:
 
 | Flag | Applies to | Meaning |
 | --- | --- | --- |
+| `--device-auth` | login | Use the OpenAI Codex device-code flow for remote/headless login |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow |
 | `--json` | verify-flagged, verify, why-selected, best, forecast, report, fix, doctor, config explain, debug bundle | Print machine-readable output |
 | `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |
@@ -260,6 +261,7 @@ failure.
 ## Upgrade Notes
 
 - `codex auth login` remains browser-first by default.
+- `codex auth login --device-auth` uses OpenAI Codex device-code login. It prints `https://auth.openai.com/codex/device` and a one-time code, then polls for completion without opening a browser or starting the local callback server.
 - `codex auth login --manual` and `codex auth login --no-browser` force the manual callback flow instead of launching a browser.
 - `CODEX_AUTH_NO_BROWSER=1` suppresses browser launch for automation/headless sessions. False-like values such as `0` and `false` do not disable browser launch by themselves.
 - In non-TTY/manual shells, pass the full redirect URL on stdin, for example: `echo "http://127.0.0.1:1455/auth/callback?code=..." | codex auth login --manual`.
@@ -275,6 +277,7 @@ failure.
 - `codex-multi-auth --version` and `codex-multi-auth -v` report the installed wrapper package version.
 - In non-TTY or host-managed sessions, including `CODEX_TUI=1`, `CODEX_DESKTOP=1`, `TERM_PROGRAM=codex`, or `ELECTRON_RUN_AS_NODE=1`, auth flows degrade to deterministic text behavior.
 - The non-TTY fallback keeps `codex auth login` predictable: it defaults to add-account mode, skips the extra "add another account" prompt, and auto-picks the default workspace selection when a follow-up choice is needed.
+- `codex auth login --device-auth` is the preferred remote/headless login path because it needs only a browser on any device plus the printed one-time code.
 - `codex auth login --manual` keeps the login flow usable in browser-restricted shells by printing the OAuth URL and accepting manual callback input instead of trying to open a browser.
 - In non-TTY/manual shells, provide the full redirect URL on stdin, for example: `echo "http://127.0.0.1:1455/auth/callback?code=..." | codex auth login --manual`.
 

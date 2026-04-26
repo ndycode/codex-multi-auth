@@ -70,9 +70,19 @@ codex auth forecast --live
 
 Use these only when the normal browser-first flow is unavailable.
 
+### Device auth login
+
+For remote, SSH, container, or other headless shells, prefer the device-code flow:
+
+```bash
+codex auth login --device-auth
+```
+
+Open `https://auth.openai.com/codex/device` in any browser, enter the printed code, and keep the terminal running until login completes. This path does not open a local browser and does not start the local OAuth callback server.
+
 ### Manual or no-browser login
 
-If browser launch is blocked or you want to handle the callback manually:
+If device auth is unavailable or you want to handle the callback manually:
 
 ```bash
 codex auth login --manual
@@ -173,7 +183,8 @@ If the OAuth callback on port `1455` fails:
 
 - stop the process using port `1455`
 - rerun `codex auth login`
-- if browser launch is unavailable, rerun `codex auth login --manual`
+- if browser launch is unavailable, prefer `codex auth login --device-auth`
+- if device auth is unavailable, rerun `codex auth login --manual`
 
 If account state looks stale:
 

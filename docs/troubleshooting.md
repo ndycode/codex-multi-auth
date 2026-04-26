@@ -50,6 +50,7 @@ npm i -g codex-multi-auth
 | --- | --- | --- |
 | Browser opens unexpectedly | Normal browser-first OAuth flow | Complete the auth step and return to the terminal |
 | OAuth callback port `1455` is in use | Another local process owns the port | Stop the conflicting process and rerun `codex auth login` |
+| Browser or callback handoff is unavailable | Remote, SSH, container, or headless shell | Run `codex auth login --device-auth`; use `codex auth login --manual` only if device auth is unavailable |
 | `missing field id_token` | Stale or malformed auth payload | Re-login the affected account |
 | `refresh_token_reused` | The token pair rotated in another context | Re-login the affected account |
 | `token_expired` | The refresh token is no longer valid | Re-login the affected account |

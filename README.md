@@ -135,6 +135,7 @@ codex auth forecast --live
 ```
 
 If browser launch is blocked, use the alternate login paths in [docs/getting-started.md](docs/getting-started.md#alternate-login-paths).
+For remote or headless shells, prefer `codex auth login --device-auth`.
 
 ---
 
@@ -305,7 +306,7 @@ codex auth login
 - Requests fail fast after repeated upstream 5xx errors: inspect `codex auth report --json` for runtime traffic and cooldown details
 - Storage cleanup fails with `EBUSY` / `EPERM` (Windows): run `codex auth doctor --fix` to retry, or manually remove `~/.codex/multi-auth/<project-key>/` and re-login
 - OAuth callback on port `1455` fails: free the port and re-run `codex auth login`
-- Browser launch is blocked or you are in a headless shell: re-run `codex auth login --manual` or set `CODEX_AUTH_NO_BROWSER=1`
+- Browser launch is blocked or you are in a headless shell: prefer `codex auth login --device-auth`; use `codex auth login --manual` or `CODEX_AUTH_NO_BROWSER=1` only when you need the callback-paste fallback
 - `missing field id_token` / `token_expired` / `refresh_token_reused`: re-login affected account
 
 </details>
