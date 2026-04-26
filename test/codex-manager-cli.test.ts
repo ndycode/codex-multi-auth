@@ -4708,6 +4708,28 @@ describe("codex manager cli commands", () => {
 				"Open: https://auth.openai.com/codex/device",
 			);
 			expect(renderedLogs).toContain("Code: ABCD-1234");
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+			expect(fetchMock).toHaveBeenNthCalledWith(
+				1,
+				"https://auth.openai.com/api/accounts/deviceauth/usercode",
+				expect.objectContaining({
+					method: "POST",
+					body: JSON.stringify({
+						client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
+					}),
+				}),
+			);
+			expect(fetchMock).toHaveBeenNthCalledWith(
+				2,
+				"https://auth.openai.com/api/accounts/deviceauth/token",
+				expect.objectContaining({
+					method: "POST",
+					body: JSON.stringify({
+						device_auth_id: "device-auth-1",
+						user_code: "ABCD-1234",
+					}),
+				}),
+			);
 			expect(browserModule.openBrowserUrl).not.toHaveBeenCalled();
 			expect(
 				vi.mocked(serverModule.startLocalOAuthServer),

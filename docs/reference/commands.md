@@ -66,8 +66,8 @@ Compatibility aliases are supported:
 
 | Flag | Applies to | Meaning |
 | --- | --- | --- |
-| `--device-auth` | login | Use the OpenAI Codex device-code flow for remote/headless login |
-| `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow |
+| `--device-auth` | login | Use the OpenAI Codex device-code flow for remote/headless login (mutually exclusive with `--manual` / `--no-browser`) |
+| `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow (mutually exclusive with `--device-auth`) |
 | `--json` | verify-flagged, verify, why-selected, best, forecast, report, fix, doctor, config explain, debug bundle | Print machine-readable output |
 | `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |
 | `--live` | best, forecast, report, fix | Use live probe before decisions/output |

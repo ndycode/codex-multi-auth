@@ -116,6 +116,7 @@ codex auth forecast --live
 - `Recover saved accounts` appears only when at least one valid named backup exists.
 - No new CLI flags or npm scripts were added for this flow.
 - The backup root remains `~/.codex/multi-auth/backups` by default, or `%CODEX_MULTI_AUTH_DIR%\backups` when `CODEX_MULTI_AUTH_DIR` is set.
+- `codex auth login --device-auth` starts a new device-code login directly and does not open the restore menu. Use plain `codex auth login` first when you want to recover a saved backup.
 
 ---
 

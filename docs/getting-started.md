@@ -78,7 +78,9 @@ For remote, SSH, container, or other headless shells, prefer the device-code flo
 codex auth login --device-auth
 ```
 
-Open `https://auth.openai.com/codex/device` in any browser, enter the printed code, and keep the terminal running until login completes. This path does not open a local browser and does not start the local OAuth callback server.
+Open `https://auth.openai.com/codex/device` in any browser, enter the printed code, and keep the terminal running until login completes. The code expires after 15 minutes; rerun `codex auth login --device-auth` if it times out. This path does not open a local browser and does not start the local OAuth callback server.
+
+`--device-auth` starts a new login directly. If you want to recover a saved backup first, run plain `codex auth login` so the onboarding restore menu can appear.
 
 ### Manual or no-browser login
 

@@ -11,6 +11,14 @@ export const DEVICE_AUTH_VERIFICATION_URL = `${DEVICE_AUTH_BASE_URL}/codex/devic
 export const DEVICE_AUTH_REDIRECT_URI = `${DEVICE_AUTH_BASE_URL}/deviceauth/callback`;
 export const DEVICE_AUTH_TIMEOUT_MS = 15 * 60 * 1000;
 export const DEVICE_AUTH_DEFAULT_INTERVAL_MS = 5_000;
+const DEVICE_AUTH_ABORTED_MESSAGE = "aborted";
+const DEVICE_AUTH_TRANSIENT_PENDING_STATUSES = new Set([
+	408,
+	429,
+	502,
+	503,
+	504,
+]);
 
 type FetchLike = typeof fetch;
 
@@ -38,8 +46,10 @@ export interface DeviceAuthFlowOptions {
 	fetchImpl?: FetchLike;
 	now?: () => number;
 	sleep?: (ms: number) => Promise<void>;
+	signal?: AbortSignal;
 	timeoutMs?: number;
 	log?: (message: string) => void;
+	random?: () => number;
 }
 
 function getFetch(options: DeviceAuthFlowOptions): FetchLike {
@@ -60,6 +70,10 @@ function getSleep(options: DeviceAuthFlowOptions): (ms: number) => Promise<void>
 	);
 }
 
+function getRandom(options: DeviceAuthFlowOptions): () => number {
+	return options.random ?? Math.random;
+}
+
 function failedResult(
 	reason: Extract<TokenResult, { type: "failed" }>["reason"],
 	message: string,
@@ -73,6 +87,63 @@ function failedResult(
 	};
 }
 
+function createAbortError(): Error {
+	const error = new Error(DEVICE_AUTH_ABORTED_MESSAGE);
+	error.name = "AbortError";
+	return error;
+}
+
+function isAbortError(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		(error.name === "AbortError" || error.message === DEVICE_AUTH_ABORTED_MESSAGE)
+	);
+}
+
+function abortedResult(): Extract<TokenResult, { type: "failed" }> {
+	return failedResult("network_error", DEVICE_AUTH_ABORTED_MESSAGE);
+}
+
+function sleepWithAbort(
+	ms: number,
+	options: DeviceAuthFlowOptions,
+): Promise<void> {
+	const signal = options.signal;
+	if (!signal) {
+		return getSleep(options)(ms);
+	}
+	if (signal.aborted) {
+		return Promise.reject(createAbortError());
+	}
+
+	const customSleep = options.sleep;
+	if (customSleep) {
+		let removeAbortListener = () => {};
+		const abortPromise = new Promise<void>((_resolve, reject) => {
+			const onAbort = () => reject(createAbortError());
+			signal.addEventListener("abort", onAbort, { once: true });
+			removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+		});
+		return Promise.race([customSleep(ms), abortPromise]).finally(
+			removeAbortListener,
+		);
+	}
+
+	return new Promise<void>((resolve, reject) => {
+		const onAbort = () => {
+			clearTimeout(timeout);
+			cleanup();
+			reject(createAbortError());
+		};
+		const cleanup = () => signal.removeEventListener("abort", onAbort);
+		const timeout = setTimeout(() => {
+			cleanup();
+			resolve();
+		}, ms);
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
 function formatWaitBudget(timeoutMs: number): string {
 	const totalSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
 	if (totalSeconds < 60) {
@@ -80,6 +151,58 @@ function formatWaitBudget(timeoutMs: number): string {
 	}
 	const totalMinutes = Math.ceil(totalSeconds / 60);
 	return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+}
+
+function isPendingStatus(status: number): boolean {
+	return (
+		status === 403 ||
+		status === 404 ||
+		DEVICE_AUTH_TRANSIENT_PENDING_STATUSES.has(status)
+	);
+}
+
+function parseRetryAfterMs(value: string | null, nowMs: number): number | null {
+	if (!value) return null;
+	const trimmed = value.trim();
+	if (!trimmed) return null;
+
+	const seconds = Number(trimmed);
+	if (Number.isFinite(seconds) && seconds >= 0) {
+		return Math.ceil(seconds * 1000);
+	}
+
+	const dateMs = Date.parse(trimmed);
+	if (Number.isFinite(dateMs)) {
+		return Math.max(0, dateMs - nowMs);
+	}
+	return null;
+}
+
+function applyLightJitter(
+	delayMs: number,
+	options: DeviceAuthFlowOptions,
+): number {
+	const jitterRatio = 1 + (getRandom(options)() - 0.5) * 0.2;
+	return Math.max(1_000, Math.round(delayMs * jitterRatio));
+}
+
+function resolvePollDelayMs(
+	response: Response,
+	deviceCode: DeviceAuthCode,
+	nowMs: number,
+	options: DeviceAuthFlowOptions,
+): number {
+	const retryAfterMs = parseRetryAfterMs(
+		response.headers.get("retry-after"),
+		nowMs,
+	);
+	if (retryAfterMs !== null) {
+		return Math.max(1_000, retryAfterMs);
+	}
+	if (response.status === 403 || response.status === 404) {
+		return deviceCode.intervalMs;
+	}
+	return applyLightJitter(deviceCode.intervalMs, options);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -161,12 +284,16 @@ async function readFailureText(response: Response): Promise<string> {
 export async function requestDeviceAuthorization(
 	options: DeviceAuthFlowOptions = {},
 ): Promise<DeviceAuthCodeResult> {
+	if (options.signal?.aborted) {
+		return abortedResult();
+	}
 	try {
 		const response = await getFetch(options)(
 			`${DEVICE_AUTH_API_BASE_URL}/deviceauth/usercode`,
 			{
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
+				signal: options.signal,
 				body: JSON.stringify({ client_id: CLIENT_ID }),
 			},
 		);
@@ -196,6 +323,9 @@ export async function requestDeviceAuthorization(
 		}
 		return { type: "success", deviceCode };
 	} catch (error) {
+		if (isAbortError(error) || options.signal?.aborted) {
+			return abortedResult();
+		}
 		return failedResult(
 			"network_error",
 			error instanceof Error ? error.message : String(error),
@@ -219,17 +349,20 @@ export async function pollDeviceAuthorization(
 	options: DeviceAuthFlowOptions = {},
 ): Promise<DeviceAuthCompletionResult> {
 	const now = getNow(options);
-	const sleep = getSleep(options);
 	const timeoutMs = options.timeoutMs ?? DEVICE_AUTH_TIMEOUT_MS;
 	const deadline = now() + timeoutMs;
 
 	try {
 		while (true) {
+			if (options.signal?.aborted) {
+				return abortedResult();
+			}
 			const response = await getFetch(options)(
 				`${DEVICE_AUTH_API_BASE_URL}/deviceauth/token`,
 				{
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
+					signal: options.signal,
 					body: JSON.stringify({
 						device_auth_id: deviceCode.deviceAuthId,
 						user_code: deviceCode.userCode,
@@ -249,15 +382,22 @@ export async function pollDeviceAuthorization(
 				return { type: "success", completion };
 			}
 
-			if (response.status === 403 || response.status === 404) {
-				const remainingMs = deadline - now();
+			if (isPendingStatus(response.status)) {
+				const nowMs = now();
+				const remainingMs = deadline - nowMs;
 				if (remainingMs <= 0) {
 					return failedResult(
-						"unknown",
+						"timeout",
 						`Device auth timed out after ${formatWaitBudget(timeoutMs)}`,
 					);
 				}
-				await sleep(Math.min(deviceCode.intervalMs, remainingMs));
+				const delayMs = resolvePollDelayMs(
+					response,
+					deviceCode,
+					nowMs,
+					options,
+				);
+				await sleepWithAbort(Math.min(delayMs, remainingMs), options);
 				continue;
 			}
 
@@ -269,6 +409,9 @@ export async function pollDeviceAuthorization(
 			);
 		}
 	} catch (error) {
+		if (isAbortError(error) || options.signal?.aborted) {
+			return abortedResult();
+		}
 		return failedResult(
 			"network_error",
 			error instanceof Error ? error.message : String(error),

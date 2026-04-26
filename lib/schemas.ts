@@ -298,6 +298,7 @@ export const TokenFailureReasonSchema = z.enum([
 	"invalid_response",
 	"network_error",
 	"missing_refresh",
+	"timeout",
 	"unknown",
 ]);
 

@@ -53,10 +53,14 @@ export function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
 		manual: false,
 		deviceAuth: false,
 	};
+	const manualFlags: string[] = [];
 
 	for (const arg of args) {
 		if (arg === "--manual" || arg === "--no-browser") {
 			options.manual = true;
+			if (!manualFlags.includes(arg)) {
+				manualFlags.push(arg);
+			}
 			continue;
 		}
 		if (arg === "--device-auth") {
@@ -74,10 +78,12 @@ export function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
 	}
 
 	if (options.deviceAuth && options.manual) {
+		const conflict =
+			manualFlags.length > 0 ? manualFlags.join(" or ") : "--manual";
 		return {
 			ok: false,
 			reason: "error",
-			message: "Cannot combine --device-auth with --manual or --no-browser",
+			message: `Cannot combine --device-auth with ${conflict}`,
 		};
 	}
 
