@@ -10,11 +10,15 @@ describe("codex-manager help parsers", () => {
 
 		expect(parseAuthLoginArgs(["--manual"])).toEqual({
 			ok: true,
-			options: { manual: true },
+			options: { manual: true, deviceAuth: false },
 		});
 		expect(parseAuthLoginArgs(["--no-browser"])).toEqual({
 			ok: true,
-			options: { manual: true },
+			options: { manual: true, deviceAuth: false },
+		});
+		expect(parseAuthLoginArgs(["--device-auth"])).toEqual({
+			ok: true,
+			options: { manual: false, deviceAuth: true },
 		});
 		expect(parseAuthLoginArgs(["--help"])).toEqual({
 			ok: false,
@@ -29,6 +33,16 @@ describe("codex-manager help parsers", () => {
 			ok: false,
 			reason: "error",
 			message: "Unknown login option: --bogus",
+		});
+		expect(parseAuthLoginArgs(["--device-auth", "--manual"])).toEqual({
+			ok: false,
+			reason: "error",
+			message: "Cannot combine --device-auth with --manual or --no-browser",
+		});
+		expect(parseAuthLoginArgs(["--no-browser", "--device-auth"])).toEqual({
+			ok: false,
+			reason: "error",
+			message: "Cannot combine --device-auth with --manual or --no-browser",
 		});
 	});
 
