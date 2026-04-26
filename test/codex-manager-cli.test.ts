@@ -4807,6 +4807,10 @@ describe("codex manager cli commands", () => {
 			});
 			promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
 			promptAddAnotherAccountMock.mockResolvedValue(false);
+			let resolveSecondPollStarted: () => void = () => undefined;
+			const secondPollStarted = new Promise<void>((resolve) => {
+				resolveSecondPollStarted = resolve;
+			});
 			const fetchMock = vi
 				.fn<typeof fetch>()
 				.mockResolvedValueOnce(
@@ -4820,12 +4824,13 @@ describe("codex manager cli commands", () => {
 						{ status: 200, headers: { "Content-Type": "application/json" } },
 					),
 				)
-				.mockResolvedValueOnce(
-					new Response("", {
+				.mockImplementationOnce(async () => {
+					resolveSecondPollStarted();
+					return new Response("", {
 						status: 429,
 						headers: { "Retry-After": "1" },
-					}),
-				)
+					});
+				})
 				.mockResolvedValueOnce(
 					new Response(
 						JSON.stringify({
@@ -4856,7 +4861,8 @@ describe("codex manager cli commands", () => {
 				"--device-auth",
 			]);
 
-			await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+			await secondPollStarted;
+			expect(fetchMock).toHaveBeenCalledTimes(2);
 			await vi.advanceTimersByTimeAsync(1_000);
 			const exitCode = await exitCodePromise;
 

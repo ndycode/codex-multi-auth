@@ -1440,6 +1440,9 @@ type OAuthSignInMode =
 	| "restore-backup"
 	| "cancel";
 type BackupRestoreMode = "latest" | "manual" | "back";
+type SignInFlowOptions = {
+	timeoutMs?: number;
+};
 
 export function formatBackupSavedAt(mtimeMs: number): string {
 	return new Date(mtimeMs).toLocaleString(undefined, {
@@ -1978,12 +1981,16 @@ async function runOAuthFlow(
 async function runSignInFlow(
 	forceNewLogin: boolean,
 	signInMode: Extract<OAuthSignInMode, "browser" | "manual" | "device">,
+	options: SignInFlowOptions = {},
 ): Promise<TokenResult> {
 	if (signInMode === "device") {
 		// OpenAI owns the device-code account picker; there is no force-new-login
 		// equivalent to pass through for this mode.
 		// TODO: Thread a manager-level AbortSignal when login cancellation exists.
-		return runDeviceAuthFlow({ log: console.log });
+		return runDeviceAuthFlow({
+			log: console.log,
+			timeoutMs: options.timeoutMs,
+		});
 	}
 	return runOAuthFlow(forceNewLogin, signInMode);
 }

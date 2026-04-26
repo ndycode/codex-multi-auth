@@ -49,6 +49,13 @@ describe("codex-manager help parsers", () => {
 			reason: "error",
 			message: "Cannot combine --device-auth with --no-browser",
 		});
+		expect(
+			parseAuthLoginArgs(["--device-auth", "--manual", "--no-browser"]),
+		).toEqual({
+			ok: false,
+			reason: "error",
+			message: "Cannot combine --device-auth with --manual or --no-browser",
+		});
 	});
 
 	it("parses best args and treats help as a first-class result", () => {
