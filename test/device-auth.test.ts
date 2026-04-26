@@ -21,16 +21,19 @@ describe("device auth flow", () => {
 	});
 
 	it("requests a user code and parses user_code plus string interval", async () => {
+		const nowMs = Date.parse("2026-04-26T00:00:00Z");
+		const expiresAtMs = nowMs + 15 * 60 * 1000;
 		const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
 			jsonResponse({
 				device_auth_id: "device-auth-1",
 				user_code: "ABCD-1234",
 				interval: "7.5",
+				expires_at: new Date(expiresAtMs).toISOString(),
 			}),
 		);
 		vi.stubGlobal("fetch", fetchMock);
 
-		const result = await requestDeviceAuthorization();
+		const result = await requestDeviceAuthorization({ now: () => nowMs });
 
 		expect(result).toEqual({
 			type: "success",
@@ -39,6 +42,7 @@ describe("device auth flow", () => {
 				userCode: "ABCD-1234",
 				deviceAuthId: "device-auth-1",
 				intervalMs: 7_500,
+				expiresAtMs,
 			},
 		});
 		expect(fetchMock).toHaveBeenCalledWith(
@@ -105,6 +109,42 @@ describe("device auth flow", () => {
 			type: "failed",
 			reason: "network_error",
 			message: "connection reset",
+		});
+	});
+
+	it("does not request a user code when the signal is already aborted", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		const fetchMock = vi.fn<typeof fetch>();
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await requestDeviceAuthorization({
+			signal: controller.signal,
+		});
+
+		expect(result).toEqual({
+			type: "failed",
+			reason: "network_error",
+			message: "aborted",
+		});
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("fails user-code requests on invalid success payloads", async () => {
+		const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+			jsonResponse({
+				user_code: "ABCD-1234",
+				interval: "5",
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await requestDeviceAuthorization();
+
+		expect(result).toEqual({
+			type: "failed",
+			reason: "invalid_response",
+			message: "Device code request response failed schema validation",
 		});
 	});
 
@@ -256,6 +296,7 @@ describe("device auth flow", () => {
 		const fetchMock = vi
 			.fn<typeof fetch>()
 			.mockResolvedValue(new Response("", { status: 403 }));
+		const sleepMock = vi.fn(() => new Promise<void>(() => {}));
 		vi.stubGlobal("fetch", fetchMock);
 
 		const resultPromise = pollDeviceAuthorization(
@@ -265,10 +306,14 @@ describe("device auth flow", () => {
 				deviceAuthId: "device-auth-1",
 				intervalMs: 5_000,
 			},
-			{ signal: controller.signal, timeoutMs: 10_000 },
+			{
+				signal: controller.signal,
+				sleep: sleepMock,
+				timeoutMs: 10_000,
+			},
 		);
 
-		await Promise.resolve();
+		await vi.waitFor(() => expect(sleepMock).toHaveBeenCalledTimes(1));
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		controller.abort();
 		await expect(resultPromise).resolves.toEqual({
@@ -277,6 +322,41 @@ describe("device auth flow", () => {
 			message: "aborted",
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("uses the server expiration as the polling deadline", async () => {
+		const fetchMock = vi
+			.fn<typeof fetch>()
+			.mockResolvedValue(new Response("", { status: 403 }));
+		let nowMs = 0;
+		const sleepMock = vi.fn(async (ms: number) => {
+			nowMs += ms;
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await pollDeviceAuthorization(
+			{
+				verificationUrl: DEVICE_AUTH_VERIFICATION_URL,
+				userCode: "ABCD-1234",
+				deviceAuthId: "device-auth-1",
+				intervalMs: 5_000,
+				expiresAtMs: 6_000,
+			},
+			{
+				now: () => nowMs,
+				sleep: sleepMock,
+				timeoutMs: 15_000,
+			},
+		);
+
+		expect(result).toEqual({
+			type: "failed",
+			reason: "timeout",
+			message: "Device auth timed out after 6 seconds",
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+		expect(sleepMock).toHaveBeenNthCalledWith(1, 5_000);
+		expect(sleepMock).toHaveBeenNthCalledWith(2, 1_000);
 	});
 
 	it("times out polling after the configured wait budget", async () => {
@@ -354,6 +434,7 @@ describe("device auth flow", () => {
 	});
 
 	it("exchanges the authorization code with the device redirect URI", async () => {
+		const nowMs = Date.parse("2026-04-26T00:00:00Z");
 		const fetchMock = vi
 			.fn<typeof fetch>()
 			.mockResolvedValueOnce(
@@ -361,6 +442,7 @@ describe("device auth flow", () => {
 					device_auth_id: "device-auth-1",
 					user_code: "ABCD-1234",
 					interval: "1",
+					expires_in: "600",
 				}),
 			)
 			.mockResolvedValueOnce(
@@ -381,7 +463,10 @@ describe("device auth flow", () => {
 		const logMock = vi.fn();
 		vi.stubGlobal("fetch", fetchMock);
 
-		const result = await runDeviceAuthFlow({ log: logMock });
+		const result = await runDeviceAuthFlow({
+			log: logMock,
+			now: () => nowMs,
+		});
 
 		expect(result).toEqual({
 			type: "success",
@@ -395,16 +480,45 @@ describe("device auth flow", () => {
 		expect(logMock).toHaveBeenCalledWith(`Open: ${DEVICE_AUTH_VERIFICATION_URL}`);
 		expect(logMock).toHaveBeenCalledWith("Code: ABCD-1234");
 		expect(logMock).toHaveBeenCalledWith(
-			"This code expires in 15 minutes. Never share it.",
+			"This code expires in 10 minutes. Never share it.",
 		);
 		const tokenExchangeCall = fetchMock.mock.calls[2];
 		expect(tokenExchangeCall?.[0]).toBe("https://auth.openai.com/oauth/token");
 		const tokenExchangeBody = tokenExchangeCall?.[1]?.body;
 		expect(tokenExchangeBody).toBeInstanceOf(URLSearchParams);
 		const params = tokenExchangeBody as URLSearchParams;
+		expect(params.get("grant_type")).toBe("authorization_code");
+		expect(params.get("client_id")).toBe("app_EMoamEEZ73f0CkXaXp7hrann");
 		expect(params.get("code")).toBe("authorization-code");
 		expect(params.get("code_verifier")).toBe("code-verifier");
 		expect(params.get("redirect_uri")).toBe(DEVICE_AUTH_REDIRECT_URI);
+	});
+
+	it("does not print or poll when aborted after the user-code response", async () => {
+		const controller = new AbortController();
+		const fetchMock = vi.fn<typeof fetch>().mockImplementationOnce(async () => {
+			controller.abort();
+			return jsonResponse({
+				device_auth_id: "device-auth-1",
+				user_code: "ABCD-1234",
+				interval: "1",
+			});
+		});
+		const logMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await runDeviceAuthFlow({
+			log: logMock,
+			signal: controller.signal,
+		});
+
+		expect(result).toEqual({
+			type: "failed",
+			reason: "network_error",
+			message: "aborted",
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(logMock).not.toHaveBeenCalled();
 	});
 
 	it("returns token exchange failures from the device auth flow", async () => {

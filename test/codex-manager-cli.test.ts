@@ -4745,6 +4745,135 @@ describe("codex manager cli commands", () => {
 		},
 	);
 
+	it("returns a clear failure when --device-auth polling reaches server expiry", async () => {
+		setInteractiveTTY(false);
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [],
+		});
+		const fetchMock = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						device_auth_id: "device-auth-expired",
+						user_code: "ABCD-1234",
+						interval: "1",
+						expires_at: new Date(Date.now() - 1_000).toISOString(),
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				),
+			)
+			.mockResolvedValueOnce(new Response("", { status: 403 }));
+		vi.stubGlobal("fetch", fetchMock);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"login",
+			"--device-auth",
+		]);
+
+		expect(exitCode).toBe(1);
+		expect(logSpy).toHaveBeenCalledWith("Device auth login");
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(errorSpy).toHaveBeenCalledWith(
+			"Login failed: Device auth timed out after 1 second",
+		);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+	});
+
+	it("honors Retry-After during --device-auth polling before persisting login", async () => {
+		vi.useFakeTimers();
+		try {
+			setInteractiveTTY(false);
+			const now = Date.now();
+			let storageState = {
+				version: 3 as const,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [] as Array<Record<string, unknown>>,
+			};
+			loadAccountsMock.mockImplementation(async () =>
+				structuredClone(storageState),
+			);
+			saveAccountsMock.mockImplementation(async (nextStorage) => {
+				storageState = structuredClone(nextStorage);
+			});
+			promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+			promptAddAnotherAccountMock.mockResolvedValue(false);
+			const fetchMock = vi
+				.fn<typeof fetch>()
+				.mockResolvedValueOnce(
+					new Response(
+						JSON.stringify({
+							device_auth_id: "device-auth-retry-after",
+							user_code: "ABCD-1234",
+							interval: "1",
+							expires_at: new Date(now + 60_000).toISOString(),
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					),
+				)
+				.mockResolvedValueOnce(
+					new Response("", {
+						status: 429,
+						headers: { "Retry-After": "1" },
+					}),
+				)
+				.mockResolvedValueOnce(
+					new Response(
+						JSON.stringify({
+							authorization_code: "authorization-code",
+							code_verifier: "code-verifier",
+							code_challenge: "code-challenge",
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					),
+				);
+			vi.stubGlobal("fetch", fetchMock);
+
+			const authModule = await import("../lib/auth/auth.js");
+			vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+				type: "success",
+				access: "access-device",
+				refresh: "refresh-device",
+				expires: now + 7_200_000,
+				idToken: "id-token-device",
+				multiAccount: true,
+			});
+			vi.spyOn(console, "log").mockImplementation(() => {});
+
+			const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+			const exitCodePromise = runCodexMultiAuthCli([
+				"auth",
+				"login",
+				"--device-auth",
+			]);
+
+			await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+			await vi.advanceTimersByTimeAsync(1_000);
+			const exitCode = await exitCodePromise;
+
+			expect(exitCode).toBe(0);
+			expect(fetchMock).toHaveBeenCalledTimes(3);
+			expect(authModule.exchangeAuthorizationCode).toHaveBeenCalledWith(
+				"authorization-code",
+				"code-verifier",
+				"https://auth.openai.com/deviceauth/callback",
+			);
+			expect(storageState.accounts).toHaveLength(1);
+			expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("restores the latest named backup from onboarding when no accounts exist", async () => {
 		const now = Date.now();
 		setInteractiveTTY(true);

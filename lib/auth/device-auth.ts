@@ -27,6 +27,7 @@ export interface DeviceAuthCode {
 	userCode: string;
 	deviceAuthId: string;
 	intervalMs: number;
+	expiresAtMs?: number;
 }
 
 export interface DeviceAuthCompletion {
@@ -60,12 +61,17 @@ function getNow(options: DeviceAuthFlowOptions): () => number {
 	return options.now ?? Date.now;
 }
 
+function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
+	(timer as { unref?: () => void }).unref?.();
+}
+
 function getSleep(options: DeviceAuthFlowOptions): (ms: number) => Promise<void> {
 	return (
 		options.sleep ??
 		((ms: number) =>
 			new Promise<void>((resolve) => {
-				setTimeout(resolve, ms);
+				const timeout = setTimeout(resolve, ms);
+				unrefTimer(timeout);
 			}))
 	);
 }
@@ -94,10 +100,7 @@ function createAbortError(): Error {
 }
 
 function isAbortError(error: unknown): boolean {
-	return (
-		error instanceof Error &&
-		(error.name === "AbortError" || error.message === DEVICE_AUTH_ABORTED_MESSAGE)
-	);
+	return error instanceof Error && error.name === "AbortError";
 }
 
 function abortedResult(): Extract<TokenResult, { type: "failed" }> {
@@ -140,6 +143,7 @@ function sleepWithAbort(
 			cleanup();
 			resolve();
 		}, ms);
+		unrefTimer(timeout);
 		signal.addEventListener("abort", onAbort, { once: true });
 	});
 }
@@ -237,6 +241,24 @@ function parseIntervalMs(value: unknown): number {
 	return DEVICE_AUTH_DEFAULT_INTERVAL_MS;
 }
 
+function parseExpirationMs(value: unknown, nowMs: number): number | null {
+	if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+		return nowMs + Math.trunc(value * 1000);
+	}
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+			const seconds = Number.parseFloat(trimmed);
+			return nowMs + Math.trunc(seconds * 1000);
+		}
+		const dateMs = Date.parse(trimmed);
+		if (Number.isFinite(dateMs)) {
+			return dateMs;
+		}
+	}
+	return null;
+}
+
 function parseNonEmptyString(value: unknown): string | null {
 	if (typeof value !== "string") {
 		return null;
@@ -245,7 +267,10 @@ function parseNonEmptyString(value: unknown): string | null {
 	return trimmed.length > 0 ? trimmed : null;
 }
 
-function parseDeviceCodePayload(payload: Record<string, unknown>): DeviceAuthCode | null {
+function parseDeviceCodePayload(
+	payload: Record<string, unknown>,
+	nowMs: number,
+): DeviceAuthCode | null {
 	const deviceAuthId = parseNonEmptyString(payload.device_auth_id);
 	const userCode =
 		parseNonEmptyString(payload.user_code) ??
@@ -253,11 +278,15 @@ function parseDeviceCodePayload(payload: Record<string, unknown>): DeviceAuthCod
 	if (!deviceAuthId || !userCode) {
 		return null;
 	}
+	const expiresAtMs =
+		parseExpirationMs(payload.expires_at, nowMs) ??
+		parseExpirationMs(payload.expires_in, nowMs);
 	return {
 		verificationUrl: DEVICE_AUTH_VERIFICATION_URL,
 		userCode,
 		deviceAuthId,
 		intervalMs: parseIntervalMs(payload.interval),
+		...(expiresAtMs === null ? {} : { expiresAtMs }),
 	};
 }
 
@@ -298,7 +327,6 @@ export async function requestDeviceAuthorization(
 			},
 		);
 		if (!response.ok) {
-			const safeText = await readFailureText(response);
 			if (response.status === 404) {
 				return failedResult(
 					"http_error",
@@ -306,6 +334,7 @@ export async function requestDeviceAuthorization(
 					response.status,
 				);
 			}
+			const safeText = await readFailureText(response);
 			return failedResult(
 				"http_error",
 				safeText || `Device code request failed with status ${response.status}`,
@@ -314,7 +343,9 @@ export async function requestDeviceAuthorization(
 		}
 
 		const payload = await readJsonRecord(response);
-		const deviceCode = payload ? parseDeviceCodePayload(payload) : null;
+		const deviceCode = payload
+			? parseDeviceCodePayload(payload, getNow(options)())
+			: null;
 		if (!deviceCode) {
 			return failedResult(
 				"invalid_response",
@@ -337,11 +368,18 @@ export function printDeviceAuthorizationPrompt(
 	deviceCode: DeviceAuthCode,
 	log: (message: string) => void = console.log,
 	timeoutMs = DEVICE_AUTH_TIMEOUT_MS,
+	nowMs = Date.now(),
 ): void {
+	const effectiveTimeoutMs =
+		deviceCode.expiresAtMs === undefined
+			? timeoutMs
+			: Math.min(timeoutMs, Math.max(0, deviceCode.expiresAtMs - nowMs));
 	log("Device auth login");
 	log(`Open: ${deviceCode.verificationUrl}`);
 	log(`Code: ${deviceCode.userCode}`);
-	log(`This code expires in ${formatWaitBudget(timeoutMs)}. Never share it.`);
+	log(
+		`This code expires in ${formatWaitBudget(effectiveTimeoutMs)}. Never share it.`,
+	);
 }
 
 export async function pollDeviceAuthorization(
@@ -349,8 +387,13 @@ export async function pollDeviceAuthorization(
 	options: DeviceAuthFlowOptions = {},
 ): Promise<DeviceAuthCompletionResult> {
 	const now = getNow(options);
+	const startMs = now();
 	const timeoutMs = options.timeoutMs ?? DEVICE_AUTH_TIMEOUT_MS;
-	const deadline = now() + timeoutMs;
+	const deadline = Math.min(
+		startMs + timeoutMs,
+		deviceCode.expiresAtMs ?? Number.POSITIVE_INFINITY,
+	);
+	const effectiveTimeoutMs = Math.max(0, deadline - startMs);
 
 	try {
 		while (true) {
@@ -388,7 +431,7 @@ export async function pollDeviceAuthorization(
 				if (remainingMs <= 0) {
 					return failedResult(
 						"timeout",
-						`Device auth timed out after ${formatWaitBudget(timeoutMs)}`,
+						`Device auth timed out after ${formatWaitBudget(effectiveTimeoutMs)}`,
 					);
 				}
 				const delayMs = resolvePollDelayMs(
@@ -426,11 +469,15 @@ export async function runDeviceAuthFlow(
 	if (deviceCodeResult.type !== "success") {
 		return deviceCodeResult;
 	}
+	if (options.signal?.aborted) {
+		return abortedResult();
+	}
 
 	printDeviceAuthorizationPrompt(
 		deviceCodeResult.deviceCode,
 		options.log ?? console.log,
 		options.timeoutMs ?? DEVICE_AUTH_TIMEOUT_MS,
+		getNow(options)(),
 	);
 
 	const completionResult = await pollDeviceAuthorization(
