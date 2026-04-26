@@ -229,9 +229,9 @@ function parseIntervalMs(value: unknown): number {
 		return Math.trunc(value * 1000);
 	}
 	if (typeof value === "string") {
-		const parsed = Number.parseInt(value.trim(), 10);
+		const parsed = Number.parseFloat(value.trim());
 		if (Number.isFinite(parsed) && parsed > 0) {
-			return parsed * 1000;
+			return Math.trunc(parsed * 1000);
 		}
 	}
 	return DEVICE_AUTH_DEFAULT_INTERVAL_MS;

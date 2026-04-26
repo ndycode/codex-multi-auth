@@ -25,7 +25,7 @@ describe("device auth flow", () => {
 			jsonResponse({
 				device_auth_id: "device-auth-1",
 				user_code: "ABCD-1234",
-				interval: "7",
+				interval: "7.5",
 			}),
 		);
 		vi.stubGlobal("fetch", fetchMock);
@@ -38,7 +38,7 @@ describe("device auth flow", () => {
 				verificationUrl: DEVICE_AUTH_VERIFICATION_URL,
 				userCode: "ABCD-1234",
 				deviceAuthId: "device-auth-1",
-				intervalMs: 7_000,
+				intervalMs: 7_500,
 			},
 		});
 		expect(fetchMock).toHaveBeenCalledWith(
