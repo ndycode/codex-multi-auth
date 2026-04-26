@@ -300,8 +300,9 @@ function parseCompletionPayload(
 	}
 	// OpenAI Codex's device-code endpoint intentionally returns the PKCE
 	// verifier with the issued authorization code. This mirrors the upstream
-	// Codex CLI flow; keep this poll response out of logs and only hand it
-	// directly to the token exchange.
+	// Codex CLI flow. The verifier is never persisted to account storage; keep
+	// this poll response out of logs and only hand it directly to the token
+	// exchange.
 	return { authorizationCode, codeVerifier };
 }
 

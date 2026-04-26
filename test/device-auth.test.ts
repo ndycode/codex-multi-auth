@@ -148,6 +148,22 @@ describe("device auth flow", () => {
 		});
 	});
 
+	it("returns sanitized user-code request failures", async () => {
+		const fetchMock = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(new Response("server unavailable", { status: 500 }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await requestDeviceAuthorization();
+
+		expect(result).toEqual({
+			type: "failed",
+			reason: "http_error",
+			statusCode: 500,
+			message: "server unavailable",
+		});
+	});
+
 	it("treats 403 and 404 poll responses as pending before success", async () => {
 		const fetchMock = vi
 			.fn<typeof fetch>()
@@ -482,6 +498,10 @@ describe("device auth flow", () => {
 		expect(logMock).toHaveBeenCalledWith(
 			"This code expires in 10 minutes. Never share it.",
 		);
+		const renderedLogs = logMock.mock.calls.flat().map((entry) => String(entry));
+		expect(renderedLogs.join("\n")).not.toMatch(
+			/access-token|refresh-token|id-token|code-verifier|code_verifier|user@example\.com/,
+		);
 		const tokenExchangeCall = fetchMock.mock.calls[2];
 		expect(tokenExchangeCall?.[0]).toBe("https://auth.openai.com/oauth/token");
 		const tokenExchangeBody = tokenExchangeCall?.[1]?.body;
@@ -521,6 +541,42 @@ describe("device auth flow", () => {
 		expect(logMock).not.toHaveBeenCalled();
 	});
 
+	it("does not leak tokens or email strings through device auth logs on timeout", async () => {
+		const fetchMock = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(
+				jsonResponse({
+					device_auth_id: "device-auth-1",
+					user_code: "ABCD-1234",
+					interval: "1",
+				}),
+			)
+			.mockResolvedValue(new Response("", { status: 403 }));
+		let nowMs = 0;
+		const sleepMock = vi.fn(async (ms: number) => {
+			nowMs += ms;
+		});
+		const logMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await runDeviceAuthFlow({
+			log: logMock,
+			now: () => nowMs,
+			sleep: sleepMock,
+			timeoutMs: 2_000,
+		});
+
+		expect(result).toEqual({
+			type: "failed",
+			reason: "timeout",
+			message: "Device auth timed out after 2 seconds",
+		});
+		const renderedLogs = logMock.mock.calls.flat().map((entry) => String(entry));
+		expect(renderedLogs.join("\n")).not.toMatch(
+			/access-token|refresh-token|id-token|code-verifier|code_verifier|user@example\.com/,
+		);
+	});
+
 	it("returns token exchange failures from the device auth flow", async () => {
 		const fetchMock = vi
 			.fn<typeof fetch>()
@@ -538,9 +594,10 @@ describe("device auth flow", () => {
 				}),
 			)
 			.mockResolvedValueOnce(new Response("bad token", { status: 400 }));
+		const logMock = vi.fn();
 		vi.stubGlobal("fetch", fetchMock);
 
-		const result = await runDeviceAuthFlow({ log: vi.fn() });
+		const result = await runDeviceAuthFlow({ log: logMock });
 
 		expect(result).toEqual({
 			type: "failed",
@@ -549,5 +606,9 @@ describe("device auth flow", () => {
 			message: "bad token",
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(3);
+		const renderedLogs = logMock.mock.calls.flat().map((entry) => String(entry));
+		expect(renderedLogs.join("\n")).not.toMatch(
+			/access-token|refresh-token|id-token|code-verifier|code_verifier|user@example\.com/,
+		);
 	});
 });
