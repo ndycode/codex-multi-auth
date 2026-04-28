@@ -3215,9 +3215,10 @@ describe("codex manager cli commands", () => {
 			],
 		});
 		loadQuotaCacheMock.mockResolvedValueOnce(originalQuotaCache);
-		saveAccountsMock.mockRejectedValueOnce(
-			makeErrnoError("save failed", "EBUSY"),
-		);
+		// Use mockRejectedValue (unbounded) so saveAccountsWithRetry's EBUSY retries
+		// also fail; the test asserts the rejection path and that we never silently
+		// drop the error.
+		saveAccountsMock.mockRejectedValue(makeErrnoError("save failed", "EBUSY"));
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
 		await expect(runCodexMultiAuthCli(["auth", "check"])).rejects.toMatchObject(

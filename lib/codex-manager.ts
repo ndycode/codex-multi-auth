@@ -38,6 +38,7 @@ import {
 } from "./codex-manager/commands/best.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
 import { runConfigExplainCommand } from "./codex-manager/commands/config-explain.js";
+import { saveAccountsWithRetry } from "./codex-manager/forecast-report-shared.js";
 import { runDebugBundleCommand } from "./codex-manager/commands/debug-bundle.js";
 import {
 	parseWhySelectedArgs,
@@ -2358,7 +2359,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 	}
 
 	if (changed) {
-		await saveAccounts(storage);
+		await saveAccountsWithRetry(storage, saveAccounts);
 	}
 
 	if (
@@ -3207,7 +3208,7 @@ async function persistAndSyncSelectedAccount({
 
 	account.lastUsed = switchNow;
 	account.lastSwitchReason = switchReason;
-	await saveAccounts(storage);
+	await saveAccountsWithRetry(storage, saveAccounts);
 
 	const synced = await setCodexCliActiveSelection({
 		accountId: account.accountId,

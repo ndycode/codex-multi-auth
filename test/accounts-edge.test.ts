@@ -122,7 +122,30 @@ describe("accounts edge branches", () => {
     const manager = await AccountManager.loadFromDisk();
 
     expect(manager.getAccountCount()).toBe(1);
+    // Non-retryable error (no errno code) → single attempt, then debug-logged.
     expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+  });
+
+  it("loadFromDisk retries source-of-truth persist on transient EBUSY", async () => {
+    const stored = buildStored([
+      buildStoredAccount({ refreshToken: "stored-1" }),
+    ]);
+    mockLoadAccounts.mockResolvedValue(stored);
+    mockSyncAccountStorageFromCodexCli.mockResolvedValue({
+      storage: stored,
+      changed: true,
+    });
+    const ebusy = Object.assign(new Error("file busy"), { code: "EBUSY" });
+    mockSaveAccounts.mockRejectedValueOnce(ebusy);
+    mockSaveAccounts.mockResolvedValueOnce(undefined);
+    mockLoadCodexCliState.mockResolvedValue({ accounts: [] });
+
+    const { AccountManager } = await importAccountsModule();
+    const manager = await AccountManager.loadFromDisk();
+
+    expect(manager.getAccountCount()).toBe(1);
+    // First attempt EBUSY, second succeeds — retry helper should have called twice.
+    expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
   });
 
   it("hydrates from Codex CLI cache and catches save failures", async () => {
