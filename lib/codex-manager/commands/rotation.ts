@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { formatAccountLabel, formatCooldown, formatWaitTime } from "../../accounts.js";
 import { getCodexMultiAuthDir } from "../../runtime-paths.js";
+import { saveAccountsWithRetry } from "../forecast-report-shared.js";
 import {
 	formatAppBindStatus,
 	type AppBindResult,
@@ -213,137 +214,158 @@ async function runResetRateLimits(
 		return 1;
 	}
 
+	// Keep the shared (non-project-scoped) path scope active across both load AND save so that
+	// `saveAccounts` writes to the same file we loaded from, even when the CLI was invoked from
+	// a project directory with a non-null project-scoped path. Restoring the previous path
+	// between load and save would silently route the write to the project storage file.
 	const previousStoragePath = deps.getStoragePath();
-	let storage: LoadedStorage;
-	let storagePath: string | null;
+	deps.setStoragePath(null);
 	try {
-		// Match `status`: the rotation pool is the shared (non-project-scoped) account file.
-		deps.setStoragePath(null);
-		storage = await deps.loadAccounts();
-		storagePath = deps.getStoragePath();
+		const storage = await deps.loadAccounts();
+		const storagePath = deps.getStoragePath();
+
+		if (!storage || storage.accounts.length === 0) {
+			const payload = {
+				ok: false,
+				error: "no accounts configured",
+				storagePath,
+			};
+			if (json) logInfo(JSON.stringify(payload));
+			else logError("No accounts configured.");
+			return 1;
+		}
+
+		if (scope === "account") {
+			if (accountIndex === null) {
+				logError("internal: account scope without index");
+				return 1;
+			}
+			if (accountIndex < 0 || accountIndex >= storage.accounts.length) {
+				const message = `Account index out of range (1..${storage.accounts.length}): ${accountIndex + 1}`;
+				if (json) {
+					logInfo(JSON.stringify({ ok: false, error: message, storagePath }));
+				} else {
+					logError(message);
+				}
+				return 1;
+			}
+		}
+
+		const targetIndexes =
+			scope === "all"
+				? storage.accounts.map((_, i) => i)
+				: accountIndex !== null
+					? [accountIndex]
+					: [];
+		const changes: ResetRateLimitsAccountChange[] = [];
+
+		for (const index of targetIndexes) {
+			const account = storage.accounts[index];
+			if (!account) continue;
+			const clearedRateLimitKeys: string[] = [];
+			if (account.rateLimitResetTimes) {
+				for (const [key, value] of Object.entries(account.rateLimitResetTimes)) {
+					if (typeof value === "number" && value > now) {
+						clearedRateLimitKeys.push(key);
+					}
+				}
+			}
+			const clearedCoolingDown =
+				typeof account.coolingDownUntil === "number" && account.coolingDownUntil > now;
+			if (clearedRateLimitKeys.length === 0 && !clearedCoolingDown) continue;
+			changes.push({
+				index,
+				label: formatAccountLabel(account, index),
+				clearedRateLimitKeys,
+				clearedCoolingDown,
+			});
+			if (!dryRun) {
+				// Only delete the keys we reported (future-active resets) so callers who inspect
+				// the JSON output can trust the report matches the action exactly. Past entries are
+				// no-ops for `getMinWaitTimeForFamily` and are pruned naturally by
+				// `clearExpiredRateLimits`.
+				if (account.rateLimitResetTimes) {
+					for (const key of clearedRateLimitKeys) {
+						delete account.rateLimitResetTimes[key];
+					}
+				}
+				if (clearedCoolingDown) {
+					delete account.coolingDownUntil;
+				}
+			}
+		}
+
+		if (!dryRun && changes.length > 0 && deps.saveAccounts) {
+			try {
+				// Use saveAccountsWithRetry to absorb transient Windows EBUSY/EPERM contention,
+				// matching every other saveAccounts call site in the codebase.
+				await saveAccountsWithRetry(storage, deps.saveAccounts);
+			} catch (error) {
+				const code =
+					error && typeof error === "object" && "code" in error
+						? String((error as { code?: unknown }).code ?? "")
+						: "";
+				const message = code
+					? `Failed to persist reset-rate-limits (${code}); rate-limit timers were not cleared.`
+					: `Failed to persist reset-rate-limits: ${
+							error instanceof Error ? error.message : String(error)
+						}`;
+				if (json) {
+					logInfo(JSON.stringify({ ok: false, error: message, storagePath }));
+				} else {
+					logError(message);
+				}
+				return 1;
+			}
+		}
+
+		if (json) {
+			logInfo(
+				JSON.stringify({
+					ok: true,
+					dryRun,
+					scope,
+					storagePath,
+					accountsScanned: targetIndexes.length,
+					accountsChanged: changes.length,
+					changes,
+					...(changes.length > 0 && !dryRun
+						? { restartHint: RESET_RATE_LIMITS_RESTART_HINT }
+						: {}),
+				}),
+			);
+			return 0;
+		}
+
+		if (changes.length === 0) {
+			logInfo(
+				scope === "all"
+					? "No accounts had active rate-limit or cooldown timers to clear."
+					: `Account ${(accountIndex ?? 0) + 1} had no active rate-limit or cooldown timers to clear.`,
+			);
+			return 0;
+		}
+
+		logInfo(
+			`${dryRun ? "Would clear" : "Cleared"} ${changes.length}/${targetIndexes.length} account(s):`,
+		);
+		for (const change of changes) {
+			const parts: string[] = [];
+			if (change.clearedRateLimitKeys.length > 0) {
+				parts.push(`rate-limit keys: ${change.clearedRateLimitKeys.join(", ")}`);
+			}
+			if (change.clearedCoolingDown) parts.push("cooldown");
+			logInfo(`  ${change.index + 1}. ${change.label} | ${parts.join(" | ")}`);
+		}
+		if (dryRun) {
+			logInfo("(dry-run; no changes written)");
+		} else {
+			logInfo(`Note: ${RESET_RATE_LIMITS_RESTART_HINT}`);
+		}
+		return 0;
 	} finally {
 		deps.setStoragePath(previousStoragePath);
 	}
-
-	if (!storage || storage.accounts.length === 0) {
-		const payload = {
-			ok: false,
-			error: "no accounts configured",
-			storagePath,
-		};
-		if (json) logInfo(JSON.stringify(payload));
-		else logError("No accounts configured.");
-		return 1;
-	}
-
-	if (scope === "account") {
-		if (accountIndex === null) {
-			logError("internal: account scope without index");
-			return 1;
-		}
-		if (accountIndex < 0 || accountIndex >= storage.accounts.length) {
-			const message = `Account index out of range (1..${storage.accounts.length}): ${accountIndex + 1}`;
-			if (json) {
-				logInfo(JSON.stringify({ ok: false, error: message, storagePath }));
-			} else {
-				logError(message);
-			}
-			return 1;
-		}
-	}
-
-	const targetIndexes =
-		scope === "all"
-			? storage.accounts.map((_, i) => i)
-			: accountIndex !== null
-				? [accountIndex]
-				: [];
-	const changes: ResetRateLimitsAccountChange[] = [];
-
-	for (const index of targetIndexes) {
-		const account = storage.accounts[index];
-		if (!account) continue;
-		const clearedRateLimitKeys: string[] = [];
-		if (account.rateLimitResetTimes) {
-			for (const [key, value] of Object.entries(account.rateLimitResetTimes)) {
-				if (typeof value === "number" && value > now) {
-					clearedRateLimitKeys.push(key);
-				}
-			}
-		}
-		const clearedCoolingDown =
-			typeof account.coolingDownUntil === "number" && account.coolingDownUntil > now;
-		if (clearedRateLimitKeys.length === 0 && !clearedCoolingDown) continue;
-		changes.push({
-			index,
-			label: formatAccountLabel(account, index),
-			clearedRateLimitKeys,
-			clearedCoolingDown,
-		});
-		if (!dryRun) {
-			// Only delete the keys we reported (future-active resets) so callers who inspect
-			// the JSON output can trust the report matches the action exactly. Past entries are
-			// no-ops for `getMinWaitTimeForFamily` and are pruned naturally by
-			// `clearExpiredRateLimits`.
-			if (account.rateLimitResetTimes) {
-				for (const key of clearedRateLimitKeys) {
-					delete account.rateLimitResetTimes[key];
-				}
-			}
-			if (clearedCoolingDown) {
-				delete account.coolingDownUntil;
-			}
-		}
-	}
-
-	if (!dryRun && changes.length > 0 && deps.saveAccounts) {
-		await deps.saveAccounts(storage);
-	}
-
-	if (json) {
-		logInfo(
-			JSON.stringify({
-				ok: true,
-				dryRun,
-				scope,
-				storagePath,
-				accountsScanned: targetIndexes.length,
-				accountsChanged: changes.length,
-				changes,
-				...(changes.length > 0 && !dryRun
-					? { restartHint: RESET_RATE_LIMITS_RESTART_HINT }
-					: {}),
-			}),
-		);
-		return 0;
-	}
-
-	if (changes.length === 0) {
-		logInfo(
-			scope === "all"
-				? "No accounts had active rate-limit or cooldown timers to clear."
-				: `Account ${(accountIndex ?? 0) + 1} had no active rate-limit or cooldown timers to clear.`,
-		);
-		return 0;
-	}
-
-	logInfo(
-		`${dryRun ? "Would clear" : "Cleared"} ${changes.length}/${targetIndexes.length} account(s):`,
-	);
-	for (const change of changes) {
-		const parts: string[] = [];
-		if (change.clearedRateLimitKeys.length > 0) {
-			parts.push(`rate-limit keys: ${change.clearedRateLimitKeys.join(", ")}`);
-		}
-		if (change.clearedCoolingDown) parts.push("cooldown");
-		logInfo(`  ${change.index + 1}. ${change.label} | ${parts.join(" | ")}`);
-	}
-	if (dryRun) {
-		logInfo("(dry-run; no changes written)");
-	} else {
-		logInfo(`Note: ${RESET_RATE_LIMITS_RESTART_HINT}`);
-	}
-	return 0;
 }
 
 function parseBooleanEnv(value: string | undefined): boolean | null {

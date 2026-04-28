@@ -698,6 +698,112 @@ describe("codex auth rotation command", () => {
 			expect(out).toContain("rotation disable");
 		});
 
+		it("keeps the global storage path active during save when CLI was project-scoped", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const projectPath = "/mock/project/openai-codex-accounts.json";
+			let activePath: string | null = projectPath;
+			let pathDuringSave: string | null | "unset" = "unset";
+			const setStoragePathMock = vi.fn((value: string | null) => {
+				activePath = value;
+			});
+			const saveAccountsMock = vi.fn(async (_storage: AccountStorageV3) => {
+				pathDuringSave = activePath;
+			});
+			const infos: string[] = [];
+			const errors: string[] = [];
+			const deps: RotationCommandDeps = {
+				loadPluginConfig: () => ({}),
+				savePluginConfig: vi.fn(async () => undefined),
+				getCodexRuntimeRotationProxy: () => true,
+				loadAccounts: async () => storage,
+				saveAccounts: saveAccountsMock,
+				resolveActiveIndex: () => 0,
+				getStoragePath: () => activePath,
+				setStoragePath: setStoragePathMock,
+				getNow: () => now,
+				logInfo: (m) => infos.push(m),
+				logError: (m) => errors.push(m),
+			};
+
+			await expect(
+				runRotationCommand(["reset-rate-limits"], deps),
+			).resolves.toBe(0);
+
+			expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+			expect(pathDuringSave).toBeNull();
+			expect(activePath).toBe(projectPath);
+			expect(setStoragePathMock).toHaveBeenNthCalledWith(1, null);
+			expect(setStoragePathMock).toHaveBeenLastCalledWith(projectPath);
+		});
+
+		it("retries save on transient EBUSY errors", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			let saveCallCount = 0;
+			const saveAccountsMock = vi.fn(async (_storage: AccountStorageV3) => {
+				saveCallCount += 1;
+				if (saveCallCount === 1) {
+					const err = new Error("file busy") as NodeJS.ErrnoException;
+					err.code = "EBUSY";
+					throw err;
+				}
+			});
+			const { deps, infos } = createDeps({ storage, now });
+			(deps as RotationCommandDeps).saveAccounts = saveAccountsMock;
+
+			await expect(
+				runRotationCommand(["reset-rate-limits"], deps),
+			).resolves.toBe(0);
+
+			expect(saveAccountsMock).toHaveBeenCalledTimes(2);
+			expect(infos.join("\n")).toContain("Cleared 2/3 account(s)");
+		});
+
+		it("returns 1 and reports the error code when save keeps failing", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const saveAccountsMock = vi.fn(async (_storage: AccountStorageV3) => {
+				const err = new Error("file busy") as NodeJS.ErrnoException;
+				err.code = "EBUSY";
+				throw err;
+			});
+			const { deps, errors } = createDeps({ storage, now });
+			(deps as RotationCommandDeps).saveAccounts = saveAccountsMock;
+
+			await expect(
+				runRotationCommand(["reset-rate-limits"], deps),
+			).resolves.toBe(1);
+
+			expect(saveAccountsMock).toHaveBeenCalledTimes(4);
+			expect(errors.join("\n")).toContain(
+				"Failed to persist reset-rate-limits (EBUSY)",
+			);
+		});
+
+		it("emits a JSON error envelope when save keeps failing under --json", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const saveAccountsMock = vi.fn(async (_storage: AccountStorageV3) => {
+				const err = new Error("file busy") as NodeJS.ErrnoException;
+				err.code = "EBUSY";
+				throw err;
+			});
+			const { deps, infos } = createDeps({ storage, now });
+			(deps as RotationCommandDeps).saveAccounts = saveAccountsMock;
+
+			await expect(
+				runRotationCommand(["reset-rate-limits", "--json"], deps),
+			).resolves.toBe(1);
+
+			expect(infos).toHaveLength(1);
+			const payload = JSON.parse(infos[0]);
+			expect(payload).toMatchObject({
+				ok: false,
+			});
+			expect(payload.error).toContain("EBUSY");
+		});
+
 		it("rejects --account with non-integer or fractional values", async () => {
 			const now = Date.now();
 			const { deps: depsAlpha, errors: errorsAlpha } = createDeps({
