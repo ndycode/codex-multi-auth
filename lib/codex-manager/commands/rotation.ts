@@ -45,6 +45,7 @@ export interface RotationCommandDeps {
 	savePluginConfig: (config: Partial<PluginConfig>) => Promise<void>;
 	getCodexRuntimeRotationProxy: (config: PluginConfig) => boolean;
 	loadAccounts: () => Promise<LoadedStorage>;
+	saveAccounts?: (storage: AccountStorageV3) => Promise<void>;
 	resolveActiveIndex: (storage: AccountStorageV3) => number;
 	getStoragePath: () => string | null;
 	setStoragePath: (path: string | null) => void;
@@ -67,13 +68,225 @@ function printRotationUsage(logInfo: (message: string) => void): void {
 			"  codex auth rotation status",
 			"  codex auth rotation bind-app",
 			"  codex auth rotation unbind-app",
+			"  codex auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]",
 			"",
 			"Behavior:",
 			"  - Runtime rotation is enabled by default for request-bearing Codex sessions",
 			"  - Binds the packaged Codex desktop app to the same localhost router when enabled or repaired",
 			"  - Use CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0 to disable the proxy for the current process without changing persistent settings",
+			"  - reset-rate-limits clears stored rateLimitResetTimes and active coolingDownUntil entries; use when `fix --live` confirms quota is available but the proxy still returns 503 pool-exhausted",
 		].join("\n"),
 	);
+}
+
+interface ResetRateLimitsOptions {
+	scope: "all" | "account";
+	accountIndex: number | null;
+	dryRun: boolean;
+	json: boolean;
+}
+
+interface ResetRateLimitsAccountChange {
+	index: number;
+	label: string;
+	clearedRateLimitKeys: string[];
+	clearedCoolingDown: boolean;
+}
+
+function parseResetRateLimitsArgs(
+	args: string[],
+): { ok: true; options: ResetRateLimitsOptions } | { ok: false; error: string } {
+	let scope: ResetRateLimitsOptions["scope"] = "all";
+	let scopeExplicit = false;
+	let accountIndex: number | null = null;
+	let dryRun = false;
+	let json = false;
+
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i];
+		if (arg === "--all") {
+			if (scopeExplicit && scope !== "all") {
+				return { ok: false, error: "--all and --account are mutually exclusive" };
+			}
+			scope = "all";
+			scopeExplicit = true;
+			continue;
+		}
+		if (arg === "--account") {
+			if (scopeExplicit && scope === "all") {
+				return { ok: false, error: "--all and --account are mutually exclusive" };
+			}
+			const next = args[i + 1];
+			if (!next) {
+				return { ok: false, error: "--account requires a 1-based index" };
+			}
+			const parsed = Number.parseInt(next, 10);
+			if (!Number.isInteger(parsed) || parsed < 1) {
+				return {
+					ok: false,
+					error: `--account expects a positive 1-based integer, got: ${next}`,
+				};
+			}
+			scope = "account";
+			scopeExplicit = true;
+			accountIndex = parsed - 1;
+			i += 1;
+			continue;
+		}
+		if (arg === "--dry-run") {
+			dryRun = true;
+			continue;
+		}
+		if (arg === "--json" || arg === "-j") {
+			json = true;
+			continue;
+		}
+		return { ok: false, error: `Unknown reset-rate-limits option: ${arg}` };
+	}
+
+	return { ok: true, options: { scope, accountIndex, dryRun, json } };
+}
+
+async function runResetRateLimits(
+	args: string[],
+	deps: RotationCommandDeps,
+): Promise<number> {
+	const logInfo = deps.logInfo ?? console.log;
+	const logError = deps.logError ?? console.error;
+	const now = deps.getNow?.() ?? Date.now();
+
+	const parsed = parseResetRateLimitsArgs(args);
+	if (!parsed.ok) {
+		logError(parsed.error);
+		return 1;
+	}
+	const { scope, accountIndex, dryRun, json } = parsed.options;
+
+	if (!dryRun && !deps.saveAccounts) {
+		logError(
+			"reset-rate-limits requires writable account storage but saveAccounts dep was not provided",
+		);
+		return 1;
+	}
+
+	const previousStoragePath = deps.getStoragePath();
+	let storage: LoadedStorage;
+	let storagePath: string | null;
+	try {
+		// Match `status`: the rotation pool is the shared (non-project-scoped) account file.
+		deps.setStoragePath(null);
+		storage = await deps.loadAccounts();
+		storagePath = deps.getStoragePath();
+	} finally {
+		deps.setStoragePath(previousStoragePath);
+	}
+
+	if (!storage || storage.accounts.length === 0) {
+		const payload = {
+			ok: false,
+			error: "no accounts configured",
+			storagePath,
+		};
+		if (json) logInfo(JSON.stringify(payload));
+		else logError("No accounts configured.");
+		return 1;
+	}
+
+	if (scope === "account") {
+		if (accountIndex === null) {
+			logError("internal: account scope without index");
+			return 1;
+		}
+		if (accountIndex < 0 || accountIndex >= storage.accounts.length) {
+			const message = `Account index out of range (1..${storage.accounts.length}): ${accountIndex + 1}`;
+			if (json) {
+				logInfo(JSON.stringify({ ok: false, error: message, storagePath }));
+			} else {
+				logError(message);
+			}
+			return 1;
+		}
+	}
+
+	const targetIndexes =
+		scope === "all"
+			? storage.accounts.map((_, i) => i)
+			: accountIndex !== null
+				? [accountIndex]
+				: [];
+	const changes: ResetRateLimitsAccountChange[] = [];
+
+	for (const index of targetIndexes) {
+		const account = storage.accounts[index];
+		if (!account) continue;
+		const clearedRateLimitKeys: string[] = [];
+		if (account.rateLimitResetTimes) {
+			for (const [key, value] of Object.entries(account.rateLimitResetTimes)) {
+				if (typeof value === "number" && value > now) {
+					clearedRateLimitKeys.push(key);
+				}
+			}
+		}
+		const clearedCoolingDown =
+			typeof account.coolingDownUntil === "number" && account.coolingDownUntil > now;
+		if (clearedRateLimitKeys.length === 0 && !clearedCoolingDown) continue;
+		changes.push({
+			index,
+			label: formatAccountLabel(account, index),
+			clearedRateLimitKeys,
+			clearedCoolingDown,
+		});
+		if (!dryRun) {
+			account.rateLimitResetTimes = {};
+			if (clearedCoolingDown) {
+				delete account.coolingDownUntil;
+			}
+		}
+	}
+
+	if (!dryRun && changes.length > 0 && deps.saveAccounts) {
+		await deps.saveAccounts(storage);
+	}
+
+	if (json) {
+		logInfo(
+			JSON.stringify({
+				ok: true,
+				dryRun,
+				scope,
+				storagePath,
+				accountsScanned: targetIndexes.length,
+				accountsChanged: changes.length,
+				changes,
+			}),
+		);
+		return 0;
+	}
+
+	if (changes.length === 0) {
+		logInfo(
+			scope === "all"
+				? "No accounts had active rate-limit or cooldown timers to clear."
+				: `Account ${(accountIndex ?? 0) + 1} had no active rate-limit or cooldown timers to clear.`,
+		);
+		return 0;
+	}
+
+	logInfo(
+		`${dryRun ? "Would clear" : "Cleared"} ${changes.length}/${targetIndexes.length} account(s):`,
+	);
+	for (const change of changes) {
+		const parts: string[] = [];
+		if (change.clearedRateLimitKeys.length > 0) {
+			parts.push(`rate-limit keys: ${change.clearedRateLimitKeys.join(", ")}`);
+		}
+		if (change.clearedCoolingDown) parts.push("cooldown");
+		logInfo(`  ${change.index + 1}. ${change.label} | ${parts.join(" | ")}`);
+	}
+	if (dryRun) {
+		logInfo("(dry-run; no changes written)");
+	}
+	return 0;
 }
 
 function parseBooleanEnv(value: string | undefined): boolean | null {
@@ -320,6 +533,9 @@ export async function runRotationCommand(
 	if (subcommand === "--help" || subcommand === "-h" || subcommand === "help") {
 		printRotationUsage(logInfo);
 		return 0;
+	}
+	if (subcommand === "reset-rate-limits") {
+		return runResetRateLimits(rest, deps);
 	}
 	if (rest.length > 0) {
 		logError(`Unknown rotation option: ${rest[0]}`);

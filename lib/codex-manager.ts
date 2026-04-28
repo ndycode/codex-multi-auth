@@ -3478,6 +3478,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			setStoragePath,
 			getStoragePath,
 			loadAccounts,
+			saveAccounts,
 			resolveActiveIndex,
 			bindCodexApp: bindCodexAppRuntimeRotation,
 			unbindCodexApp: unbindCodexAppRuntimeRotation,
