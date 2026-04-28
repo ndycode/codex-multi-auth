@@ -3,6 +3,23 @@ import { join } from "node:path";
 import { formatAccountLabel, formatCooldown, formatWaitTime } from "../../accounts.js";
 import { getCodexMultiAuthDir } from "../../runtime-paths.js";
 import { saveAccountsWithRetry } from "../forecast-report-shared.js";
+
+/**
+ * Build a privacy-safe label for {@link runResetRateLimits} change reports.
+ *
+ * `formatAccountLabel` includes the raw email, which leaks PII into JSON output
+ * that can be ingested by automation. This helper keeps just the 1-based index
+ * and a tail-only fragment of the accountId so a human can still tell which
+ * pool entry was affected.
+ */
+function redactedResetRateLimitsLabel(
+	account: AccountMetadataV3,
+	index: number,
+): string {
+	const id = typeof account.accountId === "string" ? account.accountId : "";
+	const tail = id.length > 4 ? `***${id.slice(-4)}` : "***";
+	return `account ${index + 1} (id:${tail})`;
+}
 import {
 	formatAppBindStatus,
 	type AppBindResult,
@@ -22,7 +39,7 @@ import {
 } from "../../runtime/runtime-current-account.js";
 import { isRateLimitedMarker } from "../rate-limit-markers.js";
 import type { PluginConfig } from "../../types.js";
-import type { AccountStorageV3 } from "../../storage.js";
+import type { AccountMetadataV3, AccountStorageV3 } from "../../storage.js";
 
 type LoadedStorage = AccountStorageV3 | null;
 
@@ -207,12 +224,8 @@ async function runResetRateLimits(
 	}
 	const { scope, accountIndex, dryRun, json } = parsed.options;
 
-	if (!dryRun && !deps.saveAccounts) {
-		logError(
-			"reset-rate-limits requires writable account storage but saveAccounts dep was not provided",
-		);
-		return 1;
-	}
+	// Defer the saveAccounts check to the actual write branch so a non-dry-run scan that
+	// finds nothing to clear can still succeed without writable storage.
 
 	// Keep the shared (non-project-scoped) path scope active across both load AND save so that
 	// `saveAccounts` writes to the same file we loaded from, even when the CLI was invoked from
@@ -275,7 +288,7 @@ async function runResetRateLimits(
 			if (clearedRateLimitKeys.length === 0 && !clearedCoolingDown) continue;
 			changes.push({
 				index,
-				label: formatAccountLabel(account, index),
+				label: redactedResetRateLimitsLabel(account, index),
 				clearedRateLimitKeys,
 				clearedCoolingDown,
 			});
@@ -295,7 +308,17 @@ async function runResetRateLimits(
 			}
 		}
 
-		if (!dryRun && changes.length > 0 && deps.saveAccounts) {
+		if (!dryRun && changes.length > 0) {
+			if (!deps.saveAccounts) {
+				const message =
+					"reset-rate-limits requires writable account storage but saveAccounts dep was not provided";
+				if (json) {
+					logInfo(JSON.stringify({ ok: false, error: message, storagePath }));
+				} else {
+					logError(message);
+				}
+				return 1;
+			}
 			try {
 				// Use saveAccountsWithRetry to absorb transient Windows EBUSY/EPERM contention,
 				// matching every other saveAccounts call site in the codebase.

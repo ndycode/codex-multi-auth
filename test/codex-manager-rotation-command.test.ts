@@ -880,5 +880,73 @@ describe("codex auth rotation command", () => {
 				"reset-rate-limits requires writable account storage",
 			);
 		});
+
+		it("succeeds without saveAccounts when the scan finds nothing to clear", async () => {
+			const now = Date.now();
+			const storage: AccountStorageV3 = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "clean@example.com",
+						accountId: "acc_clean",
+						refreshToken: "refresh-clean",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+						rateLimitResetTimes: {},
+					},
+				],
+			};
+			const { deps, errors, infos } = createDeps({
+				storage,
+				now,
+				withSaveAccounts: false,
+			});
+
+			await expect(
+				runRotationCommand(["reset-rate-limits"], deps),
+			).resolves.toBe(0);
+			expect(errors).toEqual([]);
+			expect(infos.join("\n")).toContain(
+				"No accounts had active rate-limit or cooldown timers to clear.",
+			);
+		});
+
+		it("does not leak email addresses into change labels", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const { deps, infos } = createDeps({ storage, now });
+
+			await expect(
+				runRotationCommand(["reset-rate-limits", "--json"], deps),
+			).resolves.toBe(0);
+
+			const payload = JSON.parse(infos[0]);
+			for (const change of payload.changes ?? []) {
+				expect(change.label).not.toContain("@");
+				expect(change.label).not.toContain("example.com");
+				expect(change.label).toMatch(/^account \d+ \(id:/);
+			}
+		});
+
+		it("serializes overlapping reset-rate-limits invocations safely", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const { deps, saveAccountsMock } = createDeps({ storage, now });
+
+			const [r1, r2] = await Promise.all([
+				runRotationCommand(["reset-rate-limits"], deps),
+				runRotationCommand(["reset-rate-limits"], deps),
+			]);
+
+			expect(r1).toBe(0);
+			expect(r2).toBe(0);
+			// First call clears the timers; the second sees a clean pool and skips the save.
+			expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+			expect(storage.accounts[0].rateLimitResetTimes).toEqual({});
+			expect(storage.accounts[0].coolingDownUntil).toBeUndefined();
+			expect(storage.accounts[1].rateLimitResetTimes).toEqual({});
+		});
 	});
 });
