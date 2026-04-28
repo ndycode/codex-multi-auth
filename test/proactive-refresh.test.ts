@@ -9,6 +9,7 @@ import {
 	MIN_PROACTIVE_BUFFER_MS,
 } from "../lib/proactive-refresh.js";
 import type { ManagedAccount } from "../lib/accounts.js";
+import * as logger from "../lib/logger.js";
 import * as refreshQueue from "../lib/refresh-queue.js";
 
 vi.mock("../lib/refresh-queue.js", () => ({
@@ -201,6 +202,61 @@ describe("proactive-refresh", () => {
 			expect(result.refreshed).toBe(true);
 			expect(result.reason).toBe("failed");
 			expect(result.tokenResult).toEqual(failResult);
+		});
+
+		it("redacts the account email through maskEmail in every log path", async () => {
+			const account = createMockAccount({
+				access: "old-access",
+				email: "user.example@longdomain.org",
+				expires: Date.now() + 60000,
+			});
+
+			const maskSpy = vi.spyOn(logger, "maskEmail");
+
+			// Success path emits both "Proactively refreshing token" and
+			// "Proactive refresh succeeded" — each masks the email once.
+			vi.mocked(refreshQueue.queuedRefresh).mockResolvedValueOnce({
+				type: "success" as const,
+				access: "new-access",
+				refresh: "new-refresh",
+				expires: Date.now() + 3600000,
+			});
+			await proactiveRefreshAccount(account);
+
+			// Failure path emits "Proactively refreshing token" and
+			// "Proactive refresh failed".
+			vi.mocked(refreshQueue.queuedRefresh).mockResolvedValueOnce({
+				type: "failed" as const,
+				reason: "network_error" as const,
+				message: "Network error",
+			});
+			await proactiveRefreshAccount(account);
+
+			expect(maskSpy).toHaveBeenCalledWith("user.example@longdomain.org");
+			// Two invocations × two log calls per invocation = 4 mask calls.
+			expect(maskSpy.mock.calls.length).toBeGreaterThanOrEqual(4);
+			maskSpy.mockRestore();
+		});
+
+		it("omits the email field entirely when account has no email", async () => {
+			const account = createMockAccount({
+				access: "old-access",
+				email: undefined,
+				expires: Date.now() + 60000,
+			});
+			const maskSpy = vi.spyOn(logger, "maskEmail");
+			vi.mocked(refreshQueue.queuedRefresh).mockResolvedValueOnce({
+				type: "success" as const,
+				access: "new-access",
+				refresh: "new-refresh",
+				expires: Date.now() + 3600000,
+			});
+
+			await proactiveRefreshAccount(account);
+
+			// No email key on the account → maskEmail must not be called.
+			expect(maskSpy).not.toHaveBeenCalled();
+			maskSpy.mockRestore();
 		});
 
 		it("uses custom buffer when specified", async () => {
