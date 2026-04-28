@@ -116,6 +116,14 @@ type ParseResetRateLimitsResult =
 	| { ok: true; help: true }
 	| { ok: false; error: string };
 
+/**
+ * Parse argv tokens into a {@link ResetRateLimitsOptions} bag (or an error / help signal).
+ *
+ * Accepts `--all`, `--account <1-based-int>`, `--dry-run`, `--json` / `-j`, and `--help` /
+ * `-h` / `help`. Rejects fractional or non-numeric account indexes and combinations of
+ * `--all` with `--account`. Returns a discriminated union so callers can route help and
+ * error paths without parsing twice.
+ */
 function parseResetRateLimitsArgs(args: string[]): ParseResetRateLimitsResult {
 	let scope: ResetRateLimitsOptions["scope"] = "all";
 	let scopeExplicit = false;
@@ -177,6 +185,10 @@ function parseResetRateLimitsArgs(args: string[]): ParseResetRateLimitsResult {
 	return { ok: true, help: false, options: { scope, accountIndex, dryRun, json } };
 }
 
+/**
+ * Print the focused `codex auth rotation reset-rate-limits` help block, including the
+ * proxy-restart guidance users need to run after a successful clear.
+ */
 function printResetRateLimitsUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
@@ -205,6 +217,18 @@ function printResetRateLimitsUsage(logInfo: (message: string) => void): void {
 const RESET_RATE_LIMITS_RESTART_HINT =
 	"If a runtime rotation proxy is currently running it may re-persist its in-memory timers and revert these changes. Run `codex auth rotation disable` then `codex auth rotation enable` (or restart the Codex app) to flush in-memory state and reload from disk.";
 
+/**
+ * Implement `codex auth rotation reset-rate-limits`: load the shared (non-project-scoped)
+ * account pool, scan for currently-blocking `rateLimitResetTimes` and `coolingDownUntil`
+ * entries, optionally clear them, and persist via {@link saveAccountsWithRetry}.
+ *
+ * The shared-path scope is held across both load and save so the write lands on the
+ * pool file even when the CLI was invoked from a project-scoped working directory.
+ *
+ * @returns 0 on success (including no-op runs and dry-runs), 1 on parse errors,
+ *   missing accounts, out-of-range index, missing writable `saveAccounts` for a real
+ *   write, or persistent save failures (e.g. Windows EBUSY exhaustion).
+ */
 async function runResetRateLimits(
 	args: string[],
 	deps: RotationCommandDeps,
