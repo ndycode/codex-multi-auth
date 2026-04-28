@@ -93,9 +93,12 @@ interface ResetRateLimitsAccountChange {
 	clearedCoolingDown: boolean;
 }
 
-function parseResetRateLimitsArgs(
-	args: string[],
-): { ok: true; options: ResetRateLimitsOptions } | { ok: false; error: string } {
+type ParseResetRateLimitsResult =
+	| { ok: true; help: false; options: ResetRateLimitsOptions }
+	| { ok: true; help: true }
+	| { ok: false; error: string };
+
+function parseResetRateLimitsArgs(args: string[]): ParseResetRateLimitsResult {
 	let scope: ResetRateLimitsOptions["scope"] = "all";
 	let scopeExplicit = false;
 	let accountIndex: number | null = null;
@@ -104,6 +107,9 @@ function parseResetRateLimitsArgs(
 
 	for (let i = 0; i < args.length; i += 1) {
 		const arg = args[i];
+		if (arg === "--help" || arg === "-h" || arg === "help") {
+			return { ok: true, help: true };
+		}
 		if (arg === "--all") {
 			if (scopeExplicit && scope !== "all") {
 				return { ok: false, error: "--all and --account are mutually exclusive" };
@@ -119,6 +125,12 @@ function parseResetRateLimitsArgs(
 			const next = args[i + 1];
 			if (!next) {
 				return { ok: false, error: "--account requires a 1-based index" };
+			}
+			if (!/^[0-9]+$/.test(next)) {
+				return {
+					ok: false,
+					error: `--account expects a positive 1-based integer, got: ${next}`,
+				};
 			}
 			const parsed = Number.parseInt(next, 10);
 			if (!Number.isInteger(parsed) || parsed < 1) {
@@ -144,8 +156,35 @@ function parseResetRateLimitsArgs(
 		return { ok: false, error: `Unknown reset-rate-limits option: ${arg}` };
 	}
 
-	return { ok: true, options: { scope, accountIndex, dryRun, json } };
+	return { ok: true, help: false, options: { scope, accountIndex, dryRun, json } };
 }
+
+function printResetRateLimitsUsage(logInfo: (message: string) => void): void {
+	logInfo(
+		[
+			"Usage:",
+			"  codex auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]",
+			"",
+			"Options:",
+			"  --all              Clear timers for every account (default)",
+			"  --account <idx>    Clear timers for a single 1-based account index",
+			"  --dry-run          Report what would change without writing",
+			"  --json, -j         Print machine-readable JSON output",
+			"",
+			"Notes:",
+			"  - Clears stored rateLimitResetTimes entries with reset times still in the future",
+			"    and any active coolingDownUntil entries.",
+			"  - Use when `codex auth fix --live` confirms upstream quota is available but the",
+			"    runtime rotation proxy still returns 503 pool-exhausted.",
+			"  - The runtime rotation proxy holds its own in-memory account state. After running",
+			"    this command, run `codex auth rotation disable` then `codex auth rotation enable`",
+			"    (or restart the Codex app) so the proxy reloads from disk.",
+		].join("\n"),
+	);
+}
+
+const RESET_RATE_LIMITS_RESTART_HINT =
+	"Run `codex auth rotation disable` then `codex auth rotation enable` (or restart the Codex app) so the runtime rotation proxy reloads cleared timers from disk.";
 
 async function runResetRateLimits(
 	args: string[],
@@ -159,6 +198,10 @@ async function runResetRateLimits(
 	if (!parsed.ok) {
 		logError(parsed.error);
 		return 1;
+	}
+	if (parsed.help) {
+		printResetRateLimitsUsage(logInfo);
+		return 0;
 	}
 	const { scope, accountIndex, dryRun, json } = parsed.options;
 
@@ -237,7 +280,15 @@ async function runResetRateLimits(
 			clearedCoolingDown,
 		});
 		if (!dryRun) {
-			account.rateLimitResetTimes = {};
+			// Only delete the keys we reported (future-active resets) so callers who inspect
+			// the JSON output can trust the report matches the action exactly. Past entries are
+			// no-ops for `getMinWaitTimeForFamily` and are pruned naturally by
+			// `clearExpiredRateLimits`.
+			if (account.rateLimitResetTimes) {
+				for (const key of clearedRateLimitKeys) {
+					delete account.rateLimitResetTimes[key];
+				}
+			}
 			if (clearedCoolingDown) {
 				delete account.coolingDownUntil;
 			}
@@ -258,6 +309,9 @@ async function runResetRateLimits(
 				accountsScanned: targetIndexes.length,
 				accountsChanged: changes.length,
 				changes,
+				...(changes.length > 0 && !dryRun
+					? { restartHint: RESET_RATE_LIMITS_RESTART_HINT }
+					: {}),
 			}),
 		);
 		return 0;
@@ -285,6 +339,8 @@ async function runResetRateLimits(
 	}
 	if (dryRun) {
 		logInfo("(dry-run; no changes written)");
+	} else {
+		logInfo(`Note: ${RESET_RATE_LIMITS_RESTART_HINT}`);
 	}
 	return 0;
 }

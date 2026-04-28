@@ -574,7 +574,7 @@ describe("codex auth rotation command", () => {
 			expect(errors.join("\n")).toContain("--all and --account are mutually exclusive");
 		});
 
-		it("emits JSON when --json is set", async () => {
+		it("emits JSON when --json is set, including a restart hint after writes", async () => {
 			const now = Date.now();
 			const storage = buildStorageWithLimits(now);
 			const { deps, infos } = createDeps({ storage, now });
@@ -597,6 +597,117 @@ describe("codex auth rotation command", () => {
 				index: 0,
 				clearedCoolingDown: true,
 			});
+			expect(payload.restartHint).toMatch(/codex auth rotation disable/);
+		});
+
+		it("omits the restart hint from JSON output for dry-run and no-op runs", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const { deps, infos } = createDeps({ storage, now });
+
+			await expect(
+				runRotationCommand(
+					["reset-rate-limits", "--dry-run", "--json"],
+					deps,
+				),
+			).resolves.toBe(0);
+
+			expect(infos).toHaveLength(1);
+			const payload = JSON.parse(infos[0]);
+			expect(payload.dryRun).toBe(true);
+			expect(payload.restartHint).toBeUndefined();
+		});
+
+		it("prints a restart hint after successful clears in human-readable mode", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const { deps, infos } = createDeps({ storage, now });
+
+			await expect(
+				runRotationCommand(["reset-rate-limits"], deps),
+			).resolves.toBe(0);
+
+			expect(infos.join("\n")).toContain(
+				"Note: Run `codex auth rotation disable` then `codex auth rotation enable`",
+			);
+		});
+
+		it("only deletes future-active rate-limit keys and preserves expired ones", async () => {
+			const now = Date.now();
+			const storage: AccountStorageV3 = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "mixed@example.com",
+						accountId: "acc_mixed",
+						refreshToken: "refresh-mixed",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						rateLimitResetTimes: {
+							codex: now + 60_000,
+							"codex:legacy": now - 30_000,
+						},
+					},
+				],
+			};
+			const { deps, saveAccountsMock, infos } = createDeps({ storage, now });
+
+			await expect(
+				runRotationCommand(["reset-rate-limits", "--json"], deps),
+			).resolves.toBe(0);
+
+			expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+			expect(storage.accounts[0].rateLimitResetTimes).toEqual({
+				"codex:legacy": now - 30_000,
+			});
+			const payload = JSON.parse(infos[0]);
+			expect(payload.changes[0].clearedRateLimitKeys).toEqual(["codex"]);
+		});
+
+		it("prints subcommand help and exits 0 on --help", async () => {
+			const { deps, infos } = createDeps();
+
+			await expect(
+				runRotationCommand(["reset-rate-limits", "--help"], deps),
+			).resolves.toBe(0);
+
+			const out = infos.join("\n");
+			expect(out).toContain("Usage:");
+			expect(out).toContain("--account <idx>");
+			expect(out).toContain("rotation disable");
+		});
+
+		it("rejects --account with non-integer or fractional values", async () => {
+			const now = Date.now();
+			const { deps: depsAlpha, errors: errorsAlpha } = createDeps({
+				storage: buildStorageWithLimits(now),
+				now,
+			});
+			await expect(
+				runRotationCommand(
+					["reset-rate-limits", "--account", "1abc"],
+					depsAlpha,
+				),
+			).resolves.toBe(1);
+			expect(errorsAlpha.join("\n")).toContain(
+				"--account expects a positive 1-based integer",
+			);
+
+			const { deps: depsFraction, errors: errorsFraction } = createDeps({
+				storage: buildStorageWithLimits(now),
+				now,
+			});
+			await expect(
+				runRotationCommand(
+					["reset-rate-limits", "--account", "1.5"],
+					depsFraction,
+				),
+			).resolves.toBe(1);
+			expect(errorsFraction.join("\n")).toContain(
+				"--account expects a positive 1-based integer",
+			);
 		});
 
 		it("returns 0 with a friendly message when nothing is rate-limited", async () => {
