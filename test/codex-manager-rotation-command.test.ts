@@ -574,6 +574,24 @@ describe("codex auth rotation command", () => {
 			expect(errors.join("\n")).toContain("--all and --account are mutually exclusive");
 		});
 
+		it("rejects --account followed by --all (reverse order)", async () => {
+			const now = Date.now();
+			const { deps, errors, saveAccountsMock } = createDeps({
+				storage: buildStorageWithLimits(now),
+				now,
+			});
+
+			await expect(
+				runRotationCommand(
+					["reset-rate-limits", "--account", "1", "--all"],
+					deps,
+				),
+			).resolves.toBe(1);
+
+			expect(saveAccountsMock).not.toHaveBeenCalled();
+			expect(errors.join("\n")).toContain("--all and --account are mutually exclusive");
+		});
+
 		it("emits JSON when --json is set, including a restart hint after writes", async () => {
 			const now = Date.now();
 			const storage = buildStorageWithLimits(now);
@@ -627,9 +645,10 @@ describe("codex auth rotation command", () => {
 				runRotationCommand(["reset-rate-limits"], deps),
 			).resolves.toBe(0);
 
-			expect(infos.join("\n")).toContain(
-				"Note: Run `codex auth rotation disable` then `codex auth rotation enable`",
-			);
+			const out = infos.join("\n");
+			expect(out).toMatch(/Note: .*re-persist its in-memory timers/);
+			expect(out).toContain("codex auth rotation disable");
+			expect(out).toContain("codex auth rotation enable");
 		});
 
 		it("only deletes future-active rate-limit keys and preserves expired ones", async () => {

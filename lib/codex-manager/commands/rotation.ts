@@ -176,15 +176,16 @@ function printResetRateLimitsUsage(logInfo: (message: string) => void): void {
 			"    and any active coolingDownUntil entries.",
 			"  - Use when `codex auth fix --live` confirms upstream quota is available but the",
 			"    runtime rotation proxy still returns 503 pool-exhausted.",
-			"  - The runtime rotation proxy holds its own in-memory account state. After running",
-			"    this command, run `codex auth rotation disable` then `codex auth rotation enable`",
-			"    (or restart the Codex app) so the proxy reloads from disk.",
+			"  - If a runtime rotation proxy is currently running it may re-persist its in-memory",
+			"    timers and revert these changes. After clearing, run `codex auth rotation disable`",
+			"    then `codex auth rotation enable` (or restart the Codex app) to flush in-memory",
+			"    state and reload from disk.",
 		].join("\n"),
 	);
 }
 
 const RESET_RATE_LIMITS_RESTART_HINT =
-	"Run `codex auth rotation disable` then `codex auth rotation enable` (or restart the Codex app) so the runtime rotation proxy reloads cleared timers from disk.";
+	"If a runtime rotation proxy is currently running it may re-persist its in-memory timers and revert these changes. Run `codex auth rotation disable` then `codex auth rotation enable` (or restart the Codex app) to flush in-memory state and reload from disk.";
 
 async function runResetRateLimits(
 	args: string[],
