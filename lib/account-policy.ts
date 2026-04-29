@@ -107,12 +107,12 @@ export function getAccountPolicyPath(): string {
 
 export function getAccountPolicyKey(
 	account: Pick<AccountMetadataV3, "accountId" | "email">,
-	index?: number,
+	_index?: number,
 ): string {
 	const identity =
 		account.accountId?.trim() ||
 		account.email?.trim().toLowerCase() ||
-		(typeof index === "number" ? `index:${index}` : "unknown");
+		"unknown";
 	return `sha256:${createHash("sha256").update(identity).digest("hex")}`;
 }
 
