@@ -233,7 +233,10 @@ describe("Documentation Integrity", () => {
 	});
 
 	it("does not include opencode wording in user docs", () => {
-		const allowedOpencodeFiles = new Set(["docs/reference/storage-paths.md"]);
+		const allowedOpencodeFiles = new Set([
+			"docs/reference/storage-paths.md",
+			"docs/reference/commands.md",
+		]);
 		for (const filePath of getUserDocs()) {
 			const content = read(filePath).toLowerCase();
 			const hasLegacyHostWord = content.includes("opencode");
@@ -328,7 +331,7 @@ describe("Documentation Integrity", () => {
 
 		expect(readme).toContain("codex auth fix --live --model gpt-5.3-codex");
 		expect(commandRef).toContain(
-			"| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, fix, doctor, config explain, debug bundle |",
+			"| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle |",
 		);
 		expect(commandRef).toContain(
 			"| `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |",

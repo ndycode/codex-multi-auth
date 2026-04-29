@@ -7,6 +7,17 @@ This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
+## [2.1.0] - 2026-04-29
+
+Release candidate for local usage governance and the local bridge. See [docs/releases/v2.1.0.md](docs/releases/v2.1.0.md) for full details.
+
+### Added
+
+- local JSONL usage ledger, `codex auth usage`, budgets, account policies, routing profiles, model capability views, and `codex auth monitor`
+- runtime policy enforcement before account selection in runtime proxy and plugin-host paths, with exactly-once local usage rows for request outcomes
+- optional loopback-only local bridge for `/health`, `/v1/models`, and `/v1/responses`
+- hashed local bridge client tokens and deterministic integration snippets using `CODEX_MULTI_AUTH_LOCAL_KEY`
+
 ## [2.0.1] - 2026-04-25
 
 ### Changed

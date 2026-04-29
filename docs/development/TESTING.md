@@ -59,6 +59,8 @@ npm run bench:edit-formats:smoke
 | Storage durability | backup/WAL recovery remains valid |
 | CLI state sync | active account sync with Codex CLI files |
 | Runtime rotation | localhost proxy startup, request forwarding, account rotation, shadow-home sync-back, app-helper status |
+| Local governance | usage ledger, account policies, routing profiles, budget guards, runtime policy, monitor aggregation |
+| Local bridge | loopback-only health/models/responses forwarding, bearer token checks, integration snippets |
 | Packaged app bind | config backup/restore, router startup state, startup entry cleanup |
 | Live updates | account changes picked up without restart |
 | Concurrency race safety | refresh/write races covered by deterministic tests |
@@ -76,6 +78,10 @@ codex auth forecast --live
 codex auth fix --dry-run
 codex auth doctor --fix --dry-run
 codex auth report --live --json
+codex auth usage --since 24h --by outcome
+codex auth monitor --json
+codex auth bridge token create --label smoke
+codex auth integrations --kind python
 ```
 
 Optional plugin-host smoke:

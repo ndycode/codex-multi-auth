@@ -28,6 +28,12 @@ import {
 import { getModelFamily, type ModelFamily } from "./prompts/codex.js";
 import { queuedRefresh } from "./refresh-queue.js";
 import { mutateRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
+import {
+	createRuntimeUsageRecorder,
+	evaluateRuntimePolicy,
+	loadRuntimePolicyState,
+	type RuntimePolicyDecision,
+} from "./policy/runtime-policy.js";
 import { SessionAffinityStore } from "./session-affinity.js";
 import type { OAuthAuthDetails, RequestBody, TokenResult } from "./types.js";
 import { isRecord } from "./utils.js";
@@ -600,6 +606,7 @@ function chooseAccount(params: {
 	model: string | null;
 	attemptedIndexes: ReadonlySet<number>;
 	now: number;
+	policy: RuntimePolicyDecision | null;
 }): ManagedAccount | null {
 	const {
 		accountManager,
@@ -609,9 +616,14 @@ function chooseAccount(params: {
 		model,
 		attemptedIndexes,
 		now,
+		policy,
 	} = params;
 	const preferredIndex = sessionAffinityStore?.getPreferredAccountIndex(sessionKey, now);
-	if (typeof preferredIndex === "number" && !attemptedIndexes.has(preferredIndex)) {
+	if (
+		typeof preferredIndex === "number" &&
+		!attemptedIndexes.has(preferredIndex) &&
+		!policy?.blockedAccountIndexes.has(preferredIndex)
+	) {
 		const preferred = accountManager.getAccountByIndex(preferredIndex);
 		if (
 			preferred &&
@@ -622,11 +634,20 @@ function chooseAccount(params: {
 		}
 	}
 
-	const selected = accountManager.getCurrentOrNextForFamilyHybrid(family, model);
-	if (selected && !attemptedIndexes.has(selected.index)) return selected;
+	const selected = accountManager.getCurrentOrNextForFamilyHybrid(family, model, {
+		scoreBoostByAccount: policy?.scoreBoostByAccount,
+	});
+	if (
+		selected &&
+		!attemptedIndexes.has(selected.index) &&
+		!policy?.blockedAccountIndexes.has(selected.index)
+	) {
+		return selected;
+	}
 
 	for (const account of accountManager.getAccountsSnapshot()) {
 		if (attemptedIndexes.has(account.index)) continue;
+		if (policy?.blockedAccountIndexes.has(account.index)) continue;
 		if (accountManager.isAccountAvailableForFamily(account.index, family, model)) {
 			const live = accountManager.getAccountByIndex(account.index);
 			if (!live) continue;
@@ -715,7 +736,7 @@ async function forwardStreamingResponse(
 	status: RuntimeRotationProxyStatus,
 	onStreamError: () => void,
 	streamStallTimeoutMs: number,
-): Promise<void> {
+): Promise<boolean> {
 	status.streamsStarted += 1;
 	res.writeHead(
 		upstream.status,
@@ -723,7 +744,7 @@ async function forwardStreamingResponse(
 	);
 	if (!upstream.body) {
 		res.end();
-		return;
+		return true;
 	}
 
 	const reader = upstream.body.getReader();
@@ -748,12 +769,14 @@ async function forwardStreamingResponse(
 			}
 		}
 		res.end();
+		return true;
 	} catch (error) {
 		status.lastError = error instanceof Error ? error.message : String(error);
 		onStreamError();
 		if (!res.destroyed) {
 			res.destroy(error instanceof Error ? error : undefined);
 		}
+		return false;
 	}
 }
 
@@ -814,6 +837,7 @@ export async function startRuntimeRotationProxy(
 		req: IncomingMessage,
 		res: ServerResponse,
 	): Promise<void> => {
+		let usageRecorder: ReturnType<typeof createRuntimeUsageRecorder> | null = null;
 		try {
 			const incomingUrl = new URL(req.url ?? "/", "http://127.0.0.1");
 			const isResponsesRequest =
@@ -838,6 +862,60 @@ export async function startRuntimeRotationProxy(
 						req,
 						await readRequestBody(req, maxRequestBodyBytes),
 					);
+			const requestStartedAt = now();
+			let policyDecision: RuntimePolicyDecision | null = null;
+			let projectKey: string | null = null;
+			let policyError: string | null = null;
+			try {
+				const policyState = await loadRuntimePolicyState();
+				projectKey = policyState.project.projectKey;
+				policyDecision = await evaluateRuntimePolicy({
+					state: policyState,
+					accounts: accountManager.getAccountsSnapshot(),
+					model: context.model,
+					now: requestStartedAt,
+				});
+			} catch (error) {
+				policyError = error instanceof Error ? error.message : String(error);
+				status.lastError = policyError;
+			}
+			usageRecorder = createRuntimeUsageRecorder({
+				source: "runtime-proxy",
+				operation: isModelsRequest ? "models" : "responses",
+				model: context.model,
+				projectKey,
+				requestId: context.sessionKey,
+				startedAt: requestStartedAt,
+			});
+			if (policyError) {
+				await usageRecorder.record({
+					outcome: "failure",
+					statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
+					errorCode: "runtime_policy_unavailable",
+				});
+				writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, {
+					error: {
+						message: "Runtime policy could not be loaded for this local request.",
+						code: "runtime_policy_unavailable",
+					},
+				});
+				return;
+			}
+			if (policyDecision && !policyDecision.allowed) {
+				await usageRecorder.record({
+					outcome: "blocked",
+					statusCode: policyDecision.statusCode,
+					errorCode: policyDecision.errorCode,
+				});
+				writeJson(res, policyDecision.statusCode, {
+					error: {
+						message: "Runtime policy blocked this local request.",
+						code: policyDecision.errorCode ?? "policy_blocked",
+						reasons: policyDecision.reasons,
+					},
+				});
+				return;
+			}
 			const upstreamUrl = buildUpstreamUrl(
 				req,
 				upstreamBaseUrl,
@@ -859,6 +937,7 @@ export async function startRuntimeRotationProxy(
 					model: context.model,
 					attemptedIndexes,
 					now: now(),
+					policy: policyDecision,
 				});
 				if (!selected) break;
 				attemptedIndexes.add(selected.index);
@@ -1028,7 +1107,7 @@ export async function startRuntimeRotationProxy(
 					context.family,
 				);
 
-				await forwardStreamingResponse(
+				const forwarded = await forwardStreamingResponse(
 					upstream,
 					res,
 					status,
@@ -1048,6 +1127,12 @@ export async function startRuntimeRotationProxy(
 					},
 					streamStallTimeoutMs,
 				);
+				await usageRecorder.record({
+					outcome: forwarded ? "success" : "failure",
+					statusCode: upstream.status,
+					errorCode: forwarded ? null : "stream_forward_failed",
+					account: refreshed.account,
+				});
 				return;
 			}
 
@@ -1058,6 +1143,11 @@ export async function startRuntimeRotationProxy(
 				exhaustionReason = "budget";
 			}
 
+			await usageRecorder?.record({
+				outcome: "failure",
+				statusCode: normalizeExhaustionStatus(exhaustionReason),
+				errorCode: exhaustionReason,
+			});
 			writePoolExhausted({
 				res,
 				accountManager,
@@ -1069,6 +1159,11 @@ export async function startRuntimeRotationProxy(
 			status.lastError = error instanceof Error ? error.message : String(error);
 			if (!res.headersSent) {
 				if (isRuntimeProxyHttpError(error)) {
+					await usageRecorder?.record({
+						outcome: "failure",
+						statusCode: error.statusCode,
+						errorCode: error.code,
+					});
 					writeJson(res, error.statusCode, {
 						error: {
 							message: error.message,
@@ -1077,6 +1172,11 @@ export async function startRuntimeRotationProxy(
 					});
 					return;
 				}
+				await usageRecorder?.record({
+					outcome: "failure",
+					statusCode: 500,
+					errorCode: "codex_runtime_rotation_proxy_error",
+				});
 				writeJson(res, 500, {
 					error: {
 						message: "Runtime rotation proxy failed before forwarding the request.",

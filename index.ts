@@ -134,6 +134,14 @@ import {
 	readQuotaSchedulerSnapshot,
 } from "./lib/preemptive-quota-scheduler.js";
 import {
+	createRuntimeUsageRecorder,
+	evaluateRuntimePolicy,
+	loadRuntimePolicyState,
+	type RuntimePolicyDecision,
+	type RuntimeUsageRecorder,
+	type RuntimeUsageRecordInput,
+} from "./lib/policy/runtime-policy.js";
+import {
 	getModelFamily,
 	MODEL_FAMILIES,
 	prewarmCodexInstructions,
@@ -933,6 +941,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							input: Request | string | URL,
 							init?: RequestInit,
 						): Promise<Response> {
+							let usageRecorder: RuntimeUsageRecorder | null = null;
+							let usageCompletion: RuntimeUsageRecordInput | null = null;
 							try {
 								if (
 									cachedAccountManager &&
@@ -1028,6 +1038,63 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								const requestTraceId = requestCorrelationId;
 								runtimeMetrics.lastRequestAt = Date.now();
 								syncRuntimeObservability(requestTraceId);
+								let runtimePolicyDecision: RuntimePolicyDecision | null = null;
+								try {
+									const runtimePolicyState = await loadRuntimePolicyState();
+									runtimePolicyDecision = await evaluateRuntimePolicy({
+										state: runtimePolicyState,
+										accounts: accountManager.getAccountsSnapshot(),
+										model: model ?? null,
+										capabilityPolicy: capabilityPolicyStore,
+									});
+								} catch (policyError) {
+									logWarn("Runtime policy evaluation failed open.", {
+										error:
+											policyError instanceof Error
+												? policyError.message
+												: String(policyError),
+									});
+								}
+								usageRecorder = createRuntimeUsageRecorder({
+									source: "plugin-host",
+									operation: "responses",
+									model: model ?? null,
+									projectKey: runtimePolicyDecision?.projectKey ?? null,
+									requestId: requestTraceId,
+									startedAt: Date.now(),
+								});
+								usageCompletion = {
+									outcome: "failure",
+									statusCode: null,
+									errorCode: "plugin_host_request_failed",
+								};
+								if (runtimePolicyDecision && !runtimePolicyDecision.allowed) {
+									runtimeMetrics.failedRequests += 1;
+									runtimeMetrics.lastError = "Runtime policy blocked request";
+									syncRuntimeObservability(requestTraceId);
+									usageCompletion = {
+										outcome: "blocked",
+										statusCode: runtimePolicyDecision.statusCode,
+										errorCode: runtimePolicyDecision.errorCode,
+									};
+									return new Response(
+										JSON.stringify({
+											error: {
+												message: "Runtime policy blocked this local request.",
+												code:
+													runtimePolicyDecision.errorCode ??
+													"policy_blocked",
+												reasons: runtimePolicyDecision.reasons,
+											},
+										}),
+										{
+											status: runtimePolicyDecision.statusCode,
+											headers: {
+												"content-type": "application/json; charset=utf-8",
+											},
+										},
+									);
+								}
 
 								const abortSignal = requestInit?.signal ?? init?.signal ?? null;
 								const sleep = createAbortableSleep(abortSignal);
@@ -1038,6 +1105,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									runtimeMetrics.poolExhaustionFastFails += 1;
 									runtimeMetrics.lastError = "Pool exhaustion cooldown active";
 									syncRuntimeObservability(requestTraceId);
+									usageCompletion = {
+										outcome: "failure",
+										statusCode: 429,
+										errorCode: "pool_exhaustion_cooldown",
+									};
 									return new Response(
 										JSON.stringify({
 											error: {
@@ -1059,6 +1131,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									runtimeMetrics.serverBurstFastFails += 1;
 									runtimeMetrics.lastError = "Server burst cooldown active";
 									syncRuntimeObservability(requestTraceId);
+									usageCompletion = {
+										outcome: "failure",
+										statusCode: 503,
+										errorCode: "server_burst_cooldown",
+									};
 									return new Response(
 										JSON.stringify({
 											error: {
@@ -1173,6 +1250,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												model ?? modelFamily,
 											);
 									}
+									for (const [rawIndex, boost] of Object.entries(
+										runtimePolicyDecision?.scoreBoostByAccount ?? {},
+									)) {
+										const index = Number(rawIndex);
+										if (!Number.isInteger(index)) continue;
+										capabilityBoostByAccount[index] =
+											(capabilityBoostByAccount[index] ?? 0) + boost;
+									}
 
 									accountAttemptLoop: while (
 										attempted.size < Math.max(1, accountCount)
@@ -1188,6 +1273,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													preferredSessionAccountIndex,
 													modelFamily,
 													model,
+												) &&
+												!runtimePolicyDecision?.blockedAccountIndexes.has(
+													preferredSessionAccountIndex,
 												)
 											) {
 												account = accountManager.getAccountByIndex(
@@ -1220,6 +1308,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											break;
 										}
 										attempted.add(account.index);
+										if (
+											runtimePolicyDecision?.blockedAccountIndexes.has(
+												account.index,
+											)
+										) {
+											continue;
+										}
 										// Log account selection for debugging rotation
 										logDebug(
 											`Using account ${account.index + 1}/${accountCount}: ${account.email ?? "unknown"} for ${modelFamily}`,
@@ -2776,6 +2871,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											}
 											runtimeMetrics.successfulRequests++;
 											runtimeMetrics.lastError = null;
+											usageCompletion = {
+												outcome: "success",
+												statusCode: successResponse.status,
+												errorCode: null,
+												account: {
+													index: successAccountForResponse.index,
+													accountId:
+														successAccountForResponse.accountId ?? null,
+													email: successAccountForResponse.email ?? null,
+												},
+											};
 											if (
 												lastCodexCliActiveSyncIndex !==
 												successAccountForResponse.index
@@ -2864,6 +2970,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									});
 								}
 							} finally {
+								if (usageRecorder && usageCompletion) {
+									await usageRecorder.record(usageCompletion);
+								}
 								syncRuntimeObservability(null);
 								clearCorrelationId();
 							}

@@ -7,6 +7,7 @@ import {
 	type RuntimeRotationProxyServer,
 } from "../lib/runtime-rotation-proxy.js";
 import { clearCircuitBreakers } from "../lib/circuit-breaker.js";
+import * as runtimePolicy from "../lib/policy/runtime-policy.js";
 import { resetRefreshQueue } from "../lib/refresh-queue.js";
 import { resetTrackers } from "../lib/rotation.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
@@ -299,6 +300,30 @@ describe("runtime rotation proxy", () => {
 			emitServerErrorForProxy(proxy, new Error("post-startup server boom")),
 		).not.toThrow();
 		expect(proxy.getStatus().lastError).toBe("post-startup server boom");
+	});
+
+	it("fails closed when runtime policy cannot be loaded", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream());
+		const policySpy = vi
+			.spyOn(runtimePolicy, "loadRuntimePolicyState")
+			.mockRejectedValueOnce(new Error("policy store unreadable"));
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5.3-codex",
+			input: "hello",
+		});
+		const payload = (await response.json()) as {
+			error?: { code?: string; message?: string };
+		};
+
+		expect(policySpy).toHaveBeenCalledTimes(1);
+		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+		expect(payload.error?.code).toBe("runtime_policy_unavailable");
+		expect(calls).toHaveLength(0);
+		expect(proxy.getStatus().lastError).toBe("policy store unreadable");
 	});
 
 	it("closes active streaming clients during shutdown", async () => {

@@ -24,6 +24,7 @@ export const HTTP_STATUS = {
 	UNAUTHORIZED: 401,
 	NOT_FOUND: 404,
 	TOO_MANY_REQUESTS: 429,
+	SERVICE_UNAVAILABLE: 503,
 } as const;
 
 /** OpenAI-specific headers */

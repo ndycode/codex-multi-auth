@@ -29,6 +29,12 @@ Override root:
 | Flagged accounts backup | `~/.codex/multi-auth/openai-codex-flagged-accounts.json.bak` |
 | Quota cache | `~/.codex/multi-auth/quota-cache.json` |
 | Runtime observability | `~/.codex/multi-auth/runtime-observability.json` |
+| Usage ledger | `~/.codex/multi-auth/usage/usage-ledger.jsonl` |
+| Usage ledger archives | `~/.codex/multi-auth/usage/usage-ledger.<timestamp>.jsonl` |
+| Account policies | `~/.codex/multi-auth/account-policies.json` |
+| Routing profiles | `~/.codex/multi-auth/routing-profiles.json` |
+| Budget guards | `~/.codex/multi-auth/budget-guards.json` |
+| Local bridge client tokens | `~/.codex/multi-auth/local-client-tokens.json` |
 | Runtime app helper status | `~/.codex/multi-auth/runtime-rotation-app-helper.json` |
 | Persistent app bind directory | `~/.codex/multi-auth/app-bind/` |
 | Logs | `~/.codex/multi-auth/logs/codex-plugin/` |
@@ -113,6 +119,22 @@ Runtime rotation adds local state only when enabled or when a helper has recentl
 | `~/.codex/multi-auth/app-bind/runtime-rotation-app-router.log` | persistent app router log |
 
 The app bind writes a provider entry to the real `~/.codex/config.toml` only after taking a backup. `codex auth rotation disable` and `codex auth rotation unbind-app` restore the backup and remove the router startup entry.
+
+---
+
+## Local Governance and Bridge Paths
+
+| Path | Purpose |
+| --- | --- |
+| `~/.codex/multi-auth/usage/usage-ledger.jsonl` | Append-only local usage metadata ledger |
+| `~/.codex/multi-auth/account-policies.json` | Hashed-account policy metadata for tags, weights, pause, drain, and notes |
+| `~/.codex/multi-auth/routing-profiles.json` | Project-aware profile preferences keyed with `getProjectStorageKey` |
+| `~/.codex/multi-auth/budget-guards.json` | Local budget limits evaluated from usage summaries |
+| `~/.codex/multi-auth/local-client-tokens.json` | Local bridge token hashes and prefixes only |
+
+The local bridge is loopback-only and exposes `/health`, `/v1/models`, and
+`/v1/responses`. Plain client tokens are shown only by `codex auth bridge token
+create` or `codex auth bridge token rotate`; the token store persists hashes.
 
 ---
 

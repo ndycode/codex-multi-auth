@@ -37,7 +37,12 @@ import {
 	runBestCommand,
 } from "./codex-manager/commands/best.js";
 import { runAccountCommand } from "./codex-manager/commands/account.js";
+import { runBudgetCommand } from "./codex-manager/commands/budget.js";
+import { runBridgeCommand } from "./codex-manager/commands/bridge.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
+import { runIntegrationsCommand } from "./codex-manager/commands/integrations.js";
+import { runModelsCommand } from "./codex-manager/commands/models.js";
+import { runMonitorCommand } from "./codex-manager/commands/monitor.js";
 import { runConfigExplainCommand } from "./codex-manager/commands/config-explain.js";
 import { saveAccountsWithRetry } from "./codex-manager/forecast-report-shared.js";
 import { runDebugBundleCommand } from "./codex-manager/commands/debug-bundle.js";
@@ -3458,6 +3463,28 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 	if (command === "account") {
 		return runAccountCommand(rest, {
+			setStoragePath,
+			loadAccounts,
+		});
+	}
+	if (command === "budget") {
+		return runBudgetCommand(rest);
+	}
+	if (command === "bridge") {
+		return runBridgeCommand(rest);
+	}
+	if (command === "integrations") {
+		return runIntegrationsCommand(rest);
+	}
+	if (command === "models") {
+		return runModelsCommand(rest, {
+			setStoragePath,
+			loadAccounts,
+			loadQuotaCache,
+		});
+	}
+	if (command === "monitor") {
+		return runMonitorCommand(rest, {
 			setStoragePath,
 			loadAccounts,
 		});
