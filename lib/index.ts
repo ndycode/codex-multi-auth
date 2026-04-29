@@ -44,3 +44,4 @@ export * from "./usage/index.js";
 export * from "./account-policy.js";
 export * from "./routing-profiles.js";
 export * from "./budget-guard.js";
+export * from "./model-capability-matrix.js";
