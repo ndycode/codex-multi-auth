@@ -1,4 +1,5 @@
 import type { Auth } from "@codex-ai/sdk";
+import { saveAccountsWithRetry } from "./codex-manager/forecast-report-shared.js";
 import { createLogger } from "./logger.js";
 import {
 	loadAccounts,
@@ -286,7 +287,7 @@ export class AccountManager {
 		const sourceOfTruthStorage = synced.storage ?? stored;
 		if (synced.changed && sourceOfTruthStorage) {
 			try {
-				await saveAccounts(sourceOfTruthStorage);
+				await saveAccountsWithRetry(sourceOfTruthStorage, saveAccounts);
 			} catch (error) {
 				log.debug("Failed to persist Codex CLI source-of-truth sync", {
 					error: String(error),

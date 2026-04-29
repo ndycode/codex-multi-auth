@@ -122,7 +122,54 @@ describe("accounts edge branches", () => {
     const manager = await AccountManager.loadFromDisk();
 
     expect(manager.getAccountCount()).toBe(1);
+    // Non-retryable error (no errno code) → single attempt, then debug-logged.
     expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+  });
+
+  it("loadFromDisk retries source-of-truth persist on transient EBUSY", async () => {
+    const stored = buildStored([
+      buildStoredAccount({ refreshToken: "stored-1" }),
+    ]);
+    mockLoadAccounts.mockResolvedValue(stored);
+    mockSyncAccountStorageFromCodexCli.mockResolvedValue({
+      storage: stored,
+      changed: true,
+    });
+    const ebusy = Object.assign(new Error("file busy"), { code: "EBUSY" });
+    mockSaveAccounts.mockRejectedValueOnce(ebusy);
+    mockSaveAccounts.mockResolvedValueOnce(undefined);
+    mockLoadCodexCliState.mockResolvedValue({ accounts: [] });
+
+    const { AccountManager } = await importAccountsModule();
+    const manager = await AccountManager.loadFromDisk();
+
+    expect(manager.getAccountCount()).toBe(1);
+    // First attempt EBUSY, second succeeds — retry helper should have called twice.
+    expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+  });
+
+  it("loadFromDisk exhausts retries on persistent EPERM and continues", async () => {
+    const stored = buildStored([
+      buildStoredAccount({ refreshToken: "stored-1" }),
+    ]);
+    mockLoadAccounts.mockResolvedValue(stored);
+    mockSyncAccountStorageFromCodexCli.mockResolvedValue({
+      storage: stored,
+      changed: true,
+    });
+    const eperm = Object.assign(new Error("permission denied"), {
+      code: "EPERM",
+    });
+    mockSaveAccounts.mockRejectedValue(eperm);
+    mockLoadCodexCliState.mockResolvedValue({ accounts: [] });
+
+    const { AccountManager } = await importAccountsModule();
+    const manager = await AccountManager.loadFromDisk();
+
+    expect(manager.getAccountCount()).toBe(1);
+    // Persistent EPERM exhausts the retry budget (initial + 3 retries = 4
+    // attempts) before lib/accounts.ts catches and continues.
+    expect(mockSaveAccounts).toHaveBeenCalledTimes(4);
   });
 
   it("hydrates from Codex CLI cache and catches save failures", async () => {

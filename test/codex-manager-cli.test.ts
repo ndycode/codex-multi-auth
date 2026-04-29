@@ -3215,9 +3215,10 @@ describe("codex manager cli commands", () => {
 			],
 		});
 		loadQuotaCacheMock.mockResolvedValueOnce(originalQuotaCache);
-		saveAccountsMock.mockRejectedValueOnce(
-			makeErrnoError("save failed", "EBUSY"),
-		);
+		// Use mockRejectedValue (unbounded) so saveAccountsWithRetry's EBUSY retries
+		// also fail; the test asserts the rejection path and that we never silently
+		// drop the error.
+		saveAccountsMock.mockRejectedValue(makeErrnoError("save failed", "EBUSY"));
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
 		await expect(runCodexMultiAuthCli(["auth", "check"])).rejects.toMatchObject(
@@ -3226,6 +3227,9 @@ describe("codex manager cli commands", () => {
 				message: "save failed",
 			},
 		);
+		// saveAccountsWithRetry must have retried beyond a single attempt; if a
+		// regression replaces it with a raw saveAccounts call, this drops to 1.
+		expect(saveAccountsMock.mock.calls.length).toBeGreaterThan(1);
 		expect(originalQuotaCache).toEqual({
 			byAccountId: {},
 			byEmail: {},
@@ -3539,6 +3543,116 @@ describe("codex manager cli commands", () => {
 		expect(logSpy).toHaveBeenCalledWith(
 			expect.stringContaining("Switched to best account 2"),
 		);
+	});
+
+	it("retries saveAccounts on transient EBUSY when persisting best-account switch", async () => {
+		// Regression for the saveAccountsWithRetry call in
+		// persistAndSyncSelectedAccount (lib/codex-manager.ts:3211): a single
+		// EBUSY must NOT abort the switch — the retry helper should recover.
+		const now = Date.now();
+		let storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "current@example.com",
+					accountId: "acc_current",
+					refreshToken: "refresh-current",
+					accessToken: "access-current",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					coolingDownUntil: now + 60_000,
+					enabled: true,
+				},
+				{
+					email: "next@example.com",
+					accountId: "acc_next",
+					refreshToken: "refresh-next",
+					accessToken: "access-next",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () =>
+			structuredClone(storageState),
+		);
+		// First save attempt rejects with EBUSY; second succeeds. Without the
+		// retry wrapper this collapses to a single attempt and the switch fails.
+		saveAccountsMock.mockRejectedValueOnce(makeErrnoError("busy", "EBUSY"));
+		saveAccountsMock.mockImplementationOnce(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "best"]);
+
+		expect(exitCode).toBe(0);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(2);
+		expect(storageState.activeIndex).toBe(1);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Switched to best account 2"),
+		);
+	});
+
+	it("propagates persistent EBUSY from persistAndSyncSelectedAccount after retry exhaustion", async () => {
+		// Regression for the saveAccountsWithRetry call in
+		// persistAndSyncSelectedAccount: when EBUSY persists past the retry
+		// budget (initial + 3 retries = 4 attempts), the error must propagate
+		// rather than be silently swallowed, and codex-cli must not be told
+		// about a switch that did not actually persist.
+		const now = Date.now();
+		const storageState = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "current@example.com",
+					accountId: "acc_current",
+					refreshToken: "refresh-current",
+					accessToken: "access-current",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 2_000,
+					lastUsed: now - 2_000,
+					coolingDownUntil: now + 60_000,
+					enabled: true,
+				},
+				{
+					email: "next@example.com",
+					accountId: "acc_next",
+					refreshToken: "refresh-next",
+					accessToken: "access-next",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockImplementation(async () =>
+			structuredClone(storageState),
+		);
+		saveAccountsMock.mockRejectedValue(makeErrnoError("busy", "EBUSY"));
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		await expect(runCodexMultiAuthCli(["auth", "best"])).rejects.toMatchObject(
+			{
+				code: "EBUSY",
+			},
+		);
+		// Initial attempt + 3 retries = 4 calls before throwing.
+		expect(saveAccountsMock).toHaveBeenCalledTimes(4);
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
 	});
 
 	it("parses --model=value for live best selection", async () => {
