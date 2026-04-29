@@ -124,6 +124,7 @@ function createDeps(params: {
 	storage?: AccountStorageV3 | null;
 	now?: number;
 	appBindStatus?: AppBindStatus;
+	withSaveAccounts?: boolean;
 } = {}): {
 	deps: RotationCommandDeps;
 	errors: string[];
@@ -132,6 +133,7 @@ function createDeps(params: {
 	setStoragePathMock: ReturnType<typeof vi.fn>;
 	bindCodexAppMock: ReturnType<typeof vi.fn>;
 	unbindCodexAppMock: ReturnType<typeof vi.fn>;
+	saveAccountsMock: ReturnType<typeof vi.fn>;
 } {
 	const config = params.config ?? {};
 	const storage = params.storage ?? null;
@@ -171,6 +173,7 @@ function createDeps(params: {
 	const unbindCodexAppMock = vi.fn(async () =>
 		createAppBindResult("Unbound Codex app config /mock/.codex/config.toml"),
 	);
+	const saveAccountsMock = vi.fn(async (_storage: AccountStorageV3) => undefined);
 	return {
 		infos,
 		errors,
@@ -178,6 +181,7 @@ function createDeps(params: {
 		setStoragePathMock,
 		bindCodexAppMock,
 		unbindCodexAppMock,
+		saveAccountsMock,
 		deps: {
 			loadPluginConfig: () => config,
 			savePluginConfig: savePluginConfigMock,
@@ -188,6 +192,7 @@ function createDeps(params: {
 				return pluginConfig.codexRuntimeRotationProxy === true;
 			},
 			loadAccounts: async () => storage,
+			...(params.withSaveAccounts === false ? {} : { saveAccounts: saveAccountsMock }),
 			resolveActiveIndex: (loadedStorage) => loadedStorage.activeIndex,
 			getStoragePath: () => "/mock/openai-codex-accounts.json",
 			setStoragePath: setStoragePathMock,
@@ -448,5 +453,500 @@ describe("codex auth rotation command", () => {
 		expect(unbindCodexAppMock).toHaveBeenCalledTimes(1);
 		expect(infos.join("\n")).toContain("Bound Codex app config");
 		expect(infos.join("\n")).toContain("Unbound Codex app config");
+	});
+
+	describe("reset-rate-limits", () => {
+		function buildStorageWithLimits(now: number): AccountStorageV3 {
+			return {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "a@example.com",
+						accountId: "acc_a",
+						refreshToken: "refresh-a",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						rateLimitResetTimes: { codex: now + 60_000 },
+						coolingDownUntil: now + 30_000,
+					},
+					{
+						email: "b@example.com",
+						accountId: "acc_b",
+						refreshToken: "refresh-b",
+						addedAt: now - 4_000,
+						lastUsed: now - 4_000,
+						rateLimitResetTimes: { codex: now + 120_000, "codex:gpt-5": now + 90_000 },
+					},
+					{
+						email: "c@example.com",
+						accountId: "acc_c",
+						refreshToken: "refresh-c",
+						addedAt: now - 3_000,
+						lastUsed: now - 3_000,
+						rateLimitResetTimes: {},
+					},
+				],
+			};
+		}
+
+		it("clears rate-limit and cooldown timers across all accounts and persists changes", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const { deps, saveAccountsMock, infos } = createDeps({ storage, now });
+
+			await expect(
+				runRotationCommand(["reset-rate-limits"], deps),
+			).resolves.toBe(0);
+
+			expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+			expect(storage.accounts[0].rateLimitResetTimes).toEqual({});
+			expect(storage.accounts[0].coolingDownUntil).toBeUndefined();
+			expect(storage.accounts[1].rateLimitResetTimes).toEqual({});
+			expect(storage.accounts[2].rateLimitResetTimes).toEqual({});
+			expect(infos.join("\n")).toContain("Cleared 2/3 account(s)");
+		});
+
+		it("dry-run reports changes without saving", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const before = JSON.parse(JSON.stringify(storage));
+			const { deps, saveAccountsMock, infos } = createDeps({ storage, now });
+
+			await expect(
+				runRotationCommand(["reset-rate-limits", "--dry-run"], deps),
+			).resolves.toBe(0);
+
+			expect(saveAccountsMock).not.toHaveBeenCalled();
+			expect(storage).toEqual(before);
+			const out = infos.join("\n");
+			expect(out).toContain("Would clear 2/3 account(s)");
+			expect(out).toContain("(dry-run; no changes written)");
+		});
+
+		it("scopes to a single account with --account", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const { deps, saveAccountsMock, infos } = createDeps({ storage, now });
+
+			await expect(
+				runRotationCommand(["reset-rate-limits", "--account", "2"], deps),
+			).resolves.toBe(0);
+
+			expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+			expect(storage.accounts[0].rateLimitResetTimes).toEqual({ codex: now + 60_000 });
+			expect(storage.accounts[0].coolingDownUntil).toBe(now + 30_000);
+			expect(storage.accounts[1].rateLimitResetTimes).toEqual({});
+			expect(infos.join("\n")).toContain("Cleared 1/1 account(s)");
+		});
+
+		it("rejects an out-of-range --account index", async () => {
+			const now = Date.now();
+			const { deps, errors, saveAccountsMock } = createDeps({
+				storage: buildStorageWithLimits(now),
+				now,
+			});
+
+			await expect(
+				runRotationCommand(["reset-rate-limits", "--account", "99"], deps),
+			).resolves.toBe(1);
+
+			expect(saveAccountsMock).not.toHaveBeenCalled();
+			expect(errors.join("\n")).toContain("Account index out of range");
+		});
+
+		it("rejects --all combined with --account", async () => {
+			const now = Date.now();
+			const { deps, errors, saveAccountsMock } = createDeps({
+				storage: buildStorageWithLimits(now),
+				now,
+			});
+
+			await expect(
+				runRotationCommand(
+					["reset-rate-limits", "--all", "--account", "1"],
+					deps,
+				),
+			).resolves.toBe(1);
+
+			expect(saveAccountsMock).not.toHaveBeenCalled();
+			expect(errors.join("\n")).toContain("--all and --account are mutually exclusive");
+		});
+
+		it("rejects --account followed by --all (reverse order)", async () => {
+			const now = Date.now();
+			const { deps, errors, saveAccountsMock } = createDeps({
+				storage: buildStorageWithLimits(now),
+				now,
+			});
+
+			await expect(
+				runRotationCommand(
+					["reset-rate-limits", "--account", "1", "--all"],
+					deps,
+				),
+			).resolves.toBe(1);
+
+			expect(saveAccountsMock).not.toHaveBeenCalled();
+			expect(errors.join("\n")).toContain("--all and --account are mutually exclusive");
+		});
+
+		it("emits JSON when --json is set, including a restart hint after writes", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const { deps, infos } = createDeps({ storage, now });
+
+			await expect(
+				runRotationCommand(["reset-rate-limits", "--json"], deps),
+			).resolves.toBe(0);
+
+			expect(infos).toHaveLength(1);
+			const payload = JSON.parse(infos[0]);
+			expect(payload).toMatchObject({
+				ok: true,
+				dryRun: false,
+				scope: "all",
+				accountsScanned: 3,
+				accountsChanged: 2,
+			});
+			expect(payload.changes).toHaveLength(2);
+			expect(payload.changes[0]).toMatchObject({
+				index: 0,
+				clearedCoolingDown: true,
+			});
+			expect(payload.restartHint).toMatch(/codex auth rotation disable/);
+		});
+
+		it("omits the restart hint from JSON output for dry-run and no-op runs", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const { deps, infos } = createDeps({ storage, now });
+
+			await expect(
+				runRotationCommand(
+					["reset-rate-limits", "--dry-run", "--json"],
+					deps,
+				),
+			).resolves.toBe(0);
+
+			expect(infos).toHaveLength(1);
+			const payload = JSON.parse(infos[0]);
+			expect(payload.dryRun).toBe(true);
+			expect(payload.restartHint).toBeUndefined();
+		});
+
+		it("prints a restart hint after successful clears in human-readable mode", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const { deps, infos } = createDeps({ storage, now });
+
+			await expect(
+				runRotationCommand(["reset-rate-limits"], deps),
+			).resolves.toBe(0);
+
+			const out = infos.join("\n");
+			expect(out).toMatch(/Note: .*re-persist its in-memory timers/);
+			expect(out).toContain("codex auth rotation disable");
+			expect(out).toContain("codex auth rotation enable");
+		});
+
+		it("only deletes future-active rate-limit keys and preserves expired ones", async () => {
+			const now = Date.now();
+			const storage: AccountStorageV3 = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "mixed@example.com",
+						accountId: "acc_mixed",
+						refreshToken: "refresh-mixed",
+						addedAt: now - 5_000,
+						lastUsed: now - 5_000,
+						rateLimitResetTimes: {
+							codex: now + 60_000,
+							"codex:legacy": now - 30_000,
+						},
+					},
+				],
+			};
+			const { deps, saveAccountsMock, infos } = createDeps({ storage, now });
+
+			await expect(
+				runRotationCommand(["reset-rate-limits", "--json"], deps),
+			).resolves.toBe(0);
+
+			expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+			expect(storage.accounts[0].rateLimitResetTimes).toEqual({
+				"codex:legacy": now - 30_000,
+			});
+			const payload = JSON.parse(infos[0]);
+			expect(payload.changes[0].clearedRateLimitKeys).toEqual(["codex"]);
+		});
+
+		it("prints subcommand help and exits 0 on --help", async () => {
+			const { deps, infos } = createDeps();
+
+			await expect(
+				runRotationCommand(["reset-rate-limits", "--help"], deps),
+			).resolves.toBe(0);
+
+			const out = infos.join("\n");
+			expect(out).toContain("Usage:");
+			expect(out).toContain("--account <idx>");
+			expect(out).toContain("rotation disable");
+		});
+
+		it("keeps the global storage path active during save when CLI was project-scoped", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const projectPath = "/mock/project/openai-codex-accounts.json";
+			let activePath: string | null = projectPath;
+			let pathDuringSave: string | null | "unset" = "unset";
+			const setStoragePathMock = vi.fn((value: string | null) => {
+				activePath = value;
+			});
+			const saveAccountsMock = vi.fn(async (_storage: AccountStorageV3) => {
+				pathDuringSave = activePath;
+			});
+			const infos: string[] = [];
+			const errors: string[] = [];
+			const deps: RotationCommandDeps = {
+				loadPluginConfig: () => ({}),
+				savePluginConfig: vi.fn(async () => undefined),
+				getCodexRuntimeRotationProxy: () => true,
+				loadAccounts: async () => storage,
+				saveAccounts: saveAccountsMock,
+				resolveActiveIndex: () => 0,
+				getStoragePath: () => activePath,
+				setStoragePath: setStoragePathMock,
+				getNow: () => now,
+				logInfo: (m) => infos.push(m),
+				logError: (m) => errors.push(m),
+			};
+
+			await expect(
+				runRotationCommand(["reset-rate-limits"], deps),
+			).resolves.toBe(0);
+
+			expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+			expect(pathDuringSave).toBeNull();
+			expect(activePath).toBe(projectPath);
+			expect(setStoragePathMock).toHaveBeenNthCalledWith(1, null);
+			expect(setStoragePathMock).toHaveBeenLastCalledWith(projectPath);
+		});
+
+		it("retries save on transient EBUSY errors", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			let saveCallCount = 0;
+			const saveAccountsMock = vi.fn(async (_storage: AccountStorageV3) => {
+				saveCallCount += 1;
+				if (saveCallCount === 1) {
+					const err = new Error("file busy") as NodeJS.ErrnoException;
+					err.code = "EBUSY";
+					throw err;
+				}
+			});
+			const { deps, infos } = createDeps({ storage, now });
+			(deps as RotationCommandDeps).saveAccounts = saveAccountsMock;
+
+			await expect(
+				runRotationCommand(["reset-rate-limits"], deps),
+			).resolves.toBe(0);
+
+			expect(saveAccountsMock).toHaveBeenCalledTimes(2);
+			expect(infos.join("\n")).toContain("Cleared 2/3 account(s)");
+		});
+
+		it("returns 1 and reports the error code when save keeps failing", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const saveAccountsMock = vi.fn(async (_storage: AccountStorageV3) => {
+				const err = new Error("file busy") as NodeJS.ErrnoException;
+				err.code = "EBUSY";
+				throw err;
+			});
+			const { deps, errors } = createDeps({ storage, now });
+			(deps as RotationCommandDeps).saveAccounts = saveAccountsMock;
+
+			await expect(
+				runRotationCommand(["reset-rate-limits"], deps),
+			).resolves.toBe(1);
+
+			expect(saveAccountsMock).toHaveBeenCalledTimes(4);
+			expect(errors.join("\n")).toContain(
+				"Failed to persist reset-rate-limits (EBUSY)",
+			);
+		});
+
+		it("emits a JSON error envelope when save keeps failing under --json", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const saveAccountsMock = vi.fn(async (_storage: AccountStorageV3) => {
+				const err = new Error("file busy") as NodeJS.ErrnoException;
+				err.code = "EBUSY";
+				throw err;
+			});
+			const { deps, infos } = createDeps({ storage, now });
+			(deps as RotationCommandDeps).saveAccounts = saveAccountsMock;
+
+			await expect(
+				runRotationCommand(["reset-rate-limits", "--json"], deps),
+			).resolves.toBe(1);
+
+			expect(infos).toHaveLength(1);
+			const payload = JSON.parse(infos[0]);
+			expect(payload).toMatchObject({
+				ok: false,
+			});
+			expect(payload.error).toContain("EBUSY");
+		});
+
+		it("rejects --account with non-integer or fractional values", async () => {
+			const now = Date.now();
+			const { deps: depsAlpha, errors: errorsAlpha } = createDeps({
+				storage: buildStorageWithLimits(now),
+				now,
+			});
+			await expect(
+				runRotationCommand(
+					["reset-rate-limits", "--account", "1abc"],
+					depsAlpha,
+				),
+			).resolves.toBe(1);
+			expect(errorsAlpha.join("\n")).toContain(
+				"--account expects a positive 1-based integer",
+			);
+
+			const { deps: depsFraction, errors: errorsFraction } = createDeps({
+				storage: buildStorageWithLimits(now),
+				now,
+			});
+			await expect(
+				runRotationCommand(
+					["reset-rate-limits", "--account", "1.5"],
+					depsFraction,
+				),
+			).resolves.toBe(1);
+			expect(errorsFraction.join("\n")).toContain(
+				"--account expects a positive 1-based integer",
+			);
+		});
+
+		it("returns 0 with a friendly message when nothing is rate-limited", async () => {
+			const now = Date.now();
+			const storage: AccountStorageV3 = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "clean@example.com",
+						accountId: "acc_clean",
+						refreshToken: "refresh-clean",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+						rateLimitResetTimes: {},
+					},
+				],
+			};
+			const { deps, saveAccountsMock, infos } = createDeps({ storage, now });
+
+			await expect(
+				runRotationCommand(["reset-rate-limits"], deps),
+			).resolves.toBe(0);
+
+			expect(saveAccountsMock).not.toHaveBeenCalled();
+			expect(infos.join("\n")).toContain(
+				"No accounts had active rate-limit or cooldown timers to clear.",
+			);
+		});
+
+		it("fails fast when saveAccounts dep is missing and not dry-run", async () => {
+			const now = Date.now();
+			const { deps, errors } = createDeps({
+				storage: buildStorageWithLimits(now),
+				now,
+				withSaveAccounts: false,
+			});
+
+			await expect(
+				runRotationCommand(["reset-rate-limits"], deps),
+			).resolves.toBe(1);
+
+			expect(errors.join("\n")).toContain(
+				"reset-rate-limits requires writable account storage",
+			);
+		});
+
+		it("succeeds without saveAccounts when the scan finds nothing to clear", async () => {
+			const now = Date.now();
+			const storage: AccountStorageV3 = {
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: [
+					{
+						email: "clean@example.com",
+						accountId: "acc_clean",
+						refreshToken: "refresh-clean",
+						addedAt: now - 1_000,
+						lastUsed: now - 1_000,
+						rateLimitResetTimes: {},
+					},
+				],
+			};
+			const { deps, errors, infos } = createDeps({
+				storage,
+				now,
+				withSaveAccounts: false,
+			});
+
+			await expect(
+				runRotationCommand(["reset-rate-limits"], deps),
+			).resolves.toBe(0);
+			expect(errors).toEqual([]);
+			expect(infos.join("\n")).toContain(
+				"No accounts had active rate-limit or cooldown timers to clear.",
+			);
+		});
+
+		it("does not leak email addresses into change labels", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const { deps, infos } = createDeps({ storage, now });
+
+			await expect(
+				runRotationCommand(["reset-rate-limits", "--json"], deps),
+			).resolves.toBe(0);
+
+			const payload = JSON.parse(infos[0]);
+			for (const change of payload.changes ?? []) {
+				expect(change.label).not.toContain("@");
+				expect(change.label).not.toContain("example.com");
+				expect(change.label).toMatch(/^account \d+ \(id:/);
+			}
+		});
+
+		it("serializes overlapping reset-rate-limits invocations safely", async () => {
+			const now = Date.now();
+			const storage = buildStorageWithLimits(now);
+			const { deps, saveAccountsMock } = createDeps({ storage, now });
+
+			const [r1, r2] = await Promise.all([
+				runRotationCommand(["reset-rate-limits"], deps),
+				runRotationCommand(["reset-rate-limits"], deps),
+			]);
+
+			expect(r1).toBe(0);
+			expect(r2).toBe(0);
+			// First call clears the timers; the second sees a clean pool and skips the save.
+			expect(saveAccountsMock).toHaveBeenCalledTimes(1);
+			expect(storage.accounts[0].rateLimitResetTimes).toEqual({});
+			expect(storage.accounts[0].coolingDownUntil).toBeUndefined();
+			expect(storage.accounts[1].rateLimitResetTimes).toEqual({});
+		});
 	});
 });
