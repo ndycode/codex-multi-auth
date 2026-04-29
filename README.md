@@ -22,8 +22,10 @@ Codex CLI-first multi-account OAuth manager for the official Codex CLI. The inst
 - Interactive dashboard for account actions and settings
 - Experimental settings tab for staged sync, backup, and refresh-guard controls
 - Forecast, report, fix, and doctor commands for operational safety
+- Local usage ledger, budgets, account policy controls, routing profiles, and monitor views for local governance
 - Runtime counters, budget/cooldown state, and multi-auth probe visibility in `codex auth status` / `codex auth report`
 - Default-on runtime Responses proxy for live account rotation inside forwarded Codex CLI/app sessions
+- Optional loopback-only local bridge for `/health`, `/v1/models`, and `/v1/responses`, protected by hashed local client tokens
 - Reversible packaged Codex app bind and user-level launcher routing helpers
 - Flagged account verification and restore flow
 - Session affinity and live account sync controls
@@ -173,6 +175,10 @@ For remote or headless shells, prefer `codex auth login --device-auth`.
 | `codex auth report --live --json` | How do I get the full machine-readable health report? |
 | `codex auth fix --live --model gpt-5.3-codex` | How do I run live repair probes with a chosen model? |
 | `codex auth why-selected --json` | Which account does the selector pick now, and why? |
+| `codex auth usage --since 24h --by project` | What local usage has been recorded recently? |
+| `codex auth monitor --json` | What is the combined usage, policy, quota, runtime, and project state? |
+| `codex auth bridge token create --label local-client` | How do I create a local bridge bearer token? |
+| `codex auth integrations --kind python` | How do I generate local bridge client snippets? |
 | `codex auth rotation status` | Is live runtime account rotation enabled for forwarded Codex sessions? |
 
 ### Reliability behavior
@@ -218,6 +224,11 @@ For remote or headless shells, prefer `codex auth login --device-auth`.
 | Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` |
 | Quota cache | `~/.codex/multi-auth/quota-cache.json` |
 | Runtime observability | `~/.codex/multi-auth/runtime-observability.json` |
+| Usage ledger | `~/.codex/multi-auth/usage/usage-ledger.jsonl` |
+| Account policies | `~/.codex/multi-auth/account-policies.json` |
+| Routing profiles | `~/.codex/multi-auth/routing-profiles.json` |
+| Budget guards | `~/.codex/multi-auth/budget-guards.json` |
+| Local client tokens | `~/.codex/multi-auth/local-client-tokens.json` |
 | Runtime app helper status | `~/.codex/multi-auth/runtime-rotation-app-helper.json` |
 | Persistent app bind state/logs | `~/.codex/multi-auth/app-bind/` |
 | Logs | `~/.codex/multi-auth/logs/codex-plugin/` |
@@ -348,6 +359,7 @@ codex auth doctor --json
 
 ## Release Notes
 
+- Release candidate: [docs/releases/v2.1.0.md](docs/releases/v2.1.0.md)
 - Current stable: [docs/releases/v2.0.2.md](docs/releases/v2.0.2.md)
 - Previous stable: [docs/releases/v2.0.1.md](docs/releases/v2.0.1.md)
 - Earlier stable: [docs/releases/v1.3.2.md](docs/releases/v1.3.2.md)

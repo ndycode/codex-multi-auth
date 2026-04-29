@@ -21,6 +21,11 @@
 | Flagged accounts | `~/.codex/multi-auth/openai-codex-flagged-accounts.json` | Accounts with hard auth failures |
 | Quota cache | `~/.codex/multi-auth/quota-cache.json` | Cached quota snapshots |
 | Runtime observability | `~/.codex/multi-auth/runtime-observability.json` | Local request counters and last-account metadata for status/report output |
+| Usage ledger | `~/.codex/multi-auth/usage/usage-ledger.jsonl` | Local request metadata summaries; no prompts, auth headers, raw emails, or raw sensitive account ids |
+| Account policies | `~/.codex/multi-auth/account-policies.json` | Local tags, weights, pause/drain state, and notes keyed by hashed account identity |
+| Routing profiles | `~/.codex/multi-auth/routing-profiles.json` | Project-aware local routing preferences keyed by project identity |
+| Budget guards | `~/.codex/multi-auth/budget-guards.json` | Local request/token/cost limits for runtime blocking |
+| Local bridge client tokens | `~/.codex/multi-auth/local-client-tokens.json` | SHA-256 token hashes plus prefixes and labels; plaintext tokens are shown only on create/rotate |
 | Runtime app helper status | `~/.codex/multi-auth/runtime-rotation-app-helper.json` | Local helper status for wrapper-launched Codex app sessions |
 | Persistent app bind state/logs | `~/.codex/multi-auth/app-bind/` | Reversible packaged-app router state, backup metadata, and local router log |
 | Logs | `~/.codex/multi-auth/logs/codex-plugin/` | Optional diagnostics |
@@ -33,6 +38,10 @@ For cleanup, apply the same deletions to resolved override roots (including
 Windows override locations).
 
 Runtime rotation uses loopback-only local HTTP listeners. The per-session proxy and persistent app router forward requests to the official Codex backend with the selected managed account token, but the project does not operate a remote telemetry service.
+
+The optional local bridge is also loopback-only and exposes only `/health`,
+`/v1/models`, and `/v1/responses`. It requires a local bearer token by default.
+The token file stores SHA-256 hashes, not plaintext tokens.
 
 ---
 
@@ -65,6 +74,11 @@ rm -f ~/.codex/multi-auth/openai-codex-accounts.json
 rm -f ~/.codex/multi-auth/openai-codex-flagged-accounts.json
 rm -f ~/.codex/multi-auth/quota-cache.json
 rm -f ~/.codex/multi-auth/runtime-observability.json
+rm -f ~/.codex/multi-auth/account-policies.json
+rm -f ~/.codex/multi-auth/routing-profiles.json
+rm -f ~/.codex/multi-auth/budget-guards.json
+rm -f ~/.codex/multi-auth/local-client-tokens.json
+rm -rf ~/.codex/multi-auth/usage
 rm -f ~/.codex/multi-auth/runtime-rotation-app-helper.json
 rm -rf ~/.codex/multi-auth/app-bind
 rm -rf ~/.codex/multi-auth/logs/codex-plugin
@@ -82,6 +96,11 @@ Remove-Item "$HOME\.codex\multi-auth\openai-codex-accounts.json" -Force -ErrorAc
 Remove-Item "$HOME\.codex\multi-auth\openai-codex-flagged-accounts.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\quota-cache.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\runtime-observability.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\account-policies.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\routing-profiles.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\budget-guards.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\local-client-tokens.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\usage" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\runtime-rotation-app-helper.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\app-bind" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\logs\codex-plugin" -Recurse -Force -ErrorAction SilentlyContinue

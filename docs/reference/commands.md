@@ -59,6 +59,11 @@ Compatibility aliases are supported:
 | `codex auth features` | Print implemented feature summary |
 | `codex auth report` | Generate full health report |
 | `codex auth usage` | Summarize local usage ledger rows |
+| `codex auth budget ...` | Manage local budget guard limits |
+| `codex auth bridge token ...` | Manage local bridge bearer tokens |
+| `codex auth integrations` | Generate local bridge client snippets |
+| `codex auth models` | Inspect local model/account capability views |
+| `codex auth monitor` | Aggregate runtime, usage, policy, quota, model, and project state |
 | `codex auth why-selected [--now|--last]` | Explain which account the selector picks now or via the last persisted runtime snapshot |
 | `codex auth rotation enable\|disable\|status\|bind-app\|unbind-app` | Manage the default-on runtime Responses proxy for live Codex account rotation |
 
@@ -70,7 +75,7 @@ Compatibility aliases are supported:
 | --- | --- | --- |
 | `--device-auth` | login | Use the OpenAI Codex device-code flow for remote/headless login (mutually exclusive with `--manual` / `--no-browser`) |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow (mutually exclusive with `--device-auth`) |
-| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, fix, doctor, config explain, debug bundle | Print machine-readable output |
+| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle | Print machine-readable output |
 | `--csv` | usage | Print or write CSV bucket output |
 | `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |
 | `--live` | best, forecast, report, fix | Use live probe before decisions/output |
@@ -79,6 +84,7 @@ Compatibility aliases are supported:
 | `--out <path>` | report, usage | Write report output to file |
 | `--since <time>` | usage | Filter local usage rows by timestamp, ISO date, or relative duration |
 | `--by <group>` | usage | Group usage by model, account, project, outcome, or day |
+| `--kind <name>` | integrations | Select one snippet kind: opencode, openclaw, python, curl, or env |
 | `--write <path>` | init-config, config template | Write template output to a file instead of stdout |
 | `--fix` | doctor | Apply safe repairs |
 | `--no-restore` | verify-flagged, verify (with `--flagged`/`--all`) | Verify only; do not restore healthy flagged accounts |
@@ -147,6 +153,46 @@ Flags:
 
 Exit code: `0` for successful summary or rotation, `1` for invalid options or
 write failures.
+
+---
+
+## Local governance commands
+
+These commands are local-only and operate on files under `~/.codex/multi-auth`.
+
+```bash
+codex auth budget limit <key> --window <hour|day|week|month> [--max-requests <n>] [--max-tokens <n>] [--max-cost-usd <n>]
+codex auth budget check <key> [--json]
+codex auth budget list [--json]
+codex auth models [--json] [--model <model>]
+codex auth monitor [--json]
+```
+
+`monitor` aggregates runtime observability, usage, policy, routing profile,
+budget, model matrix, quota cache, and current project context. `models`
+reports neutral account labels and does not expose raw account emails.
+
+---
+
+## Local bridge commands
+
+The optional local bridge exposes only `/health`, `/v1/models`, and
+`/v1/responses` on loopback. Forwarded bridge requests require a bearer token
+by default.
+
+```bash
+codex auth bridge token create [--label <label>]
+codex auth bridge token list
+codex auth bridge token rotate <id>
+codex auth bridge token revoke <id>
+codex auth integrations [--kind <opencode|openclaw|python|curl|env>] [--base-url <url>] [--model <model>] [--json]
+```
+
+Plain local bridge tokens are printed only on `create` and `rotate`. The token
+store persists SHA-256 hashes plus prefixes and labels.
+
+Generated snippets use `CODEX_MULTI_AUTH_LOCAL_KEY`. The Python snippet uses
+`client.responses.create`.
 
 ---
 

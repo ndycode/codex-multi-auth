@@ -28,6 +28,14 @@ Public documentation for `codex-multi-auth`.
 
 ## Release History
 
+### Release Candidates
+
+| Document | Focus |
+| --- | --- |
+| [releases/v2.1.0.md](releases/v2.1.0.md) | Local usage governance and local bridge release candidate |
+
+### Stable Releases
+
 | Document | Focus |
 | --- | --- |
 | [releases/v2.0.2.md](releases/v2.0.2.md) | Current stable release notes |
