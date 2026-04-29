@@ -69,5 +69,17 @@ describe("account policy store", () => {
 			updatedAt: 123,
 		});
 	});
+
+	it("does not use mutable account indexes as policy identity", async () => {
+		const { getAccountPolicyKey } = await import("../lib/account-policy.js");
+		const unidentified = {
+			accountId: undefined,
+			email: undefined,
+		};
+
+		expect(getAccountPolicyKey(unidentified, 0)).toBe(
+			getAccountPolicyKey(unidentified, 4),
+		);
+	});
 });
 
