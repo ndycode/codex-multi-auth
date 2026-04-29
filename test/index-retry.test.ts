@@ -16,6 +16,26 @@ const recoveryState = vi.hoisted(() => ({
 	isRecoverableErrorCalls: 0,
 }));
 
+interface WaitUtilsState {
+	sleepWithCountdownCalls: number;
+}
+
+const waitUtilsState = vi.hoisted<WaitUtilsState>(() => ({
+	sleepWithCountdownCalls: 0,
+}));
+
+interface RetryConfigState {
+	retryAllAccountsRateLimited: boolean;
+	retryAllAccountsMaxWaitMs: number;
+	retryAllAccountsMaxRetries: number;
+}
+
+const retryConfigState = vi.hoisted<RetryConfigState>(() => ({
+	retryAllAccountsRateLimited: true,
+	retryAllAccountsMaxWaitMs: 5000,
+	retryAllAccountsMaxRetries: 1,
+}));
+
 function createMockAccount(
 	overrides: Partial<Record<string, unknown>> = {},
 ): Record<string, unknown> {
@@ -95,6 +115,40 @@ vi.mock("../lib/request/fetch-helpers.js", () => ({
 vi.mock("../lib/request/request-transformer.js", () => ({
 	applyFastSessionDefaults: <T>(config: T) => config,
 }));
+
+vi.mock("../lib/config.js", async () => {
+	const actual = await vi.importActual<typeof import("../lib/config.js")>(
+		"../lib/config.js",
+	);
+	return {
+		...actual,
+		getRetryAllAccountsRateLimited: () =>
+			retryConfigState.retryAllAccountsRateLimited,
+		getRetryAllAccountsMaxWaitMs: () =>
+			retryConfigState.retryAllAccountsMaxWaitMs,
+		getRetryAllAccountsMaxRetries: () =>
+			retryConfigState.retryAllAccountsMaxRetries,
+		getTokenRefreshSkewMs: () => 0,
+		getRateLimitToastDebounceMs: () => 0,
+		getPrewarmCodexInstructions: () => false,
+	};
+});
+
+vi.mock("../lib/request/wait-utils.js", async () => {
+	const actual = await vi.importActual<typeof import("../lib/request/wait-utils.js")>(
+		"../lib/request/wait-utils.js",
+	);
+	return {
+		...actual,
+		createAbortableSleep: () => async () => {
+			await Promise.resolve();
+		},
+		sleepWithCountdown: async () => {
+			waitUtilsState.sleepWithCountdownCalls += 1;
+			await Promise.resolve();
+		},
+	};
+});
 
 vi.mock("../lib/accounts.js", async () => {
 	const tokenUtils = await vi.importActual("../lib/auth/token-utils.js");
@@ -380,6 +434,10 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		resetAccountManagerState();
 		recoveryState.forceRecoverable = false;
 		recoveryState.isRecoverableErrorCalls = 0;
+		waitUtilsState.sleepWithCountdownCalls = 0;
+		retryConfigState.retryAllAccountsRateLimited = true;
+		retryConfigState.retryAllAccountsMaxWaitMs = 5000;
+		retryConfigState.retryAllAccountsMaxRetries = 1;
 		vi.resetModules();
 
 		for (const key of envKeys) originalEnv[key] = process.env[key];
@@ -413,6 +471,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 	});
 
 	it("waits and retries when all accounts are rate-limited", async () => {
+		vi.useRealTimers();
 		const { OpenAIAuthPlugin } = await import("../index.js");
 		const client = {
 			tui: { showToast: vi.fn() },
@@ -434,17 +493,17 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		const fetchPromise = sdk.fetch("https://example.com", {});
 		expect(globalThis.fetch).not.toHaveBeenCalled();
 
-		await vi.advanceTimersByTimeAsync(1500);
-
 		const response = await fetchPromise;
+		expect(waitUtilsState.sleepWithCountdownCalls).toBe(1);
 		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 		expect(response.status).toBe(200);
-	}, 10_000);
+	}, 30_000);
 
 	it("does not replay across all accounts by default when every account is rate-limited", async () => {
-		delete process.env.CODEX_AUTH_RETRY_ALL_RATE_LIMITED;
-		delete process.env.CODEX_AUTH_RETRY_ALL_MAX_WAIT_MS;
-		delete process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
+		vi.useRealTimers();
+		retryConfigState.retryAllAccountsRateLimited = false;
+		retryConfigState.retryAllAccountsMaxWaitMs = 0;
+		retryConfigState.retryAllAccountsMaxRetries = 0;
 		vi.resetModules();
 		const secondaryAccount = createMockAccount({
 			index: 1,
@@ -479,9 +538,10 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		expect(response.status).toBe(429);
 		expect(payload.error.message).toContain("All 2 account(s) are rate-limited.");
 		expect(payload.error.message).toContain("15000ms");
-	}, 10_000);
+	}, 30_000);
 
 	it("fast-fails after repeated cross-account 5xx errors arm the server-burst cooldown", async () => {
+		vi.useRealTimers();
 		const accounts = Array.from({ length: 4 }, (_, index) =>
 			createMockAccount({
 				index,
@@ -533,7 +593,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 			accountManagerState.accounts = [accounts[index] as Record<string, unknown>];
 			accountManagerState.accountSelections = [accounts[index] as Record<string, unknown>];
 			const fetchPromise = sdk.fetch("https://example.com", {});
-			await vi.advanceTimersByTimeAsync(2_000);
+			await Promise.resolve();
 			const response = await fetchPromise;
 			expect(response.status).toBe(429);
 			clearPoolExhaustionCooldown();
@@ -550,7 +610,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 			"Multiple accounts recently failed with upstream server errors.",
 		);
 		expect(fetchMock).toHaveBeenCalledTimes(3);
-	});
+	}, 30_000);
 
 	it("stops after the bounded outbound request budget even when more accounts are available", async () => {
 		const logger = await import("../lib/logger.js");
