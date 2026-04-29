@@ -328,7 +328,7 @@ describe("Documentation Integrity", () => {
 
 		expect(readme).toContain("codex auth fix --live --model gpt-5.3-codex");
 		expect(commandRef).toContain(
-			"| `--json` | verify-flagged, verify, why-selected, best, forecast, report, fix, doctor, config explain, debug bundle |",
+			"| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, fix, doctor, config explain, debug bundle |",
 		);
 		expect(commandRef).toContain(
 			"| `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |",
