@@ -332,9 +332,19 @@ export async function runUsageCommand(
 			logError(parsed.message);
 			return 1;
 		}
-		const rotatedPath = await (deps.rotateLedger ?? rotateUsageLedger)({
-			ifLargerThanBytes: parsed.options.ifLargerThanBytes,
-		});
+		let rotatedPath: string | null;
+		try {
+			rotatedPath = await (deps.rotateLedger ?? rotateUsageLedger)({
+				ifLargerThanBytes: parsed.options.ifLargerThanBytes,
+			});
+		} catch (error) {
+			logError(
+				`Failed to rotate usage ledger: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+			return 1;
+		}
 		if (parsed.options.json) {
 			logInfo(
 				JSON.stringify({
@@ -386,7 +396,16 @@ export async function runUsageCommand(
 
 	if (options.outPath) {
 		const outputPath = resolve(deps.getCwd?.() ?? process.cwd(), options.outPath);
-		await (deps.writeFile ?? defaultWriteFile)(outputPath, `${rendered}\n`);
+		try {
+			await (deps.writeFile ?? defaultWriteFile)(outputPath, `${rendered}\n`);
+		} catch (error) {
+			logError(
+				`Failed to write usage report: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+			return 1;
+		}
 		if (!options.json && !options.csv) {
 			logInfo(`Usage report written: ${outputPath}`);
 		}
