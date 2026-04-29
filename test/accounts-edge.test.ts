@@ -148,6 +148,30 @@ describe("accounts edge branches", () => {
     expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
   });
 
+  it("loadFromDisk exhausts retries on persistent EPERM and continues", async () => {
+    const stored = buildStored([
+      buildStoredAccount({ refreshToken: "stored-1" }),
+    ]);
+    mockLoadAccounts.mockResolvedValue(stored);
+    mockSyncAccountStorageFromCodexCli.mockResolvedValue({
+      storage: stored,
+      changed: true,
+    });
+    const eperm = Object.assign(new Error("permission denied"), {
+      code: "EPERM",
+    });
+    mockSaveAccounts.mockRejectedValue(eperm);
+    mockLoadCodexCliState.mockResolvedValue({ accounts: [] });
+
+    const { AccountManager } = await importAccountsModule();
+    const manager = await AccountManager.loadFromDisk();
+
+    expect(manager.getAccountCount()).toBe(1);
+    // Persistent EPERM exhausts the retry budget (initial + 3 retries = 4
+    // attempts) before lib/accounts.ts catches and continues.
+    expect(mockSaveAccounts).toHaveBeenCalledTimes(4);
+  });
+
   it("hydrates from Codex CLI cache and catches save failures", async () => {
     const now = Date.now();
     const stored = buildStored([

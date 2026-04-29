@@ -3227,6 +3227,9 @@ describe("codex manager cli commands", () => {
 				message: "save failed",
 			},
 		);
+		// saveAccountsWithRetry must have retried beyond a single attempt; if a
+		// regression replaces it with a raw saveAccounts call, this drops to 1.
+		expect(saveAccountsMock.mock.calls.length).toBeGreaterThan(1);
 		expect(originalQuotaCache).toEqual({
 			byAccountId: {},
 			byEmail: {},
