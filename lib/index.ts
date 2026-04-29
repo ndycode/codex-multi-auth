@@ -40,4 +40,3 @@ export * from "./codex-cli/state.js";
 export * from "./codex-cli/sync.js";
 export * from "./codex-cli/writer.js";
 export * from "./codex-cli/observability.js";
-export * from "./usage/index.js";
