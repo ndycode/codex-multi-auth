@@ -17,7 +17,7 @@ Base: `origin/main` at `4308b56a14c132c5df9584a7b611a02b64891b2c`
 | PR | Branch | Status | Validation |
 | --- | --- | --- | --- |
 | 01 | `chore/roadmap-local-governance` | Ready for review | `npm test -- test/documentation.test.ts`; `npm run build`. |
-| 02 | `feat/usage-ledger-core` | Pending | Targeted usage ledger tests plus build. |
+| 02 | `feat/usage-ledger-core` | Ready for review | `npm run typecheck`; `npm test -- test/usage-ledger.test.ts`; `npm run lint`; `npm run build`. |
 | 03 | `feat/usage-command` | Pending | CLI usage command tests plus build. |
 | 04 | `feat/account-policy-controls` | Pending | Account policy command/store tests plus build. |
 | 05 | `feat/routing-profiles-core` | Pending | Routing profile storage/project tests plus build. |
