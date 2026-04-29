@@ -122,12 +122,17 @@ describe("usage ledger core", () => {
 			outcome: "success",
 			model: "gpt-5.3-codex",
 		});
+		const lockPath = `${getUsageLedgerPaths().current}.lock`;
+		await fs.writeFile(lockPath, "stale\n", "utf8");
+		const staleDate = new Date(Date.now() - 60_000);
+		await fs.utimes(lockPath, staleDate, staleDate);
 
 		const rotated = await rotateUsageLedger({
 			now: Date.UTC(2026, 0, 2, 3, 4, 5, 6),
 		});
 
 		expect(rotated).toContain("usage-ledger.20260102T030405006Z.jsonl");
+		await expect(fs.stat(lockPath)).rejects.toThrow();
 		await expect(fs.stat(getUsageLedgerPaths().current)).rejects.toThrow();
 
 		await appendUsageLedgerRow({
@@ -177,9 +182,27 @@ describe("usage ledger core", () => {
 				reasoningTokens: 1_000_000,
 				totalTokens: 4_000_000,
 			}),
-		).toBe(21.375);
+		).toBe(20.125);
+		expect(
+			estimateUsageCostUsd("gpt-5.3-codex", {
+				inputTokens: 1_000,
+				outputTokens: 200,
+				cachedInputTokens: 50,
+				reasoningTokens: 25,
+				totalTokens: 1_275,
+			}),
+		).toBe(0.00344375);
 		expect(
 			estimateUsageCostUsd(null, {
+				inputTokens: 1,
+				outputTokens: 1,
+				cachedInputTokens: 0,
+				reasoningTokens: 0,
+				totalTokens: 2,
+			}),
+		).toBeNull();
+		expect(
+			estimateUsageCostUsd("unknown-model", {
 				inputTokens: 1,
 				outputTokens: 1,
 				cachedInputTokens: 0,
@@ -213,6 +236,30 @@ describe("usage ledger core", () => {
 		} finally {
 			appendSpy.mockRestore();
 		}
+	});
+
+	it("removes stale append locks before writing", async () => {
+		const {
+			appendUsageLedgerRow,
+			getUsageLedgerPaths,
+			readUsageLedgerRows,
+		} = await import("../lib/usage/index.js");
+		const { dir, current } = getUsageLedgerPaths();
+		const lockPath = `${current}.lock`;
+		await fs.mkdir(dir, { recursive: true });
+		await fs.writeFile(lockPath, "stale\n", "utf8");
+		const staleDate = new Date(Date.now() - 60_000);
+		await fs.utimes(lockPath, staleDate, staleDate);
+
+		await appendUsageLedgerRow({
+			id: "after-stale-lock",
+			outcome: "success",
+		});
+
+		await expect(fs.stat(lockPath)).rejects.toThrow();
+		expect((await readUsageLedgerRows()).map((row) => row.id)).toEqual([
+			"after-stale-lock",
+		]);
 	});
 });
 

@@ -25,6 +25,9 @@ import type {
 const USAGE_DIR_NAME = "usage";
 const USAGE_LEDGER_FILE_NAME = "usage-ledger.jsonl";
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+const LOCK_RETRYABLE_FS_CODES = new Set(["EACCES", "EBUSY", "EEXIST", "EPERM"]);
+const LOCK_STALE_MS = 30_000;
+const LOCK_MAX_WAIT_MS = 10_000;
 let appendQueue: Promise<void> = Promise.resolve();
 
 const VALID_SOURCES = new Set<UsageLedgerSource>([
@@ -53,6 +56,15 @@ function isRetryableFsError(error: unknown): boolean {
 	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
 }
 
+function isRetryableLockError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && LOCK_RETRYABLE_FS_CODES.has(code);
+}
+
+function isMissingFileError(error: unknown): boolean {
+	return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
+}
+
 function normalizeTimestamp(value: number | Date | string | undefined): number | null {
 	if (value === undefined) return null;
 	if (value instanceof Date) {
@@ -66,13 +78,14 @@ function normalizeTimestamp(value: number | Date | string | undefined): number |
 	return Number.isFinite(parsed) ? parsed : null;
 }
 
-async function appendFileWithRetry(path: string, line: string): Promise<void> {
+async function unlinkWithRetry(path: string): Promise<void> {
 	let lastError: unknown;
 	for (let attempt = 0; attempt < 5; attempt += 1) {
 		try {
-			await fs.appendFile(path, line, { encoding: "utf8", mode: 0o600 });
+			await fs.unlink(path);
 			return;
 		} catch (error) {
+			if (isMissingFileError(error)) return;
 			lastError = error;
 			if (!isRetryableFsError(error) || attempt >= 4) {
 				throw error;
@@ -82,7 +95,94 @@ async function appendFileWithRetry(path: string, line: string): Promise<void> {
 	}
 	throw lastError instanceof Error
 		? lastError
-		: new Error("usage ledger append retry exhausted");
+		: new Error("usage ledger lock cleanup retry exhausted");
+}
+
+async function removeStaleLockIfNeeded(lockPath: string): Promise<boolean> {
+	try {
+		const stat = await fs.stat(lockPath);
+		if (Date.now() - stat.mtimeMs < LOCK_STALE_MS) {
+			return false;
+		}
+		await unlinkWithRetry(lockPath);
+		return true;
+	} catch (error) {
+		if (isMissingFileError(error)) return true;
+		throw error;
+	}
+}
+
+async function acquireAppendLock(lockPath: string): Promise<() => Promise<void>> {
+	const started = Date.now();
+	let attempt = 0;
+	while (true) {
+		let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
+		try {
+			handle = await fs.open(lockPath, "wx", 0o600);
+			await handle.writeFile(
+				JSON.stringify({ pid: process.pid, createdAt: Date.now() }) + "\n",
+				"utf8",
+			);
+			let released = false;
+			return async () => {
+				if (released) return;
+				released = true;
+				await handle?.close();
+				await unlinkWithRetry(lockPath);
+			};
+		} catch (error) {
+			if (handle) {
+				try {
+					await handle.close();
+				} catch {
+					// Best-effort cleanup after a failed lock metadata write.
+				}
+				await unlinkWithRetry(lockPath);
+			}
+			if (!isRetryableLockError(error)) {
+				throw error;
+			}
+			await removeStaleLockIfNeeded(lockPath);
+			if (Date.now() - started >= LOCK_MAX_WAIT_MS) {
+				throw new Error(`Timed out waiting for usage ledger lock: ${lockPath}`);
+			}
+			await sleep(Math.min(250, 10 * 2 ** Math.min(attempt, 5)));
+			attempt += 1;
+		}
+	}
+}
+
+async function appendFileWithRetry(path: string, line: string): Promise<void> {
+	const release = await acquireAppendLock(`${path}.lock`);
+	let lastError: unknown;
+	try {
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			try {
+				await fs.appendFile(path, line, { encoding: "utf8", mode: 0o600 });
+				return;
+			} catch (error) {
+				lastError = error;
+				if (!isRetryableFsError(error) || attempt >= 4) {
+					throw error;
+				}
+				await sleep(10 * 2 ** attempt);
+			}
+		}
+		throw lastError instanceof Error
+			? lastError
+			: new Error("usage ledger append retry exhausted");
+	} finally {
+		await release();
+	}
+}
+
+async function runWithAppendQueue<T>(task: () => Promise<T>): Promise<T> {
+	const queued = appendQueue.catch(() => undefined).then(task);
+	appendQueue = queued.then(
+		() => undefined,
+		() => undefined,
+	);
+	return queued;
 }
 
 async function readFileWithRetry(path: string): Promise<string> {
@@ -136,16 +236,10 @@ export async function appendUsageLedgerRow(
 	const row = normalizeUsageLedgerRow(input);
 	const { dir, current } = getUsageLedgerPaths();
 	const line = usageRowToJsonLine(row);
-	const task = async (): Promise<void> => {
+	await runWithAppendQueue(async () => {
 		await fs.mkdir(dir, { recursive: true, mode: 0o700 });
 		await appendFileWithRetry(current, line);
-	};
-	const queued = appendQueue.catch(() => undefined).then(task);
-	appendQueue = queued.then(
-		() => undefined,
-		() => undefined,
-	);
-	await queued;
+	});
 	return row;
 }
 
@@ -370,14 +464,17 @@ function addRowToBucket(bucket: UsageSummaryBucket, row: UsageLedgerRow): void {
 	bucket.costUsd = Number((bucket.costUsd + (row.costUsd ?? 0)).toFixed(8));
 }
 
-export async function summarizeUsageLedger(
+export function summarizeUsageRows(
+	rows: UsageLedgerRow[],
 	query: UsageSummaryQuery = {},
-): Promise<UsageSummary> {
+): UsageSummary {
 	const by = query.by ?? "model";
-	const rows = await readUsageLedgerRows(query);
+	const filteredRows = filterRows(rows, query).sort(
+		(a, b) => a.createdAt - b.createdAt,
+	);
 	const totals = createBucket("total");
 	const buckets = new Map<string, UsageSummaryBucket>();
-	for (const row of rows) {
+	for (const row of filteredRows) {
 		addRowToBucket(totals, row);
 		const key = getBucketKey(row, by);
 		const bucket = buckets.get(key) ?? createBucket(key);
@@ -396,29 +493,42 @@ export async function summarizeUsageLedger(
 	};
 }
 
+export async function summarizeUsageLedger(
+	query: UsageSummaryQuery = {},
+): Promise<UsageSummary> {
+	return summarizeUsageRows(await readUsageLedgerRows(query), query);
+}
+
 export async function rotateUsageLedger(options: {
 	now?: number;
 	ifLargerThanBytes?: number;
 } = {}): Promise<string | null> {
 	const { dir, current } = getUsageLedgerPaths();
-	if (!existsSync(current)) {
-		return null;
-	}
-	const stat = await fs.stat(current);
-	if (
-		typeof options.ifLargerThanBytes === "number" &&
-		stat.size <= options.ifLargerThanBytes
-	) {
-		return null;
-	}
-	await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-	const stamp = new Date(options.now ?? Date.now())
-		.toISOString()
-		.replace(/[-:]/g, "")
-		.replace(".", "");
-	const rotated = join(dir, `usage-ledger.${stamp}.jsonl`);
-	await renameWithRetry(current, rotated);
-	return rotated;
+	return runWithAppendQueue(async () => {
+		await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+		const release = await acquireAppendLock(`${current}.lock`);
+		try {
+			if (!existsSync(current)) {
+				return null;
+			}
+			const stat = await fs.stat(current);
+			if (
+				typeof options.ifLargerThanBytes === "number" &&
+				stat.size <= options.ifLargerThanBytes
+			) {
+				return null;
+			}
+			const stamp = new Date(options.now ?? Date.now())
+				.toISOString()
+				.replace(/[-:]/g, "")
+				.replace(".", "");
+			const rotated = join(dir, `usage-ledger.${stamp}.jsonl`);
+			await renameWithRetry(current, rotated);
+			return rotated;
+		} finally {
+			await release();
+		}
+	});
 }
 
 export function resetUsageLedgerQueueForTests(): void {

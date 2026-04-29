@@ -7,13 +7,6 @@ export interface UsageModelPricing {
 	reasoningUsdPerMillion?: number;
 }
 
-const DEFAULT_PRICING: UsageModelPricing = {
-	inputUsdPerMillion: 0,
-	outputUsdPerMillion: 0,
-	cachedInputUsdPerMillion: 0,
-	reasoningUsdPerMillion: 0,
-};
-
 const MODEL_PRICING: Record<string, UsageModelPricing> = {
 	"gpt-5-codex": {
 		inputUsdPerMillion: 1.25,
@@ -65,7 +58,7 @@ export function getUsageModelPricing(
 	if (!normalized) {
 		return null;
 	}
-	return MODEL_PRICING[normalized] ?? DEFAULT_PRICING;
+	return MODEL_PRICING[normalized] ?? null;
 }
 
 export function estimateUsageCostUsd(
@@ -77,8 +70,12 @@ export function estimateUsageCostUsd(
 		return null;
 	}
 
+	const billableInputTokens = Math.max(
+		0,
+		tokens.inputTokens - tokens.cachedInputTokens,
+	);
 	const input =
-		(tokens.inputTokens / 1_000_000) * pricing.inputUsdPerMillion;
+		(billableInputTokens / 1_000_000) * pricing.inputUsdPerMillion;
 	const output =
 		(tokens.outputTokens / 1_000_000) * pricing.outputUsdPerMillion;
 	const cached =
