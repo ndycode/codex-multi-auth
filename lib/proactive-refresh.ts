@@ -110,7 +110,7 @@ export async function proactiveRefreshAccount(
 	const timeUntilExpiry = getTimeUntilExpiry(account);
 	log.info("Proactively refreshing token", {
 		accountIndex: account.index,
-		...(account.email ? { email: maskEmail(account.email) } : {}),
+		...(account.email ? { emailMasked: maskEmail(account.email) } : {}),
 		expiresInMs: timeUntilExpiry,
 		expiresInMinutes: Math.round(timeUntilExpiry / 60000),
 	});
@@ -124,14 +124,14 @@ export async function proactiveRefreshAccount(
 	if (result.type === "success") {
 		log.info("Proactive refresh succeeded", {
 			accountIndex: account.index,
-			...(account.email ? { email: maskEmail(account.email) } : {}),
+			...(account.email ? { emailMasked: maskEmail(account.email) } : {}),
 		});
 		return { refreshed: true, tokenResult: result, reason: "success" };
 	}
 
 	log.warn("Proactive refresh failed", {
 		accountIndex: account.index,
-		...(account.email ? { email: maskEmail(account.email) } : {}),
+		...(account.email ? { emailMasked: maskEmail(account.email) } : {}),
 		failureReason: result.reason,
 	});
 	return { refreshed: true, tokenResult: result, reason: "failed" };
