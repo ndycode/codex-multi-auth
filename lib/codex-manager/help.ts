@@ -13,6 +13,7 @@ export function printUsage(): void {
 			"  codex auth switch <index>",
 			"  codex auth best [--live] [--json] [--model <model>]",
 			"  codex auth forecast [--live] [--json] [--model <model>]",
+			"  codex auth account tag|untag|weight|pause|unpause|drain|undrain|note ...",
 			"",
 			"Repair:",
 			"  codex auth verify-flagged [--dry-run] [--json] [--no-restore]",

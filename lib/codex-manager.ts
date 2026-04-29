@@ -36,6 +36,7 @@ import {
 	type BestCliOptions,
 	runBestCommand,
 } from "./codex-manager/commands/best.js";
+import { runAccountCommand } from "./codex-manager/commands/account.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
 import { runConfigExplainCommand } from "./codex-manager/commands/config-explain.js";
 import { saveAccountsWithRetry } from "./codex-manager/forecast-report-shared.js";
@@ -3454,6 +3455,12 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 	if (command === "best") {
 		return runBest(rest);
+	}
+	if (command === "account") {
+		return runAccountCommand(rest, {
+			setStoragePath,
+			loadAccounts,
+		});
 	}
 	if (command === "report") {
 		return runReportCommand(rest, {
