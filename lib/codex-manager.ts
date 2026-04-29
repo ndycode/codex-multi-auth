@@ -38,6 +38,7 @@ import {
 } from "./codex-manager/commands/best.js";
 import { runAccountCommand } from "./codex-manager/commands/account.js";
 import { runBudgetCommand } from "./codex-manager/commands/budget.js";
+import { runBridgeCommand } from "./codex-manager/commands/bridge.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
 import { runModelsCommand } from "./codex-manager/commands/models.js";
 import { runMonitorCommand } from "./codex-manager/commands/monitor.js";
@@ -3467,6 +3468,9 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	}
 	if (command === "budget") {
 		return runBudgetCommand(rest);
+	}
+	if (command === "bridge") {
+		return runBridgeCommand(rest);
 	}
 	if (command === "models") {
 		return runModelsCommand(rest, {

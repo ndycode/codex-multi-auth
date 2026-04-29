@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Socket } from "node:net";
 import { Hono } from "hono";
 import { fetch as undiciFetch } from "undici";
+import { verifyLocalClientBearerToken } from "./local-client-tokens.js";
 import { appendUsageLedgerRow } from "./usage/index.js";
 
 export interface LocalBridgeServer {
@@ -16,6 +17,8 @@ export interface LocalBridgeOptions {
 	port?: number;
 	runtimeBaseUrl: string;
 	fetchImpl?: typeof fetch;
+	requireAuth?: boolean;
+	verifyBearerToken?: typeof verifyLocalClientBearerToken;
 }
 
 const DEFAULT_HOST = "127.0.0.1";
@@ -135,6 +138,8 @@ export async function startLocalBridge(
 	}
 	const port = options.port ?? 0;
 	const fetchImpl = options.fetchImpl ?? (undiciFetch as typeof fetch);
+	const requireAuth = options.requireAuth ?? true;
+	const verifyBearerToken = options.verifyBearerToken ?? verifyLocalClientBearerToken;
 	const app = new Hono();
 
 	app.get("/health", (context) =>
@@ -150,6 +155,26 @@ export async function startLocalBridge(
 		targetPath: "/v1/models" | "/v1/responses",
 	): Promise<Response> => {
 		const startedAt = Date.now();
+		if (requireAuth) {
+			const token = await verifyBearerToken(
+				request.headers.get("authorization"),
+				startedAt,
+			);
+			if (!token) {
+				return new Response(
+					JSON.stringify({
+						error: {
+							message: "Local bridge rejected an unauthenticated request.",
+							code: "local_bridge_unauthorized",
+						},
+					}),
+					{
+						status: 401,
+						headers: { "content-type": "application/json; charset=utf-8" },
+					},
+				);
+			}
+		}
 		const targetUrl = `${runtimeBaseUrl}${targetPath}`;
 		let upstream: Response;
 		try {

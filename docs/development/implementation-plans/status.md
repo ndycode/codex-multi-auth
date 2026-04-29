@@ -26,7 +26,7 @@ Base: `origin/main` at `4308b56a14c132c5df9584a7b611a02b64891b2c`
 | 08 | `feat/runtime-policy-integration` | Ready for review | `npm run typecheck`; `npm test -- test/runtime-policy.test.ts test/runtime-rotation-proxy.test.ts test/index.test.ts test/failure-policy.test.ts test/request-transformer.test.ts test/stream-failover.test.ts`; `npm run lint`; `npm run build`. |
 | 09 | `feat/monitor-command` | Ready for review | `npm run typecheck`; `npm test -- test/codex-manager-monitor-command.test.ts test/runtime-policy.test.ts`; `npm run build`; `npm run lint`. |
 | 10 | `feat/local-bridge-core` | Ready for review | `npm run typecheck`; `npm test -- test/local-bridge.test.ts`; `npm run lint`; `npm run build`. |
-| 11 | `feat/local-client-tokens` | Pending | Token hash lifecycle/auth tests plus build. |
+| 11 | `feat/local-client-tokens` | Ready for review | `npm run typecheck`; `npm test -- test/local-client-tokens.test.ts test/local-bridge.test.ts test/codex-manager-bridge-command.test.ts`; `npm run lint`; `npm run build`. |
 | 12 | `feat/integration-generators` | Pending | Generator snapshot/docs tests plus build. |
 | 13 | `docs/release-local-governance` | Pending | Full final documentation gate. |
 

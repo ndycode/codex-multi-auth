@@ -24,6 +24,7 @@ export function printUsage(): void {
 			"Diagnostics:",
 			"  codex auth usage [--since <time|duration>] [--by <group>] [--json|--csv] [--out <path>]",
 			"  codex auth budget limit|check|list ...",
+			"  codex auth bridge token create|list|rotate|revoke",
 			"  codex auth models [--json] [--model <model>]",
 			"  codex auth monitor [--json]",
 			"  codex auth rotation <enable|disable|status|bind-app|unbind-app>",

@@ -49,6 +49,7 @@ describe("local bridge", () => {
 		const server = await startLocalBridge({
 			runtimeBaseUrl: "http://127.0.0.1:9999/",
 			fetchImpl,
+			requireAuth: false,
 		});
 		openServers.push(server);
 
@@ -87,6 +88,7 @@ describe("local bridge", () => {
 		const server = await startLocalBridge({
 			runtimeBaseUrl: "http://127.0.0.1:9999",
 			fetchImpl,
+			requireAuth: false,
 		});
 		openServers.push(server);
 
@@ -95,5 +97,36 @@ describe("local bridge", () => {
 		});
 		expect(rejected.status).toBe(404);
 		expect(await rejected.text()).toContain("local_bridge_not_found");
+	});
+
+	it("requires bearer tokens by default for forwarded paths", async () => {
+		const { calls, fetchImpl } = createFetch();
+		const verifyBearerToken = vi.fn().mockResolvedValue(null);
+		const server = await startLocalBridge({
+			runtimeBaseUrl: "http://127.0.0.1:9999",
+			fetchImpl,
+			verifyBearerToken,
+		});
+		openServers.push(server);
+
+		const rejected = await fetch(`${server.baseUrl}/v1/models`);
+		expect(rejected.status).toBe(401);
+		expect(await rejected.text()).toContain("local_bridge_unauthorized");
+		expect(calls).toHaveLength(0);
+
+		verifyBearerToken.mockResolvedValue({
+			id: "token-1",
+			label: "test",
+			prefix: "cma_local_abc",
+			tokenHash: "sha256:test",
+			createdAt: 1,
+			lastUsedAt: null,
+			revokedAt: null,
+		});
+		const accepted = await fetch(`${server.baseUrl}/v1/models`, {
+			headers: { authorization: "Bearer cma_local_secret" },
+		});
+		expect(accepted.status).toBe(200);
+		expect(calls).toHaveLength(1);
 	});
 });
