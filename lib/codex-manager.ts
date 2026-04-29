@@ -80,6 +80,7 @@ import {
 } from "./codex-manager/commands/status.js";
 import { loadPersistedRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import { runSwitchCommand } from "./codex-manager/commands/switch.js";
+import { runUsageCommand } from "./codex-manager/commands/usage.js";
 import { parseAuthLoginArgs, printUsage } from "./codex-manager/help.js";
 import {
 	applyUiThemeFromDashboardSettings,
@@ -3470,6 +3471,9 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			loadRuntimeObservabilitySnapshot:
 				loadPersistedRuntimeObservabilitySnapshot,
 		});
+	}
+	if (command === "usage") {
+		return runUsageCommand(rest);
 	}
 	if (command === "rotation") {
 		return runRotationCommand(rest, {

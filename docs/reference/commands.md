@@ -57,6 +57,7 @@ Compatibility aliases are supported:
 | --- | --- |
 | `codex auth features` | Print implemented feature summary |
 | `codex auth report` | Generate full health report |
+| `codex auth usage` | Summarize local usage ledger rows |
 | `codex auth why-selected [--now|--last]` | Explain which account the selector picks now or via the last persisted runtime snapshot |
 | `codex auth rotation enable\|disable\|status\|bind-app\|unbind-app` | Manage the default-on runtime Responses proxy for live Codex account rotation |
 
@@ -68,12 +69,15 @@ Compatibility aliases are supported:
 | --- | --- | --- |
 | `--device-auth` | login | Use the OpenAI Codex device-code flow for remote/headless login (mutually exclusive with `--manual` / `--no-browser`) |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow (mutually exclusive with `--device-auth`) |
-| `--json` | verify-flagged, verify, why-selected, best, forecast, report, fix, doctor, config explain, debug bundle | Print machine-readable output |
+| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, fix, doctor, config explain, debug bundle | Print machine-readable output |
+| `--csv` | usage | Print or write CSV bucket output |
 | `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |
 | `--live` | best, forecast, report, fix | Use live probe before decisions/output |
 | `--dry-run` | verify-flagged, verify (with `--flagged`/`--all`), fix, doctor | Preview without writing storage |
 | `--model <model>` | best, forecast, report, fix | Specify model for live probe paths |
-| `--out <path>` | report | Write report output to file |
+| `--out <path>` | report, usage | Write report output to file |
+| `--since <time>` | usage | Filter local usage rows by timestamp, ISO date, or relative duration |
+| `--by <group>` | usage | Group usage by model, account, project, outcome, or day |
 | `--write <path>` | init-config, config template | Write template output to a file instead of stdout |
 | `--fix` | doctor | Apply safe repairs |
 | `--no-restore` | verify-flagged, verify (with `--flagged`/`--all`) | Verify only; do not restore healthy flagged accounts |
@@ -82,6 +86,37 @@ Compatibility aliases are supported:
 | `--all` | verify | Run both `--paths` and `--flagged` together |
 | `--now`, `-n` | why-selected | Recompute the current selection from live state (default) |
 | `--last`, `-l` | why-selected | Recompute selection from current state and attach the last persisted runtime snapshot |
+
+---
+
+## `codex auth usage`
+
+Summarizes the local usage ledger. Rows are local-only metadata and do not
+contain prompts, tokens, auth headers, raw account emails, or raw sensitive
+account ids.
+
+Usage:
+
+```bash
+codex auth usage [--since <time|duration>] [--by <model|account|project|outcome|day>] [--json|--csv] [--out <path>]
+codex auth usage rotate [--if-larger-than-bytes <bytes>] [--json]
+```
+
+Flags:
+
+- `--since`: filter rows by Unix milliseconds, ISO date, or relative duration
+  such as `24h`, `7d`, or `2w`.
+- `--by`: group summary output by `model`, `account`, `project`, `outcome`, or
+  `day`. Default: `model`.
+- `--json`, `-j`: emit machine-readable JSON including the summary and rows.
+- `--csv`: emit CSV bucket output.
+- `--out`: write the rendered output to a file.
+- `rotate`: move the current ledger to a timestamped archive.
+- `--if-larger-than-bytes`: skip rotation unless the current ledger is larger
+  than the provided byte threshold.
+
+Exit code: `0` for successful summary or rotation, `1` for invalid options or
+write failures.
 
 ---
 
