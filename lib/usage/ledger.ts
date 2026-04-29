@@ -112,6 +112,25 @@ async function removeStaleLockIfNeeded(lockPath: string): Promise<boolean> {
 	}
 }
 
+async function closeLockHandleWithRetry(
+	handle: Awaited<ReturnType<typeof fs.open>>,
+): Promise<void> {
+	let lastError: unknown;
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await handle.close();
+			return;
+		} catch (error) {
+			lastError = error;
+			if (!isRetryableLockError(error)) throw error;
+			await sleep(Math.min(250, 10 * 2 ** attempt));
+		}
+	}
+	throw lastError instanceof Error
+		? lastError
+		: new Error("usage ledger lock handle close retry exhausted");
+}
+
 async function acquireAppendLock(lockPath: string): Promise<() => Promise<void>> {
 	const started = Date.now();
 	let attempt = 0;
@@ -123,17 +142,24 @@ async function acquireAppendLock(lockPath: string): Promise<() => Promise<void>>
 				JSON.stringify({ pid: process.pid, createdAt: Date.now() }) + "\n",
 				"utf8",
 			);
+			const lockHandle = handle;
 			let released = false;
 			return async () => {
 				if (released) return;
 				released = true;
-				await handle?.close();
+				let closeError: unknown;
+				try {
+					await closeLockHandleWithRetry(lockHandle);
+				} catch (error) {
+					closeError = error;
+				}
 				await unlinkWithRetry(lockPath);
+				if (closeError) throw closeError;
 			};
 		} catch (error) {
 			if (handle) {
 				try {
-					await handle.close();
+					await closeLockHandleWithRetry(handle);
 				} catch {
 					// Best-effort cleanup after a failed lock metadata write.
 				}
