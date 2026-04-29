@@ -24,7 +24,7 @@ Base: `origin/main` at `4308b56a14c132c5df9584a7b611a02b64891b2c`
 | 06 | `feat/budget-guard` | Ready for review | `npm run typecheck`; `npm test -- test/budget-guard.test.ts test/codex-manager-budget-command.test.ts`; `npm run lint`; `npm run build`. |
 | 07 | `feat/model-capability-matrix` | Ready for review | `npm run typecheck`; `npm test -- test/model-capability-matrix.test.ts test/codex-manager-models-command.test.ts test/test-model-matrix-script.test.ts`; `npm run build`; `npm run test:model-matrix:smoke` (3 passed, 9 skipped, 0 failed); `npm run lint`. |
 | 08 | `feat/runtime-policy-integration` | Ready for review | `npm run typecheck`; `npm test -- test/runtime-policy.test.ts test/runtime-rotation-proxy.test.ts test/index.test.ts test/failure-policy.test.ts test/request-transformer.test.ts test/stream-failover.test.ts`; `npm run lint`; `npm run build`. |
-| 09 | `feat/monitor-command` | Pending | Monitor command aggregation tests plus build. |
+| 09 | `feat/monitor-command` | Ready for review | `npm run typecheck`; `npm test -- test/codex-manager-monitor-command.test.ts test/runtime-policy.test.ts`; `npm run build`; `npm run lint`. |
 | 10 | `feat/local-bridge-core` | Pending | Local bridge server tests plus build. |
 | 11 | `feat/local-client-tokens` | Pending | Token hash lifecycle/auth tests plus build. |
 | 12 | `feat/integration-generators` | Pending | Generator snapshot/docs tests plus build. |

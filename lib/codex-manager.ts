@@ -40,6 +40,7 @@ import { runAccountCommand } from "./codex-manager/commands/account.js";
 import { runBudgetCommand } from "./codex-manager/commands/budget.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
 import { runModelsCommand } from "./codex-manager/commands/models.js";
+import { runMonitorCommand } from "./codex-manager/commands/monitor.js";
 import { runConfigExplainCommand } from "./codex-manager/commands/config-explain.js";
 import { saveAccountsWithRetry } from "./codex-manager/forecast-report-shared.js";
 import { runDebugBundleCommand } from "./codex-manager/commands/debug-bundle.js";
@@ -3472,6 +3473,12 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			setStoragePath,
 			loadAccounts,
 			loadQuotaCache,
+		});
+	}
+	if (command === "monitor") {
+		return runMonitorCommand(rest, {
+			setStoragePath,
+			loadAccounts,
 		});
 	}
 	if (command === "report") {
