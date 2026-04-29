@@ -245,6 +245,14 @@ describe("proactive-refresh", () => {
 				expires: Date.now() + 60000,
 			});
 			const maskSpy = vi.spyOn(logger, "maskEmail");
+			// Capture the actual log payloads to prove the email key is absent
+			// (not merely emitted as `emailMasked: undefined`).
+			const infoSpy = vi
+				.spyOn(console, "info")
+				.mockImplementation(() => undefined);
+			const warnSpy = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
 			vi.mocked(refreshQueue.queuedRefresh).mockResolvedValueOnce({
 				type: "success" as const,
 				access: "new-access",
@@ -256,7 +264,18 @@ describe("proactive-refresh", () => {
 
 			// No email key on the account → maskEmail must not be called.
 			expect(maskSpy).not.toHaveBeenCalled();
+			// And no log payload should carry an email-bearing key, even as undefined.
+			const allCalls = [...infoSpy.mock.calls, ...warnSpy.mock.calls];
+			for (const call of allCalls) {
+				const data = call[1];
+				if (data && typeof data === "object") {
+					expect(data).not.toHaveProperty("email");
+					expect(data).not.toHaveProperty("emailMasked");
+				}
+			}
 			maskSpy.mockRestore();
+			infoSpy.mockRestore();
+			warnSpy.mockRestore();
 		});
 
 		it("uses custom buffer when specified", async () => {
