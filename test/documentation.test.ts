@@ -236,6 +236,7 @@ describe("Documentation Integrity", () => {
 		const allowedOpencodeFiles = new Set([
 			"docs/reference/storage-paths.md",
 			"docs/reference/commands.md",
+			"docs/releases/v2.1.0.md",
 		]);
 		for (const filePath of getUserDocs()) {
 			const content = read(filePath).toLowerCase();

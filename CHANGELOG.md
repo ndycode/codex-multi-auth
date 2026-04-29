@@ -9,7 +9,7 @@ This top-level changelog preserves the foundational `0.x` milestones and points 
 
 ## [2.1.0] - 2026-04-29
 
-Release candidate for local usage governance and the local bridge. See [docs/releases/v2.1.0.md](docs/releases/v2.1.0.md) for full details.
+Stable release for local usage governance and the local bridge. See [docs/releases/v2.1.0.md](docs/releases/v2.1.0.md) for full details.
 
 ### Added
 
