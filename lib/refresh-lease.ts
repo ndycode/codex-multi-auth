@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { join } from "node:path";
+import { parseBooleanEnv } from "./env-parsing.js";
 import { createLogger } from "./logger.js";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
 import { safeParseTokenResult } from "./schemas.js";
@@ -46,14 +47,6 @@ export interface RefreshLeaseHandle {
 	role: "owner" | "follower" | "bypass";
 	result?: TokenResult;
 	release: (result?: TokenResult) => Promise<void>;
-}
-
-function parseBooleanEnv(value: string | undefined): boolean | undefined {
-	if (value === undefined) return undefined;
-	const normalized = value.trim().toLowerCase();
-	if (normalized === "1" || normalized === "true" || normalized === "yes") return true;
-	if (normalized === "0" || normalized === "false" || normalized === "no") return false;
-	return undefined;
 }
 
 function parseEnvInt(value: string | undefined): number | undefined {

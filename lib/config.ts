@@ -1,5 +1,6 @@
 import { existsSync, promises as fs, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { parseBooleanEnv } from "./env-parsing.js";
 import { logWarn } from "./logger.js";
 import {
 	getCodexHomeDir,
@@ -670,26 +671,6 @@ export async function savePluginConfig(
 		};
 		await saveUnifiedPluginConfig(merged);
 	});
-}
-
-/**
- * Get the effective CODEX_MODE setting
- * Priority: environment variable > config file > default (true)
- *
- * @param pluginConfig - Plugin configuration from file
- * @returns True if CODEX_MODE should be enabled
- */
-function parseBooleanEnv(value: string | undefined): boolean | undefined {
-	if (value === undefined) return undefined;
-	const normalized = value.trim().toLowerCase();
-	if (normalized.length === 0) return undefined;
-	if (normalized === "1" || normalized === "true" || normalized === "yes") {
-		return true;
-	}
-	if (normalized === "0" || normalized === "false" || normalized === "no") {
-		return false;
-	}
-	return undefined;
 }
 
 function parseNumberEnv(value: string | undefined): number | undefined {

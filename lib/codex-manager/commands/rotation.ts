@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { formatAccountLabel, formatCooldown, formatWaitTime } from "../../accounts.js";
+import { parseBooleanEnv } from "../../env-parsing.js";
 import { getCodexMultiAuthDir } from "../../runtime-paths.js";
 import { saveAccountsWithRetry } from "../forecast-report-shared.js";
 
@@ -415,23 +416,11 @@ async function runResetRateLimits(
 	}
 }
 
-function parseBooleanEnv(value: string | undefined): boolean | null {
-	if (value === undefined || value.trim().length === 0) return null;
-	const normalized = value.trim().toLowerCase();
-	if (normalized === "1" || normalized === "true" || normalized === "yes") {
-		return true;
-	}
-	if (normalized === "0" || normalized === "false" || normalized === "no") {
-		return false;
-	}
-	return null;
-}
-
 function formatEnvOverride(): string {
 	const raw = process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY;
 	if (raw === undefined || raw.trim().length === 0) return "none";
 	const parsed = parseBooleanEnv(raw);
-	if (parsed === null) return `invalid (${raw})`;
+	if (parsed === undefined) return `invalid (${raw})`;
 	return parsed ? "enabled" : "disabled";
 }
 
