@@ -162,6 +162,23 @@ describe("usage command", () => {
 		});
 	});
 
+	it("reports rotate failures without uncaught rejections", async () => {
+		const logError = vi.fn();
+		const rotateLedger = vi.fn(async () => {
+			throw new Error("rename denied");
+		});
+		const exitCode = await runUsageCommand(["rotate"], {
+			logError,
+			logInfo: vi.fn(),
+			rotateLedger,
+		});
+
+		expect(exitCode).toBe(1);
+		expect(String(logError.mock.calls[0]?.[0])).toContain(
+			"Failed to rotate usage ledger: rename denied",
+		);
+	});
+
 	it("rejects invalid options", async () => {
 		const logError = vi.fn();
 		const exitCode = await runUsageCommand(["--json", "--csv"], {
@@ -188,6 +205,25 @@ describe("usage command", () => {
 		expect(exitCode).toBe(1);
 		expect(String(logError.mock.calls[0]?.[0])).toContain(
 			"Failed to read usage ledger: read failed",
+		);
+	});
+
+	it("reports output write failures without uncaught rejections", async () => {
+		const logError = vi.fn();
+		const writeFile = vi.fn(async () => {
+			throw new Error("disk full");
+		});
+		const exitCode = await runUsageCommand(["--out", "usage.txt"], {
+			logError,
+			logInfo: vi.fn(),
+			writeFile,
+			getCwd: () => "/workspace",
+			summarizeUsage: async () => makeSummary(),
+		});
+
+		expect(exitCode).toBe(1);
+		expect(String(logError.mock.calls[0]?.[0])).toContain(
+			"Failed to write usage report: disk full",
 		);
 	});
 });
