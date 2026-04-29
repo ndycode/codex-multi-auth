@@ -694,6 +694,32 @@ describe("Plugin Configuration", () => {
 			expect(mockLogWarn).toHaveBeenCalled();
 		});
 
+		it("should not crash when readFileSync throws a non-Error value", () => {
+			// Regression: the catch branch previously cast `error as Error`, which
+			// would dereference `.message` on a string/object/null and produce
+			// "Cannot read properties of …" if anything other than an Error reached
+			// the handler. Stay defensive about non-standard throws.
+			mockExistsSync.mockReturnValue(true);
+			mockReadFileSync.mockImplementation(() => {
+				throw "raw string thrown by misbehaving fs shim";
+			});
+
+			const mockLogWarn = vi.mocked(logger.logWarn);
+			mockLogWarn.mockClear();
+
+			const config = loadPluginConfig();
+
+			expect(config.codexMode).toBe(true);
+			expect(mockLogWarn).toHaveBeenCalled();
+			const warnMessages = mockLogWarn.mock.calls
+				.map(([message]) => String(message))
+				.join("\n");
+			expect(warnMessages).toContain("Failed to load config from");
+			expect(warnMessages).toContain(
+				"raw string thrown by misbehaving fs shim",
+			);
+		});
+
 		it("should deduplicate repeated validation warnings across multiple loads", () => {
 			mockExistsSync.mockReturnValue(true);
 			mockReadFileSync.mockReturnValue(

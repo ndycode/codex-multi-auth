@@ -287,7 +287,9 @@ export function loadPluginConfig(): PluginConfig {
 	} catch (error) {
 		const configPath = resolvePluginConfigPath() ?? CONFIG_PATH;
 		logConfigWarnOnce(
-			`Failed to load config from ${configPath}: ${(error as Error).message}`,
+			`Failed to load config from ${configPath}: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
 		);
 		return { ...DEFAULT_PLUGIN_CONFIG };
 	}
