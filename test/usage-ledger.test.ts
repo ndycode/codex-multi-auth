@@ -169,6 +169,39 @@ describe("usage ledger core", () => {
 		).resolves.toBeNull();
 	});
 
+	it("retries transient lock close failures before removing the lock", async () => {
+		const realOpen = fs.open.bind(fs);
+		const openSpy = vi.spyOn(fs, "open");
+		openSpy.mockImplementationOnce(async (...args: Parameters<typeof fs.open>) => {
+			const handle = await realOpen(...args);
+			let closeAttempts = 0;
+			return new Proxy(handle, {
+				get(target, property, receiver) {
+					if (property === "close") {
+						return async () => {
+							closeAttempts += 1;
+							if (closeAttempts === 1) {
+								throw Object.assign(new Error("close busy"), { code: "EBUSY" });
+							}
+							return target.close();
+						};
+					}
+					return Reflect.get(target, property, receiver);
+				},
+			}) as Awaited<ReturnType<typeof fs.open>>;
+		});
+		const { appendUsageLedgerRow, getUsageLedgerPaths } = await import(
+			"../lib/usage/index.js"
+		);
+
+		await appendUsageLedgerRow({ id: "close-retry", outcome: "success" });
+
+		const paths = getUsageLedgerPaths();
+		await expect(fs.access(`${paths.current}.lock`)).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+	});
+
 	it("exports pricing helpers with deterministic estimates", async () => {
 		const { estimateUsageCostUsd, listUsageModelPricing } = await import(
 			"../lib/usage/index.js"
