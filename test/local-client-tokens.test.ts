@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 describe("local client tokens", () => {
 	let tempDir: string;
@@ -19,7 +20,7 @@ describe("local client tokens", () => {
 		} else {
 			process.env.CODEX_MULTI_AUTH_DIR = originalDir;
 		}
-		await fs.rm(tempDir, { recursive: true, force: true });
+		await removeWithRetry(tempDir, { recursive: true, force: true });
 	});
 
 	it("stores hashes and verifies bearer tokens without persisting plaintext", async () => {

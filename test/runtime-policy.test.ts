@@ -9,6 +9,7 @@ import {
 	type RuntimePolicyState,
 } from "../lib/policy/runtime-policy.js";
 import { appendUsageLedgerRow } from "../lib/usage/index.js";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 function state(): RuntimePolicyState {
 	return {
@@ -40,7 +41,7 @@ describe("runtime policy", () => {
 		} else {
 			process.env.CODEX_MULTI_AUTH_DIR = originalDir;
 		}
-		await fs.rm(tempDir, { recursive: true, force: true });
+		await removeWithRetry(tempDir, { recursive: true, force: true });
 	});
 
 	it("blocks paused accounts and adds profile score boosts", async () => {

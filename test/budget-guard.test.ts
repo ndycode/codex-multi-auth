@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { UsageSummary } from "../lib/usage/index.js";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 function makeSummary(requests: number, totalTokens: number, costUsd: number): UsageSummary {
 	return {
@@ -43,7 +44,7 @@ describe("budget guard", () => {
 		} else {
 			process.env.CODEX_MULTI_AUTH_DIR = originalDir;
 		}
-		await fs.rm(tempDir, { recursive: true, force: true });
+		await removeWithRetry(tempDir, { recursive: true, force: true });
 	});
 
 	it("saves, loads, and evaluates limits", async () => {
