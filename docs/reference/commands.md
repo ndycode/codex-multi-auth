@@ -34,6 +34,7 @@ Compatibility aliases are supported:
 | `codex auth switch <index>` | Set active account by index |
 | `codex auth forecast` | Forecast best account by readiness/risk |
 | `codex auth best` | Pick and optionally sync the best account |
+| `codex auth account ...` | Manage local account policy metadata |
 
 ---
 
@@ -86,6 +87,35 @@ Compatibility aliases are supported:
 | `--all` | verify | Run both `--paths` and `--flagged` together |
 | `--now`, `-n` | why-selected | Recompute the current selection from live state (default) |
 | `--last`, `-l` | why-selected | Recompute selection from current state and attach the last persisted runtime snapshot |
+
+---
+
+## `codex auth account`
+
+Stores local account policy metadata for future routing and budget enforcement.
+Policy keys are hashed from account identity; raw account ids and raw emails are
+not stored in the policy file.
+
+Usage:
+
+```bash
+codex auth account tag <index> <tag>
+codex auth account untag <index> <tag>
+codex auth account weight <index> <0..10>
+codex auth account pause <index>
+codex auth account unpause <index>
+codex auth account drain <index>
+codex auth account undrain <index>
+codex auth account note <index> <text>
+codex auth account policy list [--json]
+```
+
+Notes:
+
+- `pause` and `drain` are stored only. Runtime enforcement is added by the
+  runtime policy integration PR.
+- `weight` accepts values from `0` to `10`; default is `1`.
+- `tag` values are normalized to lowercase filesystem-safe labels.
 
 ---
 
