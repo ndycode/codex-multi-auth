@@ -18,7 +18,7 @@ Base: `origin/main` at `4308b56a14c132c5df9584a7b611a02b64891b2c`
 | --- | --- | --- | --- |
 | 01 | `chore/roadmap-local-governance` | Ready for review | `npm test -- test/documentation.test.ts`; `npm run build`. |
 | 02 | `feat/usage-ledger-core` | Ready for review | `npm run typecheck`; `npm test -- test/usage-ledger.test.ts`; `npm run lint`; `npm run build`. |
-| 03 | `feat/usage-command` | Pending | CLI usage command tests plus build. |
+| 03 | `feat/usage-command` | Ready for review | `npm run typecheck`; usage command/core/docs tests; `npm run lint`; `npm run build`. |
 | 04 | `feat/account-policy-controls` | Pending | Account policy command/store tests plus build. |
 | 05 | `feat/routing-profiles-core` | Pending | Routing profile storage/project tests plus build. |
 | 06 | `feat/budget-guard` | Pending | Budget guard command/evaluator tests plus build. |

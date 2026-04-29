@@ -21,6 +21,7 @@ export function printUsage(): void {
 			"  codex auth doctor [--json] [--fix] [--dry-run]",
 			"",
 			"Diagnostics:",
+			"  codex auth usage [--since <time|duration>] [--by <group>] [--json|--csv] [--out <path>]",
 			"  codex auth rotation <enable|disable|status|bind-app|unbind-app>",
 			"  codex auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]",
 			"  codex auth why-selected [--now | --last] [--json]",
