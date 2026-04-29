@@ -8,18 +8,23 @@ describe("account policy store", () => {
 	let tempDir: string;
 	let originalDir: string | undefined;
 
+	async function resetAccountPolicyQueue(): Promise<void> {
+		const { resetAccountPolicyWriteQueueForTests } = await import(
+			"../lib/account-policy.js"
+		);
+		resetAccountPolicyWriteQueueForTests();
+	}
+
 	beforeEach(async () => {
 		originalDir = process.env.CODEX_MULTI_AUTH_DIR;
 		tempDir = await fs.mkdtemp(join(tmpdir(), "codex-account-policy-"));
 		process.env.CODEX_MULTI_AUTH_DIR = tempDir;
 		vi.resetModules();
+		await resetAccountPolicyQueue();
 	});
 
 	afterEach(async () => {
-		const { resetAccountPolicyWriteQueueForTests } = await import(
-			"../lib/account-policy.js"
-		);
-		resetAccountPolicyWriteQueueForTests();
+		await resetAccountPolicyQueue();
 		if (originalDir === undefined) {
 			delete process.env.CODEX_MULTI_AUTH_DIR;
 		} else {
