@@ -115,8 +115,7 @@ function normalizeTokens(input: UsageLedgerAppendInput): UsageTokenCounts {
 	const cachedInputTokens = normalizeNonNegativeInteger(input.cachedInputTokens);
 	const reasoningTokens = normalizeNonNegativeInteger(input.reasoningTokens);
 	const providedTotal = normalizeFiniteNumber(input.totalTokens);
-	const computedTotal =
-		inputTokens + outputTokens + cachedInputTokens + reasoningTokens;
+	const computedTotal = inputTokens + outputTokens + reasoningTokens;
 
 	return {
 		inputTokens,

@@ -53,7 +53,8 @@ describe("usage ledger core", () => {
 		expect(row.account?.accountHash).toMatch(/^sha256:/);
 		expect(row.account?.emailHash).toMatch(/^sha256:/);
 		expect(row.account?.index).toBe(2);
-		expect(row.tokens.totalTokens).toBe(1_275);
+		expect(row.tokens.totalTokens).toBe(1_225);
+		expect(row.tokens.cachedInputTokens).toBe(50);
 		expect(row.costUsd).toBeGreaterThan(0);
 
 		const raw = await fs.readFile(getUsageLedgerPaths().current, "utf8");
@@ -189,7 +190,7 @@ describe("usage ledger core", () => {
 				outputTokens: 200,
 				cachedInputTokens: 50,
 				reasoningTokens: 25,
-				totalTokens: 1_275,
+				totalTokens: 1_225,
 			}),
 		).toBe(0.00344375);
 		expect(
