@@ -25,6 +25,7 @@ function normalizeStandaloneArgs(args) {
 	if (args[0] === "auth") return args;
 	const firstArg = args[0] ?? "";
 	if (AUTH_SUBCOMMANDS.has(firstArg)) {
+		// Keep this exhaustive: generic names here are reserved for auth routing.
 		return ["auth", ...args];
 	}
 	return args;

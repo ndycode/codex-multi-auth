@@ -266,7 +266,7 @@ describe("Documentation Integrity", () => {
 		}
 	});
 
-	it("keeps codex auth as the command standard in key docs", () => {
+	it("keeps codex-multi-auth as the command standard in key docs", () => {
 		const keyDocs = [
 			"README.md",
 			"docs/index.md",
@@ -279,8 +279,8 @@ describe("Documentation Integrity", () => {
 		for (const filePath of keyDocs) {
 			expect(
 				read(filePath),
-				`${filePath} must include codex auth command examples`,
-			).toContain("codex auth");
+				`${filePath} must include codex-multi-auth command examples`,
+			).toContain("codex-multi-auth");
 		}
 	});
 
@@ -330,7 +330,7 @@ describe("Documentation Integrity", () => {
 		const help = read(helpPath);
 		const switchCommand = read(switchPath);
 
-		expect(readme).toContain("codex auth fix --live --model gpt-5.3-codex");
+		expect(readme).toContain("codex-multi-auth fix --live --model gpt-5.3-codex");
 		expect(commandRef).toContain(
 			"| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle |",
 		);
@@ -554,8 +554,8 @@ describe("Documentation Integrity", () => {
 			url: "https://github.com/ndycode/codex-multi-auth/issues",
 		});
 		expect(packageJson.bin).toEqual({
-			codex: "scripts/codex.js",
 			"codex-multi-auth-app-launcher": "scripts/codex-app-launcher.js",
+			"codex-multi-auth-codex": "scripts/codex.js",
 			"codex-multi-auth": "scripts/codex-multi-auth.js",
 		});
 	});

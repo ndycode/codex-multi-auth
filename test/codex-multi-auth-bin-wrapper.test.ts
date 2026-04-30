@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
@@ -68,6 +68,39 @@ function createChildEnv(): NodeJS.ProcessEnv {
 		}
 	}
 	return env;
+}
+
+function writeRuntimeArgAssertion(fixtureRoot: string, expectedArgs: string[], exitCode = 0): void {
+	const distLibDir = join(fixtureRoot, "dist", "lib");
+	mkdirSync(distLibDir, { recursive: true });
+	writeFileSync(
+		join(distLibDir, "codex-manager.js"),
+		[
+			"export async function runCodexMultiAuthCli(args) {",
+			`\tconst expected = ${JSON.stringify(expectedArgs)};`,
+			'\tif (JSON.stringify(args) !== JSON.stringify(expected)) throw new Error(`bad args: ${JSON.stringify(args)}`);',
+			`\treturn ${exitCode};`,
+			"}",
+		].join("\n"),
+		"utf8",
+	);
+}
+
+function readPackageBinMap(): Record<string, string> {
+	const pkg = JSON.parse(readFileSync(join(repoRootDir, "package.json"), "utf8")) as {
+		bin?: Record<string, string>;
+	};
+	return pkg.bin ?? {};
+}
+
+function emitWindowsNpmShim(prefixDir: string, binName: string, target: string): void {
+	writeFileSync(join(prefixDir, `${binName}.cmd`), `@echo ${binName} -> ${target}\r\n`, "utf8");
+}
+
+function simulateWindowsNpmShimInstall(prefixDir: string, binMap: Record<string, string>): void {
+	for (const [binName, target] of Object.entries(binMap)) {
+		emitWindowsNpmShim(prefixDir, binName, target);
+	}
 }
 
 function runWrapper(fixtureRoot: string, args: string[] = []) {
@@ -148,22 +181,49 @@ describe("codex-multi-auth bin wrapper", () => {
 
 	it("lets the standalone bin omit the auth root for auth subcommands", () => {
 		const fixtureRoot = createWrapperFixture();
-		const distLibDir = join(fixtureRoot, "dist", "lib");
-		mkdirSync(distLibDir, { recursive: true });
-		writeFileSync(
-			join(distLibDir, "codex-manager.js"),
-			[
-				"export async function runCodexMultiAuthCli(args) {",
-				'\tif (!Array.isArray(args) || args[0] !== "auth" || args[1] !== "status") throw new Error("bad args");',
-				"\treturn 0;",
-				"}",
-			].join("\n"),
-			"utf8",
-		);
+		writeRuntimeArgAssertion(fixtureRoot, ["auth", "status"]);
 
 		const result = runWrapper(fixtureRoot, ["status"]);
 
 		expect(result.status).toBe(0);
+	});
+
+	it("lets login use the standalone auth shortcut", () => {
+		const fixtureRoot = createWrapperFixture();
+		writeRuntimeArgAssertion(fixtureRoot, ["auth", "login", "--manual"]);
+
+		const result = runWrapper(fixtureRoot, ["login", "--manual"]);
+
+		expect(result.status).toBe(0);
+		expect(result.stderr).toBe("");
+	});
+
+	it.each([
+		["unrecognized command", ["foobar"]],
+		["empty argv", []],
+	])("passes %s through without adding auth", (_label, args) => {
+		const fixtureRoot = createWrapperFixture();
+		writeRuntimeArgAssertion(fixtureRoot, args, 7);
+
+		const result = runWrapper(fixtureRoot, args);
+
+		expect(result.status).toBe(7);
+		expect(result.stderr).toBe("");
+	});
+
+	it("does not overwrite an existing codex Windows shim when emitting package bins", () => {
+		const fixtureRoot = createWrapperFixture();
+		const prefixDir = join(fixtureRoot, "prefix");
+		mkdirSync(prefixDir, { recursive: true });
+		const existingCodexShim = "@echo official codex\r\n";
+		writeFileSync(join(prefixDir, "codex.cmd"), existingCodexShim, "utf8");
+
+		simulateWindowsNpmShimInstall(prefixDir, readPackageBinMap());
+
+		expect(readFileSync(join(prefixDir, "codex.cmd"), "utf8")).toBe(existingCodexShim);
+		expect(readFileSync(join(prefixDir, "codex-multi-auth-codex.cmd"), "utf8")).toContain(
+			"codex-multi-auth-codex -> scripts/codex.js",
+		);
 	});
 
 	it("propagates integer exit codes", () => {

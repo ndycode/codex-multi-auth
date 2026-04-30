@@ -107,7 +107,7 @@ Public documentation for `codex-multi-auth`.
 | [development/RUNBOOK_ADD_CONFIG_FIELD.md](development/RUNBOOK_ADD_CONFIG_FIELD.md) | Safe workflow for introducing a new config field |
 | [development/RUNBOOK_CHANGE_ROUTING_POLICY.md](development/RUNBOOK_CHANGE_ROUTING_POLICY.md) | Safe workflow for changing routing, retry, or fallback policy |
 | [development/REPOSITORY_SCOPE.md](development/REPOSITORY_SCOPE.md) | Ownership map by repository path |
-| [development/RUNBOOK_ADD_AUTH_MANAGER_COMMAND.md](development/RUNBOOK_ADD_AUTH_MANAGER_COMMAND.md) | Safe workflow for adding a new `codex auth` command |
+| [development/RUNBOOK_ADD_AUTH_MANAGER_COMMAND.md](development/RUNBOOK_ADD_AUTH_MANAGER_COMMAND.md) | Safe workflow for adding a new `codex-multi-auth ...` command |
 | [development/RUNBOOK_ADD_CONFIG_FIELD_SAFELY.md](development/RUNBOOK_ADD_CONFIG_FIELD_SAFELY.md) | Safe workflow for introducing a new config/settings field |
 | [development/RUNBOOK_CHANGE_ROUTING_POLICY_SAFELY.md](development/RUNBOOK_CHANGE_ROUTING_POLICY_SAFELY.md) | Safe workflow for changing routing or account-selection policy |
 | [development/TESTING.md](development/TESTING.md) | Validation gates and test matrix |

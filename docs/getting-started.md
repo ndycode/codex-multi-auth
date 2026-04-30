@@ -88,7 +88,7 @@ If device auth is unavailable or you want to handle the callback manually:
 
 ```bash
 codex-multi-auth login --manual
-CODEX_AUTH_NO_BROWSER=1 codex-multi-auth login
+CODEX_AUTH_NO_BROWSER=1 codex-multi-auth login --manual
 ```
 
 In non-TTY/manual shells, provide the full redirect URL on stdin:
