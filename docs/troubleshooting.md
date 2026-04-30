@@ -29,7 +29,6 @@ where codex
 codex --version
 codex-multi-auth --version
 codex-multi-auth status
-codex-multi-auth status
 npm ls -g codex-multi-auth
 ```
 

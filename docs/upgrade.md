@@ -1,6 +1,6 @@
 # Upgrade Guide
 
-Migrate legacy installs to the canonical `codex-multi-auth` workflow on the current `2.x` release line.
+Migrate legacy installs to the canonical `codex-multi-auth` workflow on the current `3.x` release line.
 
 ---
 
@@ -9,6 +9,27 @@ Migrate legacy installs to the canonical `codex-multi-auth` workflow on the curr
 - Package: `codex-multi-auth`
 - Command family: `codex-multi-auth ...`
 - Runtime root: `~/.codex/multi-auth`
+
+---
+
+## v3.0.0 Bin Migration
+
+`v3.0.0` intentionally stops publishing a global `codex` executable. That
+name belongs to the official Codex install path and can be owned by npm,
+Homebrew, or an official release binary.
+
+Use these commands after upgrading:
+
+```bash
+codex --version
+codex-multi-auth --version
+codex-multi-auth status
+codex-multi-auth-codex --version
+```
+
+If you previously ran this package through `codex`, switch account-management
+commands to `codex-multi-auth ...`. If you intentionally need the forwarding
+wrapper from this package, use `codex-multi-auth-codex ...`.
 
 ---
 

@@ -30,7 +30,7 @@ User-facing capability map for `codex-multi-auth`.
 
 ## Rotate Live Codex Runtime Requests
 
-Runtime rotation is the current 2.x architecture addition. It is default-on and local-only.
+Runtime rotation is part of the current architecture. It is default-on and local-only.
 
 | Capability | What it gives you | Primary entry |
 | --- | --- | --- |
