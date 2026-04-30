@@ -30,6 +30,24 @@ async function loadTargetDetectionWithWin32PathMocks(): Promise<{
 			sep: actual.win32.sep,
 		};
 	});
+	vi.doMock("node:fs", async () => {
+		const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+		return {
+			...actual,
+			existsSync: (path: Parameters<typeof actual.existsSync>[0]) => {
+				if (typeof path === "string" && path.startsWith("\\\\")) {
+					return false;
+				}
+				return actual.existsSync(path);
+			},
+			readdirSync: (path: Parameters<typeof actual.readdirSync>[0]) => {
+				if (typeof path === "string" && path.startsWith("\\\\")) {
+					return [];
+				}
+				return actual.readdirSync(path);
+			},
+		};
+	});
 	const targetDetection = await import("../lib/oc-chatgpt-target-detection.js");
 	return {
 		detectOcChatgptMultiAuthTarget:
