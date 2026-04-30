@@ -252,6 +252,8 @@ describe("codex auth pro-advice command", () => {
 		await writeFile(join(root, "APP_DOSSIER.md"), "# dossier\n", "utf8");
 		const infos: string[] = [];
 		const errors: string[] = [];
+		const opened: string[] = [];
+		let clipboard = "";
 
 		await expect(
 			runProAdviceCommand(["--mode", "web", "--no-tui", "--json"], {
@@ -260,6 +262,10 @@ describe("codex auth pro-advice command", () => {
 				isTty: () => false,
 				loadAccounts: async () => createStorage(),
 				resolveActiveIndex: () => 0,
+				openUrl: (url) => opened.push(url),
+				writeClipboard: (text) => {
+					clipboard = text;
+				},
 				logInfo: (message) => infos.push(message),
 				logError: (message) => errors.push(message),
 			}),
@@ -268,6 +274,13 @@ describe("codex auth pro-advice command", () => {
 		expect(errors).toEqual([]);
 		expect(infos.join("\n")).toContain("Active pool account: pro@example.com / acc_pro");
 		expect(infos.join("\n")).toContain("https://chatgpt.com/");
+		expect(infos.join("\n")).toContain("The Pro prompt was copied to the clipboard.");
+		expect(opened).toEqual(["https://chatgpt.com/"]);
+		expect(clipboard).toContain("Run this as GPT-5.5 Pro Extended.");
+		expect(clipboard).toContain("# dossier");
+		expect(await readFile(join(root, "PRO_CHATGPT_PROMPT.md"), "utf8")).toContain(
+			"Run this as GPT-5.5 Pro Extended.",
+		);
 		const finalPayload = JSON.parse(infos.at(-1) ?? "{}");
 		expect(finalPayload).toMatchObject({
 			command: "pro-advice",
@@ -281,6 +294,7 @@ describe("codex auth pro-advice command", () => {
 		await writeFile(join(root, "APP_DOSSIER.md"), "# dossier\n", "utf8");
 		const infos: string[] = [];
 		const errors: string[] = [];
+		const opened: string[] = [];
 		const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
 			new Response(
 				JSON.stringify({
@@ -300,6 +314,8 @@ describe("codex auth pro-advice command", () => {
 				resolveActiveIndex: () => 0,
 				refreshAccessToken: async () => tokenSuccess(),
 				fetch: fetchMock,
+				openUrl: (url) => opened.push(url),
+				writeClipboard: vi.fn(),
 				logInfo: (message) => infos.push(message),
 				logError: (message) => errors.push(message),
 			}),
@@ -308,5 +324,6 @@ describe("codex auth pro-advice command", () => {
 		expect(errors.join("\n")).toContain("not supported");
 		expect(infos.join("\n")).toContain("Falling back to ChatGPT web-assisted");
 		expect(infos.join("\n")).toContain("Active pool account: pro@example.com / acc_pro");
+		expect(opened).toEqual(["https://chatgpt.com/"]);
 	});
 });

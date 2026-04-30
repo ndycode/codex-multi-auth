@@ -19,6 +19,7 @@ import type { TokenResult } from "../../types.js";
 const DEFAULT_MODEL = "gpt-5.5-pro";
 const DEFAULT_HANDOFF_FILE = "PRO_HANDOFF.md";
 const DEFAULT_ADVICE_FILE = "PRO_ADVICE.md";
+const DEFAULT_CHATGPT_PROMPT_FILE = "PRO_CHATGPT_PROMPT.md";
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const POLL_INTERVAL_MS = 2_500;
 const MAX_SCAN_DEPTH = 4;
@@ -52,6 +53,7 @@ export interface ProAdviceDeps {
 	createReadline?: () => Interface;
 	spawnCodex?: (command: string, args: string[]) => { pid?: number };
 	openUrl?: (url: string) => void | Promise<void>;
+	writeClipboard?: (text: string) => void | Promise<void>;
 	logInfo?: (message: string) => void;
 	logError?: (message: string) => void;
 }
@@ -505,12 +507,60 @@ function openExternalUrl(url: string, deps: ProAdviceDeps): void | Promise<void>
 	child.unref();
 }
 
+function writeClipboard(text: string, deps: ProAdviceDeps): Promise<boolean> {
+	if (deps.writeClipboard) {
+		return Promise.resolve(deps.writeClipboard(text)).then(
+			() => true,
+			() => false,
+		);
+	}
+	if (process.platform !== "win32") return Promise.resolve(false);
+	return new Promise((resolveCopy) => {
+		const child = spawn(
+			"powershell.exe",
+			["-NoProfile", "-Command", "Set-Clipboard -Value ([Console]::In.ReadToEnd())"],
+			{ stdio: ["pipe", "ignore", "ignore"], windowsHide: true },
+		);
+		child.on("error", () => resolveCopy(false));
+		child.on("exit", (code) => resolveCopy(code === 0));
+		child.stdin.end(text);
+	});
+}
+
 function isCodexChatGptModelUnsupported(error: string): boolean {
 	return (
 		error.includes("gpt-5.5-pro") &&
 		error.includes("not supported") &&
 		error.includes("ChatGPT account")
 	);
+}
+
+function buildChatGptWebPrompt(params: {
+	handoff: string;
+	advicePath: string;
+	activeAccount: string | null;
+}): string {
+	const accountLine = params.activeAccount
+		? `Use the ChatGPT account currently selected in the codex-multi-auth pool: ${params.activeAccount}.`
+		: "Use the intended ChatGPT Pro account for this repository.";
+	return [
+		"Run this as GPT-5.5 Pro Extended.",
+		"",
+		accountLine,
+		"",
+		"Read the handoff below and produce the required output contract exactly.",
+		"Return markdown only, with sections:",
+		"1. Findings",
+		"2. Recommended Plan",
+		"3. Codex Implementation Prompt",
+		"",
+		`After the response is complete, save the markdown output to: ${params.advicePath}`,
+		"",
+		"--- HANDOFF START ---",
+		params.handoff.trimEnd(),
+		"--- HANDOFF END ---",
+		"",
+	].join("\n");
 }
 
 async function submitBackgroundAdvice(params: {
@@ -667,6 +717,7 @@ async function runManualAdvice(params: {
 }
 
 async function runWebAdvice(params: {
+	repoRoot: string;
 	handoffPath: string;
 	advicePath: string;
 	deps: ProAdviceDeps;
@@ -679,6 +730,16 @@ async function runWebAdvice(params: {
 	}
 
 	const activeAccount = await getActiveAccountLabel(params.deps);
+	const handoff = (await readIfExists(params.handoffPath)) ?? "";
+	const promptPath = join(params.repoRoot, DEFAULT_CHATGPT_PROMPT_FILE);
+	const webPrompt = buildChatGptWebPrompt({
+		handoff,
+		advicePath: params.advicePath,
+		activeAccount,
+	});
+	await writeTextFile(promptPath, webPrompt);
+	const copied = await writeClipboard(webPrompt, params.deps);
+	await Promise.resolve(openExternalUrl(CHATGPT_WEB_URL, params.deps)).catch(() => undefined);
 	const accountHint = activeAccount
 		? `Active pool account: ${activeAccount}`
 		: "Active pool account could not be resolved; use the intended ChatGPT Pro account.";
@@ -687,7 +748,11 @@ async function runWebAdvice(params: {
 		accountHint,
 		`Open: ${CHATGPT_WEB_URL}`,
 		"Use GPT-5.5 Pro Extended in ChatGPT web.",
-		`Paste the handoff from: ${params.handoffPath}`,
+		copied
+			? "The Pro prompt was copied to the clipboard."
+			: `Copy the Pro prompt from: ${promptPath}`,
+		`Prompt file: ${promptPath}`,
+		`Handoff file: ${params.handoffPath}`,
 		`Save the Pro output to: ${params.advicePath}`,
 	].join("\n");
 
@@ -699,7 +764,6 @@ async function runWebAdvice(params: {
 		};
 	}
 
-	await Promise.resolve(openExternalUrl(CHATGPT_WEB_URL, params.deps)).catch(() => undefined);
 	const rl =
 		params.deps.createReadline?.() ??
 		createInterface({ input: defaultInput, output: defaultOutput });
@@ -850,6 +914,7 @@ export async function runProAdviceCommand(
 			}
 			result = isCodexChatGptModelUnsupported(result.error)
 				? await runWebAdvice({
+						repoRoot,
 						handoffPath,
 						advicePath,
 						deps,
@@ -864,6 +929,7 @@ export async function runProAdviceCommand(
 		}
 	} else if (options.mode === "web") {
 		result = await runWebAdvice({
+			repoRoot,
 			handoffPath,
 			advicePath,
 			deps,
