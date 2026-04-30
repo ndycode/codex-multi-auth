@@ -17,7 +17,7 @@ Public documentation for `codex-multi-auth`.
 
 | Document | Focus |
 | --- | --- |
-| [Daily-use landing page](index.md) | Common `codex auth ...` workflows and quick-start guidance |
+| [Daily-use landing page](index.md) | Common `codex-multi-auth ...` workflows and quick-start guidance |
 | [faq.md](faq.md) | Short answers to common adoption questions |
 | [features.md](features.md) | User-facing capability map |
 | [configuration.md](configuration.md) | Stable defaults, precedence, and environment overrides |
@@ -32,8 +32,9 @@ Public documentation for `codex-multi-auth`.
 
 | Document | Focus |
 | --- | --- |
-| [releases/v2.1.1.md](releases/v2.1.1.md) | Current stable release notes |
-| [releases/v2.1.0.md](releases/v2.1.0.md) | Prior stable release notes |
+| [releases/v3.0.0.md](releases/v3.0.0.md) | Current stable release notes |
+| [releases/v2.1.1.md](releases/v2.1.1.md) | Prior stable release notes |
+| [releases/v2.1.0.md](releases/v2.1.0.md) | Earlier stable release notes |
 | [releases/v2.0.2.md](releases/v2.0.2.md) | Earlier stable release notes |
 | [releases/v2.0.1.md](releases/v2.0.1.md) | Earlier stable release notes |
 | [releases/v2.0.0.md](releases/v2.0.0.md) | Earlier stable release notes |
@@ -82,8 +83,9 @@ Public documentation for `codex-multi-auth`.
 | [reference/storage-paths.md](reference/storage-paths.md) | Canonical and compatibility storage paths |
 | [reference/public-api.md](reference/public-api.md) | Public API stability and semver contract |
 | [reference/error-contracts.md](reference/error-contracts.md) | CLI, JSON, and helper error semantics |
-| [releases/v2.1.1.md](releases/v2.1.1.md) | Current stable release notes |
-| [releases/v2.1.0.md](releases/v2.1.0.md) | Prior stable release notes |
+| [releases/v3.0.0.md](releases/v3.0.0.md) | Current stable release notes |
+| [releases/v2.1.1.md](releases/v2.1.1.md) | Prior stable release notes |
+| [releases/v2.1.0.md](releases/v2.1.0.md) | Earlier stable release notes |
 | [releases/v2.0.2.md](releases/v2.0.2.md) | Earlier stable release notes |
 | [releases/v2.0.1.md](releases/v2.0.1.md) | Earlier stable release notes |
 | [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | Archived prerelease reference |
@@ -103,11 +105,11 @@ Public documentation for `codex-multi-auth`.
 | [development/IA_FINDABILITY_AUDIT_2026-03-01.md](development/IA_FINDABILITY_AUDIT_2026-03-01.md) | IA and findability baseline audit |
 | [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md) | Complete field and environment inventory |
 | [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md) | Configuration resolution flow |
-| [development/RUNBOOK_ADD_AUTH_COMMAND.md](development/RUNBOOK_ADD_AUTH_COMMAND.md) | Safe workflow for adding a new `codex auth ...` command |
+| [development/RUNBOOK_ADD_AUTH_COMMAND.md](development/RUNBOOK_ADD_AUTH_COMMAND.md) | Safe workflow for adding a new `codex-multi-auth ...` command |
 | [development/RUNBOOK_ADD_CONFIG_FIELD.md](development/RUNBOOK_ADD_CONFIG_FIELD.md) | Safe workflow for introducing a new config field |
 | [development/RUNBOOK_CHANGE_ROUTING_POLICY.md](development/RUNBOOK_CHANGE_ROUTING_POLICY.md) | Safe workflow for changing routing, retry, or fallback policy |
 | [development/REPOSITORY_SCOPE.md](development/REPOSITORY_SCOPE.md) | Ownership map by repository path |
-| [development/RUNBOOK_ADD_AUTH_MANAGER_COMMAND.md](development/RUNBOOK_ADD_AUTH_MANAGER_COMMAND.md) | Safe workflow for adding a new `codex auth` command |
+| [development/RUNBOOK_ADD_AUTH_MANAGER_COMMAND.md](development/RUNBOOK_ADD_AUTH_MANAGER_COMMAND.md) | Safe workflow for adding a new `codex-multi-auth ...` command |
 | [development/RUNBOOK_ADD_CONFIG_FIELD_SAFELY.md](development/RUNBOOK_ADD_CONFIG_FIELD_SAFELY.md) | Safe workflow for introducing a new config/settings field |
 | [development/RUNBOOK_CHANGE_ROUTING_POLICY_SAFELY.md](development/RUNBOOK_CHANGE_ROUTING_POLICY_SAFELY.md) | Safe workflow for changing routing or account-selection policy |
 | [development/TESTING.md](development/TESTING.md) | Validation gates and test matrix |

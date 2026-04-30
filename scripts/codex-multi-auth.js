@@ -3,6 +3,7 @@
 // @ts-check
 
 import { createRequire } from "node:module";
+import { AUTH_SUBCOMMANDS } from "./codex-routing.js";
 
 const versionFlags = new Set(["--version", "-v"]);
 
@@ -20,7 +21,17 @@ function resolveCliVersion() {
 	return "";
 }
 
-const args = process.argv.slice(2);
+function normalizeStandaloneArgs(args) {
+	if (args[0] === "auth") return args;
+	const firstArg = args[0] ?? "";
+	if (AUTH_SUBCOMMANDS.has(firstArg)) {
+		// Keep this exhaustive: generic names here are reserved for auth routing.
+		return ["auth", ...args];
+	}
+	return args;
+}
+
+const args = normalizeStandaloneArgs(process.argv.slice(2));
 const version = resolveCliVersion();
 
 if (version.length > 0) {

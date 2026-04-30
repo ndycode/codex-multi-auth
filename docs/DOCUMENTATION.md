@@ -54,11 +54,11 @@ Canonical governance for repository documentation quality and consistency.
 ## Canonical Policy
 
 1. Canonical package name: `codex-multi-auth`.
-2. Canonical account command family: `codex auth ...`.
+2. Canonical account command family: `codex-multi-auth ...`.
 3. Canonical storage root: `~/.codex/multi-auth` unless explicitly overridden.
 4. Compatibility aliases (`codex multi auth`, `codex multi-auth`, `codex multiauth`) belong only in command reference, troubleshooting, or migration sections.
 5. Legacy paths/flows and scoped package references belong only in migration and compatibility sections.
-6. Current stable release line is `2.x`; foundational `0.x` and pre-`0.1.0` entries stay archived separately.
+6. Current stable release line is `3.x`; foundational `0.x` and pre-`0.1.0` entries stay archived separately.
 7. Runtime rotation is documented as default-on unless a future release intentionally changes that policy.
 8. Audit evidence under `docs/audits/` is historical snapshot material. Do not rewrite captured evidence to look current; add snapshot notes or new audit artifacts instead.
 

@@ -1,14 +1,35 @@
 # Upgrade Guide
 
-Migrate legacy installs to the canonical `codex-multi-auth` workflow on the current `2.x` release line.
+Migrate legacy installs to the canonical `codex-multi-auth` workflow on the current `3.x` release line.
 
 ---
 
 ## Canonical Targets
 
 - Package: `codex-multi-auth`
-- Command family: `codex auth ...`
+- Command family: `codex-multi-auth ...`
 - Runtime root: `~/.codex/multi-auth`
+
+---
+
+## v3.0.0 Bin Migration
+
+`v3.0.0` intentionally stops publishing a global `codex` executable. That
+name belongs to the official Codex install path and can be owned by npm,
+Homebrew, or an official release binary.
+
+Use these commands after upgrading:
+
+```bash
+codex --version
+codex-multi-auth --version
+codex-multi-auth status
+codex-multi-auth-codex --version
+```
+
+If you previously ran this package through `codex`, switch account-management
+commands to `codex-multi-auth ...`. If you intentionally need the forwarding
+wrapper from this package, use `codex-multi-auth-codex ...`.
 
 ---
 
@@ -37,26 +58,26 @@ npm i -g codex-multi-auth
 ```bash
 codex --version
 codex-multi-auth --version
-codex auth status
+codex-multi-auth status
 ```
 
 1. Rebuild account health baseline:
 
 ```bash
-codex auth login
-codex auth check
-codex auth forecast --live --model gpt-5.3-codex
+codex-multi-auth login
+codex-multi-auth check
+codex-multi-auth forecast --live --model gpt-5.3-codex
 ```
 
 ---
 
 ## Login Flow Upgrade Notes
 
-- `codex auth login` remains the default browser-first path.
-- `codex auth login --device-auth` is the preferred remote/headless path. It prints a verification URL like `https://auth.openai.com/codex/device` and a one-time code, then completes without a local browser or callback server.
-- `codex auth login --manual` and `codex auth login --no-browser` force manual callback handling for browser-restricted shells.
+- `codex-multi-auth login` remains the default browser-first path.
+- `codex-multi-auth login --device-auth` is the preferred remote/headless path. It prints a verification URL like `https://auth.openai.com/codex/device` and a one-time code, then completes without a local browser or callback server.
+- `codex-multi-auth login --manual` and `codex-multi-auth login --no-browser` force manual callback handling for browser-restricted shells.
 - `CODEX_AUTH_NO_BROWSER=1` suppresses browser launch for automation/headless sessions. False-like values such as `0` and `false` no longer force manual mode.
-- In non-TTY/manual shells, provide the full redirect URL on stdin, for example: `echo "http://127.0.0.1:1455/auth/callback?code=..." | codex auth login --manual`.
+- In non-TTY/manual shells, provide the full redirect URL on stdin, for example: `echo "http://127.0.0.1:1455/auth/callback?code=..." | codex-multi-auth login --manual`.
 - No new npm scripts, storage migrations, or extra upgrade steps were introduced for this auth-flow change.
 
 For the full command/behavior reference, see [reference/commands.md](reference/commands.md).
@@ -83,8 +104,8 @@ For maintainer/debug flows, see advanced/internal controls in [development/CONFI
 The 2.0.1 line makes runtime rotation the default for request-bearing wrapper-launched Codex sessions and keeps the packaged app bind reversible.
 
 - Existing installs route request-bearing non-auth `codex` commands through the localhost rotation proxy unless `codexRuntimeRotationProxy=false` or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` is set.
-- `codex auth rotation enable` persists the setting and repairs supported packaged Codex app binds through a reversible localhost router.
-- `codex auth rotation disable` turns the setting off and removes the persistent app bind.
+- `codex-multi-auth rotation enable` persists the setting and repairs supported packaged Codex app binds through a reversible localhost router.
+- `codex-multi-auth rotation disable` turns the setting off and removes the persistent app bind.
 - Set `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0` before install/update if you only want wrapper-launched CLI/app sessions routed and do not want the packaged app bind installed.
 - Set `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0` before install/update if you do not want supported user-level app launchers routed through the wrapper.
 - Set `CODEX_MULTI_AUTH_AUTO_UPDATE=0` if you do not want installed packages to run the best-effort daily `npm update -g codex-multi-auth` check.
@@ -93,8 +114,8 @@ The 2.0.1 line makes runtime rotation the default for request-bearing wrapper-la
 Validate after enabling:
 
 ```bash
-codex auth rotation status
-codex auth forecast --live
+codex-multi-auth rotation status
+codex-multi-auth forecast --live
 ```
 
 ---
@@ -111,12 +132,12 @@ codex auth forecast --live
 
 ## Onboarding Restore Note
 
-`codex auth login` now opens directly into the sign-in menu when the active pool is empty, instead of opening the account dashboard first.
+`codex-multi-auth login` now opens directly into the sign-in menu when the active pool is empty, instead of opening the account dashboard first.
 
 - `Recover saved accounts` appears only when at least one valid named backup exists.
 - No new CLI flags or npm scripts were added for this flow.
 - The backup root remains `~/.codex/multi-auth/backups` by default, or `%CODEX_MULTI_AUTH_DIR%\backups` when `CODEX_MULTI_AUTH_DIR` is set.
-- `codex auth login --device-auth` starts a new device-code login directly and does not open the restore menu. Use plain `codex auth login` first when you want to recover a saved backup.
+- `codex-multi-auth login --device-auth` starts a new device-code login directly and does not open the restore menu. Use plain `codex-multi-auth login` first when you want to recover a saved backup.
 
 ---
 
@@ -143,7 +164,7 @@ If you used `perProjectAccounts=true` before worktree identity sharing was added
 | --- | --- |
 | `codex auth` not found | Run `where codex` (Windows) or `which codex` (macOS/Linux) |
 | Old package still active | Uninstall scoped package and reinstall unscoped package |
-| Account pool appears stale | Run `codex auth doctor --fix`, then re-login impacted accounts |
+| Account pool appears stale | Run `codex-multi-auth doctor --fix`, then re-login impacted accounts |
 | Mixed path confusion | Check [reference/storage-paths.md](reference/storage-paths.md) |
 
 ---

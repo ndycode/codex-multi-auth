@@ -3,9 +3,22 @@
 All notable changes to this project are documented in this file.
 Dates use ISO format (`YYYY-MM-DD`).
 
-This repository's current stable release line is `2.x`.
+This repository's current stable release line is `3.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
+
+## [3.0.0] - 2026-04-30
+
+Major release for conflict-free installs alongside the official Codex CLI.
+See [docs/releases/v3.0.0.md](docs/releases/v3.0.0.md) for full details.
+
+### Changed
+
+- removed the published global `codex` executable from `codex-multi-auth`
+  so npm no longer collides with official or Homebrew-owned Codex installs
+- added `codex-multi-auth-codex` as the explicit forwarding wrapper
+  executable for users who still want this package's Codex wrapper
+- kept account-management commands available through `codex-multi-auth ...`
 
 ## [2.1.1] - 2026-04-29
 

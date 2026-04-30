@@ -39,7 +39,7 @@ Use short sections and scan-friendly tables where they improve clarity.
 
 ## Command and Path Rules
 
-1. Canonical command family is `codex auth ...`.
+1. Canonical command family is `codex-multi-auth ...`.
 2. Canonical runtime root is `~/.codex/multi-auth`.
 3. Runtime rotation must be described as default-on unless the release policy changes.
 4. Legacy command/path references belong only in migration contexts.

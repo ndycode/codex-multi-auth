@@ -37,9 +37,14 @@ function readPackageVersion(): string {
 let packageVersion = "";
 let currentStableReleaseDoc = "";
 // These stay manual so the docs portal keeps an intentional short stable-history window.
-const previousStableReleaseDoc = "docs/releases/v1.3.2.md";
-const earlierStableReleaseDoc = "docs/releases/v1.3.1.md";
+const previousStableReleaseDoc = "docs/releases/v2.1.1.md";
+const earlierStableReleaseDoc = "docs/releases/v2.1.0.md";
 const stableArchiveReleaseDocs = [
+	"docs/releases/v2.0.2.md",
+	"docs/releases/v2.0.1.md",
+	"docs/releases/v2.0.0.md",
+	"docs/releases/v1.3.2.md",
+	"docs/releases/v1.3.1.md",
 	"docs/releases/v1.3.0.md",
 	"docs/releases/v1.2.7.md",
 	"docs/releases/v1.2.6.md",
@@ -266,7 +271,7 @@ describe("Documentation Integrity", () => {
 		}
 	});
 
-	it("keeps codex auth as the command standard in key docs", () => {
+	it("keeps codex-multi-auth as the command standard in key docs", () => {
 		const keyDocs = [
 			"README.md",
 			"docs/index.md",
@@ -279,8 +284,8 @@ describe("Documentation Integrity", () => {
 		for (const filePath of keyDocs) {
 			expect(
 				read(filePath),
-				`${filePath} must include codex auth command examples`,
-			).toContain("codex auth");
+				`${filePath} must include codex-multi-auth command examples`,
+			).toContain("codex-multi-auth");
 		}
 	});
 
@@ -330,7 +335,7 @@ describe("Documentation Integrity", () => {
 		const help = read(helpPath);
 		const switchCommand = read(switchPath);
 
-		expect(readme).toContain("codex auth fix --live --model gpt-5.3-codex");
+		expect(readme).toContain("codex-multi-auth fix --live --model gpt-5.3-codex");
 		expect(commandRef).toContain(
 			"| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle |",
 		);
@@ -443,21 +448,21 @@ describe("Documentation Integrity", () => {
 		expect(settingsRef).toContain("- `menuStatuslineFields`");
 	});
 
-	it("keeps release-line docs aligned with the current 2.x policy", () => {
+	it("keeps release-line docs aligned with the current 3.x policy", () => {
 		const changelog = read("CHANGELOG.md");
 		const security = read("SECURITY.md");
 		const docsGovernance = read("docs/DOCUMENTATION.md");
 		const upgradeGuide = read("docs/upgrade.md");
 		const publicApi = read("docs/reference/public-api.md");
 
-		expect(changelog).toContain("current stable release line is `2.x`");
+		expect(changelog).toContain("current stable release line is `3.x`");
 		expect(changelog).toContain("docs/releases/");
-		expect(security).toContain("`2.x` latest");
+		expect(security).toContain("`3.x` latest");
 		expect(security).toContain("pre-`1.0` historical releases");
-		expect(docsGovernance).toContain("Current stable release line is `2.x`");
-		expect(upgradeGuide).toContain("current `2.x` release line");
-		expect(publicApi).toContain("inside the current `2.x` line");
-		expect(publicApi).toContain("currently ships on a `2.x` line");
+		expect(docsGovernance).toContain("Current stable release line is `3.x`");
+		expect(upgradeGuide).toContain("current `3.x` release line");
+		expect(publicApi).toContain("inside the current `3.x` line");
+		expect(publicApi).toContain("currently ships on a `3.x` line");
 	});
 
 	it("keeps the historical changelog aligned with the archived 0.x release set", () => {
@@ -554,8 +559,8 @@ describe("Documentation Integrity", () => {
 			url: "https://github.com/ndycode/codex-multi-auth/issues",
 		});
 		expect(packageJson.bin).toEqual({
-			codex: "scripts/codex.js",
 			"codex-multi-auth-app-launcher": "scripts/codex-app-launcher.js",
+			"codex-multi-auth-codex": "scripts/codex.js",
 			"codex-multi-auth": "scripts/codex-multi-auth.js",
 		});
 	});

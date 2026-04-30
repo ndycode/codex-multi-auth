@@ -8,7 +8,7 @@ Public overview of how `codex-multi-auth` fits around the official Codex CLI.
 
 `codex-multi-auth` is a local `codex` wrapper plus a multi-account OAuth manager.
 
-- `codex auth ...` commands are handled locally by the account manager.
+- `codex-multi-auth ...` commands are handled locally by the account manager.
 - All other `codex` commands are forwarded to the official Codex CLI.
 - Account, settings, quota, backup, and diagnostic state lives under `~/.codex/multi-auth`.
 - Runtime rotation is optional and enabled by default.
@@ -25,7 +25,7 @@ Public overview of how `codex-multi-auth` fits around the official Codex CLI.
 
 It decides whether the current command should:
 
-- stay local as `codex auth ...`
+- stay local as `codex-multi-auth ...`
 - forward to the official Codex CLI
 - add runtime-rotation provider settings before forwarding, when rotation is enabled
 
@@ -66,18 +66,18 @@ The proxy:
 - replaces upstream auth headers with the selected managed account
 - rotates accounts on rate limits, auth refresh failures, network errors, and server errors before response bytes are streamed
 - strips hop-by-hop and stale decoded response headers before returning data to the local Codex client
-- records runtime status for `codex auth status`, `codex auth report`, and `codex auth rotation status`
+- records runtime status for `codex-multi-auth status`, `codex-multi-auth report`, and `codex-multi-auth rotation status`
 
 ### 5. Codex desktop app support
 
-`codex auth rotation enable` can bind a packaged Codex desktop app to the same local runtime-rotation path.
+`codex-multi-auth rotation enable` can bind a packaged Codex desktop app to the same local runtime-rotation path.
 
 This is reversible:
 
 - the real Codex `config.toml` is backed up before modification
 - a localhost router is started for the app
 - a user login startup entry keeps the router available
-- `codex auth rotation disable` or `codex auth rotation unbind-app` restores the backup and removes the startup entry
+- `codex-multi-auth rotation disable` or `codex-multi-auth rotation unbind-app` restores the backup and removes the startup entry
 - official app binaries are not patched
 
 `scripts/codex-app-launcher.js` also supports user-level shortcut routing for environments where shortcuts can be retargeted safely.
@@ -95,7 +95,7 @@ That path reuses the same account pool for:
 - live account sync
 - quota-aware selection
 
-Normal `codex auth ...` usage and wrapper forwarding do not require this host mode.
+Normal `codex-multi-auth ...` usage and wrapper forwarding do not require this host mode.
 
 ---
 
@@ -106,7 +106,7 @@ Default CLI path:
 ```text
 Terminal user
   |
-  | codex auth ...
+  | codex-multi-auth ...
   v
 codex-multi-auth wrapper
   |
@@ -162,7 +162,7 @@ Codex or ChatGPT-backed request flow with refresh, retry, and failover
 ## Design Constraints
 
 - The official OAuth flow remains the source of authentication.
-- The canonical command family is `codex auth ...`.
+- The canonical command family is `codex-multi-auth ...`.
 - The OAuth callback port remains `1455`.
 - Runtime rotation is default-on and localhost-only.
 - The desktop app bind is reversible and does not patch official app files.
