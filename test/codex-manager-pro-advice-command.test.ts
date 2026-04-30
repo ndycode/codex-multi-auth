@@ -110,6 +110,7 @@ describe("codex auth pro-advice command", () => {
 					path: "/tmp/example/APP_DOSSIER.md",
 					relativePath: "APP_DOSSIER.md",
 					priority: 40,
+					content: "# App Dossier\n\nGrounded repo notes.\n",
 				},
 			],
 		});
@@ -120,6 +121,8 @@ describe("codex auth pro-advice command", () => {
 		expect(markdown).toContain('  - "APP_DOSSIER.md"');
 		expect(markdown).toContain("## Required Output Contract");
 		expect(markdown).toContain("Codex Implementation Prompt");
+		expect(markdown).toContain("# App Dossier");
+		expect(markdown).toContain("Grounded repo notes.");
 	});
 
 	it("writes prompt files and deterministic JSON in manual non-TTY mode when no dossiers exist", async () => {
@@ -233,6 +236,8 @@ describe("codex auth pro-advice command", () => {
 		expect(errors.join("\n")).toContain("model entitlement required");
 		expect(infos.join("\n")).toContain("Falling back to manual GPT-5.5 Pro handoff.");
 		expect(infos.join("\n")).toContain("Saved Pro advice:");
+		const handoff = await readFile(join(root, "PRO_HANDOFF.md"), "utf8");
+		expect(handoff).toContain("APP_DOSSIER.md");
+		expect(handoff).not.toContain("# Manual");
 	});
 });
-

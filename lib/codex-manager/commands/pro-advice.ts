@@ -37,6 +37,7 @@ export interface DossierCandidate {
 	path: string;
 	relativePath: string;
 	priority: number;
+	content?: string;
 }
 
 export interface ProAdviceDeps {
@@ -191,6 +192,15 @@ function normalizePath(root: string, value: string): string {
 	return resolve(root, value);
 }
 
+function sameResolvedPath(left: string, right: string): boolean {
+	const leftResolved = resolve(left);
+	const rightResolved = resolve(right);
+	if (process.platform === "win32") {
+		return leftResolved.toLowerCase() === rightResolved.toLowerCase();
+	}
+	return leftResolved === rightResolved;
+}
+
 function isMarkdownFile(path: string): boolean {
 	return extname(path).toLowerCase() === ".md";
 }
@@ -337,6 +347,11 @@ export function buildProHandoffMarkdown(params: {
 		for (const candidate of params.selectedInputs) {
 			sections.push(`### ${candidate.relativePath.replace(/\\/g, "/")}`, "");
 			sections.push(`Source path: \`${candidate.relativePath.replace(/\\/g, "/")}\``, "");
+			if (typeof candidate.content === "string" && candidate.content.length > 0) {
+				sections.push("````markdown", candidate.content.trimEnd(), "````", "");
+			} else {
+				sections.push("_Content unavailable in this handoff._", "");
+			}
 		}
 	}
 
@@ -664,7 +679,9 @@ export async function runProAdviceCommand(
 	const advicePath = normalizePath(repoRoot, options.advicePath);
 	const candidates = await discoverDossierCandidates(repoRoot);
 	const selectedInputs = candidates.filter((candidate) =>
-		!candidate.relativePath.replace(/\\/g, "/").startsWith("docs/releases/"),
+		!candidate.relativePath.replace(/\\/g, "/").startsWith("docs/releases/") &&
+		!sameResolvedPath(candidate.path, handoffPath) &&
+		!sameResolvedPath(candidate.path, advicePath),
 	);
 
 	if (selectedInputs.length === 0) {
@@ -674,10 +691,17 @@ export async function runProAdviceCommand(
 		}
 	}
 
+	const selectedInputsWithContent = await Promise.all(
+		selectedInputs.map(async (candidate) => ({
+			...candidate,
+			content: await readFile(candidate.path, "utf8").catch(() => ""),
+		})),
+	);
+
 	const handoff = buildProHandoffMarkdown({
 		repoRoot,
 		createdAt: deps.now?.() ?? new Date(),
-		selectedInputs,
+		selectedInputs: selectedInputsWithContent,
 		task: options.task,
 	});
 	await writeTextFile(handoffPath, handoff);
