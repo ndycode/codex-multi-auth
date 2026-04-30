@@ -65,7 +65,7 @@ Compatibility aliases are supported:
 | `codex auth integrations` | Generate local bridge client snippets |
 | `codex auth models` | Inspect local model/account capability views |
 | `codex auth monitor` | Aggregate runtime, usage, policy, quota, model, and project state |
-| `codex auth pro-advice [--mode auto|manual]` | Run the Pro-advisor handoff workflow without web-session scraping |
+| `codex auth pro-advice [--mode auto|manual|web]` | Run the Pro-advisor handoff workflow without web-session scraping or private browser polling |
 | `codex auth why-selected [--now|--last]` | Explain which account the selector picks now or via the last persisted runtime snapshot |
 | `codex auth rotation enable\|disable\|status\|bind-app\|unbind-app` | Manage the default-on runtime Responses proxy for live Codex account rotation |
 

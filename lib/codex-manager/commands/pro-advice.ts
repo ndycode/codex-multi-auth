@@ -22,9 +22,10 @@ const DEFAULT_ADVICE_FILE = "PRO_ADVICE.md";
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const POLL_INTERVAL_MS = 2_500;
 const MAX_SCAN_DEPTH = 4;
+const CHATGPT_WEB_URL = "https://chatgpt.com/";
 
 export interface ProAdviceOptions {
-	mode: "auto" | "manual";
+	mode: "auto" | "manual" | "web";
 	handoffPath: string;
 	advicePath: string;
 	noTui: boolean;
@@ -50,6 +51,7 @@ export interface ProAdviceDeps {
 	fetch?: typeof fetch;
 	createReadline?: () => Interface;
 	spawnCodex?: (command: string, args: string[]) => { pid?: number };
+	openUrl?: (url: string) => void | Promise<void>;
 	logInfo?: (message: string) => void;
 	logError?: (message: string) => void;
 }
@@ -60,21 +62,22 @@ type ParseResult =
 	| { ok: false; reason: "error"; message: string };
 
 type AdviceResult =
-	| { ok: true; advicePath: string; responseId?: string; mode: "auto" | "manual" }
+	| { ok: true; advicePath: string; responseId?: string; mode: "auto" | "manual" | "web" }
 	| { ok: false; error: string; status?: number; responseId?: string };
 
 function printProAdviceUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
 			"Usage:",
-			"  codex auth pro-advice [--mode auto|manual] [--handoff <path>] [--advice <path>] [--no-tui] [--json]",
+			"  codex auth pro-advice [--mode auto|manual|web] [--handoff <path>] [--advice <path>] [--no-tui] [--json]",
 			"",
 			"Behavior:",
 			"  - Discovers dossier markdown in the current codebase",
 			"  - Writes PRO_HANDOFF.md with a required GPT-5.5 Pro output contract",
 			"  - Auto mode uses official background Responses when an entitled managed account is available",
+			"  - Web mode opens ChatGPT and waits for saved GPT-5.5 Pro web output",
 			"  - Manual mode saves the handoff and accepts pasted or existing PRO_ADVICE.md output",
-			"  - It does not automate ChatGPT web sessions, cookies, or browser polling",
+			"  - It does not automate ChatGPT web sessions, cookies, or private browser polling",
 		].join("\n"),
 	);
 }
@@ -97,11 +100,11 @@ export function parseProAdviceArgs(args: string[]): ParseResult {
 		}
 		if (arg === "--mode") {
 			const value = args[i + 1];
-			if (value !== "auto" && value !== "manual") {
+			if (value !== "auto" && value !== "manual" && value !== "web") {
 				return {
 					ok: false,
 					reason: "error",
-					message: "--mode expects auto or manual",
+					message: "--mode expects auto, manual, or web",
 				};
 			}
 			options.mode = value;
@@ -110,11 +113,11 @@ export function parseProAdviceArgs(args: string[]): ParseResult {
 		}
 		if (arg.startsWith("--mode=")) {
 			const value = arg.slice("--mode=".length);
-			if (value !== "auto" && value !== "manual") {
+			if (value !== "auto" && value !== "manual" && value !== "web") {
 				return {
 					ok: false,
 					reason: "error",
-					message: "--mode expects auto or manual",
+					message: "--mode expects auto, manual, or web",
 				};
 			}
 			options.mode = value;
@@ -469,6 +472,47 @@ async function getManagedAccess(deps: ProAdviceDeps): Promise<{
 	return { accountId, accessToken: token.access };
 }
 
+async function getActiveAccountLabel(deps: ProAdviceDeps): Promise<string | null> {
+	if (!deps.loadAccounts || !deps.resolveActiveIndex) return null;
+	const storage = await deps.loadAccounts().catch(() => null);
+	if (!storage || storage.accounts.length === 0) return null;
+	const index = deps.resolveActiveIndex(storage);
+	const account = storage.accounts[index];
+	if (!account) return null;
+	const parts = [account.email, account.accountId].filter(
+		(value): value is string => typeof value === "string" && value.length > 0,
+	);
+	return parts.length > 0 ? parts.join(" / ") : `account index ${index}`;
+}
+
+function openExternalUrl(url: string, deps: ProAdviceDeps): void | Promise<void> {
+	if (deps.openUrl) return deps.openUrl(url);
+	const command =
+		process.platform === "win32"
+			? "cmd"
+			: process.platform === "darwin"
+				? "open"
+				: "xdg-open";
+	const args =
+		process.platform === "win32"
+			? ["/c", "start", "", url]
+			: [url];
+	const child = spawn(command, args, {
+		detached: true,
+		stdio: "ignore",
+		windowsHide: true,
+	});
+	child.unref();
+}
+
+function isCodexChatGptModelUnsupported(error: string): boolean {
+	return (
+		error.includes("gpt-5.5-pro") &&
+		error.includes("not supported") &&
+		error.includes("ChatGPT account")
+	);
+}
+
 async function submitBackgroundAdvice(params: {
 	handoff: string;
 	advicePath: string;
@@ -622,6 +666,65 @@ async function runManualAdvice(params: {
 	}
 }
 
+async function runWebAdvice(params: {
+	handoffPath: string;
+	advicePath: string;
+	deps: ProAdviceDeps;
+	noTui: boolean;
+	logInfo: (message: string) => void;
+}): Promise<AdviceResult> {
+	const existing = await readIfExists(params.advicePath);
+	if (existing?.trim()) {
+		return { ok: true, mode: "web", advicePath: params.advicePath };
+	}
+
+	const activeAccount = await getActiveAccountLabel(params.deps);
+	const accountHint = activeAccount
+		? `Active pool account: ${activeAccount}`
+		: "Active pool account could not be resolved; use the intended ChatGPT Pro account.";
+	const instructions = [
+		"ChatGPT web-assisted Pro handoff is ready.",
+		accountHint,
+		`Open: ${CHATGPT_WEB_URL}`,
+		"Use GPT-5.5 Pro Extended in ChatGPT web.",
+		`Paste the handoff from: ${params.handoffPath}`,
+		`Save the Pro output to: ${params.advicePath}`,
+	].join("\n");
+
+	params.logInfo(instructions);
+	if (params.noTui) {
+		return {
+			ok: false,
+			error: `Web-assisted mode wrote the handoff. Save GPT-5.5 Pro web output to ${params.advicePath}.`,
+		};
+	}
+
+	await Promise.resolve(openExternalUrl(CHATGPT_WEB_URL, params.deps)).catch(() => undefined);
+	const rl =
+		params.deps.createReadline?.() ??
+		createInterface({ input: defaultInput, output: defaultOutput });
+	try {
+		const pasted = await askLine(
+			rl,
+			"Press Enter after saving PRO_ADVICE.md, or paste GPT-5.5 Pro output here: ",
+		);
+		const latest = await readIfExists(params.advicePath);
+		if (latest?.trim()) {
+			return { ok: true, mode: "web", advicePath: params.advicePath };
+		}
+		if (!pasted.trim()) {
+			return {
+				ok: false,
+				error: `No advice was provided. Save GPT-5.5 Pro web output to ${params.advicePath}.`,
+			};
+		}
+		await writeTextFile(params.advicePath, `${pasted.trim()}\n`);
+		return { ok: true, mode: "web", advicePath: params.advicePath };
+	} finally {
+		rl.close();
+	}
+}
+
 function buildLaunchCommand(advicePath: string): { command: string; args: string[]; prompt: string } {
 	const prompt = [
 		`Read ${advicePath}.`,
@@ -739,14 +842,34 @@ export async function runProAdviceCommand(
 		if (!result.ok) {
 			if (!options.json) {
 				logError(`Auto advice failed: ${result.error}`);
-				logInfo("Falling back to manual GPT-5.5 Pro handoff.");
+				logInfo(
+					isCodexChatGptModelUnsupported(result.error)
+						? "Falling back to ChatGPT web-assisted GPT-5.5 Pro handoff."
+						: "Falling back to manual GPT-5.5 Pro handoff.",
+				);
 			}
-			result = await runManualAdvice({
-				advicePath,
-				deps,
-				noTui: options.noTui || !deps.isTty?.(),
-			});
+			result = isCodexChatGptModelUnsupported(result.error)
+				? await runWebAdvice({
+						handoffPath,
+						advicePath,
+						deps,
+						noTui: options.noTui || !deps.isTty?.(),
+						logInfo,
+					})
+				: await runManualAdvice({
+						advicePath,
+						deps,
+						noTui: options.noTui || !deps.isTty?.(),
+					});
 		}
+	} else if (options.mode === "web") {
+		result = await runWebAdvice({
+			handoffPath,
+			advicePath,
+			deps,
+			noTui: options.noTui || !deps.isTty?.(),
+			logInfo,
+		});
 	} else {
 		result = await runManualAdvice({
 			advicePath,

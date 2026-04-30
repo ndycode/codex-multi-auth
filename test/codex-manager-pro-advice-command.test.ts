@@ -60,7 +60,7 @@ describe("codex auth pro-advice command", () => {
 		expect(
 			parseProAdviceArgs([
 				"--mode",
-				"manual",
+				"web",
 				"--handoff",
 				"HANDOFF.md",
 				"--advice=ADVICE.md",
@@ -70,7 +70,7 @@ describe("codex auth pro-advice command", () => {
 		).toEqual({
 			ok: true,
 			options: {
-				mode: "manual",
+				mode: "web",
 				handoffPath: "HANDOFF.md",
 				advicePath: "ADVICE.md",
 				noTui: true,
@@ -79,9 +79,15 @@ describe("codex auth pro-advice command", () => {
 			},
 		});
 		expect(parseProAdviceArgs(["--mode", "web"])).toEqual({
-			ok: false,
-			reason: "error",
-			message: "--mode expects auto or manual",
+			ok: true,
+			options: {
+				mode: "web",
+				handoffPath: "PRO_HANDOFF.md",
+				advicePath: "PRO_ADVICE.md",
+				noTui: false,
+				json: false,
+				timeoutMs: 1_800_000,
+			},
 		});
 	});
 
@@ -239,5 +245,68 @@ describe("codex auth pro-advice command", () => {
 		const handoff = await readFile(join(root, "PRO_HANDOFF.md"), "utf8");
 		expect(handoff).toContain("APP_DOSSIER.md");
 		expect(handoff).not.toContain("# Manual");
+	});
+
+	it("guides ChatGPT web handoff with the active pool account", async () => {
+		const root = await createTempRoot();
+		await writeFile(join(root, "APP_DOSSIER.md"), "# dossier\n", "utf8");
+		const infos: string[] = [];
+		const errors: string[] = [];
+
+		await expect(
+			runProAdviceCommand(["--mode", "web", "--no-tui", "--json"], {
+				cwd: () => root,
+				now: () => new Date("2026-04-30T00:00:00.000Z"),
+				isTty: () => false,
+				loadAccounts: async () => createStorage(),
+				resolveActiveIndex: () => 0,
+				logInfo: (message) => infos.push(message),
+				logError: (message) => errors.push(message),
+			}),
+		).resolves.toBe(1);
+
+		expect(errors).toEqual([]);
+		expect(infos.join("\n")).toContain("Active pool account: pro@example.com / acc_pro");
+		expect(infos.join("\n")).toContain("https://chatgpt.com/");
+		const finalPayload = JSON.parse(infos.at(-1) ?? "{}");
+		expect(finalPayload).toMatchObject({
+			command: "pro-advice",
+			ok: false,
+		});
+		expect(finalPayload.error).toContain("Web-assisted mode wrote the handoff");
+	});
+
+	it("falls back to ChatGPT web when Codex account rejects GPT-5.5 Pro", async () => {
+		const root = await createTempRoot();
+		await writeFile(join(root, "APP_DOSSIER.md"), "# dossier\n", "utf8");
+		const infos: string[] = [];
+		const errors: string[] = [];
+		const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+			new Response(
+				JSON.stringify({
+					detail:
+						"The 'gpt-5.5-pro' model is not supported when using Codex with a ChatGPT account.",
+				}),
+				{ status: 400 },
+			),
+		);
+
+		await expect(
+			runProAdviceCommand(["--no-tui"], {
+				cwd: () => root,
+				now: () => new Date("2026-04-30T00:00:00.000Z"),
+				isTty: () => false,
+				loadAccounts: async () => createStorage(),
+				resolveActiveIndex: () => 0,
+				refreshAccessToken: async () => tokenSuccess(),
+				fetch: fetchMock,
+				logInfo: (message) => infos.push(message),
+				logError: (message) => errors.push(message),
+			}),
+		).resolves.toBe(1);
+
+		expect(errors.join("\n")).toContain("not supported");
+		expect(infos.join("\n")).toContain("Falling back to ChatGPT web-assisted");
+		expect(infos.join("\n")).toContain("Active pool account: pro@example.com / acc_pro");
 	});
 });
