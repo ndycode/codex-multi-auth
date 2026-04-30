@@ -35,6 +35,7 @@ Compatibility aliases are supported:
 | `codex auth forecast` | Forecast best account by readiness/risk |
 | `codex auth best` | Pick and optionally sync the best account |
 | `codex auth account ...` | Manage local account policy metadata |
+| `codex auth pro-advice` | Prepare a GPT-5.5 Pro handoff from dossier markdown and save implementation advice |
 
 ---
 
@@ -64,6 +65,7 @@ Compatibility aliases are supported:
 | `codex auth integrations` | Generate local bridge client snippets |
 | `codex auth models` | Inspect local model/account capability views |
 | `codex auth monitor` | Aggregate runtime, usage, policy, quota, model, and project state |
+| `codex auth pro-advice [--mode auto|manual]` | Run the Pro-advisor handoff workflow without web-session scraping |
 | `codex auth why-selected [--now|--last]` | Explain which account the selector picks now or via the last persisted runtime snapshot |
 | `codex auth rotation enable\|disable\|status\|bind-app\|unbind-app` | Manage the default-on runtime Responses proxy for live Codex account rotation |
 
@@ -75,13 +77,17 @@ Compatibility aliases are supported:
 | --- | --- | --- |
 | `--device-auth` | login | Use the OpenAI Codex device-code flow for remote/headless login (mutually exclusive with `--manual` / `--no-browser`) |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow (mutually exclusive with `--device-auth`) |
-| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle | Print machine-readable output |
+| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, pro-advice, fix, doctor, config explain, debug bundle | Print machine-readable output |
 | `--csv` | usage | Print or write CSV bucket output |
 | `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |
 | `--live` | best, forecast, report, fix | Use live probe before decisions/output |
 | `--dry-run` | verify-flagged, verify (with `--flagged`/`--all`), fix, doctor | Preview without writing storage |
 | `--model <model>` | best, forecast, report, fix | Specify model for live probe paths |
 | `--out <path>` | report, usage | Write report output to file |
+| `--mode auto|manual` | pro-advice | Choose background Responses submission or manual GPT-5.5 Pro handoff |
+| `--handoff <path>` | pro-advice | Write the handoff markdown somewhere other than `PRO_HANDOFF.md` |
+| `--advice <path>` | pro-advice | Read or write advice somewhere other than `PRO_ADVICE.md` |
+| `--no-tui` | pro-advice | Use deterministic non-interactive behavior and print the launch command instead of prompting |
 | `--since <time>` | usage | Filter local usage rows by timestamp, ISO date, or relative duration |
 | `--by <group>` | usage | Group usage by model, account, project, outcome, or day |
 | `--kind <name>` | integrations | Select one snippet kind: opencode, openclaw, python, curl, or env |
@@ -171,6 +177,41 @@ codex auth monitor [--json]
 `monitor` aggregates runtime observability, usage, policy, routing profile,
 budget, model matrix, quota cache, and current project context. `models`
 reports neutral account labels and does not expose raw account emails.
+
+---
+
+## `codex auth pro-advice`
+
+Prepares a Pro-advisor handoff for the current codebase. The command discovers
+root dossier markdown such as `*_DOSSIER.md`, `*_DB_DOSSIER.md`,
+`PRO_HANDOFF.md`, `PRO_ADVICE.md`, and `docs/**/*dossier*.md`, then writes a
+clean `PRO_HANDOFF.md` with frontmatter and a required output contract.
+
+Usage:
+
+```bash
+codex auth pro-advice
+codex auth pro-advice --mode manual --no-tui
+codex auth pro-advice --handoff docs/PRO_HANDOFF.md --advice docs/PRO_ADVICE.md
+```
+
+Behavior:
+
+- Auto mode submits the handoff with `background: true` through the managed
+  Codex account pool when the active account is entitled to `gpt-5.5-pro`.
+- Entitlement, auth, quota, and upstream failures are shown plainly, then the
+  command falls back to the manual handoff path.
+- Manual mode writes the handoff and accepts either pasted Pro output or an
+  already-saved `PRO_ADVICE.md`.
+- If no dossier markdown is found, the command writes `PRO_DOSSIER_PROMPT.md`
+  and `PRO_DOSSIER_DB_PROMPT.md` so the user can run `$dossier` and
+  `$dossier-db` first.
+- The command never automates ChatGPT web sessions, cookies, browser state, or
+  private web UI polling.
+
+After `PRO_ADVICE.md` exists, interactive runs ask before launching a new Codex
+session with a prompt that reads the advice and follows its implementation
+prompt. Non-TTY and `--no-tui` runs print the exact launch command instead.
 
 ---
 

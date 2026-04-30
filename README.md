@@ -158,6 +158,7 @@ For remote or headless shells, prefer `codex auth login --device-auth`.
 | `codex auth list` | Which accounts are saved and which one is active? |
 | `codex auth switch <index>` | How do I move to a different saved account? |
 | `codex auth forecast --live` | Which account looks best for the next session? |
+| `codex auth pro-advice` | How do I turn dossier markdown into a GPT-5.5 Pro implementation handoff? |
 
 ### Repair
 
