@@ -412,6 +412,10 @@ function extractError(payload: unknown, fallback: string): string {
 		if (typeof nested.code === "string") return nested.code;
 	}
 	if (typeof record.message === "string") return record.message;
+	const serialized = JSON.stringify(payload);
+	if (serialized && serialized !== "{}") {
+		return `${fallback}: ${serialized}`;
+	}
 	return fallback;
 }
 
