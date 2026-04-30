@@ -1,6 +1,6 @@
 # Upgrade Guide
 
-Migrate legacy installs to the canonical `codex-multi-auth` workflow on the current `3.x` release line.
+Migrate legacy installs to the canonical `codex-multi-auth` workflow on the current `2.x` release line.
 
 ---
 
@@ -12,9 +12,9 @@ Migrate legacy installs to the canonical `codex-multi-auth` workflow on the curr
 
 ---
 
-## v3.0.0 Bin Migration
+## v2.1.2 Bin Migration
 
-`v3.0.0` intentionally stops publishing a global `codex` executable. That
+`v2.1.2` intentionally stops publishing a global `codex` executable. That
 name belongs to the official Codex install path and can be owned by npm,
 Homebrew, or an official release binary.
 

@@ -32,7 +32,7 @@ Public documentation for `codex-multi-auth`.
 
 | Document | Focus |
 | --- | --- |
-| [releases/v3.0.0.md](releases/v3.0.0.md) | Current stable release notes |
+| [releases/v2.1.2.md](releases/v2.1.2.md) | Current stable release notes |
 | [releases/v2.1.1.md](releases/v2.1.1.md) | Prior stable release notes |
 | [releases/v2.1.0.md](releases/v2.1.0.md) | Earlier stable release notes |
 | [releases/v2.0.2.md](releases/v2.0.2.md) | Earlier stable release notes |
@@ -83,7 +83,7 @@ Public documentation for `codex-multi-auth`.
 | [reference/storage-paths.md](reference/storage-paths.md) | Canonical and compatibility storage paths |
 | [reference/public-api.md](reference/public-api.md) | Public API stability and semver contract |
 | [reference/error-contracts.md](reference/error-contracts.md) | CLI, JSON, and helper error semantics |
-| [releases/v3.0.0.md](releases/v3.0.0.md) | Current stable release notes |
+| [releases/v2.1.2.md](releases/v2.1.2.md) | Current stable release notes |
 | [releases/v2.1.1.md](releases/v2.1.1.md) | Prior stable release notes |
 | [releases/v2.1.0.md](releases/v2.1.0.md) | Earlier stable release notes |
 | [releases/v2.0.2.md](releases/v2.0.2.md) | Earlier stable release notes |
