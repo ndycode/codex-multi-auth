@@ -40,6 +40,7 @@ describe("codex routing helpers", () => {
 			"integrations",
 			"models",
 			"monitor",
+			"pro-advice",
 			"rotation",
 			"why-selected",
 			"verify",

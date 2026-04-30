@@ -19,6 +19,7 @@ const AUTH_SUBCOMMANDS = new Set([
 	"integrations",
 	"models",
 	"monitor",
+	"pro-advice",
 	"rotation",
 	"why-selected",
 	"config",
