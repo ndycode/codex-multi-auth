@@ -54,7 +54,7 @@ Canonical governance for repository documentation quality and consistency.
 ## Canonical Policy
 
 1. Canonical package name: `codex-multi-auth`.
-2. Canonical account command family: `codex auth ...`.
+2. Canonical account command family: `codex-multi-auth ...`.
 3. Canonical storage root: `~/.codex/multi-auth` unless explicitly overridden.
 4. Compatibility aliases (`codex multi auth`, `codex multi-auth`, `codex multiauth`) belong only in command reference, troubleshooting, or migration sections.
 5. Legacy paths/flows and scoped package references belong only in migration and compatibility sections.

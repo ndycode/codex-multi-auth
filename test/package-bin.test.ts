@@ -9,7 +9,8 @@ describe("package bin entries", () => {
 			bundleDependencies?: string[];
 		};
 		expect(pkg.bin).toBeDefined();
-		expect(pkg.bin?.codex).toBe("scripts/codex.js");
+		expect(pkg.bin?.codex).toBeUndefined();
+		expect(pkg.bin?.["codex-multi-auth-codex"]).toBe("scripts/codex.js");
 		expect(pkg.bin?.["codex-multi-auth-app-launcher"]).toBe("scripts/codex-app-launcher.js");
 		expect(pkg.bin?.["codex-multi-auth"]).toBe("scripts/codex-multi-auth.js");
 		expect(pkg.bin?.["codex-multi-auth-opencode-install"]).toBeUndefined();

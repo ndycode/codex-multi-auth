@@ -1,21 +1,21 @@
 # codex-multi-auth Docs
 
-Daily-use guide for the `codex auth ...` workflow.
+Daily-use guide for the `codex-multi-auth ...` workflow.
 
 ---
 
 ## 60-Second Path
 
 ```bash
-codex auth login
-codex auth list
-codex auth check
+codex-multi-auth login
+codex-multi-auth list
+codex-multi-auth check
 ```
 
 If you are choosing an account for the next session:
 
 ```bash
-codex auth forecast --live
+codex-multi-auth forecast --live
 ```
 
 ---
@@ -32,11 +32,11 @@ codex auth forecast --live
 ## Common Daily Commands
 
 ```bash
-codex auth status
-codex auth list
-codex auth switch 2
-codex auth report --live --json
-codex auth doctor --fix
+codex-multi-auth status
+codex-multi-auth list
+codex-multi-auth switch 2
+codex-multi-auth report --live --json
+codex-multi-auth doctor --fix
 ```
 
 ---
@@ -44,9 +44,9 @@ codex auth doctor --fix
 ## Canonical Policy
 
 - Canonical package: `codex-multi-auth`
-- Canonical command family: `codex auth ...`
+- Canonical command family: `codex-multi-auth ...`
 - Canonical storage root: `~/.codex/multi-auth`
-- Runtime rotation: default-on, inspect or repair with `codex auth rotation status`
+- Runtime rotation: default-on, inspect or repair with `codex-multi-auth rotation status`
 
 Legacy migration details live in [upgrade.md](upgrade.md).
 

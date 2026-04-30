@@ -52,6 +52,10 @@ function createWrapperFixture(): string {
 		join(repoRootDir, "scripts", "codex-multi-auth.js"),
 		join(scriptDir, "codex-multi-auth.js"),
 	);
+	copyFileSync(
+		join(repoRootDir, "scripts", "codex-routing.js"),
+		join(scriptDir, "codex-routing.js"),
+	);
 	return fixtureRoot;
 }
 
@@ -140,6 +144,26 @@ describe("codex-multi-auth bin wrapper", () => {
 		expect(result.status).toBe(6);
 		expect(result.stdout).toBe("");
 		expect(result.stderr).toBe("");
+	});
+
+	it("lets the standalone bin omit the auth root for auth subcommands", () => {
+		const fixtureRoot = createWrapperFixture();
+		const distLibDir = join(fixtureRoot, "dist", "lib");
+		mkdirSync(distLibDir, { recursive: true });
+		writeFileSync(
+			join(distLibDir, "codex-manager.js"),
+			[
+				"export async function runCodexMultiAuthCli(args) {",
+				'\tif (!Array.isArray(args) || args[0] !== "auth" || args[1] !== "status") throw new Error("bad args");',
+				"\treturn 0;",
+				"}",
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["status"]);
+
+		expect(result.status).toBe(0);
 	});
 
 	it("propagates integer exit codes", () => {

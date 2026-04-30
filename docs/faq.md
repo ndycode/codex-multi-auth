@@ -6,7 +6,7 @@ Short answers for developers evaluating `codex-multi-auth`.
 
 ## Does this replace `@openai/codex`?
 
-No. `codex-multi-auth` wraps the official `@openai/codex` CLI. It handles `codex auth ...` locally and forwards the rest of the `codex` workflow to the official CLI.
+No. `codex-multi-auth` wraps the official `@openai/codex` CLI. It handles `codex-multi-auth ...` locally and forwards the rest of the `codex` workflow to the official CLI.
 
 ---
 
@@ -24,13 +24,13 @@ Not for the ChatGPT-authenticated multi-account workflow in this repository. If 
 
 ## Is the plugin runtime required?
 
-No. Many users only need the wrapper and `codex auth ...` commands. The plugin-host runtime is optional and uses the same account pool for advanced host request handling.
+No. Many users only need the wrapper and `codex-multi-auth ...` commands. The plugin-host runtime is optional and uses the same account pool for advanced host request handling.
 
 ---
 
 ## Is runtime rotation required?
 
-Runtime rotation is enabled by default for request-bearing forwarded Codex CLI/app sessions. Disable it with `codex auth rotation disable`, `codexRuntimeRotationProxy=false`, or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` when you need plain official Codex forwarding.
+Runtime rotation is enabled by default for request-bearing forwarded Codex CLI/app sessions. Disable it with `codex-multi-auth rotation disable`, `codexRuntimeRotationProxy=false`, or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` when you need plain official Codex forwarding.
 
 ---
 
@@ -63,12 +63,12 @@ By default, under `~/.codex/multi-auth`. Project-scoped account pools can also l
 Run:
 
 ```bash
-codex auth doctor --fix
-codex auth check
-codex auth forecast --live
+codex-multi-auth doctor --fix
+codex-multi-auth check
+codex-multi-auth forecast --live
 ```
 
-Then rerun `codex auth login` if the affected account still looks stale.
+Then rerun `codex-multi-auth login` if the affected account still looks stale.
 
 ---
 

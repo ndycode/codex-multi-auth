@@ -17,7 +17,7 @@ Public documentation for `codex-multi-auth`.
 
 | Document | Focus |
 | --- | --- |
-| [Daily-use landing page](index.md) | Common `codex auth ...` workflows and quick-start guidance |
+| [Daily-use landing page](index.md) | Common `codex-multi-auth ...` workflows and quick-start guidance |
 | [faq.md](faq.md) | Short answers to common adoption questions |
 | [features.md](features.md) | User-facing capability map |
 | [configuration.md](configuration.md) | Stable defaults, precedence, and environment overrides |
@@ -103,7 +103,7 @@ Public documentation for `codex-multi-auth`.
 | [development/IA_FINDABILITY_AUDIT_2026-03-01.md](development/IA_FINDABILITY_AUDIT_2026-03-01.md) | IA and findability baseline audit |
 | [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md) | Complete field and environment inventory |
 | [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md) | Configuration resolution flow |
-| [development/RUNBOOK_ADD_AUTH_COMMAND.md](development/RUNBOOK_ADD_AUTH_COMMAND.md) | Safe workflow for adding a new `codex auth ...` command |
+| [development/RUNBOOK_ADD_AUTH_COMMAND.md](development/RUNBOOK_ADD_AUTH_COMMAND.md) | Safe workflow for adding a new `codex-multi-auth ...` command |
 | [development/RUNBOOK_ADD_CONFIG_FIELD.md](development/RUNBOOK_ADD_CONFIG_FIELD.md) | Safe workflow for introducing a new config field |
 | [development/RUNBOOK_CHANGE_ROUTING_POLICY.md](development/RUNBOOK_CHANGE_ROUTING_POLICY.md) | Safe workflow for changing routing, retry, or fallback policy |
 | [development/REPOSITORY_SCOPE.md](development/REPOSITORY_SCOPE.md) | Ownership map by repository path |

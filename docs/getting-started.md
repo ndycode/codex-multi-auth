@@ -1,6 +1,6 @@
 # Getting Started
 
-Install `codex-multi-auth`, add an account, and confirm that `codex auth ...` is working.
+Install `codex-multi-auth`, add an account, and confirm that `codex-multi-auth ...` is working.
 
 ---
 
@@ -28,13 +28,13 @@ npm i -g codex-multi-auth
 
 Verify both installed surfaces:
 
-- `codex --version` checks the official `@openai/codex` CLI that the wrapper forwards to.
-- `codex-multi-auth --version` checks the installed wrapper package version.
+- `codex --version` checks the official `@openai/codex` CLI that the manager can pair with.
+- `codex-multi-auth --version` checks the installed manager package version.
 
 ```bash
 codex --version
 codex-multi-auth --version
-codex auth status
+codex-multi-auth status
 ```
 
 ---
@@ -42,7 +42,7 @@ codex auth status
 ## First Login
 
 ```bash
-codex auth login
+codex-multi-auth login
 ```
 
 Expected flow:
@@ -55,15 +55,15 @@ Expected flow:
 Verify the new account:
 
 ```bash
-codex auth status
-codex auth list
-codex auth check
+codex-multi-auth status
+codex-multi-auth list
+codex-multi-auth check
 ```
 
 Choose the next account for your next session:
 
 ```bash
-codex auth forecast --live
+codex-multi-auth forecast --live
 ```
 
 ## Alternate Login Paths
@@ -75,29 +75,29 @@ Use these only when the normal browser-first flow is unavailable.
 For remote, SSH, container, or other headless shells, prefer the device-code flow:
 
 ```bash
-codex auth login --device-auth
+codex-multi-auth login --device-auth
 ```
 
-Open `https://auth.openai.com/codex/device` in any browser, enter the printed code, and keep the terminal running until login completes. The code expires after 15 minutes; rerun `codex auth login --device-auth` if it times out. This path does not open a local browser and does not start the local OAuth callback server.
+Open `https://auth.openai.com/codex/device` in any browser, enter the printed code, and keep the terminal running until login completes. The code expires after 15 minutes; rerun `codex-multi-auth login --device-auth` if it times out. This path does not open a local browser and does not start the local OAuth callback server.
 
-`--device-auth` starts a new login directly. If you want to recover a saved backup first, run plain `codex auth login` so the onboarding restore menu can appear.
+`--device-auth` starts a new login directly. If you want to recover a saved backup first, run plain `codex-multi-auth login` so the onboarding restore menu can appear.
 
 ### Manual or no-browser login
 
 If device auth is unavailable or you want to handle the callback manually:
 
 ```bash
-codex auth login --manual
-CODEX_AUTH_NO_BROWSER=1 codex auth login
+codex-multi-auth login --manual
+CODEX_AUTH_NO_BROWSER=1 codex-multi-auth login
 ```
 
 In non-TTY/manual shells, provide the full redirect URL on stdin:
 
 ```bash
-echo "http://127.0.0.1:1455/auth/callback?code=..." | codex auth login --manual
+echo "http://127.0.0.1:1455/auth/callback?code=..." | codex-multi-auth login --manual
 ```
 
-`codex auth login` remains browser-first by default.
+`codex-multi-auth login` remains browser-first by default.
 
 ### Restore a saved backup during onboarding
 
@@ -120,12 +120,12 @@ See upgrade note: [onboarding restore behavior](upgrade.md#onboarding-restore-no
 
 ## Add More Accounts
 
-Repeat `codex auth login` for each account you want to manage.
+Repeat `codex-multi-auth login` for each account you want to manage.
 
 When you are done, choose the best account for the next session:
 
 ```bash
-codex auth forecast --live
+codex-multi-auth forecast --live
 ```
 
 ---
@@ -133,11 +133,11 @@ codex auth forecast --live
 ## Day-1 Command Pack
 
 ```bash
-codex auth status
-codex auth list
-codex auth switch 2
-codex auth check
-codex auth forecast --live
+codex-multi-auth status
+codex-multi-auth list
+codex-multi-auth switch 2
+codex-multi-auth check
+codex-multi-auth forecast --live
 ```
 
 ---
@@ -147,14 +147,14 @@ codex auth forecast --live
 Normal setup does not require runtime rotation. Enable it only when you want forwarded official Codex CLI/app sessions to use the local account-rotation proxy between Responses requests:
 
 ```bash
-codex auth rotation enable
-codex auth rotation status
+codex-multi-auth rotation enable
+codex-multi-auth rotation status
 ```
 
 To turn it off and restore the packaged app bind if one was installed:
 
 ```bash
-codex auth rotation disable
+codex-multi-auth rotation disable
 ```
 
 ---
@@ -184,15 +184,15 @@ Then continue with [troubleshooting.md](troubleshooting.md#verify-install-and-ro
 If the OAuth callback on port `1455` fails:
 
 - stop the process using port `1455`
-- rerun `codex auth login`
-- if browser launch is unavailable, prefer `codex auth login --device-auth`
-- if device auth is unavailable, rerun `codex auth login --manual`
+- rerun `codex-multi-auth login`
+- if browser launch is unavailable, prefer `codex-multi-auth login --device-auth`
+- if device auth is unavailable, rerun `codex-multi-auth login --manual`
 
 If account state looks stale:
 
 ```bash
-codex auth doctor --fix
-codex auth check
+codex-multi-auth doctor --fix
+codex-multi-auth check
 ```
 
 ---
