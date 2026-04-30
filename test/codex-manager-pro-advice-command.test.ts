@@ -254,17 +254,21 @@ describe("codex auth pro-advice command", () => {
 		const errors: string[] = [];
 		const opened: string[] = [];
 		let clipboard = "";
+		let nowMs = new Date("2026-04-30T00:00:00.000Z").getTime();
 
 		await expect(
 			runProAdviceCommand(["--mode", "web", "--no-tui", "--json"], {
 				cwd: () => root,
-				now: () => new Date("2026-04-30T00:00:00.000Z"),
+				now: () => new Date(nowMs),
 				isTty: () => false,
 				loadAccounts: async () => createStorage(),
 				resolveActiveIndex: () => 0,
 				openUrl: (url) => opened.push(url),
 				writeClipboard: (text) => {
 					clipboard = text;
+				},
+				sleep: async (ms) => {
+					nowMs += ms;
 				},
 				logInfo: (message) => infos.push(message),
 				logError: (message) => errors.push(message),
@@ -286,7 +290,7 @@ describe("codex auth pro-advice command", () => {
 			command: "pro-advice",
 			ok: false,
 		});
-		expect(finalPayload.error).toContain("Web-assisted mode wrote the handoff");
+		expect(finalPayload.error).toContain("Timed out waiting for GPT-5.5 Pro web output");
 	});
 
 	it("falls back to ChatGPT web when Codex account rejects GPT-5.5 Pro", async () => {
@@ -295,6 +299,7 @@ describe("codex auth pro-advice command", () => {
 		const infos: string[] = [];
 		const errors: string[] = [];
 		const opened: string[] = [];
+		let nowMs = new Date("2026-04-30T00:00:00.000Z").getTime();
 		const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
 			new Response(
 				JSON.stringify({
@@ -308,7 +313,7 @@ describe("codex auth pro-advice command", () => {
 		await expect(
 			runProAdviceCommand(["--no-tui"], {
 				cwd: () => root,
-				now: () => new Date("2026-04-30T00:00:00.000Z"),
+				now: () => new Date(nowMs),
 				isTty: () => false,
 				loadAccounts: async () => createStorage(),
 				resolveActiveIndex: () => 0,
@@ -316,14 +321,19 @@ describe("codex auth pro-advice command", () => {
 				fetch: fetchMock,
 				openUrl: (url) => opened.push(url),
 				writeClipboard: vi.fn(),
+				sleep: async (ms) => {
+					await writeFile(join(root, "PRO_ADVICE.md"), "# Findings\n\nweb\n", "utf8");
+					nowMs += ms;
+				},
 				logInfo: (message) => infos.push(message),
 				logError: (message) => errors.push(message),
 			}),
-		).resolves.toBe(1);
+		).resolves.toBe(0);
 
 		expect(errors.join("\n")).toContain("not supported");
 		expect(infos.join("\n")).toContain("Falling back to ChatGPT web-assisted");
 		expect(infos.join("\n")).toContain("Active pool account: pro@example.com / acc_pro");
+		expect(infos.join("\n")).toContain("Saved Pro advice:");
 		expect(opened).toEqual(["https://chatgpt.com/"]);
 	});
 });

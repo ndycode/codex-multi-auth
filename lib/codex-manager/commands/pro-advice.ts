@@ -22,6 +22,7 @@ const DEFAULT_ADVICE_FILE = "PRO_ADVICE.md";
 const DEFAULT_CHATGPT_PROMPT_FILE = "PRO_CHATGPT_PROMPT.md";
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const POLL_INTERVAL_MS = 2_500;
+const WEB_ADVICE_POLL_INTERVAL_MS = 2_500;
 const MAX_SCAN_DEPTH = 4;
 const CHATGPT_WEB_URL = "https://chatgpt.com/";
 
@@ -54,6 +55,7 @@ export interface ProAdviceDeps {
 	spawnCodex?: (command: string, args: string[]) => { pid?: number };
 	openUrl?: (url: string) => void | Promise<void>;
 	writeClipboard?: (text: string) => void | Promise<void>;
+	sleep?: (ms: number) => Promise<void>;
 	logInfo?: (message: string) => void;
 	logError?: (message: string) => void;
 }
@@ -527,6 +529,30 @@ function writeClipboard(text: string, deps: ProAdviceDeps): Promise<boolean> {
 	});
 }
 
+async function sleep(ms: number, deps: ProAdviceDeps): Promise<void> {
+	if (deps.sleep) {
+		await deps.sleep(ms);
+		return;
+	}
+	await new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+async function waitForAdviceFile(params: {
+	advicePath: string;
+	timeoutMs: number;
+	deps: ProAdviceDeps;
+}): Promise<boolean> {
+	const nowMs = () => params.deps.now?.().getTime() ?? Date.now();
+	const startedAt = nowMs();
+	while (nowMs() - startedAt < params.timeoutMs) {
+		const existing = await readIfExists(params.advicePath);
+		if (existing?.trim()) return true;
+		await sleep(WEB_ADVICE_POLL_INTERVAL_MS, params.deps);
+	}
+	const existing = await readIfExists(params.advicePath);
+	return Boolean(existing?.trim());
+}
+
 function isCodexChatGptModelUnsupported(error: string): boolean {
 	return (
 		error.includes("gpt-5.5-pro") &&
@@ -722,6 +748,7 @@ async function runWebAdvice(params: {
 	advicePath: string;
 	deps: ProAdviceDeps;
 	noTui: boolean;
+	timeoutMs: number;
 	logInfo: (message: string) => void;
 }): Promise<AdviceResult> {
 	const existing = await readIfExists(params.advicePath);
@@ -758,9 +785,17 @@ async function runWebAdvice(params: {
 
 	params.logInfo(instructions);
 	if (params.noTui) {
+		params.logInfo(`Waiting for GPT-5.5 Pro web output at ${params.advicePath}.`);
+		if (await waitForAdviceFile({
+			advicePath: params.advicePath,
+			timeoutMs: params.timeoutMs,
+			deps: params.deps,
+		})) {
+			return { ok: true, mode: "web", advicePath: params.advicePath };
+		}
 		return {
 			ok: false,
-			error: `Web-assisted mode wrote the handoff. Save GPT-5.5 Pro web output to ${params.advicePath}.`,
+			error: `Timed out waiting for GPT-5.5 Pro web output at ${params.advicePath}.`,
 		};
 	}
 
@@ -919,6 +954,7 @@ export async function runProAdviceCommand(
 						advicePath,
 						deps,
 						noTui: options.noTui || !deps.isTty?.(),
+						timeoutMs: options.timeoutMs,
 						logInfo,
 					})
 				: await runManualAdvice({
@@ -934,6 +970,7 @@ export async function runProAdviceCommand(
 			advicePath,
 			deps,
 			noTui: options.noTui || !deps.isTty?.(),
+			timeoutMs: options.timeoutMs,
 			logInfo,
 		});
 	} else {
