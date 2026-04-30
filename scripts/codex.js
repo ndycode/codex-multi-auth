@@ -3,7 +3,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
-	appendFileSync,
 	chmodSync,
 	copyFileSync,
 	cpSync,
@@ -3429,15 +3428,58 @@ function parseRolloutIndexEntry(rolloutPath) {
 	return { id, thread_name: threadName, updated_at: updatedAt };
 }
 
+function writeSessionIndexAtomicSync(indexPath, lines) {
+	const indexDir = dirname(indexPath);
+	mkdirSync(indexDir, { recursive: true });
+	for (let attempt = 0; attempt <= SHADOW_HOME_CLEANUP_BACKOFF_MS.length; attempt += 1) {
+		const tempPath = join(
+			indexDir,
+			[
+				`.${basename(indexPath)}`,
+				String(process.pid),
+				String(Date.now()),
+				randomBytes(4).toString("hex"),
+				"tmp",
+			].join("."),
+		);
+		try {
+			writeFileSync(tempPath, `${lines.join("\n")}\n`, {
+				encoding: "utf8",
+				mode: 0o600,
+			});
+			chmodSync(tempPath, 0o600);
+			renameSync(tempPath, indexPath);
+			chmodSync(indexPath, 0o600);
+			return;
+		} catch (error) {
+			try {
+				rmSync(tempPath, { force: true });
+			} catch {
+				// Preserve the original write failure.
+			}
+			if (
+				isRetryableShadowHomeCleanupError(error) &&
+				attempt < SHADOW_HOME_CLEANUP_BACKOFF_MS.length
+			) {
+				sleepSync(SHADOW_HOME_CLEANUP_BACKOFF_MS[attempt]);
+				continue;
+			}
+			throw error;
+		}
+	}
+}
+
 function repairCodexSessionIndex(codexHome) {
 	if (!codexHome || typeof codexHome !== "string") return;
 	const sessionsDir = join(codexHome, "sessions");
 	if (!existsSync(sessionsDir)) return;
 	const indexPath = join(codexHome, "session_index.jsonl");
-	const seen = new Set();
-	let existingLines = [];
-	if (existsSync(indexPath)) {
-		try {
+	let releaseLock = null;
+	try {
+		releaseLock = acquireShadowHomeSyncLock(codexHome);
+		const seen = new Set();
+		let existingLines = [];
+		if (existsSync(indexPath)) {
 			existingLines = readFileSync(indexPath, "utf8")
 				.split(/\r?\n/)
 				.filter(Boolean);
@@ -3451,28 +3493,25 @@ function repairCodexSessionIndex(codexHome) {
 					// Preserve unparsable existing lines.
 				}
 			}
-		} catch {
-			return;
 		}
-	}
 
-	const additions = [];
-	for (const rolloutPath of collectRolloutFiles(sessionsDir)) {
-		const entry = parseRolloutIndexEntry(rolloutPath);
-		if (!entry || seen.has(entry.id)) continue;
-		seen.add(entry.id);
-		additions.push(entry);
-	}
-	if (additions.length === 0) return;
-	additions.sort((a, b) => a.updated_at.localeCompare(b.updated_at));
-	try {
-		appendFileSync(
-			indexPath,
-			`${additions.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
-			"utf8",
-		);
+		const additions = [];
+		for (const rolloutPath of collectRolloutFiles(sessionsDir)) {
+			const entry = parseRolloutIndexEntry(rolloutPath);
+			if (!entry || seen.has(entry.id)) continue;
+			seen.add(entry.id);
+			additions.push(entry);
+		}
+		if (additions.length === 0) return;
+		additions.sort((a, b) => a.updated_at.localeCompare(b.updated_at));
+		writeSessionIndexAtomicSync(indexPath, [
+			...existingLines,
+			...additions.map((entry) => JSON.stringify(entry)),
+		]);
 	} catch {
 		// Best-effort repair only; forwarding must not fail because indexing did.
+	} finally {
+		releaseLock?.();
 	}
 }
 

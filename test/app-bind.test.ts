@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	bindCodexAppRuntimeRotation,
+	formatAppBindStatus,
 	resolveAppBindPaths,
 	restoreConfigTomlFromAppBind,
 	rewriteConfigTomlForAppBind,
@@ -76,6 +77,49 @@ afterEach(async () => {
 			withFileOperationRetry(() => rm(root, { recursive: true, force: true })),
 		),
 	);
+});
+
+it("prints the resolved app-bind config path in reasoning guidance", () => {
+	const configPath = "C:\\Users\\neil\\DevTools\\config\\codex\\config.toml";
+	const message = formatAppBindStatus({
+		bound: true,
+		running: true,
+		state: {
+			version: 1,
+			platform: "win32",
+			host: "127.0.0.1",
+			port: 4567,
+			baseUrl: "http://127.0.0.1:4567",
+			configPath,
+			statePath: "C:\\Users\\neil\\DevTools\\config\\codex\\multi-auth\\app-bind\\state.json",
+			backupPath: "C:\\Users\\neil\\DevTools\\config\\codex\\multi-auth\\app-bind\\backup.json",
+			statusPath: "C:\\Users\\neil\\DevTools\\config\\codex\\multi-auth\\app-bind\\status.json",
+			logPath: "C:\\Users\\neil\\DevTools\\config\\codex\\multi-auth\\app-bind\\router.log",
+			nodePath: process.execPath,
+			routerScriptPath: "C:\\repo\\scripts\\codex-app-router.js",
+			clientApiKey: "redacted",
+			startupPath: null,
+			launchAgentPath: null,
+			boundConfigHash: "hash",
+			updatedAt: 1,
+		},
+		router: null,
+		paths: {
+			codexHome: "C:\\Users\\neil\\DevTools\\config\\codex",
+			configPath,
+			bindDir: "C:\\Users\\neil\\DevTools\\config\\codex\\multi-auth\\app-bind",
+			statePath: "C:\\Users\\neil\\DevTools\\config\\codex\\multi-auth\\app-bind\\state.json",
+			backupPath: "C:\\Users\\neil\\DevTools\\config\\codex\\multi-auth\\app-bind\\backup.json",
+			statusPath: "C:\\Users\\neil\\DevTools\\config\\codex\\multi-auth\\app-bind\\status.json",
+			logPath: "C:\\Users\\neil\\DevTools\\config\\codex\\multi-auth\\app-bind\\router.log",
+			routerScriptPath: "C:\\repo\\scripts\\codex-app-router.js",
+			startupPath: null,
+			launchAgentPath: null,
+		},
+	});
+
+	expect(message).toContain(configPath);
+	expect(message).not.toContain("~/.codex/config.toml");
 });
 
 describe("Codex app runtime rotation bind", () => {

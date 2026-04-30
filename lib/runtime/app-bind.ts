@@ -802,7 +802,9 @@ export function formatAppBindStatus(status: AppBindStatus): string {
 		].join(" "),
 		[
 			"Model speed/reasoning controls stay in Codex config/CLI flags; set",
-			"`model_reasoning_effort` in ~/.codex/config.toml or pass",
+			"`model_reasoning_effort` in",
+			status.state.configPath,
+			"or pass",
 			"`-c model_reasoning_effort=<level>` for wrapper-launched CLI sessions.",
 		].join(" "),
 	].join("\n");

@@ -810,6 +810,68 @@ describe("codex bin wrapper", () => {
 		expect(existsSync(join(codexHome, "session_index.jsonl"))).toBe(false);
 	});
 
+	it("serializes concurrent local session index repairs", async () => {
+		const fixtureRoot = createWrapperFixture();
+		const codexHome = join(fixtureRoot, "codex-home");
+		const readyDir = join(fixtureRoot, "ready");
+		const firstSessionId = "019ddf58-f831-7e12-bf4a-fae1ed000101";
+		const secondSessionId = "019ddf58-f831-7e12-bf4a-fae1ed000102";
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"const { mkdirSync, readdirSync, writeFileSync } = require('node:fs');",
+			"const { join } = require('node:path');",
+			"const sessionId = process.env.CODEX_MULTI_AUTH_TEST_SESSION_ID;",
+			"const marker = process.env.CODEX_MULTI_AUTH_TEST_MARKER;",
+			"const codexHome = process.env.CODEX_HOME;",
+			"const readyDir = process.env.CODEX_MULTI_AUTH_TEST_READY_DIR;",
+			"const sessionDir = join(codexHome, 'sessions', '2026', '05', '01');",
+			"mkdirSync(sessionDir, { recursive: true });",
+			"mkdirSync(readyDir, { recursive: true });",
+			"writeFileSync(",
+			"  join(sessionDir, `rollout-2026-05-01T01-06-00-${sessionId}.jsonl`),",
+			"  [",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:06:00.000Z', type: 'session_meta', payload: { id: sessionId } }),",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:06:01.000Z', type: 'event_msg', payload: { type: 'user_message', message: marker } }),",
+			"    '',",
+			"  ].join('\\n'),",
+			"  'utf8',",
+			");",
+			"writeFileSync(join(readyDir, `${sessionId}.ready`), '1', 'utf8');",
+			"const deadline = Date.now() + 3000;",
+			"while (Date.now() < deadline && readdirSync(readyDir).filter((entry) => entry.endsWith('.ready')).length < 2) {",
+			"  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);",
+			"}",
+			"console.log(`FORWARDED_CONCURRENT:${sessionId}`);",
+			"process.exit(0);",
+		]);
+
+		const [first, second] = await Promise.all([
+			runWrapperAsync(fixtureRoot, ["exec", "status"], {
+				CODEX_HOME: codexHome,
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+				CODEX_MULTI_AUTH_TEST_READY_DIR: readyDir,
+				CODEX_MULTI_AUTH_TEST_SESSION_ID: firstSessionId,
+				CODEX_MULTI_AUTH_TEST_MARKER: "FIRST_CONCURRENT_SESSION",
+			}),
+			runWrapperAsync(fixtureRoot, ["exec", "status"], {
+				CODEX_HOME: codexHome,
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+				CODEX_MULTI_AUTH_TEST_READY_DIR: readyDir,
+				CODEX_MULTI_AUTH_TEST_SESSION_ID: secondSessionId,
+				CODEX_MULTI_AUTH_TEST_MARKER: "SECOND_CONCURRENT_SESSION",
+			}),
+		]);
+
+		expect(first.status).toBe(0);
+		expect(second.status).toBe(0);
+		const index = readFileSync(join(codexHome, "session_index.jsonl"), "utf8");
+		expect(index).toContain(firstSessionId);
+		expect(index).toContain("FIRST_CONCURRENT_SESSION");
+		expect(index).toContain(secondSessionId);
+		expect(index).toContain("SECOND_CONCURRENT_SESSION");
+	});
+
 	it("forwards non-auth commands to native codex executables", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeNativeCodexBin(fixtureRoot);

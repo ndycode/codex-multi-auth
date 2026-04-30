@@ -7,15 +7,15 @@ Recovery guide for install, login, switching, worktree storage, and stale local 
 ## Start Here
 
 ```bash
-codex-multi-auth doctor --fix
-codex-multi-auth check
-codex-multi-auth forecast --live
+codex auth doctor --fix
+codex auth check
+codex auth forecast --live
 ```
 
 If the account pool is still not usable:
 
 ```bash
-codex-multi-auth login
+codex auth login
 ```
 
 ---
@@ -28,7 +28,7 @@ Check which `codex` executable is running:
 where codex
 codex --version
 codex-multi-auth --version
-codex-multi-auth status
+codex auth status
 npm ls -g codex-multi-auth
 ```
 
@@ -39,7 +39,7 @@ npm uninstall -g @ndycode/codex-multi-auth
 npm i -g codex-multi-auth
 ```
 
-`codex-multi-auth status` is a compatibility alias. The canonical command family remains `codex-multi-auth ...`.
+`codex-multi-auth status` is a compatibility alias. The canonical command family is `codex auth ...`.
 
 ---
 
@@ -48,8 +48,8 @@ npm i -g codex-multi-auth
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
 | Browser opens unexpectedly | Normal browser-first OAuth flow | Complete the auth step and return to the terminal |
-| OAuth callback port `1455` is in use | Another local process owns the port | Stop the conflicting process and rerun `codex-multi-auth login` |
-| Browser or callback handoff is unavailable | Remote, SSH, container, or headless shell | Run `codex-multi-auth login --device-auth`; use `codex-multi-auth login --manual` only if device auth is unavailable |
+| OAuth callback port `1455` is in use | Another local process owns the port | Stop the conflicting process and rerun `codex auth login` |
+| Browser or callback handoff is unavailable | Remote, SSH, container, or headless shell | Run `codex auth login --device-auth`; use `codex auth login --manual` only if device auth is unavailable |
 | `missing field id_token` | Stale or malformed auth payload | Re-login the affected account |
 | `refresh_token_reused` | The token pair rotated in another context | Re-login the affected account |
 | `token_expired` | The refresh token is no longer valid | Re-login the affected account |
@@ -60,9 +60,9 @@ npm i -g codex-multi-auth
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
-| Switch succeeds but the wrong account stays active | Stale Codex CLI sync state | Re-run `codex-multi-auth switch <index>` and restart the session |
-| All accounts look unhealthy | The entire pool is stale or damaged | Run `codex-multi-auth doctor --fix`, then add at least one fresh account |
-| The dashboard shows old account state | Local files were updated outside the current session | Run `codex-multi-auth list`, then `codex-multi-auth check` |
+| Switch succeeds but the wrong account stays active | Stale Codex CLI sync state | Re-run `codex auth switch <index>` and restart the session |
+| All accounts look unhealthy | The entire pool is stale or damaged | Run `codex auth doctor --fix`, then add at least one fresh account |
+| The dashboard shows old account state | Local files were updated outside the current session | Run `codex auth list`, then `codex auth check` |
 
 ---
 
@@ -70,13 +70,13 @@ npm i -g codex-multi-auth
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
-| `codex-multi-auth rotation status` says disabled | Stored setting or env override is off | Run `codex-multi-auth rotation enable`, remove `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`, or set `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1` for one process |
-| Forwarded Codex session does not show the local provider | Command is help/non-requesting, rotation is disabled, or the official CLI was not launched through the wrapper | Check `where codex`, then run `codex-multi-auth rotation status` |
-| Pool exhausted error from the proxy | Every managed account is unavailable for that model/family | Run `codex-multi-auth rotation status`, then `codex-multi-auth forecast --live` |
-| Packaged app still uses normal Codex routing | App bind was not installed or was removed | Run `codex-multi-auth rotation bind-app`, then reopen the app |
-| Codex Desktop history disappears after app bind | Current Codex Desktop builds can filter local threads by the active provider, and app bind switches the real config to `codex-multi-auth-runtime-proxy` | The data is normally still under `~/.codex`; run `codex-multi-auth rotation unbind-app` or `codex-multi-auth rotation disable` to restore the original provider/config before browsing old history |
+| `codex auth rotation status` says disabled | Stored setting or env override is off | Run `codex auth rotation enable`, remove `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`, or set `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1` for one process |
+| Forwarded Codex session does not show the local provider | Command is help/non-requesting, rotation is disabled, or the official CLI was not launched through the wrapper | Check `where codex`, then run `codex auth rotation status` |
+| Pool exhausted error from the proxy | Every managed account is unavailable for that model/family | Run `codex auth rotation status`, then `codex auth forecast --live` |
+| Packaged app still uses normal Codex routing | App bind was not installed or was removed | Run `codex auth rotation bind-app`, then reopen the app |
+| Codex Desktop history disappears after app bind | Current Codex Desktop builds can filter local threads by the active provider, and app bind switches the real config to `codex-multi-auth-runtime-proxy` | The data is normally still under `~/.codex`; run `codex auth rotation unbind-app` or `codex auth rotation disable` to restore the original provider/config before browsing old history |
 | Model speed controls are not visible with rotation | Speed/reasoning controls remain owned by Codex config or CLI flags; the app bind only routes Responses traffic | Set `model_reasoning_effort` in `~/.codex/config.toml` or pass `-c model_reasoning_effort=<level>` for wrapper-launched CLI sessions |
-| App bind needs to be removed | You want the official app config restored | Run `codex-multi-auth rotation unbind-app` or `codex-multi-auth rotation disable` |
+| App bind needs to be removed | You want the official app config restored | Run `codex auth rotation unbind-app` or `codex auth rotation disable` |
 
 The runtime proxy is loopback-only and default-on. It routes Responses traffic only for forwarded request-bearing official Codex sessions and supported app launches.
 
@@ -86,7 +86,7 @@ The runtime proxy is loopback-only and default-on. It routes Responses traffic o
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
-| A worktree asks for login again | The worktree still points at a legacy path key | Run `codex-multi-auth list` once in the worktree to trigger migration into repo-shared storage |
+| A worktree asks for login again | The worktree still points at a legacy path key | Run `codex auth list` once in the worktree to trigger migration into repo-shared storage |
 | A repo should not share accounts with another repo | Project-scoped storage is not enabled or not in use | Review the project storage rules in [reference/storage-paths.md](reference/storage-paths.md) |
 
 ---
@@ -94,14 +94,14 @@ The runtime proxy is loopback-only and default-on. It routes Responses traffic o
 ## Diagnostics Pack
 
 ```bash
-codex-multi-auth list
-codex-multi-auth status
-codex-multi-auth check
-codex-multi-auth verify-flagged --json
-codex-multi-auth forecast --live
-codex-multi-auth fix --dry-run
-codex-multi-auth report --live --json
-codex-multi-auth doctor --json
+codex auth list
+codex auth status
+codex auth check
+codex auth verify-flagged --json
+codex auth forecast --live
+codex auth fix --dry-run
+codex auth report --live --json
+codex auth doctor --json
 ```
 
 ---
@@ -114,7 +114,7 @@ PowerShell:
 Remove-Item "$HOME\.codex\multi-auth\openai-codex-accounts.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\openai-codex-flagged-accounts.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\settings.json" -Force -ErrorAction SilentlyContinue
-codex-multi-auth login
+codex auth login
 ```
 
 Bash:
@@ -123,7 +123,7 @@ Bash:
 rm -f ~/.codex/multi-auth/openai-codex-accounts.json
 rm -f ~/.codex/multi-auth/openai-codex-flagged-accounts.json
 rm -f ~/.codex/multi-auth/settings.json
-codex-multi-auth login
+codex auth login
 ```
 
 ---
@@ -132,8 +132,8 @@ codex-multi-auth login
 
 Attach these outputs when opening a bug report:
 
-- `codex-multi-auth report --json`
-- `codex-multi-auth doctor --json`
+- `codex auth report --json`
+- `codex auth doctor --json`
 - `codex --version`
 - `codex-multi-auth --version`
 - `npm ls -g codex-multi-auth`
