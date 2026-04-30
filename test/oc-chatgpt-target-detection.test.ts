@@ -15,6 +15,28 @@ async function loadTargetDetectionWithWin32PathMocks(): Promise<{
 	detectOcChatgptMultiAuthTarget: typeof import("../lib/oc-chatgpt-target-detection.js").detectOcChatgptMultiAuthTarget;
 }> {
 	vi.resetModules();
+	vi.doMock("node:fs", async () => {
+		const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+		const isUncPath = (targetPath: unknown): targetPath is string =>
+			typeof targetPath === "string" &&
+			/^\\\\[^\\]+\\[^\\]+(?:\\|$)/.test(targetPath);
+		return {
+			...actual,
+			existsSync: (targetPath: Parameters<typeof actual.existsSync>[0]) =>
+				isUncPath(targetPath) ? false : actual.existsSync(targetPath),
+			readdirSync: (
+				targetPath: Parameters<typeof actual.readdirSync>[0],
+				options?: Parameters<typeof actual.readdirSync>[1],
+			) => {
+				if (isUncPath(targetPath)) {
+					const error = new Error("ENOENT: no such file or directory") as NodeJS.ErrnoException;
+					error.code = "ENOENT";
+					throw error;
+				}
+				return actual.readdirSync(targetPath, options as never);
+			},
+		};
+	});
 	vi.doMock("node:path", async () => {
 		const actual =
 			await vi.importActual<typeof import("node:path")>("node:path");
@@ -76,6 +98,7 @@ describe("oc-chatgpt target detection", () => {
 	});
 
 	afterEach(async () => {
+		vi.doUnmock("node:fs");
 		vi.doUnmock("node:path");
 		vi.resetModules();
 		if (originalHome === undefined) delete process.env.HOME;

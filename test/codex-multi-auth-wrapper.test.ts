@@ -35,9 +35,13 @@ describe("codex-multi-auth wrapper", () => {
 			path.join(process.cwd(), "scripts", "codex-multi-auth.js"),
 			path.join(scriptsDir, "codex-multi-auth.js"),
 		);
+		copyFileSync(
+			path.join(process.cwd(), "scripts", "codex-routing.js"),
+			path.join(scriptsDir, "codex-routing.js"),
+		);
 		writeFileSync(
 			path.join(root, "package.json"),
-			JSON.stringify({ version: "9.9.9-test" }, null, 2),
+			JSON.stringify({ type: "module", version: "9.9.9-test" }, null, 2),
 			"utf8",
 		);
 		writeFileSync(
