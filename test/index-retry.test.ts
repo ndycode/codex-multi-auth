@@ -694,7 +694,6 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 	});
 
 	it("keeps the total request cap when empty-response retries and server-error rotation combine", async () => {
-		vi.useFakeTimers();
 		const logger = await import("../lib/logger.js");
 		const logWarnSpy = vi.spyOn(logger, "logWarn").mockImplementation(() => {});
 
@@ -752,11 +751,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		});
 
 		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
-		const fetchPromise = sdk.fetch("https://example.com", {});
-
-		await vi.advanceTimersByTimeAsync(1500);
-
-		const response = await fetchPromise;
+		const response = await sdk.fetch("https://example.com", {});
 		const payload = await response.json();
 
 		expect(fetchMock).toHaveBeenCalledTimes(6);
