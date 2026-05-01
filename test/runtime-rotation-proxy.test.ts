@@ -149,6 +149,24 @@ async function getModels(
 	});
 }
 
+async function postThreadGoal(
+	proxy: RuntimeRotationProxyServer,
+	body: Record<string, unknown>,
+	path = "/thread/goal/get",
+	headers: Record<string, string> = {},
+): Promise<Response> {
+	return fetch(`${proxy.baseUrl}${path}`, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${DEFAULT_CLIENT_API_KEY}`,
+			"content-type": "application/json",
+			"x-api-key": "caller-key",
+			...headers,
+		},
+		body: JSON.stringify(body),
+	});
+}
+
 async function postRawResponses(
 	proxy: RuntimeRotationProxyServer,
 	body: string,
@@ -504,6 +522,99 @@ describe("runtime rotation proxy", () => {
 			lastAccountLabel: "Account 1",
 			lastAccountId: "acc_1",
 		});
+	});
+
+	it("forwards TUI thread goal requests through managed account auth", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(
+			() =>
+				new Response('{"goal":"ship it"}\n', {
+					status: HTTP_STATUS.OK,
+					headers: { "content-type": "application/json" },
+				}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postThreadGoal(proxy, {
+			threadId: "thread-1",
+			turnId: "turn-1",
+		});
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.text()).toBe('{"goal":"ship it"}\n');
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.url).toBe(
+			"https://example.test/backend-api/codex/thread/goal/get",
+		);
+		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-1");
+		expect(calls[0]?.headers.get("x-api-key")).toBeNull();
+		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
+		expect(JSON.parse(calls[0]?.bodyText ?? "{}")).toEqual({
+			threadId: "thread-1",
+			turnId: "turn-1",
+		});
+	});
+
+	it("forwards TUI thread goal set requests without duplicating codex path", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(
+			() =>
+				new Response('{"ok":true}\n', {
+					status: HTTP_STATUS.OK,
+					headers: { "content-type": "application/json" },
+				}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postThreadGoal(
+			proxy,
+			{ threadId: "thread-1", turnId: "turn-1", goal: "ship it" },
+			"/codex/thread/goal/set?source=tui",
+		);
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.url).toBe(
+			"https://example.test/backend-api/codex/thread/goal/set?source=tui",
+		);
+		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-1");
+		expect(calls[0]?.headers.get("x-api-key")).toBeNull();
+	});
+
+	it("falls back locally when upstream blocks TUI thread goal requests", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(
+			() =>
+				new Response("<html>blocked</html>", {
+					status: HTTP_STATUS.FORBIDDEN,
+					headers: { "content-type": "text/html" },
+				}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const setResponse = await postThreadGoal(
+			proxy,
+			{ threadId: "thread-1", goal: "ship it" },
+			"/thread/goal/set",
+		);
+		const getResponse = await postThreadGoal(
+			proxy,
+			{ threadId: "thread-1" },
+			"/thread/goal/get",
+		);
+
+		expect(setResponse.status).toBe(HTTP_STATUS.OK);
+		expect(await setResponse.json()).toEqual({ ok: true, goal: "ship it" });
+		expect(getResponse.status).toBe(HTTP_STATUS.OK);
+		expect(await getResponse.json()).toEqual({ goal: "ship it" });
+		expect(calls).toHaveLength(2);
+		expect(calls.map((call) => call.url)).toEqual([
+			"https://example.test/backend-api/codex/thread/goal/set",
+			"https://example.test/backend-api/codex/thread/goal/get",
+		]);
 	});
 
 	it("rejects unauthenticated model discovery requests", async () => {

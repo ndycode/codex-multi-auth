@@ -1902,6 +1902,21 @@ function mirrorFileIntoShadowHome(sourcePath, destinationPath, tightenFile) {
 	tightenFile(destinationPath);
 }
 
+function shouldMaterializeFileIntoShadowHome(name) {
+	return /\.sqlite(?:-(?:shm|wal))?$/i.test(name);
+}
+
+function materializeFileIntoShadowHome(sourcePath, destinationPath, tightenFile) {
+	try {
+		linkSync(sourcePath, destinationPath);
+		return;
+	} catch {
+		// Hard links make SQLite roots look local without copying an active DB.
+	}
+	copyFileSync(sourcePath, destinationPath);
+	tightenFile(destinationPath);
+}
+
 function collectShadowHomeSyncFileNames(shadowCodexHome, syncFileNames) {
 	try {
 		for (const entry of readdirSync(shadowCodexHome, { withFileTypes: true })) {
@@ -2075,6 +2090,7 @@ function createShadowHomeMirror(
 				continue;
 			}
 			const isKnownStateFile = SHADOW_HOME_STATE_FILE_SET.has(name);
+			const shouldMaterializeFile = shouldMaterializeFileIntoShadowHome(name);
 			const sourcePath = join(originalCodexHome, name);
 			const destinationPath = join(shadowCodexHome, name);
 			if (existsSync(destinationPath)) {
@@ -2103,6 +2119,8 @@ function createShadowHomeMirror(
 					if (isKnownStateFile) {
 						copyFileSync(sourcePath, destinationPath);
 						tightenFile(destinationPath);
+					} else if (shouldMaterializeFile) {
+						materializeFileIntoShadowHome(sourcePath, destinationPath, tightenFile);
 					} else {
 						mirrorFileIntoShadowHome(sourcePath, destinationPath, tightenFile);
 					}
@@ -2266,6 +2284,16 @@ function resolveRuntimeRotationProxyOriginalCodexHome(baseEnv) {
 	return override || resolveCodexHomeDir(baseEnv);
 }
 
+function createRuntimeRotationShadowHome(originalCodexHome) {
+	const shadowRoot = join(
+		originalCodexHome,
+		"multi-auth",
+		"runtime-shadow-homes",
+	);
+	mkdirSync(shadowRoot, { recursive: true });
+	return mkdtempSync(join(shadowRoot, "codex-multi-auth-runtime-home-"));
+}
+
 function createRuntimeRotationProxyCodexHome(
 	baseEnv,
 	proxyBaseUrl,
@@ -2273,7 +2301,7 @@ function createRuntimeRotationProxyCodexHome(
 	configTomlModule,
 ) {
 	const originalCodexHome = resolveRuntimeRotationProxyOriginalCodexHome(baseEnv);
-	const shadowCodexHome = mkdtempSync(join(tmpdir(), "codex-multi-auth-runtime-home-"));
+	const shadowCodexHome = createRuntimeRotationShadowHome(originalCodexHome);
 	let syncShadowHomeStateBack = () => {};
 	const cleanup = () => {
 		try {
@@ -2841,7 +2869,11 @@ function startRuntimeRotationAppHelper(baseContext) {
 	});
 }
 
-async function createRuntimeRotationAppHelperContext(baseContext, configTomlModule) {
+async function createRuntimeRotationAppHelperContext(
+	baseContext,
+	configTomlModule,
+	options = {},
+) {
 	const startedAt = Date.now();
 	const { helper, message } = await startRuntimeRotationAppHelper(baseContext);
 	const helperEnv = message.env ?? {};
@@ -2849,7 +2881,10 @@ async function createRuntimeRotationAppHelperContext(baseContext, configTomlModu
 
 	const cleanup = async ({ exitCode } = {}) => {
 		const livedMs = Date.now() - startedAt;
-		if (exitCode === 0 && livedMs < detachGraceMs) {
+		if (
+			options.detachOnExit === true ||
+			(exitCode === 0 && livedMs < detachGraceMs)
+		) {
 			helper.stdout?.destroy();
 			helper.stderr?.destroy();
 			helper.unref();
@@ -2897,6 +2932,11 @@ async function createRuntimeRotationProxyContextIfEnabled(
 
 	if (isCodexAppCommand(rawArgs)) {
 		return createRuntimeRotationAppHelperContext(baseContext, configTomlModule);
+	}
+	if (isCodexInteractiveTuiCommand(rawArgs)) {
+		return createRuntimeRotationAppHelperContext(baseContext, configTomlModule, {
+			detachOnExit: true,
+		});
 	}
 
 	const proxyModule = await loadRuntimeRotationProxyModule();
@@ -3090,6 +3130,10 @@ function isCodexAppCommand(rawArgs) {
 
 function isCodexAppServerCommand(rawArgs) {
 	return findForwardedCommand(rawArgs)?.command === "app-server";
+}
+
+function isCodexInteractiveTuiCommand(rawArgs) {
+	return findForwardedCommand(rawArgs) === null;
 }
 
 function shouldUseRuntimeRoutingForForwardedArgs(rawArgs) {

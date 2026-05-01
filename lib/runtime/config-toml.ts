@@ -75,12 +75,42 @@ export function rewriteTopLevelModelProvider(rawConfig: string): string {
 	return output.join(lineEnding);
 }
 
-function extractTopLevelModelProviderLine(rawConfig: string): string | null {
+export function enableTopLevelResponseStorage(rawConfig: string): string {
+	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
+	const lines = rawConfig.length > 0 ? rawConfig.split(/\r?\n/) : [];
+	const output: string[] = [];
+	let inTopLevel = true;
+
+	for (const line of lines) {
+		if (readTomlTableName(line) !== null) {
+			inTopLevel = false;
+			output.push(line);
+			continue;
+		}
+		if (
+			inTopLevel &&
+			/^\s*disable_response_storage\s*=\s*true\s*(?:#.*)?$/i.test(line)
+		) {
+			output.push("disable_response_storage = false");
+			continue;
+		}
+		output.push(line);
+	}
+
+	return output.join(lineEnding);
+}
+
+function extractTopLevelLine(rawConfig: string, key: string): string | null {
+	const pattern = new RegExp(`^\\s*${key}\\s*=`);
 	for (const line of rawConfig.split(/\r?\n/)) {
 		if (readTomlTableName(line) !== null) return null;
-		if (/^\s*model_provider\s*=/.test(line)) return line;
+		if (pattern.test(line)) return line;
 	}
 	return null;
+}
+
+function extractTopLevelModelProviderLine(rawConfig: string): string | null {
+	return extractTopLevelLine(rawConfig, "model_provider");
 }
 
 export function restoreTopLevelModelProvider(
@@ -99,6 +129,43 @@ export function restoreTopLevelModelProvider(
 			line.includes(RUNTIME_ROTATION_PROXY_PROVIDER_ID);
 		if (isRuntimeProviderLine && !handled) {
 			if (originalLine) output.push(originalLine);
+			handled = true;
+			continue;
+		}
+		output.push(line);
+	}
+
+	return output.join(lineEnding);
+}
+
+export function restoreTopLevelResponseStorage(
+	currentConfig: string,
+	originalConfig: string,
+): string {
+	const lineEnding = currentConfig.includes("\r\n") ? "\r\n" : "\n";
+	const originalLine = extractTopLevelLine(
+		originalConfig,
+		"disable_response_storage",
+	);
+	if (!originalLine) return currentConfig;
+	const lines = currentConfig.length > 0 ? currentConfig.split(/\r?\n/) : [];
+	const output: string[] = [];
+	let handled = false;
+	let inTopLevel = true;
+
+	for (const line of lines) {
+		if (readTomlTableName(line) !== null) {
+			inTopLevel = false;
+			output.push(line);
+			continue;
+		}
+		if (
+			!handled &&
+			inTopLevel &&
+			/^\s*disable_response_storage\s*=/.test(line) &&
+			readTomlTableName(line) === null
+		) {
+			output.push(originalLine);
 			handled = true;
 			continue;
 		}
@@ -147,11 +214,14 @@ export function rewriteConfigTomlForRuntimeRotationProvider(
 		/[\r\n]*$/,
 		"",
 	);
+	const withResponseStorage = enableTopLevelResponseStorage(
+		withModelProvider,
+	).replace(/[\r\n]*$/, "");
 	const providerBlock = createRuntimeRotationProviderBlock(
 		baseUrl,
 		clientApiKey,
 	).join(lineEnding);
-	return `${withModelProvider}${lineEnding}${lineEnding}${providerBlock}${lineEnding}`;
+	return `${withResponseStorage}${lineEnding}${lineEnding}${providerBlock}${lineEnding}`;
 }
 
 export function restoreConfigTomlFromRuntimeRotationProvider(
@@ -159,8 +229,12 @@ export function restoreConfigTomlFromRuntimeRotationProvider(
 	originalConfig: string,
 ): string {
 	const withoutProvider = removeRuntimeRotationProviderBlock(currentConfig);
+	const withResponseStorage = restoreTopLevelResponseStorage(
+		withoutProvider,
+		originalConfig,
+	);
 	return ensureTomlTrailingNewline(
-		restoreTopLevelModelProvider(withoutProvider, originalConfig).replace(
+		restoreTopLevelModelProvider(withResponseStorage, originalConfig).replace(
 			/[\r\n]*$/,
 			"",
 		),

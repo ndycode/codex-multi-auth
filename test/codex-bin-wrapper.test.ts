@@ -938,6 +938,7 @@ describe("codex bin wrapper", () => {
 			'console.log(`MEMORY_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "memories", "user.md"))}`);',
 			'console.log(`INSTRUCTION_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "instructions", "profile.md"))}`);',
 			'const statePath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite");',
+			'console.log(`ROOT_STATE_SYMLINK:${fs.lstatSync(statePath).isSymbolicLink()}`);',
 			'fs.appendFileSync(statePath, "shadow\\n", "utf8");',
 			'console.log(`ROOT_STATE_REALTIME:${fs.readFileSync(path.join(process.env.ORIGINAL_CODEX_HOME ?? "", "state_5.sqlite"), "utf8").includes("shadow")}`);',
 			'fs.writeFileSync(path.join(process.env.CODEX_HOME ?? "", "new-root-state.json"), "new\\n", "utf8");',
@@ -1018,6 +1019,7 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("SKILL_EXISTS:true");
 		expect(output).toContain("MEMORY_EXISTS:true");
 		expect(output).toContain("INSTRUCTION_EXISTS:true");
+		expect(output).toContain("ROOT_STATE_SYMLINK:false");
 		expect(output).toContain("ROOT_STATE_REALTIME:true");
 		const apiKeyMatch = output.match(/^OPENAI_API_KEY:([0-9a-f]{64})$/m);
 		expect(apiKeyMatch?.[1]).toBeTruthy();
@@ -1041,6 +1043,9 @@ describe("codex bin wrapper", () => {
 		const shadowHomeMatch = output.match(/^CODEX_HOME:(.+)$/m);
 		expect(shadowHomeMatch?.[1]).toBeTruthy();
 		if (shadowHomeMatch?.[1]) {
+			expect(shadowHomeMatch[1]).toContain(
+				join(originalHome, "multi-auth", "runtime-shadow-homes"),
+			);
 			expect(existsSync(shadowHomeMatch[1])).toBe(false);
 		}
 		expect(readFileSync(markerPath, "utf8")).toBe(

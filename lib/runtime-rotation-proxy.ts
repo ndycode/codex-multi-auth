@@ -141,6 +141,12 @@ const ALLOWED_MODELS_PATHS = new Set([
 	URL_PATHS.MODELS,
 	`/v1${URL_PATHS.MODELS}`,
 ]);
+const ALLOWED_THREAD_GOAL_PATHS = new Set([
+	"/thread/goal/get",
+	"/thread/goal/set",
+	"/codex/thread/goal/get",
+	"/codex/thread/goal/set",
+]);
 
 function isResponsesPath(pathname: string): boolean {
 	return ALLOWED_RESPONSES_PATHS.has(pathname);
@@ -148,6 +154,14 @@ function isResponsesPath(pathname: string): boolean {
 
 function isModelsPath(pathname: string): boolean {
 	return ALLOWED_MODELS_PATHS.has(pathname);
+}
+
+function isThreadGoalPath(pathname: string): boolean {
+	return ALLOWED_THREAD_GOAL_PATHS.has(pathname);
+}
+
+function normalizeThreadGoalUpstreamPath(pathname: string): string {
+	return pathname.startsWith("/codex/") ? pathname : `/codex${pathname}`;
 }
 
 function headersFromIncoming(req: IncomingMessage): Headers {
@@ -380,6 +394,30 @@ function buildModelsRequestContext(req: IncomingMessage): RequestContext {
 		family: "codex",
 		stream: false,
 		sessionKey: null,
+	};
+}
+
+function buildThreadGoalRequestContext(
+	req: IncomingMessage,
+	body: Buffer,
+	pathname: string,
+): RequestContext {
+	const headers = headersFromIncoming(req);
+	const parsedBody = parseRequestBody(body);
+	const sessionKey = parsedBody
+		? (readStringRecordValue(parsedBody, "thread_id") ??
+			readStringRecordValue(parsedBody, "threadId") ??
+			resolveSessionKey(headers, parsedBody))
+		: resolveSessionKey(headers, null);
+	return {
+		body,
+		headers,
+		method: req.method === "GET" ? "GET" : "POST",
+		upstreamPath: normalizeThreadGoalUpstreamPath(pathname),
+		model: null,
+		family: "codex",
+		stream: false,
+		sessionKey,
 	};
 }
 
@@ -668,7 +706,7 @@ function writeMethodOrPathError(res: ServerResponse): void {
 	writeJson(res, 404, {
 		error: {
 			message:
-				"Runtime rotation proxy only accepts Responses API and model discovery requests.",
+				"Runtime rotation proxy only accepts Responses API, model discovery, and Codex thread goal requests.",
 			code: "runtime_rotation_proxy_not_found",
 		},
 	});
@@ -832,6 +870,7 @@ export async function startRuntimeRotationProxy(
 		lastAccountId: null,
 		lastAccountUpdatedAt: null,
 	};
+	const threadGoalFallbacks = new Map<string, string | null>();
 
 	const handleRequest = async (
 		req: IncomingMessage,
@@ -844,7 +883,10 @@ export async function startRuntimeRotationProxy(
 				req.method === "POST" && isResponsesPath(incomingUrl.pathname);
 			const isModelsRequest =
 				req.method === "GET" && isModelsPath(incomingUrl.pathname);
-			if (!isResponsesRequest && !isModelsRequest) {
+			const isThreadGoalRequest =
+				(req.method === "GET" || req.method === "POST") &&
+				isThreadGoalPath(incomingUrl.pathname);
+			if (!isResponsesRequest && !isModelsRequest && !isThreadGoalRequest) {
 				writeMethodOrPathError(res);
 				return;
 			}
@@ -856,12 +898,15 @@ export async function startRuntimeRotationProxy(
 			}
 
 			status.totalRequests += 1;
+			const requestBody =
+				isResponsesRequest || (isThreadGoalRequest && req.method === "POST")
+					? await readRequestBody(req, maxRequestBodyBytes)
+					: Buffer.alloc(0);
 			const context = isModelsRequest
 				? buildModelsRequestContext(req)
-				: buildResponsesRequestContext(
-						req,
-						await readRequestBody(req, maxRequestBodyBytes),
-					);
+				: isThreadGoalRequest
+					? buildThreadGoalRequestContext(req, requestBody, incomingUrl.pathname)
+					: buildResponsesRequestContext(req, requestBody);
 			const requestStartedAt = now();
 			let policyDecision: RuntimePolicyDecision | null = null;
 			let projectKey: string | null = null;
@@ -881,7 +926,11 @@ export async function startRuntimeRotationProxy(
 			}
 			usageRecorder = createRuntimeUsageRecorder({
 				source: "runtime-proxy",
-				operation: isModelsRequest ? "models" : "responses",
+				operation: isModelsRequest
+					? "models"
+					: isThreadGoalRequest
+						? "diagnostic"
+						: "responses",
 				model: context.model,
 				projectKey,
 				requestId: context.sessionKey,
@@ -1076,6 +1125,34 @@ export async function startRuntimeRotationProxy(
 					status.retries += 1;
 					status.rotations += 1;
 					continue;
+				}
+
+				if (isThreadGoalRequest && upstream.status >= 400) {
+					await readErrorBody(upstream);
+					const parsedGoalBody = parseRequestBody(context.body);
+					const fallbackKey = context.sessionKey ?? "default";
+					const goal =
+						typeof parsedGoalBody?.goal === "string" ? parsedGoalBody.goal : null;
+					accountManager.recordSuccess(refreshed.account, context.family, context.model);
+					await persistRuntimeActiveAccount(
+						accountManager,
+						refreshed.account,
+						context.family,
+					);
+					await usageRecorder.record({
+						outcome: "success",
+						statusCode: HTTP_STATUS.OK,
+						account: refreshed.account,
+					});
+					if (context.upstreamPath.endsWith("/set")) {
+						threadGoalFallbacks.set(fallbackKey, goal);
+						writeJson(res, HTTP_STATUS.OK, { ok: true, goal });
+						return;
+					}
+					writeJson(res, HTTP_STATUS.OK, {
+						goal: threadGoalFallbacks.get(fallbackKey) ?? null,
+					});
+					return;
 				}
 
 				accountManager.recordSuccess(refreshed.account, context.family, context.model);
