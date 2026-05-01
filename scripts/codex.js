@@ -89,6 +89,7 @@ const shadowHomeCleanupRetryMarkerDir =
 	(process.env.CODEX_MULTI_AUTH_TEST_SHADOW_RETRY_MARKER_DIR ?? "").trim();
 let warnedInvalidRuntimeRotationProxyEnv = false;
 let warnedPendingAccountReadIdOverflow = false;
+let warnedShadowHomeSqliteLinkFailure = false;
 
 async function loadRuntimeConstants() {
 	const fallback = {
@@ -1906,15 +1907,19 @@ function shouldMaterializeFileIntoShadowHome(name) {
 	return /\.sqlite(?:-(?:shm|wal))?$/i.test(name);
 }
 
-function materializeFileIntoShadowHome(sourcePath, destinationPath, tightenFile) {
+function materializeFileIntoShadowHome(sourcePath, destinationPath) {
 	try {
 		linkSync(sourcePath, destinationPath);
-		return;
+		return true;
 	} catch {
-		// Hard links make SQLite roots look local without copying an active DB.
+		if (!warnedShadowHomeSqliteLinkFailure) {
+			warnedShadowHomeSqliteLinkFailure = true;
+			console.error(
+				"codex-multi-auth: skipped SQLite shadow-home materialization because hard-linking failed; refusing to copy active SQLite state.",
+			);
+		}
 	}
-	copyFileSync(sourcePath, destinationPath);
-	tightenFile(destinationPath);
+	return false;
 }
 
 function collectShadowHomeSyncFileNames(shadowCodexHome, syncFileNames) {
@@ -2120,7 +2125,7 @@ function createShadowHomeMirror(
 						copyFileSync(sourcePath, destinationPath);
 						tightenFile(destinationPath);
 					} else if (shouldMaterializeFile) {
-						materializeFileIntoShadowHome(sourcePath, destinationPath, tightenFile);
+						materializeFileIntoShadowHome(sourcePath, destinationPath);
 					} else {
 						mirrorFileIntoShadowHome(sourcePath, destinationPath, tightenFile);
 					}
@@ -2881,10 +2886,8 @@ async function createRuntimeRotationAppHelperContext(
 
 	const cleanup = async ({ exitCode } = {}) => {
 		const livedMs = Date.now() - startedAt;
-		if (
-			options.detachOnExit === true ||
-			(exitCode === 0 && livedMs < detachGraceMs)
-		) {
+		const exitedSuccessfully = exitCode === 0 || exitCode === null || exitCode === undefined;
+		if (exitedSuccessfully && (options.detachOnExit === true || livedMs < detachGraceMs)) {
 			helper.stdout?.destroy();
 			helper.stderr?.destroy();
 			helper.unref();

@@ -341,6 +341,10 @@ function readStringSearchParam(searchParams: URLSearchParams, key: string): stri
 	return value && value.trim().length > 0 ? value.trim() : null;
 }
 
+function isThreadGoalFallbackStatus(status: number): boolean {
+	return status === HTTP_STATUS.FORBIDDEN;
+}
+
 function resolveSessionKey(headers: Headers, parsedBody: RequestBody | null): string | null {
 	const headerKey =
 		headers.get(OPENAI_HEADERS.SESSION_ID) ??
@@ -938,7 +942,7 @@ export async function startRuntimeRotationProxy(
 				operation: isModelsRequest
 					? "models"
 					: isThreadGoalRequest
-						? "diagnostic"
+						? "responses"
 						: "responses",
 				model: context.model,
 				projectKey,
@@ -1136,21 +1140,32 @@ export async function startRuntimeRotationProxy(
 					continue;
 				}
 
-				if (isThreadGoalRequest && upstream.status >= 400) {
+				if (isThreadGoalRequest && isThreadGoalFallbackStatus(upstream.status)) {
 					await readErrorBody(upstream);
 					const parsedGoalBody = parseRequestBody(context.body);
-					const fallbackKey = context.sessionKey ?? "default";
+					const fallbackKey = context.sessionKey;
 					const goal =
 						typeof parsedGoalBody?.goal === "string" ? parsedGoalBody.goal : null;
-					accountManager.recordSuccess(refreshed.account, context.family, context.model);
-					await persistRuntimeActiveAccount(
-						accountManager,
-						refreshed.account,
-						context.family,
-					);
+					if (!fallbackKey) {
+						await usageRecorder.record({
+							outcome: "failure",
+							statusCode: HTTP_STATUS.BAD_REQUEST,
+							errorCode: "thread_goal_session_key_required",
+							account: refreshed.account,
+						});
+						writeJson(res, HTTP_STATUS.BAD_REQUEST, {
+							error: {
+								message:
+									"Thread goal fallback requires a thread_id, threadId, or session header.",
+								code: "thread_goal_session_key_required",
+							},
+						});
+						return;
+					}
 					await usageRecorder.record({
-						outcome: "success",
-						statusCode: HTTP_STATUS.OK,
+						outcome: "failure",
+						statusCode: upstream.status,
+						errorCode: "thread_goal_upstream_blocked",
 						account: refreshed.account,
 					});
 					if (context.upstreamPath.endsWith("/set")) {
@@ -1160,6 +1175,23 @@ export async function startRuntimeRotationProxy(
 					}
 					writeJson(res, HTTP_STATUS.OK, {
 						goal: threadGoalFallbacks.get(fallbackKey) ?? null,
+					});
+					return;
+				}
+
+				if (isThreadGoalRequest && upstream.status >= 400) {
+					const forwarded = await forwardStreamingResponse(
+						upstream,
+						res,
+						status,
+						() => undefined,
+						streamStallTimeoutMs,
+					);
+					await usageRecorder.record({
+						outcome: "failure",
+						statusCode: upstream.status,
+						errorCode: forwarded ? "thread_goal_upstream_error" : "stream_forward_failed",
+						account: refreshed.account,
 					});
 					return;
 				}

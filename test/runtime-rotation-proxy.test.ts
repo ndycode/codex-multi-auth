@@ -632,6 +632,30 @@ describe("runtime rotation proxy", () => {
 		]);
 	});
 
+	it("rejects anonymous blocked thread goal fallbacks instead of sharing state", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(
+			() =>
+				new Response("<html>blocked</html>", {
+					status: HTTP_STATUS.FORBIDDEN,
+					headers: { "content-type": "text/html" },
+				}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postThreadGoal(proxy, { goal: "ship it" }, "/thread/goal/set");
+
+		expect(response.status).toBe(HTTP_STATUS.BAD_REQUEST);
+		expect(await response.json()).toEqual({
+			error: {
+				message: "Thread goal fallback requires a thread_id, threadId, or session header.",
+				code: "thread_goal_session_key_required",
+			},
+		});
+		expect(calls).toHaveLength(1);
+	});
+
 	it("keys blocked GET thread goal fallbacks by query thread id", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now));
@@ -657,6 +681,88 @@ describe("runtime rotation proxy", () => {
 			"https://example.test/backend-api/codex/thread/goal/set",
 			"https://example.test/backend-api/codex/thread/goal/get?thread_id=thread-1",
 		]);
+	});
+
+	it("passes through non-fallback thread goal client errors", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const recordSuccessSpy = vi.spyOn(accountManager, "recordSuccess");
+		const { calls, fetchImpl } = createRecordingFetch(
+			() =>
+				new Response('{"error":{"code":"bad_goal"}}\n', {
+					status: HTTP_STATUS.BAD_REQUEST,
+					headers: { "content-type": "application/json" },
+				}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postThreadGoal(
+			proxy,
+			{ threadId: "thread-1", goal: "" },
+			"/thread/goal/set",
+		);
+
+		expect(response.status).toBe(HTTP_STATUS.BAD_REQUEST);
+		expect(await response.text()).toBe('{"error":{"code":"bad_goal"}}\n');
+		expect(calls).toHaveLength(1);
+		expect(recordSuccessSpy).not.toHaveBeenCalled();
+	});
+
+	it("rejects unauthenticated thread goal requests", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(
+			() => new Response('{"ok":true}', { status: HTTP_STATUS.OK }),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postThreadGoal(
+			proxy,
+			{ threadId: "thread-1" },
+			"/thread/goal/get",
+			{ authorization: "Bearer caller-token", "x-api-key": "caller-key" },
+		);
+
+		expect(response.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		expect(calls).toHaveLength(0);
+	});
+
+	it("isolates local thread goal fallback state across concurrent threads", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(
+			() =>
+				new Response("<html>blocked</html>", {
+					status: HTTP_STATUS.FORBIDDEN,
+					headers: { "content-type": "text/html" },
+				}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const [setA, setB] = await Promise.all([
+			postThreadGoal(proxy, { threadId: "thread-a", goal: "goal-a" }, "/thread/goal/set"),
+			postThreadGoal(proxy, { threadId: "thread-b", goal: "goal-b" }, "/thread/goal/set"),
+		]);
+		const [getA, getB] = await Promise.all([
+			postThreadGoal(proxy, { threadId: "thread-a" }, "/thread/goal/get"),
+			postThreadGoal(proxy, { threadId: "thread-b" }, "/thread/goal/get"),
+		]);
+
+		expect(setA.status).toBe(HTTP_STATUS.OK);
+		expect(setB.status).toBe(HTTP_STATUS.OK);
+		expect(await getA.json()).toEqual({ goal: "goal-a" });
+		expect(await getB.json()).toEqual({ goal: "goal-b" });
+		expect(calls).toHaveLength(4);
+		expect(
+			calls.filter(
+				(call) => call.url === "https://example.test/backend-api/codex/thread/goal/set",
+			),
+		).toHaveLength(2);
+		expect(
+			calls.filter(
+				(call) => call.url === "https://example.test/backend-api/codex/thread/goal/get",
+			),
+		).toHaveLength(2);
 	});
 
 	it("rejects unauthenticated model discovery requests", async () => {

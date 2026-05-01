@@ -14,7 +14,14 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import {
+	delimiter,
+	dirname,
+	isAbsolute,
+	join,
+	relative,
+	resolve,
+} from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -1043,9 +1050,11 @@ describe("codex bin wrapper", () => {
 		const shadowHomeMatch = output.match(/^CODEX_HOME:(.+)$/m);
 		expect(shadowHomeMatch?.[1]).toBeTruthy();
 		if (shadowHomeMatch?.[1]) {
-			expect(shadowHomeMatch[1]).toContain(
-				join(originalHome, "multi-auth", "runtime-shadow-homes"),
-			);
+			const expectedRoot = resolve(originalHome, "multi-auth", "runtime-shadow-homes");
+			const actual = resolve(shadowHomeMatch[1]);
+			const shadowRelativePath = relative(expectedRoot, actual);
+			expect(shadowRelativePath).not.toMatch(/^\.\.(?:[\\/]|$)/);
+			expect(isAbsolute(shadowRelativePath)).toBe(false);
 			expect(existsSync(shadowHomeMatch[1])).toBe(false);
 		}
 		expect(readFileSync(markerPath, "utf8")).toBe(
@@ -1803,6 +1812,42 @@ describe("codex bin wrapper", () => {
 		expect(compatibilityHomeMatch?.[1]).toBeTruthy();
 		expect(compatibilityHomeMatch?.[1]).not.toBe(originalHome);
 		expect(marker).toContain("close\n");
+	});
+
+	it("stops detached TUI app helpers after failed launches", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'console.error("tui failed");',
+			"process.exit(1);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, [], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "10000",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER_PID: "1",
+			OPENAI_API_KEY: undefined,
+		});
+
+		expect(result.status).toBe(1);
+		const marker = readFileSync(markerPath, "utf8");
+		const helperPid = Number(
+			marker.match(/^start:http:\/\/127\.0\.0\.1:4567:pid=(\d+)$/m)?.[1] ?? NaN,
+		);
+		expect(Number.isFinite(helperPid)).toBe(true);
+		expect(isProcessAlive(helperPid)).toBe(false);
 	});
 
 	it("writes app router status files with owner-only permissions", async () => {
