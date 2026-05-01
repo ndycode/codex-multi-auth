@@ -1,0 +1,73 @@
+name: Codex Plugin Quality Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Codex plugin scanner
+        uses: hashgraph-online/hol-codex-plugin-scanner-action@0f78e6d99032ec198d23a41a8425080a658c07d1 # v1
+        with:
+          # The pinned action resolves .codex-plugin/plugin.json from the repo root.
+          plugin_dir: "."
+          min_score: "70"
+
+  scan-regression:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            fixture: good
+            plugin_dir: ".github/plugin-scanner-fixtures/good"
+            expect_outcome: success
+          - os: ubuntu-latest
+            fixture: bad
+            plugin_dir: ".github/plugin-scanner-fixtures/bad"
+            expect_outcome: failure
+          - os: windows-latest
+            fixture: good
+            plugin_dir: ".github/plugin-scanner-fixtures/good"
+            expect_outcome: success
+          - os: windows-latest
+            fixture: bad
+            plugin_dir: ".github/plugin-scanner-fixtures/bad"
+            expect_outcome: failure
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Codex plugin scanner regression
+        id: scan
+        continue-on-error: true
+        uses: hashgraph-online/hol-codex-plugin-scanner-action@0f78e6d99032ec198d23a41a8425080a658c07d1 # v1
+        with:
+          plugin_dir: ${{ matrix.plugin_dir }}
+          min_score: "70"
+      - name: Assert fixture outcome
+        shell: bash
+        run: |
+          if [ "${{ steps.scan.outcome }}" != "${{ matrix.expect_outcome }}" ]; then
+            echo "Expected fixture '${{ matrix.fixture }}' to '${{ matrix.expect_outcome }}', got '${{ steps.scan.outcome }}'."
+            exit 1
+          fi
