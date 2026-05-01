@@ -1200,6 +1200,44 @@ export async function startRuntimeRotationProxy(
 						continue;
 					}
 
+					if (isThreadGoalRequest && isThreadGoalFallbackStatus(upstream.status)) {
+						const parsedGoalBody = parseRequestBody(context.body);
+						const fallbackKey = context.sessionKey;
+						const goal =
+							typeof parsedGoalBody?.goal === "string" ? parsedGoalBody.goal : null;
+						if (!fallbackKey) {
+							await usageRecorder.record({
+								outcome: "failure",
+								statusCode: HTTP_STATUS.BAD_REQUEST,
+								errorCode: "thread_goal_session_key_required",
+								account: refreshed.account,
+							});
+							writeJson(res, HTTP_STATUS.BAD_REQUEST, {
+								error: {
+									message:
+										"Thread goal fallback requires a thread_id, threadId, or session header.",
+									code: "thread_goal_session_key_required",
+								},
+							});
+							return;
+						}
+						await usageRecorder.record({
+							outcome: "failure",
+							statusCode: upstream.status,
+							errorCode: "thread_goal_upstream_blocked",
+							account: refreshed.account,
+						});
+						if (context.upstreamPath.endsWith("/set")) {
+							setThreadGoalFallback(threadGoalFallbacks, fallbackKey, goal);
+							writeJson(res, HTTP_STATUS.OK, { ok: true, goal });
+							return;
+						}
+						writeJson(res, HTTP_STATUS.OK, {
+							goal: getThreadGoalFallback(threadGoalFallbacks, fallbackKey),
+						});
+						return;
+					}
+
 					res.writeHead(upstream.status, responseHeadersForClient(upstream.headers));
 					res.end(bodyText);
 					await usageRecorder.record({
@@ -1245,45 +1283,6 @@ export async function startRuntimeRotationProxy(
 					status.retries += 1;
 					status.rotations += 1;
 					continue;
-				}
-
-				if (isThreadGoalRequest && isThreadGoalFallbackStatus(upstream.status)) {
-					await readErrorBody(upstream);
-					const parsedGoalBody = parseRequestBody(context.body);
-					const fallbackKey = context.sessionKey;
-					const goal =
-						typeof parsedGoalBody?.goal === "string" ? parsedGoalBody.goal : null;
-					if (!fallbackKey) {
-						await usageRecorder.record({
-							outcome: "failure",
-							statusCode: HTTP_STATUS.BAD_REQUEST,
-							errorCode: "thread_goal_session_key_required",
-							account: refreshed.account,
-						});
-						writeJson(res, HTTP_STATUS.BAD_REQUEST, {
-							error: {
-								message:
-									"Thread goal fallback requires a thread_id, threadId, or session header.",
-								code: "thread_goal_session_key_required",
-							},
-						});
-						return;
-					}
-					await usageRecorder.record({
-						outcome: "failure",
-						statusCode: upstream.status,
-						errorCode: "thread_goal_upstream_blocked",
-						account: refreshed.account,
-					});
-					if (context.upstreamPath.endsWith("/set")) {
-						setThreadGoalFallback(threadGoalFallbacks, fallbackKey, goal);
-						writeJson(res, HTTP_STATUS.OK, { ok: true, goal });
-						return;
-					}
-					writeJson(res, HTTP_STATUS.OK, {
-						goal: getThreadGoalFallback(threadGoalFallbacks, fallbackKey),
-					});
-					return;
 				}
 
 				if (isThreadGoalRequest && upstream.status >= 400) {
