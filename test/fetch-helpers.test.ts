@@ -688,12 +688,21 @@ describe('isWorkspaceDisabledError', () => {
 		expect(isWorkspaceDisabledError(403, 'error.usage_not_included', '')).toBe(false);
 	});
 
-	it('returns false for non-403 status even with disabled message', () => {
+	it('returns true for 402 deactivated_workspace signals', () => {
+		expect(isWorkspaceDisabledError(402, 'deactivated_workspace', '')).toBe(true);
+		expect(isWorkspaceDisabledError(402, 'error.deactivated_workspace', '')).toBe(true);
+		expect(
+			isWorkspaceDisabledError(402, '', '{"error":{"code":"deactivated_workspace"}}'),
+		).toBe(true);
+	});
+
+	it('returns false for statuses without supported disabled signals', () => {
 		expect(isWorkspaceDisabledError(400, '', 'Your workspace has been disabled')).toBe(false);
 		expect(isWorkspaceDisabledError(401, '', 'Your workspace has been disabled')).toBe(false);
 		expect(isWorkspaceDisabledError(500, '', 'Your workspace has been disabled')).toBe(false);
 		expect(isWorkspaceDisabledError(400, 'workspace_disabled', '')).toBe(false);
 		expect(isWorkspaceDisabledError(402, 'payment_required', '')).toBe(false);
+		expect(isWorkspaceDisabledError(402, '', 'Your workspace has been disabled')).toBe(false);
 	});
 
 	it('returns false for 403 with unrelated messages', () => {

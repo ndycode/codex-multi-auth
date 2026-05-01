@@ -761,6 +761,119 @@ describe("runtime rotation proxy", () => {
 		expect(proxy.getStatus().retries).toBe(1);
 	});
 
+	it("disables a deactivated workspace account and rebinds session affinity", async () => {
+		const now = Date.now();
+		const persisted: AccountStorageV3[] = [];
+		withAccountStorageTransactionMock.mockImplementation(async (handler) =>
+			handler(null, async (storage: AccountStorageV3) => {
+				persisted.push(structuredClone(storage));
+			}),
+		);
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) => {
+			if (attempt === 1) {
+				return new Response(
+					JSON.stringify({ error: { code: "deactivated_workspace" } }),
+					{
+						status: 402,
+						headers: { "content-type": "application/json" },
+					},
+				);
+			}
+			return textEventStream("data: recovered\n\n");
+		});
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const body = {
+			model: "gpt-5-codex",
+			stream: true,
+			metadata: { session_id: "thread-deactivated" },
+		};
+
+		const first = await postResponses(proxy, body);
+		expect(first.status).toBe(HTTP_STATUS.OK);
+		expect(await first.text()).toBe("data: recovered\n\n");
+		const second = await postResponses(proxy, body);
+		expect(second.status).toBe(HTTP_STATUS.OK);
+		await second.text();
+		await accountManager.flushPendingSave();
+
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+			"acc_2",
+		]);
+		expect(accountManager.getAccountByIndex(0)?.enabled).toBe(false);
+		expect(accountManager.getAccountByIndex(1)?.enabled).toBe(true);
+		expect(proxy.getStatus()).toMatchObject({
+			retries: 1,
+			rotations: 1,
+			lastAccountIndex: 1,
+		});
+		expect(persisted.at(-1)?.accounts[0]?.enabled).toBe(false);
+
+		const reloadedStorage = persisted.at(-1);
+		expect(reloadedStorage).toBeDefined();
+		if (!reloadedStorage) throw new Error("expected persisted storage");
+		const reloadedManager = new AccountManager(undefined, reloadedStorage);
+		const reloadedFetch = createRecordingFetch(() => textEventStream("data: restart\n\n"));
+		const reloadedProxy = await startProxy({
+			accountManager: reloadedManager,
+			fetchImpl: reloadedFetch.fetchImpl,
+		});
+
+		await (await postResponses(reloadedProxy, { model: "gpt-5-codex" })).text();
+
+		expect(
+			reloadedFetch.calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID)),
+		).toEqual(["acc_2"]);
+	});
+
+	it("returns pool exhaustion after all accounts are deactivated", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 6));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response(JSON.stringify({ error: { code: "deactivated_workspace" } }), {
+				status: 402,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex" });
+		const payload = (await response.json()) as { error: { code: string; reason: string } };
+
+		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+		expect(payload.error).toMatchObject({
+			code: "codex_runtime_rotation_pool_exhausted",
+			reason: "deactivated",
+		});
+		expect(calls).toHaveLength(6);
+		expect(accountManager.getAccountsSnapshot().every((account) => account.enabled === false)).toBe(
+			true,
+		);
+	});
+
+	it("forwards unrelated 402 errors without disabling the account", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response(JSON.stringify({ error: { code: "payment_required" } }), {
+				status: 402,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex" });
+		const payload = (await response.json()) as { error: { code: string } };
+
+		expect(response.status).toBe(402);
+		expect(payload.error.code).toBe("payment_required");
+		expect(calls).toHaveLength(1);
+		expect(accountManager.getAccountByIndex(0)?.enabled).toBe(true);
+		expect(accountManager.getAccountByIndex(1)?.enabled).toBe(true);
+	});
+
 	it("persists cooldowns so a restarted proxy avoids limited accounts", async () => {
 		const now = Date.now();
 		const persisted: AccountStorageV3[] = [];
