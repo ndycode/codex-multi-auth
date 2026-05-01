@@ -683,6 +683,59 @@ describe("runtime rotation proxy", () => {
 		]);
 	});
 
+	it("stores null blocked thread goal fallbacks by snake-case body thread id", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(
+			() =>
+				new Response("<html>blocked</html>", {
+					status: HTTP_STATUS.FORBIDDEN,
+					headers: { "content-type": "text/html" },
+				}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const setResponse = await postThreadGoal(
+			proxy,
+			{ thread_id: "thread-snake" },
+			"/thread/goal/set",
+		);
+		const getResponse = await getThreadGoal(
+			proxy,
+			"/thread/goal/get?threadId=thread-snake",
+		);
+
+		expect(setResponse.status).toBe(HTTP_STATUS.OK);
+		expect(await setResponse.json()).toEqual({ ok: true, goal: null });
+		expect(getResponse.status).toBe(HTTP_STATUS.OK);
+		expect(await getResponse.json()).toEqual({ goal: null });
+		expect(calls).toHaveLength(2);
+	});
+
+	it("prioritizes workspace-disabled 403 handling over thread goal fallback", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response(JSON.stringify({ error: { code: "workspace_disabled" } }), {
+				status: HTTP_STATUS.FORBIDDEN,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postThreadGoal(
+			proxy,
+			{ threadId: "thread-disabled", goal: "ship it" },
+			"/thread/goal/set",
+		);
+		const payload = (await response.json()) as { error: { reason: string } };
+
+		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+		expect(payload.error.reason).toBe("deactivated");
+		expect(calls).toHaveLength(1);
+		expect(accountManager.getAccountByIndex(0)?.enabled).toBe(false);
+	});
+
 	it("passes through non-fallback thread goal client errors", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now));
