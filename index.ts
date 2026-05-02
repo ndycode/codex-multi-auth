@@ -55,7 +55,7 @@ import {
 	openBrowserUrl,
 } from "./lib/auth/browser.js";
 import { startLocalOAuthServer } from "./lib/auth/server.js";
-import { checkAndNotify } from "./lib/auto-update-checker.js";
+import { checkAndNotify } from "./lib/update-notice.js";
 import { CapabilityPolicyStore } from "./lib/capability-policy.js";
 import { promptAddAnotherAccount, promptLoginMode } from "./lib/cli.js";
 import {

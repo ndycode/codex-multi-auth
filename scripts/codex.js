@@ -63,8 +63,8 @@ const DEFAULT_APP_RUNTIME_HELPER_DETACH_GRACE_MS = 5_000;
 const APP_RUNTIME_HELPER_LAUNCH_TIMEOUT_MS = 15_000;
 const APP_SERVER_SHIM_DIR_NAME = "app-server-shims";
 const APP_SERVER_SHIM_HELPER_PREFIX = "helper-";
-const DEFAULT_STARTUP_AUTO_UPDATE_BUDGET_MS = 3_000;
-const STARTUP_AUTO_UPDATE_TIMED_OUT = Symbol("startup-auto-update-timed-out");
+const DEFAULT_STARTUP_UPDATE_NOTICE_BUDGET_MS = 3_000;
+const STARTUP_UPDATE_NOTICE_TIMED_OUT = Symbol("startup-update-notice-timed-out");
 let shadowHomeCleanupBusyFailuresRemaining = Number.parseInt(
 	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_CLEANUP_BUSY_FAILURES ?? "0",
 	10,
@@ -261,31 +261,27 @@ function readBooleanEnvFlag(name) {
 	return null;
 }
 
-function isStartupAutoUpdateDebugEnabled() {
+function isStartupUpdateNoticeDebugEnabled() {
 	return readBooleanEnvFlag("CODEX_MULTI_AUTH_DEBUG") === true;
 }
 
-function shouldLogStartupAutoUpdateProgress() {
-	return process.stderr.isTTY === true || isStartupAutoUpdateDebugEnabled();
+function shouldLogStartupUpdateNotice() {
+	return process.stderr.isTTY === true || isStartupUpdateNoticeDebugEnabled();
 }
 
-function readStartupAutoUpdateBudgetMs() {
+function readStartupUpdateNoticeBudgetMs() {
 	const raw =
-		process.env.CODEX_MULTI_AUTH_AUTO_UPDATE_STARTUP_BUDGET_MS ??
-		process.env.CODEX_MULTI_AUTH_TEST_STARTUP_AUTO_UPDATE_BUDGET_MS;
-	if (!raw) return DEFAULT_STARTUP_AUTO_UPDATE_BUDGET_MS;
+		process.env.CODEX_MULTI_AUTH_UPDATE_NOTICE_STARTUP_BUDGET_MS ??
+		process.env.CODEX_MULTI_AUTH_TEST_STARTUP_UPDATE_NOTICE_BUDGET_MS;
+	if (!raw) return DEFAULT_STARTUP_UPDATE_NOTICE_BUDGET_MS;
 	const parsed = Number.parseInt(raw, 10);
 	return Number.isFinite(parsed) && parsed > 0
 		? parsed
-		: DEFAULT_STARTUP_AUTO_UPDATE_BUDGET_MS;
+		: DEFAULT_STARTUP_UPDATE_NOTICE_BUDGET_MS;
 }
 
-function resolveStartupAutoUpdateTimeouts(budgetMs) {
-	const fetchTimeoutMs = Math.max(1, Math.floor(budgetMs * 0.4));
-	return {
-		fetchTimeoutMs,
-		updateTimeoutMs: Math.max(1, budgetMs - fetchTimeoutMs),
-	};
+function resolveStartupUpdateNoticeTimeoutMs(budgetMs) {
+	return Math.max(1, Math.floor(budgetMs * 0.8));
 }
 
 function isModuleNotFoundError(error) {
@@ -297,7 +293,7 @@ function isModuleNotFoundError(error) {
 	);
 }
 
-function shouldRunStartupAutoUpdate(rawArgs, normalizedArgs) {
+function shouldRunStartupUpdateNotice(rawArgs, normalizedArgs) {
 	if ((process.env.CODEX_MULTI_AUTH_BYPASS ?? "").trim() === "1") {
 		return false;
 	}
@@ -310,7 +306,7 @@ function shouldRunStartupAutoUpdate(rawArgs, normalizedArgs) {
 	return true;
 }
 
-async function withStartupAutoUpdateBudget(promise, budgetMs) {
+async function withStartupUpdateNoticeBudget(promise, budgetMs) {
 	let timeout = null;
 	try {
 		return await Promise.race([
@@ -319,7 +315,7 @@ async function withStartupAutoUpdateBudget(promise, budgetMs) {
 				timeout = setTimeout(
 					() => {
 						timeout?.unref?.();
-						resolve(STARTUP_AUTO_UPDATE_TIMED_OUT);
+						resolve(STARTUP_UPDATE_NOTICE_TIMED_OUT);
 					},
 					budgetMs,
 				);
@@ -330,51 +326,42 @@ async function withStartupAutoUpdateBudget(promise, budgetMs) {
 	}
 }
 
-function logStartupAutoUpdateDebug(message) {
-	if (isStartupAutoUpdateDebugEnabled()) {
+function logStartupUpdateNoticeDebug(message) {
+	if (isStartupUpdateNoticeDebugEnabled()) {
 		console.error(`codex-multi-auth: ${message}`);
 	}
 }
 
-async function autoUpdatePackageIfEnabled(rawArgs, normalizedArgs) {
-	if (!shouldRunStartupAutoUpdate(rawArgs, normalizedArgs)) return;
-	const budgetMs = readStartupAutoUpdateBudgetMs();
-	const { fetchTimeoutMs, updateTimeoutMs } =
-		resolveStartupAutoUpdateTimeouts(budgetMs);
+async function showUpdateNoticeIfAvailable(rawArgs, normalizedArgs) {
+	if (!shouldRunStartupUpdateNotice(rawArgs, normalizedArgs)) return;
+	const budgetMs = readStartupUpdateNoticeBudgetMs();
+	const fetchTimeoutMs = resolveStartupUpdateNoticeTimeoutMs(budgetMs);
 	try {
-		const mod = await import("../dist/lib/auto-update-checker.js");
-		if (typeof mod.autoUpdateIfAvailable !== "function") {
+		const mod = await import("../dist/lib/update-notice.js");
+		if (typeof mod.checkForUpdates !== "function") {
 			return;
 		}
-		const updatePromise = mod.autoUpdateIfAvailable({
-			fetchTimeoutMs,
-			timeoutMs: updateTimeoutMs,
-			onUpdateStart: (update) => {
-				if (!update?.latestVersion) return;
-				if (!shouldLogStartupAutoUpdateProgress()) return;
-				console.error(
-					`codex-multi-auth: auto-update found ${update.latestVersion}; starting npm update -g codex-multi-auth. Startup will continue if it exceeds ${budgetMs}ms.`,
-				);
-			},
-		});
-		const result = await withStartupAutoUpdateBudget(updatePromise, budgetMs);
-		if (result === STARTUP_AUTO_UPDATE_TIMED_OUT) {
-			logStartupAutoUpdateDebug(
-				`auto-update skipped: startup budget exceeded after ${budgetMs}ms`,
+		const checkPromise = mod.checkForUpdates(false, fetchTimeoutMs);
+		const result = await withStartupUpdateNoticeBudget(checkPromise, budgetMs);
+		if (result === STARTUP_UPDATE_NOTICE_TIMED_OUT) {
+			logStartupUpdateNoticeDebug(
+				`update notice skipped: startup budget exceeded after ${budgetMs}ms`,
 			);
 			return;
 		}
-		if (result?.updated && result.latestVersion) {
-			if (shouldLogStartupAutoUpdateProgress()) {
+		if (result?.hasUpdate && result.latestVersion && shouldLogStartupUpdateNotice()) {
+			if (typeof mod.formatManualUpdateNotice === "function") {
+				console.error(mod.formatManualUpdateNotice(result));
+			} else {
 				console.error(
-					`codex-multi-auth: auto-updated to ${result.latestVersion}. New sessions will use the latest package.`,
+					`codex-multi-auth update available: v${result.latestVersion}; current: v${result.currentVersion}; run: ${result.updateCommand}`,
 				);
 			}
 		}
 	} catch (error) {
 		if (isModuleNotFoundError(error)) return;
-		logStartupAutoUpdateDebug(
-			`auto-update skipped: ${error instanceof Error ? error.message : String(error)}`,
+		logStartupUpdateNoticeDebug(
+			`update notice skipped: ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
 }
@@ -3871,7 +3858,7 @@ async function main() {
 	}
 
 	const normalizedArgs = normalizeAuthAlias(rawArgs);
-	await autoUpdatePackageIfEnabled(rawArgs, normalizedArgs);
+	await showUpdateNoticeIfAvailable(rawArgs, normalizedArgs);
 	ensureWindowsShellShimGuards();
 
 	const bypass = (process.env.CODEX_MULTI_AUTH_BYPASS ?? "").trim() === "1";

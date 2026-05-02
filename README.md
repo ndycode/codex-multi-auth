@@ -255,7 +255,6 @@ Selected runtime/environment overrides:
 | `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS=<ms>` | Override automatic Codex app helper idle shutdown |
 | `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0/1` | Opt out/in of packaged Codex app bind self-heal during install/update or rotation enable |
 | `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0/1` | Opt out/in of routing supported app shortcuts during install/update or rotation enable |
-| `CODEX_MULTI_AUTH_AUTO_UPDATE=0/1` | Opt out/in of best-effort global package auto-update checks |
 | `CODEX_TUI_V2=0/1` | Disable/enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor\|ansi256\|ansi16` | TUI color profile |
 | `CODEX_TUI_GLYPHS=ascii\|unicode\|auto` | TUI glyph style |
@@ -273,7 +272,9 @@ codex-multi-auth forecast --live
 
 Responses background mode stays opt-in. Enable `backgroundResponses` in settings or `CODEX_AUTH_BACKGROUND_RESPONSES=1` only for callers that intentionally send `background: true`, because those requests switch from stateless `store=false` routing to stateful `store=true`. See [docs/upgrade.md](docs/upgrade.md) for rollout guidance.
 
-Runtime rotation is enabled by default for request-bearing wrapper-launched Codex sessions. Global install/update self-heals supported packaged Codex app binds and user-level launcher routing when possible, while `codex-multi-auth rotation enable` remains the explicit repair command. `codex-multi-auth rotation disable` turns the setting off and removes the persistent app bind. Set `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`, `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0`, `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0`, or `CODEX_MULTI_AUTH_AUTO_UPDATE=0` to opt out of the matching default behavior.
+Runtime rotation is enabled by default for request-bearing wrapper-launched Codex sessions. Global install/update self-heals supported packaged Codex app binds and user-level launcher routing when possible, while `codex-multi-auth rotation enable` remains the explicit repair command. `codex-multi-auth rotation disable` turns the setting off and removes the persistent app bind. Set `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`, `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0`, or `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0` to opt out of the matching default behavior.
+
+Installed wrappers may perform a best-effort daily npm version check during normal forwarded Codex startup. When a newer package is detected, the wrapper only prints a manual notice on an interactive TTY or when `CODEX_MULTI_AUTH_DEBUG=1`: `npm install -g codex-multi-auth@latest`. It never runs npm install or update commands for you.
 
 ---
 

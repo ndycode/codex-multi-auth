@@ -1,11 +1,11 @@
 # TEST KNOWLEDGE BASE
 
-Generated: 2026-04-17
-Commit: 1f6da97
+Generated: 2026-05-02
+Commit: b0ef65d
 
 ## OVERVIEW
 Vitest suites for OAuth flow, request transforms, response handling, rotation logic, storage, CLI management, repo hygiene, and more.
-**3418 tests** across **225 test files** with 80%+ coverage threshold.
+**3847 tests** across **257 test files** with 80%+ coverage threshold.
 
 ## STRUCTURE
 ```
@@ -16,7 +16,7 @@ test/
 ├── auth-menu-hotkeys.test.ts       # auth menu hotkey behavior
 ├── auth-rate-limit.test.ts         # token bucket for auth
 ├── auth.test.ts                    # OAuth PKCE + JWT decoding
-├── auto-update-checker.test.ts     # npm version check
+├── update-notice.test.ts           # npm version notice
 ├── browser.test.ts                 # platform-specific browser open
 ├── capability-policy.test.ts       # model capability enforcement
 ├── chaos/

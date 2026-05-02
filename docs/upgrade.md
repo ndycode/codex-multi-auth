@@ -108,7 +108,7 @@ The 2.0.1 line makes runtime rotation the default for request-bearing wrapper-la
 - `codex-multi-auth rotation disable` turns the setting off and removes the persistent app bind.
 - Set `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0` before install/update if you only want wrapper-launched CLI/app sessions routed and do not want the packaged app bind installed.
 - Set `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0` before install/update if you do not want supported user-level app launchers routed through the wrapper.
-- Set `CODEX_MULTI_AUTH_AUTO_UPDATE=0` if you do not want installed packages to run the best-effort daily `npm update -g codex-multi-auth` check.
+- Installed wrappers may perform a best-effort daily npm version check during normal forwarded startup. If a newer package is detected, update manually with `npm install -g codex-multi-auth@latest`.
 - Official Codex app binaries are not patched.
 
 Validate after enabling:
