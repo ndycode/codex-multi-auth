@@ -1941,7 +1941,6 @@ function materializeSqliteSidecarsIntoShadowHome(sourcePath, destinationPath) {
 		try {
 			symlinkSync(sourceSidecarPath, destinationSidecarPath, "file");
 		} catch {
-			warnSkippedSqliteShadowHomeMaterialization();
 		}
 	}
 }

@@ -944,6 +944,16 @@ describe("codex bin wrapper", () => {
 			'console.log(`SKILL_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "skills", "skill.txt"))}`);',
 			'console.log(`MEMORY_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "memories", "user.md"))}`);',
 			'console.log(`INSTRUCTION_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "instructions", "profile.md"))}`);',
+			'const cachePath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite");',
+			'const cacheWalPath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite-wal");',
+			'const cacheShmPath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite-shm");',
+			'console.log(`CACHE_SQLITE_MIRRORED:${fs.existsSync(cachePath)}`);',
+			'console.log(`CACHE_WAL_MIRRORED:${fs.existsSync(cacheWalPath)}`);',
+			'let cacheShmPlaceholder = "false";',
+			'try { cacheShmPlaceholder = String(fs.lstatSync(cacheShmPath).isSymbolicLink()); } catch { cacheShmPlaceholder = process.platform === "win32" ? "skipped" : "false"; }',
+			'console.log(`CACHE_SHM_PLACEHOLDER:${cacheShmPlaceholder}`);',
+			'fs.appendFileSync(cachePath, "shadow-cache\\n", "utf8");',
+			'fs.appendFileSync(cacheWalPath, "shadow-wal\\n", "utf8");',
 			'const statePath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite");',
 			'const stateWalPath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite-wal");',
 			'const stateShmPath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite-shm");',
@@ -995,6 +1005,8 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "state_5.sqlite"), "not a sqlite database\n", "utf8");
 		writeFileSync(join(originalHome, "state_5.sqlite-wal"), "original wal\n", "utf8");
 		writeFileSync(join(originalHome, "state_5.sqlite-shm"), "original shm\n", "utf8");
+		writeFileSync(join(originalHome, "plugin_cache.sqlite"), "cache\n", "utf8");
+		writeFileSync(join(originalHome, "plugin_cache.sqlite-wal"), "cache wal\n", "utf8");
 		writeFileSync(
 			join(originalHome, "config.toml"),
 			[
@@ -1033,6 +1045,9 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("SKILL_EXISTS:true");
 		expect(output).toContain("MEMORY_EXISTS:true");
 		expect(output).toContain("INSTRUCTION_EXISTS:true");
+		expect(output).toContain("CACHE_SQLITE_MIRRORED:true");
+		expect(output).toContain("CACHE_WAL_MIRRORED:true");
+		expect(output).toMatch(/^CACHE_SHM_PLACEHOLDER:(?:true|skipped)$/m);
 		expect(output).toContain("ROOT_STATE_MIRRORED:false");
 		expect(output).toContain("ROOT_STATE_WAL_MIRRORED:false");
 		expect(output).toContain("ROOT_STATE_SHM_MIRRORED:false");
@@ -1083,6 +1098,12 @@ describe("codex bin wrapper", () => {
 		);
 		expect(readFileSync(join(originalHome, "state_5.sqlite-shm"), "utf8")).toBe(
 			"original shm\n",
+		);
+		expect(readFileSync(join(originalHome, "plugin_cache.sqlite"), "utf8")).toContain(
+			"shadow-cache",
+		);
+		expect(readFileSync(join(originalHome, "plugin_cache.sqlite-wal"), "utf8")).toContain(
+			"shadow-wal",
 		);
 		expect(readFileSync(join(originalHome, "new-root-state.json"), "utf8")).toBe(
 			"new\n",
