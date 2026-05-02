@@ -47,7 +47,7 @@ export interface UpdateCheckResult {
 	updateCommand: string;
 }
 
-function enqueueUpdateCacheWrite(writeTask: () => void): Promise<void> {
+function enqueueUpdateCacheWrite(writeTask: () => void | Promise<void>): Promise<void> {
 	const queued = updateCacheWriteQueue.catch(() => undefined).then(writeTask);
 	updateCacheWriteQueue = queued.then(
 		() => undefined,
@@ -56,13 +56,16 @@ function enqueueUpdateCacheWrite(writeTask: () => void): Promise<void> {
 	return queued;
 }
 
-function sleepSync(ms: number): void {
-	const delay = Math.max(0, Math.floor(ms));
-	if (delay === 0) return;
-	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
+function delay(ms: number): Promise<void> {
+	const normalizedDelay = Math.max(0, Math.floor(ms));
+	if (normalizedDelay === 0) return Promise.resolve();
+	return new Promise((resolve) => {
+		const timeout = setTimeout(resolve, normalizedDelay);
+		timeout.unref?.();
+	});
 }
 
-function writeCacheContents(serialized: string): void {
+async function writeCacheContents(serialized: string): Promise<void> {
 	let tempPath: string | null = null;
 	let wroteTemp = false;
 	try {
@@ -84,7 +87,7 @@ function writeCacheContents(serialized: string): void {
 				if (!RETRYABLE_WRITE_ERRORS.has(code) || attempt >= 3) {
 					throw error;
 				}
-				sleepSync(15 * (2 ** attempt));
+				await delay(15 * (2 ** attempt));
 			}
 		}
 		if (lastError) throw lastError;
@@ -160,9 +163,9 @@ function loadCache(): UpdateCheckCache | null {
 }
 
 async function saveCache(cache: UpdateCheckCache): Promise<void> {
-	await enqueueUpdateCacheWrite(() => {
+	await enqueueUpdateCacheWrite(async () => {
 		try {
-			writeCacheContents(JSON.stringify(cache, null, 2));
+			await writeCacheContents(JSON.stringify(cache, null, 2));
 		} catch (error) {
 			log.warn("Failed to save update cache", {
 				error: error instanceof Error ? error.message : String(error),
@@ -351,10 +354,10 @@ export async function checkAndNotify(
 }
 
 export function clearUpdateCache(): void {
-	void enqueueUpdateCacheWrite(() => {
+	void enqueueUpdateCacheWrite(async () => {
 		try {
 			if (existsSync(CACHE_FILE)) {
-				writeCacheContents("{}");
+				await writeCacheContents("{}");
 			}
 		} catch {
 			// Ignore errors.

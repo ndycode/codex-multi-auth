@@ -165,6 +165,45 @@ describe("update-notice", () => {
 		expect(fs.renameSync).toHaveBeenCalled();
 	});
 
+	it("retries transient cache write failures without blocking the event loop", async () => {
+		cacheContents = JSON.stringify({
+			lastCheck: Date.now() - (25 * 60 * 60 * 1_000),
+			latestVersion: "4.13.0",
+			currentVersion: "4.12.0",
+		});
+		vi.mocked(globalThis.fetch).mockResolvedValue({
+			ok: true,
+			json: async () => ({ name: "codex-multi-auth", version: "5.0.0" }),
+		} as Response);
+		let renameCalls = 0;
+		vi.mocked(fs.renameSync).mockImplementation((from: unknown, to: unknown) => {
+			const normalizedTo = String(to).replace(/\\/g, "/");
+			if (normalizedTo !== cacheFilePath) return;
+			renameCalls += 1;
+			if (renameCalls === 1) {
+				throw Object.assign(new Error("busy"), { code: "EBUSY" });
+			}
+		});
+		const atomicsWait = vi.spyOn(Atomics, "wait");
+		let settled = false;
+
+		const resultPromise = checkForUpdates(false).then((result) => {
+			settled = true;
+			return result;
+		});
+		await vi.advanceTimersByTimeAsync(14);
+
+		expect(settled).toBe(false);
+		expect(atomicsWait).not.toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(1);
+		const result = await resultPromise;
+
+		expect(result.latestVersion).toBe("5.0.0");
+		expect(renameCalls).toBe(2);
+		expect(atomicsWait).not.toHaveBeenCalled();
+	});
+
 	it("fails silently apart from debug logging when the registry is unavailable", async () => {
 		vi.mocked(globalThis.fetch).mockRejectedValue(new Error("network down"));
 
