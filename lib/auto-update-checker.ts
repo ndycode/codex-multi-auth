@@ -29,6 +29,44 @@ const AUTO_UPDATE_TIMEOUT_MS = 2 * 60 * 1000;
 const AUTO_UPDATE_LOCK_STALE_MS = 10 * 60 * 1000;
 const TASKKILL_TIMEOUT_MS = 5_000;
 const AUTO_UPDATE_ENV_NAME = "CODEX_MULTI_AUTH_AUTO_UPDATE";
+const BACKGROUND_AUTO_UPDATE_PARENT_EXIT_TIMEOUT_MS = 12 * 60 * 60 * 1000;
+const BACKGROUND_AUTO_UPDATE_PARENT_POLL_MS = 250;
+const BACKGROUND_AUTO_UPDATE_HELPER_SCRIPT = `
+const { spawn } = require("node:child_process");
+const parentPid = Number.parseInt(process.env.CODEX_MULTI_AUTH_BACKGROUND_UPDATE_PARENT_PID || "0", 10);
+const timeoutMs = Number.parseInt(process.env.CODEX_MULTI_AUTH_BACKGROUND_UPDATE_PARENT_TIMEOUT_MS || "0", 10);
+const pollMs = Number.parseInt(process.env.CODEX_MULTI_AUTH_BACKGROUND_UPDATE_PARENT_POLL_MS || "250", 10);
+function isAlive(pid) {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return error && error.code === "EPERM";
+	}
+}
+function sleep(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+(async () => {
+	const startedAt = Date.now();
+	while (isAlive(parentPid) && (timeoutMs <= 0 || Date.now() - startedAt < timeoutMs)) {
+		await sleep(Math.max(25, pollMs));
+	}
+	const command = process.env.CODEX_MULTI_AUTH_BACKGROUND_UPDATE_COMMAND;
+	const rawArgs = process.env.CODEX_MULTI_AUTH_BACKGROUND_UPDATE_ARGS || "[]";
+	if (!command) return;
+	const args = JSON.parse(rawArgs);
+	if (!Array.isArray(args) || !args.every((arg) => typeof arg === "string")) return;
+	const child = spawn(command, args, {
+		detached: true,
+		env: { ...process.env, CODEX_MULTI_AUTH_AUTO_UPDATE: "0" },
+		stdio: "ignore",
+		windowsHide: process.env.CODEX_MULTI_AUTH_BACKGROUND_UPDATE_PLATFORM === "win32",
+	});
+	child.unref();
+})().catch(() => undefined);
+`;
 const TRUE_VALUES = new Set(["1", "true", "yes"]);
 const FALSE_VALUES = new Set(["0", "false", "no"]);
 const SAFE_SUBPROCESS_ENV_KEYS = new Set([
@@ -302,6 +340,7 @@ export interface AutoUpdateResult extends UpdateCheckResult {
 		| "not-updateable-install"
 		| "already-running"
 		| "current"
+		| "update-started"
 		| "updated"
 		| "update-failed";
 	exitCode: number | null;
@@ -317,6 +356,7 @@ export interface AutoUpdateOptions {
 	platform?: NodeJS.Platform;
 	fetchTimeoutMs?: number;
 	timeoutMs?: number;
+	background?: boolean;
 	onUpdateStart?: (result: UpdateCheckResult) => void;
 }
 
@@ -508,6 +548,45 @@ async function runUpdateCommand(options: {
 	});
 }
 
+function startUpdateCommandInBackground(options: {
+	command: string;
+	env: NodeJS.ProcessEnv;
+	platform: NodeJS.Platform;
+}): { ok: true; pid: number | null } | { ok: false; error: string } {
+	const updateSpawn = resolveUpdateSpawn({
+		command: options.command,
+		platform: options.platform,
+	});
+	const helperEnv = buildAutoUpdateSubprocessEnv(options.env);
+	helperEnv.CODEX_MULTI_AUTH_BACKGROUND_UPDATE_ARGS = JSON.stringify(
+		updateSpawn.args,
+	);
+	helperEnv.CODEX_MULTI_AUTH_BACKGROUND_UPDATE_COMMAND = updateSpawn.command;
+	helperEnv.CODEX_MULTI_AUTH_BACKGROUND_UPDATE_PARENT_PID = String(process.pid);
+	helperEnv.CODEX_MULTI_AUTH_BACKGROUND_UPDATE_PARENT_POLL_MS = String(
+		BACKGROUND_AUTO_UPDATE_PARENT_POLL_MS,
+	);
+	helperEnv.CODEX_MULTI_AUTH_BACKGROUND_UPDATE_PARENT_TIMEOUT_MS = String(
+		BACKGROUND_AUTO_UPDATE_PARENT_EXIT_TIMEOUT_MS,
+	);
+	helperEnv.CODEX_MULTI_AUTH_BACKGROUND_UPDATE_PLATFORM = options.platform;
+	try {
+		const child = spawn(process.execPath, ["-e", BACKGROUND_AUTO_UPDATE_HELPER_SCRIPT], {
+			detached: true,
+			env: helperEnv,
+			stdio: "ignore",
+			windowsHide: options.platform === "win32",
+		});
+		child.unref();
+		return { ok: true, pid: child.pid ?? null };
+	} catch (error) {
+		return {
+			ok: false,
+			error: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
 async function killUpdateProcessTree(
 	child: ReturnType<typeof spawn> | null,
 	platform: NodeJS.Platform,
@@ -630,11 +709,11 @@ function isProcessAlive(pid: number): boolean {
 	}
 }
 
-function writeAutoUpdateLockOwner(): void {
+function writeAutoUpdateLockOwner(pid = process.pid): void {
 	writeFileSync(
 		AUTO_UPDATE_LOCK_OWNER_FILE,
 		`${JSON.stringify({
-			pid: process.pid,
+			pid,
 			startedAt: new Date().toISOString(),
 		})}\n`,
 		{ encoding: "utf8", mode: 0o600 },
@@ -801,6 +880,44 @@ export async function autoUpdateIfAvailable(
 
 	try {
 		notifyUpdateStart(options.onUpdateStart, result);
+		if (options.background) {
+			const updateResult = startUpdateCommandInBackground({
+				command: npmCommand,
+				env,
+				platform: options.platform ?? process.platform,
+			});
+			if (!updateResult.ok) {
+				log.warn("Auto-update failed", { error: updateResult.error });
+				return {
+					...result,
+					checked: true,
+					updated: false,
+					reason: "update-failed",
+					exitCode: null,
+					error: updateResult.error,
+				};
+			}
+			if (updateResult.pid !== null) {
+				try {
+					writeAutoUpdateLockOwner(updateResult.pid);
+				} catch (error) {
+					log.debug("Failed to update background auto-update lock owner", {
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}
+			log.info(
+				`Started background auto-update for ${PACKAGE_NAME} to v${result.latestVersion}`,
+			);
+			return {
+				...result,
+				checked: true,
+				updated: false,
+				reason: "update-started",
+				exitCode: null,
+				error: null,
+			};
+		}
 		const updateResult = await runUpdateCommand({
 			command: npmCommand,
 			env,
@@ -829,7 +946,9 @@ export async function autoUpdateIfAvailable(
 			error: null,
 		};
 	} finally {
-		releaseLock();
+		if (!options.background) {
+			releaseLock();
+		}
 	}
 }
 

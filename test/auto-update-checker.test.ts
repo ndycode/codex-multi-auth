@@ -783,6 +783,70 @@ describe("auto-update-checker", () => {
 			);
 		});
 
+		it("starts startup auto-updates in a detached background process", async () => {
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+			const child = new EventEmitter() as EventEmitter & {
+				kill: ReturnType<typeof vi.fn>;
+				unref: ReturnType<typeof vi.fn>;
+				pid: number;
+			};
+			child.kill = vi.fn();
+			child.unref = vi.fn();
+			child.pid = 5678;
+			vi.mocked(childProcess.spawn).mockReturnValue(child as never);
+
+			const result = await autoUpdateIfAvailable({
+				background: true,
+				env: { CODEX_MULTI_AUTH_AUTO_UPDATE: "1" },
+				forceCheck: true,
+				forceInstall: true,
+				npmCommand: "npm",
+				platform: "linux",
+			});
+
+			expect(result.reason).toBe("update-started");
+			expect(result.updated).toBe(false);
+			expect(childProcess.spawn).toHaveBeenCalledWith(
+				process.execPath,
+				[
+					"-e",
+					expect.stringContaining(
+						"CODEX_MULTI_AUTH_BACKGROUND_UPDATE_COMMAND",
+					),
+				],
+				expect.objectContaining({
+					detached: true,
+					env: expect.objectContaining({
+						CODEX_MULTI_AUTH_BACKGROUND_UPDATE_ARGS: JSON.stringify([
+							"update",
+							"-g",
+							"codex-multi-auth",
+						]),
+						CODEX_MULTI_AUTH_BACKGROUND_UPDATE_COMMAND: "npm",
+						CODEX_MULTI_AUTH_BACKGROUND_UPDATE_PARENT_PID: String(
+							process.pid,
+						),
+						CODEX_MULTI_AUTH_BACKGROUND_UPDATE_PLATFORM: "linux",
+						CODEX_MULTI_AUTH_AUTO_UPDATE: "0",
+					}),
+					stdio: "ignore",
+				}),
+			);
+			expect(vi.mocked(childProcess.spawn).mock.calls[0]?.[1]?.[1]).toEqual(
+				expect.stringContaining("detached: true"),
+			);
+			expect(child.unref).toHaveBeenCalledTimes(1);
+			expect(fs.writeFileSync).toHaveBeenCalledWith(
+				expect.stringContaining("owner.json"),
+				expect.stringContaining('"pid":5678'),
+				expect.objectContaining({ encoding: "utf8", mode: 0o600 }),
+			);
+			expect(fs.rmdirSync).not.toHaveBeenCalled();
+		});
+
 		it("reports synchronous update spawn failures without throwing", async () => {
 			vi.mocked(globalThis.fetch).mockResolvedValue({
 				ok: true,

@@ -347,13 +347,14 @@ async function autoUpdatePackageIfEnabled(rawArgs, normalizedArgs) {
 			return;
 		}
 		const updatePromise = mod.autoUpdateIfAvailable({
+			background: true,
 			fetchTimeoutMs,
 			timeoutMs: updateTimeoutMs,
 			onUpdateStart: (update) => {
 				if (!update?.latestVersion) return;
 				if (!shouldLogStartupAutoUpdateProgress()) return;
 				console.error(
-					`codex-multi-auth: auto-update found ${update.latestVersion}; starting npm update -g codex-multi-auth. Startup will continue if it exceeds ${budgetMs}ms.`,
+					`codex-multi-auth: auto-update found ${update.latestVersion}; starting npm update -g codex-multi-auth in the background.`,
 				);
 			},
 		});
