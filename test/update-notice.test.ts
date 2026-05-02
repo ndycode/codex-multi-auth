@@ -30,6 +30,7 @@ describe("update-notice", () => {
 
 	beforeEach(async () => {
 		vi.resetModules();
+		vi.clearAllMocks();
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-01-30T12:00:00Z"));
 		cacheContents = null;
@@ -145,6 +146,24 @@ describe("update-notice", () => {
 		expect(result.hasUpdate).toBe(true);
 		expect(result.latestVersion).toBe("5.0.0");
 		expect(globalThis.fetch).not.toHaveBeenCalled();
+	});
+
+	it("refreshes the daily cache when the installed version changes", async () => {
+		cacheContents = JSON.stringify({
+			lastCheck: Date.now() - 1_000,
+			latestVersion: "4.13.0",
+			currentVersion: "4.11.0",
+		});
+		vi.mocked(globalThis.fetch).mockResolvedValue({
+			ok: true,
+			json: async () => ({ name: "codex-multi-auth", version: "5.0.0" }),
+		} as Response);
+
+		const result = await checkForUpdates(false);
+
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+		expect(result.latestVersion).toBe("5.0.0");
+		expect(result.hasUpdate).toBe(true);
 	});
 
 	it("refreshes stale cache entries and writes the new result", async () => {

@@ -298,7 +298,12 @@ export async function checkForUpdates(
 	const now = Date.now();
 	const updateCommand = buildManualUpdateCommand();
 
-	if (!force && cache && now - cache.lastCheck < CHECK_INTERVAL_MS) {
+	if (
+		!force &&
+		cache &&
+		cache.currentVersion === currentVersion &&
+		now - cache.lastCheck < CHECK_INTERVAL_MS
+	) {
 		const hasUpdate = cache.latestVersion
 			? compareVersions(currentVersion, cache.latestVersion) > 0
 			: false;

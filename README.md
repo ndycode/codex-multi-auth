@@ -274,7 +274,7 @@ Responses background mode stays opt-in. Enable `backgroundResponses` in settings
 
 Runtime rotation is enabled by default for request-bearing wrapper-launched Codex sessions. Global install/update self-heals supported packaged Codex app binds and user-level launcher routing when possible, while `codex-multi-auth rotation enable` remains the explicit repair command. `codex-multi-auth rotation disable` turns the setting off and removes the persistent app bind. Set `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`, `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0`, or `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0` to opt out of the matching default behavior.
 
-Installed wrappers may perform a best-effort daily npm version check during normal forwarded Codex startup. When a newer package is detected, the wrapper only prints a manual notice: `npm install -g codex-multi-auth@latest`. It never runs npm install or update commands for you.
+Installed wrappers may perform a best-effort daily npm version check during normal forwarded Codex startup. When a newer package is detected, the wrapper only prints a manual notice on an interactive TTY or when `CODEX_MULTI_AUTH_DEBUG=1`: `npm install -g codex-multi-auth@latest`. It never runs npm install or update commands for you.
 
 ---
 
