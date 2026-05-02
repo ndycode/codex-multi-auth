@@ -42,6 +42,22 @@ const RUNTIME_ROTATION_SHADOW_HOME_OMIT_STATE_FILES = new Set([
 	"accounts.json",
 ]);
 const RUNTIME_ROTATION_SHADOW_HOME_OMIT_ROOT_DIRS = new Set(["multi-auth"]);
+const RUNTIME_ROTATION_SHADOW_HOME_LINK_ONLY_ROOT_DIRS = new Set([
+	".sandbox",
+	".sandbox-bin",
+	".sandbox-secrets",
+	".tmp",
+	"ambient-suggestions",
+	"archived_sessions",
+	"backups",
+	"cache",
+	"generated_images",
+	"log",
+	"sqlite",
+	"tmp",
+	"understand-anything",
+	"vendor_imports",
+]);
 const SHADOW_HOME_STATE_FILE_SET = new Set(SHADOW_HOME_STATE_FILES);
 const SHADOW_HOME_CONFIG_FILE = "config.toml";
 const SHADOW_HOME_SYNC_LOCK_DIR = ".codex-multi-auth-shadow-sync.lock";
@@ -91,6 +107,7 @@ const shadowHomeCleanupRetryMarkerDir =
 let warnedInvalidRuntimeRotationProxyEnv = false;
 let warnedPendingAccountReadIdOverflow = false;
 let warnedShadowHomeSqliteLinkFailure = false;
+const warnedShadowHomeLinkOnlyDirectoryFailures = new Set();
 const warnedShadowHomeSqliteSidecarPlaceholderFailures = new Set();
 
 async function loadRuntimeConstants() {
@@ -1868,6 +1885,41 @@ function mirrorDirectoryIntoShadowHome(sourcePath, destinationPath) {
 	return "copied";
 }
 
+function linkDirectoryIntoShadowHome(sourcePath, destinationPath) {
+	try {
+		if ((process.env.CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_DIR_COPY ?? "").trim() === "1") {
+			throw new Error("simulated directory link failure");
+		}
+		symlinkSync(
+			sourcePath,
+			destinationPath,
+			process.platform === "win32" ? "junction" : "dir",
+		);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function warnSkippedLinkOnlyShadowHomeDirectory(name) {
+	if (warnedShadowHomeLinkOnlyDirectoryFailures.has(name)) {
+		return;
+	}
+	warnedShadowHomeLinkOnlyDirectoryFailures.add(name);
+	console.error(
+		`codex-multi-auth: skipped optional shadow-home directory ${name} because linking failed; refusing to copy generated runtime data.`,
+	);
+}
+
+function shouldCopyRuntimeGeneratedShadowHomeDirectoryFallback() {
+	const normalized = (
+		process.env.CODEX_MULTI_AUTH_RUNTIME_SHADOW_COPY_GENERATED_DIRS ?? ""
+	)
+		.trim()
+		.toLowerCase();
+	return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
 function linkFileIntoShadowHome(sourcePath, destinationPath) {
 	try {
 		symlinkSync(sourcePath, destinationPath, "file");
@@ -1913,8 +1965,11 @@ function isCodexRuntimeLocalSqliteFile(name) {
 
 function isCodexRuntimeTransientStateFile(name) {
 	const normalizedName = normalizeRuntimeShadowHomeEntryName(name);
-	return /^(?:auth|accounts)\.json\.\d+\.[a-z0-9]+\.tmp$/.test(
-		normalizedName,
+	return (
+		/^(?:auth|accounts)\.json\.\d+\.[a-z0-9]+\.tmp$/.test(
+			normalizedName,
+		) ||
+		/^\.codex-global-state\.json\.tmp-[a-z0-9-]+$/.test(normalizedName)
 	);
 }
 
@@ -1925,6 +1980,11 @@ function isRuntimeRotationShadowHomeOmittedEntry(name) {
 		isCodexRuntimeLocalSqliteFile(name) ||
 		isCodexRuntimeTransientStateFile(name)
 	);
+}
+
+function isRuntimeRotationShadowHomeLinkOnlyDirectory(name) {
+	const normalizedName = normalizeRuntimeShadowHomeEntryName(name);
+	return RUNTIME_ROTATION_SHADOW_HOME_LINK_ONLY_ROOT_DIRS.has(normalizedName);
 }
 
 function shouldMaterializeFileIntoShadowHome(name) {
@@ -2154,6 +2214,8 @@ function createShadowHomeMirror(
 	const skipSyncBackNames = new Set(options.skipSyncBackNames ?? []);
 	const skipMirrorPredicate = options.skipMirrorPredicate ?? (() => false);
 	const skipSyncBackPredicate = options.skipSyncBackPredicate ?? (() => false);
+	const linkOnlyDirectoryPredicate =
+		options.linkOnlyDirectoryPredicate ?? (() => false);
 	const originalFileStates = new Map();
 	const copiedDirectoryNames = new Set();
 	const rememberSyncFile = (name) => {
@@ -2200,6 +2262,15 @@ function createShadowHomeMirror(
 					throw new Error(`Expected ${name} to be a file`);
 				}
 				if (directoryLike) {
+					if (
+						linkOnlyDirectoryPredicate(name) &&
+						!shouldCopyRuntimeGeneratedShadowHomeDirectoryFallback()
+					) {
+						if (!linkDirectoryIntoShadowHome(sourcePath, destinationPath)) {
+							warnSkippedLinkOnlyShadowHomeDirectory(name);
+						}
+						continue;
+					}
 					if (mirrorDirectoryIntoShadowHome(sourcePath, destinationPath) === "copied") {
 						copiedDirectoryNames.add(name);
 					}
@@ -2307,6 +2378,10 @@ function resolveOriginalMultiAuthDir(env) {
 		return explicit;
 	}
 	return undefined;
+}
+
+function resolveRuntimeRotationOriginalMultiAuthDir(originalCodexHome, env) {
+	return resolveOriginalMultiAuthDir(env) ?? join(originalCodexHome, "multi-auth");
 }
 
 function parseRuntimeRotationProxyEnv(value) {
@@ -2421,6 +2496,7 @@ function createRuntimeRotationProxyCodexHome(
 				skipMirrorPredicate: isRuntimeRotationShadowHomeOmittedEntry,
 				skipSyncBackNames: RUNTIME_ROTATION_SHADOW_HOME_OMIT_STATE_FILES,
 				skipSyncBackPredicate: isRuntimeRotationShadowHomeOmittedEntry,
+				linkOnlyDirectoryPredicate: isRuntimeRotationShadowHomeLinkOnlyDirectory,
 			},
 		);
 		omitRuntimeRotationShadowHomeStateFiles(shadowCodexHome);
@@ -2445,11 +2521,11 @@ function createRuntimeRotationProxyCodexHome(
 		...baseEnv,
 		CODEX_HOME: shadowCodexHome,
 		OPENAI_API_KEY: clientApiKey,
+		CODEX_MULTI_AUTH_DIR: resolveRuntimeRotationOriginalMultiAuthDir(
+			originalCodexHome,
+			baseEnv,
+		),
 	};
-	const originalMultiAuthDir = resolveOriginalMultiAuthDir(baseEnv);
-	if (originalMultiAuthDir) {
-		forwardedEnv.CODEX_MULTI_AUTH_DIR = originalMultiAuthDir;
-	}
 
 	return {
 		env: forwardedEnv,
@@ -2904,6 +2980,10 @@ function startRuntimeRotationAppHelper(baseContext) {
 			{
 				env: {
 					...baseContext.env,
+					CODEX_MULTI_AUTH_DIR: resolveRuntimeRotationOriginalMultiAuthDir(
+						realCodexHome,
+						baseContext.env,
+					),
 					[APP_RUNTIME_HELPER_OWNER_PID_ENV]: String(process.pid),
 					[APP_RUNTIME_HELPER_REAL_CODEX_HOME_ENV]: realCodexHome,
 				},
@@ -3632,6 +3712,8 @@ function repairCodexSessionIndex(codexHome) {
 
 		const additions = [];
 		for (const rolloutPath of collectRolloutFiles(sessionsDir)) {
+			const idFromName = extractRolloutIdFromFilename(basename(rolloutPath));
+			if (idFromName && seen.has(idFromName)) continue;
 			const entry = parseRolloutIndexEntry(rolloutPath);
 			if (!entry || seen.has(entry.id)) continue;
 			seen.add(entry.id);
