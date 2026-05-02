@@ -90,6 +90,7 @@ const shadowHomeCleanupRetryMarkerDir =
 let warnedInvalidRuntimeRotationProxyEnv = false;
 let warnedPendingAccountReadIdOverflow = false;
 let warnedShadowHomeSqliteLinkFailure = false;
+let warnedShadowHomeSqliteSidecarPlaceholderFailure = false;
 
 async function loadRuntimeConstants() {
 	const fallback = {
@@ -1899,7 +1900,7 @@ function isSqliteSidecarFile(name) {
 }
 
 function isCodexThreadStateFile(name) {
-	return /^state_\d+\.sqlite(?:-(?:shm|wal))?$/i.test(name);
+	return /^state_\d+\.sqlite(?:-(?:shm|wal))?$/.test(name);
 }
 
 function shouldMaterializeFileIntoShadowHome(name) {
@@ -1911,6 +1912,15 @@ function warnSkippedSqliteShadowHomeMaterialization() {
 		warnedShadowHomeSqliteLinkFailure = true;
 		console.error(
 			"codex-multi-auth: skipped SQLite shadow-home materialization because linking failed; refusing to copy active SQLite state.",
+		);
+	}
+}
+
+function warnSkippedSqliteShadowHomeSidecarPlaceholder(error) {
+	if (!warnedShadowHomeSqliteSidecarPlaceholderFailure) {
+		warnedShadowHomeSqliteSidecarPlaceholderFailure = true;
+		console.error(
+			`codex-multi-auth: skipped SQLite shadow-home sidecar placeholder because linking failed: ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
 }
@@ -1940,7 +1950,10 @@ function materializeSqliteSidecarsIntoShadowHome(sourcePath, destinationPath) {
 		}
 		try {
 			symlinkSync(sourceSidecarPath, destinationSidecarPath, "file");
-		} catch {
+		} catch (error) {
+			if (error?.code !== "EEXIST") {
+				warnSkippedSqliteShadowHomeSidecarPlaceholder(error);
+			}
 		}
 	}
 }

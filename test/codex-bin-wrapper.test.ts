@@ -954,6 +954,9 @@ describe("codex bin wrapper", () => {
 			'console.log(`CACHE_SHM_PLACEHOLDER:${cacheShmPlaceholder}`);',
 			'fs.appendFileSync(cachePath, "shadow-cache\\n", "utf8");',
 			'fs.appendFileSync(cacheWalPath, "shadow-wal\\n", "utf8");',
+			'const upperStatePath = path.join(process.env.CODEX_HOME ?? "", "STATE_6.sqlite");',
+			'console.log(`UPPER_STATE_MIRRORED:${fs.existsSync(upperStatePath)}`);',
+			'fs.appendFileSync(upperStatePath, "shadow-upper\\n", "utf8");',
 			'const statePath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite");',
 			'const stateWalPath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite-wal");',
 			'const stateShmPath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite-shm");',
@@ -1005,6 +1008,7 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "state_5.sqlite"), "not a sqlite database\n", "utf8");
 		writeFileSync(join(originalHome, "state_5.sqlite-wal"), "original wal\n", "utf8");
 		writeFileSync(join(originalHome, "state_5.sqlite-shm"), "original shm\n", "utf8");
+		writeFileSync(join(originalHome, "STATE_6.sqlite"), "upper state\n", "utf8");
 		writeFileSync(join(originalHome, "plugin_cache.sqlite"), "cache\n", "utf8");
 		writeFileSync(join(originalHome, "plugin_cache.sqlite-wal"), "cache wal\n", "utf8");
 		writeFileSync(
@@ -1048,6 +1052,7 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("CACHE_SQLITE_MIRRORED:true");
 		expect(output).toContain("CACHE_WAL_MIRRORED:true");
 		expect(output).toMatch(/^CACHE_SHM_PLACEHOLDER:(?:true|skipped)$/m);
+		expect(output).toContain("UPPER_STATE_MIRRORED:true");
 		expect(output).toContain("ROOT_STATE_MIRRORED:false");
 		expect(output).toContain("ROOT_STATE_WAL_MIRRORED:false");
 		expect(output).toContain("ROOT_STATE_SHM_MIRRORED:false");
@@ -1098,6 +1103,9 @@ describe("codex bin wrapper", () => {
 		);
 		expect(readFileSync(join(originalHome, "state_5.sqlite-shm"), "utf8")).toBe(
 			"original shm\n",
+		);
+		expect(readFileSync(join(originalHome, "STATE_6.sqlite"), "utf8")).toContain(
+			"shadow-upper",
 		);
 		expect(readFileSync(join(originalHome, "plugin_cache.sqlite"), "utf8")).toContain(
 			"shadow-cache",
