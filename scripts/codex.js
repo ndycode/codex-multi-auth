@@ -1920,12 +1920,7 @@ function materializeFileIntoShadowHome(sourcePath, destinationPath) {
 		if (linkFileIntoShadowHome(sourcePath, destinationPath)) {
 			return true;
 		}
-		if (existsSync(sourcePath)) {
-			warnSkippedSqliteShadowHomeMaterialization();
-			return false;
-		}
-		symlinkSync(sourcePath, destinationPath, "file");
-		return true;
+		warnSkippedSqliteShadowHomeMaterialization();
 	} catch {
 		warnSkippedSqliteShadowHomeMaterialization();
 	}
@@ -2060,12 +2055,13 @@ function syncAdditionalShadowHomeFiles(
 	originalFileStates,
 	tightenFile,
 	skipSyncBackNames = new Set(),
+	skipSyncBackPredicate = () => false,
 ) {
 	for (const name of names) {
 		if (
 			SHADOW_HOME_STATE_FILE_SET.has(name) ||
 			skipSyncBackNames.has(name) ||
-			isCodexThreadStateFile(name)
+			skipSyncBackPredicate(name)
 		) {
 			continue;
 		}
@@ -2102,7 +2098,8 @@ function createShadowHomeMirror(
 ) {
 	const syncFileNames = new Set(SHADOW_HOME_STATE_FILES);
 	const skipSyncBackNames = new Set(options.skipSyncBackNames ?? []);
-	const skipMirrorNames = new Set(options.skipMirrorNames ?? []);
+	const skipMirrorPredicate = options.skipMirrorPredicate ?? (() => false);
+	const skipSyncBackPredicate = options.skipSyncBackPredicate ?? (() => false);
 	const originalFileStates = new Map();
 	const copiedDirectoryNames = new Set();
 	const rememberSyncFile = (name) => {
@@ -2125,7 +2122,7 @@ function createShadowHomeMirror(
 				name === SHADOW_HOME_CONFIG_FILE ||
 				name === SHADOW_HOME_SYNC_STATE_FILE ||
 				name === SHADOW_HOME_SYNC_LOCK_DIR ||
-				skipMirrorNames.has(name)
+				skipMirrorPredicate(name)
 			) {
 				continue;
 			}
@@ -2201,6 +2198,7 @@ function createShadowHomeMirror(
 				originalFileStates,
 				tightenFile,
 				skipSyncBackNames,
+				skipSyncBackPredicate,
 			);
 		} catch {
 			// Best-effort only; runtime auth refreshes should not fail cleanup.
@@ -2366,12 +2364,9 @@ function createRuntimeRotationProxyCodexHome(
 			shadowCodexHome,
 			tightenShadowHomePermissions,
 			{
-				skipMirrorNames: new Set(
-					existsSync(originalCodexHome)
-						? readdirSync(originalCodexHome).filter(isCodexThreadStateFile)
-						: [],
-				),
+				skipMirrorPredicate: isCodexThreadStateFile,
 				skipSyncBackNames: RUNTIME_ROTATION_SHADOW_HOME_OMIT_STATE_FILES,
+				skipSyncBackPredicate: isCodexThreadStateFile,
 			},
 		);
 		omitRuntimeRotationShadowHomeStateFiles(shadowCodexHome);
