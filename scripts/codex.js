@@ -1900,7 +1900,11 @@ function isSqliteSidecarFile(name) {
 }
 
 function isCodexThreadStateFile(name) {
-	return /^state_\d+\.sqlite(?:-(?:shm|wal))?$/.test(name);
+	const normalizedName =
+		process.platform === "win32" || process.platform === "darwin"
+			? name.toLowerCase()
+			: name;
+	return /^state_\d+\.sqlite(?:-(?:shm|wal))?$/.test(normalizedName);
 }
 
 function shouldMaterializeFileIntoShadowHome(name) {

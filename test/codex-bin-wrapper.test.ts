@@ -1052,7 +1052,9 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("CACHE_SQLITE_MIRRORED:true");
 		expect(output).toContain("CACHE_WAL_MIRRORED:true");
 		expect(output).toMatch(/^CACHE_SHM_PLACEHOLDER:(?:true|skipped)$/m);
-		expect(output).toContain("UPPER_STATE_MIRRORED:true");
+		expect(output).toContain(
+			`UPPER_STATE_MIRRORED:${process.platform === "win32" || process.platform === "darwin" ? "false" : "true"}`,
+		);
 		expect(output).toContain("ROOT_STATE_MIRRORED:false");
 		expect(output).toContain("ROOT_STATE_WAL_MIRRORED:false");
 		expect(output).toContain("ROOT_STATE_SHM_MIRRORED:false");
@@ -1104,9 +1106,15 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(join(originalHome, "state_5.sqlite-shm"), "utf8")).toBe(
 			"original shm\n",
 		);
-		expect(readFileSync(join(originalHome, "STATE_6.sqlite"), "utf8")).toContain(
-			"shadow-upper",
-		);
+		if (process.platform === "win32" || process.platform === "darwin") {
+			expect(readFileSync(join(originalHome, "STATE_6.sqlite"), "utf8")).toBe(
+				"upper state\n",
+			);
+		} else {
+			expect(readFileSync(join(originalHome, "STATE_6.sqlite"), "utf8")).toContain(
+				"shadow-upper",
+			);
+		}
 		expect(readFileSync(join(originalHome, "plugin_cache.sqlite"), "utf8")).toContain(
 			"shadow-cache",
 		);
