@@ -15,7 +15,7 @@ test/
 ├── auth-menu-hotkeys.test.ts          # Auth menu hotkey behavior
 ├── auth-rate-limit.test.ts            # Token bucket rate limiting
 ├── auth.test.ts                       # OAuth authentication tests (PKCE + JWT)
-├── auto-update-checker.test.ts        # npm version check tests
+├── update-notice.test.ts              # npm version notice tests
 ├── browser.test.ts                    # Platform-specific browser open behavior
 ├── capability-policy.test.ts          # Model capability enforcement
 ├── chaos/

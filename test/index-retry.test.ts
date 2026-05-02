@@ -411,7 +411,7 @@ vi.mock("../lib/recovery.js", () => ({
 	}),
 }));
 
-vi.mock("../lib/auto-update-checker.js", () => ({
+vi.mock("../lib/update-notice.js", () => ({
 	checkAndNotify: async () => {},
 	checkForUpdates: async () => ({ hasUpdate: false, currentVersion: "4.5.0", latestVersion: null, updateCommand: "" }),
 	clearUpdateCache: () => {},

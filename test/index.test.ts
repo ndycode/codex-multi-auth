@@ -207,7 +207,7 @@ vi.mock("../lib/logger.js", () => ({
 	})),
 }));
 
-vi.mock("../lib/auto-update-checker.js", () => ({
+vi.mock("../lib/update-notice.js", () => ({
 	checkAndNotify: vi.fn(async () => {}),
 }));
 
@@ -4975,7 +4975,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 	});
 
 	it("forwards update notification toast arguments through showRuntimeToast", async () => {
-		const updateCheckerModule = await import("../lib/auto-update-checker.js");
+		const updateCheckerModule = await import("../lib/update-notice.js");
 		vi.mocked(updateCheckerModule.checkAndNotify).mockImplementationOnce(
 			async (
 				notify: (

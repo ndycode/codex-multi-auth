@@ -73,7 +73,7 @@ Stable release for local usage governance and the local bridge. See [docs/releas
 
 - runtime rotation now defaults on for request-bearing wrapper-launched Codex sessions
 - package install/update now self-heals supported packaged app binds and app launcher routing by default, with environment opt-outs
-- installed packages now run a best-effort daily auto-update check that runs `npm update -g codex-multi-auth` when a newer npm release is available; set `CODEX_MULTI_AUTH_AUTO_UPDATE=0` to disable it
+- installed packages now show best-effort daily manual update notices when npm has a newer release; update with `npm install -g codex-multi-auth@latest`
 - aligned active documentation with the 2.x wrapper-first architecture, default-on runtime Responses proxy, reversible Codex app bind, and historical audit snapshot boundaries
 - updated live quota probes, model normalization, and shipped templates to prefer current documented OpenAI models (`gpt-5.5` general, `gpt-5.3-codex` Codex) while keeping legacy `gpt-5-codex` requests as compatibility aliases
 - removed deprecated `gpt-5.1-codex*` selectors from shipped config templates; those inputs now route to the current documented Codex model when encountered for compatibility
