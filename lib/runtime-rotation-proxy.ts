@@ -1405,15 +1405,19 @@ export async function startRuntimeRotationProxy(
 			await usageRecorder?.record({
 				outcome: "failure",
 				statusCode: normalizeExhaustionStatus(exhaustionReason),
-				errorCode: exhaustionReason,
+				errorCode: isThreadGoalRequest && context.upstreamPath.endsWith("/get") ? "thread_goal_pool_exhausted" : exhaustionReason,
 			});
-			writePoolExhausted({
-				res,
-				accountManager,
-				family: context.family,
-				model: context.model,
-				reason: exhaustionReason,
-			});
+			if (isThreadGoalRequest && context.upstreamPath.endsWith("/get")) {
+				writeJson(res, HTTP_STATUS.OK, { goal: null });
+			} else {
+				writePoolExhausted({
+					res,
+					accountManager,
+					family: context.family,
+					model: context.model,
+					reason: exhaustionReason,
+				});
+			}
 		} catch (error) {
 			status.lastError = error instanceof Error ? error.message : String(error);
 			if (!res.headersSent) {
