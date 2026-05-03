@@ -5,7 +5,7 @@ Base: open local governance review stack PR
 
 ## Scope
 
-Add `codex auth monitor` to aggregate local runtime observability, usage,
+Add `codex-multi-auth monitor` to aggregate local runtime observability, usage,
 account policies, routing profile context, budget guards, model capability
 matrix summary, quota cache counts, and current project context.
 

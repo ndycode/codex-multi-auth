@@ -131,7 +131,7 @@ describe("runBestCommand", () => {
 		const result = await runBestCommand(["--model", "gpt-5-codex"], deps);
 		expect(result).toBe(1);
 		expect(deps.logError).toHaveBeenCalledWith(
-			"--model requires --live for codex auth best",
+			"--model requires --live for codex-multi-auth best",
 		);
 	});
 

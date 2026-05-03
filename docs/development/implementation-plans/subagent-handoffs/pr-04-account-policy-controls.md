@@ -5,7 +5,7 @@ Base: `origin/main` after PR 03 merge
 
 ## Scope
 
-Add local account policy storage and `codex auth account` policy commands.
+Add local account policy storage and `codex-multi-auth account` policy commands.
 
 ## Files Changed
 

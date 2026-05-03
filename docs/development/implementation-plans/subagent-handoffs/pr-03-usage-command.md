@@ -5,7 +5,7 @@ Base: `origin/main` after PR 02 merge
 
 ## Scope
 
-Add `codex auth usage` command behavior on top of the local usage ledger core.
+Add `codex-multi-auth usage` command behavior on top of the local usage ledger core.
 
 ## Files Changed
 
@@ -26,4 +26,4 @@ Add `codex auth usage` command behavior on top of the local usage ledger core.
 ## Follow-ups
 
 - PR 08 should add runtime usage row appends.
-- PR 09 should include usage summaries in `codex auth monitor`.
+- PR 09 should include usage summaries in `codex-multi-auth monitor`.

@@ -347,17 +347,17 @@ describe("Documentation Integrity", () => {
 		expect(commandRef).toContain(
 			"| `--model <model>` | best, forecast, report, fix |",
 		);
-		expect(help).toContain("codex auth login");
+		expect(help).toContain("codex-multi-auth login");
 		expect(help).toContain(
-			"codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
+			"codex-multi-auth fix [--dry-run] [--json] [--live] [--model <model>]",
 		);
 		expect(help).toContain(
-			"codex auth report [--live] [--json] [--explain] [--model <model>] [--out <path>]",
+			"codex-multi-auth report [--live] [--json] [--explain] [--model <model>] [--out <path>]",
 		);
-		expect(help).toContain("codex auth config explain [--json]");
-		expect(help).toContain("codex auth debug bundle [--json]");
+		expect(help).toContain("codex-multi-auth config explain [--json]");
+		expect(help).toContain("codex-multi-auth debug bundle [--json]");
 		expect(switchCommand).toContain(
-			"Missing index. Usage: codex auth switch <index>",
+			"Missing index. Usage: codex-multi-auth switch <index>",
 		);
 		expect(switchCommand).not.toContain("codex-multi-auth auth switch <index>");
 	});

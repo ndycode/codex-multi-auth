@@ -17,7 +17,7 @@ function printModelsUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
 			"Usage:",
-			"  codex auth models [--json] [--model <model>]",
+			"  codex-multi-auth models [--json] [--model <model>]",
 			"",
 			"Shows local model/account capability availability from model profiles, quota cache, and capability policy state.",
 		].join("\n"),

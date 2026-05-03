@@ -5,7 +5,7 @@ Commit: a87e005
 
 ## OVERVIEW
 
-Core implementation for the Codex CLI wrapper, account manager, OAuth/storage/runtime services, optional plugin-host request bridge, and default-on runtime Responses rotation proxy. The current architecture is wrapper-first: `scripts/codex.js` owns command forwarding and runtime proxy setup, while `lib/` owns account selection, storage, config, app bind, request compatibility, and diagnostics.
+Core implementation for the conflict-free account manager, optional Codex CLI forwarding wrapper, OAuth/storage/runtime services, optional plugin-host request bridge, and default-on runtime Responses rotation proxy. The current architecture is manager-first: `scripts/codex-multi-auth.js` owns the primary account-management entrypoint, `scripts/codex.js` owns explicit wrapper forwarding and runtime proxy setup, while `lib/` owns account selection, storage, config, app bind, request compatibility, and diagnostics.
 
 ## STRUCTURE
 
@@ -16,7 +16,7 @@ lib/
 │   └── rate-limits.ts             # per-account rate limit tracking
 ├── auth/                          # OAuth flow, browser/manual login, callback server, token utils
 ├── codex-cli/                     # official Codex CLI state sync and output writer helpers
-├── codex-manager.ts               # codex auth command dispatcher
+├── codex-manager.ts               # codex-multi-auth command dispatcher
 ├── codex-manager/
 │   ├── commands/                  # focused command implementations
 │   ├── settings-hub.ts            # back-compat re-export stub
@@ -76,7 +76,7 @@ lib/
 | Account rate limits | `accounts/rate-limits.ts` | per-account tracking |
 | Storage format | `storage.ts`, `storage/` | V3 storage, backup/WAL, migration, restore, import/export |
 | Storage paths | `storage/paths.ts`, `runtime-paths.ts` | project root detection and runtime root resolution |
-| CLI commands | `codex-manager.ts`, `codex-manager/commands/` | `codex auth login/list/check/fix/doctor/...` |
+| CLI commands | `codex-manager.ts`, `codex-manager/commands/` | `codex-multi-auth login/list/check/fix/doctor/...` |
 | Settings UI | `codex-manager/settings-hub/` | settings panels, Q = cancel, preview-first writes |
 | Config resolution | `config.ts`, `schemas.ts` | defaults, unified settings, env overrides, config explain |
 | Prompt/model families | `prompts/codex.ts` | GPT-5.x and Codex family handling |

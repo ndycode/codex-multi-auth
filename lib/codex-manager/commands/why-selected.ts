@@ -132,7 +132,7 @@ export async function runWhySelectedCommand(
 			logInfo(JSON.stringify(emptyPayload, null, 2));
 		} else {
 			logError(
-				"No accounts configured. Run `codex auth login` to add an account.",
+				"No accounts configured. Run `codex-multi-auth login` to add an account.",
 			);
 		}
 		return 1;
@@ -220,7 +220,7 @@ export async function runWhySelectedCommand(
 		}
 	} else {
 		logError(
-			`No account could be selected: ${trace.selectionReason}. Run \`codex auth check\` or \`codex auth doctor\` for diagnostics.`,
+			`No account could be selected: ${trace.selectionReason}. Run \`codex-multi-auth check\` or \`codex-multi-auth doctor\` for diagnostics.`,
 		);
 	}
 
@@ -291,7 +291,7 @@ export function printWhySelectedUsage(): void {
 	console.log(
 		[
 			"Usage:",
-			"  codex auth why-selected [--now | --last] [--json]",
+			"  codex-multi-auth why-selected [--now | --last] [--json]",
 			"",
 			"Options:",
 			"  --now, -n     Run selection now with live state (default)",

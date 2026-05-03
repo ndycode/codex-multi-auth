@@ -6,28 +6,29 @@ Public overview of how `codex-multi-auth` fits around the official Codex CLI.
 
 ## The Short Version
 
-`codex-multi-auth` is a local `codex` wrapper plus a multi-account OAuth manager.
+`codex-multi-auth` is a conflict-free multi-account OAuth manager plus an optional forwarding wrapper for the official Codex CLI.
 
 - `codex-multi-auth ...` commands are handled locally by the account manager.
-- All other `codex` commands are forwarded to the official Codex CLI.
+- `codex-multi-auth-codex ...` is the optional wrapper entrypoint for forwarding official Codex CLI commands.
+- The package does not publish a global `codex` binary; that name stays owned by the official Codex install path.
 - Account, settings, quota, backup, and diagnostic state lives under `~/.codex/multi-auth`.
-- Runtime rotation is optional and enabled by default.
-- When runtime rotation is enabled, forwarded Codex sessions can send Responses traffic through a localhost-only proxy that selects managed accounts per request.
+- Runtime rotation is enabled by default for request-bearing sessions launched through this package's wrapper or app bind.
+- When runtime rotation is enabled, forwarded Codex CLI/app sessions can send Responses traffic through a localhost-only proxy that selects managed accounts per request.
 - The plugin-host entrypoint remains available for advanced host integrations, but it is not required for normal CLI use.
 
 ---
 
 ## Main Components
 
-### 1. Wrapper entrypoint
+### 1. Installed CLI surfaces
 
-`scripts/codex.js` is installed as `codex`.
+`package.json` publishes these bins:
 
-It decides whether the current command should:
+- `codex-multi-auth` -> `scripts/codex-multi-auth.js`
+- `codex-multi-auth-codex` -> `scripts/codex.js`
+- `codex-multi-auth-app-launcher` -> `scripts/codex-app-launcher.js`
 
-- stay local as `codex-multi-auth ...`
-- forward to the official Codex CLI
-- add runtime-rotation provider settings before forwarding, when rotation is enabled
+The standalone entrypoint normalizes bare account-manager commands, so both `codex-multi-auth status` and `codex-multi-auth auth status` reach the same local manager. The forwarding wrapper handles `auth ...` locally, forwards every other command to the official Codex CLI, and adds runtime-rotation provider settings before forwarding when rotation is enabled.
 
 The wrapper also keeps forwarded official Codex sessions on file-backed auth state unless the caller explicitly opts out.
 
@@ -108,7 +109,7 @@ Terminal user
   |
   | codex-multi-auth ...
   v
-codex-multi-auth wrapper
+scripts/codex-multi-auth.js
   |
   v
 local account manager
@@ -119,9 +120,9 @@ Forwarded official Codex path:
 ```text
 Terminal user
   |
-  | codex exec/review/resume/app/...
+  | codex-multi-auth-codex exec/review/resume/app/...
   v
-codex-multi-auth wrapper
+scripts/codex.js
   |
   | forwards non-auth command
   v
@@ -134,7 +135,7 @@ Default runtime rotation path:
 Terminal user or Codex app
   |
   v
-codex-multi-auth wrapper/app bind
+codex-multi-auth-codex wrapper/app bind
   |
   | local provider: codex-multi-auth-runtime-proxy
   v

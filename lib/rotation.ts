@@ -575,7 +575,7 @@ export interface SelectHybridAccountTracedParams {
  *
  * The scoring logic mirrors `selectHybridAccount` exactly (same weights, same
  * availability gating, same PID offset behaviour, same capability boost), so
- * this function can be used by diagnostic commands (e.g. `codex auth
+ * this function can be used by diagnostic commands (e.g. `codex-multi-auth
  * why-selected --now`) without drifting from production selection. Candidates
  * are returned sorted by descending score.
  *

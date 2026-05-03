@@ -1129,7 +1129,7 @@ describe('createEntitlementErrorResponse', () => {
 				};
 			};
 
-			expect(json.error.message).toContain('codex login');
+			expect(json.error.message).toContain('codex-multi-auth login');
 			expect(json.error.diagnostics).toEqual(
 				expect.objectContaining({
 					cfRay: 'abc123-def',
@@ -1777,7 +1777,7 @@ describe('createEntitlementErrorResponse', () => {
 			expect(result?.body.model).toBe("gpt-5.3-codex");
 		});
 
-		it("adds codex login hint for unauthorized top-level, trimmed, statusText, and fallback messages", async () => {
+		it("adds codex-multi-auth login hint for unauthorized top-level, trimmed, statusText, and fallback messages", async () => {
 			const topLevel = await handleErrorResponse(
 				new Response(JSON.stringify({ message: "token invalid" }), {
 					status: 401,
@@ -1787,7 +1787,7 @@ describe('createEntitlementErrorResponse', () => {
 			const topLevelJson = (await topLevel.response.json()) as {
 				error: { message: string };
 			};
-			expect(topLevelJson.error.message).toContain("codex login");
+			expect(topLevelJson.error.message).toContain("codex-multi-auth login");
 
 			const trimmed = await handleErrorResponse(
 				new Response("plain auth failure", {
@@ -1798,7 +1798,7 @@ describe('createEntitlementErrorResponse', () => {
 			const trimmedJson = (await trimmed.response.json()) as {
 				error: { message: string };
 			};
-			expect(trimmedJson.error.message).toContain("codex login");
+			expect(trimmedJson.error.message).toContain("codex-multi-auth login");
 
 			const statusText = await handleErrorResponse(
 				new Response("", { status: 401, statusText: "Unauthorized" }),
@@ -1806,7 +1806,7 @@ describe('createEntitlementErrorResponse', () => {
 			const statusTextJson = (await statusText.response.json()) as {
 				error: { message: string };
 			};
-			expect(statusTextJson.error.message).toContain("codex login");
+			expect(statusTextJson.error.message).toContain("codex-multi-auth login");
 
 			const fallback = await handleErrorResponse(
 				new Response("", { status: 401, statusText: "" }),
@@ -1814,7 +1814,7 @@ describe('createEntitlementErrorResponse', () => {
 			const fallbackJson = (await fallback.response.json()) as {
 				error: { message: string };
 			};
-			expect(fallbackJson.error.message).toContain("codex login");
+			expect(fallbackJson.error.message).toContain("codex-multi-auth login");
 		});
 
 		it("does not remap empty 404 bodies to rate limits", async () => {

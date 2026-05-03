@@ -796,8 +796,8 @@ export function formatAppBindStatus(status: AppBindStatus): string {
 		`Codex app bind: ${parts.join(", ")}`,
 		[
 			"Note: Codex Desktop may hide history while the app bind selects the",
-			"codex-multi-auth-runtime-proxy provider; use `codex auth rotation",
-			"unbind-app` or `codex auth rotation disable` to restore the original",
+			"codex-multi-auth-runtime-proxy provider; use `codex-multi-auth rotation",
+			"unbind-app` or `codex-multi-auth rotation disable` to restore the original",
 			"Codex provider/config.",
 		].join(" "),
 		[

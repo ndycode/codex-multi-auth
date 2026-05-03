@@ -6,7 +6,7 @@ GitHub-facing audit and recommended presentation for `codex-multi-auth`.
 
 ## Product Summary
 
-- Purpose: add a local multi-account OAuth manager, `codex auth ...` workflow, and default-on runtime Responses rotation proxy to the official `@openai/codex` CLI
+- Purpose: add a local multi-account OAuth manager, `codex-multi-auth ...` workflow, and default-on runtime Responses rotation proxy for forwarded official `@openai/codex` CLI/app sessions
 - Target users: individual developers using the Codex CLI who want explicit account switching, health checks, local recovery tooling, optional project-scoped account pools, and live runtime rotation
 - Not the target: commercial multi-user services, generic API users, or teams looking for a hosted auth layer
 
@@ -17,7 +17,7 @@ GitHub-facing audit and recommended presentation for `codex-multi-auth`.
 Developers looking for a tool like this are likely to search for:
 
 - codex cli multi account
-- codex auth manager
+- codex multi auth manager
 - chatgpt oauth codex cli
 - codex account switching
 - codex cli auth recovery
@@ -35,7 +35,7 @@ These terms belong naturally in the README intro, feature list, and package meta
 
 Use this as the GitHub repository description:
 
-`Multi-account OAuth manager and codex auth wrapper for the official @openai/codex CLI, with switching, health checks, runtime rotation, and recovery tools`
+`Conflict-free multi-account OAuth manager and optional forwarding wrapper for the official @openai/codex CLI, with switching, health checks, runtime rotation, and recovery tools`
 
 ---
 
@@ -82,7 +82,7 @@ Use a clean text-first image with:
 
 - project name: `codex-multi-auth`
 - tagline: `Multi-account OAuth for the official Codex CLI`
-- a simple visual of `codex auth login -> list -> switch -> rotation status`
+- a simple visual of `codex-multi-auth login -> list -> switch -> rotation status`
 - terminal-inspired styling rather than abstract marketing graphics
 
 The image should immediately communicate:

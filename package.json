@@ -1,7 +1,7 @@
 {
 	"name": "codex-multi-auth",
 	"version": "2.1.5",
-	"description": "Multi-account OAuth manager and codex auth wrapper for the official @openai/codex CLI, with switching, health checks, and recovery tools",
+	"description": "Conflict-free multi-account OAuth manager and optional forwarding wrapper for the official @openai/codex CLI, with switching, health checks, and recovery tools",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"exports": {

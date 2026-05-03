@@ -142,12 +142,11 @@ codex-multi-auth forecast --live
 
 ---
 
-## Optional Runtime Rotation
+## Runtime Rotation
 
-Normal setup does not require runtime rotation. Enable it only when you want forwarded official Codex CLI/app sessions to use the local account-rotation proxy between Responses requests:
+Runtime rotation is enabled by default for request-bearing sessions launched through `codex-multi-auth-codex ...` or a configured app bind. Inspect it before relying on it for forwarded official Codex CLI/app sessions:
 
 ```bash
-codex-multi-auth rotation enable
 codex-multi-auth rotation status
 ```
 
@@ -173,10 +172,10 @@ Linked Git worktrees share the same repo identity so you do not need separate ac
 
 ## First-Run Problems
 
-If `codex auth` is not recognized:
+If `codex-multi-auth` is not recognized:
 
 ```bash
-where codex
+where codex-multi-auth
 ```
 
 Then continue with [troubleshooting.md](troubleshooting.md#verify-install-and-routing).

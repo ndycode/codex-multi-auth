@@ -804,7 +804,7 @@ function writePoolExhausted(params: {
 			code: "codex_runtime_rotation_pool_exhausted",
 			reason,
 			retry_after_ms: waitMs,
-			hint: "Run `codex auth rotation status` to inspect account state.",
+			hint: "Run `codex-multi-auth rotation status` to inspect account state.",
 		},
 	});
 }

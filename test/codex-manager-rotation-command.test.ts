@@ -233,7 +233,7 @@ afterEach(async () => {
 	);
 });
 
-describe("codex auth rotation command", () => {
+describe("codex-multi-auth rotation command", () => {
 	it("enables and disables the runtime rotation proxy setting", async () => {
 		const { deps, savePluginConfigMock, infos } = createDeps();
 
@@ -416,7 +416,7 @@ describe("codex auth rotation command", () => {
 		await expect(runRotationCommand(["maybe"], deps)).resolves.toBe(1);
 
 		expect(errors).toEqual(["Unknown rotation command: maybe"]);
-		expect(infos.join("\n")).toContain("codex auth rotation enable");
+		expect(infos.join("\n")).toContain("codex-multi-auth rotation enable");
 	});
 
 	it("binds and unbinds the Codex app with rotation enable and disable", async () => {
@@ -617,7 +617,7 @@ describe("codex auth rotation command", () => {
 				index: 0,
 				clearedCoolingDown: true,
 			});
-			expect(payload.restartHint).toMatch(/codex auth rotation disable/);
+			expect(payload.restartHint).toMatch(/codex-multi-auth rotation disable/);
 		});
 
 		it("omits the restart hint from JSON output for dry-run and no-op runs", async () => {
@@ -649,8 +649,8 @@ describe("codex auth rotation command", () => {
 
 			const out = infos.join("\n");
 			expect(out).toMatch(/Note: .*re-persist its in-memory timers/);
-			expect(out).toContain("codex auth rotation disable");
-			expect(out).toContain("codex auth rotation enable");
+			expect(out).toContain("codex-multi-auth rotation disable");
+			expect(out).toContain("codex-multi-auth rotation enable");
 		});
 
 		it("only deletes future-active rate-limit keys and preserves expired ones", async () => {

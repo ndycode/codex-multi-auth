@@ -1082,7 +1082,7 @@ describe("OpenAIOAuthPlugin", () => {
 			mockStorage.accounts = [];
 			const result = await plugin.tool["codex-list"].execute();
 			expect(result).toContain("No Codex accounts configured");
-			expect(result).toContain("codex login");
+			expect(result).toContain("codex-multi-auth login");
 		});
 
 		it("lists accounts with status", async () => {

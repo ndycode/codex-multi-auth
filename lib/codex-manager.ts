@@ -192,6 +192,33 @@ type TokenSuccessWithAccount = TokenSuccess & {
 };
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
 const log = createLogger("codex-manager");
+const ACCOUNT_MANAGER_COMMANDS = new Set([
+	"login",
+	"list",
+	"status",
+	"switch",
+	"best",
+	"check",
+	"features",
+	"usage",
+	"verify-flagged",
+	"verify",
+	"forecast",
+	"report",
+	"fix",
+	"doctor",
+	"account",
+	"budget",
+	"bridge",
+	"integrations",
+	"models",
+	"monitor",
+	"rotation",
+	"why-selected",
+	"config",
+	"init-config",
+	"debug",
+]);
 
 interface ModelInspection {
 	requested: string;
@@ -2410,7 +2437,7 @@ function printBestUsage(): void {
 	console.log(
 		[
 			"Usage:",
-			"  codex auth best [--live] [--json] [--model <model>]",
+			"  codex-multi-auth best [--live] [--json] [--model <model>]",
 			"",
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend before switching",
@@ -3108,12 +3135,12 @@ async function runAuthLogin(args: string[]): Promise<number> {
 			onboardingBackupDiscoveryWarning = null;
 			console.log(`Added account. Total: ${count}`);
 			console.log("Next steps:");
-			console.log("  codex auth status  Check that the wrapper is active.");
+			console.log("  codex-multi-auth status  Check that the wrapper is active.");
 			console.log(
-				"  codex auth check   Confirm your saved accounts look healthy.",
+				"  codex-multi-auth check   Confirm your saved accounts look healthy.",
 			);
 			console.log(
-				"  codex auth list    Review saved accounts before switching.",
+				"  codex-multi-auth list    Review saved accounts before switching.",
 			);
 			if (count >= ACCOUNT_LIMITS.MAX_ACCOUNTS) {
 				console.log(
@@ -3397,7 +3424,10 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	const startupDisplaySettings = await loadDashboardDisplaySettings();
 	applyUiThemeFromDashboardSettings(startupDisplaySettings);
 
-	const args = [...rawArgs];
+	const args =
+		rawArgs[0] && rawArgs[0] !== "auth" && ACCOUNT_MANAGER_COMMANDS.has(rawArgs[0])
+			? ["auth", ...rawArgs]
+			: [...rawArgs];
 	if (args.length === 0) {
 		printUsage();
 		return 0;

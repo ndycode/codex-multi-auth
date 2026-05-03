@@ -104,7 +104,7 @@ export async function runBestCommand(
 		options.model?.trim() || "gpt-5.3-codex",
 	);
 	if (options.modelProvided && !options.live) {
-		logError("--model requires --live for codex auth best");
+		logError("--model requires --live for codex-multi-auth best");
 		deps.printBestUsage();
 		return 1;
 	}

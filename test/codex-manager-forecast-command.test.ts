@@ -121,7 +121,7 @@ describe("runForecastCommand", () => {
 		const result = await runForecastCommand(["--help"], deps);
 		expect(result).toBe(0);
 		expect(deps.logInfo).toHaveBeenCalledWith(
-			expect.stringContaining("codex auth forecast"),
+			expect.stringContaining("codex-multi-auth forecast"),
 		);
 	});
 

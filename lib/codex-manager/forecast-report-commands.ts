@@ -94,7 +94,7 @@ export function printForecastUsage(): void {
 	console.log(
 		[
 			"Usage:",
-			"  codex auth forecast [--live] [--json] [--model <model>]",
+			"  codex-multi-auth forecast [--live] [--json] [--model <model>]",
 			"",
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend",
@@ -108,7 +108,7 @@ export function printReportUsage(): void {
 	console.log(
 		[
 			"Usage:",
-			"  codex auth report [--live] [--json] [--model <model>] [--out <path>]",
+			"  codex-multi-auth report [--live] [--json] [--model <model>] [--out <path>]",
 			"",
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend",
@@ -445,7 +445,7 @@ export async function runForecast(
 				);
 				console.log(`${deps.stylePromptText("Why:", "accent")} ${deps.stylePromptText(recommendation.reason, "muted")}`);
 				if (index !== activeIndex) {
-					console.log(`${deps.stylePromptText("Switch now with:", "accent")} codex auth switch ${index + 1}`);
+					console.log(`${deps.stylePromptText("Switch now with:", "accent")} codex-multi-auth switch ${index + 1}`);
 				}
 			}
 		} else {

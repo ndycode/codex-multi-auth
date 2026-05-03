@@ -1,6 +1,6 @@
 # Runbook: Add an Auth Manager Command
 
-Use this when adding a new `codex auth ...` command.
+Use this when adding a new `codex-multi-auth ...` command.
 
 ## Goal
 
@@ -25,7 +25,7 @@ Add a command without breaking the existing CLI surface, help text, JSON mode, o
 
 ## Compatibility Checks
 
-- Preserve canonical command shape: `codex auth <subcommand>`
+- Preserve canonical command shape: `codex-multi-auth <subcommand>`
 - Do not silently change existing help text unless docs/tests are updated too
 - If adding flags, update both help text and command reference
 

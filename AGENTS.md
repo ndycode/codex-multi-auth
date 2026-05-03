@@ -7,14 +7,14 @@ Package version: 2.0.1
 
 ## OVERVIEW
 
-`codex-multi-auth` is a Codex CLI-first OAuth account manager and wrapper for the official Codex CLI. The installed `codex` entrypoint handles `codex auth ...` locally, forwards other Codex commands to the official runtime, and routes live Responses traffic through a localhost account-rotation proxy by default. The plugin-host entrypoint remains exported for compatibility, but the primary product surface is the wrapper, account manager, storage, runtime proxy, and repair tooling.
+`codex-multi-auth` is a Codex CLI-first OAuth account manager and optional forwarding wrapper for the official Codex CLI. The installed `codex-multi-auth` entrypoint handles account-management commands locally, `codex-multi-auth-codex` forwards official Codex commands through this package's wrapper when explicitly used, and runtime rotation can route live Responses traffic through a localhost account-rotation proxy by default. The plugin-host entrypoint remains exported for compatibility, but the primary product surface is the account manager, optional wrapper, storage, runtime proxy, and repair tooling.
 
 ## STRUCTURE
 
 ```
 ./
 ├── scripts/
-│   ├── codex.js              # installed codex wrapper, official CLI forwarder, shadow CODEX_HOME/runtime proxy setup
+│   ├── codex.js              # codex-multi-auth-codex wrapper, official CLI forwarder, shadow CODEX_HOME/runtime proxy setup
 │   ├── codex-multi-auth.js   # standalone package CLI entrypoint
 │   ├── codex-routing.js      # auth command and compatibility alias routing
 │   ├── codex-bin-resolver.js # official Codex binary discovery
@@ -45,7 +45,7 @@ Package version: 2.0.1
 
 | Task | Location | Notes |
 | --- | --- | --- |
-| Wrapper command routing | `scripts/codex.js`, `scripts/codex-routing.js` | `codex auth ...` local handling, compatibility aliases, official CLI forwarding |
+| Wrapper command routing | `scripts/codex.js`, `scripts/codex-routing.js` | `codex-multi-auth-codex auth ...` local handling, compatibility aliases, official CLI forwarding |
 | Official Codex binary discovery | `scripts/codex-bin-resolver.js` | npm, native, PATH, and override resolution |
 | Runtime rotation proxy | `lib/runtime-rotation-proxy.ts` | loopback Responses/model proxy, account selection, token refresh, retries, streaming response forwarding |
 | Runtime proxy provider constants | `lib/runtime-constants.ts` | `codex-multi-auth-runtime-proxy`, app-helper status file |
@@ -58,7 +58,7 @@ Package version: 2.0.1
 | Account storage | `lib/storage.ts`, `lib/storage/` | V3 format, per-project/global paths, worktree migration, backup/restore |
 | Worktree resolution | `lib/storage/paths.ts` | repo identity root, linked-worktree detection, commondir/gitdir validation |
 | Config parsing | `lib/config.ts`, `lib/schemas.ts` | `pluginConfig`, environment overrides, config explain report |
-| CLI manager | `lib/codex-manager.ts`, `lib/codex-manager/commands/` | `codex auth ...` command dispatcher and command modules |
+| CLI manager | `lib/codex-manager.ts`, `lib/codex-manager/commands/` | `codex-multi-auth ...` command dispatcher and command modules |
 | Settings hub | `lib/codex-manager/settings-hub/` | split shared/dashboard/backend/experimental/index panels; `settings-hub.ts` is a re-export stub |
 | Runtime observability | `lib/runtime/runtime-observability.ts`, `lib/codex-manager/commands/status.ts`, `lib/codex-manager/commands/report.ts` | persisted runtime counters and diagnostics |
 | Request transformation | `lib/request/request-transformer.ts` | model normalization, prompt injection, Responses compatibility |
@@ -75,9 +75,9 @@ Package version: 2.0.1
 - Source lives in root `index.ts`, `lib/`, and `scripts/`; `dist/` is generated output.
 - ESM only (`"type": "module"`), Node >= 18.
 - Canonical package name is `codex-multi-auth`.
-- Canonical command family is `codex auth ...`.
-- The `codex` bin is a wrapper: auth commands run locally, non-auth commands forward to official Codex.
-- Runtime rotation is default-on through `codexRuntimeRotationProxy`; users can opt out with `codex auth rotation disable` or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`.
+- Canonical command family is `codex-multi-auth ...`.
+- The package does not publish a global `codex` bin; `codex-multi-auth-codex` is the explicit wrapper: auth commands run locally, non-auth commands forward to official Codex.
+- Runtime rotation is default-on through `codexRuntimeRotationProxy`; users can opt out with `codex-multi-auth rotation disable` or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`.
 - The runtime proxy is loopback-only and uses a per-process client token. It forwards only Responses API and model discovery requests.
 - The persistent desktop app bind is reversible and edits user config/startup metadata, not official app binaries.
 - OAuth callback port remains 1455.
@@ -117,8 +117,8 @@ npm run vendor:verify    # vendored dependency provenance check
 - OAuth callback: `http://127.0.0.1:1455/auth/callback`.
 - ChatGPT-backed Codex request compatibility requires stateless defaults (`store: false`) unless explicit background-mode compatibility is enabled.
 - Runtime rotation provider id: `codex-multi-auth-runtime-proxy`.
-- Runtime rotation status: `codex auth rotation status`.
-- Runtime proxy pool exhaustion returns `codex_runtime_rotation_pool_exhausted` and points to `codex auth rotation status`.
+- Runtime rotation status: `codex-multi-auth rotation status`.
+- Runtime proxy pool exhaustion returns `codex_runtime_rotation_pool_exhausted` and points to `codex-multi-auth rotation status`.
 - Per-project accounts: `~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json`.
 - Global accounts: `~/.codex/multi-auth/openai-codex-accounts.json`.
 - Official Codex state: `~/.codex/auth.json`, `~/.codex/accounts.json`, `~/.codex/config.toml`.

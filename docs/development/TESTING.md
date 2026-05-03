@@ -53,8 +53,8 @@ npm run bench:edit-formats:smoke
 
 | Area | Minimum checks |
 | --- | --- |
-| Login flow | `codex auth login` completes and stores real account data |
-| Switching flow | `codex auth switch <index>` updates active account behavior |
+| Login flow | `codex-multi-auth login` completes and stores real account data |
+| Switching flow | `codex-multi-auth switch <index>` updates active account behavior |
 | Health operations | `check`, `forecast`, `fix`, `doctor`, `report` produce sane output |
 | Storage durability | backup/WAL recovery remains valid |
 | CLI state sync | active account sync with Codex CLI files |
@@ -71,17 +71,17 @@ npm run bench:edit-formats:smoke
 ## Manual Smoke Pack
 
 ```bash
-codex auth login
-codex auth list
-codex auth check
-codex auth forecast --live
-codex auth fix --dry-run
-codex auth doctor --fix --dry-run
-codex auth report --live --json
-codex auth usage --since 24h --by outcome
-codex auth monitor --json
-codex auth bridge token create --label smoke
-codex auth integrations --kind python
+codex-multi-auth login
+codex-multi-auth list
+codex-multi-auth check
+codex-multi-auth forecast --live
+codex-multi-auth fix --dry-run
+codex-multi-auth doctor --fix --dry-run
+codex-multi-auth report --live --json
+codex-multi-auth usage --since 24h --by outcome
+codex-multi-auth monitor --json
+codex-multi-auth bridge token create --label smoke
+codex-multi-auth integrations --kind python
 ```
 
 Optional plugin-host smoke:
@@ -93,8 +93,8 @@ Optional plugin-host smoke:
 Runtime rotation smoke:
 
 ```bash
-codex auth rotation status
-codex exec "say hello" --model gpt-5.3-codex
+codex-multi-auth rotation status
+codex-multi-auth-codex exec "say hello" --model gpt-5.3-codex
 ```
 
 For live smoke evidence, confirm the official Codex startup/status output uses provider `codex-multi-auth-runtime-proxy` and a localhost Responses URL. Account/quota failures after that point can still prove routing if the provider and localhost path are visible.
@@ -108,7 +108,7 @@ For live smoke evidence, confirm the official Codex startup/status output uses p
 | OAuth callback port conflict | clean error and retry path |
 | Invalid/expired refresh token | account flagged/disabled by policy tools |
 | All accounts rate-limited | forecast/report show wait and recommendation |
-| Runtime rotation pool exhausted | proxy returns `codex_runtime_rotation_pool_exhausted` with `codex auth rotation status` hint |
+| Runtime rotation pool exhausted | proxy returns `codex_runtime_rotation_pool_exhausted` with `codex-multi-auth rotation status` hint |
 | Runtime proxy upstream compression | decoded client bytes are not paired with stale `content-encoding` |
 | Shadow-home sync owner write failure | orphaned lock is removed or retried so later sync-back is not silently skipped |
 | Storage write error | `StorageError` has actionable hint |

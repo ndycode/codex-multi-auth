@@ -22,7 +22,7 @@ Error contract reference for user-facing CLI and exported helper behavior.
 Examples:
 
 - unknown subcommand: `Unknown command: <name>` plus usage
-- `switch` with missing index: `Missing index. Usage: codex auth switch <index>`
+- `switch` with missing index: `Missing index. Usage: codex-multi-auth switch <index>`
 - `switch` with invalid index: `Invalid index: <value>`
 
 ---
@@ -31,11 +31,11 @@ Examples:
 
 The following commands support `--json` and produce pretty-printed JSON objects:
 
-- `codex auth forecast --json`
-- `codex auth report --json`
-- `codex auth fix --json`
-- `codex auth doctor --json`
-- `codex auth verify-flagged --json`
+- `codex-multi-auth forecast --json`
+- `codex-multi-auth report --json`
+- `codex-multi-auth fix --json`
+- `codex-multi-auth doctor --json`
+- `codex-multi-auth verify-flagged --json`
 
 Compatibility guarantees:
 
@@ -76,7 +76,7 @@ The default-on localhost Responses proxy returns JSON error payloads with a stab
 | `codex_runtime_rotation_pool_exhausted` | `429` or `503` | No managed account can currently service the runtime request |
 | `codex_runtime_rotation_proxy_error` | `500` | Proxy failed before forwarding the request |
 
-Pool exhaustion includes a `reason`, `retry_after_ms`, and a hint to run `codex auth rotation status`.
+Pool exhaustion includes a `reason`, `retry_after_ms`, and a hint to run `codex-multi-auth rotation status`.
 
 ---
 

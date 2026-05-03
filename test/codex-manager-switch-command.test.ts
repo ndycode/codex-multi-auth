@@ -52,7 +52,7 @@ describe("runSwitchCommand", () => {
 
 		expect(result).toBe(1);
 		expect(deps.logError).toHaveBeenCalledWith(
-			"Missing index. Usage: codex auth switch <index>",
+			"Missing index. Usage: codex-multi-auth switch <index>",
 		);
 	});
 

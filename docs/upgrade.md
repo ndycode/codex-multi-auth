@@ -23,6 +23,7 @@ Use these commands after upgrading:
 ```bash
 codex --version
 codex-multi-auth --version
+codex-multi-auth-codex --version
 codex-multi-auth status
 codex-multi-auth-codex --version
 ```
@@ -103,7 +104,7 @@ For maintainer/debug flows, see advanced/internal controls in [development/CONFI
 
 The 2.0.1 line makes runtime rotation the default for request-bearing wrapper-launched Codex sessions and keeps the packaged app bind reversible.
 
-- Existing installs route request-bearing non-auth `codex` commands through the localhost rotation proxy unless `codexRuntimeRotationProxy=false` or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` is set.
+- Current installs route request-bearing commands launched through `codex-multi-auth-codex ...` through the localhost rotation proxy unless `codexRuntimeRotationProxy=false` or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` is set.
 - `codex-multi-auth rotation enable` persists the setting and repairs supported packaged Codex app binds through a reversible localhost router.
 - `codex-multi-auth rotation disable` turns the setting off and removes the persistent app bind.
 - Set `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0` before install/update if you only want wrapper-launched CLI/app sessions routed and do not want the packaged app bind installed.
@@ -162,7 +163,7 @@ If you used `perProjectAccounts=true` before worktree identity sharing was added
 
 | Problem | Action |
 | --- | --- |
-| `codex auth` not found | Run `where codex` (Windows) or `which codex` (macOS/Linux) |
+| `codex-multi-auth` not found | Run `where codex-multi-auth` (Windows) or `which codex-multi-auth` (macOS/Linux) |
 | Old package still active | Uninstall scoped package and reinstall unscoped package |
 | Account pool appears stale | Run `codex-multi-auth doctor --fix`, then re-login impacted accounts |
 | Mixed path confusion | Check [reference/storage-paths.md](reference/storage-paths.md) |

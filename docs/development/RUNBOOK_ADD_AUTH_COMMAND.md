@@ -1,6 +1,6 @@
 # Runbook: Add Auth Command
 
-Safe workflow for adding a new `codex auth ...` command without expanding scope or breaking the existing CLI contract.
+Safe workflow for adding a new `codex-multi-auth ...` command without expanding scope or breaking the existing CLI contract.
 
 * * *
 
@@ -8,7 +8,7 @@ Safe workflow for adding a new `codex auth ...` command without expanding scope 
 
 Add one new command path while keeping:
 
-- `codex auth ...` as the canonical command family
+- `codex-multi-auth ...` as the canonical command family
 - current help text and aliases aligned with docs
 - JSON and human-readable output predictable
 - command behavior covered by targeted tests

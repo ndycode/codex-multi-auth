@@ -47,7 +47,7 @@ Ownership note:
 
 - `~/.codex/multi-auth/*` is managed by this project.
 - `~/.codex/accounts.json`, `~/.codex/auth.json`, and `~/.codex/config.toml` are managed by official Codex CLI.
-- The `codex` wrapper preserves that official CLI file-backed auth layout by forwarding non-auth commands with `-c cli_auth_credentials_store="file"`, unless the caller already set `cli_auth_credentials_store` explicitly.
+- The `codex-multi-auth-codex` wrapper preserves that official CLI file-backed auth layout by forwarding non-auth commands with `-c cli_auth_credentials_store="file"`, unless the caller already set `cli_auth_credentials_store` explicitly.
 - Set `CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE=0` to opt out of that wrapper-injected file-store override and leave the downstream CLI auth store untouched.
 - Runtime rotation may create a temporary shadow `CODEX_HOME` under the operating-system temp directory while a forwarded Codex command is running. The wrapper syncs refreshed official state files back to the original Codex home before cleanup.
 
@@ -66,7 +66,7 @@ Backup metadata:
 Upgrade note:
 
 - Restore workflows now distinguish between unreadable state and intentionally cleared state. `settings.json.bak` is only used when `settings.json` exists but cannot be read, while flagged-account backups stay suppressed whenever the reset marker survives a partial clear.
-- Operators validating a restore or clear flow should use `codex auth verify-flagged`, `codex auth fix --dry-run`, and `codex auth doctor --fix` to confirm what will be recovered, what stays cleared, and whether manual repair is still needed.
+- Operators validating a restore or clear flow should use `codex-multi-auth verify-flagged`, `codex-multi-auth fix --dry-run`, and `codex-multi-auth doctor --fix` to confirm what will be recovered, what stays cleared, and whether manual repair is still needed.
 - Maintainers validating the on-disk upgrade behavior can run `npm run build` plus `npm test -- --run test/unified-settings.test.ts test/storage-recovery-paths.test.ts test/storage-flagged.test.ts` before shipping backup or restore changes.
 
 ---
@@ -118,7 +118,7 @@ Runtime rotation adds local state only when enabled or when a helper has recentl
 | `~/.codex/multi-auth/app-bind/runtime-rotation-app-bind-status.json` | persistent app router status |
 | `~/.codex/multi-auth/app-bind/runtime-rotation-app-router.log` | persistent app router log |
 
-The app bind writes a provider entry to the real `~/.codex/config.toml` only after taking a backup. `codex auth rotation disable` and `codex auth rotation unbind-app` restore the backup and remove the router startup entry.
+The app bind writes a provider entry to the real `~/.codex/config.toml` only after taking a backup. `codex-multi-auth rotation disable` and `codex-multi-auth rotation unbind-app` restore the backup and remove the router startup entry.
 
 ---
 
@@ -133,8 +133,8 @@ The app bind writes a provider entry to the real `~/.codex/config.toml` only aft
 | `~/.codex/multi-auth/local-client-tokens.json` | Local bridge token hashes and prefixes only |
 
 The local bridge is loopback-only and exposes `/health`, `/v1/models`, and
-`/v1/responses`. Plain client tokens are shown only by `codex auth bridge token
-create` or `codex auth bridge token rotate`; the token store persists hashes.
+`/v1/responses`. Plain client tokens are shown only by `codex-multi-auth bridge token
+create` or `codex-multi-auth bridge token rotate`; the token store persists hashes.
 
 ---
 
@@ -168,8 +168,8 @@ Experimental sync targets the companion `oc-chatgpt-multi-auth` storage layout:
 ## Verification Commands
 
 ```bash
-codex auth status
-codex auth list
+codex-multi-auth status
+codex-multi-auth list
 ```
 
 ---

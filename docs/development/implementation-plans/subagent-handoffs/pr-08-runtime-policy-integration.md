@@ -31,4 +31,4 @@ block.
 ## Follow-ups
 
 - PR 09 should surface runtime policy, usage, profile, and budget state in
-  `codex auth monitor`.
+  `codex-multi-auth monitor`.

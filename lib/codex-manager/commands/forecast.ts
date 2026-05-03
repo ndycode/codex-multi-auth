@@ -124,7 +124,7 @@ function printForecastUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
 			"Usage:",
-			"  codex auth forecast [--live] [--json] [--explain] [--model <model>]",
+			"  codex-multi-auth forecast [--live] [--json] [--explain] [--model <model>]",
 			"",
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend",
@@ -472,7 +472,7 @@ export async function runForecastCommand(
 				);
 				if (index !== activeIndex) {
 					logInfo(
-						`${deps.stylePromptText("Switch now with:", "accent")} codex auth switch ${index + 1}`,
+						`${deps.stylePromptText("Switch now with:", "accent")} codex-multi-auth switch ${index + 1}`,
 					);
 				}
 			}

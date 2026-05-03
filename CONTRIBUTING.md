@@ -122,8 +122,8 @@ Before opening issues:
 For bug reports, include:
 
 - `codex --version`
-- `codex auth status`
-- `codex auth report --json`
+- `codex-multi-auth status`
+- `codex-multi-auth report --json`
 - `npm ls -g codex-multi-auth`
 
 For feature requests, include:

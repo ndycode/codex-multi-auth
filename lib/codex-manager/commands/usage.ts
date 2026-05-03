@@ -81,8 +81,8 @@ function printUsageCommandHelp(logInfo: (message: string) => void): void {
 	logInfo(
 		[
 			"Usage:",
-			"  codex auth usage [--since <time|duration>] [--by <model|account|project|outcome|day>] [--json|--csv] [--out <path>]",
-			"  codex auth usage rotate [--if-larger-than-bytes <bytes>] [--json]",
+			"  codex-multi-auth usage [--since <time|duration>] [--by <model|account|project|outcome|day>] [--json|--csv] [--out <path>]",
+			"  codex-multi-auth usage rotate [--if-larger-than-bytes <bytes>] [--json]",
 			"",
 			"Options:",
 			"  --since            Filter rows by timestamp, ISO date, or relative duration like 24h, 7d, 2w",

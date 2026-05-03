@@ -56,12 +56,10 @@ For dashboard display values:
 
 ## 5) Command Routing Flow
 
-1. Wrapper receives `codex` or `codex-multi-auth`.
-2. Normalize alias args (`multi auth`, `multi-auth`, `multiauth`).
-3. If command belongs to auth manager scope, run local manager.
-4. Otherwise discover and forward to the official Codex CLI binary.
-5. For forwarded request-bearing commands, check whether runtime rotation is enabled.
-6. Direct `codex-multi-auth ...` invocations route through the same routing entrypoint.
+1. Standalone manager receives `codex-multi-auth ...` and normalizes bare subcommands to `auth ...` before dispatch.
+2. Optional wrapper receives `codex-multi-auth-codex ...`, normalizes compatibility aliases, and runs auth-manager commands locally.
+3. If a wrapper command is not in auth-manager scope, discover and forward to the official Codex CLI binary.
+4. For forwarded request-bearing commands, check whether runtime rotation is enabled.
 
 * * *
 
@@ -110,9 +108,9 @@ For dashboard display values:
 Use:
 
 ```bash
-codex auth status
-codex auth report --json
-codex auth rotation status
+codex-multi-auth status
+codex-multi-auth report --json
+codex-multi-auth rotation status
 ```
 
 Check files:

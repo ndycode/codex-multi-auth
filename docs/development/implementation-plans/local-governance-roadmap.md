@@ -22,7 +22,7 @@ or dashboard service.
    - Store only redacted, non-prompt usage metadata.
    - Include local pricing, summaries, and rotation helpers.
 3. `feat/usage-command`
-   - Add `codex auth usage`.
+   - Add `codex-multi-auth usage`.
    - Support `--since`, `--by`, `--json`, `--out`, CSV export, and ledger
      rotation.
 4. `feat/account-policy-controls`
@@ -42,7 +42,7 @@ or dashboard service.
      account selection in runtime proxy and plugin-host paths.
    - Append exactly-once usage rows after completion or failure.
 9. `feat/monitor-command`
-   - Add `codex auth monitor` aggregating runtime observability, usage,
+   - Add `codex-multi-auth monitor` aggregating runtime observability, usage,
      policies, profiles, model matrix, quota cache, and current project context.
 
 ### v2.2.0 Local Bridge and Integrations

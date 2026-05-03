@@ -26,7 +26,7 @@ for full details.
 ### Documentation
 
 - documented the Codex Desktop history workaround:
-  `codex auth rotation unbind-app` or `codex auth rotation disable`
+  `codex-multi-auth rotation unbind-app` or `codex-multi-auth rotation disable`
 - documented Codex-owned model speed control through
   `model_reasoning_effort`
 

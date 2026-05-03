@@ -325,7 +325,7 @@ export function recommendForecastAccount(
 		return {
 			recommendedIndex: null,
 			reason:
-				"No healthy accounts are available. Run `codex auth login` to add a fresh account.",
+				"No healthy accounts are available. Run `codex-multi-auth login` to add a fresh account.",
 		};
 	}
 

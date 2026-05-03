@@ -77,7 +77,7 @@ describe("runReportCommand", () => {
 
 		expect(result).toBe(0);
 		expect(deps.logInfo).toHaveBeenCalledWith(
-			expect.stringContaining("Usage: codex auth report"),
+			expect.stringContaining("Usage: codex-multi-auth report"),
 		);
 	});
 

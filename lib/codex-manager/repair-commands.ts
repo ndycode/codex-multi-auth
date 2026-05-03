@@ -131,7 +131,7 @@ export function printFixUsage(): void {
 	console.log(
 		[
 			"Usage:",
-			"  codex auth fix [--dry-run] [--json] [--live] [--model <model>]",
+			"  codex-multi-auth fix [--dry-run] [--json] [--live] [--model <model>]",
 			"",
 			"Options:",
 			"  --dry-run, -n      Preview changes without writing storage",
@@ -151,7 +151,7 @@ export function printVerifyFlaggedUsage(): void {
 	console.log(
 		[
 			"Usage:",
-			"  codex auth verify-flagged [--dry-run] [--json] [--no-restore]",
+			"  codex-multi-auth verify-flagged [--dry-run] [--json] [--no-restore]",
 			"",
 			"Options:",
 			"  --dry-run, -n      Preview changes without writing storage",
@@ -169,7 +169,7 @@ export function printDoctorUsage(): void {
 	console.log(
 		[
 			"Usage:",
-			"  codex auth doctor [--json] [--fix] [--dry-run]",
+			"  codex-multi-auth doctor [--json] [--fix] [--dry-run]",
 			"",
 			"Options:",
 			"  --json, -j         Print machine-readable JSON diagnostics",
@@ -1510,7 +1510,7 @@ export async function runFix(
 					recommendedSwitchCommand:
 						recommendation.recommendedIndex !== null
 						&& recommendation.recommendedIndex !== activeIndex
-							? `codex auth switch ${recommendation.recommendedIndex + 1}`
+							? `codex-multi-auth switch ${recommendation.recommendedIndex + 1}`
 							: null,
 					reports,
 				},
@@ -1586,7 +1586,7 @@ export async function runFix(
 			);
 			if (recommendation.recommendedIndex !== activeIndex) {
 				console.log(
-					`${deps.stylePromptText("Switch now with:", "accent")} codex auth switch ${target}`,
+					`${deps.stylePromptText("Switch now with:", "accent")} codex-multi-auth switch ${target}`,
 				);
 			}
 		} else {

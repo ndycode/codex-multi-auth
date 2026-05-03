@@ -386,7 +386,7 @@ export function isWorkspaceDisabledError(
  *
  * This function returns a JSON Response with an `error` payload containing a user-facing message, a
  * `type` of `"entitlement_error"`, and a `code` of `"usage_not_included"`. The message suggests checking
- * account/workspace access and re-authenticating with `codex login`.
+ * account/workspace access and re-authenticating with `codex-multi-auth login`.
  *
  * Concurrency: stateless and safe to call concurrently from multiple threads or requests.
  * Windows filesystem behavior: none (function does not access the filesystem).
@@ -399,7 +399,7 @@ export function createEntitlementErrorResponse(_bodyText: string): Response {
         const message = 
                 "This model is not included in your ChatGPT subscription. " +
                 "Please check that your account or workspace has access to Codex models (Plus/Pro/Business/Enterprise). " +
-                "If you recently subscribed or switched workspaces, try logging out and back in with `codex login`.";
+                "If you recently subscribed or switched workspaces, try logging out and back in with `codex-multi-auth login`.";
         
         const payload = {
                 error: {
@@ -1133,7 +1133,7 @@ type ErrorPayload = {
  * @param errorBody - Parsed response body, if available; may be any JSON-derived value.
  * @param bodyText - Raw response text used as a fallback message when structured fields are absent.
  * @param statusText - HTTP status text used as a final fallback for the error message.
- * @param status - HTTP status code; when 401 adds a short hint to run `codex login`.
+ * @param status - HTTP status code; when 401 adds a short hint to run `codex-multi-auth login`.
  * @param diagnostics - Optional diagnostic metadata (request IDs, correlation/thread IDs); fields may be redacted for tokens and sensitive values.
  * @returns The normalized ErrorPayload with an `error.message` and optional `type`, `code`, `unsupported_model`, and `diagnostics` fields.
  *
@@ -1188,7 +1188,7 @@ function normalizeErrorPayload(
                                 payload.error.diagnostics = diagnostics;
                         }
                         if (status === HTTP_STATUS.UNAUTHORIZED) {
-                                payload.error.message = `${payload.error.message} (run \`codex login\` if this persists)`;
+                                payload.error.message = `${payload.error.message} (run \`codex-multi-auth login\` if this persists)`;
                         }
                         return payload;
                 }
@@ -1199,7 +1199,7 @@ function normalizeErrorPayload(
                                 payload.error.diagnostics = diagnostics;
                         }
                         if (status === HTTP_STATUS.UNAUTHORIZED) {
-                                payload.error.message = `${payload.error.message} (run \`codex login\` if this persists)`;
+                                payload.error.message = `${payload.error.message} (run \`codex-multi-auth login\` if this persists)`;
                         }
                         return payload;
                 }
@@ -1212,7 +1212,7 @@ function normalizeErrorPayload(
                         payload.error.diagnostics = diagnostics;
                 }
                 if (status === HTTP_STATUS.UNAUTHORIZED) {
-                        payload.error.message = `${payload.error.message} (run \`codex login\` if this persists)`;
+                        payload.error.message = `${payload.error.message} (run \`codex-multi-auth login\` if this persists)`;
                 }
                 return payload;
         }
@@ -1223,7 +1223,7 @@ function normalizeErrorPayload(
                         payload.error.diagnostics = diagnostics;
                 }
                 if (status === HTTP_STATUS.UNAUTHORIZED) {
-                        payload.error.message = `${payload.error.message} (run \`codex login\` if this persists)`;
+                        payload.error.message = `${payload.error.message} (run \`codex-multi-auth login\` if this persists)`;
                 }
                 return payload;
         }
@@ -1233,7 +1233,7 @@ function normalizeErrorPayload(
                 payload.error.diagnostics = diagnostics;
         }
         if (status === HTTP_STATUS.UNAUTHORIZED) {
-                payload.error.message = `${payload.error.message} (run \`codex login\` if this persists)`;
+                payload.error.message = `${payload.error.message} (run \`codex-multi-auth login\` if this persists)`;
         }
         return payload;
 }

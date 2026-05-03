@@ -13,7 +13,7 @@ Evidence sources:
 
 ### Runtime command taxonomy (current)
 
-- `codex auth <subcommand>` (canonical)
+- `codex-multi-auth <subcommand>` (canonical)
   - Primary: `login`, `list`, `status`, `switch`, `check`, `features`
   - Advanced: `verify-flagged`, `forecast`, `report`, `fix`, `doctor`
 - Compatibility aliases:
@@ -23,8 +23,8 @@ Evidence sources:
 - Runtime usage labels before this audit mixed canonical and package-prefixed forms in help/error paths.
   - Prior `printUsage()` output in `lib/codex-manager.ts` used package-prefixed forms such as `codex-multi-auth auth fix [--dry-run] [--json] [--live] [--model <model>]`.
   - Prior `runSwitch()` error text in `lib/codex-manager.ts` used `Missing index. Usage: codex-multi-auth auth switch <index>`.
-  - Post-fix regression baseline is now asserted in `test/documentation.test.ts` by checking canonical `codex auth ...` usage and switch-error strings.
-  - Canonical baseline strings now used in runtime output are `codex auth fix [--dry-run] [--json] [--live] [--model <model>]` and `Missing index. Usage: codex auth switch <index>`.
+  - Post-fix regression baseline is now asserted in `test/documentation.test.ts` by checking canonical `codex-multi-auth ...` usage and switch-error strings.
+  - Canonical baseline strings now used in runtime output are `codex-multi-auth fix [--dry-run] [--json] [--live] [--model <model>]` and `Missing index. Usage: codex-multi-auth switch <index>`.
 
 ### Docs hierarchy (current)
 
@@ -66,20 +66,20 @@ Scoring rubric:
 | Log in first account | `README.md` quick start / `docs/getting-started.md` | Match | Match |
 | Find all auth commands and flags | `docs/reference/commands.md` | Match | Match |
 | Understand alias availability | `docs/reference/commands.md` (or troubleshooting fallback) | Also shown in `README.md` and `docs/getting-started.md` | Near-miss |
-| Interpret CLI usage output | Canonical `codex auth ...` labels | Mixed with `codex-multi-auth auth ...` in runtime usage strings | Near-miss |
+| Interpret CLI usage output | Canonical `codex-multi-auth ...` labels | Mixed with `codex-multi-auth auth ...` in runtime usage strings | Near-miss |
 | Check current stable release notes | `docs/releases/v0.1.1.md` via docs portal reference | `docs/README.md` reference table labeled `v0.1.0` as current stable | Near-miss |
 | Find scoped legacy package guidance | Migration docs only (`docs/upgrade.md`, selected troubleshooting) | Also surfaced in stable release notes `docs/releases/v0.1.1.md` | Near-miss |
 
 Findability score (core tasks): 2/6 clear first-attempt match.
 
 Verification evidence snapshot (2026-03-01):
-- Runtime source checks in `lib/codex-manager.ts` confirm canonical `codex auth ...` usage labels and switch-error wording.
+- Runtime source checks in `lib/codex-manager.ts` confirm canonical `codex-multi-auth ...` usage labels and switch-error wording.
 - Documentation checks in `test/documentation.test.ts` validate stable release pointer correctness and alias-scope allowlists.
 - Alias detection checks are case-insensitive to prevent false negatives on mixed-case docs labels.
 
 Near-miss to remediation traceability:
 - `Understand alias availability` -> resolved by scoping aliases to reference/troubleshooting/migration surfaces and removing alias examples from primary onboarding flows.
-- `Interpret CLI usage output` -> resolved by canonicalizing runtime help and error usage strings to `codex auth ...` in `lib/codex-manager.ts`.
+- `Interpret CLI usage output` -> resolved by canonicalizing runtime help and error usage strings to `codex-multi-auth ...` in `lib/codex-manager.ts`.
 - `Check current stable release notes` -> resolved by updating docs portal stable pointer to `docs/releases/v0.1.1.md`.
 - `Find scoped legacy package guidance` -> resolved by keeping scoped-package references in migration contexts and removing them from stable release notes.
 
@@ -89,7 +89,7 @@ Near-miss to remediation traceability:
 
 | Concept | Variant A | Variant B | Recommended |
 | --- | --- | --- | --- |
-| Canonical command label | `codex auth ...` | `codex-multi-auth auth ...` | `codex auth ...` for all primary user-facing help text |
+| Canonical command label | `codex-multi-auth ...` | `codex-multi-auth auth ...` | `codex-multi-auth ...` for all primary user-facing help text |
 | Alias placement policy | Reference/troubleshooting intent | Also in primary README/getting-started command flows | Keep aliases in reference/troubleshooting/migration contexts only |
 | Stable release pointer | `v0.1.1` in user guides | `v0.1.0` labeled current stable in docs reference table | Use `v0.1.1` as current stable consistently |
 | Scoped legacy package mention | Migration-only contexts | Stable release notes mention | Keep scoped package guidance migration-only |
@@ -109,7 +109,7 @@ Near-miss to remediation traceability:
 
 ### Labeling model
 
-- Canonical command wording in runtime help/error text: `codex auth ...`
+- Canonical command wording in runtime help/error text: `codex-multi-auth ...`
 - Compatibility alias wording restricted to reference/troubleshooting/migration sections.
 - Scoped legacy package guidance restricted to migration contexts.
 
@@ -117,7 +117,7 @@ Near-miss to remediation traceability:
 
 ## Migration Path
 
-1. Canonicalize runtime usage/error strings to `codex auth ...`.
+1. Canonicalize runtime usage/error strings to `codex-multi-auth ...`.
 2. Remove alias examples from primary README/onboarding flows; keep fallback routing guidance in troubleshooting/reference.
 3. Correct docs portal reference table to current stable release (`v0.1.1`).
 4. Remove scoped package mention from stable release notes and point to upgrade guide for migration details.
@@ -125,7 +125,7 @@ Near-miss to remediation traceability:
    - `uses scoped package only in explicit legacy migration notes` (`test/documentation.test.ts:104`) enforces scoped package boundaries.
    - `keeps compatibility command aliases scoped to reference, troubleshooting, or migration docs` (`test/documentation.test.ts:127`) enforces alias-visibility boundaries with explicit allowlist files.
    - `keeps fix command flag docs aligned across README, reference, and CLI usage text` (`test/documentation.test.ts:160`) enforces canonical runtime help/error wording.
-   - Keep cross-platform verification requirements explicit: Windows-oriented validation patterns (for example HOME/USERPROFILE handling and Windows path guidance checks in `test/documentation.test.ts:244-245`) must be extended whenever new shell-sensitive command rendering is introduced, including explicit `codex auth` output-escaping checks for `cmd.exe` and `PowerShell`.
+   - Keep cross-platform verification requirements explicit: Windows-oriented validation patterns (for example HOME/USERPROFILE handling and Windows path guidance checks in `test/documentation.test.ts:244-245`) must be extended whenever new shell-sensitive command rendering is introduced, including explicit `codex-multi-auth` output-escaping checks for `cmd.exe` and `PowerShell`.
 
 ---
 

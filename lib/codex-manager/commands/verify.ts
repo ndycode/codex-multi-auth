@@ -165,7 +165,7 @@ function isWithinBase(baseDir: string, targetPath: string): boolean {
  * (homedir, tmpdir, and projectRoot as detected by resolvePath's state).
  *
  * resolvePath falls back to process.cwd() when no projectRoot is set, so when
- * the caller ran `codex auth verify --paths` from `/` or any ancestor of the
+ * the caller ran `codex-multi-auth verify --paths` from `/` or any ancestor of the
  * probe target, a naive `/etc/shadow` probe reports sandbox-broken even though
  * the sandbox is working as designed. This helper builds candidates on Windows
  * (nonexistent drive letter) or POSIX (synthetic root directory) and verifies
@@ -428,8 +428,8 @@ export function printVerifyUsage(): void {
 	console.log(
 		[
 			"Usage:",
-			"  codex auth verify --paths [--json]",
-			"  codex auth verify --flagged [--json] [--dry-run] [--no-restore]",
+			"  codex-multi-auth verify --paths [--json]",
+			"  codex-multi-auth verify --flagged [--json] [--dry-run] [--no-restore]",
 			"",
 			"Options:",
 			"  --paths           Self-test storage path resolution chain and resolvePath sandbox",
@@ -437,7 +437,7 @@ export function printVerifyUsage(): void {
 			"  --json, -j        Print machine-readable JSON output",
 			"",
 			"Notes:",
-			"  - `codex auth verify-flagged` remains available as a back-compat alias.",
+			"  - `codex-multi-auth verify-flagged` remains available as a back-compat alias.",
 			"  - `--paths` and `--flagged` cannot be combined; use `verify-flagged` when you only need flagged checks.",
 		].join("\n"),
 	);

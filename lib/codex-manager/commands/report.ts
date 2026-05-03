@@ -118,7 +118,7 @@ function isRetryableWriteError(error: unknown): boolean {
 function printReportUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
-			"Usage: codex auth report [--live] [--json] [--explain] [--model MODEL] [--out PATH]",
+			"Usage: codex-multi-auth report [--live] [--json] [--explain] [--model MODEL] [--out PATH]",
 			"",
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend",

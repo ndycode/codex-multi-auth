@@ -22,12 +22,12 @@ function printAccountUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
 			"Usage:",
-			"  codex auth account tag <index> <tag>",
-			"  codex auth account untag <index> <tag>",
-			"  codex auth account weight <index> <0..10>",
-			"  codex auth account pause|unpause|drain|undrain <index>",
-			"  codex auth account note <index> <text>",
-			"  codex auth account policy list [--json]",
+			"  codex-multi-auth account tag <index> <tag>",
+			"  codex-multi-auth account untag <index> <tag>",
+			"  codex-multi-auth account weight <index> <0..10>",
+			"  codex-multi-auth account pause|unpause|drain|undrain <index>",
+			"  codex-multi-auth account note <index> <text>",
+			"  codex-multi-auth account policy list [--json]",
 		].join("\n"),
 	);
 }

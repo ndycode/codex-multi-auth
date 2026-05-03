@@ -6,10 +6,13 @@ Complete command, flag, and hotkey reference for `codex-multi-auth`.
 
 ## Canonical Command Family
 
-Primary operations use `codex auth ...`.
+Primary operations use `codex-multi-auth ...`.
 
-Compatibility aliases are supported:
+Compatibility forms are supported for migrations and wrapper-routed environments:
 
+- `codex-multi-auth auth ...`
+- `codex-multi-auth-codex auth ...`
+- `codex auth ...` when this package's wrapper has explicitly been installed or aliased as `codex`
 - `codex multi auth ...`
 - `codex multi-auth ...`
 - `codex multiauth ...`
@@ -20,9 +23,9 @@ Compatibility aliases are supported:
 
 | Command | Description |
 | --- | --- |
-| `codex auth login` | Open interactive auth dashboard |
-| `codex auth status` | Print short runtime/account summary |
-| `codex auth check` | Run quick account health check |
+| `codex-multi-auth login` | Open interactive auth dashboard |
+| `codex-multi-auth status` | Print short runtime/account summary |
+| `codex-multi-auth check` | Run quick account health check |
 
 ---
 
@@ -30,11 +33,11 @@ Compatibility aliases are supported:
 
 | Command | Description |
 | --- | --- |
-| `codex auth list` | List saved accounts and active account |
-| `codex auth switch <index>` | Set active account by index |
-| `codex auth forecast` | Forecast best account by readiness/risk |
-| `codex auth best` | Pick and optionally sync the best account |
-| `codex auth account ...` | Manage local account policy metadata |
+| `codex-multi-auth list` | List saved accounts and active account |
+| `codex-multi-auth switch <index>` | Set active account by index |
+| `codex-multi-auth forecast` | Forecast best account by readiness/risk |
+| `codex-multi-auth best` | Pick and optionally sync the best account |
+| `codex-multi-auth account ...` | Manage local account policy metadata |
 
 ---
 
@@ -42,13 +45,13 @@ Compatibility aliases are supported:
 
 | Command | Description |
 | --- | --- |
-| `codex auth verify-flagged` | Verify flagged accounts and optionally restore healthy accounts |
-| `codex auth verify [--paths|--flagged|--all]` | Self-test storage path chain and sandbox probes; optionally delegate flagged verification |
-| `codex auth fix` | Apply safe account storage fixes |
-| `codex auth doctor` | Run diagnostics and optional repairs |
-| `codex auth config explain` | Print effective config values and their sources |
-| `codex auth init-config [modern|legacy|minimal]` | Print a starter config template |
-| `codex auth debug bundle` | Print a bundled runtime/debug snapshot |
+| `codex-multi-auth verify-flagged` | Verify flagged accounts and optionally restore healthy accounts |
+| `codex-multi-auth verify [--paths|--flagged|--all]` | Self-test storage path chain and sandbox probes; optionally delegate flagged verification |
+| `codex-multi-auth fix` | Apply safe account storage fixes |
+| `codex-multi-auth doctor` | Run diagnostics and optional repairs |
+| `codex-multi-auth config explain` | Print effective config values and their sources |
+| `codex-multi-auth init-config [modern|legacy|minimal]` | Print a starter config template |
+| `codex-multi-auth debug bundle` | Print a bundled runtime/debug snapshot |
 
 ---
 
@@ -56,16 +59,16 @@ Compatibility aliases are supported:
 
 | Command | Description |
 | --- | --- |
-| `codex auth features` | Print implemented feature summary |
-| `codex auth report` | Generate full health report |
-| `codex auth usage` | Summarize local usage ledger rows |
-| `codex auth budget ...` | Manage local budget guard limits |
-| `codex auth bridge token ...` | Manage local bridge bearer tokens |
-| `codex auth integrations` | Generate local bridge client snippets |
-| `codex auth models` | Inspect local model/account capability views |
-| `codex auth monitor` | Aggregate runtime, usage, policy, quota, model, and project state |
-| `codex auth why-selected [--now|--last]` | Explain which account the selector picks now or via the last persisted runtime snapshot |
-| `codex auth rotation enable\|disable\|status\|bind-app\|unbind-app` | Manage the default-on runtime Responses proxy for live Codex account rotation |
+| `codex-multi-auth features` | Print implemented feature summary |
+| `codex-multi-auth report` | Generate full health report |
+| `codex-multi-auth usage` | Summarize local usage ledger rows |
+| `codex-multi-auth budget ...` | Manage local budget guard limits |
+| `codex-multi-auth bridge token ...` | Manage local bridge bearer tokens |
+| `codex-multi-auth integrations` | Generate local bridge client snippets |
+| `codex-multi-auth models` | Inspect local model/account capability views |
+| `codex-multi-auth monitor` | Aggregate runtime, usage, policy, quota, model, and project state |
+| `codex-multi-auth why-selected [--now|--last]` | Explain which account the selector picks now or via the last persisted runtime snapshot |
+| `codex-multi-auth rotation enable\|disable\|status\|bind-app\|unbind-app` | Manage the default-on runtime Responses proxy for live Codex account rotation |
 
 ---
 
@@ -96,7 +99,7 @@ Compatibility aliases are supported:
 
 ---
 
-## `codex auth account`
+## `codex-multi-auth account`
 
 Stores local account policy metadata for future routing and budget enforcement.
 Policy keys are hashed from account identity; raw account ids and raw emails are
@@ -105,15 +108,15 @@ not stored in the policy file.
 Usage:
 
 ```bash
-codex auth account tag <index> <tag>
-codex auth account untag <index> <tag>
-codex auth account weight <index> <0..10>
-codex auth account pause <index>
-codex auth account unpause <index>
-codex auth account drain <index>
-codex auth account undrain <index>
-codex auth account note <index> <text>
-codex auth account policy list [--json]
+codex-multi-auth account tag <index> <tag>
+codex-multi-auth account untag <index> <tag>
+codex-multi-auth account weight <index> <0..10>
+codex-multi-auth account pause <index>
+codex-multi-auth account unpause <index>
+codex-multi-auth account drain <index>
+codex-multi-auth account undrain <index>
+codex-multi-auth account note <index> <text>
+codex-multi-auth account policy list [--json]
 ```
 
 Notes:
@@ -125,7 +128,7 @@ Notes:
 
 ---
 
-## `codex auth usage`
+## `codex-multi-auth usage`
 
 Summarizes the local usage ledger. Rows are local-only metadata and do not
 contain prompts, tokens, auth headers, raw account emails, or raw sensitive
@@ -134,8 +137,8 @@ account ids.
 Usage:
 
 ```bash
-codex auth usage [--since <time|duration>] [--by <model|account|project|outcome|day>] [--json|--csv] [--out <path>]
-codex auth usage rotate [--if-larger-than-bytes <bytes>] [--json]
+codex-multi-auth usage [--since <time|duration>] [--by <model|account|project|outcome|day>] [--json|--csv] [--out <path>]
+codex-multi-auth usage rotate [--if-larger-than-bytes <bytes>] [--json]
 ```
 
 Flags:
@@ -161,11 +164,11 @@ write failures.
 These commands are local-only and operate on files under `~/.codex/multi-auth`.
 
 ```bash
-codex auth budget limit <key> --window <hour|day|week|month> [--max-requests <n>] [--max-tokens <n>] [--max-cost-usd <n>]
-codex auth budget check <key> [--json]
-codex auth budget list [--json]
-codex auth models [--json] [--model <model>]
-codex auth monitor [--json]
+codex-multi-auth budget limit <key> --window <hour|day|week|month> [--max-requests <n>] [--max-tokens <n>] [--max-cost-usd <n>]
+codex-multi-auth budget check <key> [--json]
+codex-multi-auth budget list [--json]
+codex-multi-auth models [--json] [--model <model>]
+codex-multi-auth monitor [--json]
 ```
 
 `monitor` aggregates runtime observability, usage, policy, routing profile,
@@ -181,11 +184,11 @@ The optional local bridge exposes only `/health`, `/v1/models`, and
 by default.
 
 ```bash
-codex auth bridge token create [--label <label>]
-codex auth bridge token list
-codex auth bridge token rotate <id>
-codex auth bridge token revoke <id>
-codex auth integrations [--kind <opencode|openclaw|python|curl|env>] [--base-url <url>] [--model <model>] [--json]
+codex-multi-auth bridge token create [--label <label>]
+codex-multi-auth bridge token list
+codex-multi-auth bridge token rotate <id>
+codex-multi-auth bridge token revoke <id>
+codex-multi-auth integrations [--kind <opencode|openclaw|python|curl|env>] [--base-url <url>] [--model <model>] [--json]
 ```
 
 Plain local bridge tokens are printed only on `create` and `rotate`. The token
@@ -196,7 +199,7 @@ Generated snippets use `CODEX_MULTI_AUTH_LOCAL_KEY`. The Python snippet uses
 
 ---
 
-## `codex auth why-selected`
+## `codex-multi-auth why-selected`
 
 Explains which account the rotation selector would pick right now, with
 per-candidate scoring. Useful for reproducing rotation decisions from support
@@ -205,7 +208,7 @@ bundles or scripted diagnostics.
 Usage:
 
 ```bash
-codex auth why-selected [--now | --last] [--json]
+codex-multi-auth why-selected [--now | --last] [--json]
 ```
 
 Flags:
@@ -263,18 +266,18 @@ The `runtimeSnapshot` field is present only with `--last`. `selected` is
 
 ---
 
-## `codex auth rotation`
+## `codex-multi-auth rotation`
 
-Manages the default-on runtime Responses proxy used by forwarded official Codex sessions. This is separate from normal `codex auth switch`: the proxy can rotate managed accounts between backend Responses requests while a Codex session stays open.
+Manages the default-on runtime Responses proxy used by forwarded official Codex sessions. This is separate from normal `codex-multi-auth switch`: the proxy can rotate managed accounts between backend Responses requests while a Codex session stays open.
 
 Usage:
 
 ```bash
-codex auth rotation enable
-codex auth rotation disable
-codex auth rotation status
-codex auth rotation bind-app
-codex auth rotation unbind-app
+codex-multi-auth rotation enable
+codex-multi-auth rotation disable
+codex-multi-auth rotation status
+codex-multi-auth rotation bind-app
+codex-multi-auth rotation unbind-app
 ```
 
 Behavior:
@@ -288,11 +291,11 @@ Behavior:
 
 When enabled, the wrapper creates a temporary shadow `CODEX_HOME/config.toml` with a custom provider named `codex-multi-auth-runtime-proxy`, starts a `127.0.0.1` proxy on a random port, and forwards official Codex Responses traffic through that provider. This applies to CLI request commands plus `codex app-server` and `codex app` when they are launched through the wrapper. Existing behavior is unchanged while the setting and env override are off.
 
-If every managed account is temporarily unavailable, the proxy returns `codex_runtime_rotation_pool_exhausted` with a retry hint pointing back to `codex auth rotation status`.
+If every managed account is temporarily unavailable, the proxy returns `codex_runtime_rotation_pool_exhausted` with a retry hint pointing back to `codex-multi-auth rotation status`.
 
 Packaged desktop app support uses a reversible bind instead of patching app files. It backs up the real Codex `config.toml`, writes the same custom provider to the real Codex home, starts a localhost-only router, and installs a user login startup entry: a Startup `.cmd` on Windows or a LaunchAgent on macOS. The provider uses a local app-bind client token and `requires_openai_auth=false`, which keeps the selected multi-auth account out of the runtime composer while preserving router last-account telemetry for codex-multi-auth status and quota views. Package install/update runs the same bind by default when runtime rotation is enabled and a Codex desktop app is detected; set `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0` to skip that self-heal or `CODEX_MULTI_AUTH_APP_BIND_INSTALL=1` to force it. Global install/update also routes supported user-level app launchers by default; set `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0` to skip launcher routing. Installed wrappers may perform a best-effort daily npm version check during normal forwarded Codex startup; if a newer release exists, they only print `npm install -g codex-multi-auth@latest` and never mutate the package install.
 
-Because packaged app bind changes the real Codex `model_provider` to `codex-multi-auth-runtime-proxy`, current Codex Desktop builds can hide older local threads that were indexed under the original provider. This is a visibility/provider-filtering limitation, not expected data loss: rollout files, `session_index.jsonl`, and Codex SQLite state normally remain under `~/.codex`. If you need to browse old Desktop history, run `codex auth rotation unbind-app` or `codex auth rotation disable`, reopen Codex, and re-bind when you want app-level rotation again.
+Because packaged app bind changes the real Codex `model_provider` to `codex-multi-auth-runtime-proxy`, current Codex Desktop builds can hide older local threads that were indexed under the original provider. This is a visibility/provider-filtering limitation, not expected data loss: rollout files, `session_index.jsonl`, and Codex SQLite state normally remain under `~/.codex`. If you need to browse old Desktop history, run `codex-multi-auth rotation unbind-app` or `codex-multi-auth rotation disable`, reopen Codex, and re-bind when you want app-level rotation again.
 
 Model speed/reasoning controls also remain Codex-owned. For wrapper-launched CLI sessions, set `model_reasoning_effort` in `~/.codex/config.toml` or pass `-c model_reasoning_effort=<level>`; the app bind does not add a separate Desktop speed selector.
 
@@ -302,18 +305,18 @@ If Windows exposes Codex only as a packaged `shell:AppsFolder` entry, shortcut r
 
 ---
 
-## `codex auth verify`
+## `codex-multi-auth verify`
 
-Supersedes `codex auth verify-flagged` as a single entry point for
+Supersedes `codex-multi-auth verify-flagged` as a single entry point for
 installation self-tests. `verify-flagged` continues to work as a
 back-compat alias.
 
 Usage:
 
 ```bash
-codex auth verify --paths [--json]
-codex auth verify --flagged [--json] [--dry-run] [--no-restore]
-codex auth verify --all [--json] [--dry-run] [--no-restore]
+codex-multi-auth verify --paths [--json]
+codex-multi-auth verify --flagged [--json] [--dry-run] [--no-restore]
+codex-multi-auth verify --all [--json] [--dry-run] [--no-restore]
 ```
 
 Flags:
@@ -325,7 +328,7 @@ Flags:
   `resolvePath` accepts paths inside home and temp directories but rejects
   a synthetic outside-sandbox escape candidate.
 - `--flagged`: delegate to flagged-account verification (same behavior and
-  flags as `codex auth verify-flagged`).
+  flags as `codex-multi-auth verify-flagged`).
 - `--all`: run `--paths` followed by `--flagged` in the same invocation.
 - `--json`, `-j`: emit machine-readable JSON.
 - `--dry-run`, `--no-restore`: forwarded to `verify-flagged` when
@@ -375,26 +378,27 @@ failure.
 
 ## Upgrade Notes
 
-- `codex auth login` remains browser-first by default.
-- `codex auth login --device-auth` uses OpenAI Codex device-code login. It prints `https://auth.openai.com/codex/device` and a one-time code, then polls for completion without opening a browser or starting the local callback server.
-- `codex auth login --manual` and `codex auth login --no-browser` force the manual callback flow instead of launching a browser.
+- `codex-multi-auth login` remains browser-first by default.
+- `codex-multi-auth login --device-auth` uses OpenAI Codex device-code login. It prints `https://auth.openai.com/codex/device` and a one-time code, then polls for completion without opening a browser or starting the local callback server.
+- `codex-multi-auth login --manual` and `codex-multi-auth login --no-browser` force the manual callback flow instead of launching a browser.
 - `CODEX_AUTH_NO_BROWSER=1` suppresses browser launch for automation/headless sessions. False-like values such as `0` and `false` do not disable browser launch by themselves.
-- In non-TTY/manual shells, pass the full redirect URL on stdin, for example: `echo "http://127.0.0.1:1455/auth/callback?code=..." | codex auth login --manual`.
-- `codex auth forecast --explain` now keeps the explain breakdown visible in text mode even when dashboard settings hide recommendation summary lines. Pair it with `--json` for machine-readable reasoning snapshots.
+- In non-TTY/manual shells, pass the full redirect URL on stdin, for example: `echo "http://127.0.0.1:1455/auth/callback?code=..." | codex-multi-auth login --manual`.
+- `codex-multi-auth forecast --explain` now keeps the explain breakdown visible in text mode even when dashboard settings hide recommendation summary lines. Pair it with `--json` for machine-readable reasoning snapshots.
 - No new npm scripts or storage migration steps were introduced for this auth-flow update.
 
 ---
 
 ## Compatibility and Non-TTY Behavior
 
-- `codex` remains the primary wrapper entrypoint. It routes `codex auth ...` and the compatibility aliases to the multi-auth runtime, and forwards every other command to the official `@openai/codex` CLI.
-- `codex --version` reports the official `@openai/codex` CLI version.
-- `codex-multi-auth --version` and `codex-multi-auth -v` report the installed wrapper package version.
+- `codex-multi-auth` is the primary account-manager entrypoint and accepts bare subcommands such as `status`, `login`, and `rotation status`.
+- `codex-multi-auth-codex` is the optional forwarding wrapper. It handles `auth ...` locally and forwards every other command to the official `@openai/codex` CLI.
+- `codex --version` reports the official `@openai/codex` CLI version when the official CLI owns the `codex` name.
+- `codex-multi-auth --version` and `codex-multi-auth -v` report the installed manager package version.
 - In non-TTY or host-managed sessions, including `CODEX_TUI=1`, `CODEX_DESKTOP=1`, `TERM_PROGRAM=codex`, or `ELECTRON_RUN_AS_NODE=1`, auth flows degrade to deterministic text behavior.
-- The non-TTY fallback keeps `codex auth login` predictable: it defaults to add-account mode, skips the extra "add another account" prompt, and auto-picks the default workspace selection when a follow-up choice is needed.
-- `codex auth login --device-auth` is the preferred remote/headless login path because it needs only a browser on any device plus the printed one-time code.
-- `codex auth login --manual` keeps the login flow usable in browser-restricted shells by printing the OAuth URL and accepting manual callback input instead of trying to open a browser.
-- In non-TTY/manual shells, provide the full redirect URL on stdin, for example: `echo "http://127.0.0.1:1455/auth/callback?code=..." | codex auth login --manual`.
+- The non-TTY fallback keeps `codex-multi-auth login` predictable: it defaults to add-account mode, skips the extra "add another account" prompt, and auto-picks the default workspace selection when a follow-up choice is needed.
+- `codex-multi-auth login --device-auth` is the preferred remote/headless login path because it needs only a browser on any device plus the printed one-time code.
+- `codex-multi-auth login --manual` keeps the login flow usable in browser-restricted shells by printing the OAuth URL and accepting manual callback input instead of trying to open a browser.
+- In non-TTY/manual shells, provide the full redirect URL on stdin, for example: `echo "http://127.0.0.1:1455/auth/callback?code=..." | codex-multi-auth login --manual`.
 
 ---
 
@@ -438,17 +442,17 @@ Settings screen hotkeys are panel-specific:
 Health and planning:
 
 ```bash
-codex auth check
-codex auth forecast --live --explain --model gpt-5.3-codex
-codex auth report --live --json
+codex-multi-auth check
+codex-multi-auth forecast --live --explain --model gpt-5.3-codex
+codex-multi-auth report --live --json
 ```
 
 Repair and recovery:
 
 ```bash
-codex auth fix --dry-run
-codex auth fix --live --model gpt-5.3-codex
-codex auth doctor --fix
+codex-multi-auth fix --dry-run
+codex-multi-auth fix --live --model gpt-5.3-codex
+codex-multi-auth doctor --fix
 ```
 
 ---

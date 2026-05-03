@@ -1925,7 +1925,7 @@ describe("codex manager cli commands", () => {
 		expect(saveAccountsMock).not.toHaveBeenCalled();
 		expect(queuedRefreshMock).not.toHaveBeenCalled();
 		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
-		expect(logSpy.mock.calls[0]?.[0]).toContain("codex auth best");
+		expect(logSpy.mock.calls[0]?.[0]).toContain("codex-multi-auth best");
 	});
 
 	it("rejects malformed best args before switching accounts", async () => {
@@ -1941,7 +1941,7 @@ describe("codex manager cli commands", () => {
 		expect(saveAccountsMock).not.toHaveBeenCalled();
 		expect(queuedRefreshMock).not.toHaveBeenCalled();
 		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
-		expect(logSpy.mock.calls[0]?.[0]).toContain("codex auth best");
+		expect(logSpy.mock.calls[0]?.[0]).toContain("codex-multi-auth best");
 	});
 
 	it("rejects unknown best args before switching accounts", async () => {
@@ -1957,7 +1957,7 @@ describe("codex manager cli commands", () => {
 		expect(saveAccountsMock).not.toHaveBeenCalled();
 		expect(queuedRefreshMock).not.toHaveBeenCalled();
 		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
-		expect(logSpy.mock.calls[0]?.[0]).toContain("codex auth best");
+		expect(logSpy.mock.calls[0]?.[0]).toContain("codex-multi-auth best");
 	});
 
 	it("rejects --model without --live before loading accounts", async () => {
@@ -1974,14 +1974,14 @@ describe("codex manager cli commands", () => {
 
 		expect(exitCode).toBe(1);
 		expect(errorSpy).toHaveBeenCalledWith(
-			"--model requires --live for codex auth best",
+			"--model requires --live for codex-multi-auth best",
 		);
 		expect(loadAccountsMock).not.toHaveBeenCalled();
 		expect(saveAccountsMock).not.toHaveBeenCalled();
 		expect(fetchCodexQuotaSnapshotMock).not.toHaveBeenCalled();
 		expect(queuedRefreshMock).not.toHaveBeenCalled();
 		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
-		expect(logSpy.mock.calls[0]?.[0]).toContain("codex auth best");
+		expect(logSpy.mock.calls[0]?.[0]).toContain("codex-multi-auth best");
 	});
 
 	it("prints json error when no accounts are configured for best", async () => {
@@ -3308,7 +3308,7 @@ describe("codex manager cli commands", () => {
 			recommendedSwitchCommand: string | null;
 		};
 		expect(payload.changed).toBe(true);
-		expect(payload.recommendedSwitchCommand).toBe("codex auth switch 2");
+		expect(payload.recommendedSwitchCommand).toBe("codex-multi-auth switch 2");
 	});
 
 	it("persists refreshed probe tokens before best-account switch", async () => {
@@ -4668,13 +4668,13 @@ describe("codex manager cli commands", () => {
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
 		expect(renderedLogs).toContain("Next steps:");
 		expect(renderedLogs).toContain(
-			"  codex auth status  Check that the wrapper is active.",
+			"  codex-multi-auth status  Check that the wrapper is active.",
 		);
 		expect(renderedLogs).toContain(
-			"  codex auth check   Confirm your saved accounts look healthy.",
+			"  codex-multi-auth check   Confirm your saved accounts look healthy.",
 		);
 		expect(renderedLogs).toContain(
-			"  codex auth list    Review saved accounts before switching.",
+			"  codex-multi-auth list    Review saved accounts before switching.",
 		);
 		logSpy.mockRestore();
 	});

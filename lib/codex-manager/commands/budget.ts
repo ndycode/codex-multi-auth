@@ -24,9 +24,9 @@ function printBudgetUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
 			"Usage:",
-			"  codex auth budget limit <key> --window <hour|day|week|month> [--requests N] [--tokens N] [--cost USD]",
-			"  codex auth budget check <key> [--json]",
-			"  codex auth budget list [--json]",
+			"  codex-multi-auth budget limit <key> --window <hour|day|week|month> [--requests N] [--tokens N] [--cost USD]",
+			"  codex-multi-auth budget check <key> [--json]",
+			"  codex-multi-auth budget list [--json]",
 		].join("\n"),
 	);
 }

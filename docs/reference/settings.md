@@ -1,6 +1,6 @@
 # Settings Reference
 
-Reference for dashboard display settings and runtime `pluginConfig` values available from `codex auth login` -> `Settings`.
+Reference for dashboard display settings and runtime `pluginConfig` values available from `codex-multi-auth login` -> `Settings`.
 
 `pluginConfig` is the persisted compatibility name for runtime settings. It covers wrapper/runtime rotation behavior and optional plugin-host behavior.
 
@@ -233,9 +233,9 @@ For most environments:
 After changes:
 
 ```bash
-codex auth status
-codex auth check
-codex auth forecast --live
+codex-multi-auth status
+codex-multi-auth check
+codex-multi-auth forecast --live
 ```
 
 ---

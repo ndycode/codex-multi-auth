@@ -36,9 +36,9 @@ export function applyAccountStorageScopeFromConfig(
 					`are collapsed to the GLOBAL pool (credentials are NOT isolated ` +
 					`per project/worktree). ` +
 					`To restore per-project isolation, either (a) disable Codex CLI ` +
-					`sync via 'codex auth config set codexCliSync false', or ` +
+					`sync via 'codex-multi-auth config set codexCliSync false', or ` +
 					`(b) disable perProjectAccounts via ` +
-					`'codex auth config set perProjectAccounts false' (acknowledges ` +
+					`'codex-multi-auth config set perProjectAccounts false' (acknowledges ` +
 					`the global scope). This warning is emitted once per process.`,
 			);
 		}

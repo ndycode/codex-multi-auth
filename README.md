@@ -16,7 +16,7 @@ Codex CLI-first multi-account OAuth manager for the official Codex CLI. The pack
 ## What You Get
 
 - Conflict-free `codex-multi-auth ...` workflow for account login, switching, checks, and diagnostics
-- Official Codex CLI forwarding for all non-auth commands
+- Optional `codex-multi-auth-codex ...` forwarding wrapper for official Codex CLI commands
 - Multi-account OAuth pool with health-aware selection and automatic failover
 - Project-scoped account storage under `~/.codex/multi-auth/projects/<project-key>/...`
 - Interactive dashboard for account actions and settings
@@ -32,6 +32,20 @@ Codex CLI-first multi-account OAuth manager for the official Codex CLI. The pack
 - Proactive refresh and preemptive quota deferral controls
 - Codex-oriented request/prompt compatibility with strict runtime handling
 - Stable docs set for install, config, troubleshooting, and upgrade paths
+
+---
+
+## Current Architecture At A Glance
+
+`codex-multi-auth` now ships three conflict-free global binaries:
+
+| Binary | Purpose |
+| --- | --- |
+| `codex-multi-auth` | Primary account manager; accepts bare auth subcommands such as `login`, `status`, `switch`, `forecast`, and `rotation status` |
+| `codex-multi-auth-codex` | Optional wrapper that handles `auth ...` locally and forwards every other command to the official Codex CLI |
+| `codex-multi-auth-app-launcher` | Optional desktop launcher helper for supported user-level shortcuts and wrapper apps |
+
+The package does not publish a global `codex` binary. Keep `codex` owned by the official OpenAI install path and use `codex-multi-auth-codex ...` only when you intentionally want this package's forwarding wrapper.
 
 ---
 
@@ -312,7 +326,7 @@ codex-multi-auth login
 <details>
 <summary><b>Common symptoms</b></summary>
 
-- `codex auth` unrecognized: run `where codex` or `which codex`, then follow `docs/troubleshooting.md` for routing fallback commands
+- `codex-multi-auth` unrecognized: run `where codex-multi-auth` or `which codex-multi-auth`, then follow `docs/troubleshooting.md` for install checks
 - Switch succeeds but wrong account appears active: run `codex-multi-auth switch <index>`, then restart session
 - Requests fail fast with a pool cooldown message: wait for the cooldown window or inspect `codex-multi-auth status`
 - Requests fail fast after repeated upstream 5xx errors: inspect `codex-multi-auth report --json` for runtime traffic and cooldown details

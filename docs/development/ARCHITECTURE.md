@@ -6,7 +6,7 @@ Runtime architecture for the Codex CLI wrapper, local OAuth account manager, def
 
 ## Design Goals
 
-1. Keep account management simple for end users (`codex auth ...`).
+1. Keep account management simple for end users (`codex-multi-auth ...`).
 2. Preserve official Codex CLI behavior for non-auth commands.
 3. Route live account rotation by default while keeping explicit opt-out controls.
 4. Keep runtime rotation local, reversible, and compatible with official Codex state files.
@@ -20,19 +20,20 @@ Runtime architecture for the Codex CLI wrapper, local OAuth account manager, def
 ```text
 Terminal user
   |
-  | codex auth ...
+  | codex-multi-auth ...
   v
-scripts/codex.js
-  |- normalizes auth aliases
-  |- handles auth subcommands through lib/codex-manager.ts
+scripts/codex-multi-auth.js
+  |- normalizes bare manager subcommands to auth subcommands
+  |- handles account-manager subcommands through lib/codex-manager.ts
   |- writes/reads ~/.codex/multi-auth/*
   |- syncs active account to official Codex CLI files
 
 Terminal user
   |
-  | codex exec/review/resume/app/...
+  | codex-multi-auth-codex exec/review/resume/app/...
   v
 scripts/codex.js
+  |- handles auth subcommands locally
   |- discovers official Codex binary
   |- injects file-backed auth store unless caller opted out
   |- optionally creates shadow CODEX_HOME for runtime rotation
@@ -78,8 +79,8 @@ Codex or ChatGPT-backed request flow
 
 | Subsystem | Key files | Responsibility |
 | --- | --- | --- |
-| CLI wrapper | `scripts/codex.js`, `scripts/codex-routing.js`, `scripts/codex-bin-resolver.js` | Command routing, official Codex discovery, file-store forwarding, shadow-home setup |
-| Standalone package CLI | `scripts/codex-multi-auth.js` | Direct package entrypoint and version surface |
+| Standalone package CLI | `scripts/codex-multi-auth.js`, `scripts/codex-routing.js` | Primary conflict-free account-manager entrypoint, bare-subcommand normalization, version surface |
+| Optional forwarding wrapper | `scripts/codex.js`, `scripts/codex-routing.js`, `scripts/codex-bin-resolver.js` | Local auth routing, official Codex discovery, file-store forwarding, shadow-home setup |
 | Auth flow | `lib/auth/auth.ts`, `lib/auth/server.ts`, `lib/auth/browser.ts` | PKCE OAuth flow, callback handling, browser/manual auth path |
 | Account manager | `lib/codex-manager.ts`, `lib/codex-manager/commands/`, `lib/accounts.ts` | Dashboard actions, account selection, health operations, repair commands |
 | Runtime rotation proxy | `lib/runtime-rotation-proxy.ts`, `lib/runtime-constants.ts`, `lib/runtime/config-toml.ts` | Loopback Responses/model proxy, provider config rewrite, local client auth, rotation/failover |
@@ -169,8 +170,8 @@ Official Codex-owned files remain under `~/.codex`, including `auth.json`, `acco
 
 1. OAuth callback port remains `1455`.
 2. Dist folder is generated output only.
-3. Non-auth `codex` commands forward to official Codex unless the command is intentionally handled by the local auth manager.
-4. Canonical account-management commands remain `codex auth ...`.
+3. Non-auth `codex-multi-auth-codex` commands forward to official Codex unless the command is intentionally handled by the local auth manager.
+4. Canonical account-management commands remain `codex-multi-auth ...`.
 5. Runtime rotation is default-on and loopback-only.
 6. Runtime proxy client authentication uses a local per-process token.
 7. Runtime proxy client responses must not include account emails, auth tokens, or stale decoded content-encoding metadata.

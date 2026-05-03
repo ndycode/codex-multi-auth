@@ -25,7 +25,7 @@ function printMonitorUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
 			"Usage:",
-			"  codex auth monitor [--json]",
+			"  codex-multi-auth monitor [--json]",
 			"",
 			"Aggregates local runtime, usage, policy, profile, model, quota, and project context.",
 		].join("\n"),

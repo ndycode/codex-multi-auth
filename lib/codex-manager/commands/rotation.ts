@@ -82,12 +82,12 @@ function printRotationUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
 			"Usage:",
-			"  codex auth rotation enable",
-			"  codex auth rotation disable",
-			"  codex auth rotation status",
-			"  codex auth rotation bind-app",
-			"  codex auth rotation unbind-app",
-			"  codex auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]",
+			"  codex-multi-auth rotation enable",
+			"  codex-multi-auth rotation disable",
+			"  codex-multi-auth rotation status",
+			"  codex-multi-auth rotation bind-app",
+			"  codex-multi-auth rotation unbind-app",
+			"  codex-multi-auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]",
 			"",
 			"Behavior:",
 			"  - Runtime rotation is enabled by default for request-bearing Codex sessions",
@@ -187,14 +187,14 @@ function parseResetRateLimitsArgs(args: string[]): ParseResetRateLimitsResult {
 }
 
 /**
- * Print the focused `codex auth rotation reset-rate-limits` help block, including the
+ * Print the focused `codex-multi-auth rotation reset-rate-limits` help block, including the
  * proxy-restart guidance users need to run after a successful clear.
  */
 function printResetRateLimitsUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
 			"Usage:",
-			"  codex auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]",
+			"  codex-multi-auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]",
 			"",
 			"Options:",
 			"  --all              Clear timers for every account (default)",
@@ -205,21 +205,21 @@ function printResetRateLimitsUsage(logInfo: (message: string) => void): void {
 			"Notes:",
 			"  - Clears stored rateLimitResetTimes entries with reset times still in the future",
 			"    and any active coolingDownUntil entries.",
-			"  - Use when `codex auth fix --live` confirms upstream quota is available but the",
+			"  - Use when `codex-multi-auth fix --live` confirms upstream quota is available but the",
 			"    runtime rotation proxy still returns 503 pool-exhausted.",
 			"  - If a runtime rotation proxy is currently running it may re-persist its in-memory",
-			"    timers and revert these changes. After clearing, run `codex auth rotation disable`",
-			"    then `codex auth rotation enable` (or restart the Codex app) to flush in-memory",
+			"    timers and revert these changes. After clearing, run `codex-multi-auth rotation disable`",
+			"    then `codex-multi-auth rotation enable` (or restart the Codex app) to flush in-memory",
 			"    state and reload from disk.",
 		].join("\n"),
 	);
 }
 
 const RESET_RATE_LIMITS_RESTART_HINT =
-	"If a runtime rotation proxy is currently running it may re-persist its in-memory timers and revert these changes. Run `codex auth rotation disable` then `codex auth rotation enable` (or restart the Codex app) to flush in-memory state and reload from disk.";
+	"If a runtime rotation proxy is currently running it may re-persist its in-memory timers and revert these changes. Run `codex-multi-auth rotation disable` then `codex-multi-auth rotation enable` (or restart the Codex app) to flush in-memory state and reload from disk.";
 
 /**
- * Implement `codex auth rotation reset-rate-limits`: load the shared (non-project-scoped)
+ * Implement `codex-multi-auth rotation reset-rate-limits`: load the shared (non-project-scoped)
  * account pool, scan for currently-blocking `rateLimitResetTimes` and `coolingDownUntil`
  * entries, optionally clear them, and persist via {@link saveAccountsWithRetry}.
  *

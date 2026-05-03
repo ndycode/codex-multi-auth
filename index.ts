@@ -789,7 +789,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 					if (accountManager.getAccountCount() === 0) {
 						logDebug(
-							`[${PLUGIN_NAME}] No OAuth accounts available (run codex login)`,
+							`[${PLUGIN_NAME}] No OAuth accounts available (run codex-multi-auth login)`,
 						);
 						return {};
 					}
@@ -1113,7 +1113,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									return new Response(
 										JSON.stringify({
 											error: {
-												message: `The account pool is cooling down after recent rate-limit exhaustion. Try again in ${formatWaitTime(poolCooldownRemainingMs)} or inspect \`codex auth status\`.`,
+												message: `The account pool is cooling down after recent rate-limit exhaustion. Try again in ${formatWaitTime(poolCooldownRemainingMs)} or inspect \`codex-multi-auth status\`.`,
 											},
 										}),
 										{
@@ -1139,7 +1139,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									return new Response(
 										JSON.stringify({
 											error: {
-												message: `Multiple accounts recently failed with upstream server errors. Try again in ${formatWaitTime(serverBurstCooldownRemainingMs)} or inspect \`codex auth report --json\`.`,
+												message: `Multiple accounts recently failed with upstream server errors. Try again in ${formatWaitTime(serverBurstCooldownRemainingMs)} or inspect \`codex-multi-auth report --json\`.`,
 											},
 										}),
 										{
@@ -1397,7 +1397,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												accountManager.saveToDiskDebounced();
 												await showRuntimeToast(
 													client,
-													`Removed ${accountLabel} after ${failures} consecutive auth failures. Run 'codex login' to re-add.`,
+													`Removed ${accountLabel} after ${failures} consecutive auth failures. Run 'codex-multi-auth login' to re-add.`,
 													"error",
 													{ duration: toastDurationMs * 2 },
 												);
@@ -2815,7 +2815,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																return new Response(
 																	JSON.stringify({
 																		error: {
-																			message: `Upstream server failures were observed across multiple accounts. Pausing retries for ${formatWaitTime(serverBurstCooldownUntil - Date.now())}. Check \`codex auth report --json\` for runtime metrics.`,
+																			message: `Upstream server failures were observed across multiple accounts. Pausing retries for ${formatWaitTime(serverBurstCooldownUntil - Date.now())}. Check \`codex-multi-auth report --json\` for runtime metrics.`,
 																		},
 																	}),
 																	{
@@ -2955,10 +2955,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											: "a bit";
 									const message =
 										count === 0
-											? "No Codex accounts configured. Run `codex login`."
+											? "No Codex accounts configured. Run `codex-multi-auth login`."
 											: effectiveWaitMs > 0
-												? `All ${count} account(s) are rate-limited. A short pool cooldown is now active for ${waitLabel}. Try again later or inspect \`codex auth status\`.`
-												: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex auth report --json\`.`;
+												? `All ${count} account(s) are rate-limited. A short pool cooldown is now active for ${waitLabel}. Try again later or inspect \`codex-multi-auth status\`.`
+												: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex-multi-auth report --json\`.`;
 									runtimeMetrics.failedRequests++;
 									runtimeMetrics.lastError = message;
 									syncRuntimeObservability(requestTraceId);
@@ -3570,7 +3570,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								...formatUiHeader(ui, "Codex accounts"),
 								"",
 								formatUiItem(ui, "No accounts configured.", "warning"),
-								formatUiItem(ui, "Run: codex login", "accent"),
+								formatUiItem(ui, "Run: codex-multi-auth login", "accent"),
 								formatUiKeyValue(ui, "Storage", storePath, "muted"),
 							].join("\n");
 						}
@@ -3578,7 +3578,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							"No Codex accounts configured.",
 							"",
 							"Add accounts:",
-							"  codex login",
+							"  codex-multi-auth login",
 							"",
 							`Storage: ${storePath}`,
 						].join("\n");
@@ -3658,7 +3658,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 						lines.push("");
 						lines.push(...formatUiSection(ui, "Commands"));
-						lines.push(formatUiItem(ui, "Add account: codex login", "accent"));
+						lines.push(formatUiItem(ui, "Add account: codex-multi-auth login", "accent"));
 						lines.push(
 							formatUiItem(ui, "Switch account: codex-switch <index>"),
 						);
@@ -3722,7 +3722,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					lines.push(`Storage: ${storePath}`);
 					lines.push("");
 					lines.push("Commands:");
-					lines.push("  - Add account: codex login");
+					lines.push("  - Add account: codex-multi-auth login");
 					lines.push("  - Switch account: codex-switch");
 					lines.push("  - Status details: codex-status");
 					lines.push("  - Health check: codex-health");
@@ -3751,10 +3751,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								...formatUiHeader(ui, "Switch account"),
 								"",
 								formatUiItem(ui, "No accounts configured.", "warning"),
-								formatUiItem(ui, "Run: codex login", "accent"),
+								formatUiItem(ui, "Run: codex-multi-auth login", "accent"),
 							].join("\n");
 						}
-						return "No Codex accounts configured. Run: codex login";
+						return "No Codex accounts configured. Run: codex-multi-auth login";
 					}
 
 					const targetIndex = Math.floor((index ?? 0) - 1);
@@ -3852,10 +3852,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								...formatUiHeader(ui, "Account status"),
 								"",
 								formatUiItem(ui, "No accounts configured.", "warning"),
-								formatUiItem(ui, "Run: codex login", "accent"),
+								formatUiItem(ui, "Run: codex-multi-auth login", "accent"),
 							].join("\n");
 						}
-						return "No Codex accounts configured. Run: codex login";
+						return "No Codex accounts configured. Run: codex-multi-auth login";
 					}
 
 					const now = Date.now();
@@ -4276,10 +4276,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								...formatUiHeader(ui, "Health check"),
 								"",
 								formatUiItem(ui, "No accounts configured.", "warning"),
-								formatUiItem(ui, "Run: codex login", "accent"),
+								formatUiItem(ui, "Run: codex-multi-auth login", "accent"),
 							].join("\n");
 						}
-						return "No Codex accounts configured. Run: codex login";
+						return "No Codex accounts configured. Run: codex-multi-auth login";
 					}
 
 					const results: string[] = ui.v2Enabled
@@ -4475,7 +4475,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												)
 											: formatUiItem(
 													ui,
-													"No accounts remaining. Run: codex login",
+													"No accounts remaining. Run: codex-multi-auth login",
 													"warning",
 												),
 									].join("\n");
@@ -4485,7 +4485,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									"",
 									remaining > 0
 										? `Remaining accounts: ${remaining}`
-										: "No accounts remaining. Run: codex login",
+										: "No accounts remaining. Run: codex-multi-auth login",
 								].join("\n");
 							},
 						}),
@@ -4506,10 +4506,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											...formatUiHeader(ui, "Refresh accounts"),
 											"",
 											formatUiItem(ui, "No accounts configured.", "warning"),
-											formatUiItem(ui, "Run: codex login", "accent"),
+											formatUiItem(ui, "Run: codex-multi-auth login", "accent"),
 										].join("\n");
 									}
-									return "No Codex accounts configured. Run: codex login";
+									return "No Codex accounts configured. Run: codex-multi-auth login";
 								}
 
 								const results: string[] = ui.v2Enabled

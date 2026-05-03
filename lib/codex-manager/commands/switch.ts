@@ -27,7 +27,7 @@ export async function runSwitchCommand(
 	const indexArg = args[0];
 	if (!indexArg) {
 		(deps.logError ?? console.error)(
-			"Missing index. Usage: codex auth switch <index>",
+			"Missing index. Usage: codex-multi-auth switch <index>",
 		);
 		return 1;
 	}

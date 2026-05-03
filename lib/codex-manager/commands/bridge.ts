@@ -15,10 +15,10 @@ function printBridgeUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
 			"Usage:",
-			"  codex auth bridge token create [--label <label>] [--json]",
-			"  codex auth bridge token list [--json]",
-			"  codex auth bridge token rotate <id> [--json]",
-			"  codex auth bridge token revoke <id> [--json]",
+			"  codex-multi-auth bridge token create [--label <label>] [--json]",
+			"  codex-multi-auth bridge token list [--json]",
+			"  codex-multi-auth bridge token rotate <id> [--json]",
+			"  codex-multi-auth bridge token revoke <id> [--json]",
 		].join("\n"),
 	);
 }
@@ -86,7 +86,7 @@ export async function runBridgeCommand(
 	}
 	const [area, action, ...rest] = args;
 	if (area !== "token") {
-		logError("Expected `codex auth bridge token ...`");
+		logError("Expected `codex-multi-auth bridge token ...`");
 		return 1;
 	}
 	if (action === "create") {

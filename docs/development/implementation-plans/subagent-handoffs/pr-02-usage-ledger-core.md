@@ -28,5 +28,5 @@ Add the local usage ledger core without command dispatch or runtime integration.
 
 ## Follow-ups
 
-- PR 03 should add `codex auth usage` command behavior on top of these helpers.
+- PR 03 should add `codex-multi-auth usage` command behavior on top of these helpers.
 - Runtime append calls are intentionally deferred until PR 08.

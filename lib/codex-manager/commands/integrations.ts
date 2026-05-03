@@ -20,7 +20,7 @@ function printUsage(logInfo: (message: string) => void): void {
 	logInfo(
 		[
 			"Usage:",
-			"  codex auth integrations [--kind <name>] [--base-url <url>] [--model <model>] [--json]",
+			"  codex-multi-auth integrations [--kind <name>] [--base-url <url>] [--model <model>] [--json]",
 			"",
 			"Kinds: opencode, openclaw, python, curl, env",
 		].join("\n"),

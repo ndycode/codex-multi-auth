@@ -1584,7 +1584,7 @@ describe("runtime rotation proxy", () => {
 		expect(payload.error).toMatchObject({
 			code: "codex_runtime_rotation_pool_exhausted",
 			reason: "rate-limit",
-			hint: "Run `codex auth rotation status` to inspect account state.",
+			hint: "Run `codex-multi-auth rotation status` to inspect account state.",
 		});
 		expect(payload.error.retry_after_ms).toBeGreaterThan(0);
 	});
