@@ -880,6 +880,15 @@ describe("codex bin wrapper", () => {
 			"const sessionDir = join(codexHome, 'sessions', '2026', '05', '01');",
 			"mkdirSync(sessionDir, { recursive: true });",
 			"writeFileSync(",
+			"  join(sessionDir, `rollout-2026-05-01T01-09-00-${indexedSessionId}.jsonl`),",
+			"  [",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:09:00.000Z', type: 'session_meta', payload: { id: indexedSessionId } }),",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:09:01.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'ALREADY_INDEXED_SHOULD_SKIP' } }),",
+			"    '',",
+			"  ].join('\\n'),",
+			"  'utf8',",
+			");",
+			"writeFileSync(",
 			"  join(sessionDir, `rollout-2026-05-01T01-10-00-${indexedSessionId}.jsonl`),",
 			"  [",
 			"    JSON.stringify({ timestamp: '2026-04-30T17:10:00.000Z', type: 'session_meta', payload: { id: mismatchedPayloadId } }),",
@@ -913,6 +922,7 @@ describe("codex bin wrapper", () => {
 		expect(index).toContain(missingSessionId);
 		expect(index).toContain("MISSING_SESSION");
 		expect(index).not.toContain(mismatchedPayloadId);
+		expect(index).not.toContain("ALREADY_INDEXED_SHOULD_SKIP");
 		expect(index).not.toContain("SHOULD_NOT_BE_REPAIRED");
 	});
 
