@@ -41,6 +41,23 @@ const RUNTIME_ROTATION_SHADOW_HOME_OMIT_STATE_FILES = new Set([
 	"auth.json",
 	"accounts.json",
 ]);
+const RUNTIME_ROTATION_SHADOW_HOME_OMIT_ROOT_DIRS = new Set(["multi-auth"]);
+const RUNTIME_ROTATION_SHADOW_HOME_LINK_ONLY_ROOT_DIRS = new Set([
+	".sandbox",
+	".sandbox-bin",
+	".sandbox-secrets",
+	".tmp",
+	"ambient-suggestions",
+	"archived_sessions",
+	"backups",
+	"cache",
+	"generated_images",
+	"log",
+	"sqlite",
+	"tmp",
+	"understand-anything",
+	"vendor_imports",
+]);
 const SHADOW_HOME_STATE_FILE_SET = new Set(SHADOW_HOME_STATE_FILES);
 const SHADOW_HOME_CONFIG_FILE = "config.toml";
 const SHADOW_HOME_SYNC_LOCK_DIR = ".codex-multi-auth-shadow-sync.lock";
@@ -90,6 +107,8 @@ const shadowHomeCleanupRetryMarkerDir =
 let warnedInvalidRuntimeRotationProxyEnv = false;
 let warnedPendingAccountReadIdOverflow = false;
 let warnedShadowHomeSqliteLinkFailure = false;
+const warnedShadowHomeLinkOnlyDirectoryFailures = new Set();
+const warnedShadowHomeSqliteSidecarPlaceholderFailures = new Set();
 
 async function loadRuntimeConstants() {
 	const fallback = {
@@ -1866,6 +1885,41 @@ function mirrorDirectoryIntoShadowHome(sourcePath, destinationPath) {
 	return "copied";
 }
 
+function linkDirectoryIntoShadowHome(sourcePath, destinationPath) {
+	try {
+		if ((process.env.CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_DIR_COPY ?? "").trim() === "1") {
+			throw new Error("simulated directory link failure");
+		}
+		symlinkSync(
+			sourcePath,
+			destinationPath,
+			process.platform === "win32" ? "junction" : "dir",
+		);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function warnSkippedLinkOnlyShadowHomeDirectory(name) {
+	if (warnedShadowHomeLinkOnlyDirectoryFailures.has(name)) {
+		return;
+	}
+	warnedShadowHomeLinkOnlyDirectoryFailures.add(name);
+	console.error(
+		`codex-multi-auth: skipped optional shadow-home directory ${name} because linking failed; refusing to copy generated runtime data.`,
+	);
+}
+
+function shouldCopyRuntimeGeneratedShadowHomeDirectoryFallback() {
+	const normalized = (
+		process.env.CODEX_MULTI_AUTH_RUNTIME_SHADOW_COPY_GENERATED_DIRS ?? ""
+	)
+		.trim()
+		.toLowerCase();
+	return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
 function linkFileIntoShadowHome(sourcePath, destinationPath) {
 	try {
 		symlinkSync(sourcePath, destinationPath, "file");
@@ -1890,23 +1944,146 @@ function mirrorFileIntoShadowHome(sourcePath, destinationPath, tightenFile) {
 	tightenFile(destinationPath);
 }
 
+function isSqliteMainFile(name) {
+	return /\.sqlite$/i.test(name);
+}
+
+function isSqliteSidecarFile(name) {
+	return /\.sqlite-(?:shm|wal)$/i.test(name);
+}
+
+function normalizeRuntimeShadowHomeEntryName(name) {
+	return process.platform === "win32" || process.platform === "darwin"
+		? name.toLowerCase()
+		: name;
+}
+
+function isCodexRuntimeLocalSqliteFile(name) {
+	const normalizedName = normalizeRuntimeShadowHomeEntryName(name);
+	return /^(?:state|logs)_\d+\.sqlite(?:-(?:shm|wal))?$/.test(normalizedName);
+}
+
+function isCodexRuntimeTransientStateFile(name) {
+	const normalizedName = normalizeRuntimeShadowHomeEntryName(name);
+	return (
+		/^(?:auth|accounts)\.json\.\d+\.[a-z0-9]+\.tmp$/.test(
+			normalizedName,
+		) ||
+		/^\.codex-global-state\.json\.tmp-[a-z0-9-]+$/.test(normalizedName)
+	);
+}
+
+function isRuntimeRotationShadowHomeOmittedEntry(name) {
+	const normalizedName = normalizeRuntimeShadowHomeEntryName(name);
+	return (
+		RUNTIME_ROTATION_SHADOW_HOME_OMIT_ROOT_DIRS.has(normalizedName) ||
+		isCodexRuntimeLocalSqliteFile(name) ||
+		isCodexRuntimeTransientStateFile(name)
+	);
+}
+
+function isRuntimeRotationShadowHomeLinkOnlyDirectory(name) {
+	const normalizedName = normalizeRuntimeShadowHomeEntryName(name);
+	return RUNTIME_ROTATION_SHADOW_HOME_LINK_ONLY_ROOT_DIRS.has(normalizedName);
+}
+
 function shouldMaterializeFileIntoShadowHome(name) {
-	return /\.sqlite(?:-(?:shm|wal))?$/i.test(name);
+	return isSqliteMainFile(name) || isSqliteSidecarFile(name);
+}
+
+function warnSkippedSqliteShadowHomeMaterialization() {
+	if (!warnedShadowHomeSqliteLinkFailure) {
+		warnedShadowHomeSqliteLinkFailure = true;
+		console.error(
+			"codex-multi-auth: skipped SQLite shadow-home materialization because linking failed; refusing to copy active SQLite state.",
+		);
+	}
+}
+
+function warnSkippedSqliteShadowHomeSidecarPlaceholder(error, destinationPath) {
+	if (!warnedShadowHomeSqliteSidecarPlaceholderFailures.has(destinationPath)) {
+		warnedShadowHomeSqliteSidecarPlaceholderFailures.add(destinationPath);
+		console.error(
+			`codex-multi-auth: skipped SQLite shadow-home sidecar placeholder for ${destinationPath} because linking failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+}
+
+function materializeSqliteSidecarPlaceholder(sourceSidecarPath, destinationSidecarPath) {
+	try {
+		if (
+			(process.env.CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_SIDECAR_PLACEHOLDER_FAILURE ??
+				""
+			).trim() === "1"
+		) {
+			const error = new Error("simulated SQLite sidecar placeholder failure");
+			error.code = "EPERM";
+			throw error;
+		}
+		symlinkSync(sourceSidecarPath, destinationSidecarPath, "file");
+		return true;
+	} catch (error) {
+		if (error?.code === "EEXIST") {
+			return true;
+		}
+		warnSkippedSqliteShadowHomeSidecarPlaceholder(error, destinationSidecarPath);
+		return false;
+	}
 }
 
 function materializeFileIntoShadowHome(sourcePath, destinationPath) {
 	try {
-		linkSync(sourcePath, destinationPath);
-		return true;
-	} catch {
-		if (!warnedShadowHomeSqliteLinkFailure) {
-			warnedShadowHomeSqliteLinkFailure = true;
-			console.error(
-				"codex-multi-auth: skipped SQLite shadow-home materialization because hard-linking failed; refusing to copy active SQLite state.",
-			);
+		if (
+			(process.env.CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_SQLITE_SIDECAR_LINK_FAILURE ??
+				""
+			).trim() === "1" &&
+			isSqliteSidecarFile(basename(sourcePath))
+		) {
+			throw new Error("simulated SQLite sidecar link failure");
 		}
+		if (linkFileIntoShadowHome(sourcePath, destinationPath)) {
+			return true;
+		}
+		warnSkippedSqliteShadowHomeMaterialization();
+	} catch {
+		warnSkippedSqliteShadowHomeMaterialization();
 	}
 	return false;
+}
+
+function materializeSqliteSidecarsIntoShadowHome(sourcePath, destinationPath) {
+	for (const suffix of ["-wal", "-shm"]) {
+		const sourceSidecarPath = `${sourcePath}${suffix}`;
+		const destinationSidecarPath = `${destinationPath}${suffix}`;
+		if (existsSync(destinationSidecarPath)) {
+			continue;
+		}
+		if (existsSync(sourceSidecarPath)) {
+			if (!materializeFileIntoShadowHome(sourceSidecarPath, destinationSidecarPath)) {
+				if (!materializeSqliteSidecarPlaceholder(
+					sourceSidecarPath,
+					destinationSidecarPath,
+				)) {
+					return false;
+				}
+			}
+			continue;
+		}
+		if (!materializeSqliteSidecarPlaceholder(sourceSidecarPath, destinationSidecarPath)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+function removeSqliteShadowHomeMaterialization(destinationPath) {
+	for (const path of [destinationPath, `${destinationPath}-wal`, `${destinationPath}-shm`]) {
+		try {
+			rmSync(path, { force: true });
+		} catch {
+			// Best-effort cleanup; keep removing the remaining SQLite siblings.
+		}
+	}
 }
 
 function collectShadowHomeSyncFileNames(shadowCodexHome, syncFileNames) {
@@ -2018,9 +2195,14 @@ function syncAdditionalShadowHomeFiles(
 	originalFileStates,
 	tightenFile,
 	skipSyncBackNames = new Set(),
+	skipSyncBackPredicate = () => false,
 ) {
 	for (const name of names) {
-		if (SHADOW_HOME_STATE_FILE_SET.has(name) || skipSyncBackNames.has(name)) {
+		if (
+			SHADOW_HOME_STATE_FILE_SET.has(name) ||
+			skipSyncBackNames.has(name) ||
+			skipSyncBackPredicate(name)
+		) {
 			continue;
 		}
 		const shadowPath = join(shadowCodexHome, name);
@@ -2056,6 +2238,10 @@ function createShadowHomeMirror(
 ) {
 	const syncFileNames = new Set(SHADOW_HOME_STATE_FILES);
 	const skipSyncBackNames = new Set(options.skipSyncBackNames ?? []);
+	const skipMirrorPredicate = options.skipMirrorPredicate ?? (() => false);
+	const skipSyncBackPredicate = options.skipSyncBackPredicate ?? (() => false);
+	const linkOnlyDirectoryPredicate =
+		options.linkOnlyDirectoryPredicate ?? (() => false);
 	const originalFileStates = new Map();
 	const copiedDirectoryNames = new Set();
 	const rememberSyncFile = (name) => {
@@ -2077,7 +2263,8 @@ function createShadowHomeMirror(
 			if (
 				name === SHADOW_HOME_CONFIG_FILE ||
 				name === SHADOW_HOME_SYNC_STATE_FILE ||
-				name === SHADOW_HOME_SYNC_LOCK_DIR
+				name === SHADOW_HOME_SYNC_LOCK_DIR ||
+				skipMirrorPredicate(name)
 			) {
 				continue;
 			}
@@ -2101,6 +2288,15 @@ function createShadowHomeMirror(
 					throw new Error(`Expected ${name} to be a file`);
 				}
 				if (directoryLike) {
+					if (
+						linkOnlyDirectoryPredicate(name) &&
+						!shouldCopyRuntimeGeneratedShadowHomeDirectoryFallback()
+					) {
+						if (!linkDirectoryIntoShadowHome(sourcePath, destinationPath)) {
+							warnSkippedLinkOnlyShadowHomeDirectory(name);
+						}
+						continue;
+					}
 					if (mirrorDirectoryIntoShadowHome(sourcePath, destinationPath) === "copied") {
 						copiedDirectoryNames.add(name);
 					}
@@ -2112,7 +2308,14 @@ function createShadowHomeMirror(
 						copyFileSync(sourcePath, destinationPath);
 						tightenFile(destinationPath);
 					} else if (shouldMaterializeFile) {
-						materializeFileIntoShadowHome(sourcePath, destinationPath);
+						if (isSqliteSidecarFile(name)) {
+							continue;
+						}
+						if (materializeFileIntoShadowHome(sourcePath, destinationPath) && isSqliteMainFile(name)) {
+							if (!materializeSqliteSidecarsIntoShadowHome(sourcePath, destinationPath)) {
+								removeSqliteShadowHomeMaterialization(destinationPath);
+							}
+						}
 					} else {
 						mirrorFileIntoShadowHome(sourcePath, destinationPath, tightenFile);
 					}
@@ -2151,6 +2354,7 @@ function createShadowHomeMirror(
 				originalFileStates,
 				tightenFile,
 				skipSyncBackNames,
+				skipSyncBackPredicate,
 			);
 		} catch {
 			// Best-effort only; runtime auth refreshes should not fail cleanup.
@@ -2205,6 +2409,10 @@ function resolveOriginalMultiAuthDir(env) {
 		return explicit;
 	}
 	return undefined;
+}
+
+function resolveRuntimeRotationOriginalMultiAuthDir(originalCodexHome, env) {
+	return resolveOriginalMultiAuthDir(env) ?? join(originalCodexHome, "multi-auth");
 }
 
 function parseRuntimeRotationProxyEnv(value) {
@@ -2316,7 +2524,10 @@ function createRuntimeRotationProxyCodexHome(
 			shadowCodexHome,
 			tightenShadowHomePermissions,
 			{
+				skipMirrorPredicate: isRuntimeRotationShadowHomeOmittedEntry,
 				skipSyncBackNames: RUNTIME_ROTATION_SHADOW_HOME_OMIT_STATE_FILES,
+				skipSyncBackPredicate: isRuntimeRotationShadowHomeOmittedEntry,
+				linkOnlyDirectoryPredicate: isRuntimeRotationShadowHomeLinkOnlyDirectory,
 			},
 		);
 		omitRuntimeRotationShadowHomeStateFiles(shadowCodexHome);
@@ -2341,11 +2552,11 @@ function createRuntimeRotationProxyCodexHome(
 		...baseEnv,
 		CODEX_HOME: shadowCodexHome,
 		OPENAI_API_KEY: clientApiKey,
+		CODEX_MULTI_AUTH_DIR: resolveRuntimeRotationOriginalMultiAuthDir(
+			originalCodexHome,
+			baseEnv,
+		),
 	};
-	const originalMultiAuthDir = resolveOriginalMultiAuthDir(baseEnv);
-	if (originalMultiAuthDir) {
-		forwardedEnv.CODEX_MULTI_AUTH_DIR = originalMultiAuthDir;
-	}
 
 	return {
 		env: forwardedEnv,
@@ -2800,6 +3011,10 @@ function startRuntimeRotationAppHelper(baseContext) {
 			{
 				env: {
 					...baseContext.env,
+					CODEX_MULTI_AUTH_DIR: resolveRuntimeRotationOriginalMultiAuthDir(
+						realCodexHome,
+						baseContext.env,
+					),
 					[APP_RUNTIME_HELPER_OWNER_PID_ENV]: String(process.pid),
 					[APP_RUNTIME_HELPER_REAL_CODEX_HOME_ENV]: realCodexHome,
 				},
@@ -3528,6 +3743,8 @@ function repairCodexSessionIndex(codexHome) {
 
 		const additions = [];
 		for (const rolloutPath of collectRolloutFiles(sessionsDir)) {
+			const idFromName = extractRolloutIdFromFilename(basename(rolloutPath));
+			if (idFromName && seen.has(idFromName)) continue;
 			const entry = parseRolloutIndexEntry(rolloutPath);
 			if (!entry || seen.has(entry.id)) continue;
 			seen.add(entry.id);

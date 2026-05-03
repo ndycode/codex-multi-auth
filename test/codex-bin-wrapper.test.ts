@@ -712,6 +712,45 @@ describe("codex bin wrapper", () => {
 		expect(output).not.toContain("Cannot find module");
 	});
 
+	it("copies generated runtime directories only when explicitly requested", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'console.log(`CODEX_MULTI_AUTH_DIR:${process.env.CODEX_MULTI_AUTH_DIR ?? ""}`);',
+			'console.log(`CODEX_CLI_PATH:${process.env.CODEX_CLI_PATH ?? ""}`);',
+			'console.log(`SHADOW_MULTI_AUTH_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "multi-auth"))}`);',
+			'console.log(`SANDBOX_BIN_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", ".sandbox-bin", "codex.exe"))}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(join(originalHome, ".sandbox-bin"), { recursive: true });
+		writeFileSync(join(originalHome, ".sandbox-bin", "codex.exe"), "sandbox\n", "utf8");
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_RUNTIME_SHADOW_COPY_GENERATED_DIRS: "1",
+			CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_DIR_COPY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(0);
+		expect(output).toContain("SANDBOX_BIN_EXISTS:true");
+		expect(output).not.toContain("skipped optional shadow-home directory .sandbox-bin");
+	});
+
 	it("forwards non-auth commands when dist output is missing", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
@@ -813,6 +852,78 @@ describe("codex bin wrapper", () => {
 		expect(result.status).toBe(1);
 		expect(result.stderr).toContain("FAILED_FORWARD");
 		expect(existsSync(join(codexHome, "session_index.jsonl"))).toBe(false);
+	});
+
+	it("skips already indexed rollout files during local session index repair", () => {
+		const fixtureRoot = createWrapperFixture();
+		const codexHome = join(fixtureRoot, "codex-home");
+		const indexedSessionId = "019ddf58-f831-7e12-bf4a-fae1ed000011";
+		const mismatchedPayloadId = "019ddf58-f831-7e12-bf4a-fae1ed000012";
+		const missingSessionId = "019ddf58-f831-7e12-bf4a-fae1ed000013";
+		mkdirSync(codexHome, { recursive: true });
+		writeFileSync(
+			join(codexHome, "session_index.jsonl"),
+			`${JSON.stringify({
+				id: indexedSessionId,
+				thread_name: "Already indexed",
+				updated_at: "2026-04-30T17:10:00.000Z",
+			})}\n`,
+			"utf8",
+		);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"const { mkdirSync, writeFileSync } = require('node:fs');",
+			"const { join } = require('node:path');",
+			`const indexedSessionId = ${JSON.stringify(indexedSessionId)};`,
+			`const mismatchedPayloadId = ${JSON.stringify(mismatchedPayloadId)};`,
+			`const missingSessionId = ${JSON.stringify(missingSessionId)};`,
+			"const codexHome = process.env.CODEX_HOME;",
+			"const sessionDir = join(codexHome, 'sessions', '2026', '05', '01');",
+			"mkdirSync(sessionDir, { recursive: true });",
+			"writeFileSync(",
+			"  join(sessionDir, `rollout-2026-05-01T01-09-00-${indexedSessionId}.jsonl`),",
+			"  [",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:09:00.000Z', type: 'session_meta', payload: { id: indexedSessionId } }),",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:09:01.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'ALREADY_INDEXED_SHOULD_SKIP' } }),",
+			"    '',",
+			"  ].join('\\n'),",
+			"  'utf8',",
+			");",
+			"writeFileSync(",
+			"  join(sessionDir, `rollout-2026-05-01T01-10-00-${indexedSessionId}.jsonl`),",
+			"  [",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:10:00.000Z', type: 'session_meta', payload: { id: mismatchedPayloadId } }),",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:10:01.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'SHOULD_NOT_BE_REPAIRED' } }),",
+			"    '',",
+			"  ].join('\\n'),",
+			"  'utf8',",
+			");",
+			"writeFileSync(",
+			"  join(sessionDir, `rollout-2026-05-01T01-11-00-${missingSessionId}.jsonl`),",
+			"  [",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:11:00.000Z', type: 'session_meta', payload: { id: missingSessionId } }),",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:11:01.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'MISSING_SESSION' } }),",
+			"    '',",
+			"  ].join('\\n'),",
+			"  'utf8',",
+			");",
+			"console.log('FORWARDED_INDEX_FAST_PATH');",
+			"process.exit(0);",
+		]);
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_HOME: codexHome,
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED_INDEX_FAST_PATH");
+		const index = readFileSync(join(codexHome, "session_index.jsonl"), "utf8");
+		expect(index).toContain(indexedSessionId);
+		expect(index).toContain(missingSessionId);
+		expect(index).toContain("MISSING_SESSION");
+		expect(index).not.toContain(mismatchedPayloadId);
+		expect(index).not.toContain("ALREADY_INDEXED_SHOULD_SKIP");
+		expect(index).not.toContain("SHOULD_NOT_BE_REPAIRED");
 	});
 
 	it("serializes concurrent local session index repairs", async () => {
@@ -938,16 +1049,64 @@ describe("codex bin wrapper", () => {
 			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
 			'console.log(`CODEX_HOME:${process.env.CODEX_HOME ?? ""}`);',
 			'console.log(`CODEX_HOME_IS_ORIGINAL:${process.env.CODEX_HOME === process.env.ORIGINAL_CODEX_HOME}`);',
+			'console.log(`CODEX_MULTI_AUTH_DIR:${process.env.CODEX_MULTI_AUTH_DIR ?? ""}`);',
 			'console.log(`OPENAI_API_KEY:${process.env.OPENAI_API_KEY ?? ""}`);',
 			'console.log(`SESSION_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "sessions", "resume.jsonl"))}`);',
 			'console.log(`PLUGIN_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "plugins", "plugin.txt"))}`);',
 			'console.log(`SKILL_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "skills", "skill.txt"))}`);',
 			'console.log(`MEMORY_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "memories", "user.md"))}`);',
 			'console.log(`INSTRUCTION_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "instructions", "profile.md"))}`);',
+			'console.log(`SANDBOX_BIN_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", ".sandbox-bin", "codex.exe"))}`);',
+			'console.log(`MULTI_AUTH_MIRRORED:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "multi-auth"))}`);',
+			'const authTmpPath = path.join(process.env.CODEX_HOME ?? "", "auth.json.1772056142508.3nwgwa.tmp");',
+			'const accountsTmpPath = path.join(process.env.CODEX_HOME ?? "", "accounts.json.1772056142508.3nwgwa.tmp");',
+			'const globalStateTmpPath = path.join(process.env.CODEX_HOME ?? "", ".codex-global-state.json.tmp-1777087904981-b612ed77-42c6-452a-a3ee-181a3806b475");',
+			'const originalAuthTmpPath = path.join(process.env.ORIGINAL_CODEX_HOME ?? "", "auth.json.1772056142508.3nwgwa.tmp");',
+			'const originalAccountsTmpPath = path.join(process.env.ORIGINAL_CODEX_HOME ?? "", "accounts.json.1772056142508.3nwgwa.tmp");',
+			'const originalGlobalStateTmpPath = path.join(process.env.ORIGINAL_CODEX_HOME ?? "", ".codex-global-state.json.tmp-1777087904981-b612ed77-42c6-452a-a3ee-181a3806b475");',
+			'console.log(`AUTH_TMP_MIRRORED:${fs.existsSync(authTmpPath)}`);',
+			'console.log(`ACCOUNTS_TMP_MIRRORED:${fs.existsSync(accountsTmpPath)}`);',
+			'console.log(`GLOBAL_STATE_TMP_MIRRORED:${fs.existsSync(globalStateTmpPath)}`);',
+			'fs.writeFileSync(authTmpPath, "shadow-auth-tmp\\n", "utf8");',
+			'fs.writeFileSync(accountsTmpPath, "shadow-accounts-tmp\\n", "utf8");',
+			'fs.writeFileSync(globalStateTmpPath, "shadow-global-state-tmp\\n", "utf8");',
+			'console.log(`AUTH_TMP_ISOLATED:${!fs.readFileSync(originalAuthTmpPath, "utf8").includes("shadow-auth-tmp")}`);',
+			'console.log(`ACCOUNTS_TMP_ISOLATED:${!fs.readFileSync(originalAccountsTmpPath, "utf8").includes("shadow-accounts-tmp")}`);',
+			'console.log(`GLOBAL_STATE_TMP_ISOLATED:${!fs.readFileSync(originalGlobalStateTmpPath, "utf8").includes("shadow-global-state-tmp")}`);',
+			'const cachePath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite");',
+			'const cacheWalPath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite-wal");',
+			'const cacheShmPath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite-shm");',
+			'console.log(`CACHE_SQLITE_MIRRORED:${fs.existsSync(cachePath)}`);',
+			'console.log(`CACHE_WAL_MIRRORED:${fs.existsSync(cacheWalPath)}`);',
+			'console.log(`CACHE_SHM_MIRRORED:${fs.existsSync(cacheShmPath)}`);',
+			'const logPath = path.join(process.env.CODEX_HOME ?? "", "logs_2.sqlite");',
+			'const logWalPath = path.join(process.env.CODEX_HOME ?? "", "logs_2.sqlite-wal");',
+			'const logShmPath = path.join(process.env.CODEX_HOME ?? "", "logs_2.sqlite-shm");',
+			'const originalLogPath = path.join(process.env.ORIGINAL_CODEX_HOME ?? "", "logs_2.sqlite");',
+			'console.log(`LOG_SQLITE_MIRRORED:${fs.existsSync(logPath)}`);',
+			'console.log(`LOG_WAL_MIRRORED:${fs.existsSync(logWalPath)}`);',
+			'console.log(`LOG_SHM_MIRRORED:${fs.existsSync(logShmPath)}`);',
+			'fs.writeFileSync(logPath, "shadow-log\\n", "utf8");',
+			'fs.writeFileSync(logWalPath, "shadow-log-wal\\n", "utf8");',
+			'fs.writeFileSync(logShmPath, "shadow-log-shm\\n", "utf8");',
+			'console.log(`LOG_SQLITE_ISOLATED:${!fs.readFileSync(originalLogPath, "utf8").includes("shadow-log")}`);',
+			'const upperLogPath = path.join(process.env.CODEX_HOME ?? "", "LOGS_3.sqlite");',
+			'console.log(`UPPER_LOG_MIRRORED:${fs.existsSync(upperLogPath)}`);',
+			'fs.appendFileSync(upperLogPath, "shadow-upper-log\\n", "utf8");',
+			'fs.appendFileSync(cachePath, "shadow-cache\\n", "utf8");',
+			'fs.appendFileSync(cacheWalPath, "shadow-wal\\n", "utf8");',
+			'const upperStatePath = path.join(process.env.CODEX_HOME ?? "", "STATE_6.sqlite");',
+			'console.log(`UPPER_STATE_MIRRORED:${fs.existsSync(upperStatePath)}`);',
+			'fs.appendFileSync(upperStatePath, "shadow-upper\\n", "utf8");',
 			'const statePath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite");',
-			'console.log(`ROOT_STATE_SYMLINK:${fs.lstatSync(statePath).isSymbolicLink()}`);',
-			'fs.appendFileSync(statePath, "shadow\\n", "utf8");',
-			'console.log(`ROOT_STATE_REALTIME:${fs.readFileSync(path.join(process.env.ORIGINAL_CODEX_HOME ?? "", "state_5.sqlite"), "utf8").includes("shadow")}`);',
+			'const stateWalPath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite-wal");',
+			'const stateShmPath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite-shm");',
+			'const originalStatePath = path.join(process.env.ORIGINAL_CODEX_HOME ?? "", "state_5.sqlite");',
+			'console.log(`ROOT_STATE_MIRRORED:${fs.existsSync(statePath)}`);',
+			'console.log(`ROOT_STATE_WAL_MIRRORED:${fs.existsSync(stateWalPath)}`);',
+			'console.log(`ROOT_STATE_SHM_MIRRORED:${fs.existsSync(stateShmPath)}`);',
+			'fs.writeFileSync(statePath, "shadow-only\\n", "utf8");',
+			'console.log(`ROOT_STATE_ISOLATED:${!fs.readFileSync(originalStatePath, "utf8").includes("shadow-only")}`);',
 			'fs.writeFileSync(path.join(process.env.CODEX_HOME ?? "", "new-root-state.json"), "new\\n", "utf8");',
 			'fs.writeFileSync(path.join(process.env.CODEX_HOME ?? "", "sessions", "runtime-session.jsonl"), "runtime\\n", "utf8");',
 			'fs.writeFileSync(path.join(process.env.CODEX_HOME ?? "", "auth.json"), \'{"token":"proxy-scoped"}\\n\', "utf8");',
@@ -967,11 +1126,39 @@ describe("codex bin wrapper", () => {
 		mkdirSync(join(originalHome, "skills"), { recursive: true });
 		mkdirSync(join(originalHome, "memories"), { recursive: true });
 		mkdirSync(join(originalHome, "instructions"), { recursive: true });
+		mkdirSync(join(originalHome, ".sandbox-bin"), { recursive: true });
+		mkdirSync(join(originalHome, "multi-auth", "runtime-shadow-homes", "stale"), {
+			recursive: true,
+		});
 		writeFileSync(join(originalHome, "sessions", "resume.jsonl"), "resume\n", "utf8");
 		writeFileSync(join(originalHome, "plugins", "plugin.txt"), "plugin\n", "utf8");
 		writeFileSync(join(originalHome, "skills", "skill.txt"), "skill\n", "utf8");
 		writeFileSync(join(originalHome, "memories", "user.md"), "memory\n", "utf8");
+		writeFileSync(join(originalHome, ".sandbox-bin", "codex.exe"), "sandbox\n", "utf8");
+		writeFileSync(
+			join(originalHome, "multi-auth", "runtime-shadow-homes", "stale", "payload.txt"),
+			"stale shadow\n",
+			"utf8",
+		);
 		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
+		writeFileSync(
+			join(originalHome, "auth.json.1772056142508.3nwgwa.tmp"),
+			"original auth tmp\n",
+			"utf8",
+		);
+		writeFileSync(
+			join(originalHome, "accounts.json.1772056142508.3nwgwa.tmp"),
+			"original accounts tmp\n",
+			"utf8",
+		);
+		writeFileSync(
+			join(
+				originalHome,
+				".codex-global-state.json.tmp-1777087904981-b612ed77-42c6-452a-a3ee-181a3806b475",
+			),
+			"original global state tmp\n",
+			"utf8",
+		);
 		writeFileSync(
 			join(originalHome, "accounts.json"),
 			'{"accounts":["original"]}\n',
@@ -987,7 +1174,17 @@ describe("codex bin wrapper", () => {
 			"instruction\n",
 			"utf8",
 		);
-		writeFileSync(join(originalHome, "state_5.sqlite"), "state\n", "utf8");
+		writeFileSync(join(originalHome, "state_5.sqlite"), "not a sqlite database\n", "utf8");
+		writeFileSync(join(originalHome, "state_5.sqlite-wal"), "original wal\n", "utf8");
+		writeFileSync(join(originalHome, "state_5.sqlite-shm"), "original shm\n", "utf8");
+		writeFileSync(join(originalHome, "STATE_6.sqlite"), "upper state\n", "utf8");
+		writeFileSync(join(originalHome, "logs_2.sqlite"), "original log\n", "utf8");
+		writeFileSync(join(originalHome, "logs_2.sqlite-wal"), "original log wal\n", "utf8");
+		writeFileSync(join(originalHome, "logs_2.sqlite-shm"), "original log shm\n", "utf8");
+		writeFileSync(join(originalHome, "LOGS_3.sqlite"), "upper log\n", "utf8");
+		writeFileSync(join(originalHome, "plugin_cache.sqlite"), "cache\n", "utf8");
+		writeFileSync(join(originalHome, "plugin_cache.sqlite-wal"), "cache wal\n", "utf8");
+		writeFileSync(join(originalHome, "plugin_cache.sqlite-shm"), "cache shm\n", "utf8");
 		writeFileSync(
 			join(originalHome, "config.toml"),
 			[
@@ -1012,6 +1209,7 @@ describe("codex bin wrapper", () => {
 			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
 			CODEX_MULTI_AUTH_TEST_PROXY_BASE_URL: "http://127.0.0.1:4567",
 			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_DIR_COPY: "1",
 			OPENAI_API_KEY: undefined,
 		});
 
@@ -1021,13 +1219,39 @@ describe("codex bin wrapper", () => {
 			`FORWARDED:exec status -c cli_auth_credentials_store="file" -c model_provider="${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
 		);
 		expect(output).toContain("CODEX_HOME_IS_ORIGINAL:false");
+		expect(output).toContain(
+			`CODEX_MULTI_AUTH_DIR:${join(originalHome, "multi-auth")}`,
+		);
 		expect(output).toContain("SESSION_EXISTS:true");
 		expect(output).toContain("PLUGIN_EXISTS:true");
 		expect(output).toContain("SKILL_EXISTS:true");
 		expect(output).toContain("MEMORY_EXISTS:true");
 		expect(output).toContain("INSTRUCTION_EXISTS:true");
-		expect(output).toContain("ROOT_STATE_SYMLINK:false");
-		expect(output).toContain("ROOT_STATE_REALTIME:true");
+		expect(output).toContain("SANDBOX_BIN_EXISTS:false");
+		expect(output).toContain("MULTI_AUTH_MIRRORED:false");
+		expect(output).toContain("AUTH_TMP_MIRRORED:false");
+		expect(output).toContain("ACCOUNTS_TMP_MIRRORED:false");
+		expect(output).toContain("GLOBAL_STATE_TMP_MIRRORED:false");
+		expect(output).toContain("AUTH_TMP_ISOLATED:true");
+		expect(output).toContain("ACCOUNTS_TMP_ISOLATED:true");
+		expect(output).toContain("GLOBAL_STATE_TMP_ISOLATED:true");
+		expect(output).toContain("CACHE_SQLITE_MIRRORED:true");
+		expect(output).toContain("CACHE_WAL_MIRRORED:true");
+		expect(output).toContain("CACHE_SHM_MIRRORED:true");
+		expect(output).toContain("LOG_SQLITE_MIRRORED:false");
+		expect(output).toContain("LOG_WAL_MIRRORED:false");
+		expect(output).toContain("LOG_SHM_MIRRORED:false");
+		expect(output).toContain("LOG_SQLITE_ISOLATED:true");
+		expect(output).toContain(
+			`UPPER_LOG_MIRRORED:${process.platform === "win32" || process.platform === "darwin" ? "false" : "true"}`,
+		);
+		expect(output).toContain(
+			`UPPER_STATE_MIRRORED:${process.platform === "win32" || process.platform === "darwin" ? "false" : "true"}`,
+		);
+		expect(output).toContain("ROOT_STATE_MIRRORED:false");
+		expect(output).toContain("ROOT_STATE_WAL_MIRRORED:false");
+		expect(output).toContain("ROOT_STATE_SHM_MIRRORED:false");
+		expect(output).toContain("ROOT_STATE_ISOLATED:true");
 		const apiKeyMatch = output.match(/^OPENAI_API_KEY:([0-9a-f]{64})$/m);
 		expect(apiKeyMatch?.[1]).toBeTruthy();
 		expect(output).toContain(
@@ -1066,8 +1290,68 @@ describe("codex bin wrapper", () => {
 		expect(
 			readFileSync(join(originalHome, "sessions", "runtime-session.jsonl"), "utf8"),
 		).toBe("runtime\n");
-		expect(readFileSync(join(originalHome, "state_5.sqlite"), "utf8")).toContain(
-			"shadow",
+		expect(readFileSync(join(originalHome, "state_5.sqlite"), "utf8")).toBe(
+			"not a sqlite database\n",
+		);
+		expect(readFileSync(join(originalHome, "state_5.sqlite-wal"), "utf8")).toBe(
+			"original wal\n",
+		);
+		expect(readFileSync(join(originalHome, "state_5.sqlite-shm"), "utf8")).toBe(
+			"original shm\n",
+		);
+		expect(
+			readFileSync(
+				join(originalHome, "auth.json.1772056142508.3nwgwa.tmp"),
+				"utf8",
+			),
+		).toBe("original auth tmp\n");
+		expect(
+			readFileSync(
+				join(originalHome, "accounts.json.1772056142508.3nwgwa.tmp"),
+				"utf8",
+			),
+		).toBe("original accounts tmp\n");
+		expect(
+			readFileSync(
+				join(
+					originalHome,
+					".codex-global-state.json.tmp-1777087904981-b612ed77-42c6-452a-a3ee-181a3806b475",
+				),
+				"utf8",
+			),
+		).toBe("original global state tmp\n");
+		expect(readFileSync(join(originalHome, "logs_2.sqlite"), "utf8")).toBe(
+			"original log\n",
+		);
+		expect(readFileSync(join(originalHome, "logs_2.sqlite-wal"), "utf8")).toBe(
+			"original log wal\n",
+		);
+		expect(readFileSync(join(originalHome, "logs_2.sqlite-shm"), "utf8")).toBe(
+			"original log shm\n",
+		);
+		if (process.platform === "win32" || process.platform === "darwin") {
+			expect(readFileSync(join(originalHome, "LOGS_3.sqlite"), "utf8")).toBe(
+				"upper log\n",
+			);
+		} else {
+			expect(readFileSync(join(originalHome, "LOGS_3.sqlite"), "utf8")).toContain(
+				"shadow-upper-log",
+			);
+		}
+		if (process.platform === "win32" || process.platform === "darwin") {
+			expect(readFileSync(join(originalHome, "STATE_6.sqlite"), "utf8")).toBe(
+				"upper state\n",
+			);
+		} else {
+			expect(readFileSync(join(originalHome, "STATE_6.sqlite"), "utf8")).toContain(
+				"shadow-upper",
+			);
+		}
+		expect(readFileSync(join(originalHome, "plugin_cache.sqlite"), "utf8")).toContain(
+			"shadow-cache",
+		);
+		expect(readFileSync(join(originalHome, "plugin_cache.sqlite-wal"), "utf8")).toContain(
+			"shadow-wal",
 		);
 		expect(readFileSync(join(originalHome, "new-root-state.json"), "utf8")).toBe(
 			"new\n",
@@ -1081,6 +1365,97 @@ describe("codex bin wrapper", () => {
 		expect(
 			readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim(),
 		).toBe('{"last":"runtime"}');
+		expect(output).toContain(
+			"codex-multi-auth: skipped optional shadow-home directory .sandbox-bin because linking failed",
+		);
+	});
+
+	it("warns when sqlite sidecar placeholder materialization fails", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const cachePath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite");',
+			'const cacheWalPath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite-wal");',
+			'const cacheShmPath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite-shm");',
+			'console.log(`CACHE_SQLITE_MIRRORED:${fs.existsSync(cachePath)}`);',
+			'console.log(`CACHE_WAL_MIRRORED:${fs.existsSync(cacheWalPath)}`);',
+			'console.log(`CACHE_SHM_MIRRORED:${fs.existsSync(cacheShmPath)}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "plugin_cache.sqlite"), "cache\n", "utf8");
+		writeFileSync(join(originalHome, "plugin_cache.sqlite-wal"), "cache wal\n", "utf8");
+		writeFileSync(join(originalHome, "plugin_cache.sqlite-shm"), "cache shm\n", "utf8");
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_BASE_URL: "http://127.0.0.1:4567",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_SQLITE_SIDECAR_LINK_FAILURE: "1",
+			CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_SIDECAR_PLACEHOLDER_FAILURE: "1",
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(0);
+		expect(output).toContain("CACHE_SQLITE_MIRRORED:false");
+		expect(output).toContain("CACHE_WAL_MIRRORED:false");
+		expect(output).toContain("CACHE_SHM_MIRRORED:false");
+		expect(output).toContain(
+			"codex-multi-auth: skipped SQLite shadow-home sidecar placeholder for",
+		);
+		expect(output).toContain("plugin_cache.sqlite-wal");
+		expect(output).toContain("simulated SQLite sidecar placeholder failure");
+	});
+
+	it("removes sqlite materialization when a missing sidecar placeholder fails", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const cachePath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite");',
+			'const cacheWalPath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite-wal");',
+			'const cacheShmPath = path.join(process.env.CODEX_HOME ?? "", "plugin_cache.sqlite-shm");',
+			'console.log(`CACHE_SQLITE_MIRRORED:${fs.existsSync(cachePath)}`);',
+			'console.log(`CACHE_WAL_MIRRORED:${fs.existsSync(cacheWalPath)}`);',
+			'console.log(`CACHE_SHM_MIRRORED:${fs.existsSync(cacheShmPath)}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "plugin_cache.sqlite"), "cache\n", "utf8");
+		writeFileSync(join(originalHome, "plugin_cache.sqlite-wal"), "cache wal\n", "utf8");
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_BASE_URL: "http://127.0.0.1:4567",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_SIDECAR_PLACEHOLDER_FAILURE: "1",
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(0);
+		expect(output).toContain("CACHE_SQLITE_MIRRORED:false");
+		expect(output).toContain("CACHE_WAL_MIRRORED:false");
+		expect(output).toContain("CACHE_SHM_MIRRORED:false");
+		expect(output).toContain(
+			"codex-multi-auth: skipped SQLite shadow-home sidecar placeholder for",
+		);
+		expect(output).toContain("plugin_cache.sqlite-shm");
+		expect(output).toContain("simulated SQLite sidecar placeholder failure");
 	});
 
 	it("inserts the runtime model provider before TOML array tables", () => {
@@ -1775,8 +2150,13 @@ describe("codex bin wrapper", () => {
 		createRuntimeRotationProxyFixtureModule(fixtureRoot);
 		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
 			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
 			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
 			'console.log(`CODEX_HOME:${process.env.CODEX_HOME ?? ""}`);',
+			'console.log(`CODEX_MULTI_AUTH_DIR:${process.env.CODEX_MULTI_AUTH_DIR ?? ""}`);',
+			'console.log(`CODEX_CLI_PATH:${process.env.CODEX_CLI_PATH ?? ""}`);',
+			'console.log(`SHADOW_MULTI_AUTH_EXISTS:${fs.existsSync(path.join(process.env.CODEX_HOME ?? "", "multi-auth"))}`);',
 			"process.exit(0);",
 		]);
 		const originalHome = join(fixtureRoot, "codex-home");
@@ -1803,11 +2183,28 @@ describe("codex bin wrapper", () => {
 			throw new Error(output);
 		}
 		expect(output).toContain("FORWARDED:app . --model gpt-5.1");
+		expect(output).toContain(
+			`CODEX_MULTI_AUTH_DIR:${join(originalHome, "multi-auth")}`,
+		);
+		expect(output).toContain("SHADOW_MULTI_AUTH_EXISTS:false");
+		const cliPathMatch = output.match(/^CODEX_CLI_PATH:(.+)$/m);
+		expect(cliPathMatch?.[1]).toBeTruthy();
+		if (cliPathMatch?.[1]) {
+			const shimRelativePath = relative(
+				join(originalHome, "multi-auth", "app-server-shims"),
+				resolve(cliPathMatch[1]),
+			);
+			expect(shimRelativePath).not.toMatch(/^\.\.(?:[\\/]|$)/);
+			expect(isAbsolute(shimRelativePath)).toBe(false);
+		}
 
 		await sleep(2200);
 
 		const marker = readFileSync(markerPath, "utf8");
 		expect(marker).toContain(`real-home-env:${originalHome}\n`);
+		expect(
+			existsSync(join(originalHome, "multi-auth", "runtime-rotation-app-helper.json")),
+		).toBe(true);
 		const compatibilityHomeMatch = marker.match(/^codex-home-env:(.+)$/m);
 		expect(compatibilityHomeMatch?.[1]).toBeTruthy();
 		expect(compatibilityHomeMatch?.[1]).not.toBe(originalHome);
