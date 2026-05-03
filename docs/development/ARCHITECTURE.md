@@ -79,7 +79,7 @@ Codex or ChatGPT-backed request flow
 
 | Subsystem | Key files | Responsibility |
 | --- | --- | --- |
-| Standalone package CLI | `scripts/codex-multi-auth.js`, `scripts/codex-routing.js` | Primary conflict-free account-manager entrypoint, bare-subcommand normalization, version surface |
+| Standalone package CLI | `scripts/codex-multi-auth.js`, `scripts/codex-routing.js` | Primary account-manager entrypoint, bare-subcommand normalization, version surface |
 | Optional forwarding wrapper | `scripts/codex.js`, `scripts/codex-routing.js`, `scripts/codex-bin-resolver.js` | Local auth routing, official Codex discovery, file-store forwarding, shadow-home setup |
 | Auth flow | `lib/auth/auth.ts`, `lib/auth/server.ts`, `lib/auth/browser.ts` | PKCE OAuth flow, callback handling, browser/manual auth path |
 | Account manager | `lib/codex-manager.ts`, `lib/codex-manager/commands/`, `lib/accounts.ts` | Dashboard actions, account selection, health operations, repair commands |

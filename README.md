@@ -5,7 +5,7 @@
 [![CI](https://github.com/ndycode/codex-multi-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/ndycode/codex-multi-auth/actions/workflows/ci.yml)
 [![MIT license](https://img.shields.io/npm/l/codex-multi-auth.svg)](LICENSE)
 
-`codex-multi-auth` is a conflict-free multi-account OAuth manager for the official `@openai/codex` CLI. It gives Codex CLI users explicit ChatGPT account login, account switching, health checks, local diagnostics, project-scoped storage, and default-on runtime Responses rotation without taking over the official `codex` binary. Use `codex-multi-auth ...` for account management, or `codex-multi-auth-codex ...` only when you intentionally want the optional forwarding wrapper.
+`codex-multi-auth` is a multi-account OAuth manager for the official `@openai/codex` CLI. It gives Codex CLI users explicit ChatGPT account login, account switching, health checks, local diagnostics, project-scoped storage, and default-on runtime Responses rotation without taking over the official `codex` binary. Use `codex-multi-auth ...` for account management, or `codex-multi-auth-codex ...` only when you intentionally want the optional forwarding wrapper.
 
 Use it when you need a local Codex CLI multi-account workflow with visible account state, safer recovery commands, and a loopback-only runtime rotation proxy for request-bearing forwarded Codex sessions.
 
@@ -19,7 +19,7 @@ Use it when you need a local Codex CLI multi-account workflow with visible accou
 
 ## What You Get
 
-- Codex CLI multi-account OAuth management with a conflict-free `codex-multi-auth ...` command family
+- Codex CLI multi-account OAuth management with a dedicated `codex-multi-auth ...` command family
 - Explicit ChatGPT account login, saved-account listing, account switching, health checks, and diagnostics
 - Optional `codex-multi-auth-codex ...` forwarding wrapper for official Codex CLI commands when you choose wrapper-launched sessions
 - Health-aware account selection, quota forecasting, automatic failover, and flagged-account recovery
@@ -45,7 +45,7 @@ Use it when you need a local Codex CLI multi-account workflow with visible accou
 
 ## Current Architecture At A Glance
 
-`codex-multi-auth` now ships three conflict-free global binaries:
+`codex-multi-auth` now ships three distinct global binaries:
 
 | Binary | Purpose |
 | --- | --- |
