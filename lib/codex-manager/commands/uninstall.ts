@@ -140,7 +140,7 @@ export async function runUninstallCommand(
 	// Remove OS-level launcher
 	try {
 		const launcherModule = await import(
-			new URL("../../../scripts/codex-app-launcher.js", import.meta.url).href
+			new URL("../../../../scripts/codex-app-launcher.js", import.meta.url).href
 		);
 		if (typeof launcherModule.installCodexAppLauncher === "function") {
 			if (dryRun) {

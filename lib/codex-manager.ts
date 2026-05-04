@@ -3607,7 +3607,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		return runRepairDoctor(rest, createRepairCommandDeps());
 	}
 	if (command === "uninstall") {
-		return runUninstallCommand(rest);
+		return runUninstallCommand(rest, { clearAccounts });
 	}
 	if (command === "config") {
 		const [subcommand, ...configArgs] = rest;
