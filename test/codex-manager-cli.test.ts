@@ -10893,12 +10893,12 @@ describe("codex manager cli commands", () => {
 		);
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 
-		await expect(
-			runCodexMultiAuthCli(["auth", "fix", "--live"]),
-		).rejects.toMatchObject({
-			code: "EBUSY",
-			message: "save failed",
-		});
+		// A failed display-mode quota cache save is now downgraded to a
+		// partial-success warning (account fixes were already committed
+		// when this code path runs); the run resolves to 0 instead of
+		// rejecting. The loaded cache must still NOT be mutated.
+		const exitCode = await runCodexMultiAuthCli(["auth", "fix", "--live"]);
+		expect(exitCode).toBe(0);
 		expect(originalQuotaCache).toEqual({
 			byAccountId: {},
 			byEmail: {},
