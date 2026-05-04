@@ -187,6 +187,22 @@ export function restoreTopLevelResponseStorage(
 		output.push(line);
 	}
 
+	if (!handled && originalLine) {
+		// Mirror restoreTopLevelModelProvider: when the bind-written line was
+		// stripped from currentConfig before unbind, the user's original
+		// setting must still come back into the root table. Splice it before
+		// the first section header instead of appending at tail (a tail
+		// append would land it inside whatever section comes last).
+		const firstSectionIdx = output.findIndex(
+			(line) => readTomlTableName(line) !== null,
+		);
+		if (firstSectionIdx === -1) {
+			output.push(originalLine);
+		} else {
+			output.splice(firstSectionIdx, 0, originalLine);
+		}
+	}
+
 	return output.join(lineEnding);
 }
 
