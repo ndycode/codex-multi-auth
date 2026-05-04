@@ -9,6 +9,7 @@ import {
 	FILE_RETRY_BASE_DELAY_MS,
 	FILE_RETRY_MAX_ATTEMPTS,
 	normalizePluginList,
+	removePluginFromList,
 	resolveInstallPaths,
 	withFileOperationRetry,
 } from "../scripts/install-codex-auth-utils.js";
@@ -73,6 +74,18 @@ describe("install-codex-auth script", () => {
 			"b",
 			"codex-multi-auth",
 		]);
+	});
+
+	it("removes the plugin and versioned variants without disturbing other entries", () => {
+		expect(removePluginFromList(["codex-multi-auth", "other"])).toEqual(["other"]);
+		expect(
+			removePluginFromList(["codex-multi-auth@2.1.5", "keep", "codex-multi-auth@1.0.0"]),
+		).toEqual(["keep"]);
+		expect(removePluginFromList(undefined)).toEqual([]);
+		expect(removePluginFromList(["codex-multi-auth"])).toEqual([]);
+		// Non-string entries should be preserved.
+		const obj = { name: "other-plugin" };
+		expect(removePluginFromList([obj, "codex-multi-auth"])).toEqual([obj]);
 	});
 
 	it("uses APPDATA/LOCALAPPDATA on windows path resolution", () => {

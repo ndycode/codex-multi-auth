@@ -80,6 +80,97 @@ describe("device auth flow", () => {
 		});
 	});
 
+	it("parses expires_at as numeric Unix epoch seconds (absolute, not relative)", async () => {
+		// nowMs intentionally far away from the response timestamp to prove the
+		// value is treated as an absolute Unix epoch and not added to "now".
+		const nowMs = Date.parse("2026-04-26T00:00:00Z");
+		const expiresAtSeconds = Math.floor(
+			Date.parse("2026-05-15T12:00:00Z") / 1000,
+		);
+		const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+			jsonResponse({
+				device_auth_id: "device-auth-num-seconds",
+				user_code: "ABCD-1111",
+				interval: 5,
+				expires_at: expiresAtSeconds,
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await requestDeviceAuthorization({ now: () => nowMs });
+
+		expect(result).toMatchObject({
+			type: "success",
+			deviceCode: { expiresAtMs: expiresAtSeconds * 1000 },
+		});
+	});
+
+	it("parses expires_at as numeric Unix epoch milliseconds when above the seconds boundary", async () => {
+		const nowMs = Date.parse("2026-04-26T00:00:00Z");
+		// 10_000_000_000 is the seconds-vs-ms boundary; pick one above.
+		const expiresAtMs = Date.parse("2026-05-15T12:00:00Z");
+		const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+			jsonResponse({
+				device_auth_id: "device-auth-num-ms",
+				user_code: "ABCD-2222",
+				interval: 5,
+				expires_at: expiresAtMs,
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await requestDeviceAuthorization({ now: () => nowMs });
+
+		expect(result).toMatchObject({
+			type: "success",
+			deviceCode: { expiresAtMs },
+		});
+	});
+
+	it("parses expires_at as a numeric string of seconds", async () => {
+		const nowMs = Date.parse("2026-04-26T00:00:00Z");
+		const expiresAtSeconds = Math.floor(
+			Date.parse("2026-05-15T12:00:00Z") / 1000,
+		);
+		const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+			jsonResponse({
+				device_auth_id: "device-auth-str-seconds",
+				user_code: "ABCD-3333",
+				interval: 5,
+				expires_at: String(expiresAtSeconds),
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await requestDeviceAuthorization({ now: () => nowMs });
+
+		expect(result).toMatchObject({
+			type: "success",
+			deviceCode: { expiresAtMs: expiresAtSeconds * 1000 },
+		});
+	});
+
+	it("falls back to expires_in when expires_at is unparseable", async () => {
+		const nowMs = Date.parse("2026-04-26T00:00:00Z");
+		const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+			jsonResponse({
+				device_auth_id: "device-auth-fallback",
+				user_code: "ABCD-4444",
+				interval: 5,
+				expires_at: "not-a-date",
+				expires_in: 600,
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await requestDeviceAuthorization({ now: () => nowMs });
+
+		expect(result).toMatchObject({
+			type: "success",
+			deviceCode: { expiresAtMs: nowMs + 600 * 1000 },
+		});
+	});
+
 	it("returns a clear failure when the user-code endpoint is disabled", async () => {
 		const fetchMock = vi
 			.fn<typeof fetch>()

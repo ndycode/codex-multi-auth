@@ -6,27 +6,43 @@ import { unbindCodexAppRuntimeRotation } from "../../runtime/app-bind.js";
 
 const PLUGIN_NAME = "codex-multi-auth";
 
-async function withRetry<T>(fn: () => Promise<T>, attempts = 3, delayMs = 200): Promise<T> {
-	for (let i = 0; i < attempts; i++) {
-		try {
-			return await fn();
-		} catch (err) {
-			const code = err && typeof err === 'object' && 'code' in err ? (err as NodeJS.ErrnoException).code : undefined;
-			if ((code === 'EBUSY' || code === 'EPERM') && i < attempts - 1) {
-				await new Promise(resolve => setTimeout(resolve, delayMs));
-				continue;
-			}
-			throw err;
-		}
-	}
-	throw new Error('unreachable');
+const FILE_RETRY_CODES = new Set([
+	"EBUSY",
+	"EPERM",
+	"EAGAIN",
+	"ENOTEMPTY",
+	"EACCES",
+]);
+const FILE_RETRY_MAX_ATTEMPTS = 6;
+const FILE_RETRY_BASE_DELAY_MS = 25;
+const FILE_RETRY_JITTER_MS = 20;
+
+function isRetryableFsError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	const code = (error as NodeJS.ErrnoException).code;
+	return typeof code === "string" && FILE_RETRY_CODES.has(code);
 }
 
-function resolveUninstallPaths(
+async function withFileOperationRetry<T>(operation: () => Promise<T>): Promise<T> {
+	for (let attempt = 1; ; attempt += 1) {
+		try {
+			return await operation();
+		} catch (error) {
+			if (!isRetryableFsError(error) || attempt >= FILE_RETRY_MAX_ATTEMPTS) {
+				throw error;
+			}
+			const jitter = Math.floor(Math.random() * FILE_RETRY_JITTER_MS);
+			const delayMs = FILE_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1) + jitter;
+			await new Promise((resolve) => setTimeout(resolve, delayMs));
+		}
+	}
+}
+
+export function resolveUninstallPaths(
 	platform: NodeJS.Platform = process.platform,
 	env: NodeJS.ProcessEnv = process.env,
+	home: string = homedir(),
 ) {
-	const home = homedir();
 	const isWindows = platform === "win32";
 	const appData = (env["APPDATA"] ?? "").trim();
 	const localAppData = (env["LOCALAPPDATA"] ?? appData).trim();
@@ -45,7 +61,7 @@ function resolveUninstallPaths(
 	};
 }
 
-function removePluginFromList(list: unknown[]): unknown[] {
+export function removePluginFromList(list: unknown[]): unknown[] {
 	return list.filter((entry) => {
 		if (typeof entry !== "string") return true;
 		return entry !== PLUGIN_NAME && !entry.startsWith(`${PLUGIN_NAME}@`);
@@ -114,7 +130,33 @@ export function parseUninstallArgs(args: string[]): ParsedUninstallArgs {
 export type UninstallCommandDeps = {
 	log?: (message: string) => void;
 	clearAccounts?: () => Promise<void>;
+	unbind?: () => Promise<void>;
+	removeLauncher?: (options: {
+		remove: true;
+		log: (msg: string) => void;
+	}) => Promise<void>;
+	paths?: ReturnType<typeof resolveUninstallPaths>;
 };
+
+async function loadDefaultLauncher(): Promise<
+	| ((options: { remove: true; log: (msg: string) => void }) => Promise<void>)
+	| null
+> {
+	try {
+		const launcherModule = await import(
+			new URL("../../../../scripts/codex-app-launcher.js", import.meta.url).href
+		);
+		if (typeof launcherModule.installCodexAppLauncher === "function") {
+			return launcherModule.installCodexAppLauncher as (options: {
+				remove: true;
+				log: (msg: string) => void;
+			}) => Promise<void>;
+		}
+		return null;
+	} catch {
+		return null;
+	}
+}
 
 export async function runUninstallCommand(
 	args: string[],
@@ -133,17 +175,29 @@ export async function runUninstallCommand(
 
 	const { dryRun, json, clearAccounts } = parsed.options;
 	const log = deps.log ?? ((msg: string) => console.error(`codex-multi-auth: ${msg}`));
-	const paths = resolveUninstallPaths();
+	const paths = deps.paths ?? resolveUninstallPaths();
 	const removed: string[] = [];
 	const warnings: string[] = [];
 	let partialFailure = false;
+
+	// Surface a missing --clear-accounts handler immediately. The flag is
+	// documented as irreversible; silently no-oping would leave the user
+	// believing tokens were removed when they were not.
+	if (clearAccounts && !deps.clearAccounts) {
+		const msg =
+			"--clear-accounts has no effect: no clearAccounts handler is wired in this build";
+		log(`warning: ${msg}`);
+		warnings.push(msg);
+		partialFailure = true;
+	}
 
 	// Unbind Codex app runtime rotation
 	try {
 		if (dryRun) {
 			log("[dry-run] Would unbind Codex app runtime rotation");
 		} else {
-			await unbindCodexAppRuntimeRotation();
+			const unbind = deps.unbind ?? unbindCodexAppRuntimeRotation;
+			await unbind();
 			removed.push("app-bind");
 		}
 	} catch (error) {
@@ -155,14 +209,12 @@ export async function runUninstallCommand(
 
 	// Remove OS-level launcher
 	try {
-		const launcherModule = await import(
-			new URL("../../../../scripts/codex-app-launcher.js", import.meta.url).href
-		);
-		if (typeof launcherModule.installCodexAppLauncher === "function") {
+		const removeLauncher = deps.removeLauncher ?? (await loadDefaultLauncher());
+		if (removeLauncher) {
 			if (dryRun) {
 				log("[dry-run] Would remove OS launcher");
 			} else {
-				await launcherModule.installCodexAppLauncher({ remove: true, log });
+				await removeLauncher({ remove: true, log });
 				removed.push("launcher");
 			}
 		}
@@ -173,7 +225,10 @@ export async function runUninstallCommand(
 		partialFailure = true;
 	}
 
-	// Remove plugin entry from Codex.json
+	// Remove plugin entry from Codex.json. Track whether the resulting plugin
+	// list is empty so we can decide later whether removing the shared
+	// bun.lock is safe.
+	let configPluginsAfterRemoval: unknown[] | null = null;
 	try {
 		if (dryRun) {
 			log(`[dry-run] Would remove ${PLUGIN_NAME} from ${paths.configPath}`);
@@ -187,14 +242,18 @@ export async function runUninstallCommand(
 					"plugins" in config &&
 					Array.isArray((config as { plugins: unknown[] }).plugins)
 				) {
-					(config as { plugins: unknown[] }).plugins = removePluginFromList(
+					const next = removePluginFromList(
 						(config as { plugins: unknown[] }).plugins,
 					);
-					await withRetry(() => writeFile(
-						paths.configPath,
-						JSON.stringify(config, null, "\t") + "\n",
-						"utf8",
-					));
+					(config as { plugins: unknown[] }).plugins = next;
+					configPluginsAfterRemoval = next;
+					await withFileOperationRetry(() =>
+						writeFile(
+							paths.configPath,
+							JSON.stringify(config, null, "\t") + "\n",
+							"utf8",
+						),
+					);
 					removed.push("config-entry");
 				}
 			} catch (fileError) {
@@ -214,14 +273,32 @@ export async function runUninstallCommand(
 		partialFailure = true;
 	}
 
-	// Clear plugin cache
+	// Clear plugin cache. The plugin's node_modules subdir is private to this
+	// plugin, but bun.lock is shared across all Codex plugins — only remove it
+	// when the Codex.json plugin list is empty (or unreadable, which we treat
+	// as "no other plugins to protect").
+	const bunLockSafeToRemove =
+		configPluginsAfterRemoval === null ||
+		configPluginsAfterRemoval.length === 0;
 	try {
 		if (dryRun) {
 			log(`[dry-run] Would remove ${paths.cacheNodeModules}`);
-			log(`[dry-run] Would remove ${paths.cacheBunLock}`);
+			if (bunLockSafeToRemove) {
+				log(`[dry-run] Would remove ${paths.cacheBunLock}`);
+			} else {
+				log(
+					`[dry-run] Would skip ${paths.cacheBunLock} (other plugins still installed)`,
+				);
+			}
 		} else {
-			await withRetry(() => rm(paths.cacheNodeModules, { recursive: true, force: true }));
-			await withRetry(() => rm(paths.cacheBunLock, { force: true }));
+			await withFileOperationRetry(() =>
+				rm(paths.cacheNodeModules, { recursive: true, force: true }),
+			);
+			if (bunLockSafeToRemove) {
+				await withFileOperationRetry(() =>
+					rm(paths.cacheBunLock, { force: true }),
+				);
+			}
 			removed.push("cache");
 		}
 	} catch (error) {

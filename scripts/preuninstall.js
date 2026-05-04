@@ -37,21 +37,30 @@ function defaultPreuninstallLog(message) {
  * @param {{
  *   unbindCodexApp?: (dryRun: boolean) => Promise<void>,
  *   removeLauncher?: (options: { dryRun: boolean, log: (m: string) => void }) => Promise<void>,
- *   removePluginFromConfig?: (dryRun: boolean, log: (m: string) => void) => Promise<void>,
- *   clearCache?: (dryRun: boolean, log: (m: string) => void) => Promise<void>,
+ *   removePluginFromConfig?: (dryRun: boolean, log: (m: string) => void) => Promise<{ pluginsRemaining: number | null }>,
+ *   clearCache?: (dryRun: boolean, log: (m: string) => void, bunLockSafe: boolean) => Promise<void>,
  *   log?: (message: string) => void,
  *   env?: NodeJS.ProcessEnv,
+ *   home?: string,
  *   dryRun?: boolean,
  * }} [deps]
  */
 export async function runPreuninstallCleanup(deps = {}) {
 	const log = deps.log ?? defaultPreuninstallLog;
 	const env = deps.env ?? process.env;
+	const home =
+		deps.home ??
+		(deps.env
+			? env.HOME || env.USERPROFILE || ""
+			: undefined);
 	const dryRun = deps.dryRun ?? process.argv.includes("--dry-run");
 
 	if (isCiEnvironment(env)) {
 		return 0;
 	}
+
+	/** @type {number | null} */
+	let pluginsRemaining = null;
 
 	// Unbind Codex app runtime rotation (reverses postinstall bind)
 	try {
@@ -92,12 +101,20 @@ export async function runPreuninstallCleanup(deps = {}) {
 		);
 	}
 
-	// Remove plugin entry from Codex.json
+	// Remove plugin entry from Codex.json. Track how many plugins remain so we
+	// can decide whether the shared bun.lock is safe to delete.
 	try {
 		if (deps.removePluginFromConfig) {
-			await deps.removePluginFromConfig(dryRun, log);
+			const result = await deps.removePluginFromConfig(dryRun, log);
+			if (result && typeof result === "object" && "pluginsRemaining" in result) {
+				pluginsRemaining = /** @type {number | null} */ (result.pluginsRemaining);
+			}
 		} else {
-			const paths = resolveInstallPaths();
+			const paths = resolveInstallPaths(
+				process.platform,
+				env,
+				home || undefined,
+			);
 			if (dryRun) {
 				log(`[dry-run] Would remove codex-multi-auth from ${paths.configPath}`);
 			} else {
@@ -106,6 +123,7 @@ export async function runPreuninstallCleanup(deps = {}) {
 					const config = JSON.parse(raw);
 					if (Array.isArray(config.plugins)) {
 						config.plugins = removePluginFromList(config.plugins);
+						pluginsRemaining = config.plugins.length;
 						await withFileOperationRetry(() =>
 							writeFile(
 								paths.configPath,
@@ -135,23 +153,40 @@ export async function runPreuninstallCleanup(deps = {}) {
 		);
 	}
 
+	// bun.lock is shared across all Codex plugins. Treat it as safe to delete
+	// only when no other plugins remain (or the config is missing/unreadable,
+	// in which case there's nothing for us to protect).
+	const bunLockSafe = pluginsRemaining === null || pluginsRemaining === 0;
+
 	// Clear plugin cache dirs
 	try {
 		if (deps.clearCache) {
-			await deps.clearCache(dryRun, log);
+			await deps.clearCache(dryRun, log, bunLockSafe);
 		} else {
-			const paths = resolveInstallPaths();
+			const paths = resolveInstallPaths(
+				process.platform,
+				env,
+				home || undefined,
+			);
 			if (dryRun) {
 				log(`[dry-run] Would remove ${paths.cacheNodeModules}`);
-				log(`[dry-run] Would remove ${paths.cacheBunLock}`);
+				if (bunLockSafe) {
+					log(`[dry-run] Would remove ${paths.cacheBunLock}`);
+				} else {
+					log(
+						`[dry-run] Would skip ${paths.cacheBunLock} (other plugins still installed)`,
+					);
+				}
 			} else {
 				try {
 					await withFileOperationRetry(() =>
 						rm(paths.cacheNodeModules, { recursive: true, force: true }),
 					);
-					await withFileOperationRetry(() =>
-						rm(paths.cacheBunLock, { force: true }),
-					);
+					if (bunLockSafe) {
+						await withFileOperationRetry(() =>
+							rm(paths.cacheBunLock, { force: true }),
+						);
+					}
 				} catch (error) {
 					log(
 						`cache clear skipped: ${error instanceof Error ? error.message : String(error)}`,

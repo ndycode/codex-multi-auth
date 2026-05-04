@@ -3,8 +3,47 @@
 import { rename as fsRename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import process from "node:process";
 
 const PLUGIN_NAME = "codex-multi-auth";
+
+const TRUE_VALUES = new Set(["1", "true", "yes"]);
+const FALSE_VALUES = new Set(["0", "false", "no"]);
+const CI_ENV_KEYS = [
+	"CI",
+	"GITHUB_ACTIONS",
+	"GITLAB_CI",
+	"CIRCLECI",
+	"BUILDKITE",
+	"TF_BUILD",
+	"TEAMCITY_VERSION",
+	"JENKINS_URL",
+	"TRAVIS",
+	"APPVEYOR",
+	"BITBUCKET_BUILD_NUMBER",
+];
+
+/** @param {string | undefined} value */
+function readOptionalBooleanValue(value) {
+	if (value === undefined || value.trim().length === 0) return null;
+	const normalized = value.trim().toLowerCase();
+	if (TRUE_VALUES.has(normalized)) return true;
+	if (FALSE_VALUES.has(normalized)) return false;
+	return null;
+}
+
+/** @param {NodeJS.ProcessEnv} env @param {string} key */
+function isEnabledEnvFlag(env, key) {
+	const value = env[key];
+	if (value === undefined || value.trim().length === 0) return false;
+	return readOptionalBooleanValue(value) !== false;
+}
+
+/** @param {NodeJS.ProcessEnv} [env] */
+export function isCiEnvironment(env = process.env) {
+	if (readOptionalBooleanValue(env.npm_config_ignore_scripts) === true) return true;
+	return CI_ENV_KEYS.some((key) => isEnabledEnvFlag(env, key));
+}
 export const FILE_RETRY_CODES = new Set([
 	"EBUSY",
 	"EPERM",
