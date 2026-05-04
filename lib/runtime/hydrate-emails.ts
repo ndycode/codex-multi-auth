@@ -85,7 +85,16 @@ export async function hydrateRuntimeEmails(
 	);
 
 	if (changed) {
-		storage.accounts = accountsCopy;
+		const patchById = new Map(
+			accountsCopy
+				.filter((a): a is NonNullable<typeof a> => a !== null && a !== undefined)
+				.map((a) => [a.accountId, a]),
+		);
+		storage.accounts = storage.accounts.map((account) => {
+			if (!account) return account;
+			const patch = patchById.get(account.accountId);
+			return patch ?? account;
+		});
 		await deps.saveAccounts(storage);
 	}
 	return storage;

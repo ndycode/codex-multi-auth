@@ -387,13 +387,19 @@ function applyAccountStorageMutations(
 	mutations: readonly AccountStorageMutation[],
 ): void {
 	for (const mutation of mutations) {
-		const targetIndex =
-			findMatchingAccountIndex(storage.accounts, mutation.before, {
-				allowUniqueAccountIdFallbackWithoutEmail: true,
-			})
-			?? findMatchingAccountIndex(storage.accounts, mutation.after, {
-				allowUniqueAccountIdFallbackWithoutEmail: true,
-			});
+		const beforeIndex = findMatchingAccountIndex(storage.accounts, mutation.before, {
+			allowUniqueAccountIdFallbackWithoutEmail: true,
+		});
+		const afterIndex = findMatchingAccountIndex(storage.accounts, mutation.after, {
+			allowUniqueAccountIdFallbackWithoutEmail: true,
+		});
+		// If both match but to different accounts, skip — ambiguous, don't silently merge
+		if (
+			beforeIndex !== undefined
+			&& afterIndex !== undefined
+			&& beforeIndex !== afterIndex
+		) continue;
+		const targetIndex = beforeIndex ?? afterIndex;
 		if (targetIndex === undefined) continue;
 		const target = storage.accounts[targetIndex];
 		if (!target) continue;

@@ -135,6 +135,10 @@ export function restoreTopLevelModelProvider(
 		output.push(line);
 	}
 
+	if (!handled && originalLine) {
+		output.push(originalLine);
+	}
+
 	return output.join(lineEnding);
 }
 
@@ -147,7 +151,6 @@ export function restoreTopLevelResponseStorage(
 		originalConfig,
 		"disable_response_storage",
 	);
-	if (!originalLine) return currentConfig;
 	const lines = currentConfig.length > 0 ? currentConfig.split(/\r?\n/) : [];
 	const output: string[] = [];
 	let handled = false;
@@ -165,7 +168,10 @@ export function restoreTopLevelResponseStorage(
 			/^\s*disable_response_storage\s*=/.test(line) &&
 			readTomlTableName(line) === null
 		) {
-			output.push(originalLine);
+			if (originalLine) {
+				output.push(originalLine);
+			}
+			// If no originalLine, drop the line we wrote during bind (removing residue)
 			handled = true;
 			continue;
 		}

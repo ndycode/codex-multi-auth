@@ -152,11 +152,11 @@ export async function verifyRuntimeFlaggedAccounts(deps: {
 		await deps.persistAccountsAndFlagged(state.restored, nextFlaggedStorage, false);
 		deps.invalidateAccountManagerCache();
 	} else {
+		await deps.saveFlaggedAccounts(nextFlaggedStorage);
 		if (state.restored.length > 0) {
 			await deps.persistAccounts(state.restored, false);
 			deps.invalidateAccountManagerCache();
 		}
-		await deps.saveFlaggedAccounts(nextFlaggedStorage);
 	}
 
 	deps.showLine("");

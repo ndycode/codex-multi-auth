@@ -89,14 +89,13 @@ async function readChunkWithSoftHardTimeout(
 	softTimeoutMs: number,
 	hardTimeoutMs: number,
 ): Promise<Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>> {
-	const readPromise = reader.read();
 	try {
-		return await readChunkWithTimeout(readPromise, softTimeoutMs);
+		return await readChunkWithTimeout(reader.read(), softTimeoutMs);
 	} catch (error) {
 		if (!isStallTimeoutError(error) || hardTimeoutMs <= softTimeoutMs) {
 			throw error;
 		}
-		return readChunkWithTimeout(readPromise, hardTimeoutMs - softTimeoutMs);
+		return readChunkWithTimeout(reader.read(), hardTimeoutMs - softTimeoutMs);
 	}
 }
 
@@ -223,7 +222,13 @@ export function withStreamingFailover(
 				}
 			};
 
-			void pump();
+			pump().catch((err) => {
+				try {
+					controller.error(err);
+				} catch {
+					/* controller may already be closed */
+				}
+			});
 		},
 		cancel() {
 			closed = true;

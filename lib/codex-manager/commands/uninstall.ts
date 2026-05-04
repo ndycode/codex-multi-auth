@@ -6,6 +6,22 @@ import { unbindCodexAppRuntimeRotation } from "../../runtime/app-bind.js";
 
 const PLUGIN_NAME = "codex-multi-auth";
 
+async function withRetry<T>(fn: () => Promise<T>, attempts = 3, delayMs = 200): Promise<T> {
+	for (let i = 0; i < attempts; i++) {
+		try {
+			return await fn();
+		} catch (err) {
+			const code = err && typeof err === 'object' && 'code' in err ? (err as NodeJS.ErrnoException).code : undefined;
+			if ((code === 'EBUSY' || code === 'EPERM') && i < attempts - 1) {
+				await new Promise(resolve => setTimeout(resolve, delayMs));
+				continue;
+			}
+			throw err;
+		}
+	}
+	throw new Error('unreachable');
+}
+
 function resolveUninstallPaths(
 	platform: NodeJS.Platform = process.platform,
 	env: NodeJS.ProcessEnv = process.env,
@@ -174,11 +190,11 @@ export async function runUninstallCommand(
 					(config as { plugins: unknown[] }).plugins = removePluginFromList(
 						(config as { plugins: unknown[] }).plugins,
 					);
-					await writeFile(
+					await withRetry(() => writeFile(
 						paths.configPath,
 						JSON.stringify(config, null, "\t") + "\n",
 						"utf8",
-					);
+					));
 					removed.push("config-entry");
 				}
 			} catch (fileError) {
@@ -204,8 +220,8 @@ export async function runUninstallCommand(
 			log(`[dry-run] Would remove ${paths.cacheNodeModules}`);
 			log(`[dry-run] Would remove ${paths.cacheBunLock}`);
 		} else {
-			await rm(paths.cacheNodeModules, { recursive: true, force: true });
-			await rm(paths.cacheBunLock, { force: true });
+			await withRetry(() => rm(paths.cacheNodeModules, { recursive: true, force: true }));
+			await withRetry(() => rm(paths.cacheBunLock, { force: true }));
 			removed.push("cache");
 		}
 	} catch (error) {

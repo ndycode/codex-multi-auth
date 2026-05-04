@@ -241,6 +241,23 @@ function parseIntervalMs(value: unknown): number {
 	return DEVICE_AUTH_DEFAULT_INTERVAL_MS;
 }
 
+function parseAbsoluteExpirationMs(value: unknown): number | null {
+	if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+		// Unix epoch in seconds if < 10^10, otherwise already in ms
+		return value < 10_000_000_000 ? value * 1000 : value;
+	}
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+			const n = Number.parseFloat(trimmed);
+			return n < 10_000_000_000 ? n * 1000 : n;
+		}
+		const dateMs = Date.parse(trimmed);
+		if (Number.isFinite(dateMs)) return dateMs;
+	}
+	return null;
+}
+
 function parseExpirationMs(value: unknown, nowMs: number): number | null {
 	if (typeof value === "number" && Number.isFinite(value) && value > 0) {
 		return nowMs + Math.trunc(value * 1000);
@@ -279,7 +296,7 @@ function parseDeviceCodePayload(
 		return null;
 	}
 	const expiresAtMs =
-		parseExpirationMs(payload.expires_at, nowMs) ??
+		parseAbsoluteExpirationMs(payload.expires_at) ??
 		parseExpirationMs(payload.expires_in, nowMs);
 	return {
 		verificationUrl: DEVICE_AUTH_VERIFICATION_URL,

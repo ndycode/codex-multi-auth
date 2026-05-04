@@ -738,6 +738,11 @@ async function unbindCodexAppRuntimeRotationLocked(
 	const router = await readRouterStatus(paths.statusPath);
 	if (state) {
 		await stopRouter(router);
+		if (router?.pid && isProcessAlive(router.pid)) {
+			options.log?.(
+				`Warning: runtime router (pid ${router.pid}) did not stop; continuing cleanup`,
+			);
+		}
 		await removeAppBindStartup(state);
 	}
 
