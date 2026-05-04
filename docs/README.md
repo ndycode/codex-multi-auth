@@ -32,8 +32,9 @@ Public documentation for the `codex-multi-auth` Codex CLI multi-account OAuth ma
 
 | Document | Focus |
 | --- | --- |
-| [releases/v2.1.5.md](releases/v2.1.5.md) | Current stable release notes |
-| [releases/v2.1.4.md](releases/v2.1.4.md) | Prior stable release notes |
+| [releases/v2.1.6.md](releases/v2.1.6.md) | Current stable release notes |
+| [releases/v2.1.5.md](releases/v2.1.5.md) | Prior stable release notes |
+| [releases/v2.1.4.md](releases/v2.1.4.md) | Earlier stable release notes |
 | [releases/v2.1.3.md](releases/v2.1.3.md) | Earlier stable release notes |
 | [releases/v2.1.2.md](releases/v2.1.2.md) | Earlier stable release notes |
 | [releases/v2.1.1.md](releases/v2.1.1.md) | Earlier stable release notes |
@@ -86,8 +87,9 @@ Public documentation for the `codex-multi-auth` Codex CLI multi-account OAuth ma
 | [reference/storage-paths.md](reference/storage-paths.md) | Canonical and compatibility storage paths |
 | [reference/public-api.md](reference/public-api.md) | Public API stability and semver contract |
 | [reference/error-contracts.md](reference/error-contracts.md) | CLI, JSON, and helper error semantics |
-| [releases/v2.1.5.md](releases/v2.1.5.md) | Current stable release notes |
-| [releases/v2.1.4.md](releases/v2.1.4.md) | Prior stable release notes |
+| [releases/v2.1.6.md](releases/v2.1.6.md) | Current stable release notes |
+| [releases/v2.1.5.md](releases/v2.1.5.md) | Prior stable release notes |
+| [releases/v2.1.4.md](releases/v2.1.4.md) | Earlier stable release notes |
 | [releases/v2.1.3.md](releases/v2.1.3.md) | Earlier stable release notes |
 | [releases/v2.1.2.md](releases/v2.1.2.md) | Earlier stable release notes |
 | [releases/v2.1.1.md](releases/v2.1.1.md) | Earlier stable release notes |
