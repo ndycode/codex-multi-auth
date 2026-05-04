@@ -1490,12 +1490,13 @@ export async function runFix(
 		});
 	}
 
+	if (!options.dryRun && workingQuotaCache && quotaCacheChanged) {
+		await saveQuotaCache(workingQuotaCache);
+	}
+
 	const changed = accountStorageChanged;
 
 	if (options.json) {
-		if (!options.dryRun && workingQuotaCache && quotaCacheChanged) {
-			await saveQuotaCache(workingQuotaCache);
-		}
 		console.log(
 			JSON.stringify(
 				{
@@ -1594,9 +1595,6 @@ export async function runFix(
 				`${deps.stylePromptText("Note:", "accent")} ${deps.stylePromptText(recommendation.reason, "muted")}`,
 			);
 		}
-	}
-	if (!options.dryRun && workingQuotaCache && quotaCacheChanged) {
-		await saveQuotaCache(workingQuotaCache);
 	}
 
 	if (accountStorageChanged && options.dryRun) {

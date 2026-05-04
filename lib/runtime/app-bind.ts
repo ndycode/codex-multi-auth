@@ -669,7 +669,6 @@ async function bindCodexAppRuntimeRotationLocked(
 	await mkdir(paths.bindDir, { recursive: true });
 	await mkdir(dirname(paths.configPath), { recursive: true });
 	await atomicWriteFile(paths.backupPath, `${JSON.stringify(backup, null, 2)}\n`);
-	await atomicWriteFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`);
 	const startedRouter = await maybeStartRouter(state, options);
 	const router = startedRouter
 		? await waitForRouterStatus(

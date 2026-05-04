@@ -68,10 +68,12 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,
 		) => Promise<void>,
+		currentFlagged: FlaggedAccountStorageV1,
 	) => Promise<T>,
 	deps: {
 		getStoragePath: () => string;
 		loadCurrent: () => Promise<AccountStorageV3 | null>;
+		loadCurrentFlagged: () => Promise<FlaggedAccountStorageV1>;
 		saveAccounts: (storage: AccountStorageV3) => Promise<void>;
 		saveFlaggedAccounts: (storage: FlaggedAccountStorageV1) => Promise<void>;
 		cloneAccountStorageForPersistence: (
@@ -87,6 +89,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			active: true,
 		};
 		const current = state.snapshot;
+		const currentFlagged = await deps.loadCurrentFlagged();
 		const persist = async (
 			accountStorage: AccountStorageV3,
 			flaggedStorage: FlaggedAccountStorageV1,
@@ -115,7 +118,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			}
 		};
 		return transactionSnapshotContext.run(state, () =>
-			handler(current, persist),
+			handler(current, persist, currentFlagged),
 		);
 	});
 }
