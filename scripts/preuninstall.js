@@ -121,15 +121,20 @@ export async function runPreuninstallCleanup(deps = {}) {
 				env,
 				home || undefined,
 			);
-			if (dryRun) {
-				log(`[dry-run] Would remove codex-multi-auth from ${paths.configPath}`);
-			} else {
-				try {
-					const raw = await readFile(paths.configPath, "utf8");
-					const config = JSON.parse(raw);
-					if (Array.isArray(config.plugins)) {
-						config.plugins = removePluginFromList(config.plugins);
-						bunLockState = config.plugins.length === 0 ? "safe" : "uncertain";
+			try {
+				const raw = await withFileOperationRetry(() =>
+					readFile(paths.configPath, "utf8"),
+				);
+				const config = JSON.parse(raw);
+				if (Array.isArray(config.plugins)) {
+					const next = removePluginFromList(config.plugins);
+					bunLockState = next.length === 0 ? "safe" : "uncertain";
+					if (dryRun) {
+						log(
+							`[dry-run] Would remove codex-multi-auth from ${paths.configPath}`,
+						);
+					} else {
+						config.plugins = next;
 						await withFileOperationRetry(() =>
 							writeFile(
 								paths.configPath,
@@ -138,20 +143,29 @@ export async function runPreuninstallCleanup(deps = {}) {
 							),
 						);
 					}
-				} catch (fileError) {
-					const code =
-						fileError &&
-						typeof fileError === "object" &&
-						"code" in fileError
-							? fileError.code
-							: undefined;
-					if (code === "ENOENT") {
-						bunLockState = "safe";
-					} else {
+				} else if (dryRun) {
+					log(
+						`[dry-run] Would remove codex-multi-auth from ${paths.configPath}`,
+					);
+				}
+			} catch (fileError) {
+				const code =
+					fileError &&
+					typeof fileError === "object" &&
+					"code" in fileError
+						? fileError.code
+						: undefined;
+				if (code === "ENOENT") {
+					bunLockState = "safe";
+					if (dryRun) {
 						log(
-							`config cleanup skipped: ${fileError instanceof Error ? fileError.message : String(fileError)}`,
+							`[dry-run] Would remove codex-multi-auth from ${paths.configPath}`,
 						);
 					}
+				} else {
+					log(
+						`config cleanup skipped: ${fileError instanceof Error ? fileError.message : String(fileError)}`,
+					);
 				}
 			}
 		}

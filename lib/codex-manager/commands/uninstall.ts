@@ -204,13 +204,16 @@ export async function runUninstallCommand(
 		partialFailure = true;
 	}
 
-	// Remove OS-level launcher
+	// Remove OS-level launcher. Defer loading the default launcher module
+	// until we are actually about to call it — dry-run preview should not
+	// require `dist/scripts/codex-app-launcher.js` to be present.
 	try {
-		const removeLauncher = deps.removeLauncher ?? (await loadDefaultLauncher());
-		if (removeLauncher) {
-			if (dryRun) {
-				log("[dry-run] Would remove OS launcher");
-			} else {
+		if (dryRun) {
+			log("[dry-run] Would remove OS launcher");
+		} else {
+			const removeLauncher =
+				deps.removeLauncher ?? (await loadDefaultLauncher());
+			if (removeLauncher) {
 				await removeLauncher({ remove: true, log });
 				removed.push("launcher");
 			}

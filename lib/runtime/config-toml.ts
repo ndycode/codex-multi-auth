@@ -136,7 +136,16 @@ export function restoreTopLevelModelProvider(
 	}
 
 	if (!handled && originalLine) {
-		output.push(originalLine);
+		// Splice the restored line into the root table — appending at tail
+		// would land it inside whatever section appears last in `output`.
+		const firstSectionIdx = output.findIndex(
+			(line) => readTomlTableName(line) !== null,
+		);
+		if (firstSectionIdx === -1) {
+			output.push(originalLine);
+		} else {
+			output.splice(firstSectionIdx, 0, originalLine);
+		}
 	}
 
 	return output.join(lineEnding);

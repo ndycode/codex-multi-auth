@@ -693,8 +693,18 @@ async function bindCodexAppRuntimeRotationLocked(
 	if (routerIsUsable) {
 		port = readPortFromBaseUrl(routerBaseUrl, port);
 		baseUrl = routerBaseUrl;
-	} else if (!startedRouter && existingState && existingState.port > 0 && router !== null) {
-		// Only use existing state when router is known to be alive (status read succeeded)
+	} else if (
+		!startedRouter &&
+		existingState &&
+		existingState.port > 0 &&
+		router !== null &&
+		router.state === "running" &&
+		isProcessAlive(router.pid)
+	) {
+		// Only reuse existingState.port when the router process is verifiably
+		// alive — `router !== null` alone passes for stale status JSON left by
+		// a dead router, which would have us write a config.toml pointing at a
+		// port nothing is listening on.
 		port = existingState.port;
 		baseUrl = existingState.baseUrl;
 	}
