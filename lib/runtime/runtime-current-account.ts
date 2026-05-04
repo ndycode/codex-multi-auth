@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import process from "node:process";
 import type { RuntimeObservabilitySnapshot } from "./runtime-observability.js";
@@ -49,6 +49,7 @@ export interface RuntimeCurrentAccountSources {
 
 export const RUNTIME_CURRENT_ACCOUNT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const APP_RUNTIME_HELPER_KIND = "codex-app-runtime-rotation-helper";
+const MAX_STATUS_FILE_BYTES = 1024 * 1024; // 1 MB sanity cap
 
 export interface AppRuntimeHelperAccountStatus {
 	kind: string | null;
@@ -129,6 +130,12 @@ function isProcessAlive(pid: number | null): boolean {
 export function readAppRuntimeHelperStatus(): AppRuntimeHelperAccountStatus | null {
 	const statusPath = join(getCodexMultiAuthDir(), APP_RUNTIME_HELPER_STATUS_FILE);
 	if (!existsSync(statusPath)) return null;
+	try {
+		const stat = statSync(statusPath);
+		if (stat.size > MAX_STATUS_FILE_BYTES) return null;
+	} catch {
+		return null;
+	}
 	try {
 		const parsed = JSON.parse(readFileSync(statusPath, "utf8")) as unknown;
 		if (!isRecord(parsed)) return null;

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { formatAccountLabel, formatCooldown, formatWaitTime } from "../../accounts.js";
 import { parseBooleanEnv } from "../../env-parsing.js";
@@ -440,9 +440,17 @@ function readOptionalString(record: Record<string, unknown>, key: string): strin
 		: null;
 }
 
+const MAX_STATUS_FILE_BYTES = 1024 * 1024; // 1 MB sanity cap
+
 function readAppRuntimeHelperStatus(): AppRuntimeHelperStatus | null {
 	const statusPath = join(getCodexMultiAuthDir(), APP_RUNTIME_HELPER_STATUS_FILE);
 	if (!existsSync(statusPath)) return null;
+	try {
+		const stat = statSync(statusPath);
+		if (stat.size > MAX_STATUS_FILE_BYTES) return null;
+	} catch {
+		return null;
+	}
 	try {
 		const parsed = JSON.parse(readFileSync(statusPath, "utf8")) as unknown;
 		if (!isRecord(parsed)) return null;

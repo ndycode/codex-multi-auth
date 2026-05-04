@@ -676,6 +676,8 @@ async function bindCodexAppRuntimeRotationLocked(
 	await mkdir(paths.bindDir, { recursive: true });
 	await mkdir(dirname(paths.configPath), { recursive: true });
 	await atomicWriteFile(paths.backupPath, `${JSON.stringify(backup, null, 2)}\n`);
+	// Write bootstrap state before spawning so router can read --state on startup
+	await atomicWriteFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`);
 	const startedRouter = await maybeStartRouter(state, options);
 	const router = startedRouter
 		? await waitForRouterStatus(
@@ -691,11 +693,17 @@ async function bindCodexAppRuntimeRotationLocked(
 	if (routerIsUsable) {
 		port = readPortFromBaseUrl(routerBaseUrl, port);
 		baseUrl = routerBaseUrl;
-	} else if (existingState && existingState.port > 0) {
+	} else if (!startedRouter && existingState && existingState.port > 0 && router !== null) {
+		// Only use existing state when router is known to be alive (status read succeeded)
 		port = existingState.port;
 		baseUrl = existingState.baseUrl;
 	}
 	if (port <= 0) {
+		if (startedRouter) {
+			// Best-effort stop of the router we just spawned
+			const orphan = await readRouterStatus(state.statusPath).catch(() => null);
+			await stopRouter(orphan).catch(() => undefined);
+		}
 		throw new Error(
 			"Codex app bind could not resolve a runtime router port; refusing to write config.toml with port=0.",
 		);

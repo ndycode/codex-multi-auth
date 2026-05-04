@@ -101,7 +101,10 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 				deps.cloneAccountStorageForPersistence(accountStorage);
 			await deps.saveAccounts(nextAccounts);
 			try {
-				await deps.saveFlaggedAccounts(flaggedStorage);
+				await deps.saveFlaggedAccounts({
+					...flaggedStorage,
+					accounts: [...flaggedStorage.accounts],
+				});
 				state.snapshot = nextAccounts;
 			} catch (error) {
 				try {
