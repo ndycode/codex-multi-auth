@@ -131,6 +131,27 @@ codex-multi-auth login
 
 ---
 
+## Complete Uninstall
+
+`npm@7+` no longer fires `preuninstall` lifecycle scripts, so `npm uninstall -g codex-multi-auth` on its own leaves residual artifacts (a stale plugin entry in `Codex.json`, the cached `node_modules/codex-multi-auth` directory, an OS launcher, and the runtime app-bind state).
+
+To uninstall completely, run the manager's own cleanup **before** you remove the npm package:
+
+```bash
+codex-multi-auth uninstall
+npm uninstall -g codex-multi-auth
+```
+
+Useful flags on the cleanup step:
+
+- `--dry-run` previews what would be removed without touching the filesystem.
+- `--json` prints a machine-readable summary.
+- `--clear-accounts` also wipes stored credentials (irreversible — use only when you are leaving the package permanently).
+
+The cleanup unbinds Codex app runtime rotation, removes OS launchers, strips `codex-multi-auth` from `Codex.json`, and clears the plugin's `node_modules` cache. It conservatively preserves the shared `bun.lock` when other Codex plugins remain installed, and only deletes it when this is the sole plugin or `Codex.json` does not exist.
+
+---
+
 ## Issue Report Checklist
 
 Attach these outputs when opening a bug report:

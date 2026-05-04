@@ -1,6 +1,6 @@
 {
 	"name": "codex-multi-auth",
-	"version": "2.1.6",
+	"version": "2.1.7",
 	"description": "Codex CLI multi-account OAuth manager with account switching, health checks, runtime rotation, diagnostics, and recovery tools for @openai/codex",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
@@ -109,7 +109,6 @@
 		"audit:ci": "npm run audit:prod && npm run audit:dev:allowlist",
 		"vendor:verify": "node scripts/verify-vendor-provenance.mjs",
 		"vendor:update-manifest": "node scripts/update-vendor-provenance.mjs",
-		"preuninstall": "node scripts/preuninstall.js",
 		"postinstall": "node scripts/postinstall.js",
 		"prepublishOnly": "npm run build",
 		"prepare": "husky"

@@ -96,7 +96,11 @@ export function printUninstallUsage(): void {
 			"Behavior:",
 			"  Reverses all postinstall changes: unbinds Codex app, removes OS launchers,",
 			"  strips plugin from Codex.json, and clears the plugin cache.",
-			"  Use this to clean up residual artifacts from prior installs.",
+			"",
+			"Recommended order (npm@7+ no longer fires preuninstall lifecycle scripts,",
+			"so cleanup must be initiated manually):",
+			"  1. codex-multi-auth uninstall          # remove residual artifacts",
+			"  2. npm uninstall -g codex-multi-auth   # remove the package itself",
 		].join("\n"),
 	);
 }
