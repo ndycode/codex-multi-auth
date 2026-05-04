@@ -104,6 +104,13 @@ export interface AppBindOptions {
 	log?: (message: string) => void;
 }
 
+// Per-key mutex. `tail` resolves only after `current` resolves, so each
+// caller waits for the previous holder to call releaseCurrent(). The map
+// check and optional delete run synchronously after releaseCurrent() with no
+// await between them — JS's single-threaded event loop guarantees no other
+// caller can modify the map entry in that window. If a later caller has
+// already replaced the entry, the identity check is false and the chain is
+// preserved.
 async function withAppBindLock<T>(
 	key: string,
 	operation: () => Promise<T>,
