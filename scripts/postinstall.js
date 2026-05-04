@@ -59,7 +59,6 @@ function isEnabledEnvFlag(env, key) {
  * @param {NodeJS.ProcessEnv} [env]
  */
 export function isCiEnvironment(env = process.env) {
-	if (readOptionalBoolean(env.npm_config_ignore_scripts) === true) return true;
 	return CI_ENV_KEYS.some((key) => isEnabledEnvFlag(env, key));
 }
 

@@ -26,7 +26,7 @@ export function runInTransactionSnapshotContext<T>(
 
 export function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
 	const previousMutex = storageMutex;
-	let releaseLock: () => void;
+	let releaseLock: () => void = () => undefined;
 	storageMutex = new Promise<void>((resolve) => {
 		releaseLock = resolve;
 	});
