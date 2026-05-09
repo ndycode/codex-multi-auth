@@ -1,5 +1,5 @@
-import { timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { createHash, timingSafeEqual } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import {
@@ -259,15 +259,23 @@ function recordLastRuntimeAccount(
 }
 
 /**
- * mtime-keyed snapshot of on-disk storage metadata. The proxy is a
+ * Content-hash-keyed snapshot of on-disk storage metadata. The proxy is a
  * long-running process; the `switch`/`unpin`/`best` CLI runs in a different
  * process and mutates the storage file. We re-read only the top-level
  * `pinnedAccountIndex` and `affinityGeneration` fields on each request so
  * manual changes are honored without doing a full AccountManager reload
- * (which would lose in-memory cooldown state). See #474.
+ * (which would lose in-memory cooldown state).
+ *
+ * We key the cache on a sha1 of the file bytes rather than `mtimeMs` because
+ * Windows file systems can report sub-millisecond mtime granularity that is
+ * coarser than our atomic-rename writes — two CLI bumps that happen close
+ * together can land on the same `mtimeMs` and silently bypass an mtime-based
+ * cache. The hashing cost is negligible for the small accounts.json file
+ * (typically < 50KB) and keeps cache correctness independent of FS mtime
+ * resolution. See #474.
  */
 interface StorageMetaSnapshot {
-	mtimeMs: number;
+	contentHash: string;
 	pinnedAccountIndex: number | null;
 	affinityGeneration: number;
 }
@@ -281,6 +289,10 @@ const STORAGE_META_CACHE: { snapshot: StorageMetaSnapshot | null } = {
 	snapshot: null,
 };
 
+function hashStorageBytes(bytes: Buffer): string {
+	return createHash("sha1").update(bytes).digest("hex");
+}
+
 export function readStorageMetaFromDisk(
 	storagePath: string = getStoragePath(),
 ): StorageMeta {
@@ -289,16 +301,16 @@ export function readStorageMetaFromDisk(
 		return { pinnedAccountIndex: null, affinityGeneration: 0 };
 	}
 	try {
-		const stat = statSync(storagePath);
+		const bytes = readFileSync(storagePath);
+		const contentHash = hashStorageBytes(bytes);
 		const cached = STORAGE_META_CACHE.snapshot;
-		if (cached && cached.mtimeMs === stat.mtimeMs) {
+		if (cached && cached.contentHash === contentHash) {
 			return {
 				pinnedAccountIndex: cached.pinnedAccountIndex,
 				affinityGeneration: cached.affinityGeneration,
 			};
 		}
-		const raw = readFileSync(storagePath, "utf8");
-		const parsed = JSON.parse(raw) as {
+		const parsed = JSON.parse(bytes.toString("utf8")) as {
 			pinnedAccountIndex?: unknown;
 			affinityGeneration?: unknown;
 		};
@@ -315,7 +327,7 @@ export function readStorageMetaFromDisk(
 				? parsed.affinityGeneration
 				: 0;
 		STORAGE_META_CACHE.snapshot = {
-			mtimeMs: stat.mtimeMs,
+			contentHash,
 			pinnedAccountIndex,
 			affinityGeneration,
 		};
@@ -336,8 +348,8 @@ export function readPinnedAccountIndexFromDisk(
 }
 
 /**
- * Test-only: reset the storage-meta mtime cache between scenarios so each test
- * starts from a clean read-from-disk state.
+ * Test-only: reset the storage-meta content-hash cache between scenarios so
+ * each test starts from a clean read-from-disk state.
  */
 export function resetPinCacheForTesting(): void {
 	STORAGE_META_CACHE.snapshot = null;

@@ -1,10 +1,4 @@
-import {
-	mkdtempSync,
-	rmSync,
-	statSync,
-	utimesSync,
-	writeFileSync,
-} from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -57,12 +51,6 @@ function makeTmpStoragePath(): string {
 
 function writeStorageFile(path: string, storage: AccountStorageV3): void {
 	writeFileSync(path, JSON.stringify(storage), "utf8");
-}
-
-function bumpMtime(path: string): void {
-	const st = statSync(path);
-	const newTime = (st.mtimeMs + 1000) / 1000;
-	utimesSync(path, newTime, newTime);
 }
 
 beforeEach(() => {
@@ -179,7 +167,7 @@ describe("issue #474 — affinity invalidation on user storage events", () => {
 			expect(readStorageMetaFromDisk(path).affinityGeneration).toBe(3);
 		});
 
-		it("invalidates the mtime cache when generation changes", () => {
+		it("invalidates the cache when generation changes", () => {
 			const path = makeTmpStoragePath();
 			writeStorageFile(
 				path,
@@ -191,7 +179,6 @@ describe("issue #474 — affinity invalidation on user storage events", () => {
 				path,
 				createStorage(Date.now(), 2, { affinityGeneration: 2 }),
 			);
-			bumpMtime(path);
 			expect(readStorageMetaFromDisk(path).affinityGeneration).toBe(2);
 		});
 
@@ -290,7 +277,6 @@ describe("issue #474 — affinity invalidation on user storage events", () => {
 				path,
 				createStorage(Date.now(), 3, { affinityGeneration: 2 }),
 			);
-			bumpMtime(path);
 
 			const updated = maybeInvalidateAffinityFromDisk(
 				sessionAffinityStore,

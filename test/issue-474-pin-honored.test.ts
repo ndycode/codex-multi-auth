@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync, statSync, utimesSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -62,12 +62,6 @@ function makeTmpStoragePath(): string {
 
 function writeStorageFile(path: string, storage: AccountStorageV3): void {
 	writeFileSync(path, JSON.stringify(storage), "utf8");
-}
-
-function bumpMtime(path: string): void {
-	const st = statSync(path);
-	const newTime = (st.mtimeMs + 1000) / 1000;
-	utimesSync(path, newTime, newTime);
 }
 
 beforeEach(() => {
@@ -486,23 +480,24 @@ describe("issue #474 — manual pin honored by runtime proxy", () => {
 			expect(readPinnedAccountIndexFromDisk(path)).toBeNull();
 		});
 
-		it("re-reads on mtime change (mtime cache invalidation)", () => {
+		it("re-reads when file content changes (content-hash cache invalidation)", () => {
 			const path = makeTmpStoragePath();
 			writeStorageFile(path, createStorage(Date.now(), 3, 0));
 			expect(readPinnedAccountIndexFromDisk(path)).toBe(0);
 
 			writeStorageFile(path, createStorage(Date.now(), 3, 2));
-			bumpMtime(path);
 			expect(readPinnedAccountIndexFromDisk(path)).toBe(2);
 		});
 
-		it("returns the cached value while mtime is unchanged", () => {
+		it("returns the cached value while file content is unchanged", () => {
 			const path = makeTmpStoragePath();
-			writeStorageFile(path, createStorage(Date.now(), 3, 1));
+			const storage = createStorage(Date.now(), 3, 1);
+			writeStorageFile(path, storage);
 			expect(readPinnedAccountIndexFromDisk(path)).toBe(1);
-			// Overwrite same file content but do not bump mtime explicitly. The
-			// cache is keyed by mtime so the stale value should be returned until
-			// mtime changes.
+			// Re-write the exact same JSON. The cache is keyed by content hash so
+			// the second read should still return the cached value without a
+			// re-parse.
+			writeStorageFile(path, storage);
 			expect(readPinnedAccountIndexFromDisk(path)).toBe(1);
 		});
 
