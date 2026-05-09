@@ -285,56 +285,108 @@ export interface StorageMeta {
 	affinityGeneration: number;
 }
 
-const STORAGE_META_CACHE: { snapshot: StorageMetaSnapshot | null } = {
-	snapshot: null,
-};
+// Keyed by absolute storage path so multiple proxy instances and concurrent
+// vitest workers (each pointing at their own temp storage file) cannot
+// corrupt each other's snapshots. See issue #474.
+const STORAGE_META_CACHE: Map<string, StorageMetaSnapshot> = new Map();
+
+const TRANSIENT_FS_ERROR_CODES = new Set([
+	"EBUSY",
+	"EPERM",
+	"EACCES",
+	"EAGAIN",
+]);
+
+function isTransientFsError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	if (typeof code === "string" && TRANSIENT_FS_ERROR_CODES.has(code)) {
+		return true;
+	}
+	// JSON parse failures are treated as transient because the most likely
+	// cause inside the proxy's hot path is reading a half-written file mid
+	// atomic-rename — returning defaults in that case would clear affinity
+	// unnecessarily and let the proxy use the wrong account on the next
+	// request.
+	return error instanceof SyntaxError;
+}
 
 function hashStorageBytes(bytes: Buffer): string {
 	return createHash("sha1").update(bytes).digest("hex");
+}
+
+function metaFromSnapshot(snapshot: StorageMetaSnapshot): StorageMeta {
+	return {
+		pinnedAccountIndex: snapshot.pinnedAccountIndex,
+		affinityGeneration: snapshot.affinityGeneration,
+	};
 }
 
 export function readStorageMetaFromDisk(
 	storagePath: string = getStoragePath(),
 ): StorageMeta {
 	if (!existsSync(storagePath)) {
-		STORAGE_META_CACHE.snapshot = null;
+		STORAGE_META_CACHE.delete(storagePath);
 		return { pinnedAccountIndex: null, affinityGeneration: 0 };
 	}
-	try {
-		const bytes = readFileSync(storagePath);
-		const contentHash = hashStorageBytes(bytes);
-		const cached = STORAGE_META_CACHE.snapshot;
-		if (cached && cached.contentHash === contentHash) {
-			return {
-				pinnedAccountIndex: cached.pinnedAccountIndex,
-				affinityGeneration: cached.affinityGeneration,
+	// Up to 3 attempts to absorb a single in-flight atomic rename without
+	// falling back to the cache. Backoff is intentionally tiny — the proxy
+	// is on the request hot path and we'd rather serve a slightly stale value
+	// than block.
+	let lastError: unknown = null;
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		try {
+			const bytes = readFileSync(storagePath);
+			const contentHash = hashStorageBytes(bytes);
+			const cached = STORAGE_META_CACHE.get(storagePath);
+			if (cached && cached.contentHash === contentHash) {
+				return metaFromSnapshot(cached);
+			}
+			const parsed = JSON.parse(bytes.toString("utf8")) as {
+				pinnedAccountIndex?: unknown;
+				affinityGeneration?: unknown;
 			};
+			const pinnedAccountIndex =
+				typeof parsed.pinnedAccountIndex === "number" &&
+				Number.isFinite(parsed.pinnedAccountIndex)
+					? Math.trunc(parsed.pinnedAccountIndex)
+					: null;
+			const affinityGeneration =
+				typeof parsed.affinityGeneration === "number" &&
+				Number.isFinite(parsed.affinityGeneration) &&
+				Number.isInteger(parsed.affinityGeneration) &&
+				parsed.affinityGeneration >= 0
+					? parsed.affinityGeneration
+					: 0;
+			const snapshot: StorageMetaSnapshot = {
+				contentHash,
+				pinnedAccountIndex,
+				affinityGeneration,
+			};
+			STORAGE_META_CACHE.set(storagePath, snapshot);
+			return { pinnedAccountIndex, affinityGeneration };
+		} catch (error) {
+			lastError = error;
+			if (!isTransientFsError(error)) break;
+			// Cheap busy-wait via a tight loop; 5–10ms backoff on second/third
+			// attempts is enough to clear most atomic-rename windows on
+			// Windows without ballooning request latency.
+			if (attempt < 2) {
+				const deadline = Date.now() + 5 + attempt * 5;
+				while (Date.now() < deadline) {
+					// noop spin
+				}
+			}
 		}
-		const parsed = JSON.parse(bytes.toString("utf8")) as {
-			pinnedAccountIndex?: unknown;
-			affinityGeneration?: unknown;
-		};
-		const pinnedAccountIndex =
-			typeof parsed.pinnedAccountIndex === "number" &&
-			Number.isFinite(parsed.pinnedAccountIndex)
-				? Math.trunc(parsed.pinnedAccountIndex)
-				: null;
-		const affinityGeneration =
-			typeof parsed.affinityGeneration === "number" &&
-			Number.isFinite(parsed.affinityGeneration) &&
-			Number.isInteger(parsed.affinityGeneration) &&
-			parsed.affinityGeneration >= 0
-				? parsed.affinityGeneration
-				: 0;
-		STORAGE_META_CACHE.snapshot = {
-			contentHash,
-			pinnedAccountIndex,
-			affinityGeneration,
-		};
-		return { pinnedAccountIndex, affinityGeneration };
-	} catch {
-		return { pinnedAccountIndex: null, affinityGeneration: 0 };
 	}
+	// Transient failure (or partial-write parse error). Prefer the last good
+	// snapshot for this path so we don't blow away affinity unnecessarily.
+	// Fall through to defaults only when we've never successfully read this
+	// file before.
+	const cached = STORAGE_META_CACHE.get(storagePath);
+	if (cached && isTransientFsError(lastError)) {
+		return metaFromSnapshot(cached);
+	}
+	return { pinnedAccountIndex: null, affinityGeneration: 0 };
 }
 
 /**
@@ -352,7 +404,7 @@ export function readPinnedAccountIndexFromDisk(
  * each test starts from a clean read-from-disk state.
  */
 export function resetPinCacheForTesting(): void {
-	STORAGE_META_CACHE.snapshot = null;
+	STORAGE_META_CACHE.clear();
 }
 
 /**

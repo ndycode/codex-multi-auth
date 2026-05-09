@@ -172,6 +172,7 @@ import {
 	loadAccounts,
 	loadFlaggedAccounts,
 	type NamedBackupSummary,
+	readAffinityGenerationFromDisk,
 	restoreAccountsFromBackup,
 	StorageError,
 	saveAccounts,
@@ -3266,7 +3267,17 @@ async function persistAndSyncSelectedAccount({
 		delete storage.pinnedAccountIndex;
 	}
 	if (bumpAffinityGeneration) {
-		storage.affinityGeneration = (storage.affinityGeneration ?? 0) + 1;
+		// Re-read the on-disk generation right before saving so concurrent CLI
+		// processes don't lose increments via lost-update on the load+mutate
+		// pair. Math.max keeps the counter monotonically increasing — extra
+		// bumps are harmless (just an additional affinity invalidation), but a
+		// missed bump can let the proxy cling to the wrong account. The save
+		// itself is serialized by withStorageLock; this only narrows the
+		// lost-update window. See issue #474.
+		const diskGeneration = readAffinityGenerationFromDisk(getStoragePath());
+		const inMemoryGeneration = storage.affinityGeneration ?? 0;
+		storage.affinityGeneration =
+			Math.max(inMemoryGeneration, diskGeneration) + 1;
 	}
 	await saveAccountsWithRetry(storage, saveAccounts);
 
@@ -3507,6 +3518,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			setStoragePath,
 			loadAccounts,
 			saveAccounts,
+			getStoragePath,
 		});
 	}
 	if (command === "check") {
