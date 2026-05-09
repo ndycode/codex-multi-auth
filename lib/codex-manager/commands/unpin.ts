@@ -1,4 +1,8 @@
-import type { AccountStorageV3 } from "../../storage.js";
+import {
+	readAffinityGenerationFromDisk,
+	type AccountStorageV3,
+} from "../../storage.js";
+import { saveAccountsWithRetry } from "../forecast-report-shared.js";
 
 type LoadedStorage = AccountStorageV3 | null;
 
@@ -6,6 +10,7 @@ export interface UnpinCommandDeps {
 	setStoragePath: (path: string | null) => void;
 	loadAccounts: () => Promise<LoadedStorage>;
 	saveAccounts: (storage: AccountStorageV3) => Promise<void>;
+	getStoragePath?: () => string;
 	logError?: (message: string) => void;
 	logInfo?: (message: string) => void;
 }
@@ -30,8 +35,20 @@ export async function runUnpinCommand(
 
 	const previousPin = storage.pinnedAccountIndex;
 	delete storage.pinnedAccountIndex;
-	storage.affinityGeneration = (storage.affinityGeneration ?? 0) + 1;
-	await deps.saveAccounts(storage);
+	// Re-read the on-disk affinityGeneration just before saving so concurrent
+	// CLI processes don't lose increments via lost-update on the load+mutate
+	// pair. The save itself is serialized by withStorageLock, but the load
+	// happens earlier and another process may have bumped the counter in the
+	// meantime. Math.max keeps the counter monotonically increasing — extra
+	// bumps are harmless (just an additional affinity invalidation), but a
+	// missed bump can let the proxy cling to the wrong account.
+	const diskGeneration = deps.getStoragePath
+		? readAffinityGenerationFromDisk(deps.getStoragePath())
+		: 0;
+	const inMemoryGeneration = storage.affinityGeneration ?? 0;
+	storage.affinityGeneration =
+		Math.max(inMemoryGeneration, diskGeneration) + 1;
+	await saveAccountsWithRetry(storage, deps.saveAccounts);
 
 	logInfo(
 		`Cleared manual pin (was account ${previousPin + 1}). Runtime routing will resume hybrid rotation.`,

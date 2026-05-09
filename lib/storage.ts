@@ -1,4 +1,4 @@
-import { existsSync, promises as fs } from "node:fs";
+import { existsSync, promises as fs, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { StorageError } from "./errors.js";
@@ -1296,6 +1296,39 @@ export function normalizeAccountStorage(
 		normalized.affinityGeneration = affinityGeneration;
 	}
 	return normalized;
+}
+
+/**
+ * Synchronously reads only the top-level `affinityGeneration` field from the
+ * accounts storage file. Used by `unpin`/`switch`/`best` to avoid losing
+ * concurrent generation increments via lost-update on the load+mutate pair —
+ * callers re-read this value just before saving and apply
+ * `Math.max(inMemory, disk) + 1` so the counter is monotonically increasing.
+ *
+ * Returns 0 on any failure (missing file, malformed JSON, transient I/O
+ * error). The save itself is still serialized by `withStorageLock`; this
+ * helper only narrows the lost-update window. See issue #474.
+ */
+export function readAffinityGenerationFromDisk(path: string): number {
+	if (!existsSync(path)) return 0;
+	try {
+		const bytes = readFileSync(path);
+		const parsed = JSON.parse(bytes.toString("utf8")) as {
+			affinityGeneration?: unknown;
+		};
+		const generation = parsed.affinityGeneration;
+		if (
+			typeof generation === "number" &&
+			Number.isFinite(generation) &&
+			Number.isInteger(generation) &&
+			generation >= 0
+		) {
+			return generation;
+		}
+		return 0;
+	} catch {
+		return 0;
+	}
 }
 
 /**
