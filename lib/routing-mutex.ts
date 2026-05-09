@@ -46,7 +46,7 @@ export interface SelectionRecord {
 	/** Stable account identifier (accountId, email, or runtime key). */
 	accountId: string;
 	/** Coarse-grained classification of why this account was selected. */
-	reason: "initial" | "rotation" | "rate-limit" | "best" | "restore";
+	reason: "initial" | "rotation" | "rate-limit" | "best" | "restore" | "manual";
 	/** Wall-clock timestamp (ms since epoch) when the decision was made. */
 	timestamp: number;
 	/** Quota tracker key (e.g. `"codex"` or `"codex:gpt-5-codex"`) when scoped. */

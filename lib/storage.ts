@@ -1248,12 +1248,34 @@ export function normalizeAccountStorage(
 		);
 	}
 
-	return {
+	const pinnedAccountIndex = (() => {
+		const raw = (data as { pinnedAccountIndex?: unknown }).pinnedAccountIndex;
+		if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined;
+		const truncated = Math.trunc(raw);
+		if (
+			truncated < 0 ||
+			truncated >= deduplicatedAccounts.length ||
+			deduplicatedAccounts.length === 0
+		) {
+			log.warn("Dropping invalid pinnedAccountIndex from storage", {
+				value: raw,
+				accountCount: deduplicatedAccounts.length,
+			});
+			return undefined;
+		}
+		return truncated;
+	})();
+
+	const normalized: AccountStorageV3 = {
 		version: 3,
 		accounts: deduplicatedAccounts,
 		activeIndex,
 		activeIndexByFamily,
 	};
+	if (pinnedAccountIndex !== undefined) {
+		normalized.pinnedAccountIndex = pinnedAccountIndex;
+	}
+	return normalized;
 }
 
 /**

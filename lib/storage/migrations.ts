@@ -31,7 +31,8 @@ export interface AccountMetadataV1 {
 		| "initial"
 		| "rotation"
 		| "best"
-		| "restore";
+		| "restore"
+		| "manual";
 	rateLimitResetTime?: number;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
@@ -61,7 +62,8 @@ export interface AccountMetadataV3 {
 		| "initial"
 		| "rotation"
 		| "best"
-		| "restore";
+		| "restore"
+		| "manual";
 	rateLimitResetTimes?: RateLimitStateV3;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
@@ -74,6 +76,13 @@ export interface AccountStorageV3 {
 	accounts: AccountMetadataV3[];
 	activeIndex: number;
 	activeIndexByFamily?: Partial<Record<ModelFamily, number>>;
+	/**
+	 * Optional manual pin set by `codex-multi-auth switch <n>` (0-based).
+	 * When set and valid, the runtime rotation proxy MUST route exclusively to
+	 * this account regardless of session affinity or hybrid scoring. Cleared by
+	 * `best` and the dedicated `unpin` command. See issue #474.
+	 */
+	pinnedAccountIndex?: number;
 }
 
 function nowMs(): number {

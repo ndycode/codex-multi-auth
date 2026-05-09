@@ -7,7 +7,9 @@ type PersistAndSyncSelectedAccount = (params: {
 	storage: AccountStorageV3;
 	targetIndex: number;
 	parsed: number;
-	switchReason: "rotation" | "best" | "restore";
+	switchReason: "rotation" | "best" | "restore" | "manual";
+	setPin?: boolean;
+	clearPin?: boolean;
 }) => Promise<{ synced: boolean; wasDisabled: boolean }>;
 
 export interface SwitchCommandDeps {
@@ -62,7 +64,8 @@ export async function runSwitchCommand(
 		storage,
 		targetIndex,
 		parsed,
-		switchReason: "rotation",
+		switchReason: "manual",
+		setPin: true,
 	});
 
 	if (!synced) {
@@ -72,7 +75,7 @@ export async function runSwitchCommand(
 	}
 
 	(deps.logInfo ?? console.log)(
-		`Switched to account ${parsed}: ${formatAccountLabel(account, targetIndex)}${wasDisabled ? " (re-enabled)" : ""}`,
+		`Switched to account ${parsed}: ${formatAccountLabel(account, targetIndex)}${wasDisabled ? " (re-enabled)" : ""} (pinned for runtime routing)`,
 	);
 	return 0;
 }

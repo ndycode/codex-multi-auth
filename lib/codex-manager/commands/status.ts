@@ -186,6 +186,15 @@ export async function runStatusCommand(
 			`Runtime in use: account ${runtimeCurrent.index + 1} (${runtimeCurrent.source})`,
 		);
 	}
+	const pinnedAccountIndex = storage.pinnedAccountIndex;
+	if (typeof pinnedAccountIndex === "number") {
+		logInfo(`Pinned: account ${pinnedAccountIndex + 1} (set by switch)`);
+		if (runtimeCurrent && runtimeCurrent.index !== pinnedAccountIndex) {
+			logInfo(
+				`  warning: runtime currently using account ${runtimeCurrent.index + 1} but pin requests account ${pinnedAccountIndex + 1}; the proxy will pick up the pin on the next request.`,
+			);
+		}
+	}
 	logInfo("");
 
 	for (let i = 0; i < storage.accounts.length; i += 1) {

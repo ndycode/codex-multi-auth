@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import {
@@ -6,6 +7,7 @@ import {
 	extractAccountId,
 	type ManagedAccount,
 } from "./accounts.js";
+import { getStoragePath } from "./storage.js";
 import {
 	getFetchTimeoutMs,
 	getNetworkErrorCooldownMs,
@@ -256,11 +258,68 @@ function recordLastRuntimeAccount(
 	});
 }
 
+/**
+ * mtime-keyed snapshot of the on-disk pinnedAccountIndex. The proxy is a
+ * long-running process; the `switch` CLI runs in a different process and
+ * mutates the storage file. We re-read only the top-level `pinnedAccountIndex`
+ * field on each request so a manual switch is honored without doing a full
+ * AccountManager reload (which would lose in-memory cooldown state). See #474.
+ */
+interface PinSnapshot {
+	mtimeMs: number;
+	index: number | null;
+}
+
+const PIN_CACHE: { snapshot: PinSnapshot | null } = { snapshot: null };
+
+export function readPinnedAccountIndexFromDisk(
+	storagePath: string = getStoragePath(),
+): number | null {
+	if (!existsSync(storagePath)) {
+		PIN_CACHE.snapshot = null;
+		return null;
+	}
+	try {
+		const stat = statSync(storagePath);
+		const cached = PIN_CACHE.snapshot;
+		if (cached && cached.mtimeMs === stat.mtimeMs) {
+			return cached.index;
+		}
+		const raw = readFileSync(storagePath, "utf8");
+		const parsed = JSON.parse(raw) as { pinnedAccountIndex?: unknown };
+		const index =
+			typeof parsed.pinnedAccountIndex === "number" &&
+			Number.isFinite(parsed.pinnedAccountIndex)
+				? Math.trunc(parsed.pinnedAccountIndex)
+				: null;
+		PIN_CACHE.snapshot = { mtimeMs: stat.mtimeMs, index };
+		return index;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Test-only: reset the pin mtime cache between scenarios so each test starts
+ * from a clean read-from-disk state.
+ */
+export function resetPinCacheForTesting(): void {
+	PIN_CACHE.snapshot = null;
+}
+
 async function persistRuntimeActiveAccount(
 	accountManager: AccountManager,
 	account: ManagedAccount,
 	family: ModelFamily,
+	isPinned: boolean,
 ): Promise<void> {
+	if (isPinned) {
+		// When the user has manually pinned an account, the proxy MUST NOT
+		// clobber that pin via markSwitched("rotation"), saveToDiskDebounced(),
+		// or syncCodexCliActiveSelectionForIndex(). Pin mutations only flow
+		// from the `switch`/`unpin`/`best` CLI commands. See #474.
+		return;
+	}
 	try {
 		accountManager.markSwitched(account, "rotation", family);
 		accountManager.saveToDiskDebounced();
@@ -699,7 +758,7 @@ function getQuotaNearExhaustionWaitMs(
 	return candidates.length > 0 ? Math.max(...candidates) : 0;
 }
 
-function chooseAccount(params: {
+export function chooseAccount(params: {
 	accountManager: AccountManager;
 	sessionAffinityStore: SessionAffinityStore | null;
 	sessionKey: string | null;
@@ -708,6 +767,7 @@ function chooseAccount(params: {
 	attemptedIndexes: ReadonlySet<number>;
 	now: number;
 	policy: RuntimePolicyDecision | null;
+	pinnedIndex: number | null;
 }): ManagedAccount | null {
 	const {
 		accountManager,
@@ -718,7 +778,28 @@ function chooseAccount(params: {
 		attemptedIndexes,
 		now,
 		policy,
+		pinnedIndex,
 	} = params;
+
+	// Manual pin (from `codex-multi-auth switch <n>`) overrides every other
+	// selection signal. We do NOT call markSwitched here — the proxy must not
+	// clobber the pin set by the CLI. See issue #474.
+	if (typeof pinnedIndex === "number") {
+		if (attemptedIndexes.has(pinnedIndex)) return null;
+		if (pinnedIndex < 0 || pinnedIndex >= accountManager.getAccountCount()) {
+			return null;
+		}
+		if (policy?.blockedAccountIndexes.has(pinnedIndex)) return null;
+		const pinned = accountManager.getAccountByIndex(pinnedIndex);
+		if (!pinned || pinned.enabled === false) return null;
+		if (
+			!accountManager.isAccountAvailableForFamily(pinnedIndex, family, model)
+		) {
+			return null;
+		}
+		return pinned;
+	}
+
 	const preferredIndex = sessionAffinityStore?.getPreferredAccountIndex(sessionKey, now);
 	if (
 		typeof preferredIndex === "number" &&
@@ -1043,6 +1124,12 @@ export async function startRuntimeRotationProxy(
 			let transientAttempts = 0;
 			let transientExhaustionReason: ExhaustionReason | null = null;
 
+			// Read the manual pin from disk (mtime-cached) on each request so a
+			// `codex-multi-auth switch <n>` invocation in another process is honored
+			// without forcing a full AccountManager reload. See issue #474.
+			const pinnedIndex = readPinnedAccountIndexFromDisk();
+			const isPinned = typeof pinnedIndex === "number";
+
 			while (
 				attemptedIndexes.size < accountCount &&
 				transientAttempts < transientAttemptLimit
@@ -1056,6 +1143,7 @@ export async function startRuntimeRotationProxy(
 					attemptedIndexes,
 					now: now(),
 					policy: policyDecision,
+					pinnedIndex,
 				});
 				if (!selected) break;
 				attemptedIndexes.add(selected.index);
@@ -1359,6 +1447,7 @@ export async function startRuntimeRotationProxy(
 					accountManager,
 					refreshed.account,
 					context.family,
+					isPinned && refreshed.account.index === pinnedIndex,
 				);
 
 				const forwarded = await forwardStreamingResponse(
@@ -1400,6 +1489,25 @@ export async function startRuntimeRotationProxy(
 				transientExhaustionReason
 			) {
 				exhaustionReason = transientExhaustionReason;
+			}
+
+			// When a manual pin is set and the pinned account is unavailable, do
+			// NOT silently fall through to rotation. Hard-fail with a 503 so the
+			// user is informed the pin cannot be honored. See issue #474.
+			if (isPinned) {
+				await usageRecorder?.record({
+					outcome: "failure",
+					statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
+					errorCode: "codex_pinned_account_unavailable",
+				});
+				writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, {
+					error: {
+						message: `Pinned account ${(pinnedIndex ?? 0) + 1} is currently unavailable; run \`codex-multi-auth status\` for details, or \`codex-multi-auth unpin\` to allow rotation.`,
+						code: "codex_pinned_account_unavailable",
+						pinnedAccountIndex: pinnedIndex,
+					},
+				});
+				return;
 			}
 
 			await usageRecorder?.record({

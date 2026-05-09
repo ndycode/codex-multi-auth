@@ -82,13 +82,14 @@ describe("runSwitchCommand", () => {
 			storage: expect.objectContaining({ accounts: expect.any(Array) }),
 			targetIndex: 1,
 			parsed: 2,
-			switchReason: "rotation",
+			switchReason: "manual",
+			setPin: true,
 		});
 		expect(deps.logWarn).toHaveBeenCalledWith(
 			"Switched account 2 locally, but Codex auth sync did not complete. Multi-auth routing will still use this account.",
 		);
 		expect(deps.logInfo).toHaveBeenCalledWith(
-			"Switched to account 2: Account 2 (two@example.com) (re-enabled)",
+			"Switched to account 2: Account 2 (two@example.com) (re-enabled) (pinned for runtime routing)",
 		);
 	});
 });

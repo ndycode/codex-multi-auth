@@ -87,6 +87,7 @@ import {
 } from "./codex-manager/commands/status.js";
 import { loadPersistedRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import { runSwitchCommand } from "./codex-manager/commands/switch.js";
+import { runUnpinCommand } from "./codex-manager/commands/unpin.js";
 import { runUsageCommand } from "./codex-manager/commands/usage.js";
 import { parseAuthLoginArgs, printUsage } from "./codex-manager/help.js";
 import {
@@ -198,6 +199,7 @@ const ACCOUNT_MANAGER_COMMANDS = new Set([
 	"list",
 	"status",
 	"switch",
+	"unpin",
 	"best",
 	"check",
 	"features",
@@ -3173,13 +3175,17 @@ async function persistAndSyncSelectedAccount({
 	switchReason,
 	initialSyncIdToken,
 	preserveActiveIndexByFamily = false,
+	setPin = false,
+	clearPin = false,
 }: {
 	storage: NonNullable<Awaited<ReturnType<typeof loadAccounts>>>;
 	targetIndex: number;
 	parsed: number;
-	switchReason: "rotation" | "best" | "restore";
+	switchReason: "rotation" | "best" | "restore" | "manual";
 	initialSyncIdToken?: string;
 	preserveActiveIndexByFamily?: boolean;
+	setPin?: boolean;
+	clearPin?: boolean;
 }): Promise<{ synced: boolean; wasDisabled: boolean }> {
 	const account = storage.accounts[targetIndex];
 	if (!account) {
@@ -3252,6 +3258,11 @@ async function persistAndSyncSelectedAccount({
 
 	account.lastUsed = switchNow;
 	account.lastSwitchReason = switchReason;
+	if (setPin) {
+		storage.pinnedAccountIndex = targetIndex;
+	} else if (clearPin) {
+		delete storage.pinnedAccountIndex;
+	}
 	await saveAccountsWithRetry(storage, saveAccounts);
 
 	const synced = await setCodexCliActiveSelection({
@@ -3484,6 +3495,13 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			setStoragePath,
 			loadAccounts,
 			persistAndSyncSelectedAccount,
+		});
+	}
+	if (command === "unpin") {
+		return runUnpinCommand({
+			setStoragePath,
+			loadAccounts,
+			saveAccounts,
 		});
 	}
 	if (command === "check") {

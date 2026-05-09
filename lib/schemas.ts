@@ -117,6 +117,7 @@ export const SwitchReasonSchema = z.enum([
 	"rotation",
 	"best",
 	"restore",
+	"manual",
 ]);
 
 export type SwitchReasonFromSchema = z.infer<typeof SwitchReasonSchema>;
@@ -183,6 +184,7 @@ export const AccountStorageV3Schema = z.object({
 	accounts: z.array(AccountMetadataV3Schema),
 	activeIndex: z.number().min(0),
 	activeIndexByFamily: ActiveIndexByFamilySchema.optional(),
+	pinnedAccountIndex: z.number().int().min(0).optional(),
 });
 
 export type AccountStorageV3FromSchema = z.infer<typeof AccountStorageV3Schema>;

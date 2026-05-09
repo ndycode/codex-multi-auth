@@ -250,7 +250,13 @@ export interface ManagedAccount {
 	expires?: number;
 	addedAt: number;
 	lastUsed: number;
-	lastSwitchReason?: "rate-limit" | "initial" | "rotation" | "best" | "restore";
+	lastSwitchReason?:
+		| "rate-limit"
+		| "initial"
+		| "rotation"
+		| "best"
+		| "restore"
+		| "manual";
 	lastRateLimitReason?: RateLimitReason;
 	rateLimitResetTimes: RateLimitStateV3;
 	coolingDownUntil?: number;
@@ -862,7 +868,7 @@ export class AccountManager {
 
 	markSwitched(
 		account: ManagedAccount,
-		reason: "rate-limit" | "initial" | "rotation",
+		reason: "rate-limit" | "initial" | "rotation" | "manual",
 		family: ModelFamily,
 	): void {
 		account.lastSwitchReason = reason;
@@ -904,7 +910,7 @@ export class AccountManager {
 	 */
 	async markSwitchedLocked(
 		account: ManagedAccount,
-		reason: "rate-limit" | "initial" | "rotation",
+		reason: "rate-limit" | "initial" | "rotation" | "manual",
 		family: ModelFamily,
 		context?: { trackerKeyQuota?: string; score?: number },
 	): Promise<SelectionRecord> {

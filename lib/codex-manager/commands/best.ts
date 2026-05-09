@@ -66,6 +66,8 @@ export interface BestCommandDeps {
 		parsed: number;
 		switchReason: "best";
 		initialSyncIdToken?: string;
+		setPin?: boolean;
+		clearPin?: boolean;
 	}) => Promise<{ synced: boolean; wasDisabled: boolean }>;
 	setCodexCliActiveSelection: (params: {
 		accountId?: string;
@@ -315,13 +317,16 @@ export async function runBestCommand(
 	}
 
 	const parsed = bestIndex + 1;
+	const priorPin = storage.pinnedAccountIndex;
 	const { synced, wasDisabled } = await deps.persistAndSyncSelectedAccount({
 		storage,
 		targetIndex: bestIndex,
 		parsed,
 		switchReason: "best",
 		initialSyncIdToken: probeIdTokenByIndex.get(bestIndex),
+		clearPin: true,
 	});
+	const pinWasCleared = priorPin !== undefined;
 
 	if (options.json) {
 		logInfo(
@@ -332,6 +337,7 @@ export async function runBestCommand(
 					reason: recommendation.reason,
 					synced,
 					wasDisabled,
+					...(pinWasCleared ? { pinCleared: true } : {}),
 					...(probeErrors.length > 0 ? { probeErrors } : {}),
 				},
 				null,
@@ -340,7 +346,7 @@ export async function runBestCommand(
 		);
 	} else {
 		logInfo(
-			`Switched to best account ${parsed}: ${deps.formatAccountLabel(bestAccount, bestIndex)}${wasDisabled ? " (re-enabled)" : ""}`,
+			`Switched to best account ${parsed}: ${deps.formatAccountLabel(bestAccount, bestIndex)}${wasDisabled ? " (re-enabled)" : ""}${pinWasCleared ? " (manual pin cleared)" : ""}`,
 		);
 		logInfo(`Reason: ${recommendation.reason}`);
 		printProbeNotes();
