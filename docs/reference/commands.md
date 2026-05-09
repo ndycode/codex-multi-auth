@@ -34,9 +34,10 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | Command | Description |
 | --- | --- |
 | `codex-multi-auth list` | List saved accounts and active account |
-| `codex-multi-auth switch <index>` | Set active account by index |
+| `codex-multi-auth switch <index>` | Set active account by index and pin it for runtime routing |
+| `codex-multi-auth unpin` | Clear the manual pin set by `switch` and resume hybrid rotation |
 | `codex-multi-auth forecast` | Forecast best account by readiness/risk |
-| `codex-multi-auth best` | Pick and optionally sync the best account |
+| `codex-multi-auth best` | Pick and optionally sync the best account (clears any manual pin) |
 | `codex-multi-auth account ...` | Manage local account policy metadata |
 
 ---
