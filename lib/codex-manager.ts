@@ -3136,6 +3136,13 @@ async function runAuthLogin(args: string[]): Promise<number> {
 			const tokenResult = await runSignInFlow(forceNewLogin, signInMode);
 			if (tokenResult.type !== "success") {
 				if (isOAuthCancellation(tokenResult)) {
+					// In explicit-mode invocations the dashboard was bypassed,
+					// so falling back to it on cancel would re-enter the same
+					// transport flow and trap the user. Exit cleanly instead.
+					if (explicitSignInMode) {
+						console.log("Cancelled.");
+						return 0;
+					}
 					if (existingCount > 0) {
 						console.log(
 							stylePromptText(UI_COPY.oauth.cancelledBackToMenu, "muted"),

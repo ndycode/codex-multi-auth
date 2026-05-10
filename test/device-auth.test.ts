@@ -673,18 +673,46 @@ describe("device auth flow", () => {
 		// top-level await; if the polling timer is unref'd, Node exits before the
 		// user can complete the browser step. The keepAlive option must opt out
 		// of unref so CLI invocations stay alive.
-		function installSetTimeoutSpy(): { unrefCount: () => number } {
+		interface SetTimeoutSpy {
+			unrefCount: () => number;
+			setTimeoutCount: () => number;
+			clearTimeoutCount: () => number;
+		}
+
+		function installSetTimeoutSpy(
+			opts: { autoFire?: boolean } = {},
+		): SetTimeoutSpy {
+			const autoFire = opts.autoFire ?? true;
 			let unrefCount = 0;
+			let setTimeoutCount = 0;
+			let clearTimeoutCount = 0;
+			const liveTimers = new Set<unknown>();
 			const setTimeoutImpl = ((cb: () => void) => {
-				queueMicrotask(cb);
-				return {
+				setTimeoutCount += 1;
+				if (autoFire) {
+					queueMicrotask(cb);
+				}
+				const timer = {
 					unref: () => {
 						unrefCount += 1;
 					},
-				} as unknown as ReturnType<typeof setTimeout>;
+				};
+				liveTimers.add(timer);
+				return timer as unknown as ReturnType<typeof setTimeout>;
 			}) as typeof setTimeout;
 			vi.spyOn(globalThis, "setTimeout").mockImplementation(setTimeoutImpl);
-			return { unrefCount: () => unrefCount };
+			vi.spyOn(globalThis, "clearTimeout").mockImplementation(((
+				timer: unknown,
+			) => {
+				if (liveTimers.delete(timer)) {
+					clearTimeoutCount += 1;
+				}
+			}) as typeof clearTimeout);
+			return {
+				unrefCount: () => unrefCount,
+				setTimeoutCount: () => setTimeoutCount,
+				clearTimeoutCount: () => clearTimeoutCount,
+			};
 		}
 
 		function pollingFetchMock(): ReturnType<typeof vi.fn<typeof fetch>> {
@@ -724,6 +752,9 @@ describe("device auth flow", () => {
 			});
 
 			expect(result.type).toBe("success");
+			// Guard: a regression that skips the polling sleep entirely would
+			// silently make the unref assertion vacuously pass.
+			expect(spy.setTimeoutCount()).toBeGreaterThan(0);
 			expect(spy.unrefCount()).toBe(0);
 		});
 
@@ -734,6 +765,7 @@ describe("device auth flow", () => {
 			const result = await runDeviceAuthFlow({ log: vi.fn() });
 
 			expect(result.type).toBe("success");
+			expect(spy.setTimeoutCount()).toBeGreaterThan(0);
 			expect(spy.unrefCount()).toBeGreaterThan(0);
 		});
 
@@ -749,7 +781,45 @@ describe("device auth flow", () => {
 			});
 
 			expect(result.type).toBe("success");
+			expect(spy.setTimeoutCount()).toBeGreaterThan(0);
 			expect(spy.unrefCount()).toBe(0);
+		});
+
+		it("clears the sleepWithAbort timer when aborting mid-poll with keepAlive", async () => {
+			// Disable auto-fire so the sleep timer stays pending until the
+			// abort handler clears it. Schedule controller.abort() via
+			// setImmediate from inside the fetch mock so the abort happens
+			// after sleepWithAbort has registered its abort listener.
+			const spy = installSetTimeoutSpy({ autoFire: false });
+			const controller = new AbortController();
+			const fetchMock = vi
+				.fn<typeof fetch>()
+				.mockResolvedValueOnce(
+					jsonResponse({
+						device_auth_id: "device-auth-1",
+						user_code: "ABCD-1234",
+						interval: "1",
+					}),
+				)
+				.mockImplementationOnce(async () => {
+					setImmediate(() => controller.abort());
+					return new Response("", { status: 403 });
+				});
+			vi.stubGlobal("fetch", fetchMock);
+
+			const result = await runDeviceAuthFlow({
+				log: vi.fn(),
+				signal: controller.signal,
+				keepAlive: true,
+			});
+
+			expect(result.type).toBe("failed");
+			expect((result as { reason: string }).reason).toBe("network_error");
+			expect((result as { message: string }).message).toBe("aborted");
+			expect(spy.unrefCount()).toBe(0);
+			// The aborted polling sleep must release its handle so the CLI
+			// process can exit instead of hanging on a referenced timer.
+			expect(spy.clearTimeoutCount()).toBeGreaterThan(0);
 		});
 	});
 

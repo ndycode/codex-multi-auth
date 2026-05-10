@@ -5003,6 +5003,53 @@ describe("codex manager cli commands", () => {
 		expect(storageState.accounts).toHaveLength(2);
 	});
 
+	it("exits cleanly when --device-auth is cancelled with existing accounts", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		const storageState = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "existing-1",
+					email: "existing@example.com",
+					accessToken: "existing-access",
+					refreshToken: "existing-refresh",
+					expiresAt: now + 3_600_000,
+				},
+			] as Array<Record<string, unknown>>,
+		};
+		loadAccountsMock.mockImplementation(async () =>
+			structuredClone(storageState),
+		);
+
+		// Returning a 4xx that maps to a cancellation message ensures
+		// runSignInFlow yields an isOAuthCancellation result. The fetch is
+		// mocked once: a second invocation would mean we re-entered the
+		// device-auth flow after cancel, which is the regression we guard.
+		const fetchMock = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(
+				new Response("user cancelled the request", { status: 400 }),
+			);
+		vi.stubGlobal("fetch", fetchMock);
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"login",
+			"--device-auth",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(promptLoginModeMock).not.toHaveBeenCalled();
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+	});
+
 	it("returns a clear failure when --device-auth polling reaches server expiry", async () => {
 		setInteractiveTTY(false);
 		loadAccountsMock.mockResolvedValue({
