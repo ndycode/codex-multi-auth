@@ -2,7 +2,9 @@ import type { Auth } from "@codex-ai/sdk";
 import { saveAccountsWithRetry } from "./codex-manager/forecast-report-shared.js";
 import { createLogger } from "./logger.js";
 import {
+	getStoragePath,
 	loadAccounts,
+	readPinAndGenFromDisk,
 	saveAccounts,
 	type AccountStorageV3,
 	type CooldownReason,
@@ -277,6 +279,20 @@ export class AccountManager {
 	private pendingSave: Promise<void> | null = null;
 	private readonly storagePathState: StoragePathState;
 	/**
+	 * Manual pin set by the `switch` CLI command, hydrated from disk at
+	 * construction time and refreshed from disk just before each
+	 * `buildStorageSnapshot` so a CLI mutation that landed between proxy
+	 * startup and a routine save is not clobbered. AccountManager exposes no
+	 * mutators for this — pins flow only through the CLI commands. See #474.
+	 */
+	private pinnedAccountIndex: number | undefined;
+	/**
+	 * Counter the CLI bumps on `switch`/`unpin`/`best` so the proxy can
+	 * invalidate session affinity. Hydrated and refreshed via the same path
+	 * as `pinnedAccountIndex`. See #474.
+	 */
+	private affinityGeneration: number;
+	/**
 	 * PR-N / R4: feature-flagged routing mutex mode.
 	 * Defaults to `"legacy"` to preserve pre-PR-N behaviour for one release
 	 * cycle. When set to `"enabled"` the cursor-mutation helpers (markSwitched,
@@ -390,6 +406,28 @@ export class AccountManager {
 		const fallbackAccountEmail = sanitizeEmail(
 			extractAccountEmail(authFallback?.access),
 		);
+
+		// Hydrate pin/gen from the stored snapshot. Validation (range, integer)
+		// already happens in storage.loadAccountsInternal which strips invalid
+		// values, so we trust the typed shape here. Defaults: no pin, gen=0.
+		const rawStoredGen = stored?.affinityGeneration;
+		this.affinityGeneration =
+			typeof rawStoredGen === "number" &&
+			Number.isFinite(rawStoredGen) &&
+			Number.isInteger(rawStoredGen) &&
+			rawStoredGen >= 0
+				? rawStoredGen
+				: 0;
+		const rawStoredPin = stored?.pinnedAccountIndex;
+		const accountCount = stored?.accounts?.length ?? 0;
+		this.pinnedAccountIndex =
+			typeof rawStoredPin === "number" &&
+			Number.isFinite(rawStoredPin) &&
+			Number.isInteger(rawStoredPin) &&
+			rawStoredPin >= 0 &&
+			rawStoredPin < accountCount
+				? rawStoredPin
+				: undefined;
 
 		if (stored && stored.accounts.length > 0) {
 			const storedIdentityRows: Array<{
@@ -1101,7 +1139,41 @@ export class AccountManager {
 
 		const activeIndex = clampNonNegativeInt(activeIndexByFamily.codex, 0);
 
-		return {
+		// Race protection: a CLI `switch`/`unpin`/`best` may have written a NEW
+		// pin/gen between proxy startup (or the last save) and now. If we
+		// persisted our stale instance values, we'd silently clobber the CLI
+		// update on every routine save (rate-limit, cooldown, near-quota refund,
+		// etc.). Re-read just before snapshotting and prefer the fresher value.
+		// See #474.
+		let effectivePinnedAccountIndex = this.pinnedAccountIndex;
+		let effectiveAffinityGeneration = this.affinityGeneration;
+		try {
+			const onDisk = readPinAndGenFromDisk(getStoragePath());
+			if (onDisk.affinityGeneration > effectiveAffinityGeneration) {
+				effectiveAffinityGeneration = onDisk.affinityGeneration;
+				// The pin is part of the same atomic write the CLI performs when
+				// it bumps the generation, so a strictly-greater on-disk gen is
+				// the signal that the disk pin is the authoritative one.
+				effectivePinnedAccountIndex = onDisk.pinnedAccountIndex;
+			}
+			// Validate the refreshed pin against the live account count.
+			if (
+				effectivePinnedAccountIndex !== undefined &&
+				(effectivePinnedAccountIndex < 0 ||
+					effectivePinnedAccountIndex >= this.accounts.length)
+			) {
+				effectivePinnedAccountIndex = undefined;
+			}
+			// Cache the refreshed values so subsequent saves start from the
+			// freshest known state without re-reading every time.
+			this.pinnedAccountIndex = effectivePinnedAccountIndex;
+			this.affinityGeneration = effectiveAffinityGeneration;
+		} catch {
+			// Disk read failures fall back to in-memory values; better than
+			// dropping the snapshot save entirely.
+		}
+
+		const snapshot: AccountStorageV3 = {
 			version: 3,
 			accounts: this.accounts.map((account) => ({
 				accountId: account.accountId,
@@ -1127,6 +1199,13 @@ export class AccountManager {
 			activeIndex,
 			activeIndexByFamily,
 		};
+		if (effectivePinnedAccountIndex !== undefined) {
+			snapshot.pinnedAccountIndex = effectivePinnedAccountIndex;
+		}
+		if (effectiveAffinityGeneration > 0) {
+			snapshot.affinityGeneration = effectiveAffinityGeneration;
+		}
+		return snapshot;
 	}
 
 	async commitRefreshedAuth(

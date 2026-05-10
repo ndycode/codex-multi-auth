@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AccountManager } from "../lib/accounts.js";
 import {
 	readPinnedAccountIndexFromDisk,
 	readStorageMetaFromDisk,
@@ -12,7 +13,10 @@ import {
 	type UnpinCommandDeps,
 } from "../lib/codex-manager/commands/unpin.js";
 import { runStatusCommand } from "../lib/codex-manager/commands/status.js";
-import type { AccountStorageV3 } from "../lib/storage.js";
+import {
+	setStoragePathDirect,
+	type AccountStorageV3,
+} from "../lib/storage.js";
 
 function createStorage(
 	now: number,
@@ -319,6 +323,97 @@ describe("issue #474 — pin-honored review feedback", () => {
 			};
 			await runUnpinCommand(deps);
 			expect(storage.affinityGeneration).toBe(6);
+		});
+	});
+
+	describe("AccountManager.buildStorageSnapshot preserves pin/gen", () => {
+		afterEach(() => {
+			setStoragePathDirect(null);
+		});
+
+		it("round-trips pinnedAccountIndex and affinityGeneration through saveToDisk", async () => {
+			const path = makeTmpStoragePath();
+			const storage = createStorage(Date.now(), 3, {
+				pinnedAccountIndex: 0,
+				affinityGeneration: 5,
+			});
+			writeStorageFile(path, storage);
+			setStoragePathDirect(path);
+
+			const manager = new AccountManager(undefined, storage);
+			await manager.saveToDisk();
+
+			const onDisk = JSON.parse(readFileSync(path, "utf8")) as {
+				pinnedAccountIndex?: unknown;
+				affinityGeneration?: unknown;
+			};
+			expect(onDisk.pinnedAccountIndex).toBe(0);
+			expect(onDisk.affinityGeneration).toBe(5);
+		});
+
+		it("preserves a CLI-bumped affinityGeneration that lands between load and save", async () => {
+			const path = makeTmpStoragePath();
+			const initial = createStorage(Date.now(), 3, {
+				pinnedAccountIndex: 0,
+				affinityGeneration: 5,
+			});
+			writeStorageFile(path, initial);
+			setStoragePathDirect(path);
+
+			// AccountManager loads gen=5, pin=0.
+			const manager = new AccountManager(undefined, initial);
+
+			// Simulate the CLI (different process) bumping gen and changing the
+			// pin between proxy startup and a routine save.
+			writeStorageFile(
+				path,
+				createStorage(Date.now(), 3, {
+					pinnedAccountIndex: 2,
+					affinityGeneration: 8,
+				}),
+			);
+
+			// Routine save (e.g. rate-limit hit). With the race-protected snapshot
+			// the on-disk gen/pin must NOT be clobbered.
+			await manager.saveToDisk();
+
+			const onDisk = JSON.parse(readFileSync(path, "utf8")) as {
+				pinnedAccountIndex?: unknown;
+				affinityGeneration?: unknown;
+			};
+			expect(onDisk.affinityGeneration).toBeGreaterThanOrEqual(8);
+			expect(onDisk.pinnedAccountIndex).toBe(2);
+		});
+
+		it("omits pinnedAccountIndex when storage has no pin", async () => {
+			const path = makeTmpStoragePath();
+			const storage = createStorage(Date.now(), 2);
+			writeStorageFile(path, storage);
+			setStoragePathDirect(path);
+
+			const manager = new AccountManager(undefined, storage);
+			await manager.saveToDisk();
+
+			const onDisk = JSON.parse(readFileSync(path, "utf8")) as Record<
+				string,
+				unknown
+			>;
+			expect(onDisk.pinnedAccountIndex).toBeUndefined();
+		});
+	});
+
+	describe("readStorageMetaFromDisk first-read EBUSY", () => {
+		it("returns defaults when no cache exists and the file read throws", () => {
+			// Use a path that exists but throw on read by pointing at a directory
+			// path (readFileSync raises EISDIR/EPERM on Windows).
+			const dir = mkdtempSync(join(tmpdir(), "issue-474-ebusy-"));
+			tmpDirs.push(dir);
+			// Reading a directory as a file → ENOENT/EISDIR depending on the OS;
+			// either way the catch path runs with no cached snapshot for this
+			// path, and we must return safe defaults rather than crash.
+			const meta = readStorageMetaFromDisk(dir);
+			expect(meta.pinnedAccountIndex).toBeNull();
+			expect(meta.affinityGeneration).toBe(0);
 		});
 	});
 });

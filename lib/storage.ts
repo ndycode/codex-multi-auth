@@ -1332,6 +1332,50 @@ export function readAffinityGenerationFromDisk(path: string): number {
 }
 
 /**
+ * Synchronously reads both the top-level `pinnedAccountIndex` and
+ * `affinityGeneration` fields from the accounts storage file. Used by
+ * `AccountManager.buildStorageSnapshot` to refresh from disk just before
+ * persisting routine state (rate-limit hits, cooldowns, etc.) so a CLI
+ * `switch`/`unpin` that landed between proxy startup and the save is not
+ * clobbered. Returns `pinnedAccountIndex: undefined` and
+ * `affinityGeneration: 0` on any failure. See issue #474.
+ */
+export function readPinAndGenFromDisk(path: string): {
+	pinnedAccountIndex: number | undefined;
+	affinityGeneration: number;
+} {
+	if (!existsSync(path)) {
+		return { pinnedAccountIndex: undefined, affinityGeneration: 0 };
+	}
+	try {
+		const bytes = readFileSync(path);
+		const parsed = JSON.parse(bytes.toString("utf8")) as {
+			pinnedAccountIndex?: unknown;
+			affinityGeneration?: unknown;
+		};
+		const rawPin = parsed.pinnedAccountIndex;
+		const pinnedAccountIndex =
+			typeof rawPin === "number" &&
+			Number.isFinite(rawPin) &&
+			Number.isInteger(rawPin) &&
+			rawPin >= 0
+				? rawPin
+				: undefined;
+		const rawGen = parsed.affinityGeneration;
+		const affinityGeneration =
+			typeof rawGen === "number" &&
+			Number.isFinite(rawGen) &&
+			Number.isInteger(rawGen) &&
+			rawGen >= 0
+				? rawGen
+				: 0;
+		return { pinnedAccountIndex, affinityGeneration };
+	} catch {
+		return { pinnedAccountIndex: undefined, affinityGeneration: 0 };
+	}
+}
+
+/**
  * Loads OAuth accounts from disk storage.
  * Automatically migrates v1 storage to v3 format if needed.
  * @returns AccountStorageV3 if file exists and is valid, null otherwise
