@@ -3180,6 +3180,13 @@ async function runAuthLogin(args: string[]): Promise<number> {
 				console.log(
 					`Reached maximum account limit (${ACCOUNT_LIMITS.MAX_ACCOUNTS}).`,
 				);
+				// Same reasoning as the addAnother=false branch below: in
+				// explicit mode the dashboard is bypassed, so falling out of
+				// the inner loop would re-enter loginFlow and silently start
+				// another sign-in session despite the cap.
+				if (explicitSignInMode) {
+					return 0;
+				}
 				break;
 			}
 

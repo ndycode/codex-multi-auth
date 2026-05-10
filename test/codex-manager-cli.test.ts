@@ -5050,6 +5050,98 @@ describe("codex manager cli commands", () => {
 		expect(saveAccountsMock).not.toHaveBeenCalled();
 	});
 
+	it("exits cleanly when --device-auth fills the account pool to MAX_ACCOUNTS", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		// Seed one account short of the cap so a single successful device-auth
+		// trips the MAX_ACCOUNTS branch. With explicit-mode dashboard bypass,
+		// the previous behavior fell out of the inner loop and re-entered
+		// loginFlow, silently starting another device-auth session.
+		const seedAccountCount = 19;
+		const seedAccounts = Array.from(
+			{ length: seedAccountCount },
+			(_, i) => ({
+				accountId: `existing-${i}`,
+				email: `existing-${i}@example.com`,
+				accessToken: `existing-access-${i}`,
+				refreshToken: `existing-refresh-${i}`,
+				expiresAt: now + 3_600_000,
+			}),
+		);
+		let storageState = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: seedAccounts as Array<Record<string, unknown>>,
+		};
+		loadAccountsMock.mockImplementation(async () =>
+			structuredClone(storageState),
+		);
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		// If the test reached this prompt it would mean the cap branch fell
+		// through; failing fast here pins the regression.
+		promptAddAnotherAccountMock.mockImplementation(() => {
+			throw new Error("promptAddAnotherAccount should not run at the cap");
+		});
+
+		const fetchMock = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						device_auth_id: "device-auth-cap",
+						user_code: "CAPN-0001",
+						interval: "1",
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				),
+			)
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						authorization_code: "authorization-code-cap",
+						code_verifier: "code-verifier-cap",
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				),
+			);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const authModule = await import("../lib/auth/auth.js");
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-cap",
+			refresh: "refresh-cap",
+			expires: now + 7_200_000,
+			idToken: "id-token-cap",
+			multiAccount: true,
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"login",
+			"--device-auth",
+		]);
+		const renderedLogs = logSpy.mock.calls.flat().map((entry) => String(entry));
+
+		expect(exitCode).toBe(0);
+		expect(promptLoginModeMock).not.toHaveBeenCalled();
+		expect(promptAddAnotherAccountMock).not.toHaveBeenCalled();
+		expect(
+			renderedLogs.some((entry) =>
+				entry.startsWith("Reached maximum account limit"),
+			),
+		).toBe(true);
+		// Single device-auth session: usercode + token. A second iteration
+		// would push the call count higher.
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(storageState.accounts).toHaveLength(20);
+	});
+
 	it("returns a clear failure when --device-auth polling reaches server expiry", async () => {
 		setInteractiveTTY(false);
 		loadAccountsMock.mockResolvedValue({
