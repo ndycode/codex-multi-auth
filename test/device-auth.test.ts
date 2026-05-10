@@ -668,6 +668,91 @@ describe("device auth flow", () => {
 		);
 	});
 
+	describe("event-loop keepAlive", () => {
+		// These tests guard issue #477: the CLI invokes runDeviceAuthFlow from a
+		// top-level await; if the polling timer is unref'd, Node exits before the
+		// user can complete the browser step. The keepAlive option must opt out
+		// of unref so CLI invocations stay alive.
+		function installSetTimeoutSpy(): { unrefCount: () => number } {
+			let unrefCount = 0;
+			const setTimeoutImpl = ((cb: () => void) => {
+				queueMicrotask(cb);
+				return {
+					unref: () => {
+						unrefCount += 1;
+					},
+				} as unknown as ReturnType<typeof setTimeout>;
+			}) as typeof setTimeout;
+			vi.spyOn(globalThis, "setTimeout").mockImplementation(setTimeoutImpl);
+			return { unrefCount: () => unrefCount };
+		}
+
+		function pollingFetchMock(): ReturnType<typeof vi.fn<typeof fetch>> {
+			return vi
+				.fn<typeof fetch>()
+				.mockResolvedValueOnce(
+					jsonResponse({
+						device_auth_id: "device-auth-1",
+						user_code: "ABCD-1234",
+						interval: "1",
+					}),
+				)
+				.mockResolvedValueOnce(new Response("", { status: 403 }))
+				.mockResolvedValueOnce(
+					jsonResponse({
+						authorization_code: "authorization-code",
+						code_verifier: "code-verifier",
+					}),
+				)
+				.mockResolvedValueOnce(
+					jsonResponse({
+						access_token: "access-token",
+						refresh_token: "refresh-token",
+						expires_in: 3600,
+						id_token: "id-token",
+					}),
+				);
+		}
+
+		it("does not unref polling timers when keepAlive is true", async () => {
+			const spy = installSetTimeoutSpy();
+			vi.stubGlobal("fetch", pollingFetchMock());
+
+			const result = await runDeviceAuthFlow({
+				log: vi.fn(),
+				keepAlive: true,
+			});
+
+			expect(result.type).toBe("success");
+			expect(spy.unrefCount()).toBe(0);
+		});
+
+		it("unrefs polling timers by default to preserve library consumers", async () => {
+			const spy = installSetTimeoutSpy();
+			vi.stubGlobal("fetch", pollingFetchMock());
+
+			const result = await runDeviceAuthFlow({ log: vi.fn() });
+
+			expect(result.type).toBe("success");
+			expect(spy.unrefCount()).toBeGreaterThan(0);
+		});
+
+		it("does not unref sleepWithAbort timers when keepAlive is true and a signal is set", async () => {
+			const spy = installSetTimeoutSpy();
+			const controller = new AbortController();
+			vi.stubGlobal("fetch", pollingFetchMock());
+
+			const result = await runDeviceAuthFlow({
+				log: vi.fn(),
+				signal: controller.signal,
+				keepAlive: true,
+			});
+
+			expect(result.type).toBe("success");
+			expect(spy.unrefCount()).toBe(0);
+		});
+	});
+
 	it("returns token exchange failures from the device auth flow", async () => {
 		const fetchMock = vi
 			.fn<typeof fetch>()

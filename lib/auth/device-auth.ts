@@ -51,6 +51,12 @@ export interface DeviceAuthFlowOptions {
 	timeoutMs?: number;
 	log?: (message: string) => void;
 	random?: () => number;
+	// When true, sleep timers are not unref'd, so the Node event loop is held
+	// open while polling. Required for foreground CLI use where the process
+	// would otherwise exit while a top-level await is still pending. Defaults
+	// to false so library/background consumers keep the existing unref'd
+	// behavior and don't accidentally block process exit.
+	keepAlive?: boolean;
 }
 
 function getFetch(options: DeviceAuthFlowOptions): FetchLike {
@@ -71,7 +77,9 @@ function getSleep(options: DeviceAuthFlowOptions): (ms: number) => Promise<void>
 		((ms: number) =>
 			new Promise<void>((resolve) => {
 				const timeout = setTimeout(resolve, ms);
-				unrefTimer(timeout);
+				if (!options.keepAlive) {
+					unrefTimer(timeout);
+				}
 			}))
 	);
 }
@@ -143,7 +151,9 @@ function sleepWithAbort(
 			cleanup();
 			resolve();
 		}, ms);
-		unrefTimer(timeout);
+		if (!options.keepAlive) {
+			unrefTimer(timeout);
+		}
 		signal.addEventListener("abort", onAbort, { once: true });
 	});
 }

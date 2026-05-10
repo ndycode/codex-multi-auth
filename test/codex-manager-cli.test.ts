@@ -4866,6 +4866,143 @@ describe("codex manager cli commands", () => {
 		},
 	);
 
+	it("bypasses the accounts dashboard when --device-auth is set with existing accounts", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		let storageState = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "existing-1",
+					email: "existing@example.com",
+					accessToken: "existing-access",
+					refreshToken: "existing-refresh",
+					expiresAt: now + 3_600_000,
+				},
+			] as Array<Record<string, unknown>>,
+		};
+		loadAccountsMock.mockImplementation(async () =>
+			structuredClone(storageState),
+		);
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		promptAddAnotherAccountMock.mockResolvedValue(false);
+
+		const fetchMock = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						device_auth_id: "device-auth-2",
+						user_code: "EFGH-5678",
+						interval: "1",
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				),
+			)
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						authorization_code: "authorization-code-2",
+						code_verifier: "code-verifier-2",
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				),
+			);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const authModule = await import("../lib/auth/auth.js");
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-device-2",
+			refresh: "refresh-device-2",
+			expires: now + 7_200_000,
+			idToken: "id-token-device-2",
+			multiAccount: true,
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"login",
+			"--device-auth",
+		]);
+		const renderedLogs = logSpy.mock.calls.flat().map((entry) => String(entry));
+
+		expect(exitCode).toBe(0);
+		expect(promptLoginModeMock).not.toHaveBeenCalled();
+		expect(renderedLogs).toContain("Device auth login");
+		expect(renderedLogs).toContain("Code: EFGH-5678");
+		expect(storageState.accounts).toHaveLength(2);
+	});
+
+	it("bypasses the accounts dashboard when --manual is set with existing accounts", async () => {
+		setInteractiveTTY(true);
+		const now = Date.now();
+		let storageState = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "existing-1",
+					email: "existing@example.com",
+					accessToken: "existing-access",
+					refreshToken: "existing-refresh",
+					expiresAt: now + 3_600_000,
+				},
+			] as Array<Record<string, unknown>>,
+		};
+		loadAccountsMock.mockImplementation(async () =>
+			structuredClone(storageState),
+		);
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		promptAddAnotherAccountMock.mockResolvedValue(false);
+
+		const authModule = await import("../lib/auth/auth.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-manual-2",
+			refresh: "refresh-manual-2",
+			expires: now + 7_200_000,
+			idToken: "id-token-manual-2",
+			multiAccount: true,
+		});
+
+		const browserModule = await import("../lib/auth/browser.js");
+		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+		const serverModule = await import("../lib/auth/server.js");
+		const waitForCodeMock = vi.fn(async () => ({ code: "oauth-code" }));
+		vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValueOnce({
+			ready: true,
+			waitForCode: waitForCodeMock,
+			close: vi.fn(),
+		});
+		promptQuestionMock.mockResolvedValueOnce(
+			"http://127.0.0.1:1455/auth/callback?code=oauth-code&state=oauth-state",
+		);
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login", "--manual"]);
+
+		expect(exitCode).toBe(0);
+		expect(promptLoginModeMock).not.toHaveBeenCalled();
+		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(storageState.accounts).toHaveLength(2);
+	});
+
 	it("returns a clear failure when --device-auth polling reaches server expiry", async () => {
 		setInteractiveTTY(false);
 		loadAccountsMock.mockResolvedValue({

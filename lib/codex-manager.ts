@@ -2031,6 +2031,10 @@ async function runSignInFlow(
 		return runDeviceAuthFlow({
 			log: console.log,
 			timeoutMs: options.timeoutMs,
+			// CLI invocations rely on top-level await in scripts/codex-multi-auth.js;
+			// without keepAlive the polling timers unref and Node exits before the
+			// user can complete the browser step (issue #477).
+			keepAlive: true,
 		});
 	}
 	return runOAuthFlow(forceNewLogin, signInMode);
@@ -2786,9 +2790,18 @@ async function runAuthLogin(args: string[]): Promise<number> {
 		skipNextMenuQuotaAutoRefresh = false;
 		menuQuotaRefreshGeneration += 1;
 	};
+	// When the user explicitly picks a sign-in transport on the command line
+	// (--device-auth, --manual, --no-browser), they want to add a new account
+	// directly. Skipping the dashboard menu keeps `login --device-auth`
+	// usable from scripts and matches the documented behavior of the help text.
+	const explicitSignInMode = loginOptions.deviceAuth || loginOptions.manual;
 	loginFlow: while (true) {
 		let existingStorage = await loadAccounts();
-		if (existingStorage && existingStorage.accounts.length > 0) {
+		if (
+			!explicitSignInMode &&
+			existingStorage &&
+			existingStorage.accounts.length > 0
+		) {
 			while (true) {
 				existingStorage = await loadAccounts();
 				if (!existingStorage || existingStorage.accounts.length === 0) {
@@ -3164,7 +3177,15 @@ async function runAuthLogin(args: string[]): Promise<number> {
 			}
 
 			const addAnother = await promptAddAnotherAccount(count);
-			if (!addAnother) break;
+			if (!addAnother) {
+				// With an explicit transport flag the dashboard was bypassed,
+				// so falling back to it after declining would loop into a fresh
+				// sign-in instead of exiting. Return directly in that case.
+				if (explicitSignInMode) {
+					return 0;
+				}
+				break;
+			}
 			forceNewLogin = true;
 		}
 	}
