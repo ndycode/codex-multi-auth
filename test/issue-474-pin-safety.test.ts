@@ -14,6 +14,7 @@ import {
 } from "../lib/codex-manager/commands/unpin.js";
 import { runStatusCommand } from "../lib/codex-manager/commands/status.js";
 import {
+	readPinAndGenFromDisk,
 	setStoragePathDirect,
 	type AccountStorageV3,
 } from "../lib/storage.js";
@@ -437,6 +438,61 @@ describe("issue #474 — pin-honored review feedback", () => {
 			// path, and we must return safe defaults rather than crash.
 			const meta = readStorageMetaFromDisk(dir);
 			expect(meta.pinnedAccountIndex).toBeNull();
+			expect(meta.affinityGeneration).toBe(0);
+		});
+	});
+
+	describe("readPinAndGenFromDisk transient FS error handling", () => {
+		// Belt-and-suspenders coverage for the disk read used inside
+		// AccountManager.buildStorageSnapshot. The outer guard in accounts.ts
+		// already makes the regression provably impossible (defaults of
+		// `{undefined, 0}` fail the `disk.affinityGeneration > effective` check
+		// so in-memory values are preserved), but explicit coverage here pins
+		// the contract so future refactors of `readPinAndGenFromDisk` can't
+		// silently throw.
+
+		it("returns defaults for a missing file", () => {
+			const dir = mkdtempSync(join(tmpdir(), "issue-474-readpin-missing-"));
+			tmpDirs.push(dir);
+			const meta = readPinAndGenFromDisk(join(dir, "does-not-exist.json"));
+			expect(meta.pinnedAccountIndex).toBeUndefined();
+			expect(meta.affinityGeneration).toBe(0);
+		});
+
+		it("round-trips valid pin and generation", () => {
+			const dir = mkdtempSync(join(tmpdir(), "issue-474-readpin-valid-"));
+			tmpDirs.push(dir);
+			const path = join(dir, "accounts.json");
+			writeFileSync(
+				path,
+				JSON.stringify({ pinnedAccountIndex: 2, affinityGeneration: 17 }),
+			);
+			const meta = readPinAndGenFromDisk(path);
+			expect(meta.pinnedAccountIndex).toBe(2);
+			expect(meta.affinityGeneration).toBe(17);
+		});
+
+		it("returns defaults on partial-write JSON (simulates EBUSY mid-rename)", () => {
+			const dir = mkdtempSync(join(tmpdir(), "issue-474-readpin-partial-"));
+			tmpDirs.push(dir);
+			const path = join(dir, "accounts.json");
+			// Half-written JSON the way an in-flight atomic rename would land it.
+			writeFileSync(path, '{"pinnedAccountIndex": 2, "affinityGenera');
+			const meta = readPinAndGenFromDisk(path);
+			expect(meta.pinnedAccountIndex).toBeUndefined();
+			expect(meta.affinityGeneration).toBe(0);
+		});
+
+		it("rejects non-integer pin and negative generation", () => {
+			const dir = mkdtempSync(join(tmpdir(), "issue-474-readpin-invalid-"));
+			tmpDirs.push(dir);
+			const path = join(dir, "accounts.json");
+			writeFileSync(
+				path,
+				JSON.stringify({ pinnedAccountIndex: 2.5, affinityGeneration: -3 }),
+			);
+			const meta = readPinAndGenFromDisk(path);
+			expect(meta.pinnedAccountIndex).toBeUndefined();
 			expect(meta.affinityGeneration).toBe(0);
 		});
 	});
