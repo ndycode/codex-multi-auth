@@ -115,6 +115,45 @@ describe("forecast helpers", () => {
 		expect(result.reasons).toContain("quota cache exhausted");
 	});
 
+	it("waits for the later quota reset when both cached windows are exhausted", () => {
+		const now = 1_700_000_000_000;
+		const account = {
+			email: "quota@example.com",
+			accountId: "acc_quota",
+			refreshToken: "refresh-1",
+			addedAt: now - 10_000,
+			lastUsed: now - 10_000,
+		};
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account,
+			allAccounts: [account],
+			quotaCache: {
+				version: 1,
+				updatedAt: now,
+				byAccountId: {
+					acc_quota: {
+						accountId: "acc_quota",
+						status: 200,
+						model: "gpt-5.3-codex",
+						updatedAt: now,
+						primary: { usedPercent: 100, resetAtMs: now + 60_000 },
+						secondary: { usedPercent: 100, resetAtMs: now + 300_000 },
+					},
+				},
+				byEmail: {},
+			},
+		});
+
+		expect(result.availability).toBe("delayed");
+		expect(result.waitMs).toBe(300_000);
+		expect(result.reasons).toEqual(
+			expect.arrayContaining(["quota cache exhausted", "quota resets in 5m 0s"]),
+		);
+	});
+
 	it("applies runtime overlay skip reasons to forecast availability", () => {
 		const now = 1_700_000_000_000;
 		const account = {
@@ -142,6 +181,29 @@ describe("forecast helpers", () => {
 		expect(overlaid.availability).toBe("unavailable");
 		expect(overlaid.reasons).toContain("runtime skip: circuit-open");
 	});
+
+	it.each(["rate-limited", "cooling-down:server-error", "workspace-disabled"])(
+		"marks runtime skip reason %s as unavailable",
+		(reason) => {
+			const now = 1_700_000_000_000;
+			const result = evaluateForecastAccount({
+				index: 0,
+				now,
+				isCurrent: false,
+				account: {
+					refreshToken: "refresh-1",
+					addedAt: now - 10_000,
+					lastUsed: now - 10_000,
+				},
+				runtimeOverlay: {
+					lastPoolExhaustionSkipReasons: { "0": reason },
+				},
+			});
+
+			expect(result.availability).toBe("unavailable");
+			expect(result.reasons).toContain(`runtime skip: ${reason}`);
+		},
+	);
 
 	it("recommends the best ready account", () => {
 		const now = 1_700_000_000_000;

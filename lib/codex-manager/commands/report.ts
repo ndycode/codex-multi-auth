@@ -315,7 +315,15 @@ export async function runReportCommand(
 	const refreshFailures = new Map<number, TokenFailure>();
 	const liveQuotaByIndex = new Map<number, CodexQuotaSnapshot>();
 	const probeErrors: string[] = [];
-	const runtimeSnapshot = await deps.loadRuntimeObservabilitySnapshot?.();
+	let runtimeSnapshot: RuntimeObservabilitySnapshot | null | undefined;
+	let runtimeSnapshotLoadError: string | null = null;
+	try {
+		runtimeSnapshot = await deps.loadRuntimeObservabilitySnapshot?.();
+	} catch (error) {
+		runtimeSnapshot = null;
+		runtimeSnapshotLoadError = error instanceof Error ? error.message : String(error);
+		deps.logError?.(`Runtime observability snapshot unavailable: ${runtimeSnapshotLoadError}`);
+	}
 	let consideredLiveAccounts = 0;
 	let executedLiveProbes = 0;
 
@@ -523,7 +531,9 @@ export async function runReportCommand(
 				formatQuotaSnapshotLine,
 			),
 		},
+		runtimeOverlay: runtimeSnapshot !== null && runtimeSnapshot !== undefined,
 		runtime: runtimeSnapshot,
+		runtimeSnapshotLoadError,
 	};
 	if (report.forecast.recommendation.recommendedIndex !== null) {
 		const selectedIndex = report.forecast.recommendation.recommendedIndex;

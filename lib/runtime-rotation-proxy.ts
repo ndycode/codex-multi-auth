@@ -1120,7 +1120,8 @@ export async function startRuntimeRotationProxy(
 	options: RuntimeRotationProxyOptions,
 ): Promise<RuntimeRotationProxyServer> {
 	const pluginConfig = loadPluginConfig();
-	let accountManager = options.accountManager ?? (await AccountManager.loadFromDisk());
+	let activeAccountManager = options.accountManager ?? (await AccountManager.loadFromDisk());
+	const knownAccountManagers = new Set<AccountManager>([activeAccountManager]);
 	const fetchImpl = options.fetchImpl ?? fetch;
 	const host = options.host ?? DEFAULT_HOST;
 	const port = options.port ?? 0;
@@ -1174,13 +1175,13 @@ export async function startRuntimeRotationProxy(
 		lastAccountUpdatedAt: null,
 	};
 	const threadGoalFallbacks = new Map<string, string | null>();
-	let staleRuntimeReloadPromise: Promise<boolean> | null = null;
+	let staleRuntimeReloadPromise: Promise<AccountManager | null> | null = null;
 	let lastStaleRuntimeReloadAt = 0;
 	const staleRuntimeReloadDedupeMs = 1_000;
 
-	const recoverStaleRuntimeState = async (): Promise<boolean> => {
+	const recoverStaleRuntimeState = async (): Promise<AccountManager | null> => {
 		if (Date.now() - lastStaleRuntimeReloadAt <= staleRuntimeReloadDedupeMs) {
-			return true;
+			return activeAccountManager;
 		}
 		if (staleRuntimeReloadPromise) {
 			return staleRuntimeReloadPromise;
@@ -1189,14 +1190,15 @@ export async function startRuntimeRotationProxy(
 			AccountManager.resetVolatileRuntimeState();
 			recordRuntimeReset("pool-exhausted-no-account");
 			const reloaded = await AccountManager.loadFromDisk();
-			accountManager = reloaded;
+			activeAccountManager = reloaded;
+			knownAccountManagers.add(reloaded);
 			lastStaleRuntimeReloadAt = Date.now();
 			recordRuntimeReload("pool-exhausted-no-account");
-			return true;
+			return reloaded;
 		})()
 			.catch((error) => {
 				status.lastError = error instanceof Error ? error.message : String(error);
-				return false;
+				return null;
 			})
 			.finally(() => {
 				staleRuntimeReloadPromise = null;
@@ -1209,6 +1211,7 @@ export async function startRuntimeRotationProxy(
 		res: ServerResponse,
 	): Promise<void> => {
 		let usageRecorder: ReturnType<typeof createRuntimeUsageRecorder> | null = null;
+		let accountManager = activeAccountManager;
 		try {
 			const incomingUrl = new URL(req.url ?? "/", "http://127.0.0.1");
 			const isResponsesRequest =
@@ -1314,8 +1317,8 @@ export async function startRuntimeRotationProxy(
 			);
 			const attemptedIndexes = new Set<number>();
 			let exhaustionReason: ExhaustionReason = "no-account";
-			const accountCount = accountManager.getAccountCount();
-			const transientAttemptLimit = Math.max(
+			let accountCount = accountManager.getAccountCount();
+			let transientAttemptLimit = Math.max(
 				1,
 				Math.min(accountCount, maxRuntimeAccountAttempts),
 			);
@@ -1372,7 +1375,14 @@ export async function startRuntimeRotationProxy(
 						accountManager.getMinWaitTimeForFamily(context.family, context.model) === 0
 					) {
 						reloadedAfterNoAccount = true;
-						if (await recoverStaleRuntimeState()) {
+						const reloadedManager = await recoverStaleRuntimeState();
+						if (reloadedManager) {
+							accountManager = reloadedManager;
+							accountCount = accountManager.getAccountCount();
+							transientAttemptLimit = Math.max(
+								1,
+								Math.min(accountCount, maxRuntimeAccountAttempts),
+							);
 							accountSkipReasons.clear();
 							attemptedIndexes.clear();
 							continue;
@@ -1840,7 +1850,9 @@ export async function startRuntimeRotationProxy(
 		baseUrl: `http://${host}:${resolvedPort}`,
 		close: async () => {
 			await closeServer(server, sockets);
-			await accountManager.flushPendingSave();
+			await Promise.all(
+				[...knownAccountManagers].map((manager) => manager.flushPendingSave()),
+			);
 		},
 		getStatus: () => ({ ...status }),
 	};

@@ -1696,6 +1696,47 @@ describe("runtime rotation proxy", () => {
 		}
 	});
 
+	it("refreshes request pool limits when stale-runtime reload increases account count", async () => {
+		const now = Date.now();
+		const staleManager = new AccountManager(undefined, createStorage(now, 1));
+		const freshManager = new AccountManager(undefined, createStorage(now, 2));
+		const originalSkipReason = staleManager.getAccountRuntimeSkipReason;
+		const skipReasonSpy = vi
+			.spyOn(AccountManager.prototype, "getAccountRuntimeSkipReason")
+			.mockImplementation(function mockedSkipReason(index, family, model) {
+				if (this === staleManager) return "circuit-open";
+				return originalSkipReason.call(this, index, family, model);
+			});
+		const loadSpy = vi
+			.spyOn(AccountManager, "loadFromDisk")
+			.mockResolvedValueOnce(freshManager);
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			attempt === 1
+				? new Response("first account failed", { status: HTTP_STATUS.SERVICE_UNAVAILABLE })
+				: textEventStream(),
+		);
+		try {
+			const proxy = await startProxy({
+				accountManager: staleManager,
+				fetchImpl,
+			});
+
+			const response = await postResponses(proxy, { model: "gpt-5-codex" });
+			await response.text();
+
+			expect(response.status).toBe(HTTP_STATUS.OK);
+			expect(loadSpy).toHaveBeenCalledTimes(1);
+			expect(calls).toHaveLength(2);
+			expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+				"acc_1",
+				"acc_2",
+			]);
+		} finally {
+			skipReasonSpy.mockRestore();
+			loadSpy.mockRestore();
+		}
+	});
+
 	it("caps per-request upstream attempts instead of walking a large pool", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 6));

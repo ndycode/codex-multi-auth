@@ -4,6 +4,7 @@ import type { QuotaCacheData } from "./quota-cache.js";
 import {
 	findQuotaCacheEntryForAccount,
 	isQuotaCacheEntryExhausted,
+	quotaLeftPercentFromUsed,
 } from "./quota-readiness.js";
 import { getRateLimitResetTimeForFamily } from "./runtime/account-status.js";
 import type { AccountMetadataV3 } from "./storage.js";
@@ -228,10 +229,16 @@ export function evaluateForecastAccount(
 		input.allAccounts ?? [account],
 	);
 	if (isQuotaCacheEntryExhausted(quotaEntry, now)) {
-		const resetAts = [quotaEntry?.primary.resetAtMs, quotaEntry?.secondary.resetAtMs]
-			.filter((value): value is number => typeof value === "number")
-			.filter((value) => Number.isFinite(value) && value > now);
-		const quotaWait = resetAts.length > 0 ? Math.min(...resetAts) - now : waitMs;
+		const resetAts = [quotaEntry?.primary, quotaEntry?.secondary]
+			.filter(
+				(window) =>
+					quotaLeftPercentFromUsed(window?.usedPercent) === 0 &&
+					typeof window?.resetAtMs === "number" &&
+					Number.isFinite(window.resetAtMs) &&
+					window.resetAtMs > now,
+			)
+			.map((window) => window?.resetAtMs ?? 0);
+		const quotaWait = resetAts.length > 0 ? Math.max(...resetAts) - now : waitMs;
 		waitMs = Math.max(waitMs, quotaWait);
 		if (availability === "ready") availability = "delayed";
 		riskScore += 60;
@@ -249,10 +256,13 @@ export function evaluateForecastAccount(
 		riskScore += 95;
 		reasons.push("runtime policy blocked account");
 	} else if (overlayReason && overlayReason !== "already-attempted") {
-		if (overlayReason === "circuit-open" || overlayReason === "token-exhausted") {
-			availability = "unavailable";
-			riskScore += overlayReason === "circuit-open" ? 90 : 70;
-		}
+		availability = "unavailable";
+		riskScore +=
+			overlayReason === "circuit-open"
+				? 90
+				: overlayReason === "token-exhausted"
+					? 70
+					: 50;
 		reasons.push(`runtime skip: ${overlayReason}`);
 	}
 

@@ -202,6 +202,98 @@ describe("runReportCommand", () => {
 		expect(jsonOutput.runtime.runtimeMetrics).toBeDefined();
 	});
 
+	it("applies runtime overlay to report forecast output", async () => {
+		const deps = createDeps({
+			loadRuntimeObservabilitySnapshot: vi.fn(async () => ({
+				version: 1,
+				updatedAt: 2000,
+				responsesRequests: 0,
+				authRefreshRequests: 0,
+				diagnosticProbeRequests: 0,
+				currentRequestId: null,
+				poolExhaustionCooldownUntil: null,
+				serverBurstCooldownUntil: null,
+				lastPoolExhaustionSkipReasons: { "0": "circuit-open" },
+				runtimeMetrics: {
+					startedAt: 1000,
+					totalRequests: 0,
+					successfulRequests: 0,
+					failedRequests: 0,
+					responsesRequests: 0,
+					authRefreshRequests: 0,
+					diagnosticProbeRequests: 0,
+					outboundRequestAttemptBudget: null,
+					outboundRequestAttemptsConsumed: 0,
+					requestAttemptBudgetExhaustions: 0,
+					poolExhaustionFastFails: 0,
+					serverBurstFastFails: 0,
+					rateLimitedResponses: 0,
+					serverErrors: 0,
+					networkErrors: 0,
+					userAborts: 0,
+					authRefreshFailures: 0,
+					emptyResponseRetries: 0,
+					accountRotations: 0,
+					sameAccountRetries: 0,
+					streamFailoverAttempts: 0,
+					streamFailoverCandidatesConsidered: 0,
+					lastStreamFailoverCandidateCount: 0,
+					streamFailoverRecoveries: 0,
+					streamFailoverCrossAccountRecoveries: 0,
+					cumulativeLatencyMs: 0,
+					lastRequestAt: null,
+					lastError: null,
+				},
+			})),
+		});
+
+		await expect(runReportCommand(["--json"], deps)).resolves.toBe(0);
+
+		const jsonOutput = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ?? "{}",
+		) as {
+			runtimeOverlay: boolean;
+			runtimeSnapshotLoadError: string | null;
+			forecast: { accounts: Array<{ availability: string; reasons: string[] }> };
+			runtime: { lastPoolExhaustionSkipReasons: Record<string, string> };
+		};
+		expect(jsonOutput.runtimeOverlay).toBe(true);
+		expect(jsonOutput.runtimeSnapshotLoadError).toBeNull();
+		expect(jsonOutput.runtime.lastPoolExhaustionSkipReasons).toEqual({
+			"0": "circuit-open",
+		});
+		expect(jsonOutput.forecast.accounts[0]?.availability).toBe("unavailable");
+		expect(jsonOutput.forecast.accounts[0]?.reasons).toContain(
+			"runtime skip: circuit-open",
+		);
+	});
+
+	it("continues report generation when runtime snapshot loading fails", async () => {
+		const deps = createDeps({
+			loadRuntimeObservabilitySnapshot: vi.fn(async () => {
+				throw new Error("snapshot busy");
+			}),
+		});
+
+		await expect(runReportCommand(["--json"], deps)).resolves.toBe(0);
+
+		const jsonOutput = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ?? "{}",
+		) as {
+			runtimeOverlay: boolean;
+			runtime: null;
+			runtimeSnapshotLoadError: string;
+			forecast: { accounts: Array<{ availability: string }> };
+		};
+		expect(deps.logError).toHaveBeenCalledWith(
+			"Runtime observability snapshot unavailable: snapshot busy",
+		);
+		expect(jsonOutput.runtimeOverlay).toBe(false);
+		expect(jsonOutput.runtime).toBeNull();
+		expect(jsonOutput.runtimeSnapshotLoadError).toBe("snapshot busy");
+		expect(jsonOutput.forecast.accounts[0]?.availability).toBe("ready");
+	});
+
 	it("respects live probe account and probe budgets", async () => {
 		const deps = createDeps({
 			loadAccounts: vi.fn(async () =>
