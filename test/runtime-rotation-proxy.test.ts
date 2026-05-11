@@ -1645,6 +1645,57 @@ describe("runtime rotation proxy", () => {
 		expect(calls).toHaveLength(0);
 	});
 
+	it("deduplicates concurrent stale-runtime reload recovery", async () => {
+		const now = Date.now();
+		const staleManager = new AccountManager(undefined, createStorage(now, 2));
+		const freshManager = new AccountManager(undefined, createStorage(now, 2));
+		let releaseReload: (() => void) | null = null;
+		const originalSkipReason = staleManager.getAccountRuntimeSkipReason;
+		const skipReasonSpy = vi
+			.spyOn(AccountManager.prototype, "getAccountRuntimeSkipReason")
+			.mockImplementation(function mockedSkipReason(index, family, model) {
+				if (this === staleManager) return "circuit-open";
+				return originalSkipReason.call(this, index, family, model);
+			});
+		const loadSpy = vi
+			.spyOn(AccountManager, "loadFromDisk")
+			.mockImplementationOnce(
+				async () =>
+					new Promise<AccountManager>((resolveReload) => {
+						releaseReload = () => resolveReload(freshManager);
+					}),
+			);
+		const resetSpy = vi.spyOn(AccountManager, "resetVolatileRuntimeState");
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream());
+		try {
+			const proxy = await startProxy({
+				accountManager: staleManager,
+				fetchImpl,
+			});
+			const responses = [
+				postResponses(proxy, { model: "gpt-5-codex" }),
+				postResponses(proxy, { model: "gpt-5-codex" }),
+			];
+			await vi.waitFor(() => {
+				expect(loadSpy).toHaveBeenCalledTimes(1);
+			});
+			releaseReload?.();
+			const settled = await Promise.all(responses);
+			expect(settled.map((response) => response.status)).toEqual([
+				HTTP_STATUS.OK,
+				HTTP_STATUS.OK,
+			]);
+			await Promise.all(settled.map((response) => response.text()));
+			expect(loadSpy).toHaveBeenCalledTimes(1);
+			expect(resetSpy).toHaveBeenCalledTimes(1);
+			expect(calls).toHaveLength(2);
+		} finally {
+			skipReasonSpy.mockRestore();
+			loadSpy.mockRestore();
+			resetSpy.mockRestore();
+		}
+	});
+
 	it("caps per-request upstream attempts instead of walking a large pool", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 6));

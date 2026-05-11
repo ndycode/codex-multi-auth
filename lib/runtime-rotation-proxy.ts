@@ -1174,6 +1174,35 @@ export async function startRuntimeRotationProxy(
 		lastAccountUpdatedAt: null,
 	};
 	const threadGoalFallbacks = new Map<string, string | null>();
+	let staleRuntimeReloadPromise: Promise<boolean> | null = null;
+	let lastStaleRuntimeReloadAt = 0;
+	const staleRuntimeReloadDedupeMs = 1_000;
+
+	const recoverStaleRuntimeState = async (): Promise<boolean> => {
+		if (Date.now() - lastStaleRuntimeReloadAt <= staleRuntimeReloadDedupeMs) {
+			return true;
+		}
+		if (staleRuntimeReloadPromise) {
+			return staleRuntimeReloadPromise;
+		}
+		staleRuntimeReloadPromise = (async () => {
+			AccountManager.resetVolatileRuntimeState();
+			recordRuntimeReset("pool-exhausted-no-account");
+			const reloaded = await AccountManager.loadFromDisk();
+			accountManager = reloaded;
+			lastStaleRuntimeReloadAt = Date.now();
+			recordRuntimeReload("pool-exhausted-no-account");
+			return true;
+		})()
+			.catch((error) => {
+				status.lastError = error instanceof Error ? error.message : String(error);
+				return false;
+			})
+			.finally(() => {
+				staleRuntimeReloadPromise = null;
+			});
+		return staleRuntimeReloadPromise;
+	};
 
 	const handleRequest = async (
 		req: IncomingMessage,
@@ -1343,13 +1372,11 @@ export async function startRuntimeRotationProxy(
 						accountManager.getMinWaitTimeForFamily(context.family, context.model) === 0
 					) {
 						reloadedAfterNoAccount = true;
-						AccountManager.resetVolatileRuntimeState();
-						recordRuntimeReset("pool-exhausted-no-account");
-						accountManager = await AccountManager.loadFromDisk();
-						recordRuntimeReload("pool-exhausted-no-account");
-						accountSkipReasons.clear();
-						attemptedIndexes.clear();
-						continue;
+						if (await recoverStaleRuntimeState()) {
+							accountSkipReasons.clear();
+							attemptedIndexes.clear();
+							continue;
+						}
 					}
 					break;
 				}
