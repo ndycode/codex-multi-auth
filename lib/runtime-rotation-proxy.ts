@@ -29,7 +29,12 @@ import {
 } from "./constants.js";
 import { getModelFamily, type ModelFamily } from "./prompts/codex.js";
 import { queuedRefresh } from "./refresh-queue.js";
-import { mutateRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
+import {
+	mutateRuntimeObservabilitySnapshot,
+	recordRuntimePoolExhaustion,
+	recordRuntimeReload,
+	recordRuntimeReset,
+} from "./runtime/runtime-observability.js";
 import {
 	createRuntimeUsageRecorder,
 	evaluateRuntimePolicy,
@@ -863,6 +868,7 @@ export function chooseAccount(params: {
 	now: number;
 	policy: RuntimePolicyDecision | null;
 	pinnedIndex: number | null;
+	skipReasons?: Map<number, string>;
 }): ManagedAccount | null {
 	const {
 		accountManager,
@@ -874,22 +880,37 @@ export function chooseAccount(params: {
 		now,
 		policy,
 		pinnedIndex,
+		skipReasons,
 	} = params;
 
 	// Manual pin (from `codex-multi-auth switch <n>`) overrides every other
 	// selection signal. We do NOT call markSwitched here — the proxy must not
 	// clobber the pin set by the CLI. See issue #474.
 	if (typeof pinnedIndex === "number") {
-		if (attemptedIndexes.has(pinnedIndex)) return null;
-		if (pinnedIndex < 0 || pinnedIndex >= accountManager.getAccountCount()) {
+		if (attemptedIndexes.has(pinnedIndex)) {
+			skipReasons?.set(pinnedIndex, "already-attempted");
 			return null;
 		}
-		if (policy?.blockedAccountIndexes.has(pinnedIndex)) return null;
+		if (pinnedIndex < 0 || pinnedIndex >= accountManager.getAccountCount()) {
+			skipReasons?.set(pinnedIndex, "missing");
+			return null;
+		}
+		if (policy?.blockedAccountIndexes.has(pinnedIndex)) {
+			skipReasons?.set(pinnedIndex, "policy-blocked");
+			return null;
+		}
 		const pinned = accountManager.getAccountByIndex(pinnedIndex);
-		if (!pinned || pinned.enabled === false) return null;
-		if (
-			!accountManager.isAccountAvailableForFamily(pinnedIndex, family, model)
-		) {
+		if (!pinned || pinned.enabled === false) {
+			skipReasons?.set(pinnedIndex, "disabled");
+			return null;
+		}
+		const reason = accountManager.getAccountRuntimeSkipReason(
+			pinnedIndex,
+			family,
+			model,
+		);
+		if (reason) {
+			skipReasons?.set(pinnedIndex, reason);
 			return null;
 		}
 		return pinned;
@@ -903,11 +924,18 @@ export function chooseAccount(params: {
 	) {
 		const preferred = accountManager.getAccountByIndex(preferredIndex);
 		if (
-			preferred &&
-			accountManager.isAccountAvailableForFamily(preferred.index, family, model)
-		) {
+			preferred) {
+			const reason = accountManager.getAccountRuntimeSkipReason(
+				preferred.index,
+				family,
+				model,
+			);
+			if (reason) {
+				skipReasons?.set(preferred.index, reason);
+			} else {
 			accountManager.markSwitched(preferred, "rotation", family);
 			return preferred;
+			}
 		}
 	}
 
@@ -919,18 +947,36 @@ export function chooseAccount(params: {
 		!attemptedIndexes.has(selected.index) &&
 		!policy?.blockedAccountIndexes.has(selected.index)
 	) {
-		return selected;
+		const reason = accountManager.getAccountRuntimeSkipReason(
+			selected.index,
+			family,
+			model,
+		);
+		if (!reason) return selected;
+		skipReasons?.set(selected.index, reason);
 	}
 
 	for (const account of accountManager.getAccountsSnapshot()) {
-		if (attemptedIndexes.has(account.index)) continue;
-		if (policy?.blockedAccountIndexes.has(account.index)) continue;
-		if (accountManager.isAccountAvailableForFamily(account.index, family, model)) {
+		if (attemptedIndexes.has(account.index)) {
+			skipReasons?.set(account.index, "already-attempted");
+			continue;
+		}
+		if (policy?.blockedAccountIndexes.has(account.index)) {
+			skipReasons?.set(account.index, "policy-blocked");
+			continue;
+		}
+		const reason = accountManager.getAccountRuntimeSkipReason(
+			account.index,
+			family,
+			model,
+		);
+		if (!reason) {
 			const live = accountManager.getAccountByIndex(account.index);
 			if (!live) continue;
 			accountManager.markSwitched(live, "rotation", family);
 			return live;
 		}
+		skipReasons?.set(account.index, reason);
 	}
 
 	return null;
@@ -970,9 +1016,21 @@ function writePoolExhausted(params: {
 	family: ModelFamily;
 	model: string | null;
 	reason: ExhaustionReason;
+	accountSkipReasons?: Record<string, string>;
 }): void {
 	const { res, accountManager, family, model, reason } = params;
 	const waitMs = accountManager.getMinWaitTimeForFamily(family, model);
+	const accountCount = accountManager.getAccountCount();
+	const accountSkipReasons = params.accountSkipReasons ?? {};
+	recordRuntimePoolExhaustion({
+		reason,
+		retryAfterMs: waitMs,
+		accountSkipReasons,
+	});
+	const hint =
+		reason === "no-account" && accountCount > 0
+			? "Accounts exist but all failed runtime availability checks. Run `codex-multi-auth report --json` to inspect runtime skip reasons, or `codex-multi-auth rotation reset-runtime` to reload the runtime proxy."
+			: "Run `codex-multi-auth rotation status` to inspect account state.";
 	writeJson(res, normalizeExhaustionStatus(reason), {
 		error: {
 			message:
@@ -980,7 +1038,8 @@ function writePoolExhausted(params: {
 			code: "codex_runtime_rotation_pool_exhausted",
 			reason,
 			retry_after_ms: waitMs,
-			hint: "Run `codex-multi-auth rotation status` to inspect account state.",
+			account_skip_reasons: accountSkipReasons,
+			hint,
 		},
 	});
 }
@@ -1061,7 +1120,7 @@ export async function startRuntimeRotationProxy(
 	options: RuntimeRotationProxyOptions,
 ): Promise<RuntimeRotationProxyServer> {
 	const pluginConfig = loadPluginConfig();
-	const accountManager = options.accountManager ?? (await AccountManager.loadFromDisk());
+	let accountManager = options.accountManager ?? (await AccountManager.loadFromDisk());
 	const fetchImpl = options.fetchImpl ?? fetch;
 	const host = options.host ?? DEFAULT_HOST;
 	const port = options.port ?? 0;
@@ -1164,6 +1223,16 @@ export async function startRuntimeRotationProxy(
 					model: context.model,
 					now: requestStartedAt,
 				});
+				mutateRuntimeObservabilitySnapshot((snapshot) => {
+					snapshot.policyBlockedIndexes = [
+						...(policyDecision?.blockedAccountIndexes ?? new Set<number>()),
+					];
+					snapshot.policyBlockedReasons = Object.fromEntries(
+						[...(policyDecision?.blockedAccountIndexes ?? new Set<number>())].map(
+							(index) => [String(index), "policy-blocked"],
+						),
+					);
+				});
 			} catch (error) {
 				policyError = error instanceof Error ? error.message : String(error);
 				status.lastError = policyError;
@@ -1223,6 +1292,8 @@ export async function startRuntimeRotationProxy(
 			);
 			let transientAttempts = 0;
 			let transientExhaustionReason: ExhaustionReason | null = null;
+			const accountSkipReasons = new Map<number, string>();
+			let reloadedAfterNoAccount = false;
 
 			// Read the manual pin and affinity generation from disk (mtime-cached)
 			// on each request so a `codex-multi-auth switch|unpin|best` invocation
@@ -1254,11 +1325,38 @@ export async function startRuntimeRotationProxy(
 					now: now(),
 					policy: policyDecision,
 					pinnedIndex,
+					skipReasons: accountSkipReasons,
 				});
-				if (!selected) break;
+				if (!selected) {
+					if (
+						!reloadedAfterNoAccount &&
+						!isPinned &&
+						accountCount > 0 &&
+						exhaustionReason === "no-account" &&
+						(policyDecision?.blockedAccountIndexes.size ?? 0) === 0 &&
+						![...accountSkipReasons.values()].some(
+							(reason) =>
+								reason === "rate-limited" ||
+								reason.startsWith("cooling-down") ||
+								reason === "policy-blocked",
+						) &&
+						accountManager.getMinWaitTimeForFamily(context.family, context.model) === 0
+					) {
+						reloadedAfterNoAccount = true;
+						AccountManager.resetVolatileRuntimeState();
+						recordRuntimeReset("pool-exhausted-no-account");
+						accountManager = await AccountManager.loadFromDisk();
+						recordRuntimeReload("pool-exhausted-no-account");
+						accountSkipReasons.clear();
+						attemptedIndexes.clear();
+						continue;
+					}
+					break;
+				}
 				attemptedIndexes.add(selected.index);
 
 				if (!accountManager.consumeToken(selected, context.family, context.model)) {
+					accountSkipReasons.set(selected.index, "token-exhausted");
 					exhaustionReason = "rate-limit";
 					continue;
 				}
@@ -1634,6 +1732,12 @@ export async function startRuntimeRotationProxy(
 					family: context.family,
 					model: context.model,
 					reason: exhaustionReason,
+					accountSkipReasons: Object.fromEntries(
+						[...accountSkipReasons.entries()].map(([index, reason]) => [
+							String(index),
+							reason,
+						]),
+					),
 				});
 			}
 		} catch (error) {

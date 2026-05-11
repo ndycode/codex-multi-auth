@@ -211,6 +211,24 @@ beforeEach(() => {
 	delete process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY;
 });
 
+describe("rotation reset-runtime", () => {
+	it("returns deterministic json and restarts app bind when helpers exist", async () => {
+		const { deps, infos, bindCodexAppMock, unbindCodexAppMock } = createDeps();
+
+		const exitCode = await runRotationCommand(["reset-runtime", "--json"], deps);
+
+		expect(exitCode).toBe(0);
+		expect(unbindCodexAppMock).toHaveBeenCalledTimes(1);
+		expect(bindCodexAppMock).toHaveBeenCalledTimes(1);
+		expect(JSON.parse(infos.at(-1) ?? "{}")).toMatchObject({
+			ok: true,
+			command: "rotation reset-runtime",
+			resetVolatileRuntimeState: true,
+			appBindRestarted: true,
+		});
+	});
+});
+
 afterEach(() => {
 	if (originalRuntimeRotationProxyEnv === undefined) {
 		delete process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY;

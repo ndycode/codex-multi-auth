@@ -315,6 +315,7 @@ export async function runReportCommand(
 	const refreshFailures = new Map<number, TokenFailure>();
 	const liveQuotaByIndex = new Map<number, CodexQuotaSnapshot>();
 	const probeErrors: string[] = [];
+	const runtimeSnapshot = await deps.loadRuntimeObservabilitySnapshot?.();
 	let consideredLiveAccounts = 0;
 	let executedLiveProbes = 0;
 
@@ -453,6 +454,7 @@ export async function runReportCommand(
 					now,
 					refreshFailure: refreshFailures.get(index),
 					liveQuota: liveQuotaByIndex.get(index),
+					runtimeOverlay: runtimeSnapshot,
 				})),
 			)
 		: [];
@@ -521,7 +523,7 @@ export async function runReportCommand(
 				formatQuotaSnapshotLine,
 			),
 		},
-		runtime: await deps.loadRuntimeObservabilitySnapshot?.(),
+		runtime: runtimeSnapshot,
 	};
 	if (report.forecast.recommendation.recommendedIndex !== null) {
 		const selectedIndex = report.forecast.recommendation.recommendedIndex;

@@ -1589,6 +1589,62 @@ describe("runtime rotation proxy", () => {
 		expect(payload.error.retry_after_ms).toBeGreaterThan(0);
 	});
 
+	it("includes per-account skip reasons in final pool exhaustion responses", async () => {
+		const now = Date.now();
+		const storage = createStorage(now, 2);
+		const first = storage.accounts[0];
+		if (first) {
+			first.rateLimitResetTimes = { codex: now + 60_000 };
+		}
+		const second = storage.accounts[1];
+		if (second) {
+			second.enabled = true;
+			second.coolingDownUntil = now + 60_000;
+			second.cooldownReason = "server-error";
+		}
+		const accountManager = new AccountManager(undefined, storage);
+		const managedFirst = accountManager.getAccountByIndex(0);
+		const managedSecond = accountManager.getAccountByIndex(1);
+		if (managedFirst) {
+			accountManager.markAccountCoolingDown(
+				managedFirst,
+				60_000,
+				"network-error",
+			);
+		}
+		if (managedSecond) {
+			accountManager.markAccountCoolingDown(
+				managedSecond,
+				60_000,
+				"server-error",
+			);
+		}
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response("should not be called", { status: HTTP_STATUS.OK }),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex" });
+		const payload = (await response.json()) as {
+			error: {
+				code: string;
+				reason: string;
+				account_skip_reasons: Record<string, string>;
+				hint: string;
+			};
+		};
+
+		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+		expect(payload.error.code).toBe("codex_runtime_rotation_pool_exhausted");
+		expect(payload.error.reason).toBe("no-account");
+		expect(payload.error.account_skip_reasons).toMatchObject({
+			"0": "cooling-down:network-error",
+			"1": "cooling-down:server-error",
+		});
+		expect(payload.error.hint).toContain("rotation reset-runtime");
+		expect(calls).toHaveLength(0);
+	});
+
 	it("caps per-request upstream attempts instead of walking a large pool", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 6));

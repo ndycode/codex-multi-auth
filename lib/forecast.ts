@@ -1,5 +1,10 @@
 import { formatAccountLabel, formatWaitTime } from "./accounts.js";
 import type { CodexQuotaSnapshot } from "./quota-probe.js";
+import type { QuotaCacheData } from "./quota-cache.js";
+import {
+	findQuotaCacheEntryForAccount,
+	isQuotaCacheEntryExhausted,
+} from "./quota-readiness.js";
 import { getRateLimitResetTimeForFamily } from "./runtime/account-status.js";
 import type { AccountMetadataV3 } from "./storage.js";
 import type { TokenFailure } from "./types.js";
@@ -14,6 +19,15 @@ export interface ForecastAccountInput {
 	now: number;
 	refreshFailure?: TokenFailure;
 	liveQuota?: CodexQuotaSnapshot;
+	quotaCache?: QuotaCacheData | null;
+	allAccounts?: readonly AccountMetadataV3[];
+	runtimeOverlay?: RuntimeForecastOverlay | null;
+}
+
+export interface RuntimeForecastOverlay {
+	accountSkipReasons?: Record<string, string>;
+	lastPoolExhaustionSkipReasons?: Record<string, string>;
+	policyBlockedIndexes?: number[];
 }
 
 export interface ForecastAccountResult {
@@ -206,6 +220,40 @@ export function evaluateForecastAccount(
 		if (availability === "ready") availability = "delayed";
 		riskScore += 35;
 		appendWaitReason(reasons, "rate limit resets in", remaining);
+	}
+
+	const quotaEntry = findQuotaCacheEntryForAccount(
+		input.quotaCache,
+		account,
+		input.allAccounts ?? [account],
+	);
+	if (isQuotaCacheEntryExhausted(quotaEntry, now)) {
+		const resetAts = [quotaEntry?.primary.resetAtMs, quotaEntry?.secondary.resetAtMs]
+			.filter((value): value is number => typeof value === "number")
+			.filter((value) => Number.isFinite(value) && value > now);
+		const quotaWait = resetAts.length > 0 ? Math.min(...resetAts) - now : waitMs;
+		waitMs = Math.max(waitMs, quotaWait);
+		if (availability === "ready") availability = "delayed";
+		riskScore += 60;
+		reasons.push("quota cache exhausted");
+		appendWaitReason(reasons, "quota resets in", quotaWait);
+	}
+
+	const overlay = input.runtimeOverlay;
+	const overlayReason =
+		overlay?.accountSkipReasons?.[String(index)] ??
+		overlay?.lastPoolExhaustionSkipReasons?.[String(index)] ??
+		null;
+	if (overlay?.policyBlockedIndexes?.includes(index)) {
+		availability = "unavailable";
+		riskScore += 95;
+		reasons.push("runtime policy blocked account");
+	} else if (overlayReason && overlayReason !== "already-attempted") {
+		if (overlayReason === "circuit-open" || overlayReason === "token-exhausted") {
+			availability = "unavailable";
+			riskScore += overlayReason === "circuit-open" ? 90 : 70;
+		}
+		reasons.push(`runtime skip: ${overlayReason}`);
 	}
 
 	const quota = input.liveQuota;
