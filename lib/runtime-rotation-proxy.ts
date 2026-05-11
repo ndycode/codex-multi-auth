@@ -1371,8 +1371,7 @@ export async function startRuntimeRotationProxy(
 								reason === "rate-limited" ||
 								reason.startsWith("cooling-down") ||
 								reason === "policy-blocked",
-						) &&
-						accountManager.getMinWaitTimeForFamily(context.family, context.model) === 0
+						)
 					) {
 						reloadedAfterNoAccount = true;
 						const reloadedManager = await recoverStaleRuntimeState();
@@ -1850,9 +1849,7 @@ export async function startRuntimeRotationProxy(
 		baseUrl: `http://${host}:${resolvedPort}`,
 		close: async () => {
 			await closeServer(server, sockets);
-			await Promise.all(
-				[...knownAccountManagers].map((manager) => manager.flushPendingSave()),
-			);
+			await activeAccountManager.flushPendingSave();
 		},
 		getStatus: () => ({ ...status }),
 	};

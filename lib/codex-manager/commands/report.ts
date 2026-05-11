@@ -34,6 +34,7 @@ import {
 	type StorageHealthSummary,
 } from "../../storage.js";
 import type { RuntimeObservabilitySnapshot } from "../../runtime/runtime-observability.js";
+import type { QuotaCacheData } from "../../quota-cache.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 import { sleep } from "../../utils.js";
 
@@ -108,6 +109,7 @@ export interface ReportCommandDeps {
 	getCwd?: () => string;
 	writeFile?: (path: string, contents: string) => Promise<void>;
 	loadRuntimeObservabilitySnapshot?: () => Promise<RuntimeObservabilitySnapshot | null>;
+	loadQuotaCache?: () => Promise<QuotaCacheData | null>;
 }
 
 function isRetryableWriteError(error: unknown): boolean {
@@ -315,6 +317,7 @@ export async function runReportCommand(
 	const refreshFailures = new Map<number, TokenFailure>();
 	const liveQuotaByIndex = new Map<number, CodexQuotaSnapshot>();
 	const probeErrors: string[] = [];
+	const quotaCache = (await deps.loadQuotaCache?.().catch(() => null)) ?? null;
 	let runtimeSnapshot: RuntimeObservabilitySnapshot | null | undefined;
 	let runtimeSnapshotLoadError: string | null = null;
 	try {
@@ -462,6 +465,8 @@ export async function runReportCommand(
 					now,
 					refreshFailure: refreshFailures.get(index),
 					liveQuota: liveQuotaByIndex.get(index),
+					quotaCache,
+					allAccounts: storage.accounts,
 					runtimeOverlay: runtimeSnapshot,
 				})),
 			)

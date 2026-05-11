@@ -128,8 +128,6 @@ async function runResetRuntime(
 		return 1;
 	}
 
-	AccountManager.resetVolatileRuntimeState();
-	recordRuntimeReset("rotation-reset-runtime");
 	let unbind: AppBindResult | null = null;
 	let bind: AppBindResult | null = null;
 	let appBindRestarted = false;
@@ -145,7 +143,7 @@ async function runResetRuntime(
 					JSON.stringify({
 						ok: false,
 						command: "rotation reset-runtime",
-						resetVolatileRuntimeState: true,
+						resetVolatileRuntimeState: false,
 						appBindRestarted,
 						error: message,
 					}),
@@ -156,6 +154,8 @@ async function runResetRuntime(
 			return 1;
 		}
 	}
+	AccountManager.resetVolatileRuntimeState();
+	recordRuntimeReset("rotation-reset-runtime");
 	const payload = {
 		ok: true,
 		command: "rotation reset-runtime",

@@ -1926,12 +1926,15 @@ export async function runDoctor(
 		const runtimeSnapshot =
 			(await loadPersistedRuntimeObservabilitySnapshot().catch(() => null)) ??
 			null;
+		const quotaCache = (await loadQuotaCache().catch(() => null)) ?? null;
 		const forecastResults = evaluateForecastAccounts(
 			storageForChecks.accounts.map((account, index) => ({
 				index,
 				account,
 				isCurrent: index === activeIndex,
 				now,
+				quotaCache,
+				allAccounts: storageForChecks.accounts,
 			})),
 		);
 		const runtimeForecastResults = evaluateForecastAccounts(
@@ -1940,6 +1943,8 @@ export async function runDoctor(
 				account,
 				isCurrent: index === activeIndex,
 				now,
+				quotaCache,
+				allAccounts: storageForChecks.accounts,
 				runtimeOverlay: runtimeSnapshot,
 			})),
 		);

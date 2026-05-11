@@ -141,6 +141,54 @@ describe("runReportCommand", () => {
 		);
 	});
 
+	it("uses quota cache when computing non-live forecast readiness", async () => {
+		const deps = createDeps({
+			loadAccounts: vi.fn(async () =>
+				createStorage([
+					{
+						email: "quota@example.com",
+						refreshToken: "refresh-token-1",
+						accessToken: "access-token-1",
+						expiresAt: 10_000,
+						addedAt: 1,
+						lastUsed: 1,
+						accountId: "quota-account",
+						enabled: true,
+					},
+				]),
+			),
+			loadQuotaCache: vi.fn(async () => ({
+				byAccountId: {
+					"quota-account": {
+						updatedAt: 900,
+						status: 200,
+						model: "gpt-5.3-codex",
+						primary: { usedPercent: 100, resetAtMs: 61_000 },
+						secondary: {},
+					},
+				},
+				byEmail: {},
+			})),
+		});
+
+		const result = await runReportCommand(["--json"], deps);
+
+		expect(result).toBe(0);
+		expect(deps.loadQuotaCache).toHaveBeenCalledTimes(1);
+		const payload = JSON.parse(
+			String(
+				(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ??
+					"{}",
+			),
+		) as {
+			forecast: { accounts: Array<{ availability: string; reasons: string[] }> };
+		};
+		expect(payload.forecast.accounts[0]?.availability).toBe("delayed");
+		expect(payload.forecast.accounts[0]?.reasons).toContain(
+			"quota cache exhausted",
+		);
+	});
+
 	it("includes runtime observability fields in json output when snapshot is available", async () => {
 		const deps = createDeps({
 			loadRuntimeObservabilitySnapshot: vi.fn(async () => ({

@@ -235,7 +235,7 @@ describe("rotation reset-runtime", () => {
 		}
 	});
 
-	it("returns failure json when app bind restart throws after runtime reset", async () => {
+	it("returns failure json without clearing runtime diagnostics when app bind restart throws", async () => {
 		const { deps, infos, errors, bindCodexAppMock, unbindCodexAppMock } =
 			createDeps();
 		const resetSpy = vi.spyOn(AccountManager, "resetVolatileRuntimeState");
@@ -245,14 +245,14 @@ describe("rotation reset-runtime", () => {
 			const exitCode = await runRotationCommand(["reset-runtime", "--json"], deps);
 
 			expect(exitCode).toBe(1);
-			expect(resetSpy).toHaveBeenCalledTimes(1);
+			expect(resetSpy).not.toHaveBeenCalled();
 			expect(unbindCodexAppMock).toHaveBeenCalledTimes(1);
 			expect(bindCodexAppMock).not.toHaveBeenCalled();
 			expect(errors).toEqual([]);
 			expect(JSON.parse(infos.at(-1) ?? "{}")).toMatchObject({
 				ok: false,
 				command: "rotation reset-runtime",
-				resetVolatileRuntimeState: true,
+				resetVolatileRuntimeState: false,
 				appBindRestarted: false,
 				error: "unbind busy",
 			});

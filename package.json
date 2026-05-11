@@ -122,7 +122,15 @@
 		"dist/",
 		"assets/",
 		"config/",
-		"scripts/",
+		"scripts/codex.js",
+		"scripts/codex-app-launcher.js",
+		"scripts/codex-app-router.js",
+		"scripts/codex-bin-resolver.js",
+		"scripts/codex-multi-auth.js",
+		"scripts/codex-routing.js",
+		"scripts/install-codex-auth-utils.js",
+		"scripts/postinstall.js",
+		"scripts/preuninstall.js",
 		"vendor/codex-ai-plugin/",
 		"vendor/codex-ai-sdk/",
 		"README.md",
@@ -165,8 +173,8 @@
 		"@codex-ai/plugin": "file:vendor/codex-ai-plugin",
 		"@openauthjs/openauth": "^0.4.3",
 		"hono": "4.12.18",
-		"undici": "^6.24.1",
-		"zod": "^4.3.6"
+		"undici": "6.25.0",
+		"zod": "4.4.3"
 	},
 	"overrides": {
 		"hono": "4.12.18",

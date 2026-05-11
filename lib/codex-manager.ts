@@ -3616,6 +3616,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			normalizeFailureDetail,
 			loadRuntimeObservabilitySnapshot:
 				loadPersistedRuntimeObservabilitySnapshot,
+			loadQuotaCache,
 		});
 	}
 	if (command === "usage") {

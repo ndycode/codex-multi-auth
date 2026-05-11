@@ -728,6 +728,19 @@ describe("repair-commands direct deps coverage", () => {
 	});
 
 	it("runDoctor warns when disk forecast and runtime overlay diverge", async () => {
+		const quotaCache = {
+			byAccountId: {
+				"doctor-account": {
+					updatedAt: 1,
+					status: 200,
+					model: "gpt-5.3-codex",
+					primary: { usedPercent: 100, resetAtMs: 10_000 },
+					secondary: {},
+				},
+			},
+			byEmail: {},
+		};
+		loadQuotaCacheMock.mockResolvedValueOnce(quotaCache);
 		loadAccountsMock.mockResolvedValue({
 			version: 3,
 			accounts: [
@@ -771,6 +784,15 @@ describe("repair-commands direct deps coverage", () => {
 		const exitCode = await runDoctor(["--json"], createDeps());
 
 		expect(exitCode).toBe(0);
+		expect(loadQuotaCacheMock).toHaveBeenCalledTimes(1);
+		expect(evaluateForecastAccountsMock).toHaveBeenCalledWith(
+			expect.arrayContaining([
+				expect.objectContaining({
+					quotaCache,
+					allAccounts: expect.any(Array),
+				}),
+			]),
+		);
 		const payload = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")) as {
 			checks: Array<{ key: string; severity: string; message: string; details?: string }>;
 		};

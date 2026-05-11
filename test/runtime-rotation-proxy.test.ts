@@ -1696,6 +1696,42 @@ describe("runtime rotation proxy", () => {
 		}
 	});
 
+	it("recovers stale runtime state when real circuit breakers are open", async () => {
+		const now = Date.now();
+		const staleManager = new AccountManager(undefined, createStorage(now, 2));
+		const freshManager = new AccountManager(undefined, createStorage(now, 2));
+		for (let index = 0; index < staleManager.getAccountCount(); index += 1) {
+			const account = staleManager.getAccountByIndex(index);
+			if (!account) continue;
+			staleManager.recordFailure(account, "codex", "gpt-5-codex");
+			staleManager.recordFailure(account, "codex", "gpt-5-codex");
+			staleManager.recordFailure(account, "codex", "gpt-5-codex");
+		}
+		expect(staleManager.getMinWaitTimeForFamily("codex", "gpt-5-codex")).toBeGreaterThan(0);
+		const loadSpy = vi
+			.spyOn(AccountManager, "loadFromDisk")
+			.mockResolvedValueOnce(freshManager);
+		const resetSpy = vi.spyOn(AccountManager, "resetVolatileRuntimeState");
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream());
+		try {
+			const proxy = await startProxy({
+				accountManager: staleManager,
+				fetchImpl,
+			});
+
+			const response = await postResponses(proxy, { model: "gpt-5-codex" });
+			await response.text();
+
+			expect(response.status).toBe(HTTP_STATUS.OK);
+			expect(loadSpy).toHaveBeenCalledTimes(1);
+			expect(resetSpy).toHaveBeenCalledTimes(1);
+			expect(calls).toHaveLength(1);
+		} finally {
+			loadSpy.mockRestore();
+			resetSpy.mockRestore();
+		}
+	});
+
 	it("refreshes request pool limits when stale-runtime reload increases account count", async () => {
 		const now = Date.now();
 		const staleManager = new AccountManager(undefined, createStorage(now, 1));
