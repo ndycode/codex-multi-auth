@@ -1,6 +1,11 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { formatAccountLabel, formatCooldown, formatWaitTime } from "../../accounts.js";
+import {
+	AccountManager,
+	formatAccountLabel,
+	formatCooldown,
+	formatWaitTime,
+} from "../../accounts.js";
 import { parseBooleanEnv } from "../../env-parsing.js";
 import { getCodexMultiAuthDir } from "../../runtime-paths.js";
 import { saveAccountsWithRetry } from "../forecast-report-shared.js";
@@ -32,7 +37,10 @@ import {
 	isQuotaCacheEntryExhausted,
 } from "../../quota-readiness.js";
 import type { QuotaCacheData } from "../../quota-cache.js";
-import type { RuntimeObservabilitySnapshot } from "../../runtime/runtime-observability.js";
+import {
+	recordRuntimeReset,
+	type RuntimeObservabilitySnapshot,
+} from "../../runtime/runtime-observability.js";
 import {
 	appRuntimeHelperStatusToSignal as appRuntimeHelperStatusToRuntimeSignal,
 	resolveAccountCurrentMarkers,
@@ -88,14 +96,82 @@ function printRotationUsage(logInfo: (message: string) => void): void {
 			"  codex-multi-auth rotation bind-app",
 			"  codex-multi-auth rotation unbind-app",
 			"  codex-multi-auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]",
+			"  codex-multi-auth rotation reset-runtime [--json]",
 			"",
 			"Behavior:",
 			"  - Runtime rotation is enabled by default for request-bearing Codex sessions",
 			"  - Binds the packaged Codex desktop app to the same localhost router when enabled or repaired",
 			"  - Use CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0 to disable the proxy for the current process without changing persistent settings",
 			"  - reset-rate-limits clears stored rateLimitResetTimes and active coolingDownUntil entries; use when `fix --live` confirms quota is available but the proxy still returns 503 pool-exhausted",
+			"  - reset-runtime clears process-local runtime trackers and re-applies the Codex app bind when available",
 		].join("\n"),
 	);
+}
+
+async function runResetRuntime(
+	args: string[],
+	deps: RotationCommandDeps,
+): Promise<number> {
+	const logInfo = deps.logInfo ?? console.log;
+	const logError = deps.logError ?? console.error;
+	let json = false;
+	for (const arg of args) {
+		if (arg === "--json" || arg === "-j") {
+			json = true;
+			continue;
+		}
+		if (arg === "--help" || arg === "-h" || arg === "help") {
+			logInfo("Usage: codex-multi-auth rotation reset-runtime [--json]");
+			return 0;
+		}
+		logError(`Unknown reset-runtime option: ${arg}`);
+		return 1;
+	}
+
+	AccountManager.resetVolatileRuntimeState();
+	recordRuntimeReset("rotation-reset-runtime");
+	let unbind: AppBindResult | null = null;
+	let bind: AppBindResult | null = null;
+	let appBindRestarted = false;
+	if (deps.unbindCodexApp && deps.bindCodexApp) {
+		try {
+			unbind = await deps.unbindCodexApp();
+			bind = await deps.bindCodexApp();
+			appBindRestarted = true;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (json) {
+				logInfo(
+					JSON.stringify({
+						ok: false,
+						command: "rotation reset-runtime",
+						resetVolatileRuntimeState: true,
+						appBindRestarted,
+						error: message,
+					}),
+				);
+			} else {
+				logError(`Runtime reset completed, but app bind restart failed: ${message}`);
+			}
+			return 1;
+		}
+	}
+	const payload = {
+		ok: true,
+		command: "rotation reset-runtime",
+		resetVolatileRuntimeState: true,
+		appBindRestarted,
+		unbindStatus: unbind?.status.state ?? null,
+		bindStatus: bind?.status.state ?? null,
+	};
+	if (json) {
+		logInfo(JSON.stringify(payload));
+	} else {
+		logInfo("Runtime rotation volatile state reset.");
+		if (appBindRestarted) logInfo("Codex app bind restarted.");
+		else logInfo("Codex app bind helpers unavailable; new wrapper sessions will use the reset state.");
+	}
+	return 0;
 }
 
 interface ResetRateLimitsOptions {
@@ -659,6 +735,9 @@ export async function runRotationCommand(
 	}
 	if (subcommand === "reset-rate-limits") {
 		return runResetRateLimits(rest, deps);
+	}
+	if (subcommand === "reset-runtime") {
+		return runResetRuntime(rest, deps);
 	}
 	if (rest.length > 0) {
 		logError(`Unknown rotation option: ${rest[0]}`);

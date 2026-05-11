@@ -3,6 +3,7 @@ import { extractAccountEmail, sanitizeEmail } from "../../accounts.js";
 import {
 	buildForecastExplanation,
 	type ForecastAccountResult,
+	type RuntimeForecastOverlay,
 } from "../../forecast.js";
 import {
 	applyRefreshedAccountPatch,
@@ -22,6 +23,7 @@ interface ForecastCliOptions {
 	json: boolean;
 	explain: boolean;
 	model: string;
+	runtimeOverlay: boolean;
 }
 
 type ParsedArgsResult<T> =
@@ -80,6 +82,9 @@ export interface ForecastCommandDeps {
 			now: number;
 			refreshFailure?: TokenFailure;
 			liveQuota?: CodexQuotaSnapshot;
+			quotaCache?: QuotaCacheData | null;
+			allAccounts?: readonly AccountMetadataV3[];
+			runtimeOverlay?: RuntimeForecastOverlay | null;
 		}>,
 	) => ForecastAccountResult[];
 	summarizeForecast: (results: ForecastAccountResult[]) => {
@@ -107,6 +112,7 @@ export interface ForecastCommandDeps {
 	) => "success" | "warning" | "danger";
 	formatWaitTime: (ms: number) => string;
 	defaultDisplay: DashboardDisplaySettings;
+	loadRuntimeObservabilitySnapshot?: () => Promise<RuntimeForecastOverlay | null>;
 	logInfo?: (message: string) => void;
 	logError?: (message: string) => void;
 	getNow?: () => number;
@@ -131,6 +137,7 @@ function printForecastUsage(logInfo: (message: string) => void): void {
 			"  --json, -j         Print machine-readable JSON output",
 			"  --explain          Include structured recommendation reasoning",
 			"  --model, -m        Probe model for live mode (default: gpt-5.3-codex)",
+			"  --no-runtime-overlay  Ignore persisted runtime skip diagnostics",
 		].join("\n"),
 	);
 }
@@ -143,6 +150,7 @@ function parseForecastArgs(
 		json: false,
 		explain: false,
 		model: "gpt-5.3-codex",
+		runtimeOverlay: true,
 	};
 
 	for (let i = 0; i < args.length; i += 1) {
@@ -158,6 +166,10 @@ function parseForecastArgs(
 		}
 		if (arg === "--explain") {
 			options.explain = true;
+			continue;
+		}
+		if (arg === "--no-runtime-overlay") {
+			options.runtimeOverlay = false;
 			continue;
 		}
 		if (arg === "--model" || arg === "-m") {
@@ -205,7 +217,11 @@ export async function runForecastCommand(
 		? (await deps.loadDashboardDisplaySettings().catch(() => null)) ??
 			deps.defaultDisplay
 		: deps.defaultDisplay;
-	const quotaCache = options.live ? await deps.loadQuotaCache() : null;
+	const quotaCache = await deps.loadQuotaCache();
+	const runtimeOverlay =
+		options.runtimeOverlay && deps.loadRuntimeObservabilitySnapshot
+			? await deps.loadRuntimeObservabilitySnapshot().catch(() => null)
+			: null;
 	const workingQuotaCache = quotaCache
 		? deps.cloneQuotaCacheData(quotaCache)
 		: null;
@@ -346,6 +362,9 @@ export async function runForecastCommand(
 		now,
 		refreshFailure: refreshFailures.get(index),
 		liveQuota: liveQuotaByIndex.get(index),
+		quotaCache,
+		allAccounts: storage.accounts,
+		runtimeOverlay,
 	}));
 	const forecastResults = deps.evaluateForecastAccounts(forecastInputs);
 	const summary = deps.summarizeForecast(forecastResults);
@@ -373,6 +392,7 @@ export async function runForecastCommand(
 					command: "forecast",
 					model: requestedModel,
 					liveProbe: options.live,
+					runtimeOverlay: options.runtimeOverlay,
 					summary,
 					recommendation,
 					explanation: options.explain ? explanation : undefined,

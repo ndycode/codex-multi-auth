@@ -39,6 +39,7 @@ const getCodexCliAuthPathMock = vi.fn(() => "/mock/auth.json");
 const getCodexCliConfigPathMock = vi.fn(() => "/mock/config.toml");
 const loadCodexCliStateMock = vi.fn();
 const setCodexCliActiveSelectionMock = vi.fn();
+const loadPersistedRuntimeObservabilitySnapshotMock = vi.fn();
 
 vi.mock("node:fs", () => ({
 	existsSync: existsSyncMock,
@@ -99,6 +100,11 @@ vi.mock("../lib/codex-cli/writer.js", () => ({
 	setCodexCliActiveSelection: setCodexCliActiveSelectionMock,
 }));
 
+vi.mock("../lib/runtime/runtime-observability.js", () => ({
+	loadPersistedRuntimeObservabilitySnapshot:
+		loadPersistedRuntimeObservabilitySnapshotMock,
+}));
+
 const {
 	runDoctor,
 	runFix,
@@ -138,6 +144,12 @@ describe("repair-commands direct deps coverage", () => {
 		loadCodexCliStateMock.mockResolvedValue(null);
 		extractAccountEmailMock.mockReturnValue(undefined);
 		extractAccountIdMock.mockReturnValue(undefined);
+		loadPersistedRuntimeObservabilitySnapshotMock.mockResolvedValue(null);
+		evaluateForecastAccountsMock.mockImplementation(() => []);
+		recommendForecastAccountMock.mockReturnValue({
+			recommendedIndex: null,
+			reason: "stay",
+		});
 	});
 
 	afterEach(() => {
@@ -711,6 +723,113 @@ describe("repair-commands direct deps coverage", () => {
 			expect.objectContaining({
 				key: "refresh-token-shape",
 				severity: "warn",
+			}),
+		);
+	});
+
+	it("runDoctor warns when disk forecast and runtime overlay diverge", async () => {
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			accounts: [
+				{
+					email: "doctor@example.com",
+					refreshToken: "refresh-token",
+					accessToken: "access",
+					expiresAt: 100,
+					accountId: "doctor-account",
+					enabled: true,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		});
+		loadPersistedRuntimeObservabilitySnapshotMock.mockResolvedValue({
+			lastPoolExhaustionSkipReasons: { "0": "circuit-open" },
+		});
+		evaluateForecastAccountsMock.mockImplementation((inputs) =>
+			inputs.map((input: { index: number; runtimeOverlay?: unknown }) => ({
+				index: input.index,
+				label: `account ${input.index + 1}`,
+				isCurrent: true,
+				availability: input.runtimeOverlay ? "unavailable" : "ready",
+				riskScore: input.runtimeOverlay ? 90 : 0,
+				riskLevel: input.runtimeOverlay ? "high" : "low",
+				waitMs: 0,
+				reasons: input.runtimeOverlay
+					? ["runtime skip: circuit-open"]
+					: [],
+				hardFailure: false,
+				disabled: false,
+			})),
+		);
+		recommendForecastAccountMock.mockReturnValue({
+			recommendedIndex: 0,
+			reason: "stay",
+		});
+		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const exitCode = await runDoctor(["--json"], createDeps());
+
+		expect(exitCode).toBe(0);
+		const payload = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")) as {
+			checks: Array<{ key: string; severity: string; message: string; details?: string }>;
+		};
+		expect(payload.checks).toContainEqual(
+			expect.objectContaining({
+				key: "forecast-runtime-alignment",
+				severity: "warn",
+				message: "1 account(s) look ready on disk but unavailable in runtime state",
+				details: expect.stringContaining("runtime skip: circuit-open"),
+			}),
+		);
+	});
+
+	it("runDoctor treats failed runtime snapshot loads as aligned diagnostics", async () => {
+		loadAccountsMock.mockResolvedValue({
+			version: 3,
+			accounts: [
+				{
+					email: "doctor@example.com",
+					refreshToken: "refresh-token",
+					accessToken: "access",
+					expiresAt: 100,
+					accountId: "doctor-account",
+					enabled: true,
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		});
+		loadPersistedRuntimeObservabilitySnapshotMock.mockRejectedValue(
+			new Error("snapshot busy"),
+		);
+		evaluateForecastAccountsMock.mockImplementation((inputs) =>
+			inputs.map((input: { index: number }) => ({
+				index: input.index,
+				label: `account ${input.index + 1}`,
+				isCurrent: true,
+				availability: "ready",
+				riskScore: 0,
+				riskLevel: "low",
+				waitMs: 0,
+				reasons: [],
+				hardFailure: false,
+				disabled: false,
+			})),
+		);
+		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const exitCode = await runDoctor(["--json"], createDeps());
+
+		expect(exitCode).toBe(0);
+		const payload = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")) as {
+			checks: Array<{ key: string; severity: string; message: string }>;
+		};
+		expect(payload.checks).toContainEqual(
+			expect.objectContaining({
+				key: "forecast-runtime-alignment",
+				severity: "ok",
+				message: "Forecast and runtime availability are aligned",
 			}),
 		);
 	});

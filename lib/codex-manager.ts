@@ -2542,6 +2542,7 @@ async function runForecast(args: string[]): Promise<number> {
 		formatWaitTime,
 		defaultDisplay: DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
 		formatQuotaSnapshotLine,
+		loadRuntimeObservabilitySnapshot: loadPersistedRuntimeObservabilitySnapshot,
 	});
 }
 

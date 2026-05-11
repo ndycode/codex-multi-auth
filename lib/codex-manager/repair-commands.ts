@@ -37,6 +37,7 @@ import {
 import { setCodexCliActiveSelection } from "../codex-cli/writer.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import { resolveNormalizedModel } from "../request/helpers/model-map.js";
+import { loadPersistedRuntimeObservabilitySnapshot } from "../runtime/runtime-observability.js";
 import type { AccountIdSource, TokenFailure, TokenResult } from "../types.js";
 
 type TokenSuccess = Extract<TokenResult, { type: "success" }>;
@@ -1922,12 +1923,24 @@ export async function runDoctor(
 		});
 
 		const now = Date.now();
+		const runtimeSnapshot =
+			(await loadPersistedRuntimeObservabilitySnapshot().catch(() => null)) ??
+			null;
 		const forecastResults = evaluateForecastAccounts(
 			storageForChecks.accounts.map((account, index) => ({
 				index,
 				account,
 				isCurrent: index === activeIndex,
 				now,
+			})),
+		);
+		const runtimeForecastResults = evaluateForecastAccounts(
+			storageForChecks.accounts.map((account, index) => ({
+				index,
+				account,
+				isCurrent: index === activeIndex,
+				now,
+				runtimeOverlay: runtimeSnapshot,
 			})),
 		);
 		const recommendation = recommendForecastAccount(forecastResults);
@@ -1948,6 +1961,31 @@ export async function runDoctor(
 				message: "Current account aligns with forecast recommendation",
 			});
 		}
+
+		const divergent = forecastResults.filter((result) => {
+			const runtimeResult = runtimeForecastResults[result.index];
+			return (
+				result.availability === "ready" &&
+				runtimeResult?.availability === "unavailable"
+			);
+		});
+		addCheck({
+			key: "forecast-runtime-alignment",
+			severity: divergent.length > 0 ? "warn" : "ok",
+			message:
+				divergent.length > 0
+					? `${divergent.length} account(s) look ready on disk but unavailable in runtime state`
+					: "Forecast and runtime availability are aligned",
+			details:
+				divergent.length > 0
+					? divergent
+							.map((result) => {
+								const runtimeResult = runtimeForecastResults[result.index];
+								return `account ${result.index + 1}: ${runtimeResult?.reasons.join("; ") || "runtime unavailable"}`;
+							})
+							.join(" | ")
+					: undefined,
+		});
 
 		if (activeExists) {
 			const activeAccount = storageForChecks.accounts[activeIndex];

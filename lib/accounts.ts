@@ -17,6 +17,7 @@ import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import {
 	getHealthTracker,
 	getTokenTracker,
+	resetTrackers,
 	selectHybridAccount,
 	type AccountWithMetrics,
 	type HybridSelectionOptions,
@@ -39,7 +40,7 @@ import {
 	getAccountIdentityKey,
 	getRuntimeAccountIdentityKey,
 } from "./storage/identity.js";
-import { getCircuitBreaker } from "./circuit-breaker.js";
+import { getCircuitBreaker, resetAllCircuitBreakers } from "./circuit-breaker.js";
 import {
 	getStoragePathState,
 	runWithStoragePathState,
@@ -642,6 +643,31 @@ export class AccountManager {
 			!this.isAccountCoolingDown(account) &&
 			this.isCircuitAvailable(account)
 		);
+	}
+
+	getAccountRuntimeSkipReason(
+		index: number,
+		family: ModelFamily,
+		model?: string | null,
+	): string | null {
+		const account = this.getAccountByIndex(index);
+		if (!account) return "missing";
+		if (account.enabled === false) return "disabled";
+		if (!this.hasEnabledWorkspaces(account)) return "workspace-disabled";
+		clearExpiredRateLimits(account);
+		if (isRateLimitedForFamily(account, family, model)) return "rate-limited";
+		if (this.isAccountCoolingDown(account)) {
+			return account.cooldownReason
+				? `cooling-down:${account.cooldownReason}`
+				: "cooling-down";
+		}
+		if (!this.isCircuitAvailable(account)) return "circuit-open";
+		return null;
+	}
+
+	static resetVolatileRuntimeState(): void {
+		resetTrackers();
+		resetAllCircuitBreakers();
 	}
 
 	setActiveIndex(index: number): ManagedAccount | null {

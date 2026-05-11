@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AccountManager } from "../lib/accounts.js";
 import { runRotationCommand } from "../lib/codex-manager/commands/rotation.js";
 import type { RotationCommandDeps } from "../lib/codex-manager/commands/rotation.js";
 import type { AppBindResult, AppBindStatus } from "../lib/runtime/app-bind.js";
@@ -209,6 +210,76 @@ function createDeps(params: {
 
 beforeEach(() => {
 	delete process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY;
+});
+
+describe("rotation reset-runtime", () => {
+	it("returns deterministic json and restarts app bind when helpers exist", async () => {
+		const { deps, infos, bindCodexAppMock, unbindCodexAppMock } = createDeps();
+		const resetSpy = vi.spyOn(AccountManager, "resetVolatileRuntimeState");
+
+		try {
+			const exitCode = await runRotationCommand(["reset-runtime", "--json"], deps);
+
+			expect(exitCode).toBe(0);
+			expect(resetSpy).toHaveBeenCalledTimes(1);
+			expect(unbindCodexAppMock).toHaveBeenCalledTimes(1);
+			expect(bindCodexAppMock).toHaveBeenCalledTimes(1);
+			expect(JSON.parse(infos.at(-1) ?? "{}")).toMatchObject({
+				ok: true,
+				command: "rotation reset-runtime",
+				resetVolatileRuntimeState: true,
+				appBindRestarted: true,
+			});
+		} finally {
+			resetSpy.mockRestore();
+		}
+	});
+
+	it("returns failure json when app bind restart throws after runtime reset", async () => {
+		const { deps, infos, errors, bindCodexAppMock, unbindCodexAppMock } =
+			createDeps();
+		const resetSpy = vi.spyOn(AccountManager, "resetVolatileRuntimeState");
+		unbindCodexAppMock.mockRejectedValueOnce(new Error("unbind busy"));
+
+		try {
+			const exitCode = await runRotationCommand(["reset-runtime", "--json"], deps);
+
+			expect(exitCode).toBe(1);
+			expect(resetSpy).toHaveBeenCalledTimes(1);
+			expect(unbindCodexAppMock).toHaveBeenCalledTimes(1);
+			expect(bindCodexAppMock).not.toHaveBeenCalled();
+			expect(errors).toEqual([]);
+			expect(JSON.parse(infos.at(-1) ?? "{}")).toMatchObject({
+				ok: false,
+				command: "rotation reset-runtime",
+				resetVolatileRuntimeState: true,
+				appBindRestarted: false,
+				error: "unbind busy",
+			});
+		} finally {
+			resetSpy.mockRestore();
+		}
+	});
+
+	it("succeeds without app bind helpers and reports wrapper-session fallback", async () => {
+		const { deps, infos } = createDeps();
+		const resetSpy = vi.spyOn(AccountManager, "resetVolatileRuntimeState");
+		delete deps.bindCodexApp;
+		delete deps.unbindCodexApp;
+
+		try {
+			const exitCode = await runRotationCommand(["reset-runtime"], deps);
+
+			expect(exitCode).toBe(0);
+			expect(resetSpy).toHaveBeenCalledTimes(1);
+			expect(infos).toEqual([
+				"Runtime rotation volatile state reset.",
+				"Codex app bind helpers unavailable; new wrapper sessions will use the reset state.",
+			]);
+		} finally {
+			resetSpy.mockRestore();
+		}
+	});
 });
 
 afterEach(() => {

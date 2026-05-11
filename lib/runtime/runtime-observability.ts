@@ -47,6 +47,16 @@ export interface RuntimeObservabilitySnapshot {
 	lastAccountEmail?: string | null;
 	lastAccountId?: string | null;
 	lastAccountUpdatedAt?: number | null;
+	lastPoolExhaustionReason?: string | null;
+	lastPoolExhaustionRetryAfterMs?: number | null;
+	lastPoolExhaustionSkipReasons?: Record<string, string>;
+	lastRuntimeResetAt?: number | null;
+	lastRuntimeResetReason?: string | null;
+	lastRuntimeReloadAt?: number | null;
+	lastRuntimeReloadReason?: string | null;
+	accountSkipReasons?: Record<string, string>;
+	policyBlockedIndexes?: number[];
+	policyBlockedReasons?: Record<string, string>;
 	runtimeMetrics: RuntimeMetricsSnapshot;
 }
 
@@ -77,6 +87,16 @@ function createDefaultSnapshot(): RuntimeObservabilitySnapshot {
 		lastAccountEmail: null,
 		lastAccountId: null,
 		lastAccountUpdatedAt: null,
+		lastPoolExhaustionReason: null,
+		lastPoolExhaustionRetryAfterMs: null,
+		lastPoolExhaustionSkipReasons: {},
+		lastRuntimeResetAt: null,
+		lastRuntimeResetReason: null,
+		lastRuntimeReloadAt: null,
+		lastRuntimeReloadReason: null,
+		accountSkipReasons: {},
+		policyBlockedIndexes: [],
+		policyBlockedReasons: {},
 		runtimeMetrics: {
 			startedAt: 0,
 			totalRequests: 0,
@@ -130,6 +150,20 @@ function normalizePersistedSnapshot(
 		runtimeMetrics: {
 			...base.runtimeMetrics,
 			...(parsed.runtimeMetrics ?? {}),
+		},
+		lastPoolExhaustionSkipReasons: {
+			...(parsed.lastPoolExhaustionSkipReasons ?? {}),
+		},
+		accountSkipReasons: {
+			...(parsed.accountSkipReasons ?? {}),
+		},
+		policyBlockedIndexes: Array.isArray(parsed.policyBlockedIndexes)
+			? parsed.policyBlockedIndexes.filter((value): value is number =>
+					Number.isInteger(value),
+				)
+			: [],
+		policyBlockedReasons: {
+			...(parsed.policyBlockedReasons ?? {}),
 		},
 	};
 }
@@ -210,6 +244,39 @@ export function mutateRuntimeObservabilitySnapshot(
 		.catch(() => undefined)
 		.then(() => writeSnapshot(nextSnapshot))
 		.catch(() => undefined);
+}
+
+export function recordRuntimePoolExhaustion(params: {
+	reason: string;
+	retryAfterMs: number;
+	accountSkipReasons: Record<string, string>;
+}): void {
+	mutateRuntimeObservabilitySnapshot((snapshot) => {
+		snapshot.lastPoolExhaustionReason = params.reason;
+		snapshot.lastPoolExhaustionRetryAfterMs = params.retryAfterMs;
+		snapshot.lastPoolExhaustionSkipReasons = { ...params.accountSkipReasons };
+		snapshot.accountSkipReasons = { ...params.accountSkipReasons };
+	});
+}
+
+export function recordRuntimeReload(reason: string): void {
+	mutateRuntimeObservabilitySnapshot((snapshot) => {
+		snapshot.lastRuntimeReloadAt = Date.now();
+		snapshot.lastRuntimeReloadReason = reason;
+	});
+}
+
+export function recordRuntimeReset(reason: string): void {
+	mutateRuntimeObservabilitySnapshot((snapshot) => {
+		snapshot.lastRuntimeResetAt = Date.now();
+		snapshot.lastRuntimeResetReason = reason;
+		snapshot.lastPoolExhaustionReason = null;
+		snapshot.lastPoolExhaustionRetryAfterMs = null;
+		snapshot.lastPoolExhaustionSkipReasons = {};
+		snapshot.accountSkipReasons = {};
+		snapshot.policyBlockedIndexes = [];
+		snapshot.policyBlockedReasons = {};
+	});
 }
 
 export async function loadPersistedRuntimeObservabilitySnapshot(): Promise<RuntimeObservabilitySnapshot | null> {

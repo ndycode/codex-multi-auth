@@ -146,4 +146,39 @@ describe("runtime observability snapshot versioning", () => {
 		expect(snapshot.poolExhaustionCooldownUntil).toBe(12345);
 		expect(snapshot.runtimeMetrics.failedRequests).toBe(4);
 	});
+
+	it("normalizes and persists runtime pool exhaustion diagnostics", async () => {
+		process.env.VITEST = "";
+		readFileSyncMock.mockReturnValue(
+			JSON.stringify({
+				version: 1,
+				lastPoolExhaustionReason: "no-account",
+				lastPoolExhaustionRetryAfterMs: 0,
+				lastPoolExhaustionSkipReasons: { "0": "circuit-open" },
+				accountSkipReasons: { "0": "circuit-open" },
+				policyBlockedIndexes: [1],
+				policyBlockedReasons: { "1": "policy-blocked" },
+			}),
+		);
+
+		const mod = await import("../lib/runtime/runtime-observability.js");
+		const snapshot = mod.getRuntimeObservabilitySnapshot();
+		expect(snapshot.lastPoolExhaustionReason).toBe("no-account");
+		expect(snapshot.lastPoolExhaustionSkipReasons).toEqual({
+			"0": "circuit-open",
+		});
+		expect(snapshot.policyBlockedIndexes).toEqual([1]);
+
+		mod.recordRuntimePoolExhaustion({
+			reason: "rate-limit",
+			retryAfterMs: 5000,
+			accountSkipReasons: { "2": "token-exhausted" },
+		});
+		await vi.waitFor(() => {
+			expect(renameMock).toHaveBeenCalled();
+		});
+		expect(mod.getRuntimeObservabilitySnapshot().accountSkipReasons).toEqual({
+			"2": "token-exhausted",
+		});
+	});
 });

@@ -141,6 +141,71 @@ describe("runForecastCommand", () => {
 		);
 	});
 
+	it("honors --no-runtime-overlay in json forecast output", async () => {
+		const evaluateForecastAccounts = vi.fn((inputs) => {
+			const overlay = inputs[0]?.runtimeOverlay as
+				| { lastPoolExhaustionSkipReasons?: Record<string, string> }
+				| null
+				| undefined;
+			const reason = overlay?.lastPoolExhaustionSkipReasons?.["0"];
+			return [
+				{
+					index: 0,
+					label: "1. forecast@example.com",
+					isCurrent: true,
+					availability: reason ? "unavailable" : "ready",
+					riskScore: reason ? 90 : 0,
+					riskLevel: reason ? "high" : "low",
+					waitMs: 0,
+					reasons: reason ? [`runtime skip: ${reason}`] : [],
+					hardFailure: false,
+					disabled: false,
+				},
+			] as const;
+		});
+		const deps = createDeps({
+			evaluateForecastAccounts,
+			summarizeForecast: vi.fn((results) => ({
+				total: 1,
+				ready: results.filter((result) => result.availability === "ready").length,
+				delayed: 0,
+				unavailable: results.filter(
+					(result) => result.availability === "unavailable",
+				).length,
+				highRisk: results.filter((result) => result.riskLevel === "high").length,
+			})),
+			loadRuntimeObservabilitySnapshot: vi.fn(async () => ({
+				lastPoolExhaustionSkipReasons: { "0": "circuit-open" },
+			})),
+		});
+
+		await expect(runForecastCommand(["--json"], deps)).resolves.toBe(0);
+		await expect(
+			runForecastCommand(["--json", "--no-runtime-overlay"], deps),
+		).resolves.toBe(0);
+
+		const withOverlay = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-2)?.[0] ?? "{}",
+		) as {
+			runtimeOverlay: boolean;
+			accounts: Array<{ availability: string; reasons: string[] }>;
+		};
+		const withoutOverlay = JSON.parse(
+			(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ?? "{}",
+		) as {
+			runtimeOverlay: boolean;
+			accounts: Array<{ availability: string; reasons: string[] }>;
+		};
+		expect(withOverlay.runtimeOverlay).toBe(true);
+		expect(withOverlay.accounts[0]?.availability).toBe("unavailable");
+		expect(withOverlay.accounts[0]?.reasons).toContain(
+			"runtime skip: circuit-open",
+		);
+		expect(withoutOverlay.runtimeOverlay).toBe(false);
+		expect(withoutOverlay.accounts[0]?.availability).toBe("ready");
+		expect(withoutOverlay.accounts[0]?.reasons).toEqual([]);
+	});
+
 	it("persists refreshed probe tokens before forecasting live quota", async () => {
 		const storage = createStorage();
 		const concurrentStorage = createStorage();
