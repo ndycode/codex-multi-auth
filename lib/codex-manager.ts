@@ -27,6 +27,7 @@ import {
 import { startLocalOAuthServer } from "./auth/server.js";
 import {
 	type ExistingAccountInfo,
+	isNonInteractiveMode,
 	promptAddAnotherAccount,
 	promptLoginMode,
 } from "./cli.js";
@@ -81,6 +82,7 @@ import { runForecastCommand } from "./codex-manager/commands/forecast.js";
 import { runInitConfigCommand } from "./codex-manager/commands/init-config.js";
 import { runReportCommand } from "./codex-manager/commands/report.js";
 import { runRotationCommand } from "./codex-manager/commands/rotation.js";
+import { promptRootCommandTui } from "./codex-manager/commands/root-tui.js";
 import {
 	runFeaturesCommand,
 	runStatusCommand,
@@ -2040,6 +2042,23 @@ async function runSignInFlow(
 	return runOAuthFlow(forceNewLogin, signInMode);
 }
 
+async function addAccountWithExistingSignInFlow(
+	signInMode: Extract<OAuthSignInMode, "browser" | "manual">,
+): Promise<boolean> {
+	const tokenResult = await runSignInFlow(true, signInMode);
+	if (tokenResult.type !== "success") {
+		console.error(
+			`Add account failed: ${tokenResult.message ?? tokenResult.reason ?? "unknown error"}`,
+		);
+		return false;
+	}
+
+	const resolved = resolveAccountSelection(tokenResult);
+	await persistAccountPool([resolved], false);
+	await syncSelectionToCodex(resolved);
+	return true;
+}
+
 async function persistAccountPool(
 	results: TokenSuccessWithAccount[],
 	replaceAll: boolean,
@@ -3494,6 +3513,98 @@ function buildSelectAccountTraced(): (
 	};
 }
 
+async function runRootCommandTui(): Promise<number> {
+	const loadRootTuiAccounts = async (): Promise<ExistingAccountInfo[]> => {
+		setStoragePath(null);
+		const storage = await loadAccounts();
+		const currentStorage = storage ?? {
+			version: 3 as const,
+			accounts: [],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		};
+		const displaySettings = await loadDashboardDisplaySettings();
+		applyUiThemeFromDashboardSettings(displaySettings);
+		let quotaCache = await loadQuotaCache();
+		if (displaySettings.menuAutoFetchLimits ?? true) {
+			const quotaTtlMs =
+				displaySettings.menuQuotaTtlMs ?? DEFAULT_MENU_QUOTA_REFRESH_TTL_MS;
+			quotaCache = await refreshQuotaCacheForMenu(
+				currentStorage,
+				quotaCache,
+				quotaTtlMs,
+			);
+		}
+		const runtimeCurrent = await loadRuntimeCurrentSelectionForStorage(
+			currentStorage,
+		);
+		return toExistingAccountInfo(
+			currentStorage,
+			quotaCache,
+			displaySettings,
+			runtimeCurrent,
+		);
+	};
+
+	while (true) {
+		const action = await promptRootCommandTui(await loadRootTuiAccounts(), {
+			onRefresh: async () => ({
+				accounts: await loadRootTuiAccounts(),
+				statusMessage: "Refreshed account list.",
+				statusTone: "info",
+			}),
+			onSwitch: async (accountIndex) => {
+				let syncWarning: string | null = null;
+				await runSwitchCommand([String(accountIndex + 1)], {
+					setStoragePath,
+					loadAccounts,
+					persistAndSyncSelectedAccount,
+					logInfo: () => {},
+					logWarn: (message) => {
+						syncWarning = message;
+					},
+					logError: (message) => {
+						throw new Error(message);
+					},
+				});
+				const accounts = await loadRootTuiAccounts();
+				const switchedAccount = accounts.find(
+					(account) => account.sourceIndex === accountIndex,
+				);
+				const accountLabel =
+					switchedAccount?.email?.trim() ||
+					switchedAccount?.accountLabel?.trim() ||
+					switchedAccount?.accountId?.trim() ||
+					`account ${String(accountIndex + 1)}`;
+				return {
+					accounts,
+					statusMessage: syncWarning
+						? `${syncWarning}`
+						: `Switched to ${accountLabel}.`,
+					statusTone: syncWarning ? "info" : "success",
+				};
+			},
+		});
+
+		if (action.type === "cancel") {
+			return 0;
+		}
+		if (action.type === "refresh") {
+			continue;
+		}
+		if (action.type === "add") {
+			await addAccountWithExistingSignInFlow(action.signInMode);
+			continue;
+		}
+
+		return runSwitchCommand([String(action.accountIndex + 1)], {
+			setStoragePath,
+			loadAccounts,
+			persistAndSyncSelectedAccount,
+		});
+	}
+}
+
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	const startupDisplaySettings = await loadDashboardDisplaySettings();
 	applyUiThemeFromDashboardSettings(startupDisplaySettings);
@@ -3503,6 +3614,9 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			? ["auth", ...rawArgs]
 			: [...rawArgs];
 	if (args.length === 0) {
+		if (!isNonInteractiveMode()) {
+			return runRootCommandTui();
+		}
 		printUsage();
 		return 0;
 	}
