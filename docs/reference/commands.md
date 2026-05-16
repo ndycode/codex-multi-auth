@@ -23,6 +23,7 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 
 | Command | Description |
 | --- | --- |
+| `codex-multi-auth` | Open the root account switcher in interactive TTY sessions; print usage in non-interactive shells |
 | `codex-multi-auth login` | Open interactive auth dashboard |
 | `codex-multi-auth status` | Print short runtime/account summary |
 | `codex-multi-auth check` | Run quick account health check |

@@ -68,6 +68,7 @@ Runtime rotation is part of the current architecture. It is default-on and local
 
 | Capability | What it gives you |
 | --- | --- |
+| No-args root switcher | Opens a keyboard-driven root account switcher in interactive terminals without requiring `login` first |
 | Quick switch and search hotkeys | Faster navigation in the dashboard |
 | Account action hotkeys | Per-account set, refresh, toggle, and delete shortcuts |
 | In-dashboard settings hub | Runtime and display tuning without editing files directly |

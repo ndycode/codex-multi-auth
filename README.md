@@ -169,6 +169,7 @@ For remote or headless shells, prefer `codex-multi-auth login --device-auth`.
 
 | Command | What it answers |
 | --- | --- |
+| `codex-multi-auth` | Can I open the root account switcher directly from an interactive shell? |
 | `codex-multi-auth login` | How do I add or re-open the account menu? |
 | `codex-multi-auth status` | Is the wrapper active right now? |
 | `codex-multi-auth check` | Do my saved accounts look healthy? |
