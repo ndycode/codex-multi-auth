@@ -3596,12 +3596,8 @@ async function runRootCommandTui(): Promise<number> {
 			await addAccountWithExistingSignInFlow(action.signInMode);
 			continue;
 		}
-
-		return runSwitchCommand([String(action.accountIndex + 1)], {
-			setStoragePath,
-			loadAccounts,
-			persistAndSyncSelectedAccount,
-		});
+		// Switch actions are handled inside the TUI when onSwitch is provided here.
+		return 0;
 	}
 }
 

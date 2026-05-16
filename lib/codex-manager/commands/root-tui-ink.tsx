@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput, useWindowSize } from "ink";
 import type { ExistingAccountInfo } from "../../cli.js";
 import type {
@@ -416,7 +416,7 @@ function AddAccountModal(props: {
 	);
 }
 
-function RootCommandTuiInkApp(props: {
+export function RootCommandTuiInkApp(props: {
 	initialAccounts: ExistingAccountInfo[];
 	handlers?: RootCommandTuiHandlers;
 	onAction: (action: RootCommandTuiAction) => void;
@@ -428,6 +428,7 @@ function RootCommandTuiInkApp(props: {
 	);
 	const [status, setStatus] = useState<RootTuiStatus | null>(null);
 	const [busy, setBusy] = useState(false);
+	const busyRef = useRef(false);
 
 	const finish = (action: RootCommandTuiAction) => {
 		props.onAction(action);
@@ -473,6 +474,7 @@ function RootCommandTuiInkApp(props: {
 						: "Unable to switch accounts.";
 				setStatus({ message, tone: "error" });
 			} finally {
+				busyRef.current = false;
 				setBusy(false);
 			}
 			return;
@@ -495,6 +497,7 @@ function RootCommandTuiInkApp(props: {
 						: "Unable to refresh accounts.";
 				setStatus({ message, tone: "error" });
 			} finally {
+				busyRef.current = false;
 				setBusy(false);
 			}
 			return;
@@ -504,7 +507,7 @@ function RootCommandTuiInkApp(props: {
 	};
 
 	useInput((input, key) => {
-		if (busy) {
+		if (busyRef.current) {
 			return;
 		}
 		const event = toKeyEvent(input, key);
@@ -514,6 +517,12 @@ function RootCommandTuiInkApp(props: {
 				: handleRootScreenInput(state, event, accounts);
 		setState(transition.state);
 		if (transition.action) {
+			if (
+				(transition.action.type === "switch" && props.handlers?.onSwitch)
+				|| (transition.action.type === "refresh" && props.handlers?.onRefresh)
+			) {
+				busyRef.current = true;
+			}
 			void handleAction(transition.action);
 		}
 	});
