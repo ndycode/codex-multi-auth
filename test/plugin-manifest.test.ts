@@ -17,6 +17,9 @@ const pluginManifestPath = path.join(".codex-plugin", "plugin.json");
 
 const readJson = <T>(filePath: string): T => JSON.parse(readFileSync(filePath, "utf8")) as T;
 
+const resolveRepoRootRelativePath = (relativePath: string): string =>
+	path.resolve(relativePath.replace(/^\.\//, ""));
+
 describe("Codex plugin manifest", () => {
 	it("declares an existing marketplace composer icon and matches the package version", () => {
 		const manifest = readJson<PluginManifest>(pluginManifestPath);
@@ -27,7 +30,12 @@ describe("Codex plugin manifest", () => {
 
 		const iconPath = manifest.interface?.composerIcon;
 		expect(iconPath).toBeDefined();
-		expect(iconPath?.startsWith("./")).toBe(true);
-		expect(existsSync(path.join(path.dirname(pluginManifestPath), "..", iconPath ?? ""))).toBe(true);
+		expect(existsSync(resolveRepoRootRelativePath(iconPath ?? ""))).toBe(true);
+	});
+
+	it("normalizes dot-slash icon paths before resolving them from the repository root", () => {
+		expect(resolveRepoRootRelativePath("./assets/codex-multi-auth-icon.svg")).toBe(
+			path.resolve("assets", "codex-multi-auth-icon.svg"),
+		);
 	});
 });
