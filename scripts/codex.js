@@ -2494,6 +2494,82 @@ function createRuntimeRotationShadowHome(originalCodexHome) {
 	return mkdtempSync(join(shadowRoot, "codex-multi-auth-runtime-home-"));
 }
 
+function parseHookStateTableKey(line) {
+	const match =
+		/^\s*\[\s*hooks\.state\.("(?:[^"\\]|\\.)*")\s*\]\s*$/.exec(line);
+	if (!match) {
+		return null;
+	}
+	try {
+		const parsed = JSON.parse(match[1]);
+		return typeof parsed === "string" ? parsed : null;
+	} catch {
+		return null;
+	}
+}
+
+function isTomlTableLine(line) {
+	return /^\s*\[/.test(line);
+}
+
+function mirrorRuntimeShadowHookTrustState(
+	rawConfig,
+	originalCodexHome,
+	shadowCodexHome,
+	tomlStringLiteral,
+) {
+	const sourceHooksPath = join(originalCodexHome, "hooks.json");
+	const shadowHooksPath = join(shadowCodexHome, "hooks.json");
+	if (sourceHooksPath === shadowHooksPath) {
+		return rawConfig;
+	}
+
+	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
+	const lines = rawConfig.length > 0 ? rawConfig.split(/\r?\n/) : [];
+	const sourcePrefix = `${sourceHooksPath}:`;
+	const existingHookStateKeys = new Set();
+	for (const line of lines) {
+		const key = parseHookStateTableKey(line);
+		if (key) {
+			existingHookStateKeys.add(key);
+		}
+	}
+
+	const output = [];
+	let changed = false;
+	for (let index = 0; index < lines.length; index += 1) {
+		const line = lines[index];
+		const key = parseHookStateTableKey(line);
+		output.push(line);
+		if (!key || !key.startsWith(sourcePrefix)) {
+			continue;
+		}
+
+		const blockLines = [];
+		let nextIndex = index + 1;
+		for (
+			;
+			nextIndex < lines.length && !isTomlTableLine(lines[nextIndex]);
+			nextIndex += 1
+		) {
+			blockLines.push(lines[nextIndex]);
+		}
+		output.push(...blockLines);
+		index = nextIndex - 1;
+		const shadowKey = `${shadowHooksPath}:${key.slice(sourcePrefix.length)}`;
+		if (existingHookStateKeys.has(shadowKey)) {
+			continue;
+		}
+		output.push("");
+		output.push(`[hooks.state.${tomlStringLiteral(shadowKey)}]`);
+		output.push(...blockLines);
+		existingHookStateKeys.add(shadowKey);
+		changed = true;
+	}
+
+	return changed ? output.join(lineEnding) : rawConfig;
+}
+
 function createRuntimeRotationProxyCodexHome(
 	baseEnv,
 	proxyBaseUrl,
@@ -2535,10 +2611,15 @@ function createRuntimeRotationProxyCodexHome(
 		const rawConfig = existsSync(originalConfigPath)
 			? readFileSync(originalConfigPath, "utf8")
 			: "";
-		const runtimeConfig = configTomlModule.rewriteConfigTomlForRuntimeRotationProvider(
-			rawConfig,
-			proxyBaseUrl,
-			clientApiKey,
+		const runtimeConfig = mirrorRuntimeShadowHookTrustState(
+			configTomlModule.rewriteConfigTomlForRuntimeRotationProvider(
+				rawConfig,
+				proxyBaseUrl,
+				clientApiKey,
+			),
+			originalCodexHome,
+			shadowCodexHome,
+			configTomlModule.tomlStringLiteral,
 		);
 		const runtimeConfigPath = join(shadowCodexHome, "config.toml");
 		writeFileSync(runtimeConfigPath, runtimeConfig, "utf8");

@@ -1492,6 +1492,73 @@ describe("codex bin wrapper", () => {
 		);
 	});
 
+	it("mirrors trusted user hook state into the runtime shadow config", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'console.log(`SHADOW_HOME:${process.env.CODEX_HOME ?? ""}`);',
+			'console.log(fs.readFileSync(path.join(process.env.CODEX_HOME, "config.toml"), "utf8"));',
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "hooks.json"), '{"hooks":{}}\n', "utf8");
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			[
+				'model_provider = "openai"',
+				"",
+				`[hooks.state.${JSON.stringify(`${join(originalHome, "hooks.json")}:session_start:0:0`)}]`,
+				"enabled = true",
+				'trusted_hash = "sha256:session-start"',
+				"",
+				`[hooks.state.${JSON.stringify(`${join(originalHome, "hooks.json")}:stop:0:0`)}]`,
+				"enabled = true",
+				'trusted_hash = "sha256:stop"',
+			].join("\n"),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(0);
+		const shadowHome = output.match(/^SHADOW_HOME:(.+)$/m)?.[1];
+		expect(shadowHome).toBeTruthy();
+		if (!shadowHome) return;
+		const sourceSessionHeader =
+			`[hooks.state.${JSON.stringify(`${join(originalHome, "hooks.json")}:session_start:0:0`)}]`;
+		const shadowSessionHeader =
+			`[hooks.state.${JSON.stringify(`${join(shadowHome, "hooks.json")}:session_start:0:0`)}]`;
+		expect(output).toContain(sourceSessionHeader);
+		expect(output).toContain(shadowSessionHeader);
+		expect(output).toContain(
+			`[hooks.state.${JSON.stringify(`${join(shadowHome, "hooks.json")}:stop:0:0`)}]`,
+		);
+		const sourceSessionIndex = output.indexOf(sourceSessionHeader);
+		const sourceSessionEnabledIndex = output.indexOf(
+			"enabled = true",
+			sourceSessionIndex,
+		);
+		const shadowSessionIndex = output.indexOf(shadowSessionHeader);
+		const shadowSessionEnabledIndex = output.indexOf(
+			"enabled = true",
+			shadowSessionIndex,
+		);
+		expect(sourceSessionIndex).toBeLessThan(sourceSessionEnabledIndex);
+		expect(sourceSessionEnabledIndex).toBeLessThan(shadowSessionIndex);
+		expect(shadowSessionIndex).toBeLessThan(shadowSessionEnabledIndex);
+		expect(output).toContain('trusted_hash = "sha256:session-start"');
+		expect(output).toContain('trusted_hash = "sha256:stop"');
+	});
+
 	it("starts the opt-in runtime rotation proxy for app-server without capturing protocol stdio", () => {
 		const fixtureRoot = createWrapperFixture();
 		createRuntimeRotationProxyFixtureModule(fixtureRoot);
