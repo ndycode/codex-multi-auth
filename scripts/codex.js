@@ -2495,21 +2495,82 @@ function createRuntimeRotationShadowHome(originalCodexHome) {
 }
 
 function parseHookStateTableKey(line) {
-	const match =
+	const basicStringMatch =
 		/^\s*\[\s*hooks\.state\.("(?:[^"\\]|\\.)*")\s*\]\s*$/.exec(line);
-	if (!match) {
-		return null;
+	if (basicStringMatch) {
+		try {
+			const parsed = JSON.parse(basicStringMatch[1]);
+			return typeof parsed === "string" ? parsed : null;
+		} catch {
+			return null;
+		}
 	}
-	try {
-		const parsed = JSON.parse(match[1]);
-		return typeof parsed === "string" ? parsed : null;
-	} catch {
-		return null;
-	}
+
+	const literalStringMatch = /^\s*\[\s*hooks\.state\.'([^']*)'\s*\]\s*$/.exec(
+		line,
+	);
+	return literalStringMatch ? literalStringMatch[1] : null;
 }
 
 function isTomlTableLine(line) {
-	return /^\s*\[/.test(line);
+	return /^\s*\[\[?\s*(?:"(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_-]+)(?:\s*\.|\s*\]\]?\s*(?:#.*)?$)/.test(
+		line,
+	);
+}
+
+function createTomlBlockScanState() {
+	return {
+		arrayDepth: 0,
+		multilineStringDelimiter: null,
+	};
+}
+
+function isTopLevelTomlBlockScanState(state) {
+	return state.arrayDepth === 0 && state.multilineStringDelimiter === null;
+}
+
+function updateTomlBlockScanState(line, state) {
+	for (let index = 0; index < line.length; index += 1) {
+		if (state.multilineStringDelimiter) {
+			const closeIndex = line.indexOf(state.multilineStringDelimiter, index);
+			if (closeIndex < 0) {
+				return;
+			}
+			index = closeIndex + state.multilineStringDelimiter.length - 1;
+			state.multilineStringDelimiter = null;
+			continue;
+		}
+
+		if (line[index] === "#") {
+			return;
+		}
+		if (line.startsWith('"""', index) || line.startsWith("'''", index)) {
+			state.multilineStringDelimiter = line.slice(index, index + 3);
+			index += 2;
+			continue;
+		}
+		if (line[index] === '"') {
+			index += 1;
+			for (; index < line.length; index += 1) {
+				if (line[index] === "\\") {
+					index += 1;
+				} else if (line[index] === '"') {
+					break;
+				}
+			}
+			continue;
+		}
+		if (line[index] === "'") {
+			index = line.indexOf("'", index + 1);
+			if (index < 0) return;
+			continue;
+		}
+		if (line[index] === "[") {
+			state.arrayDepth += 1;
+		} else if (line[index] === "]" && state.arrayDepth > 0) {
+			state.arrayDepth -= 1;
+		}
+	}
 }
 
 function mirrorRuntimeShadowHookTrustState(
@@ -2547,12 +2608,17 @@ function mirrorRuntimeShadowHookTrustState(
 
 		const blockLines = [];
 		let nextIndex = index + 1;
-		for (
-			;
-			nextIndex < lines.length && !isTomlTableLine(lines[nextIndex]);
-			nextIndex += 1
-		) {
-			blockLines.push(lines[nextIndex]);
+		const blockState = createTomlBlockScanState();
+		for (; nextIndex < lines.length; nextIndex += 1) {
+			const nextLine = lines[nextIndex];
+			if (
+				isTopLevelTomlBlockScanState(blockState) &&
+				isTomlTableLine(nextLine)
+			) {
+				break;
+			}
+			blockLines.push(nextLine);
+			updateTomlBlockScanState(nextLine, blockState);
 		}
 		output.push(...blockLines);
 		index = nextIndex - 1;
