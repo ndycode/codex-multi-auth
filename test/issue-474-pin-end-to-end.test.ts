@@ -430,10 +430,10 @@ describe("issue #474 — end-to-end pin honored over real HTTP proxy", () => {
 				};
 			};
 			expect(body.error.code).toBe("codex_pinned_account_unavailable");
-			expect(body.error.reason).toMatch(/^cooling-down/);
-			expect(body.error.message).toMatch(/\(cooling-down[^)]*\)/);
-			expect(body.error.account_skip_reasons[String(pinnedIndex)]).toMatch(
-				/^cooling-down/,
+			expect(body.error.reason).toBe("cooling-down:auth-failure");
+			expect(body.error.message).toContain("(cooling-down:auth-failure)");
+			expect(body.error.account_skip_reasons[String(pinnedIndex)]).toBe(
+				"cooling-down:auth-failure",
 			);
 			expect(upstreamCalls).toHaveLength(0);
 		},

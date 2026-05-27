@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountManager } from "../lib/accounts.js";
 import { clearCircuitBreakers } from "../lib/circuit-breaker.js";
 import {
+	buildPinnedUnavailableErrorBody,
 	chooseAccount,
 	readPinnedAccountIndexFromDisk,
 	resetPinCacheForTesting,
@@ -622,6 +623,116 @@ describe("issue #474 — manual pin honored by runtime proxy", () => {
 
 			expect(result).toBeNull();
 			expect(skipReasons.get(0)).toBe("already-attempted");
+		});
+
+		it("records 'workspace-disabled' when every workspace on the pinned account is disabled", () => {
+			const now = Date.now();
+			const storage = createStorage(now, 3);
+			const accountManager = new AccountManager(undefined, storage);
+			const pinned = accountManager.getAccountByIndex(2);
+			if (!pinned) throw new Error("setup failed");
+			pinned.workspaces = [{ id: "ws-1", enabled: false }];
+			const skipReasons = new Map<number, string>();
+
+			const result = chooseAccount({
+				accountManager,
+				sessionAffinityStore: null,
+				sessionKey: null,
+				family: "codex",
+				model: null,
+				attemptedIndexes: new Set(),
+				now,
+				policy: null,
+				pinnedIndex: 2,
+				skipReasons,
+			});
+
+			expect(result).toBeNull();
+			expect(skipReasons.get(2)).toBe("workspace-disabled");
+		});
+
+		it("records 'circuit-open' when the pinned account's circuit breaker is open", () => {
+			const now = Date.now();
+			const storage = createStorage(now, 3);
+			const accountManager = new AccountManager(undefined, storage);
+			const pinned = accountManager.getAccountByIndex(1);
+			if (!pinned) throw new Error("setup failed");
+			// Default failure threshold is 3 — trip the breaker explicitly so
+			// `getAccountRuntimeSkipReason` resolves to "circuit-open".
+			accountManager.recordFailure(pinned, "codex");
+			accountManager.recordFailure(pinned, "codex");
+			accountManager.recordFailure(pinned, "codex");
+			const skipReasons = new Map<number, string>();
+
+			const result = chooseAccount({
+				accountManager,
+				sessionAffinityStore: null,
+				sessionKey: null,
+				family: "codex",
+				model: null,
+				attemptedIndexes: new Set(),
+				now,
+				policy: null,
+				pinnedIndex: 1,
+				skipReasons,
+			});
+
+			expect(result).toBeNull();
+			expect(skipReasons.get(1)).toBe("circuit-open");
+		});
+	});
+
+	// Issue #486: cover the null-reason desync branch directly. `chooseAccount`
+	// is supposed to record a skip reason for every pinned-unavailability path,
+	// but if internal state desyncs (e.g. forecast says "rotate" yet runtime
+	// state is missing a reason), the proxy still needs to produce a 503 body
+	// with an explicit `reason: null` instead of silently masking the gap.
+	describe("buildPinnedUnavailableErrorBody", () => {
+		it("returns reason: null and omits the parenthetical when no skip reason was recorded", () => {
+			const body = buildPinnedUnavailableErrorBody(
+				1,
+				new Map<number, string>(),
+			);
+			expect(body.code).toBe("codex_pinned_account_unavailable");
+			expect(body.reason).toBeNull();
+			expect(body.pinnedAccountIndex).toBe(1);
+			expect(body.account_skip_reasons).toEqual({});
+			expect(body.message).toBe(
+				"Pinned account 2 is currently unavailable; run `codex-multi-auth status` for details, or `codex-multi-auth unpin` to allow rotation.",
+			);
+			expect(body.message).not.toContain("(");
+		});
+
+		it("surfaces the skip reason and appends it to the message when present", () => {
+			const skipReasons = new Map<number, string>([[1, "rate-limited"]]);
+			const body = buildPinnedUnavailableErrorBody(1, skipReasons);
+			expect(body.reason).toBe("rate-limited");
+			expect(body.account_skip_reasons).toEqual({ "1": "rate-limited" });
+			expect(body.message).toContain("Pinned account 2");
+			expect(body.message).toContain("(rate-limited)");
+		});
+
+		it("handles a null pinnedIndex without throwing and emits reason: null", () => {
+			const body = buildPinnedUnavailableErrorBody(
+				null,
+				new Map<number, string>(),
+			);
+			expect(body.pinnedAccountIndex).toBeNull();
+			expect(body.reason).toBeNull();
+			expect(body.message).toContain("Pinned account 1");
+		});
+
+		it("mirrors the full accountSkipReasons map even when the pinned entry is unknown", () => {
+			const skipReasons = new Map<number, string>([
+				[0, "rate-limited"],
+				[2, "disabled"],
+			]);
+			const body = buildPinnedUnavailableErrorBody(1, skipReasons);
+			expect(body.reason).toBeNull();
+			expect(body.account_skip_reasons).toEqual({
+				"0": "rate-limited",
+				"2": "disabled",
+			});
 		});
 	});
 

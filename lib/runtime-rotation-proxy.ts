@@ -1044,6 +1044,47 @@ function writePoolExhausted(params: {
 	});
 }
 
+/**
+ * Build the JSON `error` body for a pinned-account 503 response. Extracted so
+ * the null-reason desync path (`reason: null`, no parenthetical in `message`)
+ * can be unit-tested without standing up a full proxy. The shape mirrors
+ * `writePoolExhausted` so consumers can handle both 503 codes uniformly. See
+ * issue #486.
+ */
+export interface PinnedUnavailableErrorBody {
+	message: string;
+	code: "codex_pinned_account_unavailable";
+	pinnedAccountIndex: number | null;
+	reason: string | null;
+	account_skip_reasons: Record<string, string>;
+}
+
+export function buildPinnedUnavailableErrorBody(
+	pinnedIndex: number | null | undefined,
+	accountSkipReasons: ReadonlyMap<number, string>,
+): PinnedUnavailableErrorBody {
+	const normalizedPinnedIndex =
+		typeof pinnedIndex === "number" ? pinnedIndex : null;
+	const skipReason =
+		normalizedPinnedIndex !== null
+			? accountSkipReasons.get(normalizedPinnedIndex) ?? null
+			: null;
+	const reasonSuffix = skipReason ? ` (${skipReason})` : "";
+	const displayIndex = (normalizedPinnedIndex ?? 0) + 1;
+	return {
+		message: `Pinned account ${displayIndex} is currently unavailable${reasonSuffix}; run \`codex-multi-auth status\` for details, or \`codex-multi-auth unpin\` to allow rotation.`,
+		code: "codex_pinned_account_unavailable",
+		pinnedAccountIndex: normalizedPinnedIndex,
+		reason: skipReason,
+		account_skip_reasons: Object.fromEntries(
+			[...accountSkipReasons.entries()].map(([index, reason]) => [
+				String(index),
+				reason,
+			]),
+		),
+	};
+}
+
 async function withTimeout<T>(
 	promise: Promise<T>,
 	timeoutMs: number,
@@ -1744,35 +1785,19 @@ export async function startRuntimeRotationProxy(
 			// null reason indicates a forecast/runtime state desync (the pinned
 			// account was selected but no skip reason was recorded) — see #486.
 			if (isPinned) {
-				const pinnedSkipReason =
-					typeof pinnedIndex === "number"
-						? accountSkipReasons.get(pinnedIndex) ?? null
-						: null;
-				if (pinnedSkipReason === null) {
+				const errorBody = buildPinnedUnavailableErrorBody(
+					pinnedIndex,
+					accountSkipReasons,
+				);
+				if (errorBody.reason === null) {
 					status.lastError = `pinned-503 missing skip reason (pinnedIndex=${pinnedIndex})`;
 				}
-				const reasonSuffix = pinnedSkipReason
-					? ` (${pinnedSkipReason})`
-					: "";
 				await usageRecorder?.record({
 					outcome: "failure",
 					statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
 					errorCode: "codex_pinned_account_unavailable",
 				});
-				writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, {
-					error: {
-						message: `Pinned account ${(pinnedIndex ?? 0) + 1} is currently unavailable${reasonSuffix}; run \`codex-multi-auth status\` for details, or \`codex-multi-auth unpin\` to allow rotation.`,
-						code: "codex_pinned_account_unavailable",
-						pinnedAccountIndex: pinnedIndex,
-						reason: pinnedSkipReason,
-						account_skip_reasons: Object.fromEntries(
-							[...accountSkipReasons.entries()].map(([index, reason]) => [
-								String(index),
-								reason,
-							]),
-						),
-					},
-				});
+				writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, { error: errorBody });
 				return;
 			}
 
