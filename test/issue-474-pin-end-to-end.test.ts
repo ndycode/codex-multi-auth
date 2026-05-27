@@ -279,8 +279,163 @@ describe("issue #474 — end-to-end pin honored over real HTTP proxy", () => {
 			expect(thirdResult.bodyText).toContain(
 				"codex_pinned_account_unavailable",
 			);
+			// Issue #486: the 503 body must surface the runtime skip reason so
+			// users can diagnose why the pin cannot be honored without scraping
+			// `codex-multi-auth status` logs out-of-band.
+			const thirdBody = JSON.parse(thirdResult.bodyText) as {
+				error: {
+					code: string;
+					pinnedAccountIndex: number | null;
+					reason: string | null;
+					account_skip_reasons: Record<string, string>;
+					message: string;
+				};
+			};
+			expect(thirdBody.error.reason).toBe("disabled");
+			expect(thirdBody.error.message).toContain("(disabled)");
+			expect(thirdBody.error.pinnedAccountIndex).toBe(otherAccountIndex);
+			expect(
+				thirdBody.error.account_skip_reasons[String(otherAccountIndex)],
+			).toBe("disabled");
 			// No additional upstream call — the proxy refused before issuing one.
 			expect(upstreamCalls).toHaveLength(2);
+		},
+	);
+
+	it(
+		"surfaces 'rate-limited' skip reason in pinned 503 body (issue #486)",
+		async () => {
+			const storagePath = makeTmpStoragePath();
+			const now = Date.now();
+			const initialStorage = createStorage(now);
+			const pinnedIndex = 1;
+			writeStorageFile(storagePath, {
+				...initialStorage,
+				pinnedAccountIndex: pinnedIndex,
+				affinityGeneration: 1,
+			});
+			setStoragePathDirect(storagePath);
+
+			const accountManager = new AccountManager(undefined, initialStorage);
+			openManagers.push(accountManager);
+
+			const pinned = accountManager.getAccountByIndex(pinnedIndex);
+			expect(pinned).not.toBeNull();
+			if (!pinned) throw new Error("setup failed");
+			// Match the family the proxy will resolve from `model: "gpt-5-codex"`.
+			// `getModelFamily("gpt-5-codex")` returns "gpt-5-codex", not "codex",
+			// so the rate-limit must be keyed under that family for the runtime
+			// skip-reason check to detect it.
+			accountManager.markRateLimitedWithReason(
+				pinned,
+				60_000,
+				"gpt-5-codex",
+				"quota",
+			);
+
+			const upstreamCalls: number[] = [];
+			const fetchImpl: typeof fetch = async (_input, init) => {
+				const headers = new Headers(init?.headers);
+				const auth = headers.get("authorization") ?? "";
+				const token = auth.replace(/^Bearer\s+/i, "");
+				const index = initialStorage.accounts.findIndex(
+					(a) => a.accessToken === token,
+				);
+				upstreamCalls.push(index);
+				return new Response(JSON.stringify({ ok: true, account: index }), {
+					status: HTTP_STATUS.OK,
+					headers: { "content-type": "application/json" },
+				});
+			};
+
+			const proxy = await startRuntimeRotationProxy({
+				accountManager,
+				fetchImpl,
+				upstreamBaseUrl: "https://example.test/backend-api",
+				clientApiKey: CLIENT_API_KEY,
+			});
+			openServers.push(proxy);
+
+			const result = await postViaHttp(
+				proxy,
+				{ model: "gpt-5-codex", stream: false },
+				"/v1/responses",
+			);
+			expect(result.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+			const body = JSON.parse(result.bodyText) as {
+				error: {
+					code: string;
+					reason: string | null;
+					account_skip_reasons: Record<string, string>;
+					message: string;
+				};
+			};
+			expect(body.error.code).toBe("codex_pinned_account_unavailable");
+			expect(body.error.reason).toBe("rate-limited");
+			expect(body.error.message).toContain("(rate-limited)");
+			expect(body.error.account_skip_reasons[String(pinnedIndex)]).toBe(
+				"rate-limited",
+			);
+			expect(upstreamCalls).toHaveLength(0);
+		},
+	);
+
+	it(
+		"surfaces a cooling-down skip reason in pinned 503 body (issue #486)",
+		async () => {
+			const storagePath = makeTmpStoragePath();
+			const now = Date.now();
+			const initialStorage = createStorage(now);
+			const pinnedIndex = 0;
+			writeStorageFile(storagePath, {
+				...initialStorage,
+				pinnedAccountIndex: pinnedIndex,
+				affinityGeneration: 1,
+			});
+			setStoragePathDirect(storagePath);
+
+			const accountManager = new AccountManager(undefined, initialStorage);
+			openManagers.push(accountManager);
+
+			const pinned = accountManager.getAccountByIndex(pinnedIndex);
+			if (!pinned) throw new Error("setup failed");
+			accountManager.markAccountCoolingDown(pinned, 60_000, "auth-failure");
+
+			const upstreamCalls: number[] = [];
+			const fetchImpl: typeof fetch = async () => {
+				upstreamCalls.push(-1);
+				return new Response("{}", { status: HTTP_STATUS.OK });
+			};
+
+			const proxy = await startRuntimeRotationProxy({
+				accountManager,
+				fetchImpl,
+				upstreamBaseUrl: "https://example.test/backend-api",
+				clientApiKey: CLIENT_API_KEY,
+			});
+			openServers.push(proxy);
+
+			const result = await postViaHttp(
+				proxy,
+				{ model: "gpt-5-codex", stream: false },
+				"/v1/responses",
+			);
+			expect(result.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+			const body = JSON.parse(result.bodyText) as {
+				error: {
+					code: string;
+					reason: string | null;
+					account_skip_reasons: Record<string, string>;
+					message: string;
+				};
+			};
+			expect(body.error.code).toBe("codex_pinned_account_unavailable");
+			expect(body.error.reason).toBe("cooling-down:auth-failure");
+			expect(body.error.message).toContain("(cooling-down:auth-failure)");
+			expect(body.error.account_skip_reasons[String(pinnedIndex)]).toBe(
+				"cooling-down:auth-failure",
+			);
+			expect(upstreamCalls).toHaveLength(0);
 		},
 	);
 });
