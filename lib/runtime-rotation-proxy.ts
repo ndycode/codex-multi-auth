@@ -1738,7 +1738,22 @@ export async function startRuntimeRotationProxy(
 			// When a manual pin is set and the pinned account is unavailable, do
 			// NOT silently fall through to rotation. Hard-fail with a 503 so the
 			// user is informed the pin cannot be honored. See issue #474.
+			//
+			// Surface the runtime skip reason in both the human-readable message
+			// and a structured `reason` field, mirroring `writePoolExhausted`. A
+			// null reason indicates a forecast/runtime state desync (the pinned
+			// account was selected but no skip reason was recorded) — see #486.
 			if (isPinned) {
+				const pinnedSkipReason =
+					typeof pinnedIndex === "number"
+						? accountSkipReasons.get(pinnedIndex) ?? null
+						: null;
+				if (pinnedSkipReason === null) {
+					status.lastError = `pinned-503 missing skip reason (pinnedIndex=${pinnedIndex})`;
+				}
+				const reasonSuffix = pinnedSkipReason
+					? ` (${pinnedSkipReason})`
+					: "";
 				await usageRecorder?.record({
 					outcome: "failure",
 					statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
@@ -1746,9 +1761,16 @@ export async function startRuntimeRotationProxy(
 				});
 				writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, {
 					error: {
-						message: `Pinned account ${(pinnedIndex ?? 0) + 1} is currently unavailable; run \`codex-multi-auth status\` for details, or \`codex-multi-auth unpin\` to allow rotation.`,
+						message: `Pinned account ${(pinnedIndex ?? 0) + 1} is currently unavailable${reasonSuffix}; run \`codex-multi-auth status\` for details, or \`codex-multi-auth unpin\` to allow rotation.`,
 						code: "codex_pinned_account_unavailable",
 						pinnedAccountIndex: pinnedIndex,
+						reason: pinnedSkipReason,
+						account_skip_reasons: Object.fromEntries(
+							[...accountSkipReasons.entries()].map(([index, reason]) => [
+								String(index),
+								reason,
+							]),
+						),
 					},
 				});
 				return;

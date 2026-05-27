@@ -462,6 +462,169 @@ describe("issue #474 — manual pin honored by runtime proxy", () => {
 		});
 	});
 
+	// Issue #486: chooseAccount must record a skip reason for every pinned
+	// unavailability path so the runtime proxy can surface it in the 503 body.
+	describe("chooseAccount populates skipReasons for pinned unavailability", () => {
+		it("records 'rate-limited' when the pinned account is rate-limited", () => {
+			const now = Date.now();
+			const storage = createStorage(now, 3);
+			const accountManager = new AccountManager(undefined, storage);
+			const pinned = accountManager.getAccountByIndex(1);
+			if (!pinned) throw new Error("setup failed");
+			accountManager.markRateLimitedWithReason(
+				pinned,
+				60_000,
+				"codex",
+				"quota",
+			);
+			const skipReasons = new Map<number, string>();
+
+			const result = chooseAccount({
+				accountManager,
+				sessionAffinityStore: null,
+				sessionKey: null,
+				family: "codex",
+				model: null,
+				attemptedIndexes: new Set(),
+				now,
+				policy: null,
+				pinnedIndex: 1,
+				skipReasons,
+			});
+
+			expect(result).toBeNull();
+			expect(skipReasons.get(1)).toBe("rate-limited");
+		});
+
+		it("records 'cooling-down:auth-failure' when the pinned account is cooling down", () => {
+			const now = Date.now();
+			const storage = createStorage(now, 3);
+			const accountManager = new AccountManager(undefined, storage);
+			const pinned = accountManager.getAccountByIndex(0);
+			if (!pinned) throw new Error("setup failed");
+			accountManager.markAccountCoolingDown(pinned, 60_000, "auth-failure");
+			const skipReasons = new Map<number, string>();
+
+			const result = chooseAccount({
+				accountManager,
+				sessionAffinityStore: null,
+				sessionKey: null,
+				family: "codex",
+				model: null,
+				attemptedIndexes: new Set(),
+				now,
+				policy: null,
+				pinnedIndex: 0,
+				skipReasons,
+			});
+
+			expect(result).toBeNull();
+			expect(skipReasons.get(0)).toBe("cooling-down:auth-failure");
+		});
+
+		it("records 'disabled' when the pinned account is disabled", () => {
+			const now = Date.now();
+			const storage = createStorage(now, 3);
+			const accountManager = new AccountManager(undefined, storage);
+			accountManager.setAccountEnabled(2, false);
+			const skipReasons = new Map<number, string>();
+
+			const result = chooseAccount({
+				accountManager,
+				sessionAffinityStore: null,
+				sessionKey: null,
+				family: "codex",
+				model: null,
+				attemptedIndexes: new Set(),
+				now,
+				policy: null,
+				pinnedIndex: 2,
+				skipReasons,
+			});
+
+			expect(result).toBeNull();
+			expect(skipReasons.get(2)).toBe("disabled");
+		});
+
+		it("records 'policy-blocked' when the pinned account is policy-blocked", () => {
+			const now = Date.now();
+			const storage = createStorage(now, 3);
+			const accountManager = new AccountManager(undefined, storage);
+			const skipReasons = new Map<number, string>();
+
+			const result = chooseAccount({
+				accountManager,
+				sessionAffinityStore: null,
+				sessionKey: null,
+				family: "codex",
+				model: null,
+				attemptedIndexes: new Set(),
+				now,
+				policy: {
+					allowed: true,
+					statusCode: 200,
+					reasons: [],
+					errorCode: null,
+					projectKey: null,
+					blockedAccountIndexes: new Set([1]),
+					scoreBoostByAccount: {},
+					budgetEvaluations: [],
+				},
+				pinnedIndex: 1,
+				skipReasons,
+			});
+
+			expect(result).toBeNull();
+			expect(skipReasons.get(1)).toBe("policy-blocked");
+		});
+
+		it("records 'missing' when the pinned index is out of range", () => {
+			const now = Date.now();
+			const storage = createStorage(now, 2);
+			const accountManager = new AccountManager(undefined, storage);
+			const skipReasons = new Map<number, string>();
+
+			const result = chooseAccount({
+				accountManager,
+				sessionAffinityStore: null,
+				sessionKey: null,
+				family: "codex",
+				model: null,
+				attemptedIndexes: new Set(),
+				now,
+				policy: null,
+				pinnedIndex: 5,
+				skipReasons,
+			});
+
+			expect(result).toBeNull();
+			expect(skipReasons.get(5)).toBe("missing");
+		});
+
+		it("records 'already-attempted' when the pinned index was already tried", () => {
+			const now = Date.now();
+			const storage = createStorage(now, 3);
+			const accountManager = new AccountManager(undefined, storage);
+			const skipReasons = new Map<number, string>();
+
+			const result = chooseAccount({
+				accountManager,
+				sessionAffinityStore: null,
+				sessionKey: null,
+				family: "codex",
+				model: null,
+				attemptedIndexes: new Set([0]),
+				now,
+				policy: null,
+				pinnedIndex: 0,
+				skipReasons,
+			});
+
+			expect(result).toBeNull();
+			expect(skipReasons.get(0)).toBe("already-attempted");
+		});
+	});
+
 	describe("readPinnedAccountIndexFromDisk", () => {
 		it("returns the pinnedAccountIndex written to disk", () => {
 			const path = makeTmpStoragePath();
