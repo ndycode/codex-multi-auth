@@ -122,8 +122,10 @@ export async function runWorkspaceCommand(
 	account.currentWorkspaceIndex = workspaceIndex;
 	await saveAccountsWithRetry(storage, deps.saveAccounts);
 
-	const idSuffix =
-		target.id.length > 6 ? target.id.slice(-6) : target.id;
+	// Guard a possibly-undefined id the same way formatWorkspaceLines does, in
+	// case on-disk data does not conform to the Workspace interface.
+	const id = target.id?.trim() ?? "";
+	const idSuffix = id.length > 6 ? id.slice(-6) : id;
 	logInfo(
 		`Account ${parsedAccount} now using workspace ${parsedWorkspace}: [${targetName}]${idSuffix ? ` (id:${idSuffix})` : ""}.`,
 	);

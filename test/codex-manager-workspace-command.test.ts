@@ -72,6 +72,14 @@ describe("runWorkspaceCommand", () => {
 		);
 	});
 
+	it("errors when the account index is non-numeric", async () => {
+		const deps = createDeps();
+		const result = await runWorkspaceCommand(["abc"], deps);
+		expect(result).toBe(1);
+		expect(deps.logError).toHaveBeenCalledWith("Invalid account index: abc");
+		expect(deps.saveAccounts).not.toHaveBeenCalled();
+	});
+
 	it("lists workspaces with the active one marked when no workspace arg", async () => {
 		const deps = createDeps();
 		const result = await runWorkspaceCommand(["1"], deps);
@@ -113,6 +121,16 @@ describe("runWorkspaceCommand", () => {
 	it("rejects an out-of-range workspace index", async () => {
 		const deps = createDeps();
 		const result = await runWorkspaceCommand(["1", "9"], deps);
+		expect(result).toBe(1);
+		expect(deps.logError).toHaveBeenCalledWith(
+			"Invalid workspace index. Valid range: 1-2",
+		);
+		expect(deps.saveAccounts).not.toHaveBeenCalled();
+	});
+
+	it("rejects a non-numeric workspace index", async () => {
+		const deps = createDeps();
+		const result = await runWorkspaceCommand(["1", "xyz"], deps);
 		expect(result).toBe(1);
 		expect(deps.logError).toHaveBeenCalledWith(
 			"Invalid workspace index. Valid range: 1-2",
