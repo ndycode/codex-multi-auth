@@ -4,7 +4,7 @@ export function printUsage(): void {
 			"Codex Multi-Auth CLI",
 			"",
 			"Start here:",
-			"  codex-multi-auth login [--device-auth|--manual|--no-browser]",
+			"  codex-multi-auth login [--device-auth|--manual|--no-browser] [--org <org_id>]",
 			"  codex-multi-auth status",
 			"  codex-multi-auth check",
 			"",
@@ -52,6 +52,7 @@ export function printUsage(): void {
 export type AuthLoginOptions = {
 	manual: boolean;
 	deviceAuth: boolean;
+	org?: string;
 };
 
 export type ParsedAuthLoginArgs =
@@ -66,7 +67,8 @@ export function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
 	};
 	const manualFlags: string[] = [];
 
-	for (const arg of args) {
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i];
 		if (arg === "--manual" || arg === "--no-browser") {
 			options.manual = true;
 			if (!manualFlags.includes(arg)) {
@@ -76,6 +78,29 @@ export function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
 		}
 		if (arg === "--device-auth") {
 			options.deviceAuth = true;
+			continue;
+		}
+		if (arg === "--org" || arg?.startsWith("--org=")) {
+			// Bind this login to a specific workspace/org id (issue #491). Reuses
+			// the CODEX_AUTH_ACCOUNT_ID override mechanism so the same email's
+			// personal vs business/team workspace can be registered on demand.
+			let value: string | undefined;
+			if (arg === "--org") {
+				value = args[i + 1];
+				i += 1;
+			} else {
+				value = arg.slice("--org=".length);
+			}
+			const trimmed = value?.trim();
+			if (!trimmed || trimmed.startsWith("--")) {
+				return {
+					ok: false,
+					reason: "error",
+					message:
+						"Missing value for --org. Usage: codex-multi-auth login --org <org_id>",
+				};
+			}
+			options.org = trimmed;
 			continue;
 		}
 		if (arg === "--help" || arg === "-h") {

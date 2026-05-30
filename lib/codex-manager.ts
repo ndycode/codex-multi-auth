@@ -2784,6 +2784,15 @@ async function runAuthLogin(args: string[]): Promise<number> {
 	}
 
 	const loginOptions = parsedArgs.options;
+	// `--org <id>` binds this login to a specific workspace/org so the same
+	// email's personal vs business/team workspace can be registered on demand
+	// (issue #491). It reuses the CODEX_AUTH_ACCOUNT_ID override, which every
+	// login resolver already honors, and takes precedence over any inherited
+	// env value for this invocation.
+	if (loginOptions.org) {
+		process.env.CODEX_AUTH_ACCOUNT_ID = loginOptions.org;
+		console.log(`Binding this login to workspace org id: ${loginOptions.org}`);
+	}
 	setStoragePath(null);
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
 	let menuQuotaRefreshStatus: string | undefined;
