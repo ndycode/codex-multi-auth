@@ -12,6 +12,7 @@ export function printUsage(): void {
 			"  codex-multi-auth list",
 			"  codex-multi-auth switch <index>   (pins the account for runtime routing)",
 			"  codex-multi-auth unpin            (clears the manual pin set by switch)",
+			"  codex-multi-auth workspace <account> [workspace]   (list or switch an account's workspaces)",
 			"  codex-multi-auth best [--live] [--json] [--model <model>]   (clears any manual pin set by switch)",
 			"  codex-multi-auth forecast [--live] [--json] [--model <model>]",
 			"  codex-multi-auth account tag|untag|weight|pause|unpause|drain|undrain|note ...",

@@ -1799,6 +1799,36 @@ export function formatAccountLabel(
 	return `Account ${index + 1} (${segments.join(", ")})`;
 }
 
+/**
+ * One display line per workspace tracked on an account, with the active one
+ * marked. Lets `status`/`list` and the `workspace` command show every workspace
+ * a same-email account can rotate between (issue #491). Callers decide when to
+ * render these (e.g. only when more than one workspace exists) and supply the
+ * leading indent.
+ */
+export function formatWorkspaceLines(
+	account:
+		| { workspaces?: Workspace[]; currentWorkspaceIndex?: number }
+		| undefined,
+	indent = "   ",
+): string[] {
+	const workspaces = account?.workspaces;
+	if (!workspaces || workspaces.length === 0) return [];
+	const activeIndex = account?.currentWorkspaceIndex ?? 0;
+	return workspaces.map((workspace, idx) => {
+		const isActive = idx === activeIndex;
+		const name = workspace.name?.trim() || "(unnamed)";
+		const id = workspace.id?.trim() ?? "";
+		const idSuffix = id.length > 6 ? id.slice(-6) : id;
+		const tags: string[] = [];
+		if (isActive) tags.push("active");
+		if (workspace.enabled === false) tags.push("disabled");
+		const tagLabel = tags.length > 0 ? ` (${tags.join(", ")})` : "";
+		const idLabel = idSuffix ? ` id:${idSuffix}` : "";
+		return `${indent}${isActive ? "*" : "-"} ${idx + 1}. [${name}]${idLabel}${tagLabel}`;
+	});
+}
+
 export function formatCooldown(
 	account: { coolingDownUntil?: number; cooldownReason?: string },
 	now = nowMs(),

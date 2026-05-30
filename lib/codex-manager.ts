@@ -88,6 +88,7 @@ import {
 import { loadPersistedRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import { runSwitchCommand } from "./codex-manager/commands/switch.js";
 import { runUnpinCommand } from "./codex-manager/commands/unpin.js";
+import { runWorkspaceCommand } from "./codex-manager/commands/workspace.js";
 import { runUsageCommand } from "./codex-manager/commands/usage.js";
 import { parseAuthLoginArgs, printUsage } from "./codex-manager/help.js";
 import {
@@ -202,6 +203,7 @@ const ACCOUNT_MANAGER_COMMANDS = new Set([
 	"status",
 	"switch",
 	"unpin",
+	"workspace",
 	"best",
 	"check",
 	"features",
@@ -3556,6 +3558,13 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			loadAccounts,
 			saveAccounts,
 			getStoragePath,
+		});
+	}
+	if (command === "workspace") {
+		return runWorkspaceCommand(rest, {
+			setStoragePath,
+			loadAccounts,
+			saveAccounts,
 		});
 	}
 	if (command === "check") {
