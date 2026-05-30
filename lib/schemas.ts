@@ -147,6 +147,22 @@ export const RateLimitStateV3Schema = z.record(
 export type RateLimitStateV3FromSchema = z.infer<typeof RateLimitStateV3Schema>;
 
 /**
+ * Workspace entry within an account. Supports a single OpenAI/Google account
+ * that belongs to multiple ChatGPT workspaces (e.g. personal Plus + a
+ * business/team workspace), each a distinct quota pool keyed by its org_id
+ * (`id`). Mirrors the `Workspace` TS interface in `lib/accounts.ts`. See #491.
+ */
+export const WorkspaceSchema = z.object({
+	id: z.string(),
+	name: z.string().optional(),
+	enabled: z.boolean(),
+	disabledAt: z.number().optional(),
+	isDefault: z.boolean().optional(),
+});
+
+export type WorkspaceFromSchema = z.infer<typeof WorkspaceSchema>;
+
+/**
  * Account metadata V3 - current storage format.
  */
 export const AccountMetadataV3Schema = z.object({
@@ -164,6 +180,11 @@ export const AccountMetadataV3Schema = z.object({
 	rateLimitResetTimes: RateLimitStateV3Schema.optional(),
 	coolingDownUntil: z.number().optional(),
 	cooldownReason: CooldownReasonSchema.optional(),
+	// Multi-workspace support (#491): without these here, the strict z.object
+	// strips workspace tracking on every load, so login-captured workspaces
+	// silently vanish after one read/write round-trip.
+	workspaces: z.array(WorkspaceSchema).optional(),
+	currentWorkspaceIndex: z.number().optional(),
 });
 
 export type AccountMetadataV3FromSchema = z.infer<

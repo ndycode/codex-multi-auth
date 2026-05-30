@@ -776,6 +776,78 @@ describe("AccountManager", () => {
 		);
 	});
 
+	it("surfaces the active workspace to distinguish same-email accounts (#491)", () => {
+		const personal = {
+			email: "user@gmail.com",
+			accountId: "org-AAAA",
+			workspaces: [{ id: "org-AAAA", name: "Personal Plus", enabled: true }],
+			currentWorkspaceIndex: 0,
+		};
+		const business = {
+			email: "user@gmail.com",
+			accountId: "org-BBBB",
+			workspaces: [{ id: "org-BBBB", name: "GkTech Business", enabled: true }],
+			currentWorkspaceIndex: 0,
+		};
+		expect(formatAccountLabel(personal, 0)).toBe(
+			"Account 1 ([Personal Plus], user@gmail.com, id:g-AAAA)",
+		);
+		expect(formatAccountLabel(business, 1)).toBe(
+			"Account 2 ([GkTech Business], user@gmail.com, id:g-BBBB)",
+		);
+	});
+
+	it("follows currentWorkspaceIndex when picking the workspace tag (#491)", () => {
+		expect(
+			formatAccountLabel(
+				{
+					email: "user@gmail.com",
+					workspaces: [
+						{ id: "org-AAAA", name: "Personal Plus", enabled: true },
+						{ id: "org-BBBB", name: "GkTech Business", enabled: true },
+					],
+					currentWorkspaceIndex: 1,
+				},
+				0,
+			),
+		).toBe("Account 1 ([GkTech Business], user@gmail.com)");
+	});
+
+	it("omits the workspace tag when it duplicates the account label (#491)", () => {
+		expect(
+			formatAccountLabel(
+				{
+					accountLabel: "Personal Plus",
+					email: "user@gmail.com",
+					workspaces: [
+						{ id: "org-AAAA", name: "Personal Plus", enabled: true },
+					],
+					currentWorkspaceIndex: 0,
+				},
+				0,
+			),
+		).toBe("Account 1 (Personal Plus, user@gmail.com)");
+	});
+
+	it("ignores empty or unnamed workspaces in the label (#491)", () => {
+		expect(
+			formatAccountLabel(
+				{
+					email: "user@gmail.com",
+					workspaces: [{ id: "org-AAAA", enabled: true }],
+					currentWorkspaceIndex: 0,
+				},
+				0,
+			),
+		).toBe("Account 1 (user@gmail.com)");
+		expect(
+			formatAccountLabel(
+				{ email: "user@gmail.com", workspaces: [], currentWorkspaceIndex: 0 },
+				0,
+			),
+		).toBe("Account 1 (user@gmail.com)");
+	});
+
 	it("performs true round-robin rotation across multiple requests", () => {
 		const now = Date.now();
 		const stored = {

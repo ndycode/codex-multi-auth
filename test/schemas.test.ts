@@ -232,6 +232,43 @@ describe("AccountMetadataV3Schema", () => {
 		});
 		expect(result.success).toBe(false);
 	});
+
+	it("preserves workspaces and currentWorkspaceIndex (#491)", () => {
+		const account = {
+			...validAccount,
+			workspaces: [
+				{
+					id: "org-AAAA",
+					name: "Personal Plus",
+					enabled: true,
+					isDefault: true,
+				},
+				{
+					id: "org-BBBB",
+					name: "GkTech Business",
+					enabled: false,
+					disabledAt: 123,
+				},
+			],
+			currentWorkspaceIndex: 1,
+		};
+		const result = AccountMetadataV3Schema.safeParse(account);
+		expect(result.success).toBe(true);
+		if (result.success) {
+			expect(result.data.workspaces).toHaveLength(2);
+			expect(result.data.workspaces?.[0]?.name).toBe("Personal Plus");
+			expect(result.data.workspaces?.[1]?.enabled).toBe(false);
+			expect(result.data.currentWorkspaceIndex).toBe(1);
+		}
+	});
+
+	it("rejects a workspace missing its id (#491)", () => {
+		const result = AccountMetadataV3Schema.safeParse({
+			...validAccount,
+			workspaces: [{ name: "Personal Plus", enabled: true }],
+		});
+		expect(result.success).toBe(false);
+	});
 });
 
 describe("AccountStorageV3Schema", () => {
@@ -778,6 +815,37 @@ describe("safeParseJson", () => {
 		);
 		expect(result).not.toBeNull();
 		expect(result?.version).toBe(3);
+	});
+
+	it("keeps workspaces through the load round-trip (#491)", () => {
+		// Regression: the strict z.object used to strip workspace tracking on
+		// every load, so login-captured workspaces vanished after one reload.
+		const raw = JSON.stringify({
+			version: 3,
+			accounts: [
+				{
+					refreshToken: "rt",
+					addedAt: 1,
+					lastUsed: 1,
+					accountId: "org-AAAA",
+					email: "user@gmail.com",
+					workspaces: [{ id: "org-AAAA", name: "Personal Plus", enabled: true }],
+					currentWorkspaceIndex: 0,
+				},
+			],
+			activeIndex: 0,
+		});
+		const result = safeParseJson(raw, AnyAccountStorageSchema, "test.workspaces");
+		expect(result).not.toBeNull();
+		const account = result?.accounts?.[0] as
+			| {
+					workspaces?: Array<{ name?: string }>;
+					currentWorkspaceIndex?: number;
+			  }
+			| undefined;
+		expect(account?.workspaces).toHaveLength(1);
+		expect(account?.workspaces?.[0]?.name).toBe("Personal Plus");
+		expect(account?.currentWorkspaceIndex).toBe(0);
 	});
 });
 

@@ -1741,13 +1741,37 @@ export class AccountManager {
 	}
 }
 
+/**
+ * Name of the account's currently-selected workspace, if any. Lets same-email
+ * accounts that live in different workspaces (personal Plus vs business/team)
+ * stay distinguishable in `list`/`status` output. See issue #491.
+ */
+function activeWorkspaceName(
+	account:
+		| { workspaces?: Workspace[]; currentWorkspaceIndex?: number }
+		| undefined,
+): string | undefined {
+	const workspaces = account?.workspaces;
+	if (!workspaces || workspaces.length === 0) return undefined;
+	const idx = account?.currentWorkspaceIndex ?? 0;
+	const workspace = workspaces[idx] ?? workspaces[0];
+	return workspace?.name?.trim() || undefined;
+}
+
 export function formatAccountLabel(
 	account:
-		| { email?: string; accountId?: string; accountLabel?: string }
+		| {
+				email?: string;
+				accountId?: string;
+				accountLabel?: string;
+				workspaces?: Workspace[];
+				currentWorkspaceIndex?: number;
+		  }
 		| undefined,
 	index: number,
 ): string {
 	const accountLabel = account?.accountLabel?.trim();
+	const workspaceName = activeWorkspaceName(account);
 	const email = account?.email?.trim();
 	const accountId = account?.accountId?.trim();
 	const idSuffix = accountId
@@ -1756,19 +1780,23 @@ export function formatAccountLabel(
 			: accountId
 		: null;
 
-	if (accountLabel && email && idSuffix) {
-		return `Account ${index + 1} (${accountLabel}, ${email}, id:${idSuffix})`;
+	const segments: string[] = [];
+	if (accountLabel) segments.push(accountLabel);
+	// Surface the active workspace so two same-email accounts in different
+	// workspaces remain distinguishable; skip it when it would just repeat the
+	// manual account label.
+	if (workspaceName && workspaceName !== accountLabel) {
+		segments.push(`[${workspaceName}]`);
 	}
-	if (accountLabel && email)
-		return `Account ${index + 1} (${accountLabel}, ${email})`;
-	if (accountLabel && idSuffix)
-		return `Account ${index + 1} (${accountLabel}, id:${idSuffix})`;
-	if (accountLabel) return `Account ${index + 1} (${accountLabel})`;
-	if (email && idSuffix)
-		return `Account ${index + 1} (${email}, id:${idSuffix})`;
-	if (email) return `Account ${index + 1} (${email})`;
-	if (idSuffix) return `Account ${index + 1} (${idSuffix})`;
-	return `Account ${index + 1}`;
+	if (email) segments.push(email);
+	// A bare id stands alone (e.g. "Account 1 (123456)"); once any other
+	// segment precedes it, prefix with "id:" for clarity.
+	if (idSuffix) {
+		segments.push(segments.length > 0 ? `id:${idSuffix}` : idSuffix);
+	}
+
+	if (segments.length === 0) return `Account ${index + 1}`;
+	return `Account ${index + 1} (${segments.join(", ")})`;
 }
 
 export function formatCooldown(
