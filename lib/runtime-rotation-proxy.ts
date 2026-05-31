@@ -719,8 +719,13 @@ async function ensureFreshAccessToken(params: {
 	model: string | null;
 	now: number;
 	tokenRefreshSkewMs: number;
-}): Promise<{ ok: true; accessToken: string; account: ManagedAccount } | { ok: false; retryable: boolean }> {
-	const { accountManager, account, family, model, now, tokenRefreshSkewMs } = params;
+	tokenInvalidationCooldownMs: number;
+}): Promise<
+	| { ok: true; accessToken: string; account: ManagedAccount }
+	| { ok: false; retryable: boolean; invalidated?: boolean }
+> {
+	const { accountManager, account, family, model, now, tokenRefreshSkewMs, tokenInvalidationCooldownMs } =
+		params;
 	if (hasUsableAccessToken(account, now, tokenRefreshSkewMs)) {
 		return { ok: true, accessToken: account.access ?? "", account };
 	}
@@ -729,13 +734,18 @@ async function ensureFreshAccessToken(params: {
 	if (refreshResult.type === "failed") {
 		accountManager.recordFailure(account, family, model);
 		accountManager.incrementAuthFailures(account);
+		// If the refresh endpoint itself returns an explicit invalidation message
+		// (e.g. Microsoft/Outlook SSO revokes the refresh token server-side), apply
+		// the long cooldown and signal to the caller to stop rotating rather than
+		// presenting other accounts' tokens from the same IP.
+		const invalidated = isTokenInvalidationError(refreshResult.message ?? "");
 		accountManager.markAccountCoolingDown(
 			account,
-			DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
+			invalidated ? tokenInvalidationCooldownMs : DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
 			"auth-failure",
 		);
 		accountManager.saveToDiskDebounced();
-		return { ok: false, retryable: isTokenRefreshRetryable(refreshResult) };
+		return { ok: false, retryable: isTokenRefreshRetryable(refreshResult), invalidated };
 	}
 
 	const auth: OAuthAuthDetails = {
@@ -1481,10 +1491,32 @@ export async function startRuntimeRotationProxy(
 					model: context.model,
 					now: now(),
 					tokenRefreshSkewMs,
+					tokenInvalidationCooldownMs,
 				});
 				if (!refreshed.ok) {
 					accountManager.refundToken(selected, context.family, context.model);
 					exhaustionReason = "auth-failure";
+					if (refreshed.invalidated) {
+						// Refresh endpoint explicitly revoked the token. Stop cascade:
+						// return auth error to client instead of rotating to the next account.
+						sessionAffinityStore?.forgetSession(context.sessionKey);
+						res.writeHead(HTTP_STATUS.UNAUTHORIZED, { "content-type": "application/json" });
+						res.end(
+							JSON.stringify({
+								error: {
+									message: "OAuth token has been invalidated. Please re-login.",
+									code: "token_invalidated",
+								},
+							}),
+						);
+						await usageRecorder.record({
+							outcome: "failure",
+							statusCode: HTTP_STATUS.UNAUTHORIZED,
+							errorCode: "token_invalidated",
+							account: selected,
+						});
+						return;
+					}
 					if (!refreshed.retryable) continue;
 					transientAttempts += 1;
 					transientExhaustionReason = "auth-failure";

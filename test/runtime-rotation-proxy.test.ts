@@ -1915,6 +1915,33 @@ describe("runtime rotation proxy", () => {
 		expect(proxy.getStatus().rotations).toBe(1);
 	});
 
+	it("returns 401 to client and does not rotate when token refresh endpoint returns invalidation error", async () => {
+		const now = Date.now();
+		const storage = createStorage(now, 2);
+		const account0 = storage.accounts[0];
+		if (!account0) throw new Error("expected account");
+		account0.expiresAt = now - 60_000; // force refresh
+		refreshAccessTokenMock.mockResolvedValueOnce({
+			type: "failed",
+			reason: "http_error",
+			statusCode: 401,
+			message: "Your authentication token has been invalidated.",
+		});
+		const accountManager = new AccountManager(undefined, storage);
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream("data: ok\n\n"));
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex" });
+		const body = (await response.json()) as { error: { code: string } };
+
+		expect(response.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		expect(body.error.code).toBe("token_invalidated");
+		expect(calls).toHaveLength(0);
+		const coolingDownUntil = accountManager.getAccountByIndex(0)?.coolingDownUntil ?? 0;
+		expect(coolingDownUntil).toBeGreaterThan(now + 250_000);
+		expect(proxy.getStatus().rotations).toBe(0);
+	});
+
 	it("sticks to last served account within minRotationIntervalMs window", async () => {
 		vi.stubEnv("CODEX_AUTH_MIN_ROTATION_INTERVAL_MS", "60000");
 		try {
