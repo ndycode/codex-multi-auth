@@ -5,6 +5,7 @@ import type { CacheMetadata, GitHubRelease } from "../types.js";
 import { logWarn, logError, logDebug } from "../logger.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
 import { getModelProfile, type PromptModelFamily } from "../request/helpers/model-map.js";
+import { fetchWithTimeout, readBodyTextGuarded } from "./fetch-utils.js";
 
 const GITHUB_API_RELEASES =
 	"https://api.github.com/repos/openai/codex/releases/latest";
@@ -116,7 +117,7 @@ async function getLatestReleaseTag(): Promise<string> {
 	}
 
 	try {
-		const response = await fetch(GITHUB_API_RELEASES);
+		const response = await fetchWithTimeout(GITHUB_API_RELEASES, { json: true });
 		if (response.ok) {
 			const data = (await response.json()) as GitHubRelease;
 			if (data.tag_name) {
@@ -131,7 +132,7 @@ async function getLatestReleaseTag(): Promise<string> {
 		// Fall through to HTML fallback
 	}
 
-	const htmlResponse = await fetch(GITHUB_HTML_RELEASES);
+	const htmlResponse = await fetchWithTimeout(GITHUB_HTML_RELEASES);
 	if (!htmlResponse.ok) {
 		throw new Error(
 			`Failed to fetch latest release: ${htmlResponse.status}`,
@@ -287,7 +288,7 @@ async function fetchAndPersistInstructions(
 		headers["If-None-Match"] = cachedETag;
 	}
 
-	const response = await fetch(instructionsUrl, { headers });
+	const response = await fetchWithTimeout(instructionsUrl, { headers });
 	if (response.status === 304) {
 		const diskContent = await readFileOrNull(cacheFile);
 		if (diskContent) {
@@ -313,7 +314,8 @@ async function fetchAndPersistInstructions(
 		throw new Error(`HTTP ${response.status}`);
 	}
 
-	const instructions = await response.text();
+	// Size-cap + reject empty bodies (prompts-04/05) before caching/serving.
+	const instructions = await readBodyTextGuarded(response);
 	const newETag = response.headers.get("etag");
 	await fs.mkdir(CACHE_DIR, { recursive: true });
 	await Promise.all([

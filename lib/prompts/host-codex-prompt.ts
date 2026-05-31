@@ -10,6 +10,7 @@ import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 import { logDebug } from "../logger.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
 import { sleep } from "../utils.js";
+import { fetchWithTimeout, readBodyTextGuarded } from "./fetch-utils.js";
 
 const DEFAULT_HOST_CODEX_PROMPT_URLS = [
 	// Canonical upstream is sst/opencode. The previous list pointed at a rebrand
@@ -277,7 +278,7 @@ async function refreshPrompt(
 
 		let response: Response;
 		try {
-			response = await fetch(sourceUrl, { headers });
+			response = await fetchWithTimeout(sourceUrl, { headers });
 		} catch (error) {
 			lastFailure = `${redactSourceForLog(sourceUrl)}: ${String(error)}`;
 			logDebug("Codex prompt source fetch failed", {
@@ -309,7 +310,20 @@ async function refreshPrompt(
 			continue;
 		}
 
-		const content = await response.text();
+		let content: string;
+		try {
+			// Size-cap + reject empty bodies (prompts-04/05): a truncated or empty
+			// 200 must not be cached and served as instructions; treat it as a source
+			// failure and fall through to the next source / disk / bundled fallback.
+			content = await readBodyTextGuarded(response);
+		} catch (error) {
+			lastFailure = `${redactSourceForLog(sourceUrl)}: ${String(error)}`;
+			logDebug("Codex prompt source body rejected", {
+				sourceUrl: redactSourceForLog(sourceUrl),
+				error: String(error),
+			});
+			continue;
+		}
 		const etag = response.headers.get("etag") || "";
 		const meta = await saveDiskCache(content, etag, sourceUrl);
 		memoryCache = { content, meta };

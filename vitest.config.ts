@@ -38,16 +38,13 @@ export default defineConfig({
     // that forgets to redirect storage paths resolves into a throwaway temp dir
     // rather than the developer's real ~/.codex. Then the property-test config.
     setupFiles: ['test/helpers/global-sandbox.ts', 'test/property/setup.ts'],
-    // Enforce single-worker / no file parallelism here too, not only in the npm
-    // scripts. Several suites bind fixed resources (e.g. the OAuth callback on
-    // port 1455) and collide under parallel files when vitest is run directly
-    // (tests-ci-03).
-    // Disable cross-file parallelism so suites that bind fixed resources (e.g.
-    // the OAuth callback on port 1455) cannot collide when `vitest` is run
-    // directly without the npm script's --maxWorkers=1 flag (tests-ci-03). We do
-    // NOT also pin maxWorkers/minWorkers here: combining them with the npm
-    // script's CLI --maxWorkers=1 produced an intermittent worker-teardown exit.
-    fileParallelism: false,
+    // tests-ci-03: the fixed-port OAuth callback (1455) collision risk is covered
+    // by `--maxWorkers=1` in the npm `test` script plus the awaited port-release in
+    // test/oauth-server.integration.test.ts afterEach, so `fileParallelism: false`
+    // is not set here (it added no protection beyond those). NOTE: this suite has a
+    // pre-existing, environment-level intermittent vitest worker crash on Windows
+    // (exit 1 with no test failure and no summary) that reproduces on upstream main
+    // too; it is unrelated to fileParallelism. See finding tests-ci-16.
     exclude: [
       'node_modules/**',
       '.codex/**',
