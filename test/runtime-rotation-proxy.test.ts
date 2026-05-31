@@ -1839,4 +1839,195 @@ describe("runtime rotation proxy", () => {
 		expect(accountManager.getAccountByIndex(0)?.cooldownReason).toBe("network-error");
 		expect(proxy.getStatus().streamsStarted).toBe(1);
 	});
+
+	it("returns 401 to client and does not rotate when upstream explicitly invalidates the token", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const invalidationBody = JSON.stringify({
+			error: { message: "Encountered invalidated oauth token for user, failing request" },
+		});
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response(invalidationBody, {
+				status: HTTP_STATUS.UNAUTHORIZED,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex" });
+
+		expect(response.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
+		expect(accountManager.getAccountByIndex(0)?.cooldownReason).toBe("auth-failure");
+		// token invalidation applies the long cooldown (~5min), not the generic 30s
+		const coolingDownUntil = accountManager.getAccountByIndex(0)?.coolingDownUntil ?? 0;
+		expect(coolingDownUntil).toBeGreaterThan(now + 250_000);
+		expect(coolingDownUntil).toBeLessThan(now + 350_000);
+		expect(proxy.getStatus().rotations).toBe(0);
+	});
+
+	it("rotates to next account on a generic 401 that is not a token invalidation", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) => {
+			if (attempt === 1) {
+				return new Response(JSON.stringify({ error: { message: "Unauthorized" } }), {
+					status: HTTP_STATUS.UNAUTHORIZED,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			return textEventStream("data: recovered\n\n");
+		});
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex", stream: true });
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.text()).toBe("data: recovered\n\n");
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+		]);
+		// generic 401 applies the short 30s cooldown, not the 5-min invalidation cooldown
+		const coolingDownUntil = accountManager.getAccountByIndex(0)?.coolingDownUntil ?? 0;
+		expect(coolingDownUntil).toBeGreaterThan(now + 20_000);
+		expect(coolingDownUntil).toBeLessThan(now + 40_000);
+		expect(proxy.getStatus().rotations).toBe(1);
+	});
+
+	it("rotates on empty 401 body instead of treating as token invalidation", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) => {
+			if (attempt === 1) {
+				return new Response("", { status: HTTP_STATUS.UNAUTHORIZED });
+			}
+			return textEventStream("data: recovered\n\n");
+		});
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex", stream: true });
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.text()).toBe("data: recovered\n\n");
+		expect(calls).toHaveLength(2);
+		expect(proxy.getStatus().rotations).toBe(1);
+	});
+
+	it("returns 401 to client and does not rotate when token refresh endpoint returns invalidation error", async () => {
+		const now = Date.now();
+		const storage = createStorage(now, 2);
+		const account0 = storage.accounts[0];
+		if (!account0) throw new Error("expected account");
+		account0.expiresAt = now - 60_000; // force refresh
+		refreshAccessTokenMock.mockResolvedValueOnce({
+			type: "failed",
+			reason: "http_error",
+			statusCode: 401,
+			message: "Your authentication token has been invalidated.",
+		});
+		const accountManager = new AccountManager(undefined, storage);
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream("data: ok\n\n"));
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const bodyWithSession = {
+			model: "gpt-5-codex",
+			metadata: { session_id: "session-refresh-inv" },
+		};
+		const response = await postResponses(proxy, bodyWithSession);
+		const body = (await response.json()) as { error: { code: string } };
+
+		expect(response.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		expect(body.error.code).toBe("token_invalidated");
+		expect(calls).toHaveLength(0);
+		const coolingDownUntil = accountManager.getAccountByIndex(0)?.coolingDownUntil ?? 0;
+		expect(coolingDownUntil).toBeGreaterThan(now + 250_000);
+		expect(proxy.getStatus().rotations).toBe(0);
+		// session affinity cleared — next request with same session routes to healthy account
+		const followUp = await postResponses(proxy, bodyWithSession);
+		expect(followUp.status).toBe(HTTP_STATUS.OK);
+		await followUp.text();
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_2");
+	});
+
+	it("minRotationIntervalMs window slides on each successful serve (regression)", async () => {
+		// Without the sliding fix, lastGlobalSwitchAt only updates on account change.
+		// Serving acc_1 at t=0 then t=55s would keep the anchor at t=0. A request at
+		// t=61s (>60s since t=0) would rotate to acc_2, even though acc_1 served just
+		// 6s earlier. With the fix, lastGlobalSwitchAt refreshes every serve so the
+		// t=61s request sees a 6s-old anchor and keeps acc_1.
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.stubEnv("CODEX_AUTH_MIN_ROTATION_INTERVAL_MS", "60000");
+		try {
+			vi.setSystemTime(0);
+			const now = Date.now;
+			const storage = createStorage(0, 2);
+			const accountManager = new AccountManager(undefined, storage);
+			const { calls, fetchImpl } = createRecordingFetch(() =>
+				textEventStream("data: ok\n\n"),
+			);
+			const proxy = await startProxy({ accountManager, fetchImpl, options: { now } });
+
+			await (await postResponses(proxy, { model: "gpt-5-codex" })).text();
+
+			vi.setSystemTime(55_000);
+			await (await postResponses(proxy, { model: "gpt-5-codex" })).text();
+
+			// t=61s: 61s past original switch (>60s) but only 6s since last serve
+			vi.setSystemTime(61_000);
+			await (await postResponses(proxy, { model: "gpt-5-codex" })).text();
+
+			expect(calls.map((c) => c.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+				"acc_1",
+				"acc_1",
+				"acc_1",
+			]);
+		} finally {
+			vi.useRealTimers();
+			vi.unstubAllEnvs();
+		}
+	});
+
+	it("sticks to last served account within minRotationIntervalMs window", async () => {
+		vi.stubEnv("CODEX_AUTH_MIN_ROTATION_INTERVAL_MS", "60000");
+		try {
+			const now = Date.now();
+			const accountManager = new AccountManager(undefined, createStorage(now, 2));
+			const { calls, fetchImpl } = createRecordingFetch(() =>
+				textEventStream("data: ok\n\n"),
+			);
+			const proxy = await startProxy({ accountManager, fetchImpl });
+
+			await (await postResponses(proxy, { model: "gpt-5-codex" })).text();
+			await (await postResponses(proxy, { model: "gpt-5-codex" })).text();
+
+			expect(calls).toHaveLength(2);
+			expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
+			expect(calls[1]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
+	it("detects token invalidation phrase in non-json 401 body (e.g. html error page)", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const htmlBody =
+			"<html><body>error: oauth token has been invalidated by the server</body></html>";
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response(htmlBody, {
+				status: HTTP_STATUS.UNAUTHORIZED,
+				headers: { "content-type": "text/html" },
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex" });
+
+		expect(response.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		expect(calls).toHaveLength(1);
+		expect(proxy.getStatus().rotations).toBe(0);
+	});
 });

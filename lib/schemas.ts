@@ -70,6 +70,8 @@ export const PluginConfigSchema = z.object({
 	proactiveRefreshBufferMs: z.number().min(30_000).optional(),
 	networkErrorCooldownMs: z.number().min(0).optional(),
 	serverErrorCooldownMs: z.number().min(0).optional(),
+	tokenInvalidationCooldownMs: z.number().min(0).optional(),
+	minRotationIntervalMs: z.number().min(0).optional(),
 	storageBackupEnabled: z.boolean().optional(),
 	preemptiveQuotaEnabled: z.boolean().optional(),
 	preemptiveQuotaRemainingPercent5h: z.number().min(0).max(100).optional(),

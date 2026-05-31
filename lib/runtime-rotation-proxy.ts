@@ -17,6 +17,8 @@ import {
 	getSessionAffinityMaxEntries,
 	getSessionAffinityTtlMs,
 	getStreamStallTimeoutMs,
+	getMinRotationIntervalMs,
+	getTokenInvalidationCooldownMs,
 	getTokenRefreshSkewMs,
 	loadPluginConfig,
 } from "./config.js";
@@ -116,7 +118,25 @@ interface RuntimeRotationAccountIdentity {
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_QUOTA_REMAINING_THRESHOLD = 10;
 const DEFAULT_AUTH_FAILURE_COOLDOWN_MS = 30_000;
+
 const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
+
+// Phrases observed in upstream 401 response bodies when OpenAI/Microsoft has
+// explicitly revoked an OAuth token (as opposed to a generic expired-token 401
+// that can be retried after a refresh). Matching is case-insensitive substring.
+// If anti-abuse detection triggers different wording in production, add the new
+// phrase here and record the source provider and date. See issue #495.
+const TOKEN_INVALIDATION_PHRASES = [
+	"invalidated oauth token",
+	"authentication token has been invalidated",
+	"oauth token has been invalidated",
+	"token has been invalidated",
+] as const;
+
+function isTokenInvalidationError(bodyText: string): boolean {
+	const lower = bodyText.toLowerCase();
+	return TOKEN_INVALIDATION_PHRASES.some((phrase) => lower.includes(phrase));
+}
 const MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024;
 const MAX_THREAD_GOAL_FALLBACKS = 512;
 const HOP_BY_HOP_HEADERS = new Set([
@@ -636,6 +656,21 @@ function buildUpstreamUrl(
 	return upstream.toString();
 }
 
+// Monotonic auth-failure cooldown: only extend, never shorten. Two concurrent
+// requests on the same account can race so that an invalidation path sets a
+// long cooldown (5 min) and a subsequent generic 401 truncates it (30 s).
+// Reading the live coolingDownUntil before writing prevents that race.
+function applyMonotonicAuthCooldown(
+	accountManager: AccountManager,
+	account: ManagedAccount,
+	cooldownMs: number,
+): void {
+	const existing = accountManager.getAccountByIndex(account.index)?.coolingDownUntil ?? 0;
+	if (Date.now() + cooldownMs > existing) {
+		accountManager.markAccountCoolingDown(account, cooldownMs, "auth-failure");
+	}
+}
+
 function hasUsableAccessToken(
 	account: ManagedAccount,
 	now: number,
@@ -699,8 +734,13 @@ async function ensureFreshAccessToken(params: {
 	model: string | null;
 	now: number;
 	tokenRefreshSkewMs: number;
-}): Promise<{ ok: true; accessToken: string; account: ManagedAccount } | { ok: false; retryable: boolean }> {
-	const { accountManager, account, family, model, now, tokenRefreshSkewMs } = params;
+	tokenInvalidationCooldownMs: number;
+}): Promise<
+	| { ok: true; accessToken: string; account: ManagedAccount }
+	| { ok: false; retryable: boolean; invalidated?: boolean }
+> {
+	const { accountManager, account, family, model, now, tokenRefreshSkewMs, tokenInvalidationCooldownMs } =
+		params;
 	if (hasUsableAccessToken(account, now, tokenRefreshSkewMs)) {
 		return { ok: true, accessToken: account.access ?? "", account };
 	}
@@ -709,13 +749,18 @@ async function ensureFreshAccessToken(params: {
 	if (refreshResult.type === "failed") {
 		accountManager.recordFailure(account, family, model);
 		accountManager.incrementAuthFailures(account);
-		accountManager.markAccountCoolingDown(
+		// If the refresh endpoint itself returns an explicit invalidation message
+		// (e.g. Microsoft/Outlook SSO revokes the refresh token server-side), apply
+		// the long cooldown and signal to the caller to stop rotating rather than
+		// presenting other accounts' tokens from the same IP.
+		const invalidated = isTokenInvalidationError(refreshResult.message ?? "");
+		applyMonotonicAuthCooldown(
+			accountManager,
 			account,
-			DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
-			"auth-failure",
+			invalidated ? tokenInvalidationCooldownMs : DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
 		);
 		accountManager.saveToDiskDebounced();
-		return { ok: false, retryable: isTokenRefreshRetryable(refreshResult) };
+		return { ok: false, retryable: isTokenRefreshRetryable(refreshResult), invalidated };
 	}
 
 	const auth: OAuthAuthDetails = {
@@ -869,6 +914,7 @@ export function chooseAccount(params: {
 	policy: RuntimePolicyDecision | null;
 	pinnedIndex: number | null;
 	skipReasons?: Map<number, string>;
+	stickyBoostByAccount?: Record<number, number>;
 }): ManagedAccount | null {
 	const {
 		accountManager,
@@ -881,6 +927,7 @@ export function chooseAccount(params: {
 		policy,
 		pinnedIndex,
 		skipReasons,
+		stickyBoostByAccount,
 	} = params;
 
 	// Manual pin (from `codex-multi-auth switch <n>`) overrides every other
@@ -940,7 +987,10 @@ export function chooseAccount(params: {
 	}
 
 	const selected = accountManager.getCurrentOrNextForFamilyHybrid(family, model, {
-		scoreBoostByAccount: policy?.scoreBoostByAccount,
+		scoreBoostByAccount: {
+			...(policy?.scoreBoostByAccount ?? {}),
+			...(stickyBoostByAccount ?? {}),
+		},
 	});
 	if (
 		selected &&
@@ -1179,6 +1229,10 @@ export async function startRuntimeRotationProxy(
 	const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
 	const networkErrorCooldownMs = getNetworkErrorCooldownMs(pluginConfig);
 	const serverErrorCooldownMs = getServerErrorCooldownMs(pluginConfig);
+	const tokenInvalidationCooldownMs = getTokenInvalidationCooldownMs(pluginConfig);
+	const minRotationIntervalMs = getMinRotationIntervalMs(pluginConfig);
+	let lastGlobalAccountIndex: number | null = null;
+	let lastGlobalSwitchAt = 0;
 	const fetchTimeoutMs = options.fetchTimeoutMs ?? getFetchTimeoutMs(pluginConfig);
 	const streamStallTimeoutMs =
 		options.streamStallTimeoutMs ?? getStreamStallTimeoutMs(pluginConfig);
@@ -1388,6 +1442,12 @@ export async function startRuntimeRotationProxy(
 				attemptedIndexes.size < accountCount &&
 				transientAttempts < transientAttemptLimit
 			) {
+				const rotationStickyBoost: Record<number, number> =
+					minRotationIntervalMs > 0 &&
+					lastGlobalAccountIndex !== null &&
+					now() - lastGlobalSwitchAt < minRotationIntervalMs
+						? { [lastGlobalAccountIndex]: 1000 }
+						: {};
 				const selected = chooseAccount({
 					accountManager,
 					sessionAffinityStore,
@@ -1399,6 +1459,7 @@ export async function startRuntimeRotationProxy(
 					policy: policyDecision,
 					pinnedIndex,
 					skipReasons: accountSkipReasons,
+					stickyBoostByAccount: rotationStickyBoost,
 				});
 				if (!selected) {
 					if (
@@ -1445,10 +1506,32 @@ export async function startRuntimeRotationProxy(
 					model: context.model,
 					now: now(),
 					tokenRefreshSkewMs,
+					tokenInvalidationCooldownMs,
 				});
 				if (!refreshed.ok) {
 					accountManager.refundToken(selected, context.family, context.model);
 					exhaustionReason = "auth-failure";
+					if (refreshed.invalidated) {
+						// Refresh endpoint explicitly revoked the token. Stop cascade:
+						// return auth error to client instead of rotating to the next account.
+						sessionAffinityStore?.forgetSession(context.sessionKey);
+						res.writeHead(HTTP_STATUS.UNAUTHORIZED, { "content-type": "application/json" });
+						res.end(
+							JSON.stringify({
+								error: {
+									message: "OAuth token has been invalidated. Please re-login.",
+									code: "token_invalidated",
+								},
+							}),
+						);
+						await usageRecorder.record({
+							outcome: "failure",
+							statusCode: HTTP_STATUS.UNAUTHORIZED,
+							errorCode: "token_invalidated",
+							account: selected,
+						});
+						return;
+					}
 					if (!refreshed.retryable) continue;
 					transientAttempts += 1;
 					transientExhaustionReason = "auth-failure";
@@ -1643,13 +1726,36 @@ export async function startRuntimeRotationProxy(
 				}
 
 				if (upstream.status === HTTP_STATUS.UNAUTHORIZED) {
-					await readErrorBody(upstream);
+					const bodyText = await readErrorBody(upstream);
 					accountManager.refundToken(refreshed.account, context.family, context.model);
 					accountManager.recordFailure(refreshed.account, context.family, context.model);
-					accountManager.markAccountCoolingDown(
+					if (isTokenInvalidationError(bodyText)) {
+						// The upstream explicitly revoked this OAuth token. Applying a long
+						// cooldown prevents cascade invalidation: rapidly presenting each
+						// account's token from the same IP triggers OpenAI's anti-abuse
+						// detection and invalidates them in sequence. Return the 401 directly
+						// rather than rotating so the client can prompt for re-login.
+						applyMonotonicAuthCooldown(
+							accountManager,
+							refreshed.account,
+							tokenInvalidationCooldownMs,
+						);
+						sessionAffinityStore?.forgetSession(context.sessionKey);
+						accountManager.saveToDiskDebounced();
+						res.writeHead(upstream.status, responseHeadersForClient(upstream.headers));
+						res.end(bodyText);
+						await usageRecorder.record({
+							outcome: "failure",
+							statusCode: upstream.status,
+							errorCode: "token_invalidated",
+							account: refreshed.account,
+						});
+						return;
+					}
+					applyMonotonicAuthCooldown(
+						accountManager,
 						refreshed.account,
 						DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
-						"auth-failure",
 					);
 					accountManager.saveToDiskDebounced();
 					exhaustionReason = "auth-failure";
@@ -1727,6 +1833,10 @@ export async function startRuntimeRotationProxy(
 						refreshed.account.index,
 						now(),
 					);
+					if (refreshed.account.index !== lastGlobalAccountIndex) {
+						lastGlobalAccountIndex = refreshed.account.index;
+					}
+					lastGlobalSwitchAt = now();
 				}
 				await persistRuntimeActiveAccount(
 					accountManager,
