@@ -34,7 +34,10 @@ export default defineConfig({
     // Wire the property-test global config so fc.configureGlobal (numRuns, time
     // budget) actually applies; it was previously a dead export never imported
     // (tests-ci-02).
-    setupFiles: ['test/property/setup.ts'],
+    // Global HOME/CODEX_HOME sandbox (tests-ci-01) must load first so any suite
+    // that forgets to redirect storage paths resolves into a throwaway temp dir
+    // rather than the developer's real ~/.codex. Then the property-test config.
+    setupFiles: ['test/helpers/global-sandbox.ts', 'test/property/setup.ts'],
     // Enforce single-worker / no file parallelism here too, not only in the npm
     // scripts. Several suites bind fixed resources (e.g. the OAuth callback on
     // port 1455) and collide under parallel files when vitest is run directly
