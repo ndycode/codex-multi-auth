@@ -17,7 +17,9 @@ const v2Ui: UiRuntimeOptions = {
 	glyphMode: "ascii",
 	palette: "green",
 	accent: "green",
-	theme: createUiTheme({ profile: "truecolor", glyphMode: "ascii" }),
+	// Force color on: this fixture exists to verify v2 styling emits ANSI codes,
+	// independent of the test env's NO_COLOR/FORCE_COLOR=0 (ui-04).
+	theme: createUiTheme({ profile: "truecolor", glyphMode: "ascii", disableColor: false }),
 };
 
 const legacyUi: UiRuntimeOptions = {

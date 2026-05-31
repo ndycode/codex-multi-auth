@@ -197,6 +197,36 @@ function getColors(profile: UiColorProfile, palette: UiPalette, accent: UiAccent
 }
 
 /**
+ * Decide whether ANSI color output should be suppressed (ui-04).
+ *
+ * Honors the de-facto conventions:
+ *   - NO_COLOR set (to anything) disables color (https://no-color.org)
+ *   - FORCE_COLOR overrides: "0"/"false" forces off, any other value forces on
+ *   - otherwise, color is off when stdout is not a TTY (piped/redirected)
+ *
+ * Injectable env/isTTY keep this unit-testable.
+ */
+export function shouldDisableColor(
+	env: NodeJS.ProcessEnv = process.env,
+	isTTY: boolean = Boolean(process.stdout?.isTTY),
+): boolean {
+	const force = (env.FORCE_COLOR ?? "").trim().toLowerCase();
+	if (force === "0" || force === "false") return true;
+	if (force.length > 0) return false; // explicit force-on wins over TTY/NO_COLOR
+	if (typeof env.NO_COLOR === "string") return true;
+	return !isTTY;
+}
+
+/** Replace every color token with an empty string (color-disabled theme). */
+function stripColors(colors: UiThemeColors): UiThemeColors {
+	const blanked = {} as Record<keyof UiThemeColors, string>;
+	for (const key of Object.keys(colors) as Array<keyof UiThemeColors>) {
+		blanked[key] = "";
+	}
+	return blanked as UiThemeColors;
+}
+
+/**
  * Create a UI theme object for terminal rendering.
  *
  * @param options - Optional configuration:
@@ -204,6 +234,7 @@ function getColors(profile: UiColorProfile, palette: UiPalette, accent: UiAccent
  *   - glyphMode: glyph rendering mode; defaults to `"ascii"`.
  *   - palette: overall palette variant; defaults to `"green"`.
  *   - accent: accent color selection; defaults to `"green"`.
+ *   - disableColor: force the color-stripped theme regardless of env/TTY.
  * @returns The constructed UiTheme object containing `profile`, `glyphMode`, `glyphs`, and `colors`.
  *
  * @remarks
@@ -216,16 +247,21 @@ export function createUiTheme(options?: {
 	glyphMode?: UiGlyphMode;
 	palette?: UiPalette;
 	accent?: UiAccent;
+	disableColor?: boolean;
 }): UiTheme {
 	const profile = options?.profile ?? "truecolor";
 	const glyphMode = options?.glyphMode ?? "ascii";
 	const palette = options?.palette ?? "green";
 	const accent = options?.accent ?? "green";
 	const resolvedGlyphMode = resolveGlyphMode(glyphMode);
+	const colors = getColors(profile, palette, accent);
+	// ui-04: honor NO_COLOR / FORCE_COLOR / non-TTY by blanking color tokens. The
+	// caller may also force this explicitly (e.g. for snapshot-stable output).
+	const disableColor = options?.disableColor ?? shouldDisableColor();
 	return {
 		profile,
 		glyphMode,
 		glyphs: getGlyphs(resolvedGlyphMode),
-		colors: getColors(profile, palette, accent),
+		colors: disableColor ? stripColors(colors) : colors,
 	};
 }
