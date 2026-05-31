@@ -55,6 +55,15 @@ vi.mock("../lib/logger.js", () => ({
 		error: loggerErrorMock,
 	})),
 	logWarn: vi.fn(),
+	maskEmail: vi.fn((email: string) => {
+		const at = email.indexOf("@");
+		if (at < 0) return "***@***";
+		const local = email.slice(0, at);
+		const domain = email.slice(at + 1);
+		const tld = domain.split(".").pop() ?? "";
+		return `${local.slice(0, Math.min(2, local.length))}***@***.${tld}`;
+	}),
+	maskString: vi.fn((value: string) => value),
 }));
 
 vi.mock("../lib/auth/auth.js", () => ({
@@ -1221,12 +1230,16 @@ describe("codex manager cli commands", () => {
 			codexCli: {
 				path: "/mock/.codex/state.json",
 				accountCount: 1,
-				activeEmail: "codex@example.com",
+				// activeEmail is redacted (errors-logging-04): the debug bundle is a
+				// shareable artifact and must not embed the raw account email.
+				activeEmail: "co***@***.com",
 				activeAccountId: "acc_codex",
 				syncVersion: 7,
 				sourceUpdatedAtMs: 1_710_000_000_000,
 			},
 		});
+		// Hard guarantee: the raw email never appears anywhere in the emitted bundle.
+		expect(String(logSpy.mock.calls[0]?.[0])).not.toContain("codex@example.com");
 	});
 
 	it.each([

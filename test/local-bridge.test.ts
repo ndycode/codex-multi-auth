@@ -129,4 +129,33 @@ describe("local bridge", () => {
 		expect(accepted.status).toBe(200);
 		expect(calls).toHaveLength(1);
 	});
+
+	// Regression (runtime-proxy-02): the bridge forwards the caller's bearer token to
+	// runtimeBaseUrl, so that target must be loopback. A remote runtimeBaseUrl would
+	// exfiltrate the local client token off-box; startup must refuse it.
+	it("refuses a non-loopback runtimeBaseUrl", async () => {
+		const { fetchImpl } = createFetch();
+		await expect(
+			startLocalBridge({
+				host: "127.0.0.1",
+				port: 0,
+				runtimeBaseUrl: "http://evil.example.com:8080",
+				fetchImpl,
+				requireAuth: false,
+			}),
+		).rejects.toThrow(/non-loopback runtimeBaseUrl/i);
+	});
+
+	it("rejects an invalid runtimeBaseUrl", async () => {
+		const { fetchImpl } = createFetch();
+		await expect(
+			startLocalBridge({
+				host: "127.0.0.1",
+				port: 0,
+				runtimeBaseUrl: "not a url",
+				fetchImpl,
+				requireAuth: false,
+			}),
+		).rejects.toThrow(/not a valid URL/i);
+	});
 });

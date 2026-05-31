@@ -4,6 +4,7 @@ import {
 	getValidationErrors,
 	safeParseJson,
 } from "../schemas.js";
+import { withFileOperationRetry } from "../fs-retry.js";
 import type { AccountStorageV3 } from "../storage.js";
 
 export function parseAndNormalizeStorage(
@@ -51,7 +52,12 @@ export async function loadAccountsFromPath(
 	storedVersion: unknown;
 	schemaErrors: string[];
 }> {
-	const content = await fs.readFile(path, "utf-8");
+	// Retry only transient FS lock errors (EBUSY/EPERM/EACCES/…) on the primary
+	// read so a momentary Windows lock doesn't fall through to WAL/backup recovery
+	// (storage-01). ENOENT is not a retryable code, so the missing-file contract is
+	// unchanged; JSON.parse runs outside the retry, so the SyntaxError → recovery
+	// contract documented above is also preserved.
+	const content = await withFileOperationRetry(() => fs.readFile(path, "utf-8"));
 
 	// Run the Zod-guarded JSON boundary first. Returns null on either a
 	// `SyntaxError` or a schema mismatch; we disambiguate below so the

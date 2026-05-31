@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, stat, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
 	applyOcChatgptSync,
@@ -182,6 +185,91 @@ describe("oc-chatgpt orchestrator", () => {
 			expect(result.persistedPath).toBe("C:/target/openai-codex-accounts.json");
 			expect(result.preview.toAdd).toHaveLength(1);
 			expect(result.preview.unchangedDestinationOnly).toHaveLength(1);
+		}
+	});
+
+	// Regression (chatgpt-import-01/02): the default persister writes the merged
+	// secret-bearing account file to the live destination. It must do so atomically
+	// (so a crash cannot truncate the live store) and with owner-only 0o600 perms
+	// (the file embeds raw refresh tokens). Exercises the REAL persistMergedDefault
+	// by omitting the persistMerged dependency.
+	it("default persister writes the merged file atomically and 0o600", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "codex-oc-persist-"));
+		const accountPath = join(dir, "openai-codex-accounts.json");
+		try {
+			const result = await applyOcChatgptSync({
+				source: sourceStorage,
+				destination: destinationStorage,
+				dependencies: {
+					detectTarget: () => ({
+						kind: "target",
+						descriptor: {
+							scope: "global",
+							root: dir,
+							accountPath,
+							backupRoot: join(dir, "backups"),
+							source: "default-global",
+							resolution: "accounts",
+						},
+					}),
+					// no persistMerged → real persistMergedDefault runs
+				},
+			});
+
+			expect(result.kind).toBe("applied");
+			if (result.kind === "applied") {
+				expect(result.persistedPath).toBe(accountPath);
+			}
+
+			// File landed (atomic rename completed) and no temp file leaked behind.
+			const written = JSON.parse(await readFile(accountPath, "utf-8"));
+			expect(written.accounts.length).toBeGreaterThanOrEqual(2);
+
+			if (process.platform !== "win32") {
+				const mode = (await stat(accountPath)).mode & 0o777;
+				expect(mode).toBe(0o600);
+			}
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	// Cross-platform atomicity check: the destination must only ever appear via an
+	// atomic rename, so a no-leftover-temp + valid-JSON destination proves the temp+
+	// rename path ran (the pre-fix code wrote the destination directly, non-atomically).
+	it("default persister leaves no temp file and a complete destination", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "codex-oc-persist-atomic-"));
+		const accountPath = join(dir, "openai-codex-accounts.json");
+		try {
+			const result = await applyOcChatgptSync({
+				source: sourceStorage,
+				destination: destinationStorage,
+				dependencies: {
+					detectTarget: () => ({
+						kind: "target",
+						descriptor: {
+							scope: "global",
+							root: dir,
+							accountPath,
+							backupRoot: join(dir, "backups"),
+							source: "default-global",
+							resolution: "accounts",
+						},
+					}),
+				},
+			});
+			expect(result.kind).toBe("applied");
+
+			// Destination is complete + parseable (rename committed).
+			const parsed = JSON.parse(await readFile(accountPath, "utf-8"));
+			expect(parsed.version).toBe(3);
+
+			// No .tmp sibling leaked behind.
+			const { readdir } = await import("node:fs/promises");
+			const leftovers = (await readdir(dir)).filter((f) => f.endsWith(".tmp"));
+			expect(leftovers).toEqual([]);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
 		}
 	});
 

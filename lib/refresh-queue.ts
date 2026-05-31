@@ -8,6 +8,7 @@
  * Ported from antigravity-auth refresh-queue.ts pattern.
  */
 
+import { createHash } from "node:crypto";
 import { refreshAccessToken } from "./auth/auth.js";
 import type { TokenResult } from "./types.js";
 import { createLogger } from "./logger.js";
@@ -15,6 +16,19 @@ import { RefreshLeaseCoordinator } from "./refresh-lease.js";
 import { isAbortError } from "./utils.js";
 
 const log = createLogger("refresh-queue");
+
+/**
+ * Non-reversible correlation fingerprint for a token, for logs.
+ *
+ * Logging the trailing characters of a refresh token (`token.slice(-6)`) leaks
+ * recoverable secret material into 0600 log files. A short SHA-256 prefix gives
+ * the same cross-log correlation ("is this the same token?") without exposing
+ * any part of the token itself.
+ */
+function tokenFingerprint(token: string): string {
+  if (!token) return "none";
+  return createHash("sha256").update(token).digest("hex").slice(0, 8);
+}
 
 /**
  * Entry representing an in-flight token refresh operation.
@@ -103,7 +117,7 @@ export class RefreshQueue {
     const existing = this.pending.get(refreshToken);
     if (existing) {
       log.info("Reusing in-flight refresh for token", {
-        tokenSuffix: refreshToken.slice(-6),
+        tokenSuffix: tokenFingerprint(refreshToken),
         waitingMs: Date.now() - existing.startedAt,
       });
       return existing.promise;
@@ -116,8 +130,8 @@ export class RefreshQueue {
       const originalEntry = this.pending.get(rotatedFrom);
       if (originalEntry) {
         log.info("Reusing in-flight refresh via rotation mapping", {
-          newTokenSuffix: refreshToken.slice(-6),
-          originalTokenSuffix: rotatedFrom.slice(-6),
+          newTokenSuffix: tokenFingerprint(refreshToken),
+          originalTokenSuffix: tokenFingerprint(rotatedFrom),
           waitingMs: Date.now() - originalEntry.startedAt,
         });
         return originalEntry.promise;
@@ -141,7 +155,7 @@ export class RefreshQueue {
         return undefined;
       }
       log.info("Refresh generation superseded; joining newer in-flight refresh", {
-        tokenSuffix: refreshToken.slice(-6),
+        tokenSuffix: tokenFingerprint(refreshToken),
         staleGeneration: generation,
         activeGeneration: current.generation,
       });
@@ -153,7 +167,7 @@ export class RefreshQueue {
         lease = await this.leaseCoordinator.acquire(refreshToken);
       } catch (error) {
         log.warn("Refresh lease acquire failed; falling back to local refresh", {
-          tokenSuffix: refreshToken.slice(-6),
+          tokenSuffix: tokenFingerprint(refreshToken),
           error: (error as Error)?.message ?? String(error),
         });
         const supersedingPromise = getSupersedingPromise();
@@ -165,7 +179,7 @@ export class RefreshQueue {
       }
       if (lease.role === "follower" && lease.result) {
         log.info("Using refresh result from cross-process lease", {
-          tokenSuffix: refreshToken.slice(-6),
+          tokenSuffix: tokenFingerprint(refreshToken),
         });
         return lease.result;
       }
@@ -181,7 +195,7 @@ export class RefreshQueue {
           await lease.release(result);
         } catch (error) {
           log.warn("Failed to publish lease refresh result", {
-            tokenSuffix: refreshToken.slice(-6),
+            tokenSuffix: tokenFingerprint(refreshToken),
             error: (error as Error)?.message ?? String(error),
           });
         }
@@ -191,7 +205,7 @@ export class RefreshQueue {
           await lease.release();
         } catch (error) {
           log.warn("Failed to release refresh lease", {
-            tokenSuffix: refreshToken.slice(-6),
+            tokenSuffix: tokenFingerprint(refreshToken),
             error: (error as Error)?.message ?? String(error),
           });
         }
@@ -239,8 +253,8 @@ export class RefreshQueue {
     if (result.type === "success" && result.refresh !== refreshToken) {
       this.tokenRotationMap.set(refreshToken, result.refresh);
       log.info("Token rotated during refresh", {
-        oldTokenSuffix: refreshToken.slice(-6),
-        newTokenSuffix: result.refresh.slice(-6),
+        oldTokenSuffix: tokenFingerprint(refreshToken),
+        newTokenSuffix: tokenFingerprint(result.refresh),
       });
     }
     
@@ -252,7 +266,7 @@ export class RefreshQueue {
    */
   private async executeRefresh(refreshToken: string): Promise<TokenResult> {
     const startTime = Date.now();
-    log.info("Starting token refresh", { tokenSuffix: refreshToken.slice(-6) });
+    log.info("Starting token refresh", { tokenSuffix: tokenFingerprint(refreshToken) });
     const timeoutMs = Math.max(1_000, this.maxEntryAgeMs);
     const timeoutController = new AbortController();
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -276,12 +290,12 @@ export class RefreshQueue {
 
       if (result.type === "success") {
         log.info("Token refresh succeeded", {
-          tokenSuffix: refreshToken.slice(-6),
+          tokenSuffix: tokenFingerprint(refreshToken),
           durationMs: duration,
         });
       } else {
         log.warn("Token refresh failed", {
-          tokenSuffix: refreshToken.slice(-6),
+          tokenSuffix: tokenFingerprint(refreshToken),
           reason: result.reason,
           durationMs: duration,
         });
@@ -292,7 +306,7 @@ export class RefreshQueue {
       const duration = Date.now() - startTime;
       if (isAbortError(error)) {
         log.warn("Token refresh aborted", {
-          tokenSuffix: refreshToken.slice(-6),
+          tokenSuffix: tokenFingerprint(refreshToken),
           error: (error as Error)?.message ?? String(error),
           durationMs: duration,
         });
@@ -303,7 +317,7 @@ export class RefreshQueue {
         };
       }
       log.error("Token refresh threw exception", {
-        tokenSuffix: refreshToken.slice(-6),
+        tokenSuffix: tokenFingerprint(refreshToken),
         error: (error as Error)?.message ?? String(error),
         durationMs: duration,
       });
@@ -331,7 +345,7 @@ export class RefreshQueue {
       if (ageMs <= this.maxEntryAgeMs) continue;
       if (entry.stage === "acquire") {
         log.warn("Evicting stale refresh entry during lease acquire stage", {
-          tokenSuffix: token.slice(-6),
+          tokenSuffix: tokenFingerprint(token),
           ageMs,
         });
         this.pending.delete(token);
@@ -340,7 +354,7 @@ export class RefreshQueue {
       }
       if (!entry.staleWarningLogged) {
         log.warn("Refresh entry exceeded stale warning threshold", {
-          tokenSuffix: token.slice(-6),
+          tokenSuffix: tokenFingerprint(token),
           ageMs,
         });
         entry.staleWarningLogged = true;

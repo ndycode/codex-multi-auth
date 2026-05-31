@@ -137,7 +137,8 @@
 		"LICENSE"
 	],
 	"bundleDependencies": [
-		"@codex-ai/plugin"
+		"@codex-ai/plugin",
+		"@codex-ai/sdk"
 	],
 	"lint-staged": {
 		"*.ts": [
@@ -154,7 +155,6 @@
 		"typescript": "^5"
 	},
 	"devDependencies": {
-		"@codex-ai/sdk": "file:vendor/codex-ai-sdk",
 		"@fast-check/vitest": "^0.2.4",
 		"@types/node": "^25.3.0",
 		"@typescript-eslint/eslint-plugin": "^8.56.0",
@@ -171,6 +171,7 @@
 	},
 	"dependencies": {
 		"@codex-ai/plugin": "file:vendor/codex-ai-plugin",
+		"@codex-ai/sdk": "file:vendor/codex-ai-sdk",
 		"@openauthjs/openauth": "^0.4.3",
 		"hono": "4.12.18",
 		"undici": "6.25.0",

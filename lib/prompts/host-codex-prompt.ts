@@ -12,14 +12,13 @@ import { getCodexCacheDir } from "../runtime-paths.js";
 import { sleep } from "../utils.js";
 
 const DEFAULT_HOST_CODEX_PROMPT_URLS = [
-	"https://raw.githubusercontent.com/anomalyco/Codex/dev/packages/Codex/src/session/prompt/codex.txt",
-	"https://raw.githubusercontent.com/sst/Codex/dev/packages/Codex/src/session/prompt/codex.txt",
-	"https://raw.githubusercontent.com/anomalyco/Codex/main/packages/Codex/src/session/prompt/codex.txt",
-	"https://raw.githubusercontent.com/sst/Codex/main/packages/Codex/src/session/prompt/codex.txt",
-	"https://raw.githubusercontent.com/anomalyco/Codex/dev/packages/Codex/src/session/prompt/codex.md",
-	"https://raw.githubusercontent.com/sst/Codex/dev/packages/Codex/src/session/prompt/codex.md",
-	"https://raw.githubusercontent.com/anomalyco/Codex/main/packages/Codex/src/session/prompt/codex.md",
-	"https://raw.githubusercontent.com/sst/Codex/main/packages/Codex/src/session/prompt/codex.md",
+	// Canonical upstream is sst/opencode. The previous list pointed at a rebrand
+	// artifact (`anomalyco/Codex`, `sst/Codex`, `packages/Codex/...`) that 404s, so
+	// the ETag fetch path was dead and re-ran on every request. Verified 2026-05-31:
+	// only the `dev` branch `codex.txt` returns 200; `main` is kept as a cheap
+	// self-healing fallback in case the branch layout changes upstream.
+	"https://raw.githubusercontent.com/sst/opencode/dev/packages/opencode/src/session/prompt/codex.txt",
+	"https://raw.githubusercontent.com/sst/opencode/main/packages/opencode/src/session/prompt/codex.txt",
 ] as const;
 const CODEX_PROMPT_URL_OVERRIDE_ENV = "CODEX_PROMPT_SOURCE_URL";
 const LEGACY_HOST_CODEX_URL_OVERRIDE_ENV = "CODEX_CODEX_PROMPT_URL";

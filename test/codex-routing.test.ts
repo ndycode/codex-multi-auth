@@ -21,36 +21,14 @@ describe("codex routing helpers", () => {
 		expect(shouldHandleMultiAuthAuth(["status"])).toBe(false);
 	});
 
-	it("keeps wrapper auth routing aligned with manager subcommands", () => {
-		const managerSubcommands = [
-			"login",
-			"list",
-			"status",
-			"switch",
-			"check",
-			"features",
-			"usage",
-			"verify-flagged",
-			"forecast",
-			"best",
-			"report",
-			"account",
-			"budget",
-			"bridge",
-			"integrations",
-			"models",
-			"monitor",
-			"rotation",
-			"why-selected",
-			"verify",
-			"fix",
-			"doctor",
-			"config",
-			"init-config",
-			"debug",
-		];
+	it("keeps wrapper auth routing aligned with manager subcommands", async () => {
+		// Import the REAL dispatcher command set instead of hardcoding it, so this
+		// test fails whenever a manager command is added without a matching wrapper
+		// route (cli-manager-01/02). Every command the standalone manager dispatches
+		// must also be routable through the `codex-multi-auth-codex auth <cmd>` wrapper.
+		const { ACCOUNT_MANAGER_COMMANDS } = await import("../lib/codex-manager.js");
 
-		for (const subcommand of managerSubcommands) {
+		for (const subcommand of ACCOUNT_MANAGER_COMMANDS) {
 			expect(AUTH_SUBCOMMANDS.has(subcommand), subcommand).toBe(true);
 			expect(shouldHandleMultiAuthAuth(["auth", subcommand]), subcommand).toBe(true);
 		}

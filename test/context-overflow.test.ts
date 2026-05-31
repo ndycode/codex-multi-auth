@@ -73,19 +73,37 @@ describe("Context Overflow Handler", () => {
 			expect(response.headers.get("X-Codex-Plugin-Error-Type")).toBe("context_overflow");
 		});
 
-		it("includes SSE events with helpful message", async () => {
+		it("includes Responses-API SSE events with helpful message", async () => {
 			const response = createContextOverflowResponse("gpt-5.1-codex");
 			const text = await response.text();
-			
-			expect(text).toContain("event: message_start");
-			expect(text).toContain("event: content_block_start");
-			expect(text).toContain("event: content_block_delta");
-			expect(text).toContain("event: content_block_stop");
-			expect(text).toContain("event: message_delta");
-			expect(text).toContain("event: message_stop");
+
+			// Responses-API dialect (recovery-01) — NOT Anthropic Messages events.
+			expect(text).toContain("event: response.created");
+			expect(text).toContain("event: response.output_item.added");
+			expect(text).toContain("event: response.output_text.delta");
+			expect(text).toContain("event: response.output_text.done");
+			expect(text).toContain("event: response.completed");
+			// Old Anthropic envelope must be gone.
+			expect(text).not.toContain("event: message_start");
+			expect(text).not.toContain("content_block_delta");
 			expect(text).toContain("/compact");
 			expect(text).toContain("/clear");
 			expect(text).toContain("/undo");
+		});
+
+		it("round-trips through the Responses SSE parser the client uses", async () => {
+			const { convertSseToJson } = await import("../lib/request/response-handler.js");
+			const response = createContextOverflowResponse("gpt-5.1-codex");
+			const parsed = await convertSseToJson(response, new Headers());
+			const body = (await parsed.json()) as {
+				output_text?: string;
+				output?: Array<{ content?: Array<{ text?: string }> }>;
+			};
+			// The notice is actually recoverable by the client (the whole point of
+			// recovery-01): both the flattened output_text and the structured output
+			// carry the advisory message.
+			expect(body.output_text).toContain("/compact");
+			expect(body.output?.[0]?.content?.[0]?.text).toContain("Context is too long");
 		});
 
 		it("includes model in response", async () => {

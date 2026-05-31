@@ -6,13 +6,45 @@ import { describe, it, expect, afterEach } from "vitest";
 import http from "node:http";
 import { startLocalOAuthServer } from "../lib/auth/server.js";
 
+const OAUTH_PORT = 1455;
+
+/**
+ * Wait until the OAuth port is actually free again.
+ *
+ * `startLocalOAuthServer().close()` stops accepting connections but releases the
+ * listening socket asynchronously (via the server's close callback), and the test
+ * helper does not await it. Each `it()` here binds the same fixed port 1455, so
+ * without waiting for release the next bind can intermittently hit EADDRINUSE under
+ * full-suite load. This polls a throwaway listener until the port binds cleanly,
+ * making teardown deterministic (hardens the tests-ci-03 fragility).
+ */
+async function waitForPortFree(port: number, timeoutMs = 2000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		const free = await new Promise<boolean>((resolve) => {
+			const probe = http.createServer();
+			probe.once("error", () => {
+				probe.close();
+				resolve(false);
+			});
+			probe.listen(port, "127.0.0.1", () => {
+				probe.close(() => resolve(true));
+			});
+		});
+		if (free) return;
+		if (Date.now() >= deadline) return; // best effort; don't hang the suite
+		await new Promise((r) => setTimeout(r, 25));
+	}
+}
+
 describe("OAuth Server Integration", () => {
 	let serverInfo: Awaited<ReturnType<typeof startLocalOAuthServer>> | null = null;
 
-	afterEach(() => {
+	afterEach(async () => {
 		if (serverInfo) {
 			serverInfo.close();
 			serverInfo = null;
+			await waitForPortFree(OAUTH_PORT);
 		}
 	});
 

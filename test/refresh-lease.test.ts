@@ -483,4 +483,112 @@ describe("RefreshLeaseCoordinator", () => {
       isDirectory: expect.any(Function),
     });
   });
+
+  // Regression: lease artifacts embed OAuth token material (the result file
+  // carries the refreshed access + refresh tokens). They must be created with
+  // owner-only permissions (0o600 files under a 0o700 dir), not at the umask.
+  // POSIX-only: Windows does not enforce these mode bits.
+  (process.platform === "win32" ? it.skip : it)(
+    "creates lease dir 0o700 and token result/lock files 0o600",
+    async () => {
+      const ownLeaseDir = join(leaseDir, "perm-check");
+      const coordinator = new RefreshLeaseCoordinator({
+        enabled: true,
+        leaseDir: ownLeaseDir,
+        leaseTtlMs: 5_000,
+        waitTimeoutMs: 500,
+        pollIntervalMs: 25,
+        resultTtlMs: 5_000,
+      });
+
+      const owner = await coordinator.acquire("token-perms");
+      expect(owner.role).toBe("owner");
+
+      const tokenHash = hashToken("token-perms");
+      const lockPath = join(ownLeaseDir, `${tokenHash}.lock`);
+      const resultPath = join(ownLeaseDir, `${tokenHash}.result.json`);
+
+      const dirMode = (await fsPromises.stat(ownLeaseDir)).mode & 0o777;
+      expect(dirMode).toBe(0o700);
+      const lockMode = (await fsPromises.stat(lockPath)).mode & 0o777;
+      expect(lockMode).toBe(0o600);
+
+      await owner.release(sampleSuccessResult);
+
+      const resultMode = (await fsPromises.stat(resultPath)).mode & 0o777;
+      expect(resultMode).toBe(0o600);
+    },
+  );
+
+  // Cross-platform companion to the POSIX on-disk check above: assert the code
+  // PASSES owner-only mode args to fs, regardless of whether the OS enforces them.
+  // Runs on Windows too (where the on-disk mode assertions are skipped).
+  it("passes 0o700 dir mode and 0o600 file modes to fsOps", async () => {
+    const calls: { mkdir: unknown[][]; open: unknown[][]; writeFile: unknown[][] } = {
+      mkdir: [],
+      open: [],
+      writeFile: [],
+    };
+    const fsOps = {
+      mkdir: (...a: Parameters<typeof fsPromises.mkdir>) => {
+        calls.mkdir.push(a);
+        return fsPromises.mkdir(...a);
+      },
+      open: (...a: Parameters<typeof fsPromises.open>) => {
+        calls.open.push(a);
+        return fsPromises.open(...a);
+      },
+      writeFile: (...a: Parameters<typeof fsPromises.writeFile>) => {
+        calls.writeFile.push(a);
+        return fsPromises.writeFile(...a);
+      },
+      rename: fsPromises.rename.bind(fsPromises),
+      unlink: fsPromises.unlink.bind(fsPromises),
+      readFile: fsPromises.readFile.bind(fsPromises),
+      stat: fsPromises.stat.bind(fsPromises),
+      readdir: fsPromises.readdir.bind(fsPromises),
+    };
+    const coordinator = new RefreshLeaseCoordinator({
+      enabled: true,
+      leaseDir: join(leaseDir, "spy-check"),
+      leaseTtlMs: 5_000,
+      waitTimeoutMs: 500,
+      pollIntervalMs: 25,
+      resultTtlMs: 5_000,
+      fsOps,
+    });
+
+    const owner = await coordinator.acquire("token-spy");
+    await owner.release(sampleSuccessResult);
+
+    // leaseDir created with 0o700
+    expect(
+      calls.mkdir.some(
+        ([p, opts]) =>
+          typeof p === "string" &&
+          p.includes("spy-check") &&
+          typeof opts === "object" &&
+          opts !== null &&
+          (opts as { mode?: number }).mode === 0o700,
+      ),
+    ).toBe(true);
+    // lock opened "wx" with 0o600
+    expect(
+      calls.open.some(
+        ([p, flags, mode]) =>
+          typeof p === "string" && p.endsWith(".lock") && flags === "wx" && mode === 0o600,
+      ),
+    ).toBe(true);
+    // result temp file written with 0o600
+    expect(
+      calls.writeFile.some(
+        ([p, , opts]) =>
+          typeof p === "string" &&
+          p.includes(".result.json") &&
+          typeof opts === "object" &&
+          opts !== null &&
+          (opts as { mode?: number }).mode === 0o600,
+      ),
+    ).toBe(true);
+  });
 });

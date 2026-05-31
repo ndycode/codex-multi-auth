@@ -428,4 +428,4 @@ export function getRequestId(): number {
 	return requestCounter;
 }
 
-export { formatDuration, maskEmail };
+export { formatDuration, maskEmail, maskString };

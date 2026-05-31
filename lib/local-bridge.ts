@@ -136,6 +136,22 @@ export async function startLocalBridge(
 	if (!runtimeBaseUrl) {
 		throw new Error("Local bridge requires a runtimeBaseUrl.");
 	}
+	// Egress guard (runtime-proxy-02): the bridge forwards the caller's bearer token
+	// to runtimeBaseUrl. That target must be the loopback runtime proxy, never an
+	// arbitrary remote host — otherwise a misconfigured base URL would exfiltrate the
+	// local client token (and, downstream, managed account material) off-box.
+	let runtimeHost: string;
+	try {
+		runtimeHost = new URL(runtimeBaseUrl).hostname;
+	} catch {
+		throw new Error(`Local bridge runtimeBaseUrl is not a valid URL: ${runtimeBaseUrl}`);
+	}
+	if (!isLoopbackHost(runtimeHost)) {
+		throw new Error(
+			`Local bridge refuses to forward to non-loopback runtimeBaseUrl host "${runtimeHost}". ` +
+				"It must target the loopback runtime proxy.",
+		);
+	}
 	const port = options.port ?? 0;
 	const fetchImpl = options.fetchImpl ?? (undiciFetch as typeof fetch);
 	const requireAuth = options.requireAuth ?? true;

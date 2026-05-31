@@ -118,6 +118,10 @@ async function evaluateBudgets(input: {
 		const summary = await summarizeUsageLedger({
 			since: getBudgetWindowStart(limit.window, input.now),
 			until: input.now,
+			// Budget windows (e.g. monthly) can span a ledger rotation. Without archives,
+			// rotated-out rows are dropped from the sum, under-counting spend and letting
+			// usage exceed the limit within the active window (quota-forecast-03).
+			includeArchives: true,
 		});
 		evaluations.push(evaluateBudgetGuard(limit, summary));
 	}

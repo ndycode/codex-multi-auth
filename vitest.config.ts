@@ -31,6 +31,17 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    // Wire the property-test global config so fc.configureGlobal (numRuns, time
+    // budget) actually applies; it was previously a dead export never imported
+    // (tests-ci-02).
+    setupFiles: ['test/property/setup.ts'],
+    // Enforce single-worker / no file parallelism here too, not only in the npm
+    // scripts. Several suites bind fixed resources (e.g. the OAuth callback on
+    // port 1455) and collide under parallel files when vitest is run directly
+    // (tests-ci-03).
+    maxWorkers: 1,
+    minWorkers: 1,
+    fileParallelism: false,
     exclude: [
       'node_modules/**',
       '.codex/**',

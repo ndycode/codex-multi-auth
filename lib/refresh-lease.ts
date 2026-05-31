@@ -198,7 +198,11 @@ export class RefreshLeaseCoordinator {
 		const tokenHash = hashRefreshToken(refreshToken);
 		const lockPath = join(this.leaseDir, `${tokenHash}.lock`);
 		const resultPath = join(this.leaseDir, `${tokenHash}.result.json`);
-		await this.fsOps.mkdir(this.leaseDir, { recursive: true });
+		// Lease artifacts hold full OAuth token material (the result file embeds the
+		// refreshed access+refresh tokens). Restrict the directory to the owner so the
+		// artifacts inherit a private parent, matching the at-rest convention used by
+		// account storage (mode 0o600 files under a 0o700 dir).
+		await this.fsOps.mkdir(this.leaseDir, { recursive: true, mode: 0o700 });
 		void this.pruneExpiredArtifacts();
 
 		const deadline = Date.now() + this.waitTimeoutMs;
@@ -215,7 +219,7 @@ export class RefreshLeaseCoordinator {
 			}
 
 			try {
-				const handle = await this.fsOps.open(lockPath, "wx");
+				const handle = await this.fsOps.open(lockPath, "wx", 0o600);
 				try {
 					const now = Date.now();
 					const payload: LeaseFilePayload = {
@@ -308,7 +312,12 @@ export class RefreshLeaseCoordinator {
 		};
 		const tempPath = `${resultPath}.${process.pid}.${Date.now()}.tmp`;
 		try {
-			await this.fsOps.writeFile(tempPath, `${JSON.stringify(payload)}\n`, "utf8");
+			// mode 0o600: the result payload embeds the refreshed access + refresh
+			// tokens; it must never be created at the (commonly world-readable) umask.
+			await this.fsOps.writeFile(tempPath, `${JSON.stringify(payload)}\n`, {
+				encoding: "utf8",
+				mode: 0o600,
+			});
 			await this.fsOps.rename(tempPath, resultPath);
 		} finally {
 			await safeUnlink(tempPath, undefined, this.fsOps);

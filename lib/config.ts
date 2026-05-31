@@ -1901,6 +1901,24 @@ const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
 		envNames: ["CODEX_AUTH_PREEMPTIVE_QUOTA_MAX_DEFERRAL_MS"],
 		getValue: getPreemptiveQuotaMaxDeferralMs,
 	},
+	// config-01/config-07: these three live settings were missing from the explain
+	// report, so `config explain` silently under-reported the effective config. A
+	// parity test (test/config-explain.test.ts) now guards this class of drift.
+	{
+		key: "responseContinuation",
+		envNames: ["CODEX_AUTH_RESPONSE_CONTINUATION"],
+		getValue: getResponseContinuation,
+	},
+	{
+		key: "backgroundResponses",
+		envNames: ["CODEX_AUTH_BACKGROUND_RESPONSES"],
+		getValue: getBackgroundResponses,
+	},
+	{
+		key: "routingMutex",
+		envNames: ["CODEX_AUTH_ROUTING_MUTEX"],
+		getValue: getRoutingMutexMode,
+	},
 ];
 
 export function getPluginConfigExplainReport(): ConfigExplainReport {

@@ -201,7 +201,10 @@ type TokenSuccessWithAccount = TokenSuccess & {
 };
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
 const log = createLogger("codex-manager");
-const ACCOUNT_MANAGER_COMMANDS = new Set([
+// Exported so the wrapper-routing alignment test (test/codex-routing.test.ts) can
+// assert AUTH_SUBCOMMANDS ⊇ ACCOUNT_MANAGER_COMMANDS without hardcoding a list that
+// silently drifts from the dispatcher (cli-manager-01/02).
+export const ACCOUNT_MANAGER_COMMANDS = new Set([
 	"login",
 	"list",
 	"status",

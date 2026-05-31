@@ -324,6 +324,41 @@ describe("runtime rotation proxy", () => {
 		).rejects.toThrow("clientApiKey");
 	});
 
+	// Regression (runtime-proxy-01): the proxy forwards managed OAuth tokens and must
+	// stay loopback-only. A non-loopback host must be refused unless explicitly opted in.
+	it("refuses to bind a non-loopback host by default", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { fetchImpl } = createRecordingFetch(() => textEventStream());
+
+		await expect(
+			startRuntimeRotationProxy({
+				accountManager,
+				fetchImpl,
+				clientApiKey: DEFAULT_CLIENT_API_KEY,
+				host: "0.0.0.0",
+				upstreamBaseUrl: "https://example.test/backend-api",
+			}),
+		).rejects.toThrow(/non-loopback/i);
+	});
+
+	it("allows a non-loopback host only with the explicit opt-in", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { fetchImpl } = createRecordingFetch(() => textEventStream());
+
+		const proxy = await startRuntimeRotationProxy({
+			accountManager,
+			fetchImpl,
+			clientApiKey: DEFAULT_CLIENT_API_KEY,
+			host: "127.0.0.1",
+			allowNonLoopbackHost: true,
+			upstreamBaseUrl: "https://example.test/backend-api",
+		});
+		expect(proxy.port).toBeGreaterThan(0);
+		await proxy.close();
+	});
+
 	it("records post-startup server errors without throwing uncaught errors", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now));

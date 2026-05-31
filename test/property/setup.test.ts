@@ -3,6 +3,16 @@ import * as fc from "fast-check";
 import { arbHealthScore, arbAccountIndex, arbQuotaKey } from "./helpers.js";
 
 describe("Property test setup verification", () => {
+  // Regression (tests-ci-02): the global property-test config is wired via
+  // vitest setupFiles, so fc.configureGlobal actually applies here. Previously
+  // setup.ts was never imported and these settings were inert.
+  it("applies the global fast-check config from setup.ts", () => {
+    const global = fc.readConfigureGlobal();
+    expect(global?.numRuns).toBe(100);
+    expect(global?.skipAllAfterTimeLimit).toBe(10000);
+    expect(global?.endOnFailure).toBe(true);
+  });
+
   it("health scores are always in valid range", () => {
     fc.assert(
       fc.property(arbHealthScore, (score) => {

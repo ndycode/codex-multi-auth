@@ -202,4 +202,18 @@ describe("getPluginConfigExplainReport", () => {
 		expect(entry).toBeDefined();
 		expect(entry?.source).toBe("env");
 	});
+
+	// Parity guard (config-07): every key in DEFAULT_PLUGIN_CONFIG must have a
+	// corresponding `config explain` entry. This prevents the class of drift where a
+	// new setting is added to the config + schema but forgotten in
+	// CONFIG_EXPLAIN_ENTRIES (the original config-01; the beta.2 token-invalidation
+	// keys were the most recent near-miss). If this fails, add the missing entry.
+	it("explains every key in DEFAULT_PLUGIN_CONFIG (no drift)", async () => {
+		const mod = await import("../lib/config.js");
+		const report = mod.getPluginConfigExplainReport();
+		const explained = new Set(report.entries.map((item) => item.key));
+		const configKeys = Object.keys(mod.DEFAULT_PLUGIN_CONFIG);
+		const missing = configKeys.filter((key) => !explained.has(key));
+		expect(missing).toEqual([]);
+	});
 });

@@ -1,4 +1,18 @@
 import type { ConfigExplainReport } from "../../config.js";
+import { homedir } from "node:os";
+import { maskEmail } from "../../logger.js";
+
+/**
+ * Replace the user's home-directory prefix with `~` so the bundle does not leak
+ * the OS username embedded in absolute paths (errors-logging-04).
+ */
+function redactHome(value: string): string {
+	const home = homedir();
+	if (home && value.startsWith(home)) {
+		return `~${value.slice(home.length)}`;
+	}
+	return value;
+}
 
 export function runDebugBundleCommand(
 	args: string[],
@@ -41,7 +55,7 @@ export function runDebugBundleCommand(
 		.then(([config, accounts, flagged, codexCli]) => {
 			const bundle = {
 				generatedAt: new Date().toISOString(),
-				storagePath: deps.getStoragePath(),
+				storagePath: redactHome(deps.getStoragePath()),
 				lastAccountsSaveTimestamp: deps.getLastAccountsSaveTimestamp(),
 				config,
 				accounts: {
@@ -59,9 +73,11 @@ export function runDebugBundleCommand(
 				},
 				codexCli: codexCli
 					? {
-							path: codexCli.path,
+							path: redactHome(codexCli.path),
 							accountCount: codexCli.accounts.length,
-							activeEmail: codexCli.activeEmail ?? null,
+							activeEmail: codexCli.activeEmail
+								? maskEmail(codexCli.activeEmail)
+								: null,
 							activeAccountId: codexCli.activeAccountId ?? null,
 							syncVersion: codexCli.syncVersion ?? null,
 							sourceUpdatedAtMs: codexCli.sourceUpdatedAtMs ?? null,
