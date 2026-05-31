@@ -8,6 +8,7 @@ import {
 	setCorrelationId,
 	getCorrelationId,
 	clearCorrelationId,
+	runWithCorrelationId,
 	logDebug,
 	logInfo,
 	logWarn,
@@ -167,6 +168,37 @@ describe('Logger Module', () => {
 			setCorrelationId();
 			expect(getCorrelationId()).not.toBeNull();
 			clearCorrelationId();
+			expect(getCorrelationId()).toBeNull();
+		});
+
+		// errors-logging-02: AsyncLocalStorage scopes the id per async context, so
+		// concurrent requests cannot read each other's correlation id.
+		it('isolates correlation IDs across concurrent async scopes', async () => {
+			clearCorrelationId();
+			const seen: Record<string, string | null> = {};
+			await Promise.all([
+				runWithCorrelationId('req-A', async () => {
+					await new Promise((r) => setTimeout(r, 10));
+					seen.a = getCorrelationId();
+				}),
+				runWithCorrelationId('req-B', async () => {
+					await new Promise((r) => setTimeout(r, 5));
+					seen.b = getCorrelationId();
+				}),
+			]);
+			expect(seen.a).toBe('req-A');
+			expect(seen.b).toBe('req-B');
+			// Outside any scope, the concurrent ids did not leak into the global.
+			expect(getCorrelationId()).toBeNull();
+		});
+
+		it('setCorrelationId inside a scope updates only that scope', async () => {
+			clearCorrelationId();
+			await runWithCorrelationId('outer', async () => {
+				expect(getCorrelationId()).toBe('outer');
+				setCorrelationId('updated');
+				expect(getCorrelationId()).toBe('updated');
+			});
 			expect(getCorrelationId()).toBeNull();
 		});
 

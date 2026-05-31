@@ -40,7 +40,7 @@ import {
 	getAccountIdentityKey,
 	getRuntimeAccountIdentityKey,
 } from "./storage/identity.js";
-import { getCircuitBreaker, resetAllCircuitBreakers } from "./circuit-breaker.js";
+import { getCircuitBreaker, resetAllCircuitBreakers, removeCircuitBreaker } from "./circuit-breaker.js";
 import {
 	getStoragePathState,
 	runWithStoragePathState,
@@ -1459,6 +1459,18 @@ export class AccountManager {
 		}
 
 		this.accounts.splice(idx, 1);
+		// Clear identity-keyed tracker + circuit state for the removed account so a
+		// later re-add of the same identity does not inherit stale health/token
+		// penalties or an open circuit (accounts-02). Done before the numeric-range
+		// clear below, which handles the index-shift of the *remaining* accounts.
+		const removedIdentityKey = getRuntimeAccountIdentityKey(account);
+		if (removedIdentityKey !== undefined) {
+			getHealthTracker().clearAccountKey(removedIdentityKey);
+			getTokenTracker().clearAccountKey(removedIdentityKey);
+		}
+		if (typeof account.circuitKeyId === "string" && account.circuitKeyId) {
+			removeCircuitBreaker(account.circuitKeyId);
+		}
 		// Clear numeric-keyed tracker state in the shifted range. After reindex,
 		// any refresh-only account that moved from N to N-1 must not inherit the
 		// stale health/token entries that used to belong to the old numeric slot.

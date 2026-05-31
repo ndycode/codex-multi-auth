@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
@@ -20,6 +20,7 @@ import {
 	getMinRotationIntervalMs,
 	getTokenInvalidationCooldownMs,
 	getTokenRefreshSkewMs,
+	getPidOffsetEnabled,
 	loadPluginConfig,
 } from "./config.js";
 import {
@@ -44,7 +45,7 @@ import {
 	type RuntimePolicyDecision,
 } from "./policy/runtime-policy.js";
 import { isWorkspaceDisabledError } from "./request/fetch-helpers.js";
-import { maskString } from "./logger.js";
+import { createLogger, maskString, runWithCorrelationId } from "./logger.js";
 import { SessionAffinityStore } from "./session-affinity.js";
 import type { OAuthAuthDetails, RequestBody, TokenResult } from "./types.js";
 import { isRecord } from "./utils.js";
@@ -132,6 +133,12 @@ function isLoopbackHost(host: string): boolean {
 		normalized === "[::1]"
 	);
 }
+
+// Structured logger for the default-on runtime proxy (errors-logging-01,
+// runtime-proxy-04). Previously the 1900-LOC proxy had zero logger integration;
+// failures surfaced only as a last-write-wins status.lastError string. Logs are
+// level-gated and carry the per-request correlation id set in handleRequest.
+const proxyLog = createLogger("runtime-proxy");
 const DEFAULT_QUOTA_REMAINING_THRESHOLD = 10;
 const DEFAULT_AUTH_FAILURE_COOLDOWN_MS = 30_000;
 
@@ -971,6 +978,7 @@ export function chooseAccount(params: {
 	pinnedIndex: number | null;
 	skipReasons?: Map<number, string>;
 	stickyBoostByAccount?: Record<number, number>;
+	pidOffsetEnabled?: boolean;
 }): ManagedAccount | null {
 	const {
 		accountManager,
@@ -984,6 +992,7 @@ export function chooseAccount(params: {
 		pinnedIndex,
 		skipReasons,
 		stickyBoostByAccount,
+		pidOffsetEnabled,
 	} = params;
 
 	// Manual pin (from `codex-multi-auth switch <n>`) overrides every other
@@ -1047,6 +1056,10 @@ export function chooseAccount(params: {
 			...(policy?.scoreBoostByAccount ?? {}),
 			...(stickyBoostByAccount ?? {}),
 		},
+		// accounts-05: carry the PID-offset distribution into the default-on proxy
+		// path too (index.ts already does). Without it, parallel proxy processes can
+		// stampede the same account instead of spreading across the pool.
+		pidOffsetEnabled,
 	});
 	if (
 		selected &&
@@ -1298,6 +1311,7 @@ export async function startRuntimeRotationProxy(
 	const serverErrorCooldownMs = getServerErrorCooldownMs(pluginConfig);
 	const tokenInvalidationCooldownMs = getTokenInvalidationCooldownMs(pluginConfig);
 	const minRotationIntervalMs = getMinRotationIntervalMs(pluginConfig);
+	const pidOffsetEnabled = getPidOffsetEnabled(pluginConfig);
 	let lastGlobalAccountIndex: number | null = null;
 	let lastGlobalSwitchAt = 0;
 	const fetchTimeoutMs = options.fetchTimeoutMs ?? getFetchTimeoutMs(pluginConfig);
@@ -1372,6 +1386,18 @@ export async function startRuntimeRotationProxy(
 		req: IncomingMessage,
 		res: ServerResponse,
 	): Promise<void> => {
+		// Per-request trace id (errors-logging-03): distinct from sessionKey, which
+		// is shared across a thread's requests. Bound to this request's async context
+		// so every proxyLog line and usage row can be correlated to one request.
+		const traceId = randomUUID();
+		return runWithCorrelationId(traceId, () => handleRequestInner(req, res, traceId));
+	};
+
+	const handleRequestInner = async (
+		req: IncomingMessage,
+		res: ServerResponse,
+		traceId: string,
+	): Promise<void> => {
 		let usageRecorder: ReturnType<typeof createRuntimeUsageRecorder> | null = null;
 		let accountManager = activeAccountManager;
 		try {
@@ -1440,7 +1466,7 @@ export async function startRuntimeRotationProxy(
 						: "responses",
 				model: context.model,
 				projectKey,
-				requestId: context.sessionKey,
+				requestId: traceId,
 				startedAt: requestStartedAt,
 			});
 			if (policyError) {
@@ -1527,6 +1553,7 @@ export async function startRuntimeRotationProxy(
 					pinnedIndex,
 					skipReasons: accountSkipReasons,
 					stickyBoostByAccount: rotationStickyBoost,
+					pidOffsetEnabled,
 				});
 				if (!selected) {
 					if (
@@ -2003,6 +2030,14 @@ export async function startRuntimeRotationProxy(
 			}
 		} catch (error) {
 			status.lastError = error instanceof Error ? error.message : String(error);
+			// errors-logging-01: surface the failure through the structured logger
+			// (redaction-safe) with the request trace id, instead of only stashing a
+			// last-write-wins status string. logError masks any email/token material.
+			proxyLog.error("runtime proxy request failed", {
+				traceId,
+				code: isRuntimeProxyHttpError(error) ? error.code : "codex_runtime_rotation_proxy_error",
+				error: error instanceof Error ? error.message : String(error),
+			});
 			if (!res.headersSent) {
 				if (isRuntimeProxyHttpError(error)) {
 					await usageRecorder?.record({

@@ -400,6 +400,37 @@ function isLookalikeSibling(baseDir: string, targetPath: string): boolean {
 	return boundary !== sep && boundary !== "/" && boundary !== "\\";
 }
 
+/**
+ * Canonicalize the deepest existing ancestor of `targetPath` via realpath so a
+ * symlink inside an approved root that points outside it cannot pass the purely
+ * lexical containment check (storage-02). We canonicalize the nearest existing
+ * ancestor (the target itself may not exist yet for export/write paths) and join
+ * the remaining non-existent segments back on. Returns the original path if
+ * realpath is unavailable/fails, so behavior degrades to the lexical guard rather
+ * than throwing spuriously.
+ */
+function canonicalizeExistingPrefix(targetPath: string): string {
+	let current = targetPath;
+	const trailing: string[] = [];
+	// Walk up until we find a path component that exists on disk.
+	for (let i = 0; i < 4096; i++) {
+		if (existsSync(current)) break;
+		const parent = dirname(current);
+		if (parent === current) {
+			// Reached the filesystem root without finding an existing ancestor.
+			return targetPath;
+		}
+		trailing.unshift(basename(current));
+		current = parent;
+	}
+	try {
+		const realBase = realpathSync(current);
+		return trailing.length > 0 ? join(realBase, ...trailing) : realBase;
+	} catch {
+		return targetPath;
+	}
+}
+
 export function resolvePath(filePath: string): string {
 	let resolved: string;
 	if (filePath.startsWith("~")) {
@@ -435,6 +466,26 @@ export function resolvePath(filePath: string): string {
 		throw new Error(
 			`Access denied: path must be within home directory, project directory, or temp directory`,
 		);
+	}
+
+	// storage-02: re-verify containment against the realpath-canonicalized path so
+	// a symlink within an approved root that resolves outside it is rejected. If
+	// the lexical guard passed but the canonical path escapes every approved root,
+	// the path is a symlink-escape and must be denied.
+	const canonical = canonicalizeExistingPrefix(resolved);
+	if (canonical !== resolved) {
+		if (
+			isLookalikeSibling(home, canonical) ||
+			isLookalikeSibling(projectRoot, canonical) ||
+			isLookalikeSibling(tmp, canonical) ||
+			(!isWithinDirectory(home, canonical) &&
+				!isWithinDirectory(projectRoot, canonical) &&
+				!isWithinDirectory(tmp, canonical))
+		) {
+			throw new Error(
+				`Access denied: path resolves (via symlink) outside the home, project, or temp directory`,
+			);
+		}
 	}
 
 	return resolved;

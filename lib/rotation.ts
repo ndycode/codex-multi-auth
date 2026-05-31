@@ -178,6 +178,23 @@ export class HealthScoreTracker {
 			}
 		}
 	}
+
+	/**
+	 * Delete every entry (across all quota-key variants) for a given account key.
+	 * Used when an account is removed so a later re-add of the same identity does
+	 * not inherit stale health penalties (accounts-02).
+	 */
+	clearAccountKey(accountKey: TrackerKey): void {
+		const normalized = typeof accountKey === "number" ? `${accountKey}` : accountKey;
+		for (const key of this.entries.keys()) {
+			try {
+				const [entryKey] = JSON.parse(key) as [string, string | null];
+				if (entryKey === normalized) this.entries.delete(key);
+			} catch {
+				// Ignore malformed tracker keys.
+			}
+		}
+	}
 }
 
 // ============================================================================
@@ -328,6 +345,23 @@ export class TokenBucketTracker {
 				if (/^\d+$/.test(accountKey) && Number(accountKey) >= startIndex) {
 					this.buckets.delete(key);
 				}
+			} catch {
+				// Ignore malformed tracker keys.
+			}
+		}
+	}
+
+	/**
+	 * Delete every bucket (across all quota-key variants) for a given account key,
+	 * so a removed-then-re-added account does not inherit stale token state
+	 * (accounts-02).
+	 */
+	clearAccountKey(accountKey: TrackerKey): void {
+		const normalized = typeof accountKey === "number" ? `${accountKey}` : accountKey;
+		for (const key of this.buckets.keys()) {
+			try {
+				const [entryKey] = JSON.parse(key) as [string, string | null];
+				if (entryKey === normalized) this.buckets.delete(key);
 			} catch {
 				// Ignore malformed tracker keys.
 			}

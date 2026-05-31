@@ -194,3 +194,12 @@ export function resetAllCircuitBreakers(): void {
 export function clearCircuitBreakers(): void {
 	circuitBreakers.clear();
 }
+
+/**
+ * Remove a single circuit breaker by key. Used when an account is removed so a
+ * later re-add of the same identity starts with a fresh (closed) circuit rather
+ * than inheriting an open one (accounts-02).
+ */
+export function removeCircuitBreaker(key: string): void {
+	circuitBreakers.delete(key);
+}

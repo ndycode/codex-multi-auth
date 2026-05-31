@@ -42,8 +42,11 @@ export default defineConfig({
     // scripts. Several suites bind fixed resources (e.g. the OAuth callback on
     // port 1455) and collide under parallel files when vitest is run directly
     // (tests-ci-03).
-    maxWorkers: 1,
-    minWorkers: 1,
+    // Disable cross-file parallelism so suites that bind fixed resources (e.g.
+    // the OAuth callback on port 1455) cannot collide when `vitest` is run
+    // directly without the npm script's --maxWorkers=1 flag (tests-ci-03). We do
+    // NOT also pin maxWorkers/minWorkers here: combining them with the npm
+    // script's CLI --maxWorkers=1 produced an intermittent worker-teardown exit.
     fileParallelism: false,
     exclude: [
       'node_modules/**',

@@ -1043,6 +1043,48 @@ describe("AccountManager", () => {
 			expect(remaining[1]?.index).toBe(1);
 		});
 
+		// Regression (accounts-02): removing an account must clear its identity-keyed
+		// health/token state so a later re-add of the same identity starts fresh
+		// instead of inheriting the old penalty.
+		it("clears identity-keyed health state when an account is removed", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{ refreshToken: "tok-a", accountId: "acc_stable", addedAt: now, lastUsed: now },
+					{ refreshToken: "tok-b", accountId: "acc_other", addedAt: now, lastUsed: now },
+				],
+			};
+			const manager = new AccountManager(undefined, stored);
+
+			const target = manager
+				.getAccountsSnapshot()
+				.find((a) => a.accountId === "acc_stable");
+			expect(target).toBeDefined();
+			// Resolve the real identity key the trackers use (e.g. "account:acc_stable").
+			const identityKey = getRuntimeTrackerKey(target!);
+			expect(identityKey).toBe("account:acc_stable");
+
+			// Drive the stable account's health score down via repeated failures.
+			// recordFailure keys health by quotaKey = family ("codex").
+			for (let i = 0; i < 5; i++) manager.recordFailure(target!, "codex");
+			const penalized = getHealthTracker().getScore(identityKey, "codex");
+			expect(penalized).toBeLessThan(100);
+
+			// Use a LIVE reference for removal: removeAccount matches by object
+			// identity, and the snapshot above is a shallow copy that would not match.
+			const liveTarget = manager.getAccountByIndex(0);
+			expect(liveTarget?.accountId).toBe("acc_stable");
+			expect(manager.removeAccount(liveTarget!)).toBe(true);
+
+			// After removal the identity-keyed health entry is gone, so a fresh lookup
+			// for the same identity returns the default max score (no inherited penalty).
+			const afterRemoval = getHealthTracker().getScore(identityKey, "codex");
+			expect(afterRemoval).toBe(100);
+			expect(afterRemoval).toBeGreaterThan(penalized);
+		});
+
 		it("returns false when removing non-existent account", () => {
 			const now = Date.now();
 			const stored = {

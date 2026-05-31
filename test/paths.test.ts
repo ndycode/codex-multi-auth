@@ -798,6 +798,30 @@ describe("Storage Paths Module", () => {
 			expect(() => resolvePath(tempPath)).not.toThrow();
 		});
 
+		// storage-02: a path that is lexically inside home but whose realpath
+		// (via a symlink) resolves outside every approved root must be rejected.
+		it("rejects a symlink inside home that resolves outside all approved roots", () => {
+			const insideHome = path.join(homedir(), ".codex", "evil-link");
+			const escapeTarget = path.join(path.parse(homedir()).root, "etc", "secrets");
+			// The lexical path exists (it's the symlink), and realpath follows it
+			// out to a location outside home/project/temp.
+			mockedExistsSync.mockImplementation((p) => String(p) === insideHome);
+			mockedRealpathSync.mockImplementation((p) =>
+				String(p) === insideHome ? escapeTarget : String(p),
+			);
+			expect(() => resolvePath(insideHome)).toThrow("Access denied");
+		});
+
+		it("allows a symlink inside home that resolves to another approved root", () => {
+			const insideHome = path.join(homedir(), ".codex", "ok-link");
+			const tempTarget = path.join(tmpdir(), "real-target.json");
+			mockedExistsSync.mockImplementation((p) => String(p) === insideHome);
+			mockedRealpathSync.mockImplementation((p) =>
+				String(p) === insideHome ? tempTarget : String(p),
+			);
+			expect(() => resolvePath(insideHome)).not.toThrow();
+		});
+
 		it("accepts paths within the storage state's project root even when cwd differs", () => {
 			const cwd = process.cwd();
 			const parent = path.dirname(cwd);

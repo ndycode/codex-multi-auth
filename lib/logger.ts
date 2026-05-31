@@ -1,6 +1,7 @@
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { PLUGIN_NAME } from "./constants.js";
 import { getCodexLogDir } from "./runtime-paths.js";
 
@@ -128,19 +129,50 @@ const LOG_DIR_MAX_ATTEMPTS = 3;
 const LOG_DIR_RETRY_BASE_DELAY_MS = 10;
 
 let client: LogClient | null = null;
-let currentCorrelationId: string | null = null;
+
+// Correlation id storage (errors-logging-02).
+//
+// A single process-global was wrong for the concurrent runtime proxy: many
+// requests are in flight at once, so a global last-writer-wins value tags log
+// lines with the wrong request. AsyncLocalStorage scopes the id to the async
+// context of each request. A module-global fallback is retained ONLY for the
+// legacy set/clear callers (index.ts plugin-host path) that are effectively
+// single-flight; new concurrent code should use runWithCorrelationId.
+const correlationStore = new AsyncLocalStorage<{ id: string }>();
+let fallbackCorrelationId: string | null = null;
+
+/**
+ * Run `fn` with a correlation id bound to its async context. Concurrent-safe:
+ * each invocation gets an isolated id that does not leak across requests.
+ */
+export function runWithCorrelationId<T>(id: string | undefined, fn: () => T): T {
+	return correlationStore.run({ id: id ?? randomUUID() }, fn);
+}
 
 export function setCorrelationId(id?: string): string {
-	currentCorrelationId = id ?? randomUUID();
-	return currentCorrelationId;
+	const resolved = id ?? randomUUID();
+	const store = correlationStore.getStore();
+	if (store) {
+		// Inside an ALS scope: update the scoped id in place.
+		store.id = resolved;
+	} else {
+		// Legacy single-flight path: keep the module-global fallback working.
+		fallbackCorrelationId = resolved;
+	}
+	return resolved;
 }
 
 export function getCorrelationId(): string | null {
-	return currentCorrelationId;
+	return correlationStore.getStore()?.id ?? fallbackCorrelationId;
 }
 
 export function clearCorrelationId(): void {
-	currentCorrelationId = null;
+	const store = correlationStore.getStore();
+	if (store) {
+		store.id = "";
+	} else {
+		fallbackCorrelationId = null;
+	}
 }
 
 export function initLogger(newClient: LogClient): void {
@@ -158,7 +190,7 @@ function logToApp(
 
 	const sanitizedMessage = maskString(message).replace(/[\r\n]+/g, " ");
 	const sanitizedData = data === undefined ? undefined : sanitizeValue(data);
-	const correlationId = currentCorrelationId;
+	const correlationId = getCorrelationId();
 	const extraData: Record<string, unknown> = {};
 	
 	if (correlationId) {
@@ -293,7 +325,7 @@ export function logRequest(stage: string, data: Record<string, unknown>): void {
 
 	const timestamp = new Date().toISOString();
 	const requestId = ++requestCounter;
-	const correlationId = currentCorrelationId;
+	const correlationId = getCorrelationId();
 	const filename = join(LOG_DIR, `request-${requestId}-${stage}.json`);
 	const requestData = sanitizeRequestLogData(data);
 	const sanitizedData = sanitizeValue(requestData) as Record<string, unknown>;
