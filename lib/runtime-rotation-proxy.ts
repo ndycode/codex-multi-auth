@@ -666,6 +666,11 @@ function applyMonotonicAuthCooldown(
 	cooldownMs: number,
 ): void {
 	const existing = accountManager.getAccountByIndex(account.index)?.coolingDownUntil ?? 0;
+	// Intentionally Date.now(), not the proxy's injected now(): coolingDownUntil is
+	// written by markAccountCoolingDown via nowMs() (== Date.now()), so both sides of
+	// this comparison must live in the same real-wall-clock domain. Switching to the
+	// injected now() would mis-compare an injected-clock value against a real-clock
+	// deadline and silently defeat the monotonic guard.
 	if (Date.now() + cooldownMs > existing) {
 		accountManager.markAccountCoolingDown(account, cooldownMs, "auth-failure");
 	}
@@ -841,6 +846,41 @@ async function readErrorBody(response: Response): Promise<string> {
 	} catch {
 		return "";
 	}
+}
+
+const TOKEN_INVALIDATED_CODE = "token_invalidated";
+const TOKEN_INVALIDATED_FALLBACK_MESSAGE =
+	"OAuth token has been invalidated. Please re-login.";
+
+// Both invalidation exit paths (refresh-failure and upstream-401) must hand the
+// client the same machine-readable shape — { error: { message, code:
+// "token_invalidated" } } — so a consumer keying off error.code behaves
+// identically regardless of which vector fired. The upstream forwards a raw body
+// with no guaranteed code, so we wrap it here while preserving its human-readable
+// message when one is present.
+function buildTokenInvalidationBody(upstreamBodyText: string): string {
+	let message = TOKEN_INVALIDATED_FALLBACK_MESSAGE;
+	const trimmed = upstreamBodyText.trim();
+	if (trimmed) {
+		try {
+			const parsed = JSON.parse(trimmed) as unknown;
+			if (isRecord(parsed)) {
+				const direct = parsed.message;
+				if (typeof direct === "string" && direct.trim()) {
+					message = direct.trim();
+				} else if (isRecord(parsed.error)) {
+					const nested = parsed.error.message;
+					if (typeof nested === "string" && nested.trim()) {
+						message = nested.trim();
+					}
+				}
+			}
+		} catch {
+			// Non-JSON upstream body (e.g. HTML error page): keep the stable fallback
+			// message rather than echoing markup back to the client.
+		}
+	}
+	return JSON.stringify({ error: { message, code: TOKEN_INVALIDATED_CODE } });
 }
 
 function extractErrorCodeFromBody(bodyText: string): string | null {
@@ -1742,8 +1782,13 @@ export async function startRuntimeRotationProxy(
 						);
 						sessionAffinityStore?.forgetSession(context.sessionKey);
 						accountManager.saveToDiskDebounced();
-						res.writeHead(upstream.status, responseHeadersForClient(upstream.headers));
-						res.end(bodyText);
+						// Emit the same machine-readable shape as the refresh-failure path
+						// (code: "token_invalidated") instead of forwarding the raw upstream
+						// body, so the client contract is consistent across both vectors.
+						const clientHeaders = responseHeadersForClient(upstream.headers);
+						clientHeaders["content-type"] = "application/json";
+						res.writeHead(upstream.status, clientHeaders);
+						res.end(buildTokenInvalidationBody(bodyText));
 						await usageRecorder.record({
 							outcome: "failure",
 							statusCode: upstream.status,

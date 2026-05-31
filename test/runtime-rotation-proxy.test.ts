@@ -1857,6 +1857,13 @@ describe("runtime rotation proxy", () => {
 		const response = await postResponses(proxy, { model: "gpt-5-codex" });
 
 		expect(response.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		// upstream-401 invalidation path emits the same machine-readable contract as
+		// the refresh-failure path, preserving the upstream message
+		const body = (await response.json()) as { error: { message: string; code: string } };
+		expect(body.error.code).toBe("token_invalidated");
+		expect(body.error.message).toBe(
+			"Encountered invalidated oauth token for user, failing request",
+		);
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
 		expect(accountManager.getAccountByIndex(0)?.cooldownReason).toBe("auth-failure");
@@ -2027,6 +2034,11 @@ describe("runtime rotation proxy", () => {
 		const response = await postResponses(proxy, { model: "gpt-5-codex" });
 
 		expect(response.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		// non-JSON upstream body falls back to the stable message rather than echoing
+		// markup back to the client, but still carries the consistent code
+		const body = (await response.json()) as { error: { message: string; code: string } };
+		expect(body.error.code).toBe("token_invalidated");
+		expect(body.error.message).toBe("OAuth token has been invalidated. Please re-login.");
 		expect(calls).toHaveLength(1);
 		expect(proxy.getStatus().rotations).toBe(0);
 	});
