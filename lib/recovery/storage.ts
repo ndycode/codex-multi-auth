@@ -20,7 +20,54 @@ import {
 	THINKING_TYPES,
 	META_TYPES,
 } from "./constants.js";
+import { createLogger } from "../logger.js";
 import type { StoredMessageMeta, StoredPart, StoredTextPart } from "./types.js";
+
+const recoveryLog = createLogger("recovery-storage");
+
+/**
+ * recovery-10: corrupt session files were silently skipped (`continue`) with no
+ * signal, so a user could never tell recovery had dropped data. We now quarantine
+ * the unreadable file (rename to a `.corrupt-<ts>` sibling, preserving it for
+ * inspection rather than deleting) and track a count surfaced via
+ * {@link getRecoveryCorruptionStats} so callers can report it.
+ */
+let corruptFileCount = 0;
+const quarantinedPaths: string[] = [];
+
+function quarantineCorruptFile(filePath: string, error: unknown): void {
+	corruptFileCount += 1;
+	const reason = error instanceof Error ? error.message : String(error);
+	try {
+		const target = `${filePath}.corrupt-${Date.now()}`;
+		renameSync(filePath, target);
+		quarantinedPaths.push(target);
+		recoveryLog.warn("quarantined corrupt recovery file", { path: target, reason });
+	} catch (renameError) {
+		// If we cannot move it (e.g. Windows lock), still record that it was corrupt
+		// so the count and log reflect reality; leave the file in place.
+		recoveryLog.warn("failed to quarantine corrupt recovery file", {
+			path: filePath,
+			reason,
+			renameError:
+				renameError instanceof Error ? renameError.message : String(renameError),
+		});
+	}
+}
+
+/** Snapshot of corrupt-file quarantine activity for this process (recovery-10). */
+export function getRecoveryCorruptionStats(): {
+	corruptFileCount: number;
+	quarantinedPaths: string[];
+} {
+	return { corruptFileCount, quarantinedPaths: [...quarantinedPaths] };
+}
+
+/** Test-only reset of the corruption counters. */
+export function __resetRecoveryCorruptionStats(): void {
+	corruptFileCount = 0;
+	quarantinedPaths.length = 0;
+}
 
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
@@ -215,10 +262,13 @@ export function readMessages(sessionID: string): StoredMessageMeta[] {
 	try {
 		for (const file of readdirSync(messageDir)) {
 			if (!file.endsWith(".json")) continue;
+			const filePath = join(messageDir, file);
 			try {
-				const content = readFileSync(join(messageDir, file), "utf-8");
+				const content = readFileSync(filePath, "utf-8");
 				messages.push(JSON.parse(content));
-			} catch {
+			} catch (error) {
+				// recovery-10: surface + quarantine instead of silently dropping.
+				quarantineCorruptFile(filePath, error);
 				continue;
 			}
 		}
@@ -247,10 +297,13 @@ export function readParts(messageID: string): StoredPart[] {
 	try {
 		for (const file of readdirSync(partDir)) {
 			if (!file.endsWith(".json")) continue;
+			const filePath = join(partDir, file);
 			try {
-				const content = readFileSync(join(partDir, file), "utf-8");
+				const content = readFileSync(filePath, "utf-8");
 				parts.push(JSON.parse(content));
-			} catch {
+			} catch (error) {
+				// recovery-10: surface + quarantine instead of silently dropping.
+				quarantineCorruptFile(filePath, error);
 				continue;
 			}
 		}

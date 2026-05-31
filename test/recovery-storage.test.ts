@@ -153,6 +153,16 @@ describe("RecoveryStorage", () => {
 
 			const result = storage.readMessages(sessionID);
 			expect(result.map((msg) => msg.id)).toEqual(["a", "b"]);
+
+			// recovery-10: the corrupt file is quarantined (renamed to .corrupt-*),
+			// not silently dropped, and the corruption stats reflect it.
+			expect(fsMock.renameSync).toHaveBeenCalledWith(
+				join(messageDir, "bad.json"),
+				expect.stringContaining(".corrupt-"),
+			);
+			const stats = storage.getRecoveryCorruptionStats();
+			expect(stats.corruptFileCount).toBeGreaterThanOrEqual(1);
+			expect(stats.quarantinedPaths.some((p) => p.includes("bad.json"))).toBe(true);
 		});
 
 		it("should return empty array on read failure", () => {
