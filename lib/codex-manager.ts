@@ -88,8 +88,13 @@ import {
 import { loadPersistedRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import { runSwitchCommand } from "./codex-manager/commands/switch.js";
 import { runUnpinCommand } from "./codex-manager/commands/unpin.js";
+import { runWorkspaceCommand } from "./codex-manager/commands/workspace.js";
 import { runUsageCommand } from "./codex-manager/commands/usage.js";
-import { parseAuthLoginArgs, printUsage } from "./codex-manager/help.js";
+import {
+	type AuthLoginOptions,
+	parseAuthLoginArgs,
+	printUsage,
+} from "./codex-manager/help.js";
 import {
 	applyUiThemeFromDashboardSettings,
 	configureUnifiedSettings,
@@ -202,6 +207,7 @@ const ACCOUNT_MANAGER_COMMANDS = new Set([
 	"status",
 	"switch",
 	"unpin",
+	"workspace",
 	"best",
 	"check",
 	"features",
@@ -2782,6 +2788,32 @@ async function runAuthLogin(args: string[]): Promise<number> {
 	}
 
 	const loginOptions = parsedArgs.options;
+	// `--org <id>` binds this login to a specific workspace/org so the same
+	// email's personal vs business/team workspace can be registered on demand
+	// (issue #491). It reuses the CODEX_AUTH_ACCOUNT_ID override that every login
+	// resolver already honors. Scope it to this invocation and restore the prior
+	// value in a finally so a later login in the same process (menu re-entry, a
+	// reused test worker) is never silently bound to a stale org.
+	if (!loginOptions.org) {
+		return runAuthLoginFlow(loginOptions);
+	}
+	const previousAccountIdOverride = process.env.CODEX_AUTH_ACCOUNT_ID;
+	process.env.CODEX_AUTH_ACCOUNT_ID = loginOptions.org;
+	console.log(`Binding this login to workspace org id: ${loginOptions.org}`);
+	try {
+		return await runAuthLoginFlow(loginOptions);
+	} finally {
+		if (previousAccountIdOverride === undefined) {
+			delete process.env.CODEX_AUTH_ACCOUNT_ID;
+		} else {
+			process.env.CODEX_AUTH_ACCOUNT_ID = previousAccountIdOverride;
+		}
+	}
+}
+
+async function runAuthLoginFlow(
+	loginOptions: AuthLoginOptions,
+): Promise<number> {
 	setStoragePath(null);
 	let pendingMenuQuotaRefresh: Promise<void> | null = null;
 	let menuQuotaRefreshStatus: string | undefined;
@@ -3556,6 +3588,13 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 			loadAccounts,
 			saveAccounts,
 			getStoragePath,
+		});
+	}
+	if (command === "workspace") {
+		return runWorkspaceCommand(rest, {
+			setStoragePath,
+			loadAccounts,
+			saveAccounts,
 		});
 	}
 	if (command === "check") {

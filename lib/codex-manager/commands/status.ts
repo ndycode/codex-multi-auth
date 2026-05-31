@@ -2,6 +2,7 @@ import {
 	formatAccountLabel,
 	formatCooldown,
 	formatWaitTime,
+	formatWorkspaceLines,
 } from "../../accounts.js";
 import {
 	evaluateForecastAccounts,
@@ -241,6 +242,14 @@ export async function runStatusCommand(
 		const primaryReason = forecastResults[i]?.reasons[0];
 		if (primaryReason) {
 			logInfo(`   reason: ${primaryReason}`);
+		}
+		// Surface every workspace a same-email account can rotate between, so
+		// personal Plus vs business/team stay visible at once (issue #491).
+		if ((account.workspaces?.length ?? 0) > 1) {
+			logInfo("   workspaces:");
+			for (const workspaceLine of formatWorkspaceLines(account, "     ")) {
+				logInfo(workspaceLine);
+			}
 		}
 	}
 
