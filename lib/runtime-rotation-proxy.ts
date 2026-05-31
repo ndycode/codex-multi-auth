@@ -656,6 +656,21 @@ function buildUpstreamUrl(
 	return upstream.toString();
 }
 
+// Monotonic auth-failure cooldown: only extend, never shorten. Two concurrent
+// requests on the same account can race so that an invalidation path sets a
+// long cooldown (5 min) and a subsequent generic 401 truncates it (30 s).
+// Reading the live coolingDownUntil before writing prevents that race.
+function applyMonotonicAuthCooldown(
+	accountManager: AccountManager,
+	account: ManagedAccount,
+	cooldownMs: number,
+): void {
+	const existing = accountManager.getAccountByIndex(account.index)?.coolingDownUntil ?? 0;
+	if (Date.now() + cooldownMs > existing) {
+		accountManager.markAccountCoolingDown(account, cooldownMs, "auth-failure");
+	}
+}
+
 function hasUsableAccessToken(
 	account: ManagedAccount,
 	now: number,
@@ -739,10 +754,10 @@ async function ensureFreshAccessToken(params: {
 		// the long cooldown and signal to the caller to stop rotating rather than
 		// presenting other accounts' tokens from the same IP.
 		const invalidated = isTokenInvalidationError(refreshResult.message ?? "");
-		accountManager.markAccountCoolingDown(
+		applyMonotonicAuthCooldown(
+			accountManager,
 			account,
 			invalidated ? tokenInvalidationCooldownMs : DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
-			"auth-failure",
 		);
 		accountManager.saveToDiskDebounced();
 		return { ok: false, retryable: isTokenRefreshRetryable(refreshResult), invalidated };
@@ -1720,10 +1735,10 @@ export async function startRuntimeRotationProxy(
 						// account's token from the same IP triggers OpenAI's anti-abuse
 						// detection and invalidates them in sequence. Return the 401 directly
 						// rather than rotating so the client can prompt for re-login.
-						accountManager.markAccountCoolingDown(
+						applyMonotonicAuthCooldown(
+							accountManager,
 							refreshed.account,
 							tokenInvalidationCooldownMs,
-							"auth-failure",
 						);
 						sessionAffinityStore?.forgetSession(context.sessionKey);
 						accountManager.saveToDiskDebounced();
@@ -1737,10 +1752,10 @@ export async function startRuntimeRotationProxy(
 						});
 						return;
 					}
-					accountManager.markAccountCoolingDown(
+					applyMonotonicAuthCooldown(
+						accountManager,
 						refreshed.account,
 						DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
-						"auth-failure",
 					);
 					accountManager.saveToDiskDebounced();
 					exhaustionReason = "auth-failure";
@@ -1820,8 +1835,8 @@ export async function startRuntimeRotationProxy(
 					);
 					if (refreshed.account.index !== lastGlobalAccountIndex) {
 						lastGlobalAccountIndex = refreshed.account.index;
-						lastGlobalSwitchAt = now();
 					}
+					lastGlobalSwitchAt = now();
 				}
 				await persistRuntimeActiveAccount(
 					accountManager,

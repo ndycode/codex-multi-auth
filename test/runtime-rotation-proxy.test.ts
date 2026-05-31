@@ -1931,7 +1931,11 @@ describe("runtime rotation proxy", () => {
 		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream("data: ok\n\n"));
 		const proxy = await startProxy({ accountManager, fetchImpl });
 
-		const response = await postResponses(proxy, { model: "gpt-5-codex" });
+		const bodyWithSession = {
+			model: "gpt-5-codex",
+			metadata: { session_id: "session-refresh-inv" },
+		};
+		const response = await postResponses(proxy, bodyWithSession);
 		const body = (await response.json()) as { error: { code: string } };
 
 		expect(response.status).toBe(HTTP_STATUS.UNAUTHORIZED);
@@ -1940,6 +1944,50 @@ describe("runtime rotation proxy", () => {
 		const coolingDownUntil = accountManager.getAccountByIndex(0)?.coolingDownUntil ?? 0;
 		expect(coolingDownUntil).toBeGreaterThan(now + 250_000);
 		expect(proxy.getStatus().rotations).toBe(0);
+		// session affinity cleared — next request with same session routes to healthy account
+		const followUp = await postResponses(proxy, bodyWithSession);
+		expect(followUp.status).toBe(HTTP_STATUS.OK);
+		await followUp.text();
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_2");
+	});
+
+	it("minRotationIntervalMs window slides on each successful serve (regression)", async () => {
+		// Without the sliding fix, lastGlobalSwitchAt only updates on account change.
+		// Serving acc_1 at t=0 then t=55s would keep the anchor at t=0. A request at
+		// t=61s (>60s since t=0) would rotate to acc_2, even though acc_1 served just
+		// 6s earlier. With the fix, lastGlobalSwitchAt refreshes every serve so the
+		// t=61s request sees a 6s-old anchor and keeps acc_1.
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.stubEnv("CODEX_AUTH_MIN_ROTATION_INTERVAL_MS", "60000");
+		try {
+			vi.setSystemTime(0);
+			const now = Date.now;
+			const storage = createStorage(0, 2);
+			const accountManager = new AccountManager(undefined, storage);
+			const { calls, fetchImpl } = createRecordingFetch(() =>
+				textEventStream("data: ok\n\n"),
+			);
+			const proxy = await startProxy({ accountManager, fetchImpl, options: { now } });
+
+			await (await postResponses(proxy, { model: "gpt-5-codex" })).text();
+
+			vi.setSystemTime(55_000);
+			await (await postResponses(proxy, { model: "gpt-5-codex" })).text();
+
+			// t=61s: 61s past original switch (>60s) but only 6s since last serve
+			vi.setSystemTime(61_000);
+			await (await postResponses(proxy, { model: "gpt-5-codex" })).text();
+
+			expect(calls.map((c) => c.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+				"acc_1",
+				"acc_1",
+				"acc_1",
+			]);
+		} finally {
+			vi.useRealTimers();
+			vi.unstubAllEnvs();
+		}
 	});
 
 	it("sticks to last served account within minRotationIntervalMs window", async () => {
