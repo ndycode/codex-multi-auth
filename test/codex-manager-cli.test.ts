@@ -1175,6 +1175,7 @@ describe("codex manager cli commands", () => {
 			proactiveRefreshBufferMs: 300000,
 			networkErrorCooldownMs: 6000,
 			serverErrorCooldownMs: 4000,
+			tokenInvalidationCooldownMs: 300000,
 			storageBackupEnabled: true,
 			preemptiveQuotaEnabled: true,
 			preemptiveQuotaRemainingPercent5h: 5,

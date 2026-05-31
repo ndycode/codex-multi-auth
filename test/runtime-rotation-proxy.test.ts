@@ -1839,4 +1839,52 @@ describe("runtime rotation proxy", () => {
 		expect(accountManager.getAccountByIndex(0)?.cooldownReason).toBe("network-error");
 		expect(proxy.getStatus().streamsStarted).toBe(1);
 	});
+
+	it("returns 401 to client and does not rotate when upstream explicitly invalidates the token", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const invalidationBody = JSON.stringify({
+			error: { message: "Encountered invalidated oauth token for user, failing request" },
+		});
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response(invalidationBody, {
+				status: HTTP_STATUS.UNAUTHORIZED,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex" });
+
+		expect(response.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
+		expect(accountManager.getAccountByIndex(0)?.cooldownReason).toBe("auth-failure");
+		expect(proxy.getStatus().rotations).toBe(0);
+	});
+
+	it("rotates to next account on a generic 401 that is not a token invalidation", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) => {
+			if (attempt === 1) {
+				return new Response(JSON.stringify({ error: { message: "Unauthorized" } }), {
+					status: HTTP_STATUS.UNAUTHORIZED,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			return textEventStream("data: recovered\n\n");
+		});
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex", stream: true });
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.text()).toBe("data: recovered\n\n");
+		expect(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).toEqual([
+			"acc_1",
+			"acc_2",
+		]);
+		expect(proxy.getStatus().rotations).toBe(1);
+	});
 });

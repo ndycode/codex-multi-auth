@@ -17,6 +17,7 @@ import {
 	getSessionAffinityMaxEntries,
 	getSessionAffinityTtlMs,
 	getStreamStallTimeoutMs,
+	getTokenInvalidationCooldownMs,
 	getTokenRefreshSkewMs,
 	loadPluginConfig,
 } from "./config.js";
@@ -116,6 +117,21 @@ interface RuntimeRotationAccountIdentity {
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_QUOTA_REMAINING_THRESHOLD = 10;
 const DEFAULT_AUTH_FAILURE_COOLDOWN_MS = 30_000;
+
+// Substrings present in OpenAI/Microsoft error bodies when an OAuth token has
+// been explicitly revoked by the backend (as opposed to a generic 401 from an
+// expired token that can be retried after refresh).
+const TOKEN_INVALIDATION_PHRASES = [
+	"invalidated oauth token",
+	"authentication token has been invalidated",
+	"oauth token has been invalidated",
+	"token has been invalidated",
+] as const;
+
+function isTokenInvalidationError(bodyText: string): boolean {
+	const lower = bodyText.toLowerCase();
+	return TOKEN_INVALIDATION_PHRASES.some((phrase) => lower.includes(phrase));
+}
 const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
 const MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024;
 const MAX_THREAD_GOAL_FALLBACKS = 512;
@@ -1179,6 +1195,7 @@ export async function startRuntimeRotationProxy(
 	const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
 	const networkErrorCooldownMs = getNetworkErrorCooldownMs(pluginConfig);
 	const serverErrorCooldownMs = getServerErrorCooldownMs(pluginConfig);
+	const tokenInvalidationCooldownMs = getTokenInvalidationCooldownMs(pluginConfig);
 	const fetchTimeoutMs = options.fetchTimeoutMs ?? getFetchTimeoutMs(pluginConfig);
 	const streamStallTimeoutMs =
 		options.streamStallTimeoutMs ?? getStreamStallTimeoutMs(pluginConfig);
@@ -1643,9 +1660,32 @@ export async function startRuntimeRotationProxy(
 				}
 
 				if (upstream.status === HTTP_STATUS.UNAUTHORIZED) {
-					await readErrorBody(upstream);
+					const bodyText = await readErrorBody(upstream);
 					accountManager.refundToken(refreshed.account, context.family, context.model);
 					accountManager.recordFailure(refreshed.account, context.family, context.model);
+					if (isTokenInvalidationError(bodyText)) {
+						// The upstream explicitly revoked this OAuth token. Applying a long
+						// cooldown prevents cascade invalidation: rapidly presenting each
+						// account's token from the same IP triggers OpenAI's anti-abuse
+						// detection and invalidates them in sequence. Return the 401 directly
+						// rather than rotating so the client can prompt for re-login.
+						accountManager.markAccountCoolingDown(
+							refreshed.account,
+							tokenInvalidationCooldownMs,
+							"auth-failure",
+						);
+						sessionAffinityStore?.forgetSession(context.sessionKey);
+						accountManager.saveToDiskDebounced();
+						res.writeHead(upstream.status, responseHeadersForClient(upstream.headers));
+						res.end(bodyText);
+						await usageRecorder.record({
+							outcome: "failure",
+							statusCode: upstream.status,
+							errorCode: "token_invalidated",
+							account: refreshed.account,
+						});
+						return;
+					}
 					accountManager.markAccountCoolingDown(
 						refreshed.account,
 						DEFAULT_AUTH_FAILURE_COOLDOWN_MS,

@@ -198,6 +198,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	proactiveRefreshBufferMs: 5 * 60_000,
 	networkErrorCooldownMs: 6_000,
 	serverErrorCooldownMs: 4_000,
+	tokenInvalidationCooldownMs: 5 * 60_000,
 	storageBackupEnabled: true,
 	preemptiveQuotaEnabled: true,
 	preemptiveQuotaRemainingPercent5h: 5,
@@ -1403,6 +1404,26 @@ export function getServerErrorCooldownMs(pluginConfig: PluginConfig): number {
 }
 
 /**
+ * Get the cooldown duration in milliseconds to apply when an OAuth token has been
+ * explicitly invalidated by the upstream (distinct from a generic 401).
+ *
+ * A longer default (5 minutes) prevents the cascade where rapid account rotation
+ * causes each successive account's token to be invalidated in turn by OpenAI's
+ * anti-abuse detection.
+ *
+ * @param pluginConfig - Plugin configuration used to resolve the setting
+ * @returns The cooldown in milliseconds (minimum 0, default 300000)
+ */
+export function getTokenInvalidationCooldownMs(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS",
+		pluginConfig.tokenInvalidationCooldownMs,
+		5 * 60_000,
+		{ min: 0 },
+	);
+}
+
+/**
  * Determines whether periodic storage backups are enabled.
  *
  * When enabled, background backup tasks may run concurrently; backups follow platform filesystem semantics (including Windows path behavior), and persisted backup data will have sensitive tokens redacted.
@@ -1821,6 +1842,11 @@ const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
 		key: "serverErrorCooldownMs",
 		envNames: ["CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS"],
 		getValue: getServerErrorCooldownMs,
+	},
+	{
+		key: "tokenInvalidationCooldownMs",
+		envNames: ["CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS"],
+		getValue: getTokenInvalidationCooldownMs,
 	},
 	{
 		key: "storageBackupEnabled",
