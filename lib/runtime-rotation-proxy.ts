@@ -118,9 +118,13 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_QUOTA_REMAINING_THRESHOLD = 10;
 const DEFAULT_AUTH_FAILURE_COOLDOWN_MS = 30_000;
 
-// Substrings present in OpenAI/Microsoft error bodies when an OAuth token has
-// been explicitly revoked by the backend (as opposed to a generic 401 from an
-// expired token that can be retried after refresh).
+const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
+
+// Phrases observed in upstream 401 response bodies when OpenAI/Microsoft has
+// explicitly revoked an OAuth token (as opposed to a generic expired-token 401
+// that can be retried after a refresh). Matching is case-insensitive substring.
+// If anti-abuse detection triggers different wording in production, add the new
+// phrase here and record the source provider and date. See issue #495.
 const TOKEN_INVALIDATION_PHRASES = [
 	"invalidated oauth token",
 	"authentication token has been invalidated",
@@ -132,7 +136,6 @@ function isTokenInvalidationError(bodyText: string): boolean {
 	const lower = bodyText.toLowerCase();
 	return TOKEN_INVALIDATION_PHRASES.some((phrase) => lower.includes(phrase));
 }
-const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
 const MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024;
 const MAX_THREAD_GOAL_FALLBACKS = 512;
 const HOP_BY_HOP_HEADERS = new Set([

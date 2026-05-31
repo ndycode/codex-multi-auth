@@ -1860,6 +1860,10 @@ describe("runtime rotation proxy", () => {
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
 		expect(accountManager.getAccountByIndex(0)?.cooldownReason).toBe("auth-failure");
+		// token invalidation applies the long cooldown (~5min), not the generic 30s
+		const coolingDownUntil = accountManager.getAccountByIndex(0)?.coolingDownUntil ?? 0;
+		expect(coolingDownUntil).toBeGreaterThan(now + 250_000);
+		expect(coolingDownUntil).toBeLessThan(now + 350_000);
 		expect(proxy.getStatus().rotations).toBe(0);
 	});
 
@@ -1885,6 +1889,49 @@ describe("runtime rotation proxy", () => {
 			"acc_1",
 			"acc_2",
 		]);
+		// generic 401 applies the short 30s cooldown, not the 5-min invalidation cooldown
+		const coolingDownUntil = accountManager.getAccountByIndex(0)?.coolingDownUntil ?? 0;
+		expect(coolingDownUntil).toBeGreaterThan(now + 20_000);
+		expect(coolingDownUntil).toBeLessThan(now + 40_000);
 		expect(proxy.getStatus().rotations).toBe(1);
+	});
+
+	it("rotates on empty 401 body instead of treating as token invalidation", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) => {
+			if (attempt === 1) {
+				return new Response("", { status: HTTP_STATUS.UNAUTHORIZED });
+			}
+			return textEventStream("data: recovered\n\n");
+		});
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex", stream: true });
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.text()).toBe("data: recovered\n\n");
+		expect(calls).toHaveLength(2);
+		expect(proxy.getStatus().rotations).toBe(1);
+	});
+
+	it("detects token invalidation phrase in non-json 401 body (e.g. html error page)", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const htmlBody =
+			"<html><body>error: oauth token has been invalidated by the server</body></html>";
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response(htmlBody, {
+				status: HTTP_STATUS.UNAUTHORIZED,
+				headers: { "content-type": "text/html" },
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex" });
+
+		expect(response.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+		expect(calls).toHaveLength(1);
+		expect(proxy.getStatus().rotations).toBe(0);
 	});
 });
