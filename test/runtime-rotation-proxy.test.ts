@@ -1915,6 +1915,27 @@ describe("runtime rotation proxy", () => {
 		expect(proxy.getStatus().rotations).toBe(1);
 	});
 
+	it("sticks to last served account within minRotationIntervalMs window", async () => {
+		vi.stubEnv("CODEX_AUTH_MIN_ROTATION_INTERVAL_MS", "60000");
+		try {
+			const now = Date.now();
+			const accountManager = new AccountManager(undefined, createStorage(now, 2));
+			const { calls, fetchImpl } = createRecordingFetch(() =>
+				textEventStream("data: ok\n\n"),
+			);
+			const proxy = await startProxy({ accountManager, fetchImpl });
+
+			await (await postResponses(proxy, { model: "gpt-5-codex" })).text();
+			await (await postResponses(proxy, { model: "gpt-5-codex" })).text();
+
+			expect(calls).toHaveLength(2);
+			expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
+			expect(calls[1]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
 	it("detects token invalidation phrase in non-json 401 body (e.g. html error page)", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 2));

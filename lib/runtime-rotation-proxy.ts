@@ -17,6 +17,7 @@ import {
 	getSessionAffinityMaxEntries,
 	getSessionAffinityTtlMs,
 	getStreamStallTimeoutMs,
+	getMinRotationIntervalMs,
 	getTokenInvalidationCooldownMs,
 	getTokenRefreshSkewMs,
 	loadPluginConfig,
@@ -888,6 +889,7 @@ export function chooseAccount(params: {
 	policy: RuntimePolicyDecision | null;
 	pinnedIndex: number | null;
 	skipReasons?: Map<number, string>;
+	stickyBoostByAccount?: Record<number, number>;
 }): ManagedAccount | null {
 	const {
 		accountManager,
@@ -900,6 +902,7 @@ export function chooseAccount(params: {
 		policy,
 		pinnedIndex,
 		skipReasons,
+		stickyBoostByAccount,
 	} = params;
 
 	// Manual pin (from `codex-multi-auth switch <n>`) overrides every other
@@ -959,7 +962,10 @@ export function chooseAccount(params: {
 	}
 
 	const selected = accountManager.getCurrentOrNextForFamilyHybrid(family, model, {
-		scoreBoostByAccount: policy?.scoreBoostByAccount,
+		scoreBoostByAccount: {
+			...(policy?.scoreBoostByAccount ?? {}),
+			...(stickyBoostByAccount ?? {}),
+		},
 	});
 	if (
 		selected &&
@@ -1199,6 +1205,9 @@ export async function startRuntimeRotationProxy(
 	const networkErrorCooldownMs = getNetworkErrorCooldownMs(pluginConfig);
 	const serverErrorCooldownMs = getServerErrorCooldownMs(pluginConfig);
 	const tokenInvalidationCooldownMs = getTokenInvalidationCooldownMs(pluginConfig);
+	const minRotationIntervalMs = getMinRotationIntervalMs(pluginConfig);
+	let lastGlobalAccountIndex: number | null = null;
+	let lastGlobalSwitchAt = 0;
 	const fetchTimeoutMs = options.fetchTimeoutMs ?? getFetchTimeoutMs(pluginConfig);
 	const streamStallTimeoutMs =
 		options.streamStallTimeoutMs ?? getStreamStallTimeoutMs(pluginConfig);
@@ -1408,6 +1417,12 @@ export async function startRuntimeRotationProxy(
 				attemptedIndexes.size < accountCount &&
 				transientAttempts < transientAttemptLimit
 			) {
+				const rotationStickyBoost: Record<number, number> =
+					minRotationIntervalMs > 0 &&
+					lastGlobalAccountIndex !== null &&
+					now() - lastGlobalSwitchAt < minRotationIntervalMs
+						? { [lastGlobalAccountIndex]: 1000 }
+						: {};
 				const selected = chooseAccount({
 					accountManager,
 					sessionAffinityStore,
@@ -1419,6 +1434,7 @@ export async function startRuntimeRotationProxy(
 					policy: policyDecision,
 					pinnedIndex,
 					skipReasons: accountSkipReasons,
+					stickyBoostByAccount: rotationStickyBoost,
 				});
 				if (!selected) {
 					if (
@@ -1770,6 +1786,10 @@ export async function startRuntimeRotationProxy(
 						refreshed.account.index,
 						now(),
 					);
+					if (refreshed.account.index !== lastGlobalAccountIndex) {
+						lastGlobalAccountIndex = refreshed.account.index;
+						lastGlobalSwitchAt = now();
+					}
 				}
 				await persistRuntimeActiveAccount(
 					accountManager,

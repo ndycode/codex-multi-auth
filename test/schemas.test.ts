@@ -99,6 +99,7 @@ describe("PluginConfigSchema", () => {
 		["networkErrorCooldownMs", -1, 0],
 		["serverErrorCooldownMs", -1, 0],
 		["tokenInvalidationCooldownMs", -1, 0],
+		["minRotationIntervalMs", -1, 0],
 	] as const)("allows zero and rejects negatives for %s", (key, invalidValue, validValue) => {
 		const invalidResult = PluginConfigSchema.safeParse({ [key]: invalidValue });
 		const validResult = PluginConfigSchema.safeParse({ [key]: validValue });
@@ -134,6 +135,7 @@ describe("PluginConfigSchema", () => {
 		"networkErrorCooldownMs",
 		"serverErrorCooldownMs",
 		"tokenInvalidationCooldownMs",
+		"minRotationIntervalMs",
 		"preemptiveQuotaRemainingPercent5h",
 		"preemptiveQuotaRemainingPercent7d",
 		"preemptiveQuotaMaxDeferralMs",

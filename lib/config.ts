@@ -199,6 +199,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	networkErrorCooldownMs: 6_000,
 	serverErrorCooldownMs: 4_000,
 	tokenInvalidationCooldownMs: 5 * 60_000,
+	minRotationIntervalMs: 60_000,
 	storageBackupEnabled: true,
 	preemptiveQuotaEnabled: true,
 	preemptiveQuotaRemainingPercent5h: 5,
@@ -1424,6 +1425,28 @@ export function getTokenInvalidationCooldownMs(pluginConfig: PluginConfig): numb
 }
 
 /**
+ * Get the minimum time in milliseconds that must elapse between global account
+ * switches across requests. When the last served account is still within this
+ * window and is available, it receives a large selection-score boost so the
+ * proxy stays on it rather than rotating to a fresher idle account.
+ *
+ * Setting this to 0 disables the throttle. Default is 60 seconds, which
+ * reduces the rate at which different OAuth tokens are presented from the same
+ * IP and helps avoid OpenAI's anti-abuse detection (see issue #495).
+ *
+ * @param pluginConfig - Plugin configuration used to resolve the setting
+ * @returns The minimum rotation interval in milliseconds (minimum 0, default 60000)
+ */
+export function getMinRotationIntervalMs(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_MIN_ROTATION_INTERVAL_MS",
+		pluginConfig.minRotationIntervalMs,
+		60_000,
+		{ min: 0 },
+	);
+}
+
+/**
  * Determines whether periodic storage backups are enabled.
  *
  * When enabled, background backup tasks may run concurrently; backups follow platform filesystem semantics (including Windows path behavior), and persisted backup data will have sensitive tokens redacted.
@@ -1847,6 +1870,11 @@ const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
 		key: "tokenInvalidationCooldownMs",
 		envNames: ["CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS"],
 		getValue: getTokenInvalidationCooldownMs,
+	},
+	{
+		key: "minRotationIntervalMs",
+		envNames: ["CODEX_AUTH_MIN_ROTATION_INTERVAL_MS"],
+		getValue: getMinRotationIntervalMs,
 	},
 	{
 		key: "storageBackupEnabled",
