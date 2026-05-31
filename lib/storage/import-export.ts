@@ -1,6 +1,7 @@
 import { existsSync, promises as fs } from "node:fs";
 import { dirname } from "node:path";
 import { AnyAccountStorageSchema, safeParseJson } from "../schemas.js";
+import { shouldRetryFileOperation } from "../fs-retry.js";
 import type { AccountStorageV3 } from "../storage.js";
 
 const EXPORT_RENAME_MAX_ATTEMPTS = 4;
@@ -16,10 +17,10 @@ async function renameExportFileWithRetry(
 			await fs.rename(sourcePath, destinationPath);
 			return;
 		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
+			// storage-07: use the shared retryable-code set (adds ENOTEMPTY/EACCES)
+			// rather than the local EPERM/EBUSY/EAGAIN subset.
 			const canRetry =
-				(code === "EPERM" || code === "EBUSY" || code === "EAGAIN") &&
-				attempt + 1 < EXPORT_RENAME_MAX_ATTEMPTS;
+				shouldRetryFileOperation(error) && attempt + 1 < EXPORT_RENAME_MAX_ATTEMPTS;
 			if (!canRetry) {
 				throw error;
 			}

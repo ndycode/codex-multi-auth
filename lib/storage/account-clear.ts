@@ -1,8 +1,10 @@
 import { promises as fs } from "node:fs";
+import { shouldRetryFileOperation } from "../fs-retry.js";
 
+// storage-07: use the single shared retryable-code set (EBUSY/EPERM/EAGAIN/
+// ENOTEMPTY/EACCES) instead of a local subset that omitted ENOTEMPTY/EACCES.
 function isRetryableFsError(error: unknown): boolean {
-	const code = (error as NodeJS.ErrnoException | undefined)?.code;
-	return code === "EBUSY" || code === "EPERM";
+	return shouldRetryFileOperation(error);
 }
 
 async function sleep(ms: number): Promise<void> {

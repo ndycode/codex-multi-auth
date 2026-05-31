@@ -3,8 +3,11 @@ import { dirname } from "node:path";
 import { FlaggedAccountStorageV1Schema, safeParseJson } from "../schemas.js";
 import type { FlaggedAccountStorageV1 } from "../storage.js";
 import { readFileWithRetry } from "./flagged-storage-file.js";
+import { FILE_RETRY_CODES } from "../fs-retry.js";
 
-const RETRYABLE_UNLINK_CODES = new Set(["EBUSY", "EAGAIN", "EPERM"]);
+// storage-07: align with the single shared retryable-code set (adds ENOTEMPTY/
+// EACCES) instead of a local subset.
+const RETRYABLE_UNLINK_CODES = FILE_RETRY_CODES;
 
 function isValidFlaggedStorageCandidate(
 	data: unknown,

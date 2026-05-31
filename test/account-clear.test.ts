@@ -44,6 +44,9 @@ describe("account clear helper", () => {
 	it.each([
 		"EBUSY",
 		"EPERM",
+		// storage-07: ENOTEMPTY and EACCES are now in the shared retryable set too.
+		"ENOTEMPTY",
+		"EACCES",
 	] as const)("retries transient %s errors when clearing required artifacts", async (code) => {
 		// Marker write is a real fs.writeFile; stub it so the test does
 		// not depend on real disk I/O and so fake timers can drain the
