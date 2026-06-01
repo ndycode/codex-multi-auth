@@ -10303,7 +10303,9 @@ describe("codex manager cli commands", () => {
 		expect(savePluginConfigMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				proactiveRefreshGuardian: !(defaults.proactiveRefreshGuardian ?? false),
-				proactiveRefreshIntervalMs: 120_000,
+				// settings-hub-01: interval step unified to the backend schema's 5000
+				// (was 60000): 180000 -5000 -5000 +5000 = 175000.
+				proactiveRefreshIntervalMs: 175_000,
 			}),
 		);
 	});
@@ -10546,8 +10548,10 @@ describe("codex manager cli commands", () => {
 		expect(savePluginConfigMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				proactiveRefreshGuardian: !(defaults.proactiveRefreshGuardian ?? false),
+				// settings-hub-01: one increase step is now the backend schema's 5000
+				// (was 60000), unifying the experimental and backend panels.
 				proactiveRefreshIntervalMs:
-					(defaults.proactiveRefreshIntervalMs ?? 60000) + 60000,
+					(defaults.proactiveRefreshIntervalMs ?? 60000) + 5000,
 			}),
 		);
 	});

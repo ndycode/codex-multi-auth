@@ -770,7 +770,9 @@ describe("settings-hub utility coverage", () => {
 			const selected = await api.promptExperimentalSettings({
 				proactiveRefreshIntervalMs: 30_000,
 			});
-			expect(selected?.proactiveRefreshIntervalMs).toBe(60_000);
+			// settings-hub-01: bounds now derive from the backend schema (min 5000,
+			// step 5000), unified with the backend settings panel: 30000 - 5000.
+			expect(selected?.proactiveRefreshIntervalMs).toBe(25_000);
 		});
 
 		it("supports experimental submenu hotkeys for guardian toggle and interval increase", async () => {
@@ -785,7 +787,8 @@ describe("settings-hub utility coverage", () => {
 				proactiveRefreshIntervalMs: 60_000,
 			});
 			expect(selected?.proactiveRefreshGuardian).toBe(true);
-			expect(selected?.proactiveRefreshIntervalMs).toBe(120_000);
+			// settings-hub-01: schema step is 5000 (was 60000): 60000 + 5000.
+			expect(selected?.proactiveRefreshIntervalMs).toBe(65_000);
 		});
 
 		it("supports alternate experimental interval hotkeys with minus and plus", async () => {
@@ -799,7 +802,8 @@ describe("settings-hub utility coverage", () => {
 			const selected = await api.promptExperimentalSettings({
 				proactiveRefreshIntervalMs: 180_000,
 			});
-			expect(selected?.proactiveRefreshIntervalMs).toBe(120_000);
+			// settings-hub-01: step 5000 (was 60000): 180000 -5000 -5000 +5000.
+			expect(selected?.proactiveRefreshIntervalMs).toBe(175_000);
 		});
 
 		it("maps experimental menu and status hotkeys including numeric and uppercase variants", async () => {
