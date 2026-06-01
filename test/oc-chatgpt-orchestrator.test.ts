@@ -144,6 +144,66 @@ describe("oc-chatgpt orchestrator", () => {
 		}
 	});
 
+	// chatgpt-import-06: planning must return a structured error (not throw) when
+	// loading the target fails, mirroring applyOcChatgptSync's guarded behavior.
+	it("returns plan-error when loading the target throws", async () => {
+		const result = await planOcChatgptSync({
+			source: sourceStorage,
+			// destination omitted -> loadTargetStorage is invoked
+			dependencies: {
+				detectTarget: () => ({
+					kind: "target",
+					descriptor: {
+						scope: "global",
+						root: "C:/target",
+						accountPath: "C:/target/openai-codex-accounts.json",
+						backupRoot: "C:/target/backups",
+						source: "default-global",
+						resolution: "accounts",
+					},
+				}),
+				loadTargetStorage: async () => {
+					throw new Error("corrupt destination file");
+				},
+			},
+		});
+
+		expect(result.kind).toBe("plan-error");
+		if (result.kind === "plan-error") {
+			expect(result.cause).toBe("load");
+			expect(String((result.error as Error).message)).toContain("corrupt destination");
+			expect(result.target.accountPath).toContain("openai-codex-accounts.json");
+		}
+	});
+
+	it("returns plan-error when previewing the merge throws", async () => {
+		const result = await planOcChatgptSync({
+			source: sourceStorage,
+			destination: destinationStorage,
+			dependencies: {
+				detectTarget: () => ({
+					kind: "target",
+					descriptor: {
+						scope: "global",
+						root: "C:/target",
+						accountPath: "C:/target/openai-codex-accounts.json",
+						backupRoot: "C:/target/backups",
+						source: "default-global",
+						resolution: "accounts",
+					},
+				}),
+				previewMerge: () => {
+					throw new Error("preview boom");
+				},
+			},
+		});
+
+		expect(result.kind).toBe("plan-error");
+		if (result.kind === "plan-error") {
+			expect(result.cause).toBe("preview");
+		}
+	});
+
 	it("returns applied when persist succeeds", async () => {
 		const persistMerged = vi.fn(
 			async () => "C:/target/openai-codex-accounts.json",

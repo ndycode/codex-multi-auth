@@ -38,7 +38,21 @@ type OcChatgptSyncPlanReady = {
 	destination: AccountStorageV3 | null;
 };
 
-export type OcChatgptSyncPlanResult = OcChatgptSyncPlanReady | BlockedDetection;
+// chatgpt-import-06: a structured error result so planOcChatgptSync can report a
+// failure to load/preview the target (e.g. a corrupt destination file) the same
+// way applyOcChatgptSync already does, instead of throwing an uncaught error out
+// of the planning step.
+type OcChatgptSyncPlanError = {
+	kind: "plan-error";
+	target: OcChatgptTargetDescriptor;
+	error: unknown;
+	cause: "load" | "preview";
+};
+
+export type OcChatgptSyncPlanResult =
+	| OcChatgptSyncPlanReady
+	| BlockedDetection
+	| OcChatgptSyncPlanError;
 
 type DetectOptions = {
 	explicitRoot?: string | null;
@@ -103,16 +117,29 @@ export async function planOcChatgptSync(
 	}
 
 	const descriptor = detection.descriptor;
-	const destination =
-		options.destination === undefined
-			? await (
-					options.dependencies?.loadTargetStorage ?? loadTargetStorageDefault
-				)(descriptor)
-			: options.destination;
-	const preview = previewMerge({
-		source: options.source,
-		destination,
-	});
+	let destination: AccountStorageV3 | null;
+	try {
+		destination =
+			options.destination === undefined
+				? await (
+						options.dependencies?.loadTargetStorage ?? loadTargetStorageDefault
+					)(descriptor)
+				: options.destination;
+	} catch (error) {
+		// chatgpt-import-06: a corrupt/unreadable destination must not throw out of
+		// planning; return a structured error like applyOcChatgptSync does.
+		return { kind: "plan-error", target: descriptor, error, cause: "load" };
+	}
+
+	let preview: OcChatgptMergePreview;
+	try {
+		preview = previewMerge({
+			source: options.source,
+			destination,
+		});
+	} catch (error) {
+		return { kind: "plan-error", target: descriptor, error, cause: "preview" };
+	}
 
 	return {
 		kind: "ready",
@@ -194,6 +221,10 @@ export async function applyOcChatgptSync(
 			},
 		});
 
+		if (plan.kind === "plan-error") {
+			// Map the structured planning error onto the apply error variant.
+			return { kind: "error", target: plan.target, error: plan.error };
+		}
 		if (plan.kind !== "ready") {
 			return plan;
 		}

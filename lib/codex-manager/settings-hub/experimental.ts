@@ -100,7 +100,18 @@ export async function promptExperimentalSettings(
 			const candidate = plan as {
 				kind: string;
 				detection?: { reason?: string };
+				error?: unknown;
+				cause?: string;
 			};
+			// chatgpt-import-06: surface a real planning failure (corrupt/unreadable
+			// target) rather than a generic "unavailable" message.
+			if (candidate.kind === "plan-error") {
+				const detail =
+					candidate.error instanceof Error
+						? candidate.error.message
+						: String(candidate.error ?? "unknown error");
+				return `Sync failed while ${candidate.cause === "load" ? "loading the target" : "previewing the merge"}: ${detail}`;
+			}
 			return candidate.kind === "blocked-ambiguous"
 				? `Sync blocked: ${candidate.detection?.reason ?? "unknown"}`
 				: `Sync unavailable: ${candidate.detection?.reason ?? "unknown"}`;
