@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { vi } from "vitest";
 import {
 	fetchWithTimeout,
 	readBodyTextGuarded,
@@ -19,8 +19,21 @@ describe("prompt fetch-utils", () => {
 			expect(withPromptFetchHeaders({}, true).Accept).toContain("application/vnd.github+json");
 		});
 
-		it("lets caller override the defaults", () => {
-			expect(withPromptFetchHeaders({ "User-Agent": "custom" })["User-Agent"]).toBe("custom");
+		it("does not let the caller override the mandatory User-Agent / Accept", () => {
+			// Hardening guarantee: a caller must not be able to blank or replace the
+			// mandatory headers (github rejects requests without a User-Agent).
+			const h = withPromptFetchHeaders({
+				"User-Agent": "custom",
+				Accept: "text/evil",
+			});
+			expect(h["User-Agent"]).toBe("codex-multi-auth");
+			expect(h.Accept).toContain("text/plain");
+		});
+
+		it("keeps mandatory headers when the caller tries to blank them", () => {
+			const h = withPromptFetchHeaders({ "User-Agent": "", Accept: "" }, true);
+			expect(h["User-Agent"]).toBe("codex-multi-auth");
+			expect(h.Accept).toContain("application/vnd.github+json");
 		});
 	});
 
@@ -51,6 +64,27 @@ describe("prompt fetch-utils", () => {
 					hang as unknown as typeof fetch,
 				),
 			).rejects.toThrow(/abort/i);
+		});
+
+		it("resolves and clears the timer when fetch wins the race", async () => {
+			// Abort-vs-resolve ordering regression: a fetch that resolves before the
+			// timeout must return the response and must not abort afterwards.
+			let aborted = false;
+			const quick = (_url: string, init?: RequestInit) => {
+				init?.signal?.addEventListener("abort", () => {
+					aborted = true;
+				});
+				return Promise.resolve(new Response("won"));
+			};
+			const res = await fetchWithTimeout(
+				"https://example.com",
+				{ timeoutMs: 1000 },
+				quick as unknown as typeof fetch,
+			);
+			expect(await res.text()).toBe("won");
+			// Give any (incorrectly) pending timer a chance to fire; it must not.
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			expect(aborted).toBe(false);
 		});
 	});
 

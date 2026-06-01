@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm, stat, readFile } from "node:fs/promises";
+import { mkdtemp, stat, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 import {
 	applyOcChatgptSync,
@@ -290,7 +291,7 @@ describe("oc-chatgpt orchestrator", () => {
 				expect(mode).toBe(0o600);
 			}
 		} finally {
-			await rm(dir, { recursive: true, force: true });
+			await removeWithRetry(dir, { recursive: true, force: true });
 		}
 	});
 
@@ -329,7 +330,7 @@ describe("oc-chatgpt orchestrator", () => {
 			const leftovers = (await readdir(dir)).filter((f) => f.endsWith(".tmp"));
 			expect(leftovers).toEqual([]);
 		} finally {
-			await rm(dir, { recursive: true, force: true });
+			await removeWithRetry(dir, { recursive: true, force: true });
 		}
 	});
 

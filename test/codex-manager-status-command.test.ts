@@ -5,6 +5,7 @@ import {
 	runStatusCommand,
 	type StatusCommandDeps,
 } from "../lib/codex-manager/commands/status.js";
+import { runCodexMultiAuthCli } from "../lib/codex-manager.js";
 import type { AccountStorageV3, StorageHealthSummary } from "../lib/storage.js";
 import type { RuntimeObservabilitySnapshot } from "../lib/runtime/runtime-observability.js";
 
@@ -380,6 +381,31 @@ describe("runStatusCommand", () => {
 		expect(payload.accountCount).toBe(0);
 		expect(payload.accounts).toEqual([]);
 	});
+});
+
+// cli-manager-03 (plumbing): the runStatusCommand tests above prove behavior once
+// `json` is already true. This block exercises the CLI arg → json-flag mapping in
+// runCodexMultiAuthCli ("status"/"list" with -j/--json), which a wrapper-routing
+// regression would otherwise leave uncovered. Runs against the global test
+// sandbox (no real ~/.codex), so storage is empty and the JSON object is the
+// empty-storage shape.
+describe("runCodexMultiAuthCli status/list --json plumbing", () => {
+	for (const args of [["status", "-j"], ["status", "--json"], ["list", "-j"], ["list", "--json"]]) {
+		it(`maps ${args.join(" ")} to a single JSON object`, async () => {
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+			try {
+				const code = await runCodexMultiAuthCli(args);
+				expect(code).toBe(0);
+				// Exactly one machine-readable line emitted.
+				expect(logSpy).toHaveBeenCalledTimes(1);
+				const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0]));
+				expect(typeof payload.accountCount).toBe("number");
+				expect(Array.isArray(payload.accounts)).toBe(true);
+			} finally {
+				logSpy.mockRestore();
+			}
+		});
+	}
 });
 
 describe("runFeaturesCommand", () => {

@@ -347,11 +347,14 @@ describe("runtime rotation proxy", () => {
 		const accountManager = new AccountManager(undefined, createStorage(now));
 		const { fetchImpl } = createRecordingFetch(() => textEventStream());
 
+		// Use a genuinely non-loopback bind (0.0.0.0) so this actually exercises the
+		// allowNonLoopbackHost branch — 127.0.0.1 is already loopback and would pass
+		// even if the opt-in were ignored.
 		const proxy = await startRuntimeRotationProxy({
 			accountManager,
 			fetchImpl,
 			clientApiKey: DEFAULT_CLIENT_API_KEY,
-			host: "127.0.0.1",
+			host: "0.0.0.0",
 			allowNonLoopbackHost: true,
 			upstreamBaseUrl: "https://example.test/backend-api",
 		});

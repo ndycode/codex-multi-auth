@@ -50,11 +50,11 @@ const RETRYABLE_CONFIG_READ_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
  * loadPluginConfig() is synchronous, so a transient EBUSY/EPERM/EAGAIN on a
  * Windows lock used to fall straight through to the catch and silently revert to
  * DEFAULT_PLUGIN_CONFIG, discarding the user's real settings (config-04). This
- * mirrors the async retry already used by readConfigRecordFromPath. ENOENT and
- * SyntaxError are not retryable and propagate unchanged.
+ * mirrors the async retry already used by readConfigRecordFromPath (5 total
+ * attempts). ENOENT and SyntaxError are not retryable and propagate unchanged.
  */
 function readFileSyncWithConfigRetry(configPath: string): string {
-	const maxAttempts = 4;
+	const maxAttempts = 5;
 	for (let attempt = 0; ; attempt += 1) {
 		try {
 			return readFileSync(configPath, "utf-8");
@@ -565,6 +565,30 @@ function resolveStoredPluginConfigRecord(): {
 	storageKind: ConfigExplainStorageKind;
 	record: Record<string, unknown> | null;
 } {
+	// config-01: mirror loadPluginConfig()'s precedence exactly. loadPluginConfig
+	// prefers CODEX_MULTI_AUTH_CONFIG_PATH (when set + present) over unified
+	// settings; the explain report must report the SAME source/path/storageKind,
+	// otherwise `config explain` describes a different file than the one actually
+	// loaded when the env override is active (a split-brain).
+	const envConfigPath = (process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim();
+	if (envConfigPath.length > 0 && existsSync(envConfigPath)) {
+		const record = readConfigRecordFromPath(envConfigPath);
+		if (record) {
+			return {
+				configPath: envConfigPath,
+				storageKind: "file",
+				record,
+			};
+		}
+		// Env path is set and exists but is unreadable/invalid: report it as the
+		// active (unreadable) source rather than masking it behind unified.
+		return {
+			configPath: envConfigPath,
+			storageKind: "unreadable",
+			record: null,
+		};
+	}
+
 	const unifiedConfig = loadUnifiedPluginConfigSync();
 	if (isRecord(unifiedConfig)) {
 		return {

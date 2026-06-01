@@ -28,6 +28,17 @@ async function listFilesUnder(relRoot) {
 				await walk(childRel);
 			} else if (entry.isFile()) {
 				out.push(childRel);
+			} else if (entry.isSymbolicLink()) {
+				// install-scripts-01: a symlink under a vendored root could point an
+				// unlisted artifact (or escape the tree) past the manifest check.
+				// Fail closed instead of silently skipping it.
+				throw new Error(
+					`Symbolic links are not allowed in vendored content: ${childRel}`,
+				);
+			} else {
+				// Any other dirent type (FIFO, socket, block/char device) is unexpected
+				// in vendored source — reject rather than ignore.
+				throw new Error(`Unsupported vendored entry type: ${childRel}`);
 			}
 		}
 	}

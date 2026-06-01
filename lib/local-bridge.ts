@@ -174,7 +174,18 @@ export async function startLocalBridge(
 	const fetchImpl = options.fetchImpl ?? (undiciFetch as typeof fetch);
 	const requireAuth = options.requireAuth ?? true;
 	const verifyBearerToken = options.verifyBearerToken ?? verifyLocalClientBearerToken;
-	const runtimeClientApiKey = options.runtimeClientApiKey;
+	const runtimeClientApiKey = options.runtimeClientApiKey?.trim() || undefined;
+	if (runtimeClientApiKey && !requireAuth) {
+		// Security: forwarding a runtime client key while accepting unauthenticated
+		// inbound requests turns the bridge into an open local capability proxy —
+		// any local process that can reach the loopback port gets upstream access
+		// for free. The runtime-proxy-03 feature (inject a client key to reach an
+		// auth-enabled proxy) is only safe when inbound auth is also required, so
+		// fail fast on this combination rather than silently granting it.
+		throw new Error(
+			"Local bridge requires requireAuth=true when runtimeClientApiKey is configured.",
+		);
+	}
 	const app = new Hono();
 
 	app.get("/health", (context) =>

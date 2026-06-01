@@ -138,7 +138,7 @@ let client: LogClient | null = null;
 // context of each request. A module-global fallback is retained ONLY for the
 // legacy set/clear callers (index.ts plugin-host path) that are effectively
 // single-flight; new concurrent code should use runWithCorrelationId.
-const correlationStore = new AsyncLocalStorage<{ id: string }>();
+const correlationStore = new AsyncLocalStorage<{ id: string | null }>();
 let fallbackCorrelationId: string | null = null;
 
 /**
@@ -163,13 +163,19 @@ export function setCorrelationId(id?: string): string {
 }
 
 export function getCorrelationId(): string | null {
-	return correlationStore.getStore()?.id ?? fallbackCorrelationId;
+	// Inside an ALS scope the scoped id is authoritative (including a cleared
+	// null); only fall back to the module-global when no scope is active. This
+	// keeps the declared `string | null` contract honest after clearCorrelationId
+	// runs inside runWithCorrelationId — returning the empty sentinel would leak
+	// "" to callers doing an explicit `=== null` check.
+	const store = correlationStore.getStore();
+	return store ? store.id : fallbackCorrelationId;
 }
 
 export function clearCorrelationId(): void {
 	const store = correlationStore.getStore();
 	if (store) {
-		store.id = "";
+		store.id = null;
 	} else {
 		fallbackCorrelationId = null;
 	}

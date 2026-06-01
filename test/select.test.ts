@@ -128,3 +128,44 @@ describe("ui select", () => {
 		await expect(confirmPromise).resolves.toBe(false);
 	});
 });
+
+describe("truncateAnsi ANSI reset placement (ui-01)", () => {
+	const ESC = String.fromCharCode(27);
+	const RED = `${ESC}[31m`;
+	const RESET = `${ESC}[0m`;
+
+	async function load() {
+		const mod = await import("../lib/ui/select.js");
+		return mod.truncateAnsi;
+	}
+
+	it("appends suffix + reset when the kept portion contains an ANSI escape", async () => {
+		const truncateAnsi = await load();
+		// 10 colored visible chars truncated to 5 -> "..", keep 2 visible, then reset.
+		const out = truncateAnsi(`${RED}abcdefghij`, 5);
+		expect(out.endsWith(`...${RESET}`)).toBe(true);
+		expect(out.startsWith(RED)).toBe(true);
+	});
+
+	it("does NOT add an extra reset when the colored input is not truncated", async () => {
+		const truncateAnsi = await load();
+		const input = `${RED}abc${RESET}`;
+		// Fits within width -> returned unchanged, no second reset appended.
+		expect(truncateAnsi(input, 10)).toBe(input);
+	});
+
+	it("does NOT add a reset when plain (no ANSI) input is truncated", async () => {
+		const truncateAnsi = await load();
+		const out = truncateAnsi("abcdefghij", 5);
+		expect(out.includes(RESET)).toBe(false);
+		expect(out.endsWith("...")).toBe(true);
+	});
+
+	it("still ends with a single reset when multiple ANSI escapes are kept", async () => {
+		const truncateAnsi = await load();
+		const out = truncateAnsi(`${RED}a${RESET}${RED}bcdefghij`, 5);
+		expect(out.endsWith(RESET)).toBe(true);
+		// Exactly one trailing reset (suffix + reset), not a doubled reset.
+		expect(out.endsWith(`${RESET}${RESET}`)).toBe(false);
+	});
+});

@@ -185,11 +185,13 @@ async function persistMergedDefault(
 	merged: AccountStorageV3,
 ): Promise<string> {
 	const path = target.accountPath;
-	await fs.mkdir(dirname(path), { recursive: true });
 	// The merged file embeds raw refresh tokens for every account and overwrites the
 	// live, watched account store. Write atomically (temp + rename) at mode 0o600 so a
 	// crash mid-write cannot truncate the destination and the secrets are never created
-	// at the process umask. Mirrors lib/codex-cli/writer.ts atomicWriteText.
+	// at the process umask. Create the parent at 0o700 too (matching auth-01) so the
+	// directory is not world-listable — otherwise other users could enumerate the
+	// filenames, including the `.tmp` intermediary that briefly holds the same secrets.
+	await fs.mkdir(dirname(path), { recursive: true, mode: 0o700 });
 	const tempPath = `${path}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
 	const content = `${JSON.stringify(merged, null, 2)}\n`;
 	try {

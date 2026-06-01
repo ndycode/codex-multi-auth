@@ -1,5 +1,5 @@
 import { promises as fs } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	loadAccountsFromPath,
 	parseAndNormalizeStorage,
@@ -10,6 +10,10 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 	!!value && typeof value === "object" && !Array.isArray(value);
 
 describe("storage parser helpers", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
 	it("parses and normalizes record storage payloads", () => {
 		const result = parseAndNormalizeStorage(
 			{ version: 3, activeIndex: 0, accounts: [] },
@@ -53,6 +57,44 @@ describe("storage parser helpers", () => {
 		} finally {
 			await fs.rm(filePath, { force: true });
 		}
+	});
+
+	it("retries a transient EBUSY on the primary read, then parses (windows lock)", async () => {
+		// storage-01: a momentary Windows lock surfaces as EBUSY on readFile. The
+		// loader routes the read through withFileOperationRetry, so it must retry
+		// rather than fall through to WAL/backup recovery — the parsed result is
+		// returned once the lock clears.
+		const ebusy = Object.assign(new Error("EBUSY: resource busy or locked"), {
+			code: "EBUSY",
+		});
+		const validJson = JSON.stringify({ version: 3, activeIndex: 0, accounts: [] });
+		const readSpy = vi
+			.spyOn(fs, "readFile")
+			.mockRejectedValueOnce(ebusy)
+			.mockResolvedValueOnce(validJson as unknown as Buffer);
+
+		const result = await loadAccountsFromPath("/virtual/accounts.json", {
+			normalizeAccountStorage,
+			isRecord,
+		});
+		expect(result.normalized?.version).toBe(3);
+		expect(readSpy).toHaveBeenCalledTimes(2);
+	});
+
+	it("does NOT retry ENOENT (missing-file contract preserved)", async () => {
+		const enoent = Object.assign(new Error("ENOENT: no such file"), {
+			code: "ENOENT",
+		});
+		const readSpy = vi.spyOn(fs, "readFile").mockRejectedValue(enoent);
+
+		await expect(
+			loadAccountsFromPath("/virtual/missing.json", {
+				normalizeAccountStorage,
+				isRecord,
+			}),
+		).rejects.toThrow(/ENOENT/);
+		// ENOENT is not a retryable code: a single attempt only.
+		expect(readSpy).toHaveBeenCalledTimes(1);
 	});
 
 	it("surfaces schema warnings for JSON-valid but schema-invalid payloads", async () => {

@@ -37,6 +37,7 @@ import {
 	runBestCommand,
 } from "./codex-manager/commands/best.js";
 import { runAccountCommand } from "./codex-manager/commands/account.js";
+import { ACCOUNT_MANAGER_COMMANDS } from "./codex-manager/account-manager-commands.js";
 import { runBudgetCommand } from "./codex-manager/commands/budget.js";
 import { runBridgeCommand } from "./codex-manager/commands/bridge.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
@@ -201,39 +202,6 @@ type TokenSuccessWithAccount = TokenSuccess & {
 };
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
 const log = createLogger("codex-manager");
-// Exported so the wrapper-routing alignment test (test/codex-routing.test.ts) can
-// assert AUTH_SUBCOMMANDS ⊇ ACCOUNT_MANAGER_COMMANDS without hardcoding a list that
-// silently drifts from the dispatcher (cli-manager-01/02).
-export const ACCOUNT_MANAGER_COMMANDS = new Set([
-	"login",
-	"list",
-	"status",
-	"switch",
-	"unpin",
-	"workspace",
-	"best",
-	"check",
-	"features",
-	"usage",
-	"verify-flagged",
-	"verify",
-	"forecast",
-	"report",
-	"fix",
-	"doctor",
-	"uninstall",
-	"account",
-	"budget",
-	"bridge",
-	"integrations",
-	"models",
-	"monitor",
-	"rotation",
-	"why-selected",
-	"config",
-	"init-config",
-	"debug",
-]);
 
 interface ModelInspection {
 	requested: string;

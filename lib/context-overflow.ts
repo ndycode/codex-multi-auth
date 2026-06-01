@@ -61,7 +61,9 @@ export function createContextOverflowResponse(model: string = "unknown"): Respon
   const messageId = `msg_synthetic_overflow_${Date.now()}_${Math.random()
     .toString(36)
     .slice(2, 8)}`;
-  const responseId = `resp_synthetic_overflow_${Date.now()}`;
+  const responseId = `resp_synthetic_overflow_${Date.now()}_${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
   const events: string[] = [];
 
   const push = (type: string, payload: Record<string, unknown>): void => {

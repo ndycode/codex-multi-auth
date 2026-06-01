@@ -202,6 +202,21 @@ describe('Logger Module', () => {
 			expect(getCorrelationId()).toBeNull();
 		});
 
+		it('clearCorrelationId inside a scope returns null, not an empty string', async () => {
+			// Regression: clearing inside an ALS scope used to store "" so
+			// getCorrelationId() returned an empty string, silently breaking the
+			// declared `string | null` contract for callers doing `=== null`.
+			clearCorrelationId();
+			await runWithCorrelationId('req-clear', async () => {
+				expect(getCorrelationId()).toBe('req-clear');
+				clearCorrelationId();
+				const cleared = getCorrelationId();
+				expect(cleared).toBeNull();
+				expect(cleared).not.toBe('');
+			});
+			expect(getCorrelationId()).toBeNull();
+		});
+
 		it('should overwrite existing correlation ID', () => {
 			const first = setCorrelationId('first-id');
 			const second = setCorrelationId('second-id');

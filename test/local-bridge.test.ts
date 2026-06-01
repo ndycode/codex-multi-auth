@@ -160,13 +160,23 @@ describe("local bridge", () => {
 	});
 
 	// runtime-proxy-03: the bridge can authenticate to an auth-enabled runtime proxy
-	// by injecting a configured client key, replacing the inbound Authorization.
+	// by injecting a configured client key, replacing the inbound Authorization —
+	// but only when inbound auth is also required (see rejection test below).
 	it("forwards the configured runtimeClientApiKey as Authorization", async () => {
 		const { calls, fetchImpl } = createFetch();
 		const server = await startLocalBridge({
 			runtimeBaseUrl: "http://127.0.0.1:9999/",
 			fetchImpl,
-			requireAuth: false,
+			requireAuth: true,
+			verifyBearerToken: async () => ({
+				id: "test-id",
+				label: "test",
+				prefix: "tst",
+				tokenHash: "hash",
+				createdAt: 0,
+				lastUsedAt: null,
+				revokedAt: null,
+			}),
 			runtimeClientApiKey: "runtime-secret-key",
 		});
 		openServers.push(server);
@@ -179,6 +189,20 @@ describe("local bridge", () => {
 		const headers = new Headers(forwarded?.init?.headers as HeadersInit);
 		// The runtime key replaced the inbound client's token.
 		expect(headers.get("authorization")).toBe("Bearer runtime-secret-key");
+	});
+
+	it("refuses to start with a runtimeClientApiKey when auth is disabled", async () => {
+		const { fetchImpl } = createFetch();
+		// Security regression: a configured runtime key + requireAuth:false would
+		// expose upstream access to any local process. Fail fast instead.
+		await expect(
+			startLocalBridge({
+				runtimeBaseUrl: "http://127.0.0.1:9999/",
+				fetchImpl,
+				requireAuth: false,
+				runtimeClientApiKey: "runtime-secret-key",
+			}),
+		).rejects.toThrow(/requireAuth=true when runtimeClientApiKey is configured/i);
 	});
 
 	it("strips inbound Authorization when no runtime key is configured", async () => {

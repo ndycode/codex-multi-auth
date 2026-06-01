@@ -1,4 +1,3 @@
-import { describe, it, expect } from "vitest";
 import { displayWidth, truncateToWidth } from "../lib/ui/display-width.js";
 
 describe("display-width (ui-02)", () => {
@@ -19,12 +18,19 @@ describe("display-width (ui-02)", () => {
 		});
 
 		it("treats combining marks and ZWJ as zero width", () => {
-			expect(displayWidth("é")).toBe(1); // e + combining acute
-			expect(displayWidth("a‍b")).toBe(2); // a + ZWJ + b
+			// Build from explicit code points (ASCII source) so the zero-width
+			// branches are genuinely hit and the test cannot be silently corrupted
+			// by an editor normalizing a precomposed glyph on save.
+			const combining = `e${String.fromCharCode(0x0301)}`; // e + COMBINING ACUTE ACCENT
+			expect(combining).toHaveLength(2);
+			expect(displayWidth(combining)).toBe(1);
+			const zwj = `a${String.fromCharCode(0x200d)}b`; // a + ZERO WIDTH JOINER + b
+			expect(zwj).toHaveLength(3);
+			expect(displayWidth(zwj)).toBe(2);
 		});
 
 		it("counts emoji pictographs as 2 columns", () => {
-			expect(displayWidth("😀")).toBe(2);
+			expect(displayWidth(String.fromCodePoint(0x1f600))).toBe(2);
 		});
 	});
 

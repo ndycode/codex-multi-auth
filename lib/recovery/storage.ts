@@ -35,12 +35,53 @@ const recoveryLog = createLogger("recovery-storage");
 let corruptFileCount = 0;
 const quarantinedPaths: string[] = [];
 
+// Transient read-side faults that are NOT corruption: a Windows lock from
+// antivirus / file-indexer / concurrent writer (EBUSY/EPERM/EACCES/EAGAIN) or a
+// file that vanished mid-scan (ENOENT) from a concurrent rotation. Quarantining
+// (renaming) on these would hide healthy recovery state behind a transient race.
+const TRANSIENT_READ_CODES = new Set([
+	"EBUSY",
+	"EPERM",
+	"EACCES",
+	"EAGAIN",
+	"ENOENT",
+]);
+
+function isTransientReadError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return typeof code === "string" && TRANSIENT_READ_CODES.has(code);
+}
+
+/**
+ * Decide what to do with a file whose read+parse failed (recovery-10).
+ *
+ * Only a *successful read followed by a parse/validation failure* is treated as
+ * corruption and quarantined. A transient FS-lock or ENOENT read error is a
+ * race, not corruption, so we leave the file in place and skip it this pass
+ * (a later pass reads it cleanly). Returns true when the caller should count it
+ * as quarantined corruption, false when it was a transient skip.
+ */
+function handleUnreadableFile(filePath: string, error: unknown): void {
+	if (isTransientReadError(error)) {
+		// Transient lock / concurrent-rotation race: do not quarantine, just skip.
+		recoveryLog.debug("skipping recovery file on transient read error", {
+			path: filePath,
+			reason: error instanceof Error ? error.message : String(error),
+		});
+		return;
+	}
+	quarantineCorruptFile(filePath, error);
+}
+
 function quarantineCorruptFile(filePath: string, error: unknown): void {
 	corruptFileCount += 1;
 	const reason = error instanceof Error ? error.message : String(error);
 	try {
 		const target = `${filePath}.corrupt-${Date.now()}`;
-		renameSync(filePath, target);
+		// Route through renameSyncWithRetry so a transient Windows EBUSY/EPERM/
+		// ENOTEMPTY/EAGAIN lock on the quarantine move is retried with backoff
+		// rather than abandoning a genuinely-corrupt file in place.
+		renameSyncWithRetry(filePath, target);
 		quarantinedPaths.push(target);
 		recoveryLog.warn("quarantined corrupt recovery file", { path: target, reason });
 	} catch (renameError) {
@@ -267,8 +308,10 @@ export function readMessages(sessionID: string): StoredMessageMeta[] {
 				const content = readFileSync(filePath, "utf-8");
 				messages.push(JSON.parse(content));
 			} catch (error) {
-				// recovery-10: surface + quarantine instead of silently dropping.
-				quarantineCorruptFile(filePath, error);
+				// recovery-10: quarantine genuine corruption; skip transient FS-lock /
+				// ENOENT races (handleUnreadableFile classifies) instead of renaming a
+				// healthy file that was momentarily locked or concurrently rotated.
+				handleUnreadableFile(filePath, error);
 				continue;
 			}
 		}
@@ -307,8 +350,10 @@ export function readParts(messageID: string): StoredPart[] {
 				const content = readFileSync(filePath, "utf-8");
 				parts.push(JSON.parse(content));
 			} catch (error) {
-				// recovery-10: surface + quarantine instead of silently dropping.
-				quarantineCorruptFile(filePath, error);
+				// recovery-10: quarantine genuine corruption; skip transient FS-lock /
+				// ENOENT races (handleUnreadableFile classifies) instead of renaming a
+				// healthy file that was momentarily locked or concurrently rotated.
+				handleUnreadableFile(filePath, error);
 				continue;
 			}
 		}

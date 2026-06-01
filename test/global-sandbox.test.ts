@@ -1,4 +1,3 @@
-import { describe, it, expect } from "vitest";
 import { getCodexMultiAuthDir, getCodexHomeDir } from "../lib/runtime-paths.js";
 
 /**

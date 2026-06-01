@@ -32,7 +32,14 @@ async function waitForPortFree(port: number, timeoutMs = 2000): Promise<void> {
 			});
 		});
 		if (free) return;
-		if (Date.now() >= deadline) return; // best effort; don't hang the suite
+		if (Date.now() >= deadline) {
+			// Fail loudly instead of returning best-effort: a port that never frees
+			// means the next case starts with 1455 occupied and hits the same
+			// intermittent EADDRINUSE race this helper exists to prevent.
+			throw new Error(
+				`Port ${port} did not free within ${timeoutMs}ms during test teardown.`,
+			);
+		}
 		await new Promise((r) => setTimeout(r, 25));
 	}
 }

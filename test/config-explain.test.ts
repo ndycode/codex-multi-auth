@@ -216,4 +216,45 @@ describe("getPluginConfigExplainReport", () => {
 		const missing = configKeys.filter((key) => !explained.has(key));
 		expect(missing).toEqual([]);
 	});
+
+	// config-01 (bidirectional): the parity guard must also fail if `config explain`
+	// keeps a stale or renamed entry after a config key is removed/renamed —
+	// otherwise drift in the other direction goes unnoticed.
+	it("has no extra explain entries beyond DEFAULT_PLUGIN_CONFIG keys", async () => {
+		const mod = await import("../lib/config.js");
+		const report = mod.getPluginConfigExplainReport();
+		const configKeys = new Set(Object.keys(mod.DEFAULT_PLUGIN_CONFIG));
+		const extras = report.entries
+			.map((item) => item.key)
+			.filter((key) => !configKeys.has(key));
+		expect(extras).toEqual([]);
+	});
+
+	// config-01 (precedence): when CODEX_MULTI_AUTH_CONFIG_PATH is set and present,
+	// loadPluginConfig() reads that file in preference to unified settings, so the
+	// explain report must describe the SAME file (storageKind "file" + that path),
+	// not the unified store. Regression for the split-brain where explain reported
+	// unified while load read the env file.
+	it('reports the env config path as the "file" source when CODEX_MULTI_AUTH_CONFIG_PATH is set', async () => {
+		const configPath = nextConfigPath("env-precedence");
+		await fs.writeFile(
+			configPath,
+			JSON.stringify({ unsupportedCodexPolicy: "fallback" }),
+			"utf-8",
+		);
+		// Unified settings also present — env path must still win.
+		loadUnifiedPluginConfigSyncMock.mockReturnValue({
+			unsupportedCodexPolicy: "strict",
+		});
+		process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+
+		const { getPluginConfigExplainReport } = await import("../lib/config.js");
+		const report = getPluginConfigExplainReport();
+
+		expect(report.storageKind).toBe("file");
+		expect(report.configPath).toBe(configPath);
+		const entry = expectEntry(report, "unsupportedCodexPolicy");
+		expect(entry?.source).toBe("file");
+		expect(entry?.value).toBe("fallback");
+	});
 });

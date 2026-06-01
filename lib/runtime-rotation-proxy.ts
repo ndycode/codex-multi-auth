@@ -2041,14 +2041,19 @@ export async function startRuntimeRotationProxy(
 				});
 			}
 		} catch (error) {
-			status.lastError = error instanceof Error ? error.message : String(error);
+			const rawErrorMessage = error instanceof Error ? error.message : String(error);
+			// errors-logging-08: redact any email/token material that leaked into a
+			// raw upstream or refresh error string before it reaches status consumers
+			// or the structured log. maskString is a no-op for clean diagnostic text.
+			const maskedErrorMessage = maskString(rawErrorMessage);
+			status.lastError = maskedErrorMessage;
 			// errors-logging-01: surface the failure through the structured logger
 			// (redaction-safe) with the request trace id, instead of only stashing a
-			// last-write-wins status string. logError masks any email/token material.
+			// last-write-wins status string.
 			proxyLog.error("runtime proxy request failed", {
 				traceId,
 				code: isRuntimeProxyHttpError(error) ? error.code : "codex_runtime_rotation_proxy_error",
-				error: error instanceof Error ? error.message : String(error),
+				error: maskedErrorMessage,
 			});
 			if (!res.headersSent) {
 				if (isRuntimeProxyHttpError(error)) {

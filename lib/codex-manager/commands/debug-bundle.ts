@@ -1,16 +1,48 @@
 import type { ConfigExplainReport } from "../../config.js";
 import { homedir } from "node:os";
+import { sep } from "node:path";
 import { maskEmail } from "../../logger.js";
 
 /**
  * Replace the user's home-directory prefix with `~` so the bundle does not leak
  * the OS username embedded in absolute paths (errors-logging-04).
+ *
+ * The match is path-aware, not a raw `startsWith`:
+ *   - Windows path comparison is case-insensitive, so `C:\Users\Alice` and
+ *     `c:\users\alice` must both redact. We case-fold both sides on win32.
+ *   - A bare prefix check falsely matches sibling directories that merely share
+ *     a string prefix (e.g. home `/users/alice` would "match" `/users/alice2`).
+ *     We require a real path boundary: either an exact home match or the next
+ *     character after the prefix is a path separator.
+ *
+ * @internal Exported for unit testing of the windows-casing / prefix-collision
+ * branches; not part of the public CLI surface.
  */
-function redactHome(value: string): string {
+export function redactHome(value: string): string {
 	const home = homedir();
-	if (home && value.startsWith(home)) {
+	if (!home) {
+		return value;
+	}
+
+	const isWindows = process.platform === "win32";
+	const normalizedValue = isWindows ? value.toLowerCase() : value;
+	const normalizedHome = isWindows ? home.toLowerCase() : home;
+
+	if (normalizedValue === normalizedHome) {
+		return "~";
+	}
+
+	// Require a path boundary after the home prefix so `/users/alice2` is not
+	// treated as living under home `/users/alice`. Accept either path separator
+	// so a value captured with the foreign separator still redacts.
+	const boundary = normalizedValue.slice(normalizedHome.length, normalizedHome.length + 1);
+	if (
+		normalizedValue.startsWith(normalizedHome) &&
+		(boundary === sep || boundary === "/" || boundary === "\\")
+	) {
 		return `~${value.slice(home.length)}`;
 	}
+
 	return value;
 }
 

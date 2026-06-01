@@ -63,8 +63,11 @@ function stripAnsi(input: string): string {
  * @param input - The input string which may contain ANSI SGR escape sequences.
  * @param maxVisibleChars - Maximum number of visible (non-ANSI) characters to keep; values <= 0 yield an empty string.
  * @returns The input string truncated so its visible character count does not exceed `maxVisibleChars`, with ANSI codes preserved and a truncation suffix appended when truncation occurred.
+ *
+ * @internal Exported for unit testing of ANSI reset placement (ui-01); not part
+ * of the public UI surface.
  */
-function truncateAnsi(input: string, maxVisibleChars: number): string {
+export function truncateAnsi(input: string, maxVisibleChars: number): string {
 	if (maxVisibleChars <= 0) return "";
 	const visible = stripAnsi(input);
 	if (visible.length <= maxVisibleChars) return input;

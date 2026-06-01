@@ -26,15 +26,23 @@ export interface PromptFetchOptions {
 	json?: boolean;
 }
 
-/** Merge caller headers with the mandatory User-Agent / Accept defaults. */
+/**
+ * Merge caller headers with the mandatory User-Agent / Accept defaults.
+ *
+ * The mandatory headers are applied AFTER the caller's so they always win: a
+ * caller must not be able to blank or replace `User-Agent` / `Accept` and
+ * bypass the hardening this helper guarantees on every prompt fetch (api.github
+ * .com rejects requests without a User-Agent). Caller headers are still honored
+ * for everything else (e.g. `If-None-Match`).
+ */
 export function withPromptFetchHeaders(
 	headers: Record<string, string> = {},
 	json = false,
 ): Record<string, string> {
 	return {
+		...headers,
 		"User-Agent": PROMPT_FETCH_USER_AGENT,
 		Accept: json ? "application/vnd.github+json" : "text/plain, */*",
-		...headers,
 	};
 }
 
@@ -59,7 +67,6 @@ export async function fetchWithTimeout(
 		clearTimeout(timer);
 	}
 }
-// PLACEHOLDER_READ_BODY
 
 /**
  * Read a response body as text with a size ceiling, rejecting empty bodies.

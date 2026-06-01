@@ -16,6 +16,7 @@ import {
 	getHealthTracker,
 	getTokenTracker,
 	resetTrackers,
+	DEFAULT_TOKEN_BUCKET_CONFIG,
 } from "../lib/rotation.js";
 import { CodexAuthError } from "../lib/errors.js";
 import {
@@ -1066,6 +1067,25 @@ describe("AccountManager", () => {
 			const identityKey = getRuntimeTrackerKey(target!);
 			expect(identityKey).toBe("account:acc_stable");
 
+			// accounts-02 (extended): consume a token and open the breaker BEFORE the
+			// health failures (an open breaker would otherwise block consumeToken), so
+			// the regression fails if removeAccount stops clearing token buckets
+			// (lib/rotation.ts clearAccountKey) or stale circuit breakers
+			// (lib/circuit-breaker.ts). Use a LIVE reference for these mutations.
+			const liveStable = manager.getAccountByIndex(0);
+			expect(liveStable?.accountId).toBe("acc_stable");
+			expect(manager.consumeToken(liveStable!, "codex")).toBe(true);
+			const tokenTracker = getTokenTracker();
+			expect(tokenTracker.getTokens(identityKey, "codex")).toBeLessThan(
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+			);
+			const breakerKey = getAccountIdentityKey(liveStable!)!;
+			const breaker = getCircuitBreaker(breakerKey);
+			breaker.recordFailure();
+			breaker.recordFailure();
+			breaker.recordFailure();
+			expect(breaker.getState()).toBe("open");
+
 			// Drive the stable account's health score down via repeated failures.
 			// recordFailure keys health by quotaKey = family ("codex").
 			for (let i = 0; i < 5; i++) manager.recordFailure(target!, "codex");
@@ -1083,6 +1103,14 @@ describe("AccountManager", () => {
 			const afterRemoval = getHealthTracker().getScore(identityKey, "codex");
 			expect(afterRemoval).toBe(100);
 			expect(afterRemoval).toBeGreaterThan(penalized);
+
+			// Token bucket reset: a fresh lookup for the same identity reports the
+			// full default capacity (the consumed token did not carry over).
+			expect(tokenTracker.getTokens(identityKey, "codex")).toBe(
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+			);
+			// Circuit breaker reset: a fresh breaker for the same identity is closed.
+			expect(getCircuitBreaker(breakerKey).getState()).toBe("closed");
 		});
 
 		it("returns false when removing non-existent account", () => {

@@ -269,6 +269,37 @@ describe("Codex Prompts Module", () => {
 				expect(result).toBe("disk cached content");
 			});
 
+			it("retries a transient EBUSY on the cache rename and still persists (windows lock)", async () => {
+				// prompts-06 / windows fs: writeCacheAtomically routes its rename calls
+				// through withFileOperationRetry, so a transient EBUSY from an antivirus
+				// or file-indexer lock must be retried rather than turning a successful
+				// fetch into a cache-write failure.
+				mockedReadFile.mockRejectedValue(new Error("ENOENT"));
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({ tag_name: "rust-v0.50.0" }),
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					text: () => Promise.resolve("instructions after lock contention"),
+					headers: { get: () => "fresh-etag" },
+				});
+				mockedMkdir.mockResolvedValue(undefined);
+				mockedWriteFile.mockResolvedValue(undefined);
+				// First rename throws EBUSY once, then succeeds — withFileOperationRetry
+				// must absorb the transient fault.
+				const ebusy = Object.assign(new Error("EBUSY: resource busy or locked"), {
+					code: "EBUSY",
+				});
+				mockedRename.mockRejectedValueOnce(ebusy);
+				mockedRename.mockResolvedValue(undefined);
+
+				const result = await getCodexInstructions("gpt-5.2");
+				expect(result).toBe("instructions after lock contention");
+				// At least one extra rename attempt beyond the initial failed one.
+				expect(mockedRename.mock.calls.length).toBeGreaterThanOrEqual(2);
+			});
+
 			it("should refresh stale cache in background when release tag changes", async () => {
 				const oldTimestamp = Date.now() - 20 * 60 * 1000;
 				mockedReadFile.mockImplementation((filePath) => {

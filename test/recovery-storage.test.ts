@@ -165,6 +165,76 @@ describe("RecoveryStorage", () => {
 			expect(stats.quarantinedPaths.some((p) => p.includes("bad.json"))).toBe(true);
 		});
 
+		it("does NOT quarantine a file on a transient EBUSY read race", () => {
+			// recovery-10: a Windows lock (AV/indexer/concurrent writer) surfaces as
+			// EBUSY on read — a transient race, not corruption. The file must be
+			// skipped this pass and left in place, never renamed to .corrupt-*.
+			storage.__resetRecoveryCorruptionStats();
+			const sessionID = "sess";
+			const messageDir = join(MESSAGE_STORAGE, sessionID);
+
+			fsMock.existsSync.mockImplementation(
+				(path: string) => path === MESSAGE_STORAGE || path === messageDir,
+			);
+			fsMock.readdirSync.mockReturnValue(["good.json", "locked.json"]);
+			fsMock.readFileSync.mockImplementation((path: string) => {
+				if (path === join(messageDir, "good.json")) {
+					return JSON.stringify({
+						id: "good",
+						sessionID,
+						role: "assistant",
+						time: { created: 1 },
+					});
+				}
+				if (path === join(messageDir, "locked.json")) {
+					throw Object.assign(new Error("EBUSY: resource busy or locked"), {
+						code: "EBUSY",
+					});
+				}
+				return "";
+			});
+
+			const result = storage.readMessages(sessionID);
+			expect(result.map((msg) => msg.id)).toEqual(["good"]);
+			expect(fsMock.renameSync).not.toHaveBeenCalled();
+			const transientStats = storage.getRecoveryCorruptionStats();
+			expect(transientStats.corruptFileCount).toBe(0);
+			expect(transientStats.quarantinedPaths).toHaveLength(0);
+		});
+
+		it("retries a transient EBUSY on the quarantine rename, then succeeds", () => {
+			// recovery-10 / windows fs: genuine corruption is quarantined, and the
+			// quarantine rename routes through renameSyncWithRetry so a transient
+			// EBUSY on the rename is retried rather than abandoning the move.
+			storage.__resetRecoveryCorruptionStats();
+			const sessionID = "sess";
+			const messageDir = join(MESSAGE_STORAGE, sessionID);
+
+			fsMock.existsSync.mockImplementation(
+				(path: string) => path === MESSAGE_STORAGE || path === messageDir,
+			);
+			fsMock.readdirSync.mockReturnValue(["bad.json"]);
+			fsMock.readFileSync.mockImplementation(() => "not json {{{");
+			let renameCalls = 0;
+			fsMock.renameSync.mockImplementation(() => {
+				renameCalls += 1;
+				if (renameCalls === 1) {
+					throw Object.assign(new Error("EBUSY: locked"), { code: "EBUSY" });
+				}
+				return undefined;
+			});
+
+			const result = storage.readMessages(sessionID);
+			expect(result).toEqual([]);
+			// First rename threw EBUSY; the retry path must have called it again.
+			expect(renameCalls).toBeGreaterThanOrEqual(2);
+			const corruptStats = storage.getRecoveryCorruptionStats();
+			expect(corruptStats.corruptFileCount).toBeGreaterThanOrEqual(1);
+			expect(corruptStats.quarantinedPaths.some((p) => p.includes("bad.json"))).toBe(
+				true,
+			);
+		});
+
 		it("should return empty array on read failure", () => {
 			const sessionID = "sess";
 			const messageDir = join(MESSAGE_STORAGE, sessionID);

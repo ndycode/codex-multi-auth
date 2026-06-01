@@ -7,6 +7,7 @@ import { logWarn, logError, logDebug } from "../logger.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
 import { getModelProfile, type PromptModelFamily } from "../request/helpers/model-map.js";
 import { fetchWithTimeout, readBodyTextGuarded } from "./fetch-utils.js";
+import { withFileOperationRetry } from "../fs-retry.js";
 
 /** SHA-256 of cache content for integrity verification (prompts-03). */
 function sha256(content: string): string {
@@ -20,6 +21,14 @@ function sha256(content: string): string {
  * a crash between them left content and meta (etag/sha) out of sync. Write each
  * to a temp sibling then rename, and write the content before the meta so the
  * meta's sha always describes a content file already on disk.
+ *
+ * Note on atomicity: this is a *two-rename* operation (content, then meta), not
+ * a single atomic commit. If the second rename fails permanently the disk holds
+ * new content with stale meta — which the next read self-heals via the sha256
+ * integrity check (mismatch ⇒ discard + refetch). Each fs step is wrapped in
+ * withFileOperationRetry so a transient Windows EBUSY/EPERM/ENOTEMPTY/EACCES
+ * from antivirus, the file indexer, or a concurrent reader is retried with
+ * backoff instead of turning a successful fetch into a cache-write failure.
  */
 async function writeCacheAtomically(
 	cacheFile: string,
@@ -27,15 +36,19 @@ async function writeCacheAtomically(
 	content: string,
 	meta: CacheMetadata,
 ): Promise<void> {
-	await fs.mkdir(CACHE_DIR, { recursive: true });
+	await withFileOperationRetry(() => fs.mkdir(CACHE_DIR, { recursive: true }));
 	const nonce = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 	const contentTmp = `${cacheFile}.${nonce}.tmp`;
 	const metaTmp = `${cacheMetaFile}.${nonce}.tmp`;
 	try {
-		await fs.writeFile(contentTmp, content, { encoding: "utf8" });
-		await fs.writeFile(metaTmp, JSON.stringify(meta), { encoding: "utf8" });
-		await fs.rename(contentTmp, cacheFile);
-		await fs.rename(metaTmp, cacheMetaFile);
+		await withFileOperationRetry(() =>
+			fs.writeFile(contentTmp, content, { encoding: "utf8" }),
+		);
+		await withFileOperationRetry(() =>
+			fs.writeFile(metaTmp, JSON.stringify(meta), { encoding: "utf8" }),
+		);
+		await withFileOperationRetry(() => fs.rename(contentTmp, cacheFile));
+		await withFileOperationRetry(() => fs.rename(metaTmp, cacheMetaFile));
 	} finally {
 		await fs.rm(contentTmp, { force: true }).catch(() => undefined);
 		await fs.rm(metaTmp, { force: true }).catch(() => undefined);
