@@ -61,6 +61,22 @@ describe("table-formatter", () => {
 			const row = buildTableRow(["42", "abc"], options);
 			expect(row).toBe("   42 abc  ");
 		});
+
+		// ui-02: CJK content must be padded by display columns, not code units.
+		it("pads CJK values by display width so columns stay aligned", () => {
+			// Name col width 10; "漢字漢字" = 4 glyphs * 2 cols = 8 cols -> 2 pad spaces.
+			const row = buildTableRow(["1", "漢字漢字", "ok"], simpleOptions);
+			// "1" -> 4 cols, "漢字漢字" -> 8 + 2 pad = 10 cols, "ok" -> 8 cols.
+			expect(row).toBe("1    漢字漢字   ok      ");
+		});
+
+		it("truncates wide-glyph values without splitting a glyph", () => {
+			// Name width 10: a 6-glyph value = 12 cols overflows. Reserve 1 col for the
+			// ellipsis -> keep up to 9 cols of content, but a 5th wide glyph (10 cols)
+			// won't fit in 9, so only 4 glyphs (8 cols) are kept, then "…", then pad.
+			const row = buildTableRow(["1", "漢字漢字漢字", "ok"], simpleOptions);
+			expect(row).toBe("1    漢字漢字…  ok      ");
+		});
 	});
 
 	describe("buildTable", () => {

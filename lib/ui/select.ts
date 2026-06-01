@@ -89,7 +89,11 @@ function truncateAnsi(input: string, maxVisibleChars: number): string {
 		kept += 1;
 	}
 
-	return output + suffix;
+	// ui-01: if the kept portion contains any ANSI escape (e.g. a color that the
+	// truncated tail would have closed), append a reset so the color does not bleed
+	// past the truncation point into the rest of the terminal line.
+	const reset = output.includes("\x1b") ? "\x1b[0m" : "";
+	return output + suffix + reset;
 }
 
 /**

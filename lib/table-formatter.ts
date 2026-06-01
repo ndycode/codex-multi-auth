@@ -3,6 +3,8 @@
  * Generates consistent, aligned table output.
  */
 
+import { displayWidth, truncateToWidth } from "./ui/display-width.js";
+
 export interface TableColumn {
 	/** Column header text */
 	header: string;
@@ -23,8 +25,19 @@ export interface TableOptions {
  * Format a value to fit within a column width.
  */
 function formatCell(value: string, width: number, align: "left" | "right" = "left"): string {
-	const truncated = value.length > width ? value.slice(0, width - 1) + "…" : value;
-	return align === "right" ? truncated.padStart(width) : truncated.padEnd(width);
+	// ui-02: measure and pad by display columns, not UTF-16 code units, so CJK/
+	// emoji content stays aligned. When truncating, reserve one column for the
+	// ellipsis and never split a wide glyph across the boundary.
+	const valueWidth = displayWidth(value);
+	let cell: string;
+	if (valueWidth > width) {
+		const { text } = truncateToWidth(value, Math.max(0, width - 1));
+		cell = `${text}…`;
+	} else {
+		cell = value;
+	}
+	const pad = Math.max(0, width - displayWidth(cell));
+	return align === "right" ? " ".repeat(pad) + cell : cell + " ".repeat(pad);
 }
 
 /**

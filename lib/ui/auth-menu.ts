@@ -288,8 +288,14 @@ function formatQuotaBar(
 	const width = 10;
 	const ratio = leftPercent === null ? 0 : leftPercent / 100;
 	const filled = Math.max(0, Math.min(width, Math.round(ratio * width)));
-	const filledText = "█".repeat(filled);
-	const emptyText = "▒".repeat(width - filled);
+	// ui-03: honor glyph mode. The Unicode block glyphs (█/▒) render as mojibake on
+	// ascii terminals, so fall back to ASCII fill/empty chars unless glyphMode is
+	// explicitly "unicode". ("auto" stays ascii here to avoid environment guesses.)
+	const useUnicodeBar = ui.theme.glyphMode === "unicode";
+	const fillChar = useUnicodeBar ? "█" : "#";
+	const emptyChar = useUnicodeBar ? "▒" : "-";
+	const filledText = fillChar.repeat(filled);
+	const emptyText = emptyChar.repeat(width - filled);
 	if (ui.v2Enabled) {
 		const tone = leftPercent === null ? "muted" : quotaToneFromLeftPercent(leftPercent);
 		const filledSegment = filledText.length > 0 ? paintUiText(ui, filledText, tone) : "";
