@@ -81,6 +81,9 @@ const APP_RUNTIME_HELPER_LAUNCH_TIMEOUT_MS = 15_000;
 const APP_SERVER_SHIM_DIR_NAME = "app-server-shims";
 const APP_SERVER_SHIM_HELPER_PREFIX = "helper-";
 const DEFAULT_STARTUP_UPDATE_NOTICE_BUDGET_MS = 3_000;
+const DEFAULT_STATUS_QUOTA_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+const STATUS_QUOTA_REFRESH_LOCK_STALE_MS = 10 * 60 * 1000;
+const STATUS_QUOTA_REFRESH_LOCK_DIR = "status-quota-refresh.lock";
 const STARTUP_UPDATE_NOTICE_TIMED_OUT = Symbol("startup-update-notice-timed-out");
 let shadowHomeCleanupBusyFailuresRemaining = Number.parseInt(
 	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_CLEANUP_BUSY_FAILURES ?? "0",
@@ -174,6 +177,418 @@ function hydrateCliVersionEnv() {
 	} catch {
 		// Best effort only.
 	}
+}
+
+function readJsonFileQuiet(path) {
+	try {
+		if (!existsSync(path)) return null;
+		return JSON.parse(readFileSync(path, "utf8"));
+	} catch {
+		return null;
+	}
+}
+
+function resolveMultiAuthDirFromEnv(env = process.env) {
+	const configured = (env.CODEX_MULTI_AUTH_DIR ?? "").trim();
+	if (configured.length > 0) return configured;
+	return join(resolveCodexHomeDir(env), "multi-auth");
+}
+
+function resolveAccountsPath(env = process.env) {
+	return join(resolveMultiAuthDirFromEnv(env), "openai-codex-accounts.json");
+}
+
+function resolveQuotaCachePath(env = process.env) {
+	return join(resolveMultiAuthDirFromEnv(env), "quota-cache.json");
+}
+
+function resolveRuntimeObservabilityPath(env = process.env) {
+	return join(resolveMultiAuthDirFromEnv(env), "runtime-observability.json");
+}
+
+function normalizeAccountIdentifier(value) {
+	return typeof value === "string" && value.trim().length > 0
+		? value.trim().toLowerCase()
+		: "";
+}
+
+function findAccountIndexByIdOrEmail(accounts, id, email) {
+	const normalizedId = normalizeAccountIdentifier(id);
+	const normalizedEmail = normalizeAccountIdentifier(email);
+	for (let index = 0; index < accounts.length; index += 1) {
+		const account = accounts[index];
+		if (!account || typeof account !== "object") continue;
+		if (
+			normalizedId &&
+			normalizeAccountIdentifier(account.accountId) === normalizedId
+		) {
+			return index;
+		}
+		if (
+			normalizedEmail &&
+			normalizeAccountIdentifier(account.email) === normalizedEmail
+		) {
+			return index;
+		}
+	}
+	return -1;
+}
+
+function resolveModelFamilyForStatus(model) {
+	const normalized = typeof model === "string" ? model.trim().toLowerCase() : "";
+	if (normalized.startsWith("gpt-5.2")) return "gpt-5.2";
+	if (normalized.startsWith("gpt-5.1")) return "gpt-5.1";
+	if (normalized.includes("codex-max")) return "codex-max";
+	if (normalized.includes("codex")) return "codex";
+	if (normalized.startsWith("gpt-5")) return "gpt-5-codex";
+	return null;
+}
+
+function resolveStatusAccountIndex(storage, runtime, model) {
+	const accounts = Array.isArray(storage?.accounts) ? storage.accounts : [];
+	if (accounts.length === 0) return -1;
+
+	const runtimeUpdatedAt =
+		typeof runtime?.lastAccountUpdatedAt === "number"
+			? runtime.lastAccountUpdatedAt
+			: typeof runtime?.updatedAt === "number"
+				? runtime.updatedAt
+				: 0;
+	if (Date.now() - runtimeUpdatedAt <= 60 * 60 * 1000) {
+		const runtimeIndex = findAccountIndexByIdOrEmail(
+			accounts,
+			runtime?.lastAccountId,
+			runtime?.lastAccountEmail,
+		);
+		if (runtimeIndex >= 0) return runtimeIndex;
+		if (
+			typeof runtime?.lastAccountIndex === "number" &&
+			runtime.lastAccountIndex >= 0 &&
+			runtime.lastAccountIndex < accounts.length
+		) {
+			return runtime.lastAccountIndex;
+		}
+	}
+
+	const family = resolveModelFamilyForStatus(model);
+	const familyIndex =
+		family && storage?.activeIndexByFamily && typeof storage.activeIndexByFamily[family] === "number"
+			? storage.activeIndexByFamily[family]
+			: undefined;
+	if (
+		typeof familyIndex === "number" &&
+		familyIndex >= 0 &&
+		familyIndex < accounts.length
+	) {
+		return familyIndex;
+	}
+	if (
+		typeof storage?.activeIndex === "number" &&
+		storage.activeIndex >= 0 &&
+		storage.activeIndex < accounts.length
+	) {
+		return storage.activeIndex;
+	}
+	return 0;
+}
+
+function extractConfigAssignmentValue(rawConfig, key) {
+	const pattern = new RegExp(`^\\s*${key}\\s*=\\s*([^\\n#]+)`, "m");
+	const match = rawConfig.match(pattern);
+	if (!match) return null;
+	const rawValue = (match[1] ?? "").trim();
+	const quoted = rawValue.match(/^["'](.*)["']$/);
+	return (quoted ? quoted[1] : rawValue).trim() || null;
+}
+
+function readCodexConfigValue(env, key) {
+	const configPath = join(resolveCodexHomeDir(env), "config.toml");
+	try {
+		if (!existsSync(configPath)) return null;
+		return extractConfigAssignmentValue(readFileSync(configPath, "utf8"), key);
+	} catch {
+		return null;
+	}
+}
+
+function extractArgValue(args, longName, shortName) {
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index];
+		if (arg === longName || (shortName && arg === shortName)) {
+			const next = args[index + 1];
+			return typeof next === "string" ? next : null;
+		}
+		if (arg.startsWith(`${longName}=`)) {
+			return arg.slice(longName.length + 1);
+		}
+	}
+	return null;
+}
+
+function extractConfigOverrideValue(args, key) {
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index];
+		let assignment = null;
+		if (arg === "-c" || arg === "--config") {
+			assignment = args[index + 1] ?? null;
+		} else if (arg.startsWith("-c=")) {
+			assignment = arg.slice(3);
+		} else if (arg.startsWith("--config=")) {
+			assignment = arg.slice("--config=".length);
+		}
+		if (typeof assignment !== "string") continue;
+		const separator = assignment.indexOf("=");
+		if (separator <= 0) continue;
+		if (assignment.slice(0, separator).trim() !== key) continue;
+		return assignment
+			.slice(separator + 1)
+			.trim()
+			.replace(/^["']|["']$/g, "");
+	}
+	return null;
+}
+
+function resolveStatusModel(args, env = process.env) {
+	return (
+		extractArgValue(args, "--model", "-m") ??
+		extractConfigOverrideValue(args, "model") ??
+		readCodexConfigValue(env, "model") ??
+		"unknown-model"
+	);
+}
+
+function resolveStatusReasoningEffort(args, env = process.env) {
+	return (
+		extractConfigOverrideValue(args, "model_reasoning_effort") ??
+		readCodexConfigValue(env, "model_reasoning_effort") ??
+		"unknown"
+	);
+}
+
+function formatStatusPath(cwd = process.cwd(), home = homedir()) {
+	const resolvedCwd = resolvePath(cwd);
+	const resolvedHome = resolvePath(home);
+	if (resolvedCwd === resolvedHome) return "~";
+	if (resolvedCwd.startsWith(`${resolvedHome}/`)) {
+		return `~/${resolvedCwd.slice(resolvedHome.length + 1)}`;
+	}
+	return resolvedCwd;
+}
+
+function formatStatusResetTime(resetAtMs) {
+	if (typeof resetAtMs !== "number" || !Number.isFinite(resetAtMs) || resetAtMs <= 0) {
+		return null;
+	}
+	const date = new Date(resetAtMs);
+	if (!Number.isFinite(date.getTime())) return null;
+	return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function formatStatusResetDate(resetAtMs) {
+	if (typeof resetAtMs !== "number" || !Number.isFinite(resetAtMs) || resetAtMs <= 0) {
+		return null;
+	}
+	const date = new Date(resetAtMs);
+	if (!Number.isFinite(date.getTime())) return null;
+	return date.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+function formatCacheAge(updatedAt) {
+	if (typeof updatedAt !== "number" || !Number.isFinite(updatedAt) || updatedAt <= 0) {
+		return "stale";
+	}
+	const ageMs = Math.max(0, Date.now() - updatedAt);
+	if (ageMs < 60_000) return "now";
+	if (ageMs < 60 * 60_000) return `${Math.floor(ageMs / 60_000)}m`;
+	return `${Math.floor(ageMs / (60 * 60_000))}h`;
+}
+
+function getQuotaEntryForAccount(quotaCache, account) {
+	const byAccountId =
+		quotaCache && typeof quotaCache === "object" && quotaCache.byAccountId
+			? quotaCache.byAccountId
+			: {};
+	const byEmail =
+		quotaCache && typeof quotaCache === "object" && quotaCache.byEmail
+			? quotaCache.byEmail
+			: {};
+	const accountId = typeof account?.accountId === "string" ? account.accountId : "";
+	const email = typeof account?.email === "string" ? account.email.toLowerCase() : "";
+	return byAccountId?.[accountId] ?? byEmail?.[email] ?? null;
+}
+
+function formatUsageWindow(label, window, resetFormatter) {
+	const used =
+		typeof window?.usedPercent === "number" && Number.isFinite(window.usedPercent)
+			? Math.max(0, Math.min(100, Math.round(window.usedPercent)))
+			: null;
+	const reset = resetFormatter(window?.resetAtMs);
+	if (used === null && !reset) return null;
+	if (used === null) return `${label} resets ${reset}`;
+	if (!reset) return `${label} ${used}%`;
+	return `${label} ${used}% ${reset}`;
+}
+
+function formatUsageSegment(entry) {
+	const primary = formatUsageWindow("5h", entry?.primary, formatStatusResetTime);
+	const secondary = formatUsageWindow("week", entry?.secondary, formatStatusResetDate);
+	const parts = [primary, secondary].filter(Boolean);
+	return parts.length > 0 ? parts.join(" | ") : "usage cached";
+}
+
+function formatPlan(planType) {
+	if (typeof planType !== "string" || planType.trim().length === 0) return "Plan?";
+	const normalized = planType.trim();
+	if (normalized.length <= 1) return normalized.toUpperCase();
+	return `${normalized[0].toUpperCase()}${normalized.slice(1).toLowerCase()}`;
+}
+
+function shouldShowForwardStatus(args, env = process.env) {
+	const override = (env.CODEX_MULTI_AUTH_STATUSLINE ?? "").trim().toLowerCase();
+	if (new Set(["0", "false", "no", "off"]).has(override)) return false;
+	if (new Set(["1", "true", "yes", "on"]).has(override)) return true;
+	if ((env.CODEX_MULTI_AUTH_STATUS_REFRESH_CHILD ?? "").trim() === "1") return false;
+	if (args.some((arg) => arg === "--help" || arg === "-h" || arg === "--version" || arg === "-V")) {
+		return false;
+	}
+	return process.stderr.isTTY === true;
+}
+
+function formatForwardStatusLine(rawArgs, env = process.env) {
+	const storage = readJsonFileQuiet(resolveAccountsPath(env));
+	const accounts = Array.isArray(storage?.accounts) ? storage.accounts : [];
+	if (accounts.length === 0) return null;
+
+	const runtime = readJsonFileQuiet(resolveRuntimeObservabilityPath(env));
+	const quotaCache = readJsonFileQuiet(resolveQuotaCachePath(env));
+	const model = resolveStatusModel(rawArgs, env);
+	const effort = resolveStatusReasoningEffort(rawArgs, env);
+	const accountIndex = resolveStatusAccountIndex(storage, runtime, model);
+	const account = accounts[accountIndex];
+	if (!account || typeof account !== "object") return null;
+
+	const quotaEntry = getQuotaEntryForAccount(quotaCache, account);
+	const email = typeof account.email === "string" && account.email.trim()
+		? account.email.trim()
+		: `Account ${accountIndex + 1}`;
+	const plan = formatPlan(quotaEntry?.planType);
+	const usage = formatUsageSegment(quotaEntry);
+	const cacheAge = formatCacheAge(quotaEntry?.updatedAt);
+	const parts = [
+		"codex-multi-auth",
+		`${model} ${effort}`,
+		formatStatusPath(),
+		`Account ${accountIndex + 1}`,
+		usage,
+		`${email}(${plan})`,
+		`cache ${cacheAge}`,
+	];
+	return parts.join(" | ");
+}
+
+function maybePrintForwardStatusLine(rawArgs, env = process.env) {
+	if (!shouldShowForwardStatus(rawArgs, env)) return;
+	const line = formatForwardStatusLine(rawArgs, env);
+	if (!line) return;
+	process.stderr.write(`${line}\n`);
+}
+
+function parseDurationMs(value, fallback) {
+	const trimmed = typeof value === "string" ? value.trim() : "";
+	if (trimmed.length === 0) return fallback;
+	const parsed = Number.parseInt(trimmed, 10);
+	if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+	return parsed;
+}
+
+function quotaCacheNeedsRefresh(env = process.env) {
+	const intervalMs = parseDurationMs(
+		env.CODEX_MULTI_AUTH_STATUS_QUOTA_REFRESH_INTERVAL_MS,
+		DEFAULT_STATUS_QUOTA_REFRESH_INTERVAL_MS,
+	);
+	if (intervalMs <= 0) return false;
+	const cache = readJsonFileQuiet(resolveQuotaCachePath(env));
+	const entries = [
+		...Object.values(cache?.byAccountId ?? {}),
+		...Object.values(cache?.byEmail ?? {}),
+	].filter((entry) => entry && typeof entry === "object");
+	if (entries.length === 0) return true;
+	const newest = Math.max(
+		...entries.map((entry) =>
+			typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt)
+				? entry.updatedAt
+				: 0,
+		),
+	);
+	return newest <= 0 || Date.now() - newest >= intervalMs;
+}
+
+function acquireStatusRefreshLock(env = process.env) {
+	const lockPath = join(resolveMultiAuthDirFromEnv(env), STATUS_QUOTA_REFRESH_LOCK_DIR);
+	try {
+		mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
+		mkdirSync(lockPath);
+		writeFileSync(
+			join(lockPath, "owner.json"),
+			`${JSON.stringify({ pid: process.pid, createdAt: Date.now() })}\n`,
+			{ mode: 0o600 },
+		);
+		return { lockPath, acquired: true };
+	} catch {
+		try {
+			const stat = statSync(lockPath);
+			if (Date.now() - stat.mtimeMs > STATUS_QUOTA_REFRESH_LOCK_STALE_MS) {
+				removeDirectoryWithRetry(lockPath);
+				mkdirSync(lockPath);
+				writeFileSync(
+					join(lockPath, "owner.json"),
+					`${JSON.stringify({ pid: process.pid, createdAt: Date.now(), recovered: true })}\n`,
+					{ mode: 0o600 },
+				);
+				return { lockPath, acquired: true };
+			}
+		} catch {
+			// Another process can win the race; skip refresh.
+		}
+	}
+	return { lockPath, acquired: false };
+}
+
+function maybeRefreshQuotaCacheInBackground(env = process.env) {
+	if ((env.CODEX_MULTI_AUTH_STATUS_REFRESH_CHILD ?? "").trim() === "1") return;
+	if (!quotaCacheNeedsRefresh(env)) return;
+	const { lockPath, acquired } = acquireStatusRefreshLock(env);
+	if (!acquired) return;
+
+	const scriptPath = join(dirname(fileURLToPath(import.meta.url)), "codex-multi-auth.js");
+	const child = spawn(
+		process.execPath,
+		[scriptPath, "forecast", "--live", "--json"],
+		{
+			env: {
+				...env,
+				CODEX_MULTI_AUTH_STATUS_REFRESH_CHILD: "1",
+				CODEX_MULTI_AUTH_STATUSLINE: "0",
+			},
+			stdio: "ignore",
+			detached: true,
+		},
+	);
+	child.once("close", () => {
+		try {
+			removeDirectoryWithRetry(lockPath);
+		} catch {
+			// Best-effort cleanup; stale lock recovery handles leftovers.
+		}
+	});
+	child.once("error", () => {
+		try {
+			removeDirectoryWithRetry(lockPath);
+		} catch {
+			// Best-effort cleanup.
+		}
+	});
+	child.unref();
 }
 
 function isRotationEnableCommand(args) {
@@ -4262,6 +4677,8 @@ async function main() {
 	}
 
 	await autoSyncManagerActiveSelectionIfEnabled();
+	maybePrintForwardStatusLine(rawArgs);
+	maybeRefreshQuotaCacheInBackground();
 	try {
 		return await withForwardedRuntimeObservability(rawArgs, () =>
 			forwardToRealCodex(realCodexBin, rawArgs),

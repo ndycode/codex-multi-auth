@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+monitor_interval="${MCODEX_MONITOR_INTERVAL:-5}"
+live_accounts=0
+
+quote_args() {
+  local quoted=()
+  local arg
+  for arg in "$@"; do
+    printf -v arg '%q' "$arg"
+    quoted+=("$arg")
+  done
+  printf '%s ' "${quoted[@]}"
+}
+
+run_monitor() {
+  watch -n "$monitor_interval" 'codex-multi-auth list'
+}
+
+if [[ "${1:-}" == "--monitor" ]]; then
+  shift
+  run_monitor "$@"
+  exit 0
+fi
+
+if [[ "${1:-}" == "--tmux" || "${1:-}" == "-t" ]]; then
+  shift
+  if [[ "${1:-}" == "--live-accounts" ]]; then
+    live_accounts=1
+    shift
+  fi
+  if ! command -v tmux >/dev/null 2>&1; then
+    echo "mcodex: tmux is not installed; launching without tmux" >&2
+    exec codex-multi-auth-codex "$@"
+  fi
+
+  if [[ -n "${TMUX:-}" ]]; then
+    if [[ "$live_accounts" == "1" ]]; then
+      tmux split-window -h "watch -n $monitor_interval 'codex-multi-auth list'"
+    fi
+    exec codex-multi-auth-codex "$@"
+  fi
+
+  session="${MCODEX_TMUX_SESSION:-mcodex}"
+  suffix="$(date +%H%M%S)"
+  if tmux has-session -t "$session" 2>/dev/null; then
+    session="${session}-${suffix}"
+  fi
+
+  args="$(quote_args "$@")"
+  tmux new-session -d -s "$session" -n codex "codex-multi-auth-codex $args"
+  if [[ "$live_accounts" == "1" ]]; then
+    tmux split-window -h -t "$session:0" "watch -n $monitor_interval 'codex-multi-auth list'"
+  fi
+  tmux select-pane -t "$session:0.0"
+  tmux attach-session -t "$session"
+  exit 0
+fi
+
+exec codex-multi-auth-codex "$@"

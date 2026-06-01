@@ -114,6 +114,7 @@
 		"prepare": "husky"
 	},
 	"bin": {
+		"mcodex": "scripts/mcodex",
 		"codex-multi-auth-codex": "scripts/codex.js",
 		"codex-multi-auth-app-launcher": "scripts/codex-app-launcher.js",
 		"codex-multi-auth": "scripts/codex-multi-auth.js"
@@ -128,6 +129,7 @@
 		"scripts/codex-bin-resolver.js",
 		"scripts/codex-multi-auth.js",
 		"scripts/codex-routing.js",
+		"scripts/mcodex",
 		"scripts/install-codex-auth-utils.js",
 		"scripts/postinstall.js",
 		"scripts/preuninstall.js",
