@@ -3,6 +3,7 @@ set -euo pipefail
 
 monitor_interval="${MCODEX_MONITOR_INTERVAL:-5}"
 live_accounts=0
+tmux_history_limit="${MCODEX_TMUX_HISTORY_LIMIT:-50000}"
 
 quote_args() {
   local quoted=()
@@ -16,6 +17,17 @@ quote_args() {
 
 run_monitor() {
   watch -n "$monitor_interval" 'codex-multi-auth list'
+}
+
+configure_tmux_scrollback() {
+  local target="${1:-}"
+  local target_args=()
+  if [[ -n "$target" ]]; then
+    target_args=(-t "$target")
+  fi
+
+  tmux set-option "${target_args[@]}" mouse on >/dev/null
+  tmux set-option "${target_args[@]}" history-limit "$tmux_history_limit" >/dev/null
 }
 
 if [[ "${1:-}" == "--monitor" ]]; then
@@ -36,6 +48,7 @@ if [[ "${1:-}" == "--tmux" || "${1:-}" == "-t" ]]; then
   fi
 
   if [[ -n "${TMUX:-}" ]]; then
+    configure_tmux_scrollback
     if [[ "$live_accounts" == "1" ]]; then
       tmux split-window -h "watch -n $monitor_interval 'codex-multi-auth list'"
     fi
@@ -50,6 +63,7 @@ if [[ "${1:-}" == "--tmux" || "${1:-}" == "-t" ]]; then
 
   args="$(quote_args "$@")"
   tmux new-session -d -s "$session" -n codex "codex-multi-auth-codex $args"
+  configure_tmux_scrollback "$session"
   if [[ "$live_accounts" == "1" ]]; then
     tmux split-window -h -t "$session:0" "watch -n $monitor_interval 'codex-multi-auth list'"
   fi
