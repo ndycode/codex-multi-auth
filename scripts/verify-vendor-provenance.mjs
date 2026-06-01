@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 
 const manifest = JSON.parse(
 	await readFile(new URL("../vendor/provenance.json", import.meta.url), "utf8"),
@@ -8,6 +8,31 @@ const manifest = JSON.parse(
 
 if (!manifest || !Array.isArray(manifest.components)) {
 	throw new Error("vendor/provenance.json is missing a valid components array");
+}
+
+/**
+ * Recursively list every file under a directory, as repo-relative POSIX paths.
+ * @param {string} relRoot repo-relative root (e.g. "vendor/codex-ai-plugin")
+ * @returns {Promise<string[]>}
+ */
+async function listFilesUnder(relRoot) {
+	/** @type {string[]} */
+	const out = [];
+	/** @param {string} rel */
+	async function walk(rel) {
+		const dirUrl = new URL(`../${rel}`, import.meta.url);
+		const entries = await readdir(dirUrl, { withFileTypes: true });
+		for (const entry of entries) {
+			const childRel = `${rel}/${entry.name}`;
+			if (entry.isDirectory()) {
+				await walk(childRel);
+			} else if (entry.isFile()) {
+				out.push(childRel);
+			}
+		}
+	}
+	await walk(relRoot);
+	return out;
 }
 
 for (const component of manifest.components) {
@@ -43,6 +68,34 @@ for (const component of manifest.components) {
 		if (actual !== file.sha256) {
 			throw new Error(
 				`Vendor provenance mismatch for ${file.path}: expected ${file.sha256}, got ${actual}`,
+			);
+		}
+	}
+
+	// install-scripts-01: verifying only the manifest's listed files lets a rogue
+	// file added to a vendored dir pass silently. Enumerate the component root and
+	// fail if any on-disk file is not in the manifest (extra/unlisted file).
+	if (component.root) {
+		const manifestPaths = new Set(
+			component.files.map((/** @type {{ path: string }} */ f) => f.path),
+		);
+		let onDisk;
+		try {
+			onDisk = await listFilesUnder(component.root);
+		} catch (error) {
+			const code =
+				error && typeof error === "object"
+					? /** @type {{ code?: string }} */ (error).code
+					: undefined;
+			throw new Error(
+				`Failed to enumerate vendor root for ${component.name} (${component.root}): ${code ?? error}`,
+			);
+		}
+		const extras = onDisk.filter((path) => !manifestPaths.has(path));
+		if (extras.length > 0) {
+			throw new Error(
+				`Unlisted vendor file(s) in ${component.name}: ${extras.join(", ")}. ` +
+					`Every file under ${component.root} must be declared in vendor/provenance.json.`,
 			);
 		}
 	}
