@@ -28,6 +28,11 @@ configure_tmux_scrollback() {
 
   tmux set-option "${target_args[@]}" mouse on >/dev/null
   tmux set-option "${target_args[@]}" history-limit "$tmux_history_limit" >/dev/null
+  tmux bind-key -T root WheelUpPane copy-mode -e >/dev/null
+  tmux bind-key -T copy-mode WheelUpPane send-keys -X scroll-up >/dev/null
+  tmux bind-key -T copy-mode WheelDownPane send-keys -X scroll-down >/dev/null
+  tmux bind-key -T copy-mode-vi WheelUpPane send-keys -X scroll-up >/dev/null
+  tmux bind-key -T copy-mode-vi WheelDownPane send-keys -X scroll-down >/dev/null
 }
 
 if [[ "${1:-}" == "--monitor" ]]; then
