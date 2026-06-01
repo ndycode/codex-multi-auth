@@ -380,6 +380,15 @@ describe("runStatusCommand", () => {
 		const payload = JSON.parse(String(logInfo.mock.calls[0]?.[0]));
 		expect(payload.accountCount).toBe(0);
 		expect(payload.accounts).toEqual([]);
+		// cli-manager-03: the empty-storage shape emits the same keys as the
+		// populated one (null) so a --json consumer sees one stable shape.
+		expect(payload).toMatchObject({
+			activeIndex: null,
+			pinnedAccountIndex: null,
+			recommendedIndex: null,
+			recommendationReason: null,
+			runtimeInUseIndex: null,
+		});
 	});
 });
 
@@ -397,6 +406,33 @@ describe("runCodexMultiAuthCli status/list --json plumbing", () => {
 				const code = await runCodexMultiAuthCli(args);
 				expect(code).toBe(0);
 				// Exactly one machine-readable line emitted.
+				expect(logSpy).toHaveBeenCalledTimes(1);
+				const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0]));
+				expect(typeof payload.accountCount).toBe("number");
+				expect(Array.isArray(payload.accounts)).toBe(true);
+			} finally {
+				logSpy.mockRestore();
+			}
+		});
+	}
+});
+
+// cli-manager-03: the `auth list` / `auth status` wrapper form must map -j/--json
+// the same way the bare `status`/`list` form does (codex-manager.ts:3547). A
+// wrapper-routing regression would otherwise leave the auth-prefixed path
+// emitting text instead of the machine-readable object.
+describe("runCodexMultiAuthCli auth list/status --json plumbing", () => {
+	for (const args of [
+		["auth", "list", "-j"],
+		["auth", "list", "--json"],
+		["auth", "status", "-j"],
+		["auth", "status", "--json"],
+	]) {
+		it(`maps ${args.join(" ")} to a single JSON object`, async () => {
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+			try {
+				const code = await runCodexMultiAuthCli(args);
+				expect(code).toBe(0);
 				expect(logSpy).toHaveBeenCalledTimes(1);
 				const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0]));
 				expect(typeof payload.accountCount).toBe("number");
