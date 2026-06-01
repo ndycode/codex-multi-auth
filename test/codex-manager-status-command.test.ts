@@ -347,6 +347,39 @@ describe("runStatusCommand", () => {
 			expect.stringContaining("1. Account 1 (one@example.com) [current, quota-exhausted]"),
 		);
 	});
+
+	// cli-manager-03: status/list support --json (single machine-readable object).
+	it("emits a single JSON object when json is set", async () => {
+		const logInfo = vi.fn();
+		const deps = createStatusDeps({ json: true, logInfo });
+
+		const result = await runStatusCommand(deps);
+
+		expect(result).toBe(0);
+		expect(logInfo).toHaveBeenCalledTimes(1);
+		const payload = JSON.parse(String(logInfo.mock.calls[0]?.[0]));
+		expect(payload.accountCount).toBe(2);
+		expect(payload.storagePath).toBe("/tmp/codex.json");
+		expect(Array.isArray(payload.accounts)).toBe(true);
+		expect(payload.accounts[0]).toMatchObject({ index: 0, current: true });
+	});
+
+	it("emits JSON for empty storage when json is set", async () => {
+		const logInfo = vi.fn();
+		const deps = createStatusDeps({
+			json: true,
+			logInfo,
+			loadAccounts: vi.fn(async () => null),
+		});
+
+		const result = await runStatusCommand(deps);
+
+		expect(result).toBe(0);
+		expect(logInfo).toHaveBeenCalledTimes(1);
+		const payload = JSON.parse(String(logInfo.mock.calls[0]?.[0]));
+		expect(payload.accountCount).toBe(0);
+		expect(payload.accounts).toEqual([]);
+	});
 });
 
 describe("runFeaturesCommand", () => {

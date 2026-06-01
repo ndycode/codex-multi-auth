@@ -3576,6 +3576,7 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 					.catch(() => null),
 			loadAppHelperStatus: readAppRuntimeHelperAccountSignal,
 			loadQuotaCache,
+			json: rest.includes("--json") || rest.includes("-j"),
 		});
 	}
 	if (command === "switch") {

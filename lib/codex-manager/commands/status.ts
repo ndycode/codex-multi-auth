@@ -47,6 +47,8 @@ export interface StatusCommandDeps {
 	inspectStorageHealth?: () => Promise<StorageHealthSummary>;
 	getNow?: () => number;
 	logInfo?: (message: string) => void;
+	/** When true, emit a single machine-readable JSON object instead of text (cli-manager-03). */
+	json?: boolean;
 }
 
 function isRestoreReason(value: unknown): value is RestoreReason {
@@ -102,6 +104,21 @@ export async function runStatusCommand(
 					restoreReason === "missing-storage"
 						? "empty"
 						: undefined);
+		if (deps.json) {
+			logInfo(
+				JSON.stringify(
+					{
+						storagePath: path,
+						storageHealth: effectiveState ?? null,
+						accountCount: 0,
+						accounts: [],
+					},
+					null,
+					2,
+				),
+			);
+			return 0;
+		}
 		logInfo(
 			effectiveState === "intentional-reset"
 				? "No accounts configured. Storage was intentionally reset."
@@ -129,15 +146,17 @@ export async function runStatusCommand(
 		})),
 	);
 	const recommendation = recommendForecastAccount(forecastResults);
-	logInfo(`Accounts (${storage.accounts.length})`);
-	logInfo(`Storage: ${path}`);
-	if (recommendation.recommendedIndex !== null) {
-		logInfo(
-			`Selection reason: account ${recommendation.recommendedIndex + 1} (${recommendation.reason})`,
-		);
-	}
-	if (storageHealth) {
-		logInfo(`Storage health: ${storageHealth.state}`);
+	if (!deps.json) {
+		logInfo(`Accounts (${storage.accounts.length})`);
+		logInfo(`Storage: ${path}`);
+		if (recommendation.recommendedIndex !== null) {
+			logInfo(
+				`Selection reason: account ${recommendation.recommendedIndex + 1} (${recommendation.reason})`,
+			);
+		}
+		if (storageHealth) {
+			logInfo(`Storage health: ${storageHealth.state}`);
+		}
 	}
 	const appHelperStatus = deps.loadAppHelperStatus?.() ?? null;
 	const [runtimeSnapshot, appBindStatus, quotaCache] = await Promise.all([
@@ -154,6 +173,58 @@ export async function runStatusCommand(
 		},
 		{ now },
 	);
+
+	// cli-manager-03: machine-readable output for status/list. Build a single
+	// object from the same data the text path renders, then emit and return.
+	if (deps.json) {
+		const accounts = storage.accounts.map((account, i) => {
+			const markers: string[] = [];
+			markers.push(...resolveAccountCurrentMarkers(i, activeIndex, runtimeCurrent));
+			if (account.enabled === false) markers.push("disabled");
+			if (deps.formatRateLimitEntry(account, now, "codex")) markers.push("rate-limited");
+			const quotaEntry = findQuotaCacheEntryForAccount(quotaCache, account, storage.accounts);
+			if (quotaEntry?.status === 429 && !markers.some(isRateLimitedMarker)) {
+				markers.push("rate-limited");
+			}
+			if (isQuotaCacheEntryExhausted(quotaEntry, now)) markers.push("quota-exhausted");
+			const cooldown = formatCooldown(account, now);
+			if (cooldown) markers.push(`cooldown:${cooldown}`);
+			return {
+				index: i,
+				label: formatAccountLabel(account, i),
+				enabled: account.enabled !== false,
+				current: i === activeIndex,
+				markers,
+				lastUsed:
+					typeof account.lastUsed === "number" && account.lastUsed > 0
+						? account.lastUsed
+						: null,
+				reason: forecastResults[i]?.reasons[0] ?? null,
+			};
+		});
+		logInfo(
+			JSON.stringify(
+				{
+					storagePath: path,
+					storageHealth: storageHealth?.state ?? null,
+					accountCount: storage.accounts.length,
+					activeIndex,
+					pinnedAccountIndex:
+						typeof storage.pinnedAccountIndex === "number"
+							? storage.pinnedAccountIndex
+							: null,
+					recommendedIndex: recommendation.recommendedIndex,
+					recommendationReason: recommendation.reason,
+					runtimeInUseIndex: runtimeCurrent ? runtimeCurrent.index : null,
+					accounts,
+				},
+				null,
+				2,
+			),
+		);
+		return 0;
+	}
+
 	if (runtimeSnapshot) {
 		const runtimeMetrics = runtimeSnapshot.runtimeMetrics;
 		const poolCooldown =
