@@ -928,10 +928,27 @@ export function createCodexHeaders(
  * @param response - Error response from API
  * @returns Original response or mapped retryable response
  */
+/**
+ * Log RFC 8594 Deprecation/Sunset headers if present. Shared by the success and
+ * error response handlers so a sunset notice is surfaced regardless of status
+ * (request-01).
+ */
+function logDeprecationHeaders(response: Response): void {
+        const deprecation = response.headers.get("Deprecation");
+        const sunset = response.headers.get("Sunset");
+        if (deprecation || sunset) {
+                logWarn(`API deprecation notice`, { deprecation, sunset });
+        }
+}
+
 export async function handleErrorResponse(
         response: Response,
         options?: ErrorHandlingOptions,
 ): Promise<ErrorHandlingResult> {
+        // request-01: deprecation/sunset headers (RFC 8594) were logged only on the
+        // success path. Upstream often attaches them to error responses too (e.g. a
+        // sunset endpoint returning 4xx), so log them here as well.
+        logDeprecationHeaders(response);
         const bodyText = await safeReadBody(response);
         const mapped = mapUsageLimit404WithBody(response, bodyText);
         
@@ -989,12 +1006,8 @@ export async function handleSuccessResponse(
 		streamStallTimeoutMs?: number;
 	},
 ): Promise<Response> {
-    // Check for deprecation headers (RFC 8594)
-    const deprecation = response.headers.get("Deprecation");
-    const sunset = response.headers.get("Sunset");
-    if (deprecation || sunset) {
-        logWarn(`API deprecation notice`, { deprecation, sunset });
-    }
+    // Check for deprecation headers (RFC 8594) — see logDeprecationHeaders.
+    logDeprecationHeaders(response);
 
     const responseHeaders = ensureContentType(response.headers);
 

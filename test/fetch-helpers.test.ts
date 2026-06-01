@@ -998,10 +998,28 @@ describe('createEntitlementErrorResponse', () => {
 		it('does not log warning when no deprecation headers present', async () => {
 			const warnSpy = vi.spyOn(loggerModule, 'logWarn');
 			const response = new Response('{}', { status: 200 });
-			
+
 			await handleSuccessResponse(response, false);
-			
+
 			expect(warnSpy).not.toHaveBeenCalled();
+		});
+
+		// request-01: deprecation/sunset headers must also be logged on the ERROR
+		// path (e.g. a sunset endpoint returning 4xx), not only on success.
+		it('logs deprecation/sunset headers on the error response path', async () => {
+			const warnSpy = vi.spyOn(loggerModule, 'logWarn');
+			const headers = new Headers({ Sunset: 'Sat, 01 Jan 2030 00:00:00 GMT' });
+			const response = new Response('{"error":{"message":"gone"}}', {
+				status: 410,
+				headers,
+			});
+
+			await handleErrorResponse(response);
+
+			expect(warnSpy).toHaveBeenCalledWith('API deprecation notice', {
+				deprecation: null,
+				sunset: 'Sat, 01 Jan 2030 00:00:00 GMT',
+			});
 		});
 
 		it('returns stream as-is for streaming requests', async () => {
