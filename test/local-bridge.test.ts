@@ -318,6 +318,7 @@ describe("local bridge", () => {
 				authorization: "Bearer inbound-client-token",
 				"x-api-key": "inbound-secret-key",
 				cookie: "session=inbound-cookie-secret",
+				"proxy-authorization": "Basic inbound-proxy-cred",
 			},
 		});
 
@@ -327,5 +328,6 @@ describe("local bridge", () => {
 		expect(headers.get("authorization")).toBeNull();
 		expect(headers.get("x-api-key")).toBeNull();
 		expect(headers.get("cookie")).toBeNull();
+		expect(headers.get("proxy-authorization")).toBeNull();
 	});
 });

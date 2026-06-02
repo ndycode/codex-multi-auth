@@ -6,6 +6,7 @@ const writeFileMock = vi.fn(async () => undefined);
 const renameMock = vi.fn(async () => undefined);
 const unlinkMock = vi.fn(async () => undefined);
 const mkdirMock = vi.fn(async () => undefined);
+const chmodMock = vi.fn(async () => undefined);
 vi.mock("node:fs", () => ({
 	existsSync: vi.fn(() => true),
 	readFileSync: readFileSyncMock,
@@ -15,6 +16,7 @@ vi.mock("node:fs", () => ({
 		rename: renameMock,
 		unlink: unlinkMock,
 		mkdir: mkdirMock,
+		chmod: chmodMock,
 	},
 }));
 

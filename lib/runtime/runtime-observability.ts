@@ -199,6 +199,13 @@ async function writeSnapshot(snapshot: RuntimeObservabilitySnapshot): Promise<vo
 	// keep it owner-only on POSIX like the other sensitive writers (logger,
 	// local-client-tokens). mode is a no-op on win32 (ACL-based).
 	await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+	// mkdir's mode only applies to a freshly-created dir; an upgrade path with a
+	// pre-existing multi-auth dir keeps its old (possibly permissive) perms, so
+	// re-assert 0o700 on POSIX. Best-effort: a concurrent wrapper may race the
+	// chmod, and win32 ignores POSIX modes.
+	if (process.platform !== "win32") {
+		await fs.chmod(dir, 0o700).catch(() => undefined);
+	}
 	let lastError: unknown = null;
 	for (let attempt = 0; attempt < 3; attempt += 1) {
 		const tempPath = `${path}.${process.pid}.${Date.now()}.${attempt}.tmp`;
