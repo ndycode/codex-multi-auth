@@ -118,6 +118,12 @@ describe("runtime observability snapshot versioning", () => {
 				expect(renameMock).toHaveBeenCalled();
 			});
 			expect(chmodMock).not.toHaveBeenCalled();
+			// The snapshot temp file is written owner-only regardless of platform.
+			expect(writeFileMock).toHaveBeenCalledWith(
+				expect.any(String),
+				expect.any(String),
+				expect.objectContaining({ mode: 0o600 }),
+			);
 		} finally {
 			platformSpy.mockRestore();
 		}
