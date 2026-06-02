@@ -76,7 +76,7 @@ describe("runWorkspaceCommand", () => {
 		const deps = createDeps();
 		const result = await runWorkspaceCommand(["abc"], deps);
 		expect(result).toBe(1);
-		expect(deps.logError).toHaveBeenCalledWith("Invalid account index: abc");
+		expect(deps.logError).toHaveBeenCalledWith("Invalid account index (must be a positive integer): abc");
 		expect(deps.saveAccounts).not.toHaveBeenCalled();
 	});
 
@@ -85,7 +85,7 @@ describe("runWorkspaceCommand", () => {
 		const deps = createDeps();
 		const result = await runWorkspaceCommand(["1.9"], deps);
 		expect(result).toBe(1);
-		expect(deps.logError).toHaveBeenCalledWith("Invalid account index: 1.9");
+		expect(deps.logError).toHaveBeenCalledWith("Invalid account index (must be a positive integer): 1.9");
 		expect(deps.saveAccounts).not.toHaveBeenCalled();
 	});
 
@@ -93,7 +93,7 @@ describe("runWorkspaceCommand", () => {
 		const deps = createDeps();
 		const result = await runWorkspaceCommand(["2abc", "1"], deps);
 		expect(result).toBe(1);
-		expect(deps.logError).toHaveBeenCalledWith("Invalid account index: 2abc");
+		expect(deps.logError).toHaveBeenCalledWith("Invalid account index (must be a positive integer): 2abc");
 		expect(deps.saveAccounts).not.toHaveBeenCalled();
 	});
 
@@ -103,7 +103,7 @@ describe("runWorkspaceCommand", () => {
 		const result = await runWorkspaceCommand(["1", "2.9"], deps);
 		expect(result).toBe(1);
 		expect(deps.logError).toHaveBeenCalledWith(
-			"Invalid workspace index. Valid range: 1-2",
+			"Invalid workspace index (must be a positive integer). Valid range: 1-2",
 		);
 		expect(deps.saveAccounts).not.toHaveBeenCalled();
 	});
@@ -161,7 +161,7 @@ describe("runWorkspaceCommand", () => {
 		const result = await runWorkspaceCommand(["1", "xyz"], deps);
 		expect(result).toBe(1);
 		expect(deps.logError).toHaveBeenCalledWith(
-			"Invalid workspace index. Valid range: 1-2",
+			"Invalid workspace index (must be a positive integer). Valid range: 1-2",
 		);
 		expect(deps.saveAccounts).not.toHaveBeenCalled();
 	});

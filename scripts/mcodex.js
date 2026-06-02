@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -301,13 +301,30 @@ export function runMcodex(argv = process.argv.slice(2), env = process.env, platf
 	forwardToCodexWrapper(forwardArgs, env);
 }
 
-const isDirectRun = (() => {
+export function isDirectRunInvocation(invoked, selfUrl) {
+	if (!invoked) return false;
+	const selfPath = fileURLToPath(selfUrl);
+	// Canonicalize both sides: npm installs bins as symlinks (and on Windows the
+	// .cmd/.ps1 shim invokes this file via its real path), so a raw string compare
+	// of process.argv[1] against import.meta.url misses the symlinked-bin case and
+	// the launcher silently becomes a no-op. realpathSync resolves both to the same
+	// target; fall back to a resolved-path compare if realpath fails (e.g. the file
+	// was unlinked between launch and this check).
+	const canonical = (p) => {
+		try {
+			return realpathSync(p);
+		} catch {
+			return resolvePath(p);
+		}
+	};
 	try {
-		return resolvePath(process.argv[1] ?? "") === fileURLToPath(import.meta.url);
+		return canonical(invoked) === canonical(selfPath);
 	} catch {
 		return false;
 	}
-})();
+}
+
+const isDirectRun = isDirectRunInvocation(process.argv[1], import.meta.url);
 
 if (isDirectRun) {
 	runMcodex();

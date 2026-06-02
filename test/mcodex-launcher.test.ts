@@ -1,7 +1,8 @@
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+	isDirectRunInvocation,
 	parseMcodexArgs,
 	resolveMonitorInterval,
 	resolveTmuxHistoryLimit,
@@ -120,5 +121,42 @@ describe("mcodex ships as a node entry, not bash", () => {
 		const source = await readFile(mcodexPath, "utf8");
 		expect(source.startsWith("#!/usr/bin/env node")).toBe(true);
 		expect(source).not.toContain("#!/usr/bin/env bash");
+	});
+});
+
+describe("mcodex direct-run gate (isDirectRunInvocation)", () => {
+	const selfUrl = pathToFileURL(mcodexPath).href;
+
+	it("matches when invoked via the real script path", () => {
+		expect(isDirectRunInvocation(mcodexPath, selfUrl)).toBe(true);
+	});
+
+	it("matches when invoked via a symlink to the script (npm-bin case)", async () => {
+		// npm installs bins as symlinks. The gate must canonicalize both sides
+		// (realpath) or the launcher silently no-ops when run through the link.
+		const { mkdtemp, symlink, rm } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const tmp = await mkdtemp(join(tmpdir(), "mcodex-link-"));
+		const link = join(tmp, "mcodex");
+		try {
+			await symlink(mcodexPath, link);
+			expect(isDirectRunInvocation(link, selfUrl)).toBe(true);
+		} catch (err) {
+			// Windows without symlink privilege (EPERM): skip rather than fail.
+			if ((err as NodeJS.ErrnoException).code === "EPERM") return;
+			throw err;
+		} finally {
+			await rm(tmp, { recursive: true, force: true });
+		}
+	});
+
+	it("does not match an unrelated invocation path", () => {
+		expect(
+			isDirectRunInvocation(join(dirname(mcodexPath), "codex.js"), selfUrl),
+		).toBe(false);
+	});
+
+	it("returns false when argv[1] is absent (imported, not run)", () => {
+		expect(isDirectRunInvocation(undefined, selfUrl)).toBe(false);
 	});
 });

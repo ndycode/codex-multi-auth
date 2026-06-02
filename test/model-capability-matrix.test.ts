@@ -113,6 +113,50 @@ describe("model capability matrix", () => {
 		);
 	});
 
+	it("surfaces a negative capabilityBoost from recordFailure under the entitlement key", () => {
+		// getBoost depends on failures/successes (not just unsupported), and is also
+		// read with the entitlement key. A failure applies a penalty, so the boost is
+		// negative — pinning that recordFailure writes under the key the matrix reads.
+		const capabilityPolicy = new CapabilityPolicyStore();
+		const entitlementKey = resolveEntitlementAccountKey({
+			accountId: "acct_1",
+			email: "owner@example.com",
+			index: 0,
+		});
+		capabilityPolicy.recordFailure(entitlementKey, "gpt-5.3-codex", 100);
+
+		const matrix = buildModelCapabilityMatrix({
+			storage: storage(),
+			models: ["gpt-5.3-codex"],
+			capabilityPolicy,
+			now: 100,
+		});
+
+		// failurePenalty = 3 (1 failure * 3), no successes → net boost -3.
+		expect(matrix.entries[0]?.capabilityBoost).toBeLessThan(0);
+	});
+
+	it("recordSuccess under the entitlement key lifts the capabilityBoost back positive", () => {
+		const capabilityPolicy = new CapabilityPolicyStore();
+		const entitlementKey = resolveEntitlementAccountKey({
+			accountId: "acct_1",
+			email: "owner@example.com",
+			index: 0,
+		});
+		capabilityPolicy.recordFailure(entitlementKey, "gpt-5.3-codex", 100);
+		// recordSuccess decrements failures (→0) and adds a success → net positive.
+		capabilityPolicy.recordSuccess(entitlementKey, "gpt-5.3-codex", 100);
+
+		const matrix = buildModelCapabilityMatrix({
+			storage: storage(),
+			models: ["gpt-5.3-codex"],
+			capabilityPolicy,
+			now: 100,
+		});
+
+		expect(matrix.entries[0]?.capabilityBoost).toBeGreaterThan(0);
+	});
+
 	it("marks disabled and entitlement-blocked accounts unavailable", () => {
 		const baseStorage = storage();
 		baseStorage.accounts[0] = {
