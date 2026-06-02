@@ -1,4 +1,5 @@
 import { existsSync, promises as fs, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { parseBooleanEnv } from "./env-parsing.js";
 import { logWarn } from "./logger.js";
@@ -560,6 +561,7 @@ const CONFIG_LOCK_POLL_MS = 50;
 
 interface ConfigLockPayload {
 	pid: number;
+	owner: string;
 	acquiredAt: number;
 	expiresAt: number;
 }
@@ -585,6 +587,31 @@ async function unlinkConfigLockWithRetry(lockPath: string): Promise<void> {
 			return;
 		}
 	}
+}
+
+// Owner-safe release: only unlink the lockfile if it still carries OUR owner
+// token. If a slow save was deemed stale and a second process stole the lock,
+// the lockfile now holds the new owner's token — deleting it would reopen
+// concurrent saves, so we leave it alone.
+async function releaseConfigLockIfOwner(
+	lockPath: string,
+	owner: string,
+): Promise<void> {
+	try {
+		const content = await fs.readFile(lockPath, "utf-8");
+		const parsed = JSON.parse(stripUtf8Bom(content)) as
+			| Partial<ConfigLockPayload>
+			| undefined;
+		if (parsed?.owner && parsed.owner !== owner) {
+			// Lock was taken over by another holder; do not delete their lock.
+			return;
+		}
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") return;
+		// Unreadable/malformed: fall through and attempt our best-effort unlink.
+	}
+	await unlinkConfigLockWithRetry(lockPath);
 }
 
 async function isConfigLockStale(lockPath: string): Promise<boolean> {
@@ -619,6 +646,7 @@ async function withConfigFileLock<T>(
 	task: () => Promise<T>,
 ): Promise<T> {
 	const lockPath = `${targetPath}.lock`;
+	const owner = randomUUID();
 	await fs.mkdir(dirname(lockPath), { recursive: true });
 	const deadline = Date.now() + CONFIG_LOCK_WAIT_TIMEOUT_MS;
 	let acquired = false;
@@ -627,6 +655,7 @@ async function withConfigFileLock<T>(
 			const now = Date.now();
 			const payload: ConfigLockPayload = {
 				pid: process.pid,
+				owner,
 				acquiredAt: now,
 				expiresAt: now + CONFIG_LOCK_TTL_MS,
 			};
@@ -670,7 +699,7 @@ async function withConfigFileLock<T>(
 	try {
 		return await task();
 	} finally {
-		await unlinkConfigLockWithRetry(lockPath);
+		await releaseConfigLockIfOwner(lockPath, owner);
 	}
 }
 

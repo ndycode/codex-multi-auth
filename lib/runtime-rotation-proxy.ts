@@ -1126,23 +1126,22 @@ function getQuotaNearExhaustionWaitMs(
 }
 
 /**
- * KNOWN GAP (L4, routing mutex): the two `accountManager.markSwitched(...)`
- * cursor mutations below (the session-affinity-preferred branch and the
- * round-robin fallback) run UNLOCKED even when `routingMutex === "enabled"`.
- * Only `persistRuntimeActiveAccount` routes its cursor mutation through
- * `markSwitchedLocked` / `withRoutingMutex`, so concurrent requests can still
- * race the selection-time cursor update.
+ * `chooseAccount` is a SYNC selector that internally advances the rotation
+ * cursor (the session-affinity-preferred branch and the round-robin fallback
+ * both call `accountManager.markSwitched(...)`, and the hybrid selector advances
+ * its own cursor). It does NOT acquire the routing mutex itself.
  *
- * Deferred (needs design), not fixed inline, because closing it safely is not
- * a minimal change: `chooseAccount` is a SYNC function (returns
- * `ManagedAccount | null`) consumed at ~15 exported/test call sites, whereas
- * `markSwitchedLocked` is async and the routing mutex (`withRoutingMutex` ->
- * `runExclusive`) is a non-reentrant FIFO queue. Awaiting it here would force
- * `chooseAccount` async (signature + every caller) and, if any caller already
- * holds the mutex, deadlock on the non-reentrant queue. The correct fix is to
- * restructure selection so the cursor commit happens in one awaited
- * critical section alongside `persistRuntimeActiveAccount`, which is out of
- * scope for a minimal hot-path patch. Tracked for the routing-mutex redesign.
+ * Concurrency (L4): when `routingMutex === "enabled"`, the proxy hot path runs
+ * this whole call AND the subsequent `markSwitchedLocked` commit inside a single
+ * `withRoutingMutex` acquisition, so concurrent requests serialize selection +
+ * cursor advance and cannot stampede the same account. `withRoutingMutex` is
+ * reentrant (AsyncLocalStorage), so the nested `markSwitchedLocked` — and the
+ * later one in `persistRuntimeActiveAccount` — run inline without re-acquiring
+ * the non-reentrant FIFO queue (no deadlock). In legacy mode the inline
+ * `markSwitched` calls below are used unchanged and no lock is taken, so default
+ * behavior and perf are identical. See the hot-path caller in
+ * `startRuntimeRotationProxy` and the regression in
+ * `test/runtime-rotation-proxy.test.ts`.
  */
 export function chooseAccount(params: {
 	accountManager: AccountManager;

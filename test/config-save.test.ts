@@ -292,6 +292,74 @@ describe("plugin config save paths", () => {
     expect(parsed.preserved).toBe(1);
   });
 
+  it("takes over a stale foreign lock and removes only its own lock (config-18)", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(configPath, JSON.stringify({ preserved: 1 }), "utf8");
+
+    // Seed a STALE foreign-owned lock (different owner, already expired). Our
+    // save must take it over, complete, and clean up.
+    const lockPath = `${configPath}.lock`;
+    await fs.writeFile(
+      lockPath,
+      `${JSON.stringify({
+        pid: 999999,
+        owner: "other-owner-token",
+        acquiredAt: Date.now() - 60_000,
+        expiresAt: Date.now() - 30_000,
+      })}\n`,
+      "utf8",
+    );
+
+    const { savePluginConfig } = await import("../lib/config.js");
+    await savePluginConfig({ fastSession: true });
+
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed.fastSession).toBe(true);
+    expect(parsed.preserved).toBe(1);
+    // Our own lock is released after the save.
+    await expect(fs.access(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not delete a live foreign lock and times out instead (config-18)", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(configPath, JSON.stringify({ preserved: 1 }), "utf8");
+
+    // Seed a LIVE foreign-owned lock (different owner, not expired). Our save
+    // must respect it (wait then time out) and must NOT delete the other
+    // owner's lockfile.
+    const lockPath = `${configPath}.lock`;
+    const foreignPayload = `${JSON.stringify({
+      pid: 999999,
+      owner: "other-owner-token",
+      acquiredAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+    })}\n`;
+    await fs.writeFile(lockPath, foreignPayload, "utf8");
+
+    const { savePluginConfig } = await import("../lib/config.js");
+    await expect(savePluginConfig({ fastSession: true })).rejects.toMatchObject({
+      code: "ELOCKTIMEOUT",
+    });
+
+    // The foreign lock is untouched (same owner token, not stomped).
+    const lockAfter = JSON.parse(await fs.readFile(lockPath, "utf8")) as {
+      owner?: string;
+    };
+    expect(lockAfter.owner).toBe("other-owner-token");
+    // And our save did not partially apply.
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed.fastSession).toBeUndefined();
+    await fs.rm(lockPath, { force: true });
+  }, 15_000);
+
   it("writes through unified settings when env path is unset", async () => {
     delete process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
     const unifiedPath = join(tempDir, "settings.json");

@@ -2,7 +2,6 @@ import { dirname, join } from "node:path";
 import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { describe, expect, it, vi } from "vitest";
 import {
 	isDirectRunInvocation,
 	parseMcodexArgs,
