@@ -18,9 +18,10 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
+import { rm as rmAsync } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { basename, delimiter, dirname, join, resolve as resolvePath } from "node:path";
+import { basename, delimiter, dirname, join, resolve as resolvePath, sep } from "node:path";
 import process from "node:process";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -163,6 +164,28 @@ function removeDirectoryWithRetry(targetPath) {
 			}
 			sleepSync(SHADOW_HOME_CLEANUP_BACKOFF_MS[attempt]);
 		}
+	}
+}
+
+/**
+ * Best-effort async directory removal for hot-path callbacks (e.g. the
+ * status-refresh child's close/error handlers, which fire on the PARENT event
+ * loop while Codex is running). Unlike removeDirectoryWithRetry this never calls
+ * the Atomics.wait-backed sleepSync, so a retryable Windows lock (EBUSY/EPERM/
+ * ENOTEMPTY) can't stall the event loop for up to ~200ms. fsPromises.rm has its
+ * own internal retry (maxRetries) and yields between attempts. On persistent
+ * failure we give up silently — the 10-minute stale-lock recovery reclaims it.
+ */
+async function removeDirectoryBestEffortAsync(targetPath) {
+	try {
+		await rmAsync(targetPath, {
+			recursive: true,
+			force: true,
+			maxRetries: 3,
+			retryDelay: 20,
+		});
+	} catch {
+		// Best-effort; stale-lock recovery handles any leftover.
 	}
 }
 
@@ -369,8 +392,15 @@ function formatStatusPath(cwd = process.cwd(), home = homedir()) {
 	const resolvedCwd = resolvePath(cwd);
 	const resolvedHome = resolvePath(home);
 	if (resolvedCwd === resolvedHome) return "~";
-	if (resolvedCwd.startsWith(`${resolvedHome}/`)) {
-		return `~/${resolvedCwd.slice(resolvedHome.length + 1)}`;
+	// Use the platform separator, not a hardcoded "/": on Windows resolvePath
+	// returns backslash paths (C:\Users\user\project), so the old "/"-anchored
+	// prefix check never matched and the cwd was never abbreviated to ~. `sep`
+	// keeps the boundary check correct on both POSIX and Windows.
+	const prefix = `${resolvedHome}${sep}`;
+	if (resolvedCwd.startsWith(prefix)) {
+		// Normalize the remainder to forward slashes for a stable, readable status
+		// line regardless of the host separator.
+		return `~/${resolvedCwd.slice(prefix.length).split(sep).join("/")}`;
 	}
 	return resolvedCwd;
 }
@@ -538,6 +568,14 @@ function acquireStatusRefreshLock(env = process.env) {
 		try {
 			const stat = statSync(lockPath);
 			if (Date.now() - stat.mtimeMs > STATUS_QUOTA_REFRESH_LOCK_STALE_MS) {
+				// Known, bounded TOCTOU: two processes that both observe a stale lock
+				// will both rmSync({force:true}) (both succeed) then race on mkdirSync;
+				// only one wins, so dual lock acquisition is still prevented. The
+				// residual risk is evicting a refresh owner that is merely SLOW (alive,
+				// holding the lock past the stale threshold) rather than dead, which can
+				// briefly yield two `forecast --live --json` children. That is benign
+				// here — the refresh is idempotent, read-mostly, and rate-limited by the
+				// cache TTL — so we accept it rather than add a heavier liveness probe.
 				removeDirectoryWithRetry(lockPath);
 				mkdirSync(lockPath);
 				writeFileSync(
@@ -561,6 +599,10 @@ function maybeRefreshQuotaCacheInBackground(env = process.env) {
 	if (!acquired) return;
 
 	const scriptPath = join(dirname(fileURLToPath(import.meta.url)), "codex-multi-auth.js");
+	// Note: the child is detached + unref'd so it outlives this short-lived launcher
+	// process. The close/error handlers below remove the lock dir, but if the parent
+	// exits before the child settles they will NOT fire — in that case the lock is
+	// reclaimed by the 10-minute stale-lock recovery in acquireStatusRefreshLock.
 	const child = spawn(
 		process.execPath,
 		[scriptPath, "forecast", "--live", "--json"],
@@ -575,18 +617,12 @@ function maybeRefreshQuotaCacheInBackground(env = process.env) {
 		},
 	);
 	child.once("close", () => {
-		try {
-			removeDirectoryWithRetry(lockPath);
-		} catch {
-			// Best-effort cleanup; stale lock recovery handles leftovers.
-		}
+		// Async, non-blocking: these handlers fire on the parent event loop while
+		// Codex is running, so the cleanup must never block it on a Windows lock.
+		void removeDirectoryBestEffortAsync(lockPath);
 	});
 	child.once("error", () => {
-		try {
-			removeDirectoryWithRetry(lockPath);
-		} catch {
-			// Best-effort cleanup.
-		}
+		void removeDirectoryBestEffortAsync(lockPath);
 	});
 	child.unref();
 }

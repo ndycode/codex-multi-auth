@@ -5,6 +5,23 @@ monitor_interval="${MCODEX_MONITOR_INTERVAL:-5}"
 live_accounts=0
 tmux_history_limit="${MCODEX_TMUX_HISTORY_LIMIT:-50000}"
 
+# Security: monitor_interval is embedded into `watch -n <n> ...` command strings
+# that tmux hands to a shell. An attacker-controlled MCODEX_MONITOR_INTERVAL like
+# "5; rm -rf ~" would otherwise execute. Require a positive integer (optionally
+# with a fractional part for sub-second intervals) and fall back to the default
+# otherwise, so no shell metacharacters can ever reach the command string.
+if ! [[ "$monitor_interval" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  echo "mcodex: invalid MCODEX_MONITOR_INTERVAL '$monitor_interval'; using 5" >&2
+  monitor_interval=5
+fi
+
+# Same hardening for the tmux scrollback history limit (used as a tmux option
+# argument): must be a plain integer.
+if ! [[ "$tmux_history_limit" =~ ^[0-9]+$ ]]; then
+  echo "mcodex: invalid MCODEX_TMUX_HISTORY_LIMIT '$tmux_history_limit'; using 50000" >&2
+  tmux_history_limit=50000
+fi
+
 quote_args() {
   local quoted=()
   local arg
@@ -12,7 +29,10 @@ quote_args() {
     printf -v arg '%q' "$arg"
     quoted+=("$arg")
   done
-  printf '%s ' "${quoted[@]}"
+  # Join with single spaces and NO trailing space (a trailing space would become
+  # part of the interpolated tmux command string).
+  local IFS=' '
+  printf '%s' "${quoted[*]}"
 }
 
 run_monitor() {
@@ -26,18 +46,18 @@ configure_tmux_scrollback() {
     target_args=(-t "$target")
   fi
 
-  tmux set-option "${target_args[@]}" mouse on >/dev/null
-  tmux set-option "${target_args[@]}" history-limit "$tmux_history_limit" >/dev/null
-  tmux bind-key -T root WheelUpPane copy-mode -e >/dev/null
-  tmux bind-key -T copy-mode WheelUpPane send-keys -X scroll-up >/dev/null
-  tmux bind-key -T copy-mode WheelDownPane send-keys -X scroll-down >/dev/null
-  tmux bind-key -T copy-mode-vi WheelUpPane send-keys -X scroll-up >/dev/null
-  tmux bind-key -T copy-mode-vi WheelDownPane send-keys -X scroll-down >/dev/null
+  tmux set-option "${target_args[@]}" mouse on >/dev/null 2>&1
+  tmux set-option "${target_args[@]}" history-limit "$tmux_history_limit" >/dev/null 2>&1
+  tmux bind-key -T root WheelUpPane copy-mode -e >/dev/null 2>&1
+  tmux bind-key -T copy-mode WheelUpPane send-keys -X scroll-up >/dev/null 2>&1
+  tmux bind-key -T copy-mode WheelDownPane send-keys -X scroll-down >/dev/null 2>&1
+  tmux bind-key -T copy-mode-vi WheelUpPane send-keys -X scroll-up >/dev/null 2>&1
+  tmux bind-key -T copy-mode-vi WheelDownPane send-keys -X scroll-down >/dev/null 2>&1
 }
 
 if [[ "${1:-}" == "--monitor" ]]; then
-  shift
-  run_monitor "$@"
+  # --monitor takes no extra args; the live account list is fixed.
+  run_monitor
   exit 0
 fi
 
@@ -66,8 +86,16 @@ if [[ "${1:-}" == "--tmux" || "${1:-}" == "-t" ]]; then
     session="${session}-${suffix}"
   fi
 
+  # Build the inner shell-command as a single string. quote_args runs each arg
+  # through printf %q, so every token is already shell-safe (embedded quotes,
+  # spaces, $, backticks are escaped); the surrounding expansion is not
+  # re-evaluated, so the command tmux receives is exactly this string.
+  cmd="codex-multi-auth-codex"
   args="$(quote_args "$@")"
-  tmux new-session -d -s "$session" -n codex "codex-multi-auth-codex $args"
+  if [[ -n "$args" ]]; then
+    cmd="$cmd $args"
+  fi
+  tmux new-session -d -s "$session" -n codex "$cmd"
   configure_tmux_scrollback "$session"
   if [[ "$live_accounts" == "1" ]]; then
     tmux split-window -h -t "$session:0" "watch -n $monitor_interval 'codex-multi-auth list'"
