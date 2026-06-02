@@ -186,6 +186,112 @@ describe("plugin config save paths", () => {
     expect(parsed.preserved).toBe(1);
   });
 
+  it("retries a transient stat failure during an env-path save (config-08)", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ codexMode: true, preserved: 1 }),
+      "utf8",
+    );
+
+    const originalStat = fs.stat.bind(fs);
+    let injectedStatFailure = false;
+    const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+      // One-shot EBUSY on the first mtime probe of the config file. Without the
+      // bounded retry in getConfigFileMtimeMs, this transient Windows lock would
+      // abort the whole save.
+      if (String(args[0]) === configPath && !injectedStatFailure) {
+        injectedStatFailure = true;
+        const error = new Error("busy") as NodeJS.ErrnoException;
+        error.code = "EBUSY";
+        throw error;
+      }
+      return originalStat(...(args as Parameters<typeof fs.stat>));
+    });
+
+    try {
+      const { savePluginConfig } = await import("../lib/config.js");
+      await savePluginConfig({ fastSession: true });
+    } finally {
+      statSpy.mockRestore();
+    }
+
+    expect(injectedStatFailure).toBe(true);
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(parsed.fastSession).toBe(true);
+    expect(parsed.codexMode).toBe(true);
+    expect(parsed.preserved).toBe(1);
+  });
+
+  it("does not lose a concurrent env-path update injected at rename time (config-09)", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ codexMode: true, preserved: 1 }),
+      "utf8",
+    );
+    // Pin a known starting mtime so the simulated concurrent write produces a
+    // clearly different timestamp.
+    const baseTime = new Date("2026-01-01T00:00:00.000Z");
+    await fs.utimes(configPath, baseTime, baseTime);
+
+    const originalRename = fs.rename.bind(fs);
+    let injectedConcurrentWrite = false;
+    const renameSpy = vi
+      .spyOn(fs, "rename")
+      .mockImplementation(async (...args) => {
+        const dest = String(args[1]);
+        // Simulate another process landing a write at the very last moment:
+        // AFTER our mtime CAS passed but BEFORE our rename commits — the window
+        // the existing readFile-injection test cannot reach. The atomic writer
+        // surfaces ESTALE; the second-line CAS loop must re-read and re-merge so
+        // the competing key is not clobbered.
+        if (dest === configPath && !injectedConcurrentWrite) {
+          injectedConcurrentWrite = true;
+          const concurrentTime = new Date("2026-01-02T00:00:00.000Z");
+          await fs.writeFile(
+            configPath,
+            JSON.stringify({
+              codexMode: true,
+              preserved: 1,
+              concurrentKey: "from-other-process",
+            }),
+            "utf8",
+          );
+          await fs.utimes(configPath, concurrentTime, concurrentTime);
+          const staleError = new Error(
+            "config changed during rename",
+          ) as NodeJS.ErrnoException;
+          staleError.code = "ESTALE";
+          throw staleError;
+        }
+        return originalRename(...(args as Parameters<typeof fs.rename>));
+      });
+
+    try {
+      const { savePluginConfig } = await import("../lib/config.js");
+      await savePluginConfig({ fastSession: true });
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    expect(injectedConcurrentWrite).toBe(true);
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    // The last-moment competing key survives and our patch still applies.
+    expect(parsed.concurrentKey).toBe("from-other-process");
+    expect(parsed.fastSession).toBe(true);
+    expect(parsed.codexMode).toBe(true);
+    expect(parsed.preserved).toBe(1);
+  });
+
   it("writes through unified settings when env path is unset", async () => {
     delete process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
     const unifiedPath = join(tempDir, "settings.json");

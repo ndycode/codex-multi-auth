@@ -26,6 +26,8 @@
  *     singleton; OS-level mutexes are out of scope for this PR.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
+
 export type RoutingMutexMode = "enabled" | "legacy";
 
 /**
@@ -125,6 +127,33 @@ export function createAsyncMutex(): AsyncMutex {
 let routingMutexInstance: AsyncMutex | null = null;
 
 /**
+ * Reentrancy guard for `withRoutingMutex`.
+ *
+ * The underlying `runExclusive` queue is a strictly non-reentrant FIFO: a task
+ * that is *already* holding the mutex and then calls `withRoutingMutex` again
+ * would enqueue behind itself and deadlock (the outer task can never settle
+ * because it is awaiting the inner task, which can never start because the
+ * outer task still holds the lock).
+ *
+ * This mirrors `isStorageLockHeld` / `storageLockHeldContext` in
+ * `lib/storage/transactions.ts`. When a critical section needs to span several
+ * cursor mutations that each route through `withRoutingMutex` (e.g. the runtime
+ * proxy holds the mutex around `chooseAccount` selection AND the later
+ * `persistRuntimeActiveAccount` commit), the nested calls must run inline
+ * within the already-held section instead of re-acquiring.
+ */
+const routingMutexHeldContext = new AsyncLocalStorage<true>();
+
+/**
+ * Reports whether the caller is already running inside a `withRoutingMutex`
+ * critical section (in `"enabled"` mode). Callers that may run both standalone
+ * and nested under a held mutex use this to avoid re-acquiring and deadlocking.
+ */
+export function isRoutingMutexHeld(): boolean {
+	return routingMutexHeldContext.getStore() === true;
+}
+
+/**
  * Singleton accessor for the rotation critical-section mutex.
  *
  * Callers in `lib/accounts.ts` use this when the plugin config flag
@@ -150,13 +179,26 @@ export function __resetRoutingMutexForTests(): void {
  * Run `fn` under the routing mutex when `mode === "enabled"`, otherwise run
  * it inline. Hot-path helper used by account-pool mutation sites so the
  * flag check stays O(1) per call.
+ *
+ * Reentrant: if the caller is already inside a held `withRoutingMutex` section
+ * (`isRoutingMutexHeld()` is true), `fn` runs inline rather than re-acquiring
+ * the non-reentrant FIFO queue, which would otherwise deadlock. When the lock
+ * is acquired, `fn` runs inside `routingMutexHeldContext` so any nested
+ * `withRoutingMutex` calls it makes are detected as reentrant.
  */
 export async function withRoutingMutex<T>(
 	mode: RoutingMutexMode,
 	fn: () => Promise<T> | T,
 ): Promise<T> {
 	if (mode === "enabled") {
-		return getRoutingMutex().runExclusive(fn);
+		if (isRoutingMutexHeld()) {
+			// Already inside the critical section for this async context: run
+			// inline so we don't enqueue behind ourselves and deadlock.
+			return await fn();
+		}
+		return getRoutingMutex().runExclusive(() =>
+			routingMutexHeldContext.run(true, fn),
+		);
 	}
 	return await fn();
 }

@@ -8,6 +8,11 @@ import {
 	type RuntimeRotationProxyServer,
 } from "../lib/runtime-rotation-proxy.js";
 import { clearCircuitBreakers } from "../lib/circuit-breaker.js";
+import {
+	__resetRoutingMutexForTests,
+	isRoutingMutexHeld,
+	withRoutingMutex,
+} from "../lib/routing-mutex.js";
 import * as runtimePolicy from "../lib/policy/runtime-policy.js";
 import { resetRefreshQueue } from "../lib/refresh-queue.js";
 import { resetTrackers } from "../lib/rotation.js";
@@ -288,6 +293,7 @@ beforeEach(() => {
 	resetTrackers();
 	clearCircuitBreakers();
 	resetRefreshQueue();
+	__resetRoutingMutexForTests();
 	refreshAccessTokenMock.mockReset();
 	saveAccountsMock.mockReset();
 	saveAccountsMock.mockResolvedValue(undefined);
@@ -307,6 +313,7 @@ afterEach(async () => {
 	resetTrackers();
 	clearCircuitBreakers();
 	resetRefreshQueue();
+	__resetRoutingMutexForTests();
 });
 
 describe("runtime rotation proxy", () => {
@@ -2213,6 +2220,133 @@ describe("runtime rotation proxy", () => {
 		expect(body.error.message).toBe("OAuth token has been invalidated. Please re-login.");
 		expect(calls).toHaveLength(1);
 		expect(proxy.getStatus().rotations).toBe(0);
+	});
+});
+
+describe("routing mutex serializes selection + cursor commit (issue #14 / L4)", () => {
+	const prevEnv = process.env.CODEX_AUTH_ROUTING_MUTEX;
+
+	afterEach(() => {
+		if (prevEnv === undefined) delete process.env.CODEX_AUTH_ROUTING_MUTEX;
+		else process.env.CODEX_AUTH_ROUTING_MUTEX = prevEnv;
+		__resetRoutingMutexForTests();
+	});
+
+	// Deterministic, fix-sensitive proof of the property the hot path depends on:
+	// when `routingMutex === "enabled"`, a "select + commit" critical section that
+	// spans an await must NOT let a second critical section begin its selection
+	// until the first has fully committed. The pre-fix code committed the cursor in
+	// a SEPARATE mutex acquisition (markSwitched ran unlocked during selection,
+	// markSwitchedLocked ran later in persist), so two requests could both select
+	// before either committed. This test models that exact shape at the mutex layer
+	// and asserts strict serialization (maxConcurrent === 1) plus reentrancy.
+	it("never overlaps two enabled-mode select+commit sections, and is reentrant", async () => {
+		__resetRoutingMutexForTests();
+		let active = 0;
+		let maxConcurrent = 0;
+		const selectionOrder: number[] = [];
+		// Gate that holds the FIRST critical section open across an await, so that if
+		// selection were allowed outside the lock the second request's selection
+		// would interleave here and bump maxConcurrent to 2.
+		let releaseFirst: (() => void) | undefined;
+		const firstHeld = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+
+		const runSelectCommit = (id: number, gateOpen: boolean): Promise<void> =>
+			withRoutingMutex("enabled", async () => {
+				// SELECTION happens here, inside the held mutex.
+				selectionOrder.push(id);
+				active += 1;
+				maxConcurrent = Math.max(maxConcurrent, active);
+				// Reentrancy: the real hot path calls markSwitchedLocked (which itself
+				// routes through withRoutingMutex) WHILE already holding the mutex.
+				// That nested acquisition must run inline rather than deadlock.
+				expect(isRoutingMutexHeld()).toBe(true);
+				await withRoutingMutex("enabled", async () => {
+					expect(isRoutingMutexHeld()).toBe(true);
+					// COMMIT happens here, still inside the same held section.
+				});
+				if (gateOpen) {
+					// Hold the first section open until the second has been scheduled.
+					await firstHeld;
+				}
+				active -= 1;
+			});
+
+		const first = runSelectCommit(0, true);
+		// Ensure the first task has acquired the mutex before scheduling the second.
+		await Promise.resolve();
+		const second = runSelectCommit(1, false);
+		// Let the event loop spin: a buggy (non-serialized) implementation would run
+		// the second selection now, while the first is parked on `firstHeld`.
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		releaseFirst?.();
+		await Promise.all([first, second]);
+
+		// Strict serialization: the two critical sections never overlapped.
+		expect(maxConcurrent).toBe(1);
+		// And they ran in FIFO order, second strictly after the first committed.
+		expect(selectionOrder).toEqual([0, 1]);
+	});
+
+	// End-to-end: two concurrent proxy requests under routingMutex="enabled" against
+	// a 2-account pool must serialize selection + cursor advance, hand out DISTINCT
+	// accounts, and both complete without deadlock (the reentrant markSwitchedLocked
+	// commit on the hot path + the gated commit in persistRuntimeActiveAccount).
+	it("hands distinct accounts to concurrent enabled-mode requests without deadlock", async () => {
+		process.env.CODEX_AUTH_ROUTING_MUTEX = "enabled";
+		__resetRoutingMutexForTests();
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+
+		// Barrier: hold BOTH upstream fetches open until both requests are in-flight,
+		// guaranteeing genuine concurrency through the select+commit critical section.
+		let releaseFetch: (() => void) | undefined;
+		const fetchGate = new Promise<void>((resolve) => {
+			releaseFetch = resolve;
+		});
+		let inFlight = 0;
+		let bothInFlight: (() => void) | undefined;
+		const bothStarted = new Promise<void>((resolve) => {
+			bothInFlight = resolve;
+		});
+		const { calls, fetchImpl } = createRecordingFetch(async () => {
+			inFlight += 1;
+			if (inFlight >= 2) bothInFlight?.();
+			await fetchGate;
+			return textEventStream("data: forwarded\n\n");
+		});
+
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		expect(accountManager.getRoutingMutexMode()).toBe("enabled");
+
+		const bodyFor = (session: string) => ({
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+			metadata: { session_id: session },
+		});
+
+		const reqA = postResponses(proxy, bodyFor("session-a"));
+		const reqB = postResponses(proxy, bodyFor("session-b"));
+
+		// Wait until both requests have passed selection and reached the upstream
+		// fetch, then release them. A deadlock here (e.g. non-reentrant re-acquire)
+		// would hang and fail the test via timeout rather than passing silently.
+		await bothStarted;
+		releaseFetch?.();
+		const [resA, resB] = await Promise.all([reqA, reqB]);
+
+		expect(resA.status).toBe(HTTP_STATUS.OK);
+		expect(resB.status).toBe(HTTP_STATUS.OK);
+		await Promise.all([resA.text(), resB.text()]);
+
+		// Both upstream calls happened, and selection+advance serialized so the two
+		// concurrent requests landed on DISTINCT accounts (no stampede onto acc_1).
+		expect(calls).toHaveLength(2);
+		const servedAuth = calls.map((c) => c.headers.get("authorization")).sort();
+		expect(servedAuth).toEqual(["Bearer access-1", "Bearer access-2"]);
 	});
 });
 

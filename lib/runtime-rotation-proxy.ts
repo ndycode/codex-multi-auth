@@ -7,6 +7,7 @@ import {
 	extractAccountId,
 	type ManagedAccount,
 } from "./accounts.js";
+import { withRoutingMutex } from "./routing-mutex.js";
 import { getStoragePath } from "./storage.js";
 import {
 	getFetchTimeoutMs,
@@ -555,7 +556,21 @@ async function persistRuntimeActiveAccount(
 		// (syncCodexCliActiveSelectionForIndex), which is the lost-update window the
 		// mutex exists to close. In legacy mode markSwitchedLocked runs inline, so
 		// behavior is unchanged by default.
-		await accountManager.markSwitchedLocked(account, "rotation", family);
+		//
+		// L4 fix: in "enabled" mode the SELECTION path already committed the cursor
+		// for this account inside the routing mutex (atomic select+commit, see the
+		// hot-path caller). Re-running markSwitchedLocked here — after the upstream
+		// fetch, in a *separate* critical section — would redundantly re-advance the
+		// cursor and could clobber a concurrent request's atomic advance that landed
+		// while this request was awaiting upstream. So only do the locked cursor
+		// commit in legacy mode, where selection does NOT commit under a lock and
+		// this remains the sole commit site (preserving legacy behavior exactly).
+		// `saveToDiskDebounced` + CLI sync still run in both modes: they snapshot the
+		// current in-memory state / mirror the CLI selection and do not advance the
+		// in-memory rotation cursor.
+		if (accountManager.getRoutingMutexMode() !== "enabled") {
+			await accountManager.markSwitchedLocked(account, "rotation", family);
+		}
 		accountManager.saveToDiskDebounced();
 		await accountManager.syncCodexCliActiveSelectionForIndex(account.index);
 	} catch {
@@ -1722,20 +1737,55 @@ export async function startRuntimeRotationProxy(
 					now() - lastGlobalSwitchAt < minRotationIntervalMs
 						? { [lastGlobalAccountIndex]: 1000 }
 						: {};
-				const selected = chooseAccount({
-					accountManager,
-					sessionAffinityStore,
-					sessionKey: context.sessionKey,
-					family: context.family,
-					model: context.model,
-					attemptedIndexes,
-					now: now(),
-					policy: policyDecision,
-					pinnedIndex,
-					skipReasons: accountSkipReasons,
-					stickyBoostByAccount: rotationStickyBoost,
-					pidOffsetEnabled,
-				});
+				// L4 fix (routing mutex): when `routingMutex === "enabled"`, run the
+				// selection AND the cursor commit inside ONE mutex acquisition so two
+				// concurrent requests cannot read the same cursor and stampede before
+				// the locked commit lands. `chooseAccount` is sync and mutates the
+				// cursor internally (session-affinity `markSwitched`, the hybrid
+				// selector's own advance, and the round-robin fallback `markSwitched`);
+				// holding the mutex across the whole call serializes all of those.
+				// We then `markSwitchedLocked` the winner to (a) re-commit the cursor
+				// under the lock across the await boundary and (b) hand
+				// `persistRuntimeActiveAccount` a cursor that is already correct. That
+				// later `markSwitchedLocked` runs INLINE (reentrant) within this held
+				// section, so there is no double-acquire and no deadlock on the
+				// non-reentrant FIFO queue. In legacy mode the inline `markSwitched`
+				// calls inside `chooseAccount` are used unchanged and no lock is taken,
+				// so default behavior and perf are identical to before.
+				const selectAccount = (): ManagedAccount | null =>
+					chooseAccount({
+						accountManager,
+						sessionAffinityStore,
+						sessionKey: context.sessionKey,
+						family: context.family,
+						model: context.model,
+						attemptedIndexes,
+						now: now(),
+						policy: policyDecision,
+						pinnedIndex,
+						skipReasons: accountSkipReasons,
+						stickyBoostByAccount: rotationStickyBoost,
+						pidOffsetEnabled,
+					});
+				const selected =
+					routingMutexMode === "enabled"
+						? await withRoutingMutex(routingMutexMode, async () => {
+								const candidate = selectAccount();
+								if (candidate && pinnedIndex === null) {
+									// Re-commit the cursor under the held mutex. Skipped when a
+									// manual pin is active so the proxy never clobbers the pin
+									// (see #474); pinned selections are deterministic and need no
+									// cursor advance. Runs inline via reentrancy — see comment
+									// above.
+									await accountManager.markSwitchedLocked(
+										candidate,
+										"rotation",
+										context.family,
+									);
+								}
+								return candidate;
+							})
+						: selectAccount();
 				if (!selected) {
 					if (
 						!reloadedAfterNoAccount &&

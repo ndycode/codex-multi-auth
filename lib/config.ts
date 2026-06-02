@@ -451,15 +451,35 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function getConfigFileMtimeMs(filePath: string): Promise<number | null> {
-	try {
-		return (await fs.stat(filePath)).mtimeMs;
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException | undefined)?.code;
-		if (code === "ENOENT") {
-			return null;
+	// config-08: the mtime CAS preflight (and savePluginConfig's env-path branch)
+	// run on the Windows-sensitive save path, where a transient EBUSY/EPERM/EAGAIN
+	// from an AV/indexer lock on a single fs.stat would abort the entire save.
+	// Mirror readConfigRecordForSave's bounded transient-FS retry (same code set,
+	// same backoff, 5 attempts). ENOENT still returns null immediately.
+	let lastError: unknown;
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			return (await fs.stat(filePath)).mtimeMs;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "ENOENT") {
+				return null;
+			}
+			lastError = error;
+			if (
+				typeof code === "string" &&
+				RETRYABLE_CONFIG_READ_CODES.has(code) &&
+				attempt < 4
+			) {
+				await sleep(10 * 2 ** attempt);
+				continue;
+			}
+			throw error;
 		}
-		throw error;
 	}
+	// Exhausted retries on a transient code: surface the last failure so the caller
+	// treats it as a real save error rather than a phantom missing file.
+	throw lastError;
 }
 
 async function writeJsonFileAtomicWithRetry(
@@ -521,6 +541,136 @@ async function withConfigSaveLock(
 		if (configSaveQueues.get(path) === queued) {
 			configSaveQueues.delete(path);
 		}
+	}
+}
+
+// Cross-process config-save lock. withConfigSaveLock only serializes saves
+// within THIS process (a per-path promise queue); it does nothing against a
+// second process. The mtime CAS in writeJsonFileAtomicWithRetry narrows but does
+// not close the read→check→merge→rename TOCTOU window (another process can still
+// land a write between the CAS stat and the rename). This file lock provides the
+// cross-process mutual exclusion that closes that window. It deliberately mirrors
+// RefreshLeaseCoordinator (lib/refresh-lease.ts): exclusive `wx` lockfile create,
+// JSON payload carrying pid + expiry, stale-takeover via expiry/mtime, and a
+// best-effort retrying release in a finally. The mtime CAS stays as a second-line
+// guard for any non-participating writer.
+const CONFIG_LOCK_TTL_MS = 10_000;
+const CONFIG_LOCK_WAIT_TIMEOUT_MS = 10_000;
+const CONFIG_LOCK_POLL_MS = 50;
+
+interface ConfigLockPayload {
+	pid: number;
+	acquiredAt: number;
+	expiresAt: number;
+}
+
+async function unlinkConfigLockWithRetry(lockPath: string): Promise<void> {
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await fs.unlink(lockPath);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code === "ENOENT") return;
+			if (
+				typeof code === "string" &&
+				RETRYABLE_FS_CODES.has(code) &&
+				attempt < 4
+			) {
+				await sleep(10 * 2 ** attempt);
+				continue;
+			}
+			// Best-effort release: a leftover lockfile is recovered as stale by the
+			// next acquirer via its expiry/mtime, so never fail the save over this.
+			return;
+		}
+	}
+}
+
+async function isConfigLockStale(lockPath: string): Promise<boolean> {
+	try {
+		const content = await fs.readFile(lockPath, "utf-8");
+		const parsed = JSON.parse(stripUtf8Bom(content)) as
+			| Partial<ConfigLockPayload>
+			| undefined;
+		if (
+			typeof parsed?.expiresAt === "number" &&
+			Number.isFinite(parsed.expiresAt)
+		) {
+			return parsed.expiresAt <= Date.now();
+		}
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") return true;
+		// Unreadable/malformed payload: fall through to the mtime heuristic.
+	}
+	try {
+		const stat = await fs.stat(lockPath);
+		return Date.now() - stat.mtimeMs > CONFIG_LOCK_TTL_MS;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") return true;
+		return false;
+	}
+}
+
+async function withConfigFileLock<T>(
+	targetPath: string,
+	task: () => Promise<T>,
+): Promise<T> {
+	const lockPath = `${targetPath}.lock`;
+	await fs.mkdir(dirname(lockPath), { recursive: true });
+	const deadline = Date.now() + CONFIG_LOCK_WAIT_TIMEOUT_MS;
+	let acquired = false;
+	while (!acquired) {
+		try {
+			const now = Date.now();
+			const payload: ConfigLockPayload = {
+				pid: process.pid,
+				acquiredAt: now,
+				expiresAt: now + CONFIG_LOCK_TTL_MS,
+			};
+			const handle = await fs.open(lockPath, "wx", 0o600);
+			try {
+				await handle.writeFile(`${JSON.stringify(payload)}\n`, "utf8");
+			} finally {
+				await handle.close();
+			}
+			acquired = true;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (code !== "EEXIST") {
+				// A transient FS lock on the lockfile itself: retry until the deadline,
+				// matching the bounded backoff used elsewhere on the Windows save path.
+				if (
+					typeof code === "string" &&
+					RETRYABLE_FS_CODES.has(code) &&
+					Date.now() < deadline
+				) {
+					await sleep(CONFIG_LOCK_POLL_MS);
+					continue;
+				}
+				throw error;
+			}
+			// Lock is held. Take it over if the holder expired/crashed; otherwise wait.
+			if (await isConfigLockStale(lockPath)) {
+				await unlinkConfigLockWithRetry(lockPath);
+				continue;
+			}
+			if (Date.now() >= deadline) {
+				const timeoutError = new Error(
+					`Timed out acquiring config save lock at ${lockPath}.`,
+				) as NodeJS.ErrnoException;
+				timeoutError.code = "ELOCKTIMEOUT";
+				throw timeoutError;
+			}
+			await sleep(CONFIG_LOCK_POLL_MS);
+		}
+	}
+	try {
+		return await task();
+	} finally {
+		await unlinkConfigLockWithRetry(lockPath);
 	}
 }
 
@@ -736,42 +886,45 @@ export async function savePluginConfig(
 
 	if (envPath.length > 0) {
 		await withConfigSaveLock(envPath, async () => {
-			// Cross-process compare-and-swap: capture mtime before the
-			// read-merge-write, then have the atomic writer re-check it before the
-			// rename. On mismatch (another process wrote concurrently) we re-read and
-			// retry instead of silently dropping the other process's update. Mirrors
-			// the unified-settings save path (writeSettingsRecordAsync CAS).
-			for (let attempt = 0; attempt < 3; attempt += 1) {
-				const expectedMtimeMs = await getConfigFileMtimeMs(envPath);
-				const envConfigState = await readConfigRecordForSave(envPath);
-				if (envConfigState.status === "unreadable") {
-					throw new Error(
-						`Aborting config save because ${envPath} is unreadable.`,
-					);
-				}
-				const existingConfig =
-					envConfigState.status === "ok"
-						? sanitizeStoredPluginConfigRecord(envConfigState.record)
-						: null;
-				const merged = {
-					...(existingConfig ?? {}),
-					...sanitizedPatch,
-				};
-				try {
-					await writeJsonFileAtomicWithRetry(envPath, merged, {
-						expectedMtimeMs,
-					});
-					return;
-				} catch (error) {
-					if (
-						(error as NodeJS.ErrnoException).code !== "ESTALE" ||
-						attempt >= 2
-					) {
-						throw error;
+			// In-process queue (above) is the cheap fast path; the cross-process file
+			// lock (below) closes the read→merge→rename TOCTOU window against OTHER
+			// processes. Acquire the file lock for the full critical section, then run
+			// the same mtime CAS retry as a second-line guard for any non-participating
+			// writer. Mirrors the unified-settings save path (writeSettingsRecordAsync
+			// CAS).
+			await withConfigFileLock(envPath, async () => {
+				for (let attempt = 0; attempt < 3; attempt += 1) {
+					const expectedMtimeMs = await getConfigFileMtimeMs(envPath);
+					const envConfigState = await readConfigRecordForSave(envPath);
+					if (envConfigState.status === "unreadable") {
+						throw new Error(
+							`Aborting config save because ${envPath} is unreadable.`,
+						);
 					}
-					// Loop: re-stat, re-read, re-merge against the latest on-disk state.
+					const existingConfig =
+						envConfigState.status === "ok"
+							? sanitizeStoredPluginConfigRecord(envConfigState.record)
+							: null;
+					const merged = {
+						...(existingConfig ?? {}),
+						...sanitizedPatch,
+					};
+					try {
+						await writeJsonFileAtomicWithRetry(envPath, merged, {
+							expectedMtimeMs,
+						});
+						return;
+					} catch (error) {
+						if (
+							(error as NodeJS.ErrnoException).code !== "ESTALE" ||
+							attempt >= 2
+						) {
+							throw error;
+						}
+						// Loop: re-stat, re-read, re-merge against the latest on-disk state.
+					}
 				}
-			}
+			});
 		});
 		return;
 	}
