@@ -1,10 +1,12 @@
 import { dirname, join } from "node:path";
+import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	isDirectRunInvocation,
 	parseMcodexArgs,
+	relaySignalsToChild,
 	resolveMonitorInterval,
 	resolveTmuxHistoryLimit,
 	resolveTmuxSession,
@@ -179,5 +181,71 @@ describe("mcodex direct-run gate (isDirectRunInvocation)", () => {
 
 	it("returns false when argv[1] is absent (imported, not run)", () => {
 		expect(isDirectRunInvocation(undefined, selfUrl)).toBe(false);
+	});
+});
+
+describe("mcodex signal relay (relaySignalsToChild)", () => {
+	// #15 regression: a SIGTERM to the launcher used to exit the parent without
+	// killing the forwarded codex.js / watch child, orphaning it. The launcher now
+	// relays terminating signals to the child and tears the handlers down on close.
+	// A true cross-process SIGTERM test is unreliable on Windows (process.kill maps
+	// to TerminateProcess and bypasses Node's signal handler), so assert the relay
+	// wiring deterministically with an injected fake process + child.
+	function makeFakeChild() {
+		const kill = vi.fn();
+		return { kill } as unknown as import("node:child_process").ChildProcess & {
+			kill: ReturnType<typeof vi.fn>;
+		};
+	}
+
+	it("forwards a received signal to the child via child.kill", () => {
+		const proc = new EventEmitter();
+		const child = makeFakeChild();
+		relaySignalsToChild(child, { proc, signals: ["SIGTERM"] });
+
+		expect(proc.listenerCount("SIGTERM")).toBe(1);
+		proc.emit("SIGTERM");
+		expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+	});
+
+	it("registers SIGTERM and SIGINT by default", () => {
+		const proc = new EventEmitter();
+		const child = makeFakeChild();
+		relaySignalsToChild(child, { proc });
+
+		expect(proc.listenerCount("SIGTERM")).toBe(1);
+		expect(proc.listenerCount("SIGINT")).toBe(1);
+
+		proc.emit("SIGINT");
+		expect(child.kill).toHaveBeenCalledWith("SIGINT");
+	});
+
+	it("removes the relay handlers when cleanup runs (no leak past child close)", () => {
+		const proc = new EventEmitter();
+		const child = makeFakeChild();
+		const removeSignalRelays = relaySignalsToChild(child, {
+			proc,
+			signals: ["SIGTERM", "SIGINT"],
+		});
+
+		removeSignalRelays();
+		expect(proc.listenerCount("SIGTERM")).toBe(0);
+		expect(proc.listenerCount("SIGINT")).toBe(0);
+
+		// After cleanup a late signal must not reach an already-settled child.
+		proc.emit("SIGTERM");
+		expect(child.kill).not.toHaveBeenCalled();
+	});
+
+	it("swallows a child.kill failure (child already exited)", () => {
+		const proc = new EventEmitter();
+		const kill = vi.fn(() => {
+			throw new Error("ESRCH");
+		});
+		const child = { kill } as unknown as import("node:child_process").ChildProcess;
+		relaySignalsToChild(child, { proc, signals: ["SIGTERM"] });
+
+		expect(() => proc.emit("SIGTERM")).not.toThrow();
+		expect(kill).toHaveBeenCalledWith("SIGTERM");
 	});
 });

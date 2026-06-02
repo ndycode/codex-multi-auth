@@ -1116,16 +1116,23 @@ describe("flagged storage extracted helpers", () => {
 		);
 
 		// Fail loudly on a hang rather than letting the whole suite time out.
-		const timeout = new Promise<never>((_, reject) =>
-			setTimeout(
+		let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<never>((_, reject) => {
+			timeoutHandle = setTimeout(
 				() => reject(new Error("withAccountAndFlaggedStorageTransaction deadlocked")),
 				3000,
-			),
-		);
+			);
+		});
 
-		const recoveredFlagged = (await Promise.race([run, timeout])) as Awaited<
-			typeof run
-		>;
+		let recoveredFlagged: Awaited<typeof run>;
+		try {
+			recoveredFlagged = (await Promise.race([run, timeout])) as Awaited<
+				typeof run
+			>;
+		} finally {
+			// Clear the guard so it never dangles into teardown on the happy path.
+			if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+		}
 		expect(recoveredFlagged.accounts).toHaveLength(1);
 		expect(recoveredFlagged.accounts[0]).toEqual(
 			expect.objectContaining({

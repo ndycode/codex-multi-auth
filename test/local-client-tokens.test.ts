@@ -81,6 +81,52 @@ describe("local client tokens", () => {
 		expect(store.tokens.filter((token) => token.revokedAt !== null)).toHaveLength(2);
 	});
 
+	it("debounces lastUsedAt persistence across rapid verifies", async () => {
+		const { addLocalClientToken, loadLocalClientTokenStore, verifyLocalClientBearerToken } =
+			await import("../lib/local-client-tokens.js");
+
+		const created = await addLocalClientToken({ label: "hot-path", now: 100 });
+
+		// Seed a persisted lastUsedAt so subsequent rapid verifies fall inside the
+		// debounce window rather than the "never persisted" branch.
+		await verifyLocalClientBearerToken(`Bearer ${created.plainToken}`, 1_000);
+
+		// From here, every verify within the threshold must stay in-memory: no
+		// temp-write + rename per request on the auth hot path.
+		const renameSpy = vi.spyOn(fs, "rename");
+		try {
+			for (let i = 1; i <= 5; i += 1) {
+				const verified = await verifyLocalClientBearerToken(
+					`Bearer ${created.plainToken}`,
+					1_000 + i,
+				);
+				// Verification correctness is unchanged, and lastUsedAt advances
+				// in-memory on each call.
+				expect(verified?.id).toBe(created.record.id);
+				expect(verified?.lastUsedAt).toBe(1_000 + i);
+			}
+			expect(renameSpy).not.toHaveBeenCalled();
+
+			// On disk it is still the last persisted value (debounced).
+			const debounced = await loadLocalClientTokenStore();
+			expect(debounced.tokens[0]?.lastUsedAt).toBe(1_000);
+
+			// Once the in-memory value advances past the threshold, the next verify
+			// flushes to disk so usage data is not lost indefinitely.
+			const flushed = await verifyLocalClientBearerToken(
+				`Bearer ${created.plainToken}`,
+				1_000 + 60_000,
+			);
+			expect(flushed?.lastUsedAt).toBe(1_000 + 60_000);
+			expect(renameSpy).toHaveBeenCalledTimes(1);
+		} finally {
+			renameSpy.mockRestore();
+		}
+
+		const persisted = await loadLocalClientTokenStore();
+		expect(persisted.tokens[0]?.lastUsedAt).toBe(1_000 + 60_000);
+	});
+
 	it("does not lose mutations when revoke and add run concurrently", async () => {
 		const {
 			addLocalClientToken,
@@ -116,30 +162,33 @@ describe("local client tokens", () => {
 		expect(addedRecord?.revokedAt).toBeNull();
 	});
 
-	it("retries atomic rename on transient ENOTEMPTY errors", async () => {
-		const { addLocalClientToken, loadLocalClientTokenStore } = await import(
-			"../lib/local-client-tokens.js"
-		);
-		const realRename = fs.rename.bind(fs);
-		let attempts = 0;
-		const renameSpy = vi.spyOn(fs, "rename");
-		renameSpy.mockImplementation(async (...args) => {
-			attempts += 1;
-			if (attempts === 1) {
-				const error = new Error("dir not empty") as NodeJS.ErrnoException;
-				error.code = "ENOTEMPTY";
-				throw error;
-			}
-			return realRename(...args);
-		});
+	it.each(["ENOTEMPTY", "EAGAIN", "EACCES"])(
+		"retries atomic rename on transient %s errors",
+		async (code) => {
+			const { addLocalClientToken, loadLocalClientTokenStore } = await import(
+				"../lib/local-client-tokens.js"
+			);
+			const realRename = fs.rename.bind(fs);
+			let attempts = 0;
+			const renameSpy = vi.spyOn(fs, "rename");
+			renameSpy.mockImplementation(async (...args) => {
+				attempts += 1;
+				if (attempts === 1) {
+					const error = new Error(`transient ${code}`) as NodeJS.ErrnoException;
+					error.code = code;
+					throw error;
+				}
+				return realRename(...args);
+			});
 
-		try {
-			const created = await addLocalClientToken({ label: "retry", now: 100 });
-			expect(attempts).toBeGreaterThan(1);
-			const store = await loadLocalClientTokenStore();
-			expect(store.tokens.find((t) => t.id === created.record.id)).toBeDefined();
-		} finally {
-			renameSpy.mockRestore();
-		}
-	});
+			try {
+				const created = await addLocalClientToken({ label: "retry", now: 100 });
+				expect(attempts).toBeGreaterThan(1);
+				const store = await loadLocalClientTokenStore();
+				expect(store.tokens.find((t) => t.id === created.record.id)).toBeDefined();
+			} finally {
+				renameSpy.mockRestore();
+			}
+		},
+	);
 });

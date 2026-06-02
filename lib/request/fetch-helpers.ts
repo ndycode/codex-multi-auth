@@ -194,6 +194,7 @@ function isUnsupportedCodexModelForChatGpt(status: number, bodyText: string): bo
 	if (!bodyText) return false;
 	return (
 		CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN.test(bodyText) ||
+		NORMALIZED_UNSUPPORTED_MODEL_PATTERN.test(bodyText) ||
 		MODEL_ACCESS_DENIED_PATTERN.test(bodyText)
 	);
 }

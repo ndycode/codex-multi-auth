@@ -30,6 +30,15 @@ describe("clampIndex", () => {
 	it("never exceeds the last index for large fractional input", () => {
 		expect(clampIndex(7.5, 3)).toBe(2);
 	});
+
+	it("coerces a non-finite index to a valid bound", () => {
+		// A tampered/corrupt activeIndex of NaN must not propagate through
+		// Math.trunc/Math.min and yield undefined array indexing.
+		expect(clampIndex(Number.NaN, 5)).toBe(0);
+		// ±Infinity still clamp to the valid range rather than producing NaN.
+		expect(clampIndex(Number.POSITIVE_INFINITY, 5)).toBe(4);
+		expect(clampIndex(Number.NEGATIVE_INFINITY, 5)).toBe(0);
+	});
 });
 
 describe("isRecord", () => {

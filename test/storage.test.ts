@@ -7,6 +7,7 @@ import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
 import { setStoragePathState } from "../lib/storage/path-state.js";
 import { getIntentionalResetMarkerPath } from "../lib/storage/backup-paths.js";
 import { getRuntimeAccountIdentityKey } from "../lib/storage/identity.js";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 import {
 	buildNamedBackupPath,
 	clearAccounts,
@@ -66,7 +67,7 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			setStoragePathDirect(null);
-			await fs.rm(storageDir, { recursive: true, force: true });
+			await removeWithRetry(storageDir, { recursive: true, force: true });
 		});
 
 		it.skipIf(process.platform === "win32")(

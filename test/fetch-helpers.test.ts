@@ -1186,6 +1186,28 @@ describe('createEntitlementErrorResponse', () => {
 				}),
 			);
 		});
+
+		it('rewrites normalized "not currently available" 400 wording as an entitlement error', async () => {
+			// request-fetch: a 400 body using the normalized
+			// "not currently available for this chatgpt account" wording (without the
+			// legacy "not supported when using codex" phrasing) must still trigger the
+			// entitlement-error rewrite + fallback guidance, matching
+			// getUnsupportedCodexModelInfo.
+			const response = new Response(
+				"The model 'gpt-5.3-codex' is not currently available for this chatgpt account.",
+				{ status: 400 },
+			);
+
+			const { response: result } = await handleErrorResponse(response);
+			const json = (await result.json()) as {
+				error: { message: string; type?: string; code?: string; unsupported_model?: string };
+			};
+
+			expect(json.error.type).toBe('entitlement_error');
+			expect(json.error.code).toBe('model_not_supported_with_chatgpt_account');
+			expect(json.error.unsupported_model).toBe('gpt-5.3-codex');
+			expect(json.error.message).toContain('entitlement gate');
+		});
 	});
 
 	describe('handleErrorResponse edge cases', () => {

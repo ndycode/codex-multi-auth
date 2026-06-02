@@ -42,6 +42,11 @@ export interface ForecastAccountResult {
 	reasons: string[];
 	hardFailure: boolean;
 	disabled: boolean;
+	// True when the account is blocked solely by quota-cache exhaustion. Such
+	// accounts are classified `availability === "delayed"` (so display/sorting
+	// still treat them as a timed wait), but they must NOT be recommended as a
+	// "pick shortest wait" fallback when every account is exhausted.
+	exhausted: boolean;
 }
 
 export interface ForecastRecommendation {
@@ -177,6 +182,7 @@ export function evaluateForecastAccount(
 	let riskScore = isCurrent ? -5 : 0;
 	let waitMs = 0;
 	let hardFailure = false;
+	let exhausted = false;
 	const disabled = account.enabled === false;
 
 	if (disabled) {
@@ -241,6 +247,7 @@ export function evaluateForecastAccount(
 		const quotaWait = resetAts.length > 0 ? Math.max(...resetAts) - now : waitMs;
 		waitMs = Math.max(waitMs, quotaWait);
 		if (availability === "ready") availability = "delayed";
+		exhausted = true;
 		riskScore += 60;
 		reasons.push("quota cache exhausted");
 		appendWaitReason(reasons, "quota resets in", quotaWait);
@@ -332,6 +339,7 @@ export function evaluateForecastAccount(
 		reasons,
 		hardFailure,
 		disabled,
+		exhausted,
 	};
 }
 
@@ -380,22 +388,27 @@ export function recommendForecastAccount(
 	// exhausted) in addition to disabled/hard-failed ones. Such accounts carry
 	// availability === "unavailable" with hardFailure === false, so without this
 	// guard they were recommended with a misleading "pick shortest wait".
+	// Quota-exhausted accounts are classified "delayed" (not "unavailable") to
+	// preserve display/sorting semantics, so exclude them explicitly via the
+	// `exhausted` flag — otherwise an all-exhausted pool returns a bogus
+	// "shortest wait" pick instead of the null recommendation.
 	const candidates = results.filter(
 		(result) =>
 			!result.disabled &&
 			!result.hardFailure &&
+			!result.exhausted &&
 			result.availability !== "unavailable",
 	);
 	if (candidates.length === 0) {
 		// Distinguish "blocked/exhausted" accounts (unavailable but neither
-		// disabled nor hard-failed — e.g. policy block, runtime skip, quota
-		// exhaustion) from disabled/hard-failed ones so the guidance matches the
-		// actual blocker.
+		// disabled nor hard-failed — e.g. policy block, runtime skip — or
+		// quota-exhausted "delayed" accounts) from disabled/hard-failed ones so
+		// the guidance matches the actual blocker.
 		const hasBlockedOrExhausted = results.some(
 			(result) =>
-				result.availability === "unavailable" &&
 				!result.disabled &&
-				!result.hardFailure,
+				!result.hardFailure &&
+				(result.exhausted || result.availability === "unavailable"),
 		);
 		return {
 			recommendedIndex: null,

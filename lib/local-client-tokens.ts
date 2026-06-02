@@ -27,6 +27,14 @@ export interface CreatedLocalClientToken {
 
 const TOKEN_FILE_NAME = "local-client-tokens.json";
 const TOKEN_PREFIX = "cma_local";
+// Debounce window for persisting a record's lastUsedAt. Bearer verification is
+// on the auth hot path (every authenticated bridge request), so writing the
+// store to disk on each verify serializes behind the shared write queue and
+// triggers a temp-write+rename per request (with Windows rename-lock retries).
+// lastUsedAt is informational only (surfaced by `bridge token list`), so we
+// coalesce updates: advance it in-memory every verify but only flush to disk
+// once it has moved at least this far past the persisted value.
+const LAST_USED_PERSIST_THRESHOLD_MS = 60_000;
 const RETRYABLE_FS_CODES = new Set([
 	"EBUSY",
 	"EPERM",
@@ -154,7 +162,21 @@ export async function loadLocalClientTokenStore(): Promise<LocalClientTokenStore
 async function writeStoreToDisk(store: LocalClientTokenStore): Promise<void> {
 	const path = getLocalClientTokenPath();
 	const payload = normalizeStore(store);
-	await fs.mkdir(getCodexMultiAuthDir(), { recursive: true, mode: 0o700 });
+	const dir = getCodexMultiAuthDir();
+	// This store holds token hashes, so keep the directory owner-only on POSIX
+	// (mode is a no-op on win32 / ACL-based).
+	await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+	// mkdir's mode only applies to a freshly-created dir; an upgrade with a
+	// pre-existing multi-auth dir keeps its old (possibly world-listable) perms,
+	// so re-assert 0o700 on POSIX. Best-effort: a chmod failure must not break
+	// the write (the 0o600 file below still protects the hashes).
+	if (process.platform !== "win32") {
+		try {
+			await fs.chmod(dir, 0o700);
+		} catch {
+			// Best-effort hardening only.
+		}
+	}
 	const tempPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
 	let moved = false;
 	try {
@@ -268,8 +290,17 @@ export async function verifyLocalClientBearerToken(
 			(entry) => entry.revokedAt === null && entry.tokenHash === tokenHash,
 		);
 		if (!record) return null;
+		// Token match (verification correctness) is decided above and never
+		// depends on lastUsedAt. Always advance lastUsedAt in-memory so callers
+		// see a fresh value, but only flush to disk when it has not been
+		// persisted yet, or has advanced past the debounce threshold. This keeps
+		// steady-state verifies off the disk-write path while still recording
+		// recent usage on a coarse (>=60s) cadence.
+		const persisted = record.lastUsedAt;
 		record.lastUsedAt = now;
-		await writeStoreToDisk(store);
+		if (persisted === null || now - persisted >= LAST_USED_PERSIST_THRESHOLD_MS) {
+			await writeStoreToDisk(store);
+		}
 		return record;
 	});
 }

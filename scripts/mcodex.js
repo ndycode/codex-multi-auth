@@ -37,6 +37,35 @@ function defaultWarn(message) {
 	console.error(message);
 }
 
+// When mcodex itself is asked to terminate, forward the signal to the spawned
+// child so the forwarded codex.js / watch process doesn't outlive us as an
+// orphan. Without this, a SIGTERM to the launcher exits the parent while the
+// child keeps running detached. Listeners are registered with `once` and torn
+// down when the child settles (returned cleanup), so they never leak across the
+// launcher's lifetime. `proc` is injectable so the wiring is unit-testable
+// without registering handlers on the real process.
+export function relaySignalsToChild(
+	child,
+	{ proc = process, signals = ["SIGTERM", "SIGINT"] } = {},
+) {
+	const registered = signals.map((signal) => {
+		const handler = () => {
+			try {
+				child.kill(signal);
+			} catch {
+				// Child may have already exited; nothing left to forward.
+			}
+		};
+		proc.once(signal, handler);
+		return { signal, handler };
+	});
+	return function removeSignalRelays() {
+		for (const { signal, handler } of registered) {
+			proc.removeListener(signal, handler);
+		}
+	};
+}
+
 function coerceValidatedSetting(rawValue, pattern, fallback, envName, warn) {
 	// Mirror bash `${VAR:-default}`: unset OR empty falls back silently; any other
 	// value is validated and, if it fails, replaced with the default plus a warning.
@@ -131,13 +160,16 @@ function forwardToCodexWrapper(forwardArgs, env = process.env) {
 		stdio: "inherit",
 		env,
 	});
+	const removeSignalRelays = relaySignalsToChild(child);
 	child.once("error", (error) => {
+		removeSignalRelays();
 		console.error(
 			`mcodex: failed to launch codex wrapper: ${error instanceof Error ? error.message : String(error)}`,
 		);
 		process.exit(1);
 	});
 	child.once("close", (code, signal) => {
+		removeSignalRelays();
 		if (signal === "SIGINT") {
 			process.exit(130);
 			return;
@@ -156,13 +188,16 @@ function runMonitor(interval, env = process.env, platform = process.platform) {
 		return;
 	}
 	const child = spawn(watchPath, buildWatchArgs(interval), { stdio: "inherit", env });
+	const removeSignalRelays = relaySignalsToChild(child);
 	child.once("error", (error) => {
+		removeSignalRelays();
 		console.error(
 			`mcodex: failed to launch watch: ${error instanceof Error ? error.message : String(error)}`,
 		);
 		process.exit(1);
 	});
 	child.once("close", (code, signal) => {
+		removeSignalRelays();
 		if (signal === "SIGINT") {
 			process.exit(130);
 			return;
