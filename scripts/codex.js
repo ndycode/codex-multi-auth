@@ -217,16 +217,66 @@ function resolveMultiAuthDirFromEnv(env = process.env) {
 	return join(resolveCodexHomeDir(env), "multi-auth");
 }
 
-function resolveAccountsPath(env = process.env) {
-	return join(resolveMultiAuthDirFromEnv(env), "openai-codex-accounts.json");
+function resolveAccountsPath(env = process.env, dir = resolveMultiAuthDirFromEnv(env)) {
+	return join(dir, "openai-codex-accounts.json");
 }
 
-function resolveQuotaCachePath(env = process.env) {
-	return join(resolveMultiAuthDirFromEnv(env), "quota-cache.json");
+function resolveQuotaCachePath(env = process.env, dir = resolveMultiAuthDirFromEnv(env)) {
+	return join(dir, "quota-cache.json");
 }
 
-function resolveRuntimeObservabilityPath(env = process.env) {
-	return join(resolveMultiAuthDirFromEnv(env), "runtime-observability.json");
+function resolveRuntimeObservabilityPath(env = process.env, dir = resolveMultiAuthDirFromEnv(env)) {
+	return join(dir, "runtime-observability.json");
+}
+
+/**
+ * Resolve the multi-auth dir the status line should read ACCOUNTS from, mirroring
+ * the runtime's own account scoping (lib/runtime/account-scope.ts):
+ *   - when perProjectAccounts is enabled, Codex CLI sync is OFF, an explicit
+ *     CODEX_MULTI_AUTH_DIR is NOT set, and the cwd resolves to a git/project root,
+ *     accounts live in the per-project pool at
+ *     <configDir>/projects/<project-key>/openai-codex-accounts.json;
+ *   - otherwise the global dir is used.
+ * Only the ACCOUNTS pool is per-project; quota-cache.json and
+ * runtime-observability.json remain global (lib: getCodexMultiAuthDir). Reusing
+ * the built dist helpers (never re-deriving project keys from raw paths, per
+ * AGENTS.md) keeps the status line consistent with what Codex routes through.
+ * Any failure falls back to the global dir so the launcher never breaks.
+ */
+async function resolveStatusAccountsDir(env = process.env) {
+	const globalDir = resolveMultiAuthDirFromEnv(env);
+	try {
+		const [configMod, pathsMod, stateMod] = await Promise.all([
+			import("../dist/lib/config.js"),
+			import("../dist/lib/storage/paths.js"),
+			import("../dist/lib/codex-cli/state.js"),
+		]);
+		if (
+			typeof configMod.loadPluginConfig !== "function" ||
+			typeof configMod.getPerProjectAccounts !== "function" ||
+			typeof pathsMod.findProjectRoot !== "function" ||
+			typeof pathsMod.resolveProjectStorageIdentityRoot !== "function" ||
+			typeof pathsMod.getProjectGlobalConfigDir !== "function"
+		) {
+			return globalDir;
+		}
+		const pluginConfig = configMod.loadPluginConfig();
+		if (configMod.getPerProjectAccounts(pluginConfig) !== true) return globalDir;
+		// Codex CLI sync forces the global pool (account-scope.ts), so honor that.
+		if (typeof stateMod.isCodexCliSyncEnabled === "function" && stateMod.isCodexCliSyncEnabled()) {
+			return globalDir;
+		}
+		const projectRoot = pathsMod.findProjectRoot(process.cwd());
+		if (!projectRoot) return globalDir;
+		// getProjectGlobalConfigDir grounds the per-project pool in the dist config
+		// dir, which itself honors CODEX_MULTI_AUTH_DIR / CODEX_HOME — so the pool is
+		// nested under an explicit dir exactly as the runtime writes it. No special
+		// casing of CODEX_MULTI_AUTH_DIR here, or the status line would diverge.
+		const identityRoot = pathsMod.resolveProjectStorageIdentityRoot(projectRoot);
+		return pathsMod.getProjectGlobalConfigDir(identityRoot);
+	} catch {
+		return globalDir;
+	}
 }
 
 function normalizeAccountIdentifier(value) {
@@ -484,8 +534,11 @@ function shouldShowForwardStatus(args, env = process.env) {
 	return process.stderr.isTTY === true;
 }
 
-function formatForwardStatusLine(rawArgs, env = process.env) {
-	const storage = readJsonFileQuiet(resolveAccountsPath(env));
+function formatForwardStatusLine(rawArgs, env = process.env, accountsDir = resolveMultiAuthDirFromEnv(env)) {
+	// Only the accounts pool is per-project; quota-cache.json and
+	// runtime-observability.json are global (lib: getCodexMultiAuthDir), so read
+	// accounts from the (possibly project-scoped) dir and the rest from global.
+	const storage = readJsonFileQuiet(resolveAccountsPath(env, accountsDir));
 	const accounts = Array.isArray(storage?.accounts) ? storage.accounts : [];
 	if (accounts.length === 0) return null;
 
@@ -516,9 +569,10 @@ function formatForwardStatusLine(rawArgs, env = process.env) {
 	return parts.join(" | ");
 }
 
-function maybePrintForwardStatusLine(rawArgs, env = process.env) {
+async function maybePrintForwardStatusLine(rawArgs, env = process.env) {
 	if (!shouldShowForwardStatus(rawArgs, env)) return;
-	const line = formatForwardStatusLine(rawArgs, env);
+	const accountsDir = await resolveStatusAccountsDir(env);
+	const line = formatForwardStatusLine(rawArgs, env, accountsDir);
 	if (!line) return;
 	process.stderr.write(`${line}\n`);
 }
@@ -4713,7 +4767,7 @@ async function main() {
 	}
 
 	await autoSyncManagerActiveSelectionIfEnabled();
-	maybePrintForwardStatusLine(rawArgs);
+	await maybePrintForwardStatusLine(rawArgs);
 	maybeRefreshQuotaCacheInBackground();
 	try {
 		return await withForwardedRuntimeObservability(rawArgs, () =>
