@@ -67,6 +67,18 @@ describe("runSwitchCommand", () => {
 		);
 	});
 
+	it.each(["1.5", "2.9", "2abc", "0x2", "1e0", "+1", "-1"])(
+		"rejects a non-integer index %p instead of truncating it",
+		async (arg) => {
+			const deps = createDeps();
+			const result = await runSwitchCommand([arg], deps);
+			expect(result).toBe(1);
+			expect(deps.logError).toHaveBeenCalledWith(`Invalid index: ${arg}`);
+			// A rejected index must never persist a selection.
+			expect(deps.persistAndSyncSelectedAccount).not.toHaveBeenCalled();
+		},
+	);
+
 	it("persists and reports the selected account", async () => {
 		const deps = createDeps({
 			persistAndSyncSelectedAccount: vi.fn(async () => ({

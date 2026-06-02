@@ -442,6 +442,12 @@ function canonicalizeExistingPrefix(targetPath: string): string {
 }
 
 export function resolvePath(filePath: string): string {
+	// Reject NUL bytes up front (defense in depth): a poison byte cannot traverse
+	// out of an approved root, but it must never reach the fs layer — fail here
+	// with a clear error rather than letting Node throw deep in a later read/write.
+	if (filePath.includes(String.fromCharCode(0))) {
+		throw new Error("Invalid path: contains a NUL byte");
+	}
 	let resolved: string;
 	if (filePath.startsWith("~")) {
 		resolved = join(homedir(), filePath.slice(1));

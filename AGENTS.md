@@ -3,7 +3,7 @@
 Generated: 2026-04-25
 Commit: a87e005
 Branch: main
-Package version: 2.1.13-beta.3
+Package version: 2.2.0
 
 ## OVERVIEW
 
