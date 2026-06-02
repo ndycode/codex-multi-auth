@@ -1120,6 +1120,8 @@ describe("runtime rotation proxy", () => {
 					accept: "application/json",
 					connection: "close",
 					"x-custom-trace": "trace-1",
+					cookie: "session=inbound-cookie-secret",
+					"proxy-authorization": "Basic inbound-proxy-cred",
 				},
 			)
 		).text();
@@ -1130,6 +1132,9 @@ describe("runtime rotation proxy", () => {
 		expect(calls[0]?.headers.get("connection")).toBeNull();
 		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-1");
 		expect(calls[0]?.headers.get("x-api-key")).toBeNull();
+		// Inbound client credentials must never ride upstream with the managed token.
+		expect(calls[0]?.headers.get("cookie")).toBeNull();
+		expect(calls[0]?.headers.get("proxy-authorization")).toBeNull();
 	});
 
 	it("strips expect before forwarding to fetch", async () => {

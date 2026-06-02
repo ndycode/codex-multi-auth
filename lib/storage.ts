@@ -2,6 +2,7 @@ import { existsSync, promises as fs, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { StorageError } from "./errors.js";
+import { shouldRetryFileOperation, withFileOperationRetry } from "./fs-retry.js";
 import { createLogger } from "./logger.js";
 import {
 	exportNamedBackupFile,
@@ -273,8 +274,7 @@ async function copyFileWithRetry(
 				return;
 			}
 			const canRetry =
-				(code === "EPERM" || code === "EBUSY") &&
-				attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
+				shouldRetryFileOperation(error) && attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
 			if (canRetry) {
 				await new Promise((resolve) =>
 					setTimeout(resolve, BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt),
@@ -295,10 +295,8 @@ async function renameFileWithRetry(
 			await fs.rename(sourcePath, destinationPath);
 			return;
 		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
 			const canRetry =
-				(code === "EPERM" || code === "EBUSY" || code === "EAGAIN") &&
-				attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
+				shouldRetryFileOperation(error) && attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
 			if (!canRetry) {
 				throw error;
 			}
@@ -1834,13 +1832,20 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 				checksum: computeSha256(content),
 				content,
 			};
-			await fs.writeFile(walPath, JSON.stringify(journalEntry), {
-				encoding: "utf-8",
-				mode: 0o600,
-			});
+			// Secret-bearing WAL write: retry transient Windows locks via the shared
+			// taxonomy so a momentary AV/indexer/concurrent-reader lock can't fail an
+			// otherwise-valid save (EBUSY/EPERM/EAGAIN/ENOTEMPTY/EACCES).
+			await withFileOperationRetry(() =>
+				fs.writeFile(walPath, JSON.stringify(journalEntry), {
+					encoding: "utf-8",
+					mode: 0o600,
+				}),
+			);
 		},
 		writeTemp: (tempPath: string, content: string) =>
-			fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 }),
+			withFileOperationRetry(() =>
+				fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 }),
+			),
 		statTemp: (tempPath: string) => fs.stat(tempPath),
 		renameTempToPath: async (tempPath: string) => {
 			let lastError: NodeJS.ErrnoException | null = null;
@@ -1875,8 +1880,11 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 			}
 		},
 		cleanupTemp: async (tempPath: string) => {
+			// The temp file holds the full account store (refresh tokens, 0o600).
+			// Retry cleanup so a transient lock can't strand a secret-bearing *.tmp
+			// next to the destination; swallow a persistent failure (best effort).
 			try {
-				await fs.unlink(tempPath);
+				await withFileOperationRetry(() => fs.unlink(tempPath));
 			} catch {
 				// Ignore cleanup failure.
 			}

@@ -195,13 +195,34 @@ function ensureSnapshotState(): RuntimeObservabilitySnapshot {
 async function writeSnapshot(snapshot: RuntimeObservabilitySnapshot): Promise<void> {
 	const dir = getCodexMultiAuthDir();
 	const path = getSnapshotPath();
-	await fs.mkdir(dir, { recursive: true });
+	// The snapshot persists account identifiers (lastAccountId/label/index), so
+	// keep it owner-only on POSIX like the other sensitive writers (logger,
+	// local-client-tokens). mode is a no-op on win32 (ACL-based).
+	await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+	// mkdir's mode only applies to a freshly-created dir; an upgrade path with a
+	// pre-existing multi-auth dir keeps its old (possibly permissive) perms, so
+	// re-assert 0o700 on POSIX. Only ENOENT is swallowed (the dir was removed by a
+	// concurrent process — the snapshot write below will recreate/fail as needed);
+	// any other chmod failure is surfaced rather than silently leaving a
+	// world-readable dir to hold account ids/labels.
+	if (process.platform !== "win32") {
+		try {
+			await fs.chmod(dir, 0o700);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
+				throw error;
+			}
+		}
+	}
 	let lastError: unknown = null;
 	for (let attempt = 0; attempt < 3; attempt += 1) {
 		const tempPath = `${path}.${process.pid}.${Date.now()}.${attempt}.tmp`;
 		let moved = false;
 		try {
-			await fs.writeFile(tempPath, JSON.stringify(snapshot, null, 2), "utf-8");
+			await fs.writeFile(tempPath, JSON.stringify(snapshot, null, 2), {
+				encoding: "utf-8",
+				mode: 0o600,
+			});
 			await fs.rename(tempPath, path);
 			moved = true;
 			return;

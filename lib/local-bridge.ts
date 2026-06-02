@@ -98,6 +98,10 @@ function forwardHeaders(headers: Headers, runtimeClientApiKey?: string): Headers
 	// caller's local credential across the bridge boundary and could change which
 	// auth the runtime proxy evaluates — strip it unconditionally.
 	result.delete("x-api-key");
+	// Same contract: never carry an inbound Cookie / proxy-auth header upstream
+	// alongside the managed token.
+	result.delete("cookie");
+	result.delete("proxy-authorization");
 	// runtime-proxy-03: present the runtime proxy's client token. We replace the
 	// inbound client's Authorization (already validated by the bridge) rather than
 	// forwarding it verbatim, so the bridge can authenticate to an auth-enabled

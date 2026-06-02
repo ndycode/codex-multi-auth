@@ -1,12 +1,12 @@
 import { spawnSync } from "node:child_process";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -82,13 +82,8 @@ function runWrapper(cwd: string, env: NodeJS.ProcessEnv) {
 }
 
 function hasDistBuild(): boolean {
-	try {
-		// paths.js is emitted by `npm run build`; skip if the tree isn't built.
-		// eslint-disable-next-line @typescript-eslint/no-require-imports
-		return require("node:fs").existsSync(distPathsModule);
-	} catch {
-		return false;
-	}
+	// paths.js is emitted by `npm run build`; skip if the tree isn't built.
+	return existsSync(distPathsModule);
 }
 
 describe.runIf(hasDistBuild())("mcodex statusline per-project accounts (PR #500)", () => {

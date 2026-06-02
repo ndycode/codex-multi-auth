@@ -430,4 +430,117 @@ describe("quota cache", () => {
       vi.doUnmock("../lib/logger.js");
     }
   });
+
+  it("retries transient EACCES while loading cache", async () => {
+    const { loadQuotaCache, getQuotaCachePath } =
+      await import("../lib/quota-cache.js");
+    await fs.writeFile(
+      getQuotaCachePath(),
+      JSON.stringify({
+        version: 1,
+        byAccountId: {
+          acc_1: {
+            updatedAt: Date.now(),
+            status: 200,
+            model: "gpt-5-codex",
+            primary: { usedPercent: 12 },
+            secondary: { usedPercent: 7 },
+          },
+        },
+        byEmail: {},
+      }),
+      "utf8",
+    );
+
+    const realRead = fs.readFile.bind(fs);
+    let attempts = 0;
+    const readSpy = vi.spyOn(fs, "readFile");
+    readSpy.mockImplementation(async (...args) => {
+      if (String(args[0]) === getQuotaCachePath()) {
+        attempts += 1;
+        if (attempts === 1) {
+          const error = new Error("permission denied") as NodeJS.ErrnoException;
+          error.code = "EACCES";
+          throw error;
+        }
+      }
+      return realRead(...args);
+    });
+
+    try {
+      const loaded = await loadQuotaCache();
+      expect(loaded.byAccountId.acc_1?.model).toBe("gpt-5-codex");
+      expect(attempts).toBeGreaterThan(1);
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it("retries atomic rename on transient ENOTEMPTY errors", async () => {
+    const { saveQuotaCache, loadQuotaCache } =
+      await import("../lib/quota-cache.js");
+    const realRename = fs.rename.bind(fs);
+    let attempts = 0;
+    const renameSpy = vi.spyOn(fs, "rename");
+    renameSpy.mockImplementation(async (...args) => {
+      attempts += 1;
+      if (attempts === 1) {
+        const error = new Error("dir not empty") as NodeJS.ErrnoException;
+        error.code = "ENOTEMPTY";
+        throw error;
+      }
+      return realRename(...args);
+    });
+
+    try {
+      await saveQuotaCache({
+        byAccountId: {
+          acc_1: {
+            updatedAt: Date.now(),
+            status: 200,
+            model: "gpt-5-codex",
+            primary: { usedPercent: 40, windowMinutes: 300 },
+            secondary: { usedPercent: 20, windowMinutes: 10080 },
+          },
+        },
+        byEmail: {},
+      });
+      const loaded = await loadQuotaCache();
+      expect(loaded.byAccountId.acc_1?.model).toBe("gpt-5-codex");
+      expect(attempts).toBeGreaterThan(1);
+    } finally {
+      renameSpy.mockRestore();
+    }
+  });
+
+  it("serializes concurrent saves so the last write wins", async () => {
+    const { saveQuotaCache, loadQuotaCache, getQuotaCachePath } =
+      await import("../lib/quota-cache.js");
+
+    const makePayload = (usedPercent: number) => ({
+      byAccountId: {
+        acc_1: {
+          updatedAt: Date.now(),
+          status: 200,
+          model: "gpt-5-codex",
+          planType: "plus",
+          primary: { usedPercent, windowMinutes: 300 },
+          secondary: { usedPercent: 5, windowMinutes: 10080 },
+        },
+      },
+      byEmail: {},
+    });
+
+    // Fire two writes back-to-back without awaiting the first; the internal
+    // quotaCacheWriteQueue serializes them so the second (last) call wins and
+    // the file is never left torn/interleaved.
+    const first = saveQuotaCache(makePayload(11));
+    const second = saveQuotaCache(makePayload(99));
+    await Promise.all([first, second]);
+
+    const raw = await fs.readFile(getQuotaCachePath(), "utf8");
+    expect(() => JSON.parse(raw)).not.toThrow();
+    const loaded = await loadQuotaCache();
+    expect(loaded.byAccountId.acc_1?.primary.usedPercent).toBe(99);
+  });
 });

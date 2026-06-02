@@ -260,15 +260,19 @@ describe("local bridge", () => {
 			headers: {
 				authorization: "Bearer inbound-client-token",
 				"x-api-key": "inbound-secret-key",
+				cookie: "session=inbound-cookie-secret",
+				"proxy-authorization": "Basic inbound-proxy-cred",
 			},
 		});
 
 		const forwarded = calls.find((c) => c.url.endsWith("/v1/models"));
 		const headers = new Headers(forwarded?.init?.headers as HeadersInit);
-		// The runtime key is injected as Authorization, but the inbound x-api-key is
-		// still stripped — it must never cross the bridge, runtime key or not.
+		// The runtime key is injected as Authorization, but every inbound credential
+		// header is still stripped — none may cross the bridge, runtime key or not.
 		expect(headers.get("authorization")).toBe("Bearer runtime-secret-key");
 		expect(headers.get("x-api-key")).toBeNull();
+		expect(headers.get("cookie")).toBeNull();
+		expect(headers.get("proxy-authorization")).toBeNull();
 	});
 
 	it("refuses to start with a runtimeClientApiKey when auth is disabled", async () => {
@@ -317,13 +321,17 @@ describe("local bridge", () => {
 			headers: {
 				authorization: "Bearer inbound-client-token",
 				"x-api-key": "inbound-secret-key",
+				cookie: "session=inbound-cookie-secret",
+				"proxy-authorization": "Basic inbound-proxy-cred",
 			},
 		});
 
 		const forwarded = calls.find((c) => c.url.endsWith("/v1/models"));
 		const headers = new Headers(forwarded?.init?.headers as HeadersInit);
-		// runtime-proxy-02: neither inbound credential header crosses the bridge.
+		// runtime-proxy-02: no inbound credential header crosses the bridge.
 		expect(headers.get("authorization")).toBeNull();
 		expect(headers.get("x-api-key")).toBeNull();
+		expect(headers.get("cookie")).toBeNull();
+		expect(headers.get("proxy-authorization")).toBeNull();
 	});
 });

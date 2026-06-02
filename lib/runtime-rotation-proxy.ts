@@ -268,6 +268,10 @@ function createOutboundHeaders(
 	}
 	headers.delete("host");
 	headers.delete("x-api-key");
+	// Never forward inbound client credentials upstream: a Cookie / proxy-auth
+	// header would ride along with the managed OAuth Bearer to OpenAI.
+	headers.delete("cookie");
+	headers.delete("proxy-authorization");
 	headers.set("authorization", `Bearer ${accessToken}`);
 	headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
 	headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES);
@@ -892,9 +896,62 @@ function parseRetryAfterBodyMs(bodyText: string, now: number): number | null {
 	return null;
 }
 
-async function readErrorBody(response: Response): Promise<string> {
+async function readErrorBody(
+	response: Response,
+	timeoutMs: number,
+	maxBytes = 1024 * 1024,
+): Promise<string> {
+	// The outbound fetch's abort timer is cleared once headers arrive, so a
+	// stalled error body would otherwise hang this handler forever (the success
+	// path is per-chunk stall-bounded; the error path was not). Read the body via
+	// a reader, bound it by an idle timeout AND a size cap, and cancel the stream
+	// on timeout/overflow so the socket is released.
+	const body = response.body;
+	if (!body || typeof body.getReader !== "function") {
+		// Fallback for impls without a streamable body: race text() against a timer.
+		try {
+			return await withTimeout(
+				response.text(),
+				timeoutMs,
+				() => undefined,
+				"error body stalled",
+			);
+		} catch {
+			return "";
+		}
+	}
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
 	try {
-		return await response.text();
+		for (;;) {
+			let idleTimer: ReturnType<typeof setTimeout> | undefined;
+			const idle = new Promise<never>((_resolve, reject) => {
+				idleTimer = setTimeout(
+					() => reject(new Error("error body stalled")),
+					Math.max(1, timeoutMs),
+				);
+			});
+			let result: Awaited<ReturnType<typeof reader.read>>;
+			try {
+				result = await Promise.race([reader.read(), idle]);
+			} finally {
+				if (idleTimer) clearTimeout(idleTimer);
+			}
+			if (result.done) break;
+			if (result.value) {
+				total += result.value.byteLength;
+				if (total > maxBytes) break; // cap: enough for diagnostics, no OOM
+				chunks.push(result.value);
+			}
+		}
+	} catch {
+		// stalled or errored — fall through with whatever we have
+	} finally {
+		await reader.cancel().catch(() => undefined);
+	}
+	try {
+		return Buffer.concat(chunks).toString("utf8");
 	} catch {
 		return "";
 	}
@@ -1734,7 +1791,7 @@ export async function startRuntimeRotationProxy(
 				}
 
 				if (upstream.status === HTTP_STATUS.TOO_MANY_REQUESTS) {
-					const bodyText = await readErrorBody(upstream);
+					const bodyText = await readErrorBody(upstream, streamStallTimeoutMs);
 					const retryAfterMs =
 						parseRetryAfterHeaderMs(upstream.headers, now()) ??
 						parseRetryAfterBodyMs(bodyText, now()) ??
@@ -1759,7 +1816,7 @@ export async function startRuntimeRotationProxy(
 				}
 
 				if (upstream.status === 402 || upstream.status === HTTP_STATUS.FORBIDDEN) {
-					const bodyText = await readErrorBody(upstream);
+					const bodyText = await readErrorBody(upstream, streamStallTimeoutMs);
 					const errorCode = extractErrorCodeFromBody(bodyText);
 					if (isWorkspaceDisabledError(upstream.status, errorCode, bodyText)) {
 						const accountWasEnabled =
@@ -1856,7 +1913,7 @@ export async function startRuntimeRotationProxy(
 				}
 
 				if (upstream.status === HTTP_STATUS.UNAUTHORIZED) {
-					const bodyText = await readErrorBody(upstream);
+					const bodyText = await readErrorBody(upstream, streamStallTimeoutMs);
 					accountManager.refundToken(refreshed.account, context.family, context.model);
 					accountManager.recordFailure(refreshed.account, context.family, context.model);
 					if (isTokenInvalidationError(bodyText)) {
@@ -1902,7 +1959,7 @@ export async function startRuntimeRotationProxy(
 				}
 
 				if (upstream.status >= 500) {
-					await readErrorBody(upstream);
+					await readErrorBody(upstream, streamStallTimeoutMs);
 					accountManager.refundToken(refreshed.account, context.family, context.model);
 					accountManager.recordFailure(refreshed.account, context.family, context.model);
 					accountManager.markAccountCoolingDown(

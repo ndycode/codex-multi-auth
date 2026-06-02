@@ -32,7 +32,16 @@ interface QuotaCacheFile {
 
 const QUOTA_CACHE_PATH = join(getCodexMultiAuthDir(), "quota-cache.json");
 const QUOTA_CACHE_LABEL = basename(QUOTA_CACHE_PATH);
-const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+// Align with the shared FILE_RETRY_CODES taxonomy (lib/fs-retry.ts) so a
+// transient Windows lock (AV/indexer/concurrent reader) on the quota cache is
+// retried consistently with every other fs path, not just EBUSY/EPERM.
+const RETRYABLE_FS_CODES = new Set([
+	"EBUSY",
+	"EPERM",
+	"EAGAIN",
+	"ENOTEMPTY",
+	"EACCES",
+]);
 let quotaCacheWriteQueue: Promise<void> = Promise.resolve();
 
 function isRetryableFsError(error: unknown): boolean {
