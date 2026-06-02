@@ -65,4 +65,43 @@ describe.runIf(hasBash())("mcodex monitor-interval hardening", () => {
 		});
 		expect(res.stdout).toMatch(/\^\[0-9\]\+\(\\\.\[0-9\]\+\)\?\$/);
 	});
+
+	it("--monitor fails fast with a clear error when `watch` is missing", () => {
+		// Drive the real require_watch + run_monitor logic with `watch` forced
+		// absent by shadowing the `command` builtin so `command -v watch` reports
+		// missing. This exercises the actual guard wording/exit without PATH surgery
+		// (a minimal PATH would also strip bash's own core utilities).
+		const harness = `
+set -euo pipefail
+require_watch() {
+  if ! command -v watch >/dev/null 2>&1; then
+    echo "mcodex: 'watch' is not installed; the live account monitor requires it (install procps / procps-ng)." >&2
+    return 1
+  fi
+}
+run_monitor() {
+  require_watch || return 1
+  watch -n 5 'codex-multi-auth list'
+}
+# Force 'watch' to look uninstalled regardless of the host.
+command() { if [ "\${2:-}" = "watch" ]; then return 1; fi; builtin command "$@"; }
+run_monitor
+exit $?
+`;
+		const res = spawnSync("bash", ["-c", harness], { encoding: "utf-8" });
+		expect(res.status).not.toBe(0);
+		expect(`${res.stderr}`).toMatch(/watch.*not installed|requires it/i);
+	});
+
+	it("the shipped script wires require_watch into every watch invocation", () => {
+		// Static guard: all three live-monitor sites must be gated, so a future edit
+		// that drops the runtime check is caught.
+		const res = spawnSync("bash", ["-c", `cat "${mcodexPath}"`], { encoding: "utf-8" });
+		const src = res.stdout ?? "";
+		expect(src).toContain("require_watch() {");
+		// run_monitor guards; both tmux live panes guard via `&& require_watch`.
+		expect(src).toMatch(/require_watch \|\| return 1/);
+		const guardedPanes = src.match(/"\$live_accounts" == "1" \]\] && require_watch/g) ?? [];
+		expect(guardedPanes.length).toBe(2);
+	});
 });

@@ -35,7 +35,15 @@ quote_args() {
   printf '%s' "${quoted[*]}"
 }
 
+require_watch() {
+  if ! command -v watch >/dev/null 2>&1; then
+    echo "mcodex: 'watch' is not installed; the live account monitor requires it (install procps / procps-ng)." >&2
+    return 1
+  fi
+}
+
 run_monitor() {
+  require_watch || return 1
   watch -n "$monitor_interval" 'codex-multi-auth list'
 }
 
@@ -56,9 +64,10 @@ configure_tmux_scrollback() {
 }
 
 if [[ "${1:-}" == "--monitor" ]]; then
-  # --monitor takes no extra args; the live account list is fixed.
+  # --monitor takes no extra args; the live account list is fixed. Propagate the
+  # watch-availability check's exit code instead of masking it with `exit 0`.
   run_monitor
-  exit 0
+  exit $?
 fi
 
 if [[ "${1:-}" == "--tmux" || "${1:-}" == "-t" ]]; then
@@ -74,7 +83,7 @@ if [[ "${1:-}" == "--tmux" || "${1:-}" == "-t" ]]; then
 
   if [[ -n "${TMUX:-}" ]]; then
     configure_tmux_scrollback
-    if [[ "$live_accounts" == "1" ]]; then
+    if [[ "$live_accounts" == "1" ]] && require_watch; then
       tmux split-window -h "watch -n $monitor_interval 'codex-multi-auth list'"
     fi
     exec codex-multi-auth-codex "$@"
@@ -97,7 +106,7 @@ if [[ "${1:-}" == "--tmux" || "${1:-}" == "-t" ]]; then
   fi
   tmux new-session -d -s "$session" -n codex "$cmd"
   configure_tmux_scrollback "$session"
-  if [[ "$live_accounts" == "1" ]]; then
+  if [[ "$live_accounts" == "1" ]] && require_watch; then
     tmux split-window -h -t "$session:0" "watch -n $monitor_interval 'codex-multi-auth list'"
   fi
   tmux select-pane -t "$session:0.0"
