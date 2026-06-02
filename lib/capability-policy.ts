@@ -73,6 +73,9 @@ export class CapabilityPolicyStore {
 		const key = makeKey(accountKey, model);
 		if (!key) return;
 		const existing = this.entries.get(key);
+		// Delete-then-set so the entry moves to the end of Map iteration order,
+		// making eviction LRU (least-recently-recorded) rather than FIFO.
+		this.entries.delete(key);
 		this.entries.set(key, {
 			successes: (existing?.successes ?? 0) + 1,
 			failures: Math.max(0, (existing?.failures ?? 0) - 1),
@@ -88,6 +91,7 @@ export class CapabilityPolicyStore {
 		const key = makeKey(accountKey, model);
 		if (!key) return;
 		const existing = this.entries.get(key);
+		this.entries.delete(key);
 		this.entries.set(key, {
 			successes: existing?.successes ?? 0,
 			failures: (existing?.failures ?? 0) + 1,
@@ -103,6 +107,7 @@ export class CapabilityPolicyStore {
 		const key = makeKey(accountKey, model);
 		if (!key) return;
 		const existing = this.entries.get(key);
+		this.entries.delete(key);
 		this.entries.set(key, {
 			successes: existing?.successes ?? 0,
 			failures: (existing?.failures ?? 0) + 1,

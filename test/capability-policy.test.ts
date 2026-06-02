@@ -104,6 +104,25 @@ describe("capability policy store", () => {
 		expect(store.getSnapshot("id:acc_2054", "gpt-5-codex")).not.toBeNull();
 	});
 
+	it("uses LRU eviction so a re-recorded old entry survives over an idle newer one", () => {
+		const store = new CapabilityPolicyStore();
+		// Fill exactly to capacity (MAX_ENTRIES = 2048): acc_0 is the oldest.
+		for (let i = 0; i < 2048; i += 1) {
+			store.recordSuccess(`id:acc_${i}`, "gpt-5-codex", 1_000 + i);
+		}
+		// Re-record the oldest entry: this must refresh its position so it is no
+		// longer first in iteration order (FIFO would still evict it next).
+		store.recordSuccess("id:acc_0", "gpt-5-codex", 5_000);
+		// One more distinct insert pushes size over capacity and triggers eviction.
+		store.recordSuccess("id:acc_new", "gpt-5-codex", 6_000);
+
+		// The hot, re-recorded entry survives; the now-oldest idle entry (acc_1) is
+		// evicted instead.
+		expect(store.getSnapshot("id:acc_0", "gpt-5-codex")).not.toBeNull();
+		expect(store.getSnapshot("id:acc_1", "gpt-5-codex")).toBeNull();
+		expect(store.getSnapshot("id:acc_new", "gpt-5-codex")).not.toBeNull();
+	});
+
 	it("clamps boost to score boundaries", () => {
 		const store = new CapabilityPolicyStore();
 		for (let i = 0; i < 20; i += 1) {

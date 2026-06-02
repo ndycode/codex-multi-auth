@@ -392,7 +392,10 @@ function styleQuotaSummary(summary: string): string {
 			return stylePromptText(segment, "muted");
 		}
 		const windowLabel = match[1] ?? "";
-		const leftPercent = Number.parseInt(match[2] ?? "", 10);
+		const leftPercent = Math.max(
+			0,
+			Math.min(100, Number.parseInt(match[2] ?? "", 10)),
+		);
 		if (!Number.isFinite(leftPercent)) {
 			return stylePromptText(segment, "muted");
 		}

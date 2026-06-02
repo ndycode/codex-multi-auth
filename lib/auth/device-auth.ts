@@ -167,6 +167,21 @@ function formatWaitBudget(timeoutMs: number): string {
 	return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
 }
 
+// The OpenAI Codex device-code token endpoint is NOT RFC 8628 compliant: it
+// does not return a 400 + {"error":"authorization_pending"} body while waiting.
+// Instead, `POST /api/accounts/deviceauth/token` returns a bare 403 while the
+// user has not yet approved the code in the browser, and a bare 404 while the
+// `device_auth_id` is not yet recognized (propagation lag right after the
+// usercode request). Both are normal mid-flight states that must keep polling
+// until the user completes the browser step or the deadline/server expiry hits;
+// treating either as terminal would abort every login the instant the first
+// poll fires, before the user could ever approve. This is exercised by
+// test/device-auth.test.ts, where a 403 (and a 404) is the happy-path waiting
+// state immediately preceding success. Do not move 403/404 out of the pending
+// set without first re-confirming the live endpoint contract, including how a
+// user-initiated denial is signaled — if denial is reported with its own
+// distinguishable status or body, add that as a separate terminal branch rather
+// than reclassifying the bare 403/404 pending responses.
 function isPendingStatus(status: number): boolean {
 	return (
 		status === 403 ||

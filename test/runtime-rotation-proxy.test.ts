@@ -579,6 +579,53 @@ describe("runtime rotation proxy", () => {
 		expect(calls).toHaveLength(2);
 	});
 
+	// L5 (endpoint enumeration): the auth check must run BEFORE path/method
+	// discrimination so an unauthenticated caller cannot distinguish a valid
+	// endpoint from an invalid one — both must return 401. Authorized callers
+	// must still receive 404 on unsupported paths.
+	it("returns 401 (not 404) for unauthenticated requests to unknown paths", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { calls, fetchImpl } = createRecordingFetch(
+			() => new Response('{"ok":true}', { status: HTTP_STATUS.OK }),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		// Unauthenticated caller hitting a bogus path: must NOT be told the path
+		// is invalid (404). It must look identical to any other unauthorized
+		// request (401), revealing nothing about which endpoints exist.
+		const unauthUnknownPath = await fetch(`${proxy.baseUrl}/totally/unknown/path`, {
+			method: "GET",
+			headers: { authorization: "Bearer caller-token", "x-api-key": "caller-key" },
+		});
+		expect(unauthUnknownPath.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+
+		// Same for an unauthenticated caller using an unsupported method on a
+		// path that would otherwise be valid: still 401, never 404/405.
+		const unauthBadMethod = await fetch(`${proxy.baseUrl}/responses`, {
+			method: "DELETE",
+			headers: { authorization: "Bearer caller-token", "x-api-key": "caller-key" },
+		});
+		expect(unauthBadMethod.status).toBe(HTTP_STATUS.UNAUTHORIZED);
+
+		// Authorized caller hitting a bogus path: ordering preserved, still 404.
+		const authUnknownPath = await fetch(`${proxy.baseUrl}/totally/unknown/path`, {
+			method: "GET",
+			headers: { authorization: `Bearer ${DEFAULT_CLIENT_API_KEY}` },
+		});
+		expect(authUnknownPath.status).toBe(404);
+		expect(await authUnknownPath.json()).toEqual({
+			error: {
+				message:
+					"Runtime rotation proxy only accepts Responses API, model discovery, and Codex thread goal requests.",
+				code: "runtime_rotation_proxy_not_found",
+			},
+		});
+
+		// No request should have been forwarded upstream for any of the above.
+		expect(calls).toHaveLength(0);
+	});
+
 	it("forwards Responses requests unchanged while replacing caller auth", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now));

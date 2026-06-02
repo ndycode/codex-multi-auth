@@ -393,7 +393,12 @@ export async function loadCodexCliState(
 	if (!options?.forceRefresh && cache && now - cacheLoadedAt < CACHE_TTL_MS) {
 		return cache;
 	}
-	if (inFlightLoadPromise) {
+	// A forceRefresh caller must observe fresh disk state, so it must not be
+	// satisfied by an in-flight load that may have been started without
+	// forceRefresh (and could resolve stale/coalesced data). Only non-forced
+	// callers coalesce onto the in-flight promise; forced callers fall through
+	// and start their own fresh read below.
+	if (!options?.forceRefresh && inFlightLoadPromise) {
 		return inFlightLoadPromise;
 	}
 

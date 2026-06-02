@@ -80,4 +80,39 @@ describe("local client tokens", () => {
 		const store = await loadLocalClientTokenStore();
 		expect(store.tokens.filter((token) => token.revokedAt !== null)).toHaveLength(2);
 	});
+
+	it("does not lose mutations when revoke and add run concurrently", async () => {
+		const {
+			addLocalClientToken,
+			loadLocalClientTokenStore,
+			revokeLocalClientToken,
+		} = await import("../lib/local-client-tokens.js");
+
+		// Seed a token whose revoke will race against a brand-new add. Before the
+		// read-modify-write was serialized through the write queue, the add and
+		// the revoke each loaded the same base store, mutated their own copy, and
+		// the later write clobbered the earlier one (lost update). Routing the
+		// full load->mutate->persist through the queue means each op observes the
+		// other's committed state, so both survive.
+		const seeded = await addLocalClientToken({ label: "seed", now: 100 });
+
+		const [, revoked] = await Promise.all([
+			addLocalClientToken({ label: "added-concurrently", now: 200 }),
+			revokeLocalClientToken(seeded.record.id, 300),
+		]);
+
+		expect(revoked).toBe(true);
+
+		const store = await loadLocalClientTokenStore();
+		// Neither mutation was lost: the seed token is present and revoked, and
+		// the concurrently-added token is present and active.
+		expect(store.tokens).toHaveLength(2);
+		const seedRecord = store.tokens.find((t) => t.id === seeded.record.id);
+		expect(seedRecord?.revokedAt).toBe(300);
+		const addedRecord = store.tokens.find(
+			(t) => t.label === "added-concurrently",
+		);
+		expect(addedRecord).toBeDefined();
+		expect(addedRecord?.revokedAt).toBeNull();
+	});
 });

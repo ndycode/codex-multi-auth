@@ -1,5 +1,5 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import {
@@ -349,8 +349,21 @@ function recordLastRuntimeAccount(
  * cache. The hashing cost is negligible for the small accounts.json file
  * (typically < 50KB) and keeps cache correctness independent of FS mtime
  * resolution. See #474.
+ *
+ * We additionally retain the last-seen `mtimeMs`/`size` so the hot path can
+ * skip the `readFileSync` + sha1 entirely when neither has changed since the
+ * previous read AND the cached mtime has settled past
+ * `MTIME_SHORTCIRCUIT_SETTLE_MS` (the common case — the proxy reads on every
+ * request but the file only mutates on a `switch`/`unpin`/`best` CLI
+ * invocation, then sits quiescent). The sha1 remains the source of truth:
+ * when `mtimeMs`/`size` differ, were never cached, or the mtime is too recent
+ * to trust against same-tick writes, we re-read and hash, so the content-hash
+ * path still protects against the coarse-mtime collision described above
+ * whenever the file is re-read.
  */
 interface StorageMetaSnapshot {
+	mtimeMs: number;
+	size: number;
 	contentHash: string;
 	pinnedAccountIndex: number | null;
 	affinityGeneration: number;
@@ -366,6 +379,18 @@ export interface StorageMeta {
 // corrupt each other's snapshots. See issue #474.
 const STORAGE_META_CACHE: Map<string, StorageMetaSnapshot> = new Map();
 
+// The mtime+size short-circuit (L3) may only be trusted once the cached
+// mtime is far enough in the past that no *subsequent* write could share the
+// same coarse mtime tick. Filesystems report mtime at wildly different
+// granularities (ext4 ns, FAT 2s, some network/Windows volumes ~1s, and CI
+// containers occasionally coarser), and our writers use atomic rename, so two
+// rapid CLI bumps can land on an identical mtimeMs. Within this settle window
+// we therefore ignore mtime equality and fall back to the read + sha1 path
+// (the real source of truth). Outside it, the file has been quiescent long
+// enough that mtime equality provably means "unchanged", so we skip the read.
+// 2s comfortably exceeds the coarsest mtime granularity we expect in practice.
+const MTIME_SHORTCIRCUIT_SETTLE_MS = 2_000;
+
 function hashStorageBytes(bytes: Buffer): string {
 	return createHash("sha1").update(bytes).digest("hex");
 }
@@ -378,7 +403,11 @@ function metaFromSnapshot(snapshot: StorageMetaSnapshot): StorageMeta {
 }
 
 /**
- * Cheap, hot-path-safe single read with mtime-cache short-circuit. Transient
+ * Cheap, hot-path-safe single read with mtime-cache short-circuit. When the
+ * file's `mtimeMs` and `size` match the cached snapshot for this path we
+ * return the cached value WITHOUT reading or hashing the file. Only when
+ * mtime/size differ (or were never cached) do we `readFileSync` + sha1 and,
+ * if the content hash still matches, skip the `JSON.parse`. Transient
  * failures (EBUSY/EPERM/EACCES/EAGAIN, partial-write SyntaxError) fall through
  * to the last cached value for this path; defaults are only returned when the
  * file has never been successfully read.
@@ -396,11 +425,38 @@ export function readStorageMetaFromDisk(
 		return { pinnedAccountIndex: null, affinityGeneration: 0 };
 	}
 	try {
+		// mtime+size short-circuit (L3): when neither has changed since the last
+		// successful read AND the cached mtime has settled (see
+		// MTIME_SHORTCIRCUIT_SETTLE_MS) we return the cached snapshot without
+		// reading or hashing the file. During the settle window we deliberately
+		// fall through to the read + sha1 path below, which stays the source of
+		// truth and protects against the coarse-mtime collision described on
+		// StorageMetaSnapshot. So this is a pure fast path for the common
+		// "file quiescent, proxy polling every request" case.
+		const stats = statSync(storagePath);
+		const cachedByStat = STORAGE_META_CACHE.get(storagePath);
+		if (
+			cachedByStat &&
+			cachedByStat.mtimeMs === stats.mtimeMs &&
+			cachedByStat.size === stats.size &&
+			Date.now() - stats.mtimeMs > MTIME_SHORTCIRCUIT_SETTLE_MS
+		) {
+			return metaFromSnapshot(cachedByStat);
+		}
 		const bytes = readFileSync(storagePath);
 		const contentHash = hashStorageBytes(bytes);
 		const cached = STORAGE_META_CACHE.get(storagePath);
 		if (cached && cached.contentHash === contentHash) {
-			return metaFromSnapshot(cached);
+			// Content is byte-identical despite the mtime/size change (e.g. an
+			// atomic-rename rewrite of the same bytes). Refresh the stat fields so
+			// the next request takes the fast path, but skip the JSON.parse.
+			const refreshed: StorageMetaSnapshot = {
+				...cached,
+				mtimeMs: stats.mtimeMs,
+				size: stats.size,
+			};
+			STORAGE_META_CACHE.set(storagePath, refreshed);
+			return metaFromSnapshot(refreshed);
 		}
 		const parsed = JSON.parse(bytes.toString("utf8")) as {
 			pinnedAccountIndex?: unknown;
@@ -419,6 +475,8 @@ export function readStorageMetaFromDisk(
 				? parsed.affinityGeneration
 				: 0;
 		const snapshot: StorageMetaSnapshot = {
+			mtimeMs: stats.mtimeMs,
+			size: stats.size,
 			contentHash,
 			pinnedAccountIndex,
 			affinityGeneration,
@@ -1052,6 +1110,25 @@ function getQuotaNearExhaustionWaitMs(
 	return candidates.length > 0 ? Math.max(...candidates) : 0;
 }
 
+/**
+ * KNOWN GAP (L4, routing mutex): the two `accountManager.markSwitched(...)`
+ * cursor mutations below (the session-affinity-preferred branch and the
+ * round-robin fallback) run UNLOCKED even when `routingMutex === "enabled"`.
+ * Only `persistRuntimeActiveAccount` routes its cursor mutation through
+ * `markSwitchedLocked` / `withRoutingMutex`, so concurrent requests can still
+ * race the selection-time cursor update.
+ *
+ * Deferred (needs design), not fixed inline, because closing it safely is not
+ * a minimal change: `chooseAccount` is a SYNC function (returns
+ * `ManagedAccount | null`) consumed at ~15 exported/test call sites, whereas
+ * `markSwitchedLocked` is async and the routing mutex (`withRoutingMutex` ->
+ * `runExclusive`) is a non-reentrant FIFO queue. Awaiting it here would force
+ * `chooseAccount` async (signature + every caller) and, if any caller already
+ * holds the mutex, deadlock on the non-reentrant queue. The correct fix is to
+ * restructure selection so the cursor commit happens in one awaited
+ * critical section alongside `persistRuntimeActiveAccount`, which is out of
+ * scope for a minimal hot-path patch. Tracked for the routing-mutex redesign.
+ */
 export function chooseAccount(params: {
 	accountManager: AccountManager;
 	sessionAffinityStore: SessionAffinityStore | null;
@@ -1131,6 +1208,7 @@ export function chooseAccount(params: {
 			if (reason) {
 				skipReasons?.set(preferred.index, reason);
 			} else {
+			// L4 (deferred): unlocked cursor mutation — see chooseAccount header.
 			accountManager.markSwitched(preferred, "rotation", family);
 			return preferred;
 			}
@@ -1178,6 +1256,7 @@ export function chooseAccount(params: {
 		if (!reason) {
 			const live = accountManager.getAccountByIndex(account.index);
 			if (!live) continue;
+			// L4 (deferred): unlocked cursor mutation — see chooseAccount header.
 			accountManager.markSwitched(live, "rotation", family);
 			return live;
 		}
@@ -1499,6 +1578,17 @@ export async function startRuntimeRotationProxy(
 		let accountManager = activeAccountManager;
 		try {
 			const incomingUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+			// Authenticate before discriminating path/method so an unauthenticated
+			// caller cannot enumerate which endpoints exist: an unknown caller always
+			// gets 401, never a 404 that would confirm a path is invalid (vs. just
+			// unauthorized). Authorized callers still fall through to the 404 below
+			// when they hit an unsupported path/method.
+			const incomingHeaders = headersFromIncoming(req);
+			if (!isAuthorizedClient(incomingHeaders, clientApiKey)) {
+				writeUnauthorized(res);
+				return;
+			}
+
 			const isResponsesRequest =
 				req.method === "POST" && isResponsesPath(incomingUrl.pathname);
 			const isModelsRequest =
@@ -1508,12 +1598,6 @@ export async function startRuntimeRotationProxy(
 				isThreadGoalPath(incomingUrl.pathname);
 			if (!isResponsesRequest && !isModelsRequest && !isThreadGoalRequest) {
 				writeMethodOrPathError(res);
-				return;
-			}
-
-			const incomingHeaders = headersFromIncoming(req);
-			if (!isAuthorizedClient(incomingHeaders, clientApiKey)) {
-				writeUnauthorized(res);
 				return;
 			}
 

@@ -124,6 +124,68 @@ describe("plugin config save paths", () => {
     expect(leakedTemps).toHaveLength(0);
   });
 
+  it("does not lose a concurrent env-path update (mtime compare-and-swap)", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ codexMode: true, preserved: 1 }),
+      "utf8",
+    );
+    // Pin a known starting mtime so the simulated concurrent write below
+    // produces a clearly different timestamp.
+    const baseTime = new Date("2026-01-01T00:00:00.000Z");
+    await fs.utimes(configPath, baseTime, baseTime);
+
+    const originalReadFile = fs.readFile.bind(fs);
+    let injectedConcurrentWrite = false;
+    const readSpy = vi
+      .spyOn(fs, "readFile")
+      .mockImplementation(async (...args) => {
+        const result = await originalReadFile(
+          ...(args as Parameters<typeof fs.readFile>),
+        );
+        if (
+          String(args[0]) === configPath &&
+          !injectedConcurrentWrite
+        ) {
+          // Simulate another process landing a write AFTER our read but
+          // BEFORE our rename. The CAS must detect the mtime change, abort
+          // with ESTALE, then re-read and merge so this key is not lost.
+          injectedConcurrentWrite = true;
+          const concurrentTime = new Date("2026-01-02T00:00:00.000Z");
+          await fs.writeFile(
+            configPath,
+            JSON.stringify({
+              codexMode: true,
+              preserved: 1,
+              concurrentKey: "from-other-process",
+            }),
+            "utf8",
+          );
+          await fs.utimes(configPath, concurrentTime, concurrentTime);
+        }
+        return result;
+      });
+
+    try {
+      const { savePluginConfig } = await import("../lib/config.js");
+      await savePluginConfig({ fastSession: true });
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    // The concurrent process's key survives (not clobbered) and our patch applies.
+    expect(parsed.concurrentKey).toBe("from-other-process");
+    expect(parsed.fastSession).toBe(true);
+    expect(parsed.codexMode).toBe(true);
+    expect(parsed.preserved).toBe(1);
+  });
+
   it("writes through unified settings when env path is unset", async () => {
     delete process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
     const unifiedPath = join(tempDir, "settings.json");

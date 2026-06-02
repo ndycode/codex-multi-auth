@@ -1089,4 +1089,82 @@ describe("codex-cli state", () => {
     expect(await lookupCodexCliTokensByEmail("   ")).toBeNull();
     expect(await lookupCodexCliTokensByEmail("a@example.com")).toBeNull();
   });
+  it("forceRefresh reads fresh disk data even while a non-forced load is in flight", async () => {
+    const staleAccounts = JSON.stringify(
+      {
+        activeAccountId: "acc_a",
+        accounts: [
+          {
+            accountId: "acc_a",
+            email: "a@example.com",
+            auth: {
+              tokens: { access_token: "a.b.c", refresh_token: "refresh-a" },
+            },
+          },
+        ],
+      },
+      null,
+      2,
+    );
+    await writeFile(accountsPath, staleAccounts, "utf-8");
+    clearCodexCliStateCache();
+
+    const realReadFile = fsPromises.readFile.bind(fsPromises);
+    let accountsReadCount = 0;
+    let releaseFirstRead: (() => void) | undefined;
+    const firstReadGate = new Promise<void>((resolve) => {
+      releaseFirstRead = resolve;
+    });
+    const readSpy = vi.spyOn(fsPromises, "readFile");
+    readSpy.mockImplementation(async (...args) => {
+      if (String(args[0]) === accountsPath) {
+        accountsReadCount += 1;
+        if (accountsReadCount === 1) {
+          // Hold the first (non-forced) load mid-flight and return the stale
+          // snapshot so it cannot observe the later on-disk update.
+          await firstReadGate;
+          return staleAccounts;
+        }
+      }
+      return realReadFile(...args);
+    });
+
+    try {
+      // Non-forced load starts and parks on the gate, leaving inFlightLoadPromise set.
+      const stalePromise = loadCodexCliState();
+      await Promise.resolve();
+      expect(accountsReadCount).toBe(1);
+
+      // Disk changes after the in-flight (non-forced) load already read stale data.
+      const freshAccounts = JSON.stringify(
+        {
+          activeAccountId: "acc_b",
+          accounts: [
+            {
+              accountId: "acc_b",
+              email: "b@example.com",
+              auth: {
+                tokens: { access_token: "x.y.z", refresh_token: "refresh-b" },
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      );
+      await writeFile(accountsPath, freshAccounts, "utf-8");
+
+      // forceRefresh must not be satisfied by the in-flight non-forced load.
+      const forced = await loadCodexCliState({ forceRefresh: true });
+      expect(forced?.activeAccountId).toBe("acc_b");
+      expect(accountsReadCount).toBeGreaterThanOrEqual(2);
+
+      releaseFirstRead?.();
+      const stale = await stalePromise;
+      expect(stale?.activeAccountId).toBe("acc_a");
+    } finally {
+      releaseFirstRead?.();
+      readSpy.mockRestore();
+    }
+  });
 });

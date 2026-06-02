@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, delimiter, dirname, extname, join } from "node:path";
+import { basename, delimiter, dirname, extname, isAbsolute, join, relative } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -23,6 +23,21 @@ function normalizeResolvedPath(candidatePath, realpathSyncImpl) {
 	} catch {
 		return candidatePath;
 	}
+}
+
+// Defense-in-depth self-recursion guard. The exact-realpath check only blocks
+// the wrapper's own codex.js (the POSIX symlink case). If the wrapper were ever
+// exposed as a native codex/codex.exe sitting alongside it, that exact-path
+// check would miss it. Skipping any candidate that resolves inside the
+// wrapper's own directory closes that latent self-loop.
+function isWithinDirectory(candidatePath, directoryPath, realpathSyncImpl) {
+	if (!directoryPath) return false;
+	const resolvedCandidate = normalizeResolvedPath(candidatePath, realpathSyncImpl);
+	const relativePath = relative(directoryPath, resolvedCandidate);
+	return (
+		relativePath === "" ||
+		(!relativePath.startsWith("..") && !isAbsolute(relativePath))
+	);
 }
 
 function resolveWrapperScriptPath(moduleUrl, realpathSyncImpl) {
@@ -92,6 +107,12 @@ function resolveCodexExecutableFromPath(
 			) {
 				continue;
 			}
+			if (
+				selfScriptPath &&
+				isWithinDirectory(candidate, dirname(selfScriptPath), realpathSyncImpl)
+			) {
+				continue;
+			}
 			return candidate;
 		}
 	}
@@ -151,6 +172,12 @@ function resolveCodexExecutableFromSystemPath(
 			if (
 				selfScriptPath &&
 				normalizeResolvedPath(candidate, realpathSyncImpl) === selfScriptPath
+			) {
+				continue;
+			}
+			if (
+				selfScriptPath &&
+				isWithinDirectory(candidate, dirname(selfScriptPath), realpathSyncImpl)
 			) {
 				continue;
 			}

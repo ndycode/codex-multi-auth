@@ -4309,6 +4309,51 @@ describe("codex bin wrapper", () => {
 		});
 	});
 
+	it("skips native codex candidates inside the wrapper's own directory (defense-in-depth self-loop guard)", () => {
+		// Latent self-recursion: if the wrapper were exposed as a native
+		// codex/codex.exe alongside codex.js, its realpath would NOT equal the
+		// codex.js realpath, so the exact-path guard misses it. The directory guard
+		// must still skip any candidate resolving inside the wrapper's own dir and
+		// fall through to the genuine native binary elsewhere on PATH.
+		const wrapperScriptPath = join(
+			"C:\\test-root",
+			"npm",
+			"lib",
+			"node_modules",
+			"codex-multi-auth",
+			"scripts",
+			"codex.js",
+		);
+		const wrapperDir = dirname(wrapperScriptPath);
+		const wrapperSiblingCodexPath = join(wrapperDir, "codex");
+		const nativeCodexPath = join("C:\\test-root", "native", "bin", "codex");
+		const resolved = resolveRealCodexBin({
+			env: {
+				PATH: [wrapperDir, join("C:\\test-root", "native", "bin")].join(delimiter),
+			},
+			argv: [process.execPath, wrapperScriptPath],
+			platform: "linux",
+			moduleUrl: pathToFileURL(join(repoRootDir, "scripts", "codex.js")).href,
+			resolvePackageBin: () => null,
+			spawnSyncImpl: () => createSpawnSyncSuccess(""),
+			existsSyncImpl: (candidate) =>
+				candidate === wrapperSiblingCodexPath || candidate === nativeCodexPath,
+			realpathSyncImpl: (candidate) => {
+				if (candidate === join(repoRootDir, "scripts", "codex.js")) {
+					return wrapperScriptPath;
+				}
+				// The sibling native binary has its OWN realpath (not codex.js), so the
+				// exact-path guard would not catch it — only the directory guard does.
+				return candidate;
+			},
+		});
+
+		expect(resolved).toEqual({
+			path: nativeCodexPath,
+			launchWithNode: false,
+		});
+	});
+
 	it("discovers native codex executables via which fallback when PATH scan misses", () => {
 		const nativeCodexPath = "/opt/homebrew/bin/codex";
 		const spawnCalls = [];

@@ -152,6 +152,14 @@ export async function evaluateRuntimePolicy(input: {
 		reasons.push("routing profile does not allow requested model");
 	}
 
+	// NOTE (audit L10): Budget enforcement is soft / eventually-consistent under
+	// concurrency. Each evaluation reads a pre-request ledger snapshot, while
+	// consumption is only recorded at request completion (see
+	// createRuntimeUsageRecorder below). N requests racing in the same window can
+	// therefore all observe sub-limit usage and pass before any of them records,
+	// allowing transient overshoot of e.g. maxRequests. This is intentional: a
+	// hard cap would require a cross-process reservation/locking system that is
+	// out of scope here. Budgets are a best-effort guard, not a strict quota.
 	const budgetEvaluations = await evaluateBudgets({ state: input.state, now });
 	for (const evaluation of budgetEvaluations) {
 		if (!evaluation.allowed) {

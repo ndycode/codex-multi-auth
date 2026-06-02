@@ -80,4 +80,16 @@ describe("styleAccountDetailText tone precedence", () => {
 		expect(styled).toContain(ANSI.red);
 		expect(styled).not.toContain(ANSI.green);
 	});
+
+	it("clamps an out-of-range quota percent to 100% in the styled quota segment", () => {
+		// A malformed quota summary like "5h 999%" must be clamped to [0,100] before
+		// tone selection and rendering, so it renders identically to "5h 100%"
+		// (success/green) and never surfaces the bogus 999% value to the user.
+		const clamped = styleAccountDetailText("acct (5h 999%)");
+		const hundred = styleAccountDetailText("acct (5h 100%)");
+		expect(clamped).toContain("100%");
+		expect(clamped).not.toContain("999%");
+		expect(clamped).toContain(ANSI.green);
+		expect(clamped).toBe(hundred);
+	});
 });

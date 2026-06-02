@@ -450,15 +450,41 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function getConfigFileMtimeMs(filePath: string): Promise<number | null> {
+	try {
+		return (await fs.stat(filePath)).mtimeMs;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return null;
+		}
+		throw error;
+	}
+}
+
 async function writeJsonFileAtomicWithRetry(
 	filePath: string,
 	payload: Record<string, unknown>,
+	options?: { expectedMtimeMs?: number | null },
 ): Promise<void> {
 	const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
 	await fs.mkdir(dirname(filePath), { recursive: true });
 	await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 	let renamed = false;
 	try {
+		// Compare-and-swap guard: if a concurrent writer changed the target file
+		// since the caller read it (mtime mismatch), abort with ESTALE so the
+		// caller can re-read and merge instead of clobbering the other write.
+		if (options && "expectedMtimeMs" in options) {
+			const currentMtimeMs = await getConfigFileMtimeMs(filePath);
+			if (currentMtimeMs !== options.expectedMtimeMs) {
+				const staleError = new Error(
+					`Config at ${filePath} changed on disk during save; retrying with latest state.`,
+				) as NodeJS.ErrnoException;
+				staleError.code = "ESTALE";
+				throw staleError;
+			}
+		}
 		for (let attempt = 0; attempt < 5; attempt += 1) {
 			try {
 				await fs.rename(tempPath, filePath);
@@ -710,21 +736,42 @@ export async function savePluginConfig(
 
 	if (envPath.length > 0) {
 		await withConfigSaveLock(envPath, async () => {
-			const envConfigState = await readConfigRecordForSave(envPath);
-			if (envConfigState.status === "unreadable") {
-				throw new Error(
-					`Aborting config save because ${envPath} is unreadable.`,
-				);
+			// Cross-process compare-and-swap: capture mtime before the
+			// read-merge-write, then have the atomic writer re-check it before the
+			// rename. On mismatch (another process wrote concurrently) we re-read and
+			// retry instead of silently dropping the other process's update. Mirrors
+			// the unified-settings save path (writeSettingsRecordAsync CAS).
+			for (let attempt = 0; attempt < 3; attempt += 1) {
+				const expectedMtimeMs = await getConfigFileMtimeMs(envPath);
+				const envConfigState = await readConfigRecordForSave(envPath);
+				if (envConfigState.status === "unreadable") {
+					throw new Error(
+						`Aborting config save because ${envPath} is unreadable.`,
+					);
+				}
+				const existingConfig =
+					envConfigState.status === "ok"
+						? sanitizeStoredPluginConfigRecord(envConfigState.record)
+						: null;
+				const merged = {
+					...(existingConfig ?? {}),
+					...sanitizedPatch,
+				};
+				try {
+					await writeJsonFileAtomicWithRetry(envPath, merged, {
+						expectedMtimeMs,
+					});
+					return;
+				} catch (error) {
+					if (
+						(error as NodeJS.ErrnoException).code !== "ESTALE" ||
+						attempt >= 2
+					) {
+						throw error;
+					}
+					// Loop: re-stat, re-read, re-merge against the latest on-disk state.
+				}
 			}
-			const existingConfig =
-				envConfigState.status === "ok"
-					? sanitizeStoredPluginConfigRecord(envConfigState.record)
-					: null;
-			const merged = {
-				...(existingConfig ?? {}),
-				...sanitizedPatch,
-			};
-			await writeJsonFileAtomicWithRetry(envPath, merged);
 		});
 		return;
 	}
