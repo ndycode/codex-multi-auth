@@ -4,6 +4,7 @@ import {
 	withAccountAndFlaggedStorageTransaction,
 	withAccountStorageTransaction,
 } from "../lib/storage/transactions.js";
+import { cloneAccountStorageForPersistence } from "../lib/storage/account-persistence.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 
 describe("storage transaction helpers", () => {
@@ -200,5 +201,41 @@ describe("storage transaction helpers", () => {
 		).rejects.toThrow("flagged failed");
 
 		expect(saveAccounts).toHaveBeenCalledTimes(2);
+	});
+
+	it("preserves pinnedAccountIndex and affinityGeneration through the combined transaction", async () => {
+		// Regression for the clone dropping the manual pin: persisting through the
+		// real cloneAccountStorageForPersistence must carry both fields to disk.
+		const saved: AccountStorageV3[] = [];
+		await withAccountAndFlaggedStorageTransaction(
+			async (_current, persist) => {
+				await persist(
+					{
+						version: 3,
+						accounts: [{ refreshToken: "new" }],
+						activeIndex: 1,
+						activeIndexByFamily: { codex: 1 },
+						pinnedAccountIndex: 1,
+						affinityGeneration: 9,
+					},
+					{ version: 1, accounts: [] },
+				);
+			},
+			{
+				getStoragePath: () => "/tmp/accounts.json",
+				loadCurrent: async () => null,
+				loadCurrentFlagged: async () => ({ version: 1 as const, accounts: [] }),
+				saveAccounts: async (storage) => {
+					saved.push(storage);
+				},
+				saveFlaggedAccounts: async () => undefined,
+				cloneAccountStorageForPersistence,
+				logRollbackError: vi.fn(),
+			},
+		);
+
+		expect(saved).toHaveLength(1);
+		expect(saved[0]?.pinnedAccountIndex).toBe(1);
+		expect(saved[0]?.affinityGeneration).toBe(9);
 	});
 });

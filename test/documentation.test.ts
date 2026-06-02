@@ -579,7 +579,7 @@ describe("Documentation Integrity", () => {
 			url: "https://github.com/ndycode/codex-multi-auth/issues",
 		});
 		expect(packageJson.bin).toEqual({
-			mcodex: "scripts/mcodex",
+			mcodex: "scripts/mcodex.js",
 			"codex-multi-auth-app-launcher": "scripts/codex-app-launcher.js",
 			"codex-multi-auth-codex": "scripts/codex.js",
 			"codex-multi-auth": "scripts/codex-multi-auth.js",

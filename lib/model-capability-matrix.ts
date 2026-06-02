@@ -82,14 +82,12 @@ export function buildModelCapabilityMatrix(input: {
 
 	for (const [index, account] of accounts.entries()) {
 		const accountKey = getAccountPolicyKey(account, index);
-		const entitlementKeys = [
-			accountKey,
-			resolveEntitlementAccountKey({
-				accountId: account.accountId,
-				email: account.email,
-				index,
-			}),
-		];
+		const entitlementKey = resolveEntitlementAccountKey({
+			accountId: account.accountId,
+			email: account.email,
+			index,
+		});
+		const entitlementKeys = [accountKey, entitlementKey];
 		for (const model of models) {
 			const profile = MODEL_PROFILES[model] ?? MODEL_PROFILES[resolveNormalizedModel(model)];
 			if (!profile) continue;
@@ -99,11 +97,16 @@ export function buildModelCapabilityMatrix(input: {
 				profile.normalizedModel,
 				now,
 			);
+			// quota-forecast-01: the capability store is WRITTEN under the
+			// entitlement key (resolveEntitlementAccountKey) at the
+			// recordUnsupported sites, so reads must use the same key. Previously
+			// this used getAccountPolicyKey ("sha256:…"), a different format, so
+			// getSnapshot/getBoost never matched and the capability signal was dead.
 			const capabilityPolicy =
-				input.capabilityPolicy?.getSnapshot(accountKey, profile.normalizedModel) ??
+				input.capabilityPolicy?.getSnapshot(entitlementKey, profile.normalizedModel) ??
 				null;
 			const capabilityBoost =
-				input.capabilityPolicy?.getBoost(accountKey, profile.normalizedModel, now) ??
+				input.capabilityPolicy?.getBoost(entitlementKey, profile.normalizedModel, now) ??
 				0;
 			const quota =
 				input.quotaCache && input.storage

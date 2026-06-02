@@ -50,6 +50,27 @@ import http from 'node:http';
 import { startLocalOAuthServer } from '../lib/auth/server.js';
 import { logError, logWarn } from '../lib/logger.js';
 
+function createMockRequest(url: string): IncomingMessage {
+	const req = new EventEmitter() as IncomingMessage;
+	req.url = url;
+	return req;
+}
+
+function createMockResponse(): ServerResponse & { _body: string; _headers: Record<string, string> } {
+	const res = {
+		statusCode: 200,
+		_body: '',
+		_headers: {} as Record<string, string>,
+		setHeader: vi.fn((name: string, value: string) => {
+			res._headers[name.toLowerCase()] = value;
+		}),
+		end: vi.fn((body?: string) => {
+			if (body) res._body = body;
+		}),
+	};
+	return res as unknown as ServerResponse & { _body: string; _headers: Record<string, string> };
+}
+
 describe('OAuth Server Unit Tests', () => {
 	let mockServer: ReturnType<typeof http.createServer> & {
 		_handler?: (req: IncomingMessage, res: ServerResponse) => void;
@@ -123,27 +144,6 @@ describe('OAuth Server Unit Tests', () => {
 			requestHandler = mockServer._handler!;
 		});
 
-		function createMockRequest(url: string): IncomingMessage {
-			const req = new EventEmitter() as IncomingMessage;
-			req.url = url;
-			return req;
-		}
-
-		function createMockResponse(): ServerResponse & { _body: string; _headers: Record<string, string> } {
-			const res = {
-				statusCode: 200,
-				_body: '',
-				_headers: {} as Record<string, string>,
-				setHeader: vi.fn((name: string, value: string) => {
-					res._headers[name.toLowerCase()] = value;
-				}),
-				end: vi.fn((body?: string) => {
-					if (body) res._body = body;
-				}),
-			};
-			return res as unknown as ServerResponse & { _body: string; _headers: Record<string, string> };
-		}
-
 		it('should return 404 for non-callback paths', () => {
 			const req = createMockRequest('/other-path');
 			const res = createMockResponse();
@@ -191,28 +191,58 @@ describe('OAuth Server Unit Tests', () => {
 			expect(res.end).toHaveBeenCalledWith('<html>Success</html>');
 		});
 
-		it('should store the code in server._lastCode', () => {
+		it('should store the captured code, surfaced via waitForCode', async () => {
+			const serverInfo = await startLocalOAuthServer({ state: 'test-state' });
+			const handler = mockServer._handler!;
 			const req = createMockRequest('/auth/callback?code=captured-code&state=test-state');
 			const res = createMockResponse();
 
-			requestHandler(req, res);
+			handler(req, res);
 
-			expect(mockServer._lastCode).toBe('captured-code');
+			expect(await serverInfo.waitForCode('test-state')).toEqual({
+				code: 'captured-code',
+			});
 		});
 
-		it('should keep the first code when duplicate callbacks arrive', () => {
+		it('should keep the first code when duplicate callbacks arrive', async () => {
+			const serverInfo = await startLocalOAuthServer({ state: 'test-state' });
+			const handler = mockServer._handler!;
 			const firstReq = createMockRequest('/auth/callback?code=first-code&state=test-state');
 			const secondReq = createMockRequest('/auth/callback?code=second-code&state=test-state');
 			const firstRes = createMockResponse();
 			const secondRes = createMockResponse();
 
-			requestHandler(firstReq, firstRes);
-			requestHandler(secondReq, secondRes);
+			handler(firstReq, firstRes);
+			handler(secondReq, secondRes);
 
-			expect(mockServer._lastCode).toBe('first-code');
+			expect(await serverInfo.waitForCode('test-state')).toEqual({
+				code: 'first-code',
+			});
 			expect(logWarn).toHaveBeenCalledWith(
 				expect.stringContaining('Duplicate OAuth callback received'),
 			);
+		});
+
+		it('keeps capture state isolated between two concurrent server instances', async () => {
+			const serverA = await startLocalOAuthServer({ state: 'state-a' });
+			const handlerA = mockServer._handler!;
+			const serverB = await startLocalOAuthServer({ state: 'state-b' });
+			const handlerB = mockServer._handler!;
+
+			// Deliver each instance's callback through its own request handler.
+			handlerA(
+				createMockRequest('/auth/callback?code=code-a&state=state-a'),
+				createMockResponse(),
+			);
+			handlerB(
+				createMockRequest('/auth/callback?code=code-b&state=state-b'),
+				createMockResponse(),
+			);
+
+			// Each server must surface only its own code; previously both codes were
+			// stored on the shared server object and cross-bound.
+			expect(await serverA.waitForCode('state-a')).toEqual({ code: 'code-a' });
+			expect(await serverB.waitForCode('state-b')).toEqual({ code: 'code-b' });
 		});
 
 		it('should handle request handler errors gracefully', () => {
@@ -301,9 +331,14 @@ describe('OAuth Server Unit Tests', () => {
 			(mockServer.on as ReturnType<typeof vi.fn>).mockReturnValue(mockServer);
 
 			const result = await startLocalOAuthServer({ state: 'test-state' });
-			
-			mockServer._lastCode = 'the-code';
-			
+
+			// Deliver the code through the request handler (closure capture) rather
+			// than poking server internals.
+			mockServer._handler!(
+				createMockRequest('/auth/callback?code=the-code&state=test-state'),
+				createMockResponse(),
+			);
+
 			const code = await result.waitForCode('test-state');
 			expect(code).toEqual({ code: 'the-code' });
 		});
@@ -317,10 +352,14 @@ describe('OAuth Server Unit Tests', () => {
 			);
 			(mockServer.on as ReturnType<typeof vi.fn>).mockReturnValue(mockServer);
 
-			const result = await startLocalOAuthServer({ state: 'test-state' });
+			// The server validates against 'other-state'; a callback for that state
+			// is captured, but waitForCode is asked for 'test-state'.
+			const result = await startLocalOAuthServer({ state: 'other-state' });
 
-			mockServer._lastCode = 'the-code';
-			mockServer._lastState = 'other-state';
+			mockServer._handler!(
+				createMockRequest('/auth/callback?code=the-code&state=other-state'),
+				createMockResponse(),
+			);
 
 			const code = await result.waitForCode('test-state');
 			expect(code).toBeNull();

@@ -38,6 +38,13 @@ export function startLocalOAuthServer({
 	state: string;
 }): Promise<OAuthServerInfo> {
 	let pollAborted = false;
+	// Capture the authorization code/state in per-call closure variables rather
+	// than mutating the shared http.Server instance. Two logins in the same
+	// process previously cross-bound callback state via server._lastCode/
+	// _lastState; isolating them here keeps concurrent server instances
+	// independent.
+	let capturedCode: string | undefined;
+	let capturedState: string | undefined;
 	const server = http.createServer((req, res) => {
 		try {
 			const url = new URL(req.url || "", AUTH_REDIRECT.origin);
@@ -66,18 +73,14 @@ export function startLocalOAuthServer({
 				"default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; script-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
 			);
 			res.end(successHtml);
-			const trackedServer = server as http.Server & {
-				_lastCode?: string;
-				_lastState?: string;
-			};
-			if (trackedServer._lastCode) {
+			if (capturedCode) {
 				logWarn(
 					"Duplicate OAuth callback received; preserving first authorization code",
 				);
 				return;
 			}
-			trackedServer._lastCode = code;
-			trackedServer._lastState = state;
+			capturedCode = code;
+			capturedState = state;
 		} catch (err) {
 			logError(
 				`Request handler error: ${(err as Error)?.message ?? String(err)}`,
@@ -107,13 +110,9 @@ export function startLocalOAuthServer({
 							new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
 						for (let i = 0; i < maxIterations; i++) {
 							if (pollAborted) return null;
-							const trackedServer = server as http.Server & {
-								_lastCode?: string;
-								_lastState?: string;
-							};
-							const lastCode = trackedServer._lastCode;
+							const lastCode = capturedCode;
 							if (lastCode) {
-								if (trackedServer._lastState !== expectedState) {
+								if (capturedState !== expectedState) {
 									logWarn(
 										"Discarding OAuth callback due to state mismatch in waitForCode",
 									);

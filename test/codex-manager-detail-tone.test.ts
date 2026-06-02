@@ -69,4 +69,15 @@ describe("styleAccountDetailText tone precedence", () => {
 		expect(styled).toContain(ANSI.red);
 		expect(styled).not.toContain(ANSI.yellow);
 	});
+
+	it("does not render a 'working' prefix green when the failure is inside the quota segment", () => {
+		// Reachable from runHealthCheck: a failed live probe still emits a quota
+		// percent, so "failed" is trapped inside the (…%) parens while the prefix
+		// reads "working". The prefix must NOT render green over a real failure.
+		const styled = styleAccountDetailText(
+			"signed in and working (live check failed: timeout 0%)",
+		);
+		expect(styled).toContain(ANSI.red);
+		expect(styled).not.toContain(ANSI.green);
+	});
 });

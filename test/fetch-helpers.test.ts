@@ -822,6 +822,34 @@ describe('createEntitlementErrorResponse', () => {
 			expect(info.unsupportedModel).toBe('gpt-5.3-codex-spark');
 		});
 
+		it('flags normalized "not currently available" wording as unsupported in the nested-error branch', () => {
+			// request-fetch: the nested-error message uses the normalized
+			// "not currently available for this chatgpt account" wording without the
+			// unsupported code; it must still be classified as unsupported (not a
+			// transient error) so model fallback engages.
+			const info = getUnsupportedCodexModelInfo({
+				error: {
+					message:
+						"The model 'gpt-5.3-codex' is not currently available for this chatgpt account.",
+				},
+			});
+
+			expect(info.isUnsupported).toBe(true);
+			expect(info.unsupportedModel).toBe('gpt-5.3-codex');
+		});
+
+		it('flags normalized "not currently available" wording as unsupported in the flat-detail branch', () => {
+			// Same wording delivered via the flat `{ detail: "..." }` envelope used by
+			// the quota endpoint must also be treated as unsupported.
+			const info = getUnsupportedCodexModelInfo({
+				detail:
+					"The model 'gpt-5.3-codex' is not currently available for this chatgpt account.",
+			});
+
+			expect(info.isUnsupported).toBe(true);
+			expect(info.unsupportedModel).toBe('gpt-5.3-codex');
+		});
+
 		it('resolves Spark fallback chain to current gpt-5.3-codex first', () => {
 			const errorBody = {
 				error: {

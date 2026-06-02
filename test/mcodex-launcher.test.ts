@@ -1,107 +1,124 @@
-import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import {
+	parseMcodexArgs,
+	resolveMonitorInterval,
+	resolveTmuxHistoryLimit,
+	resolveTmuxSession,
+} from "../scripts/mcodex.js";
 
-// Security regression for the mcodex launcher (scripts/mcodex). The monitor
-// interval is interpolated into `watch -n <n> ...` command strings that tmux
-// hands to a shell, so an attacker-controlled MCODEX_MONITOR_INTERVAL must never
-// reach the command string with shell metacharacters intact. These tests drive
-// the real script's validation block via bash and assert the value is sanitized.
-//
-// Skipped automatically where bash is unavailable (e.g. a bare Windows runner).
+// H1 regression: scripts/mcodex was a `#!/usr/bin/env bash` script shipped as a
+// Windows bin. npm's generated mcodex.cmd/.ps1 shim invoked bare `bash`; when a WSL
+// stub resolved before git-bash on PATH the launcher died with
+// HCS_E_SERVICE_NOT_AVAILABLE. It is now a node entry (scripts/mcodex.js) with zero
+// bash dependency. These tests exercise the node launcher's arg/env parsing and the
+// injection-hardening validation that the bash prologue used to own.
 
 const testFileDir = dirname(fileURLToPath(import.meta.url));
-const mcodexPath = join(testFileDir, "..", "scripts", "mcodex");
+const mcodexPath = join(testFileDir, "..", "scripts", "mcodex.js");
 
-function hasBash(): boolean {
-	const probe = spawnSync("bash", ["-c", "echo ok"], { encoding: "utf-8" });
-	return probe.status === 0 && /ok/.test(probe.stdout ?? "");
+function captureWarnings(run: (warn: (message: string) => void) => string): {
+	value: string;
+	warnings: string[];
+} {
+	const warnings: string[] = [];
+	const value = run((message) => warnings.push(message));
+	return { value, warnings };
 }
 
-// Extract and run ONLY the interval-validation prologue from the real script so
-// the test exercises the shipped regex, not a copy. We stop before any tmux/exec
-// line by echoing the sanitized value and exiting.
-function resolveInterval(envValue: string): string {
-	const harness = `
-set -euo pipefail
-monitor_interval="\${MCODEX_MONITOR_INTERVAL:-5}"
-if ! [[ "$monitor_interval" =~ ^[0-9]+(\\.[0-9]+)?$ ]]; then
-  monitor_interval=5
-fi
-printf '%s' "$monitor_interval"
-`;
-	const res = spawnSync("bash", ["-c", harness], {
-		encoding: "utf-8",
-		env: { ...process.env, MCODEX_MONITOR_INTERVAL: envValue },
-	});
-	return (res.stdout ?? "").trim();
-}
-
-describe.runIf(hasBash())("mcodex monitor-interval hardening", () => {
+describe("mcodex monitor-interval hardening", () => {
 	it("passes through a valid integer interval", () => {
-		expect(resolveInterval("10")).toBe("10");
+		expect(resolveMonitorInterval({ MCODEX_MONITOR_INTERVAL: "10" })).toBe("10");
 	});
 
 	it("passes through a valid fractional interval", () => {
-		expect(resolveInterval("2.5")).toBe("2.5");
+		expect(resolveMonitorInterval({ MCODEX_MONITOR_INTERVAL: "2.5" })).toBe("2.5");
+	});
+
+	it("falls back to 5 when unset or empty", () => {
+		expect(resolveMonitorInterval({})).toBe("5");
+		expect(resolveMonitorInterval({ MCODEX_MONITOR_INTERVAL: "" })).toBe("5");
 	});
 
 	it("neutralizes a command-injection payload to the safe default", () => {
-		// "5; touch PWNED" must NOT survive — it is rejected and replaced with 5.
-		expect(resolveInterval("5; touch PWNED")).toBe("5");
+		const { value, warnings } = captureWarnings((warn) =>
+			resolveMonitorInterval({ MCODEX_MONITOR_INTERVAL: "5; touch PWNED" }, warn),
+		);
+		expect(value).toBe("5");
+		expect(warnings.join("\n")).toMatch(/invalid MCODEX_MONITOR_INTERVAL/);
 	});
 
 	it("neutralizes shell metacharacters and substitutions", () => {
-		expect(resolveInterval("$(echo evil)")).toBe("5");
-		expect(resolveInterval("`id`")).toBe("5");
-		expect(resolveInterval("5 && rm -rf ~")).toBe("5");
+		expect(resolveMonitorInterval({ MCODEX_MONITOR_INTERVAL: "$(echo evil)" }, () => {})).toBe("5");
+		expect(resolveMonitorInterval({ MCODEX_MONITOR_INTERVAL: "`id`" }, () => {})).toBe("5");
+		expect(resolveMonitorInterval({ MCODEX_MONITOR_INTERVAL: "5 && rm -rf ~" }, () => {})).toBe("5");
+	});
+});
+
+describe("mcodex tmux-history-limit hardening", () => {
+	it("passes through a valid integer", () => {
+		expect(resolveTmuxHistoryLimit({ MCODEX_TMUX_HISTORY_LIMIT: "12345" })).toBe("12345");
 	});
 
-	it("the shipped script actually contains the numeric guard", () => {
-		// Guards against the validation being removed in a future edit.
-		const res = spawnSync("bash", ["-c", `cat "${mcodexPath}"`], {
-			encoding: "utf-8",
-		});
-		expect(res.stdout).toMatch(/\^\[0-9\]\+\(\\\.\[0-9\]\+\)\?\$/);
+	it("falls back to 50000 when unset or empty", () => {
+		expect(resolveTmuxHistoryLimit({})).toBe("50000");
+		expect(resolveTmuxHistoryLimit({ MCODEX_TMUX_HISTORY_LIMIT: "" })).toBe("50000");
 	});
 
-	it("--monitor fails fast with a clear error when `watch` is missing", () => {
-		// Drive the real require_watch + run_monitor logic with `watch` forced
-		// absent by shadowing the `command` builtin so `command -v watch` reports
-		// missing. This exercises the actual guard wording/exit without PATH surgery
-		// (a minimal PATH would also strip bash's own core utilities).
-		const harness = `
-set -euo pipefail
-require_watch() {
-  if ! command -v watch >/dev/null 2>&1; then
-    echo "mcodex: 'watch' is not installed; the live account monitor requires it (install procps / procps-ng)." >&2
-    return 1
-  fi
-}
-run_monitor() {
-  require_watch || return 1
-  watch -n 5 'codex-multi-auth list'
-}
-# Force 'watch' to look uninstalled regardless of the host.
-command() { if [ "\${2:-}" = "watch" ]; then return 1; fi; builtin command "$@"; }
-run_monitor
-exit $?
-`;
-		const res = spawnSync("bash", ["-c", harness], { encoding: "utf-8" });
-		expect(res.status).not.toBe(0);
-		expect(`${res.stderr}`).toMatch(/watch.*not installed|requires it/i);
+	it("rejects fractional and metacharacter values", () => {
+		expect(resolveTmuxHistoryLimit({ MCODEX_TMUX_HISTORY_LIMIT: "2.5" }, () => {})).toBe("50000");
+		const { value, warnings } = captureWarnings((warn) =>
+			resolveTmuxHistoryLimit({ MCODEX_TMUX_HISTORY_LIMIT: "50000; rm -rf ~" }, warn),
+		);
+		expect(value).toBe("50000");
+		expect(warnings.join("\n")).toMatch(/invalid MCODEX_TMUX_HISTORY_LIMIT/);
+	});
+});
+
+describe("mcodex session + arg parsing", () => {
+	it("defaults the tmux session and honors an override", () => {
+		expect(resolveTmuxSession({})).toBe("mcodex");
+		expect(resolveTmuxSession({ MCODEX_TMUX_SESSION: "work" })).toBe("work");
 	});
 
-	it("the shipped script wires require_watch into every watch invocation", () => {
-		// Static guard: all three live-monitor sites must be gated, so a future edit
-		// that drops the runtime check is caught.
-		const res = spawnSync("bash", ["-c", `cat "${mcodexPath}"`], { encoding: "utf-8" });
-		const src = res.stdout ?? "";
-		expect(src).toContain("require_watch() {");
-		// run_monitor guards; both tmux live panes guard via `&& require_watch`.
-		expect(src).toMatch(/require_watch \|\| return 1/);
-		const guardedPanes = src.match(/"\$live_accounts" == "1" \]\] && require_watch/g) ?? [];
-		expect(guardedPanes.length).toBe(2);
+	it("routes a plain invocation to the forward mode with all args", () => {
+		const parsed = parseMcodexArgs(["exec", "--model", "gpt-5.3-codex"]);
+		expect(parsed.mode).toBe("forward");
+		expect(parsed.liveAccounts).toBe(false);
+		expect(parsed.forwardArgs).toEqual(["exec", "--model", "gpt-5.3-codex"]);
+	});
+
+	it("parses --monitor with no passthrough args", () => {
+		const parsed = parseMcodexArgs(["--monitor"]);
+		expect(parsed.mode).toBe("monitor");
+		expect(parsed.forwardArgs).toEqual([]);
+	});
+
+	it("parses --tmux and -t, consuming --live-accounts only after the flag", () => {
+		const longForm = parseMcodexArgs(["--tmux", "--live-accounts", "exec"]);
+		expect(longForm.mode).toBe("tmux");
+		expect(longForm.liveAccounts).toBe(true);
+		expect(longForm.forwardArgs).toEqual(["exec"]);
+
+		const shortForm = parseMcodexArgs(["-t", "resume"]);
+		expect(shortForm.mode).toBe("tmux");
+		expect(shortForm.liveAccounts).toBe(false);
+		expect(shortForm.forwardArgs).toEqual(["resume"]);
+	});
+
+	it("does not treat --live-accounts as a mode on its own", () => {
+		const parsed = parseMcodexArgs(["--live-accounts"]);
+		expect(parsed.mode).toBe("forward");
+		expect(parsed.forwardArgs).toEqual(["--live-accounts"]);
+	});
+});
+
+describe("mcodex ships as a node entry, not bash", () => {
+	it("uses a node shebang so npm's Windows shim never invokes bash", async () => {
+		const { readFile } = await import("node:fs/promises");
+		const source = await readFile(mcodexPath, "utf8");
+		expect(source.startsWith("#!/usr/bin/env node")).toBe(true);
+		expect(source).not.toContain("#!/usr/bin/env bash");
 	});
 });

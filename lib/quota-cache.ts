@@ -235,7 +235,21 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 
 	const writeTask = async (): Promise<void> => {
 		try {
-			await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
+			const cacheDir = getCodexMultiAuthDir();
+			// The quota cache lives alongside other at-rest secrets, so keep the
+			// directory owner-only on POSIX (mode is a no-op on win32 / ACL-based).
+			await fs.mkdir(cacheDir, { recursive: true, mode: 0o700 });
+			// mkdir's mode only applies to a freshly-created dir; an upgrade with a
+			// pre-existing multi-auth dir keeps its old (possibly world-listable)
+			// perms, so re-assert 0o700 on POSIX. Best-effort: a chmod failure must
+			// not break the cache write (the 0o600 file below still protects data).
+			if (process.platform !== "win32") {
+				try {
+					await fs.chmod(cacheDir, 0o700);
+				} catch {
+					// Best-effort hardening only.
+				}
+			}
 			const tempPath = `${QUOTA_CACHE_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
 			await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
 				encoding: "utf8",

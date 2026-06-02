@@ -53,11 +53,14 @@ describe("model capability matrix", () => {
 
 	it("marks capability policy and quota cache issues unavailable", () => {
 		const capabilityPolicy = new CapabilityPolicyStore();
-		const accountKey = buildModelCapabilityMatrix({
-			storage: storage(),
-			models: ["gpt-5.3-codex"],
-		}).entries[0]!.accountKey;
-		capabilityPolicy.recordUnsupported(accountKey, "gpt-5.3-codex", 100);
+		// The capability store is keyed by the entitlement account key, which is
+		// the same key the matrix now reads with (regression for quota-forecast-01).
+		const entitlementKey = resolveEntitlementAccountKey({
+			accountId: "acct_1",
+			email: "owner@example.com",
+			index: 0,
+		});
+		capabilityPolicy.recordUnsupported(entitlementKey, "gpt-5.3-codex", 100);
 		const matrix = buildModelCapabilityMatrix({
 			storage: storage(),
 			models: ["gpt-5.3-codex"],
@@ -81,6 +84,33 @@ describe("model capability matrix", () => {
 			"capability policy has unsupported failures",
 		);
 		expect(matrix.entries[0]?.reasons).toContain("quota cache is rate-limited");
+	});
+
+	it("surfaces capability snapshots recorded under the entitlement key", () => {
+		// quota-forecast-01 regression: recordUnsupported writes under the
+		// entitlement key, so the matrix must read capabilityPolicy with that same
+		// key (not the sha256 getAccountPolicyKey) for the snapshot to surface.
+		const capabilityPolicy = new CapabilityPolicyStore();
+		const entitlementKey = resolveEntitlementAccountKey({
+			accountId: "acct_1",
+			email: "owner@example.com",
+			index: 0,
+		});
+		capabilityPolicy.recordUnsupported(entitlementKey, "gpt-5.3-codex", 100);
+
+		const matrix = buildModelCapabilityMatrix({
+			storage: storage(),
+			models: ["gpt-5.3-codex"],
+			capabilityPolicy,
+			now: 100,
+		});
+
+		expect(matrix.entries[0]?.capabilityPolicy).not.toBeNull();
+		expect(matrix.entries[0]?.capabilityPolicy?.unsupported).toBeGreaterThan(0);
+		expect(matrix.entries[0]?.available).toBe(false);
+		expect(matrix.entries[0]?.reasons).toContain(
+			"capability policy has unsupported failures",
+		);
 	});
 
 	it("marks disabled and entitlement-blocked accounts unavailable", () => {

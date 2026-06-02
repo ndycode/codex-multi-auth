@@ -710,4 +710,45 @@ describe("forecast helpers", () => {
 			"No healthy accounts are available",
 		);
 	});
+
+	it("returns null recommendation when all accounts are policy-blocked/exhausted", () => {
+		// Blocked/exhausted accounts report availability === "unavailable" with
+		// hardFailure === false and disabled === false. They must not be
+		// recommended with a misleading "pick shortest wait".
+		const now = 1_700_000_000_000;
+		const results = evaluateForecastAccounts([
+			{
+				index: 0,
+				now,
+				isCurrent: true,
+				account: {
+					refreshToken: "a",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+				},
+				runtimeOverlay: { policyBlockedIndexes: [0] },
+			},
+			{
+				index: 1,
+				now,
+				isCurrent: false,
+				account: {
+					refreshToken: "b",
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+				},
+				runtimeOverlay: {
+					lastPoolExhaustionSkipReasons: { "1": "token-exhausted" },
+				},
+			},
+		]);
+
+		// Sanity: both are unavailable but neither disabled nor hard-failed.
+		expect(results.every((r) => r.availability === "unavailable")).toBe(true);
+		expect(results.every((r) => !r.disabled && !r.hardFailure)).toBe(true);
+
+		const recommendation = recommendForecastAccount(results);
+		expect(recommendation.recommendedIndex).toBeNull();
+		expect(recommendation.reason).toContain("blocked or exhausted");
+	});
 });

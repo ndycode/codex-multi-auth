@@ -419,7 +419,12 @@ export function styleAccountDetailText(
 		const quota = (quotaMatch[2] ?? "").trim();
 		const suffix = (quotaMatch[3] ?? "").trim();
 
-		const prefixTone: PromptTone = /failed|error/i.test(prefix)
+		// danger wins across the WHOLE detail: a failure keyword anywhere — even
+		// trapped inside the (…%) quota segment, e.g.
+		// "signed in and working (live check failed: … 0%)" — must keep the prefix
+		// red, never let a "working"/"ok" prefix render green over a real failure.
+		const detailHasFailure = /failed|error|rate-limited/i.test(compact);
+		const prefixTone: PromptTone = detailHasFailure
 			? "danger"
 			: /ok|working|succeeded|valid/i.test(prefix)
 				? "success"

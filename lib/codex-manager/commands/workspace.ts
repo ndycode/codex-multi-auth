@@ -44,6 +44,13 @@ export async function runWorkspaceCommand(
 		return 1;
 	}
 
+	// Require a plain positive integer (matches `switch`): Number.parseInt would
+	// silently truncate "1.9" -> 1 or "2abc" -> 2 and operate on the wrong
+	// account, so reject anything that isn't all digits.
+	if (!/^\d+$/.test(accountArg.trim())) {
+		logError(`Invalid account index: ${accountArg}`);
+		return 1;
+	}
 	const parsedAccount = Number.parseInt(accountArg, 10);
 	if (!Number.isFinite(parsedAccount) || parsedAccount < 1) {
 		logError(`Invalid account index: ${accountArg}`);
@@ -85,6 +92,10 @@ export async function runWorkspaceCommand(
 		return 0;
 	}
 
+	if (!/^\d+$/.test(workspaceArg.trim())) {
+		logError(`Invalid workspace index. Valid range: 1-${workspaces.length}`);
+		return 1;
+	}
 	const parsedWorkspace = Number.parseInt(workspaceArg, 10);
 	if (
 		!Number.isFinite(parsedWorkspace) ||

@@ -376,14 +376,32 @@ function compareForecastResults(
 export function recommendForecastAccount(
 	results: ForecastAccountResult[],
 ): ForecastRecommendation {
+	// Exclude unavailable accounts (policy-blocked, runtime-skipped, quota
+	// exhausted) in addition to disabled/hard-failed ones. Such accounts carry
+	// availability === "unavailable" with hardFailure === false, so without this
+	// guard they were recommended with a misleading "pick shortest wait".
 	const candidates = results.filter(
-		(result) => !result.disabled && !result.hardFailure,
+		(result) =>
+			!result.disabled &&
+			!result.hardFailure &&
+			result.availability !== "unavailable",
 	);
 	if (candidates.length === 0) {
+		// Distinguish "blocked/exhausted" accounts (unavailable but neither
+		// disabled nor hard-failed — e.g. policy block, runtime skip, quota
+		// exhaustion) from disabled/hard-failed ones so the guidance matches the
+		// actual blocker.
+		const hasBlockedOrExhausted = results.some(
+			(result) =>
+				result.availability === "unavailable" &&
+				!result.disabled &&
+				!result.hardFailure,
+		);
 		return {
 			recommendedIndex: null,
-			reason:
-				"No healthy accounts are available. Run `codex-multi-auth login` to add a fresh account.",
+			reason: hasBlockedOrExhausted
+				? "All accounts are blocked or exhausted. Wait for a reset, clear the block, or run `codex-multi-auth login` to add a fresh account."
+				: "No healthy accounts are available. Run `codex-multi-auth login` to add a fresh account.",
 		};
 	}
 

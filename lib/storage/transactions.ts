@@ -10,6 +10,18 @@ export type TransactionSnapshotState = {
 let storageMutex: Promise<void> = Promise.resolve();
 const transactionSnapshotContext =
 	new AsyncLocalStorage<TransactionSnapshotState>();
+const storageLockHeldContext = new AsyncLocalStorage<true>();
+
+/**
+ * Reports whether the caller is already running inside a `withStorageLock`
+ * critical section. The global storage mutex has no reentrancy, so callers
+ * that may run both standalone and nested under a held lock (e.g. recovery
+ * persistence triggered while loading flagged storage during a transaction)
+ * must use this to avoid re-acquiring the lock and deadlocking.
+ */
+export function isStorageLockHeld(): boolean {
+	return storageLockHeldContext.getStore() === true;
+}
 
 export function getTransactionSnapshotState():
 	| TransactionSnapshotState
@@ -30,7 +42,9 @@ export function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
 	storageMutex = new Promise<void>((resolve) => {
 		releaseLock = resolve;
 	});
-	return previousMutex.then(fn).finally(() => releaseLock());
+	return previousMutex
+		.then(() => storageLockHeldContext.run(true, fn))
+		.finally(() => releaseLock());
 }
 
 export async function withAccountStorageTransaction<T>(
