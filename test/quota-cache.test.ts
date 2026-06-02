@@ -67,6 +67,10 @@ describe("quota cache", () => {
     // The quota cache sits alongside at-rest secrets; the dir must not be
     // world-listable. mode is a no-op on win32 (ACL-based), so skip there.
     if (process.platform === "win32") return;
+    // beforeEach already created tempDir, so this exercises the chmod-on-an-
+    // EXISTING-dir path (mkdir's mode only applies to a fresh dir). Loosen it to
+    // 0o755 first; if saveQuotaCache failed to re-assert 0o700 the test fails.
+    await fs.chmod(tempDir, 0o755);
     const { saveQuotaCache } = await import("../lib/quota-cache.js");
     await saveQuotaCache({ byAccountId: {}, byEmail: {} });
     const stats = await fs.stat(tempDir);

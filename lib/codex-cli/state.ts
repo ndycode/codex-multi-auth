@@ -38,6 +38,11 @@ export interface CodexCliState {
 let cache: CodexCliState | null = null;
 let cacheLoadedAt = 0;
 let inFlightLoadPromise: Promise<CodexCliState | null> | null = null;
+// Monotonic load generation. forceRefresh lets loads overlap, so a slower stale
+// (earlier) read must not overwrite the shared cache committed by a newer one.
+// Each readTask captures its generation and only commits cache/cacheLoadedAt when
+// it is still the latest; the caller always receives its own fresh return value.
+let latestLoadGeneration = 0;
 const emittedWarnings = new Set<string>();
 
 function isRetryableFsError(error: unknown): boolean {
@@ -403,6 +408,13 @@ export async function loadCodexCliState(
 	}
 
 	const readTask = async (): Promise<CodexCliState | null> => {
+		// Claim a generation; only the latest load is allowed to commit the cache.
+		const loadGeneration = ++latestLoadGeneration;
+		const commitCache = (value: CodexCliState | null): void => {
+			if (loadGeneration === latestLoadGeneration) {
+				cache = value;
+			}
+		};
 		const accountsPath = getCodexCliAccountsPath();
 		const authPath = getCodexCliAuthPath();
 		incrementCodexCliMetric("readAttempts");
@@ -411,7 +423,7 @@ export async function loadCodexCliState(
 		const hasAuthPath = existsSync(authPath);
 		if (!hasAccountsPath && !hasAuthPath) {
 			incrementCodexCliMetric("readMisses");
-			cache = null;
+			commitCache(null);
 			return null;
 		}
 
@@ -439,7 +451,7 @@ export async function loadCodexCliState(
 								email: state.activeEmail,
 							}),
 						});
-						cache = state;
+						commitCache(state);
 						return state;
 					}
 					log.warn("Codex CLI accounts payload is malformed", {
@@ -480,7 +492,7 @@ export async function loadCodexCliState(
 								email: state.activeEmail,
 							}),
 						});
-						cache = state;
+						commitCache(state);
 						return state;
 					}
 					log.warn("Codex CLI auth payload is malformed", {
@@ -499,7 +511,7 @@ export async function loadCodexCliState(
 			}
 
 			incrementCodexCliMetric("readFailures");
-			cache = null;
+			commitCache(null);
 			return null;
 		} catch (error) {
 			incrementCodexCliMetric("readFailures");
@@ -509,10 +521,14 @@ export async function loadCodexCliState(
 				path: hasAccountsPath ? accountsPath : authPath,
 				error: String(error),
 			});
-			cache = null;
+			commitCache(null);
 			return null;
 		} finally {
-			cacheLoadedAt = Date.now();
+			// Only the latest load advances the shared cache timestamp, mirroring
+			// commitCache, so a slow stale read can't reset the TTL window.
+			if (loadGeneration === latestLoadGeneration) {
+				cacheLoadedAt = Date.now();
+			}
 		}
 	};
 

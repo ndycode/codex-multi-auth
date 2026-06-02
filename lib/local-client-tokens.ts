@@ -27,7 +27,13 @@ export interface CreatedLocalClientToken {
 
 const TOKEN_FILE_NAME = "local-client-tokens.json";
 const TOKEN_PREFIX = "cma_local";
-const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
+const RETRYABLE_FS_CODES = new Set([
+	"EBUSY",
+	"EPERM",
+	"EAGAIN",
+	"ENOTEMPTY",
+	"EACCES",
+]);
 let writeQueue: Promise<unknown> = Promise.resolve();
 
 // Serialize a task on the shared write queue so each task runs only after the

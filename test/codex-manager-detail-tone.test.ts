@@ -92,4 +92,14 @@ describe("styleAccountDetailText tone precedence", () => {
 		expect(clamped).toContain(ANSI.green);
 		expect(clamped).toBe(hundred);
 	});
+
+	it("renders the 0% lower bound as danger (red) without crashing", () => {
+		// 0% is the clamp lower bound; quotaToneFromLeftPercent(0) => "danger"
+		// (0 <= 15). It must render the literal "0%" in red, never drop the value
+		// or throw on the boundary.
+		const styled = styleAccountDetailText("acct (5h 0%)");
+		expect(styled).toContain("0%");
+		expect(styled).toContain(ANSI.red);
+		expect(styled).not.toContain(ANSI.green);
+	});
 });

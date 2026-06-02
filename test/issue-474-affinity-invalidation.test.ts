@@ -1,4 +1,9 @@
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	mkdtempSync,
+	promises as fs,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +21,26 @@ import {
 	type AccountStorageV3,
 	normalizeAccountStorage,
 } from "../lib/storage.js";
+
+const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "EACCES", "EAGAIN", "ENOTEMPTY"]);
+async function removeWithRetry(
+	targetPath: string,
+	options: { recursive?: boolean; force?: boolean },
+): Promise<void> {
+	for (let attempt = 0; attempt < 6; attempt += 1) {
+		try {
+			await fs.rm(targetPath, options);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") return;
+			if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+		}
+	}
+}
 
 function createStorage(
 	now: number,
@@ -57,11 +82,11 @@ beforeEach(() => {
 	resetPinCacheForTesting();
 });
 
-afterEach(() => {
+afterEach(async () => {
 	resetPinCacheForTesting();
 	for (const dir of tmpDirs.splice(0, tmpDirs.length)) {
 		try {
-			rmSync(dir, { recursive: true, force: true });
+			await removeWithRetry(dir, { recursive: true, force: true });
 		} catch {
 			// best-effort cleanup
 		}

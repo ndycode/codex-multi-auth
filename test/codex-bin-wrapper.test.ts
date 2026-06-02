@@ -4316,7 +4316,7 @@ describe("codex bin wrapper", () => {
 		// must still skip any candidate resolving inside the wrapper's own dir and
 		// fall through to the genuine native binary elsewhere on PATH.
 		const wrapperScriptPath = join(
-			"C:\\test-root",
+			"/test-root",
 			"npm",
 			"lib",
 			"node_modules",
@@ -4326,10 +4326,10 @@ describe("codex bin wrapper", () => {
 		);
 		const wrapperDir = dirname(wrapperScriptPath);
 		const wrapperSiblingCodexPath = join(wrapperDir, "codex");
-		const nativeCodexPath = join("C:\\test-root", "native", "bin", "codex");
+		const nativeCodexPath = join("/test-root", "native", "bin", "codex");
 		const resolved = resolveRealCodexBin({
 			env: {
-				PATH: [wrapperDir, join("C:\\test-root", "native", "bin")].join(delimiter),
+				PATH: [wrapperDir, join("/test-root", "native", "bin")].join(delimiter),
 			},
 			argv: [process.execPath, wrapperScriptPath],
 			platform: "linux",

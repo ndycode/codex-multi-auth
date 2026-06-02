@@ -1,4 +1,5 @@
 import { dirname, join } from "node:path";
+import { promises as fs } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
@@ -8,6 +9,26 @@ import {
 	resolveTmuxHistoryLimit,
 	resolveTmuxSession,
 } from "../scripts/mcodex.js";
+
+const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "EACCES", "EAGAIN", "ENOTEMPTY"]);
+async function removeWithRetry(
+	targetPath: string,
+	options: { recursive?: boolean; force?: boolean },
+): Promise<void> {
+	for (let attempt = 0; attempt < 6; attempt += 1) {
+		try {
+			await fs.rm(targetPath, options);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") return;
+			if (!code || !RETRYABLE_REMOVE_CODES.has(code) || attempt === 5) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+		}
+	}
+}
 
 // H1 regression: scripts/mcodex was a `#!/usr/bin/env bash` script shipped as a
 // Windows bin. npm's generated mcodex.cmd/.ps1 shim invoked bare `bash`; when a WSL
@@ -134,7 +155,7 @@ describe("mcodex direct-run gate (isDirectRunInvocation)", () => {
 	it("matches when invoked via a symlink to the script (npm-bin case)", async () => {
 		// npm installs bins as symlinks. The gate must canonicalize both sides
 		// (realpath) or the launcher silently no-ops when run through the link.
-		const { mkdtemp, symlink, rm } = await import("node:fs/promises");
+		const { mkdtemp, symlink } = await import("node:fs/promises");
 		const { tmpdir } = await import("node:os");
 		const tmp = await mkdtemp(join(tmpdir(), "mcodex-link-"));
 		const link = join(tmp, "mcodex");
@@ -146,7 +167,7 @@ describe("mcodex direct-run gate (isDirectRunInvocation)", () => {
 			if ((err as NodeJS.ErrnoException).code === "EPERM") return;
 			throw err;
 		} finally {
-			await rm(tmp, { recursive: true, force: true });
+			await removeWithRetry(tmp, { recursive: true, force: true });
 		}
 	});
 

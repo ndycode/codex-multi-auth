@@ -54,6 +54,49 @@ describe("storage", () => {
 		else delete process.env.CODEX_MULTI_AUTH_DIR;
 	});
 
+	describe("account storage directory hardening", () => {
+		let storageDir: string;
+		let storagePath: string;
+
+		beforeEach(async () => {
+			storageDir = await fs.mkdtemp(join(tmpdir(), "codex-acct-dirmode-"));
+			storagePath = join(storageDir, "openai-codex-accounts.json");
+			setStoragePathDirect(storagePath);
+		});
+
+		afterEach(async () => {
+			setStoragePathDirect(null);
+			await fs.rm(storageDir, { recursive: true, force: true });
+		});
+
+		it.skipIf(process.platform === "win32")(
+			"re-asserts owner-only (0o700) on a pre-existing permissive dir after save",
+			async () => {
+				// The dir already exists (mkdtemp), so mkdir({ mode: 0o700 }) is a
+				// no-op and only the explicit chmod can tighten it. Loosen to 0o755
+				// first to prove saveAccounts hardens an EXISTING dir, not just a
+				// freshly-created one.
+				await fs.chmod(storageDir, 0o755);
+				expect((await fs.stat(storageDir)).mode & 0o777).toBe(0o755);
+
+				await saveAccounts({
+					version: 3,
+					activeIndex: 0,
+					accounts: [
+						{
+							accountId: "acct-dirmode",
+							refreshToken: "refresh",
+							addedAt: 1,
+							lastUsed: 2,
+						},
+					],
+				} as Parameters<typeof saveAccounts>[0]);
+
+				expect((await fs.stat(storageDir)).mode & 0o777).toBe(0o700);
+			},
+		);
+	});
+
 	describe("storage error hints", () => {
 		it("formats actionable Windows file-lock guidance for EBUSY errors", () => {
 			const hint = formatStorageErrorHint(

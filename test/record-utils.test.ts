@@ -1,4 +1,3 @@
-import { describe, expect, it } from "vitest";
 import { clampIndex, isRecord } from "../lib/storage/record-utils.js";
 
 describe("clampIndex", () => {

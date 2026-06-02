@@ -1162,6 +1162,12 @@ describe("codex-cli state", () => {
       releaseFirstRead?.();
       const stale = await stalePromise;
       expect(stale?.activeAccountId).toBe("acc_a");
+
+      // The stale (older-generation) load resolved LAST. It must not have
+      // committed acc_a into the shared cache — a later plain read must still
+      // serve the fresh acc_b within the TTL window (load-generation guard).
+      const afterStale = await loadCodexCliState();
+      expect(afterStale?.activeAccountId).toBe("acc_b");
     } finally {
       releaseFirstRead?.();
       readSpy.mockRestore();

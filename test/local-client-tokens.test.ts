@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -114,5 +114,32 @@ describe("local client tokens", () => {
 		);
 		expect(addedRecord).toBeDefined();
 		expect(addedRecord?.revokedAt).toBeNull();
+	});
+
+	it("retries atomic rename on transient ENOTEMPTY errors", async () => {
+		const { addLocalClientToken, loadLocalClientTokenStore } = await import(
+			"../lib/local-client-tokens.js"
+		);
+		const realRename = fs.rename.bind(fs);
+		let attempts = 0;
+		const renameSpy = vi.spyOn(fs, "rename");
+		renameSpy.mockImplementation(async (...args) => {
+			attempts += 1;
+			if (attempts === 1) {
+				const error = new Error("dir not empty") as NodeJS.ErrnoException;
+				error.code = "ENOTEMPTY";
+				throw error;
+			}
+			return realRename(...args);
+		});
+
+		try {
+			const created = await addLocalClientToken({ label: "retry", now: 100 });
+			expect(attempts).toBeGreaterThan(1);
+			const store = await loadLocalClientTokenStore();
+			expect(store.tokens.find((t) => t.id === created.record.id)).toBeDefined();
+		} finally {
+			renameSpy.mockRestore();
+		}
 	});
 });
