@@ -36,6 +36,13 @@ export async function runSwitchCommand(
 		return 1;
 	}
 
+	// Require a plain positive integer. Number.parseInt would silently truncate
+	// "1.5" -> 1 (or "2abc" -> 2), selecting a real account from malformed input;
+	// reject anything that isn't all digits so the index is unambiguous.
+	if (!/^\d+$/.test(indexArg.trim())) {
+		(deps.logError ?? console.error)(`Invalid index: ${indexArg}`);
+		return 1;
+	}
 	const parsed = Number.parseInt(indexArg, 10);
 	if (!Number.isFinite(parsed) || parsed < 1) {
 		(deps.logError ?? console.error)(`Invalid index: ${indexArg}`);

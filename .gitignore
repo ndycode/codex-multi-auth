@@ -32,3 +32,6 @@ test-results.md
 # local env files
 .env
 .env.local
+
+# OMC session scratch (never publish)
+.omc/

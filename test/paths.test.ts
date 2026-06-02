@@ -772,6 +772,14 @@ describe("Storage Paths Module", () => {
 	});
 
 	describe("resolvePath", () => {
+		it("rejects a path containing a NUL byte", () => {
+			// Defense in depth: a poison byte must be refused here, not deep in fs.
+			expect(() => resolvePath(`~/.codex/${String.fromCharCode(0)}evil.json`)).toThrow(
+				/NUL byte/i,
+			);
+			expect(() => resolvePath(`${String.fromCharCode(0)}`)).toThrow(/NUL byte/i);
+		});
+
 		it("should expand tilde to home directory", () => {
 			const result = resolvePath("~/.codex/config.json");
 			expect(result).toBe(path.join(homedir(), ".codex/config.json"));

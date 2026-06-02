@@ -403,7 +403,10 @@ function styleQuotaSummary(summary: string): string {
 	return joinStyledSegments(rendered);
 }
 
-function styleAccountDetailText(
+// Exported for unit tests: tone precedence (danger before warning) is
+// security/UX-relevant — a failure whose text contains "unavailable" must
+// render red, not be downgraded to yellow. See test/codex-manager-detail-tone.test.ts.
+export function styleAccountDetailText(
 	detail: string,
 	fallbackTone: PromptTone = "muted",
 ): string {
@@ -422,10 +425,13 @@ function styleAccountDetailText(
 				? "success"
 				: fallbackTone;
 		const suffixTone: PromptTone =
-			/re-login|stale|warning|retry|fallback|unavailable|not available/i.test(suffix)
-				? "warning"
-				: /failed|error/i.test(suffix)
-					? "danger"
+			// danger wins first: a real failure whose text happens to contain
+			// "unavailable"/"not available" (e.g. a 5xx "service not available")
+			// must render red, not be downgraded to a yellow warning.
+			/failed|error/i.test(suffix)
+				? "danger"
+				: /re-login|stale|warning|retry|fallback|unavailable|not available/i.test(suffix)
+					? "warning"
 					: "muted";
 
 		const chunks: string[] = [];
@@ -436,9 +442,9 @@ function styleAccountDetailText(
 	}
 
 	if (/rate-limited/i.test(compact)) return stylePromptText(compact, "danger");
+	if (/failed|error/i.test(compact)) return stylePromptText(compact, "danger");
 	if (/re-login|stale|warning|fallback|unavailable|not available/i.test(compact))
 		return stylePromptText(compact, "warning");
-	if (/failed|error/i.test(compact)) return stylePromptText(compact, "danger");
 	if (/ok|working|succeeded|valid/i.test(compact))
 		return stylePromptText(compact, "success");
 	return stylePromptText(compact, fallbackTone);
