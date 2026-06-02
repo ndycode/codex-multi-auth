@@ -403,7 +403,10 @@ function styleQuotaSummary(summary: string): string {
 	return joinStyledSegments(rendered);
 }
 
-function styleAccountDetailText(
+// Exported for unit tests: tone precedence (danger before warning) is
+// security/UX-relevant — a failure whose text contains "unavailable" must
+// render red, not be downgraded to yellow. See test/codex-manager-detail-tone.test.ts.
+export function styleAccountDetailText(
 	detail: string,
 	fallbackTone: PromptTone = "muted",
 ): string {
