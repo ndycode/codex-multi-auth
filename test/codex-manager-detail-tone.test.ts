@@ -102,4 +102,22 @@ describe("styleAccountDetailText tone precedence", () => {
 		expect(styled).toContain(ANSI.red);
 		expect(styled).not.toContain(ANSI.green);
 	});
+
+	it("does not render a soft-failure detail green via an unanchored success keyword", () => {
+		// The success regex is /\b(ok|working|succeeded|valid)\b/ — without word
+		// boundaries, "invalid"/"revoked"/"token" would match (valid in invalid,
+		// ok in revoked/token) and color a failure detail green. These details have
+		// no "failed"/"error" keyword, so the danger pre-check does not catch them.
+		for (const detail of [
+			"token is invalid or expired",
+			"refresh token revoked",
+		]) {
+			const styled = styleAccountDetailText(detail);
+			expect(styled).not.toContain(ANSI.green);
+		}
+		// A genuine success keyword on a word boundary still renders green.
+		expect(styleAccountDetailText("signed in and working")).toContain(
+			ANSI.green,
+		);
+	});
 });

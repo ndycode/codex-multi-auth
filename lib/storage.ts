@@ -2112,7 +2112,20 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 			};
 			return isStorageLockHeld() ? recover() : withStorageLock(recover);
 		},
-		saveFlaggedAccounts,
+		saveFlaggedAccounts: async (storage) => {
+			// Mirror persistRecoveredBackup above: loadFlaggedAccountsState's legacy
+			// migration persists via this callback, and loadFlaggedAccounts can run
+			// inside an already-held storage lock
+			// (withAccountAndFlaggedStorageTransaction / withFlaggedStorageTransaction).
+			// The global mutex is non-reentrant, so re-acquiring it via the locking
+			// saveFlaggedAccounts would deadlock — use the unlocked save when the lock
+			// is already held, otherwise acquire it as usual.
+			if (isStorageLockHeld()) {
+				await saveFlaggedAccountsUnlocked(storage);
+				return;
+			}
+			await saveFlaggedAccounts(storage);
+		},
 		loadFlaggedAccountsState,
 		logError: (message, details) => {
 			log.error(message, details);

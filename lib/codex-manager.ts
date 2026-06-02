@@ -429,7 +429,7 @@ export function styleAccountDetailText(
 		const detailHasFailure = /failed|error|rate-limited/i.test(compact);
 		const prefixTone: PromptTone = detailHasFailure
 			? "danger"
-			: /ok|working|succeeded|valid/i.test(prefix)
+			: /\b(ok|working|succeeded|valid)\b/i.test(prefix)
 				? "success"
 				: fallbackTone;
 		const suffixTone: PromptTone =
@@ -453,7 +453,7 @@ export function styleAccountDetailText(
 	if (/failed|error/i.test(compact)) return stylePromptText(compact, "danger");
 	if (/re-login|stale|warning|fallback|unavailable|not available/i.test(compact))
 		return stylePromptText(compact, "warning");
-	if (/ok|working|succeeded|valid/i.test(compact))
+	if (/\b(ok|working|succeeded|valid)\b/i.test(compact))
 		return stylePromptText(compact, "success");
 	return stylePromptText(compact, fallbackTone);
 }

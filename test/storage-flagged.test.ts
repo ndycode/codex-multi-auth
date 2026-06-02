@@ -1147,4 +1147,81 @@ describe("flagged storage extracted helpers", () => {
 		expect(persisted.accounts).toHaveLength(1);
 		expect(persisted.accounts[0]?.refreshToken).toBe("recovered-token");
 	});
+
+	it("migrates a legacy flagged file inside a held storage lock without deadlocking", async () => {
+		// CRITICAL regression: loadFlaggedAccountsState's legacy-migration path
+		// persists via the saveFlaggedAccounts callback. When loadFlaggedAccounts
+		// runs inside withAccountAndFlaggedStorageTransaction (global lock held), the
+		// locking saveFlaggedAccounts would re-acquire the non-reentrant mutex and
+		// deadlock. Trigger it: legacy blocked-accounts file present, flagged primary
+		// absent, loaded inside a held transaction.
+		const { cloneAccountStorageForPersistence } = await import(
+			"../lib/storage/account-persistence.js"
+		);
+		const flaggedPath = getFlaggedAccountsPath();
+		const legacyPath = join(
+			dirname(getStoragePath()),
+			"openai-codex-blocked-accounts.json",
+		);
+		await fs.mkdir(dirname(flaggedPath), { recursive: true });
+		await removeWithRetry(flaggedPath, { force: true });
+		await removeWithRetry(`${flaggedPath}.bak`, { force: true });
+		await fs.writeFile(
+			legacyPath,
+			JSON.stringify({
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "legacy-locked-token",
+						accountId: "acct-legacy",
+						flaggedAt: 5,
+						addedAt: 5,
+						lastUsed: 5,
+					},
+				],
+			}),
+			"utf8",
+		);
+
+		const run = withAccountAndFlaggedStorageTransaction(
+			async (_current, _persist, currentFlagged) => currentFlagged,
+			{
+				getStoragePath,
+				loadCurrent: async () => null,
+				loadCurrentFlagged: loadFlaggedAccounts,
+				saveAccounts: async () => undefined,
+				saveFlaggedAccounts,
+				cloneAccountStorageForPersistence,
+				logRollbackError: () => undefined,
+			},
+		);
+
+		let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<never>((_, reject) => {
+			timeoutHandle = setTimeout(
+				() =>
+					reject(
+						new Error("legacy flagged migration deadlocked inside held lock"),
+					),
+				3000,
+			);
+		});
+
+		let migratedFlagged: Awaited<typeof run>;
+		try {
+			migratedFlagged = (await Promise.race([run, timeout])) as Awaited<
+				typeof run
+			>;
+		} finally {
+			if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+		}
+
+		expect(migratedFlagged.accounts).toHaveLength(1);
+		expect(migratedFlagged.accounts[0]?.refreshToken).toBe(
+			"legacy-locked-token",
+		);
+		// Migration must persist the new flagged file and remove the legacy one.
+		expect(existsSync(flaggedPath)).toBe(true);
+		expect(existsSync(legacyPath)).toBe(false);
+	});
 });
