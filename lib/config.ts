@@ -145,7 +145,12 @@ export function __resetConfigWarningCacheForTests(): void {
  */
 function resolvePluginConfigPath(): string | null {
 	const envPath = (process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim();
-	if (envPath.length > 0) {
+	// Only honor the env override when it actually points at an existing file.
+	// A set-but-not-yet-created CODEX_MULTI_AUTH_CONFIG_PATH must be treated as
+	// absent here, otherwise the fallback returns it unconditionally and the
+	// caller's read throws ENOENT — masking a real legacy config on disk and
+	// collapsing to defaults (split-brain with the unified/legacy sources).
+	if (envPath.length > 0 && existsSync(envPath)) {
 		return envPath;
 	}
 

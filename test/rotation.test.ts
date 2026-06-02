@@ -187,11 +187,11 @@ describe("HealthScoreTracker", () => {
 		});
 
 		it("normalizes a numeric account key to its string form", () => {
-			// getScore stores under the numeric key; clearAccountKey(number) must
-			// match the same normalized "0" entry.
-			tracker.recordFailure(0, "codex");
-			tracker.clearAccountKey(0);
-			expect(tracker.getScore(0, "codex")).toBe(
+			// Write under the numeric key but clear with the string form: the two only
+			// reset the same entry if clearAccountKey normalizes number → string ("3").
+			tracker.recordFailure(3, "codex");
+			tracker.clearAccountKey("3");
+			expect(tracker.getScore(3, "codex")).toBe(
 				DEFAULT_HEALTH_SCORE_CONFIG.maxScore,
 			);
 		});
@@ -355,9 +355,11 @@ describe("TokenBucketTracker", () => {
 		});
 
 		it("normalizes a numeric account key to its string form", () => {
-			tracker.drain(0, "codex", 30);
-			tracker.clearAccountKey(0);
-			expect(tracker.getTokens(0, "codex")).toBe(
+			// Drain under the string key but clear with the numeric form: the two only
+			// reset the same bucket if clearAccountKey normalizes number → string ("3").
+			tracker.drain("3", "codex", 30);
+			tracker.clearAccountKey(3);
+			expect(tracker.getTokens("3", "codex")).toBe(
 				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
 			);
 		});

@@ -275,13 +275,19 @@ export async function getCodexInstructions(
 	let usableDiskContent = diskContent;
 
 	if (diskContent && cachedMetadata?.lastChecked) {
-		// prompts-03: if the meta carries a sha256, the disk content must match it;
-		// a mismatch means a corrupted/tampered cache, so discard and refetch rather
-		// than serving untrusted instructions. Caches without a sha (pre-upgrade) are
-		// accepted for backward compatibility.
-		const integrityOk =
-			!cachedMetadata.sha256 || cachedMetadata.sha256 === sha256(diskContent);
-		if (!integrityOk) {
+		// prompts-03: a sha256 mismatch means a corrupted/tampered cache — discard it
+		// everywhere (not served, not the 304 body, not the offline fallback). A
+		// MISSING sha (pre-upgrade legacy cache) is merely *unverified*: it must not
+		// be fast-path served and must not drive conditional revalidation (a 304
+		// would mint a fresh digest over un-vetted bytes), so we force one full 200
+		// fetch to establish trust — but we keep the old bytes as an offline fallback
+		// in case that fetch fails.
+		const priorSha = cachedMetadata.sha256;
+		if (!priorSha) {
+			// Unverified legacy entry: clear meta so no If-None-Match is sent and the
+			// cache isn't served as-is; retain usableDiskContent for offline fallback.
+			cachedMetadata = null;
+		} else if (priorSha !== sha256(diskContent)) {
 			logWarn(`Discarding corrupt prompt cache for ${modelFamily} (sha256 mismatch)`);
 			// Force a full refetch: drop the corrupt body so it cannot be served or
 			// used as the catch fallback, and clear the cached metadata so no
@@ -382,8 +388,11 @@ async function fetchAndPersistInstructions(
 		// had on record. Recomputing and trusting the hash unconditionally would
 		// launder tampered bytes; verifying against the prior sha closes that.
 		const priorSha = cachedMetadata?.sha256;
+		// Require a prior sha to trust a 304: without one the on-disk bytes are
+		// unverified, so re-serving them and minting a fresh digest would launder
+		// un-vetted content. A missing sha forces the full-fetch path below.
 		const diskIntegrityOk =
-			diskContent !== null && (!priorSha || priorSha === sha256(diskContent));
+			diskContent !== null && !!priorSha && priorSha === sha256(diskContent);
 		if (diskContent && diskIntegrityOk) {
 			setCacheEntry(modelFamily, { content: diskContent, timestamp: Date.now() });
 			// Refresh the meta (lastChecked) atomically and re-affirm the content sha

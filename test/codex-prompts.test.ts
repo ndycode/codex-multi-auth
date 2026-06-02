@@ -261,6 +261,137 @@ describe("Codex Prompts Module", () => {
 					instructionsHeaders.some((h) => h && "If-None-Match" in h),
 				).toBe(false);
 			});
+
+			// prompts-03 regression: a cached entry whose meta has NO sha256 (a
+			// pre-upgrade legacy cache) is UNVERIFIED. It must not be fast-path served
+			// and must not drive conditional revalidation — it forces one full 200
+			// fetch to mint the first digest. The freshly-fetched body wins.
+			it("forces a full GET (no fast-path serve) for a legacy cache entry missing sha256", async () => {
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						// Legacy meta: has lastChecked + etag but NO sha256.
+						return Promise.resolve(
+							JSON.stringify({
+								etag: "legacy-etag",
+								tag: "rust-v0.43.0",
+								lastChecked: Date.now() - 5 * 60 * 1000, // within TTL — would be served if trusted
+								url: "https://example.com",
+							}),
+						);
+					}
+					return Promise.resolve("legacy disk bytes (no sha)");
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					json: () => Promise.resolve({ tag_name: "rust-v0.43.0" }),
+				});
+				mockFetch.mockResolvedValueOnce({
+					ok: true,
+					text: () => Promise.resolve("freshly minted instructions"),
+					headers: { get: () => "minted-etag" },
+				});
+				mockedMkdir.mockResolvedValue(undefined);
+				mockedWriteFile.mockResolvedValue(undefined);
+
+				const result = await getCodexInstructions("gpt-5.2");
+				// The legacy disk bytes were NOT served as-is; a full fetch happened.
+				expect(result).toBe("freshly minted instructions");
+				const rawGitHubUrls = mockFetch.mock.calls
+					.map((call) => call[0])
+					.filter(
+						(url): url is string =>
+							typeof url === "string" &&
+							url.includes("raw.githubusercontent.com"),
+					);
+				expect(rawGitHubUrls.length).toBeGreaterThanOrEqual(1);
+				expect(
+					rawGitHubUrls.some((url) => url.includes("gpt_5_2_prompt.md")),
+				).toBe(true);
+			});
+
+			// prompts-03 regression: the legacy (no-sha) disk bytes are still a valid
+			// OFFLINE fallback. If the forced full fetch fails (network error), the old
+			// bytes are served rather than dropping straight to bundled instructions.
+			it("keeps a no-sha legacy cache as offline fallback when the forced refetch fails", async () => {
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						return Promise.resolve(
+							JSON.stringify({
+								etag: "legacy-etag",
+								tag: "rust-v0.43.0",
+								lastChecked: Date.now() - 5 * 60 * 1000,
+								url: "https://example.com",
+							}),
+						);
+					}
+					if (
+						typeof filePath === "string" &&
+						filePath.includes("codex-instructions.md")
+					) {
+						return Promise.resolve("bundled fallback instructions");
+					}
+					return Promise.resolve("legacy disk bytes (offline)");
+				});
+				// The release-tag lookup succeeds, but the instructions GET fails.
+				mockFetch.mockImplementation((url: string) => {
+					if (String(url).includes("api.github.com")) {
+						return Promise.resolve({
+							ok: true,
+							json: () => Promise.resolve({ tag_name: "rust-v0.43.0" }),
+						});
+					}
+					return Promise.reject(new Error("Network error"));
+				});
+
+				const result = await getCodexInstructions("gpt-5.2");
+				// Offline fallback uses the legacy disk bytes, NOT the bundled file.
+				expect(result).toBe("legacy disk bytes (offline)");
+			});
+
+			// prompts-03 regression: a no-sha (unverified) entry must NOT send an
+			// If-None-Match header. The metadata is cleared so the GET is a full,
+			// unconditional fetch — a 304 over un-vetted bytes can never be trusted.
+			it("does not send If-None-Match for a no-sha legacy cache entry", async () => {
+				mockedReadFile.mockImplementation((filePath) => {
+					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
+						return Promise.resolve(
+							JSON.stringify({
+								etag: "legacy-etag", // present, but must be ignored without a sha
+								tag: "rust-v0.43.0",
+								lastChecked: Date.now() - 5 * 60 * 1000,
+								url: "https://example.com",
+							}),
+						);
+					}
+					return Promise.resolve("legacy disk bytes (header check)");
+				});
+				const sentHeaders: Array<Record<string, string> | undefined> = [];
+				mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+					sentHeaders.push(init?.headers as Record<string, string> | undefined);
+					if (String(url).includes("api.github.com")) {
+						return Promise.resolve({
+							ok: true,
+							json: () => Promise.resolve({ tag_name: "rust-v0.43.0" }),
+						});
+					}
+					return Promise.resolve({
+						ok: true,
+						text: () => Promise.resolve("unconditional fetch body"),
+						headers: { get: () => "new-etag" },
+					});
+				});
+				mockedMkdir.mockResolvedValue(undefined);
+				mockedWriteFile.mockResolvedValue(undefined);
+
+				const result = await getCodexInstructions("gpt-5.2");
+				expect(result).toBe("unconditional fetch body");
+				const instructionsHeaders = sentHeaders.filter(Boolean) as Array<
+					Record<string, string>
+				>;
+				expect(
+					instructionsHeaders.some((h) => h && "If-None-Match" in h),
+				).toBe(false);
+			});
 		});
 
 		describe("GitHub fetch with ETag", () => {
@@ -420,6 +551,15 @@ describe("Codex Prompts Module", () => {
 
 			it("should refresh stale cache in background when release tag changes", async () => {
 				const oldTimestamp = Date.now() - 20 * 60 * 1000;
+				// Post prompts-03: only a VERIFIED (sha-bearing) entry takes the
+				// stale-while-revalidate path. A matching sha256 makes "old content"
+				// trusted, so it is served immediately while the tag change drives a
+				// background refresh to "new version content". (A no-sha entry would
+				// instead force a full blocking fetch and never serve the stale body.)
+				const { createHash } = await import("node:crypto");
+				const oldDigest = createHash("sha256")
+					.update("old content", "utf8")
+					.digest("hex");
 				mockedReadFile.mockImplementation((filePath) => {
 					if (typeof filePath === "string" && filePath.includes("-meta.json")) {
 						return Promise.resolve(JSON.stringify({
@@ -427,6 +567,7 @@ describe("Codex Prompts Module", () => {
 							tag: "rust-v0.40.0",
 							lastChecked: oldTimestamp,
 							url: "https://example.com",
+							sha256: oldDigest,
 						}));
 					}
 					return Promise.resolve("old content");

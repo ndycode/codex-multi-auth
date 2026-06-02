@@ -69,6 +69,21 @@ describe("display-width (ui-02)", () => {
 			expect(displayWidth(cjkZwj)).toBe(4);
 		});
 
+		it("counts emoji-presentation (U+FE0F) clusters at rendered width 2", () => {
+			// Bases that are text-width 1 render at width 2 with the emoji-presentation
+			// selector U+FE0F: ☀️ (U+2600), ❤️ (U+2764).
+			expect(displayWidth(`${String.fromCodePoint(0x2600)}${String.fromCharCode(0xfe0f)}`)).toBe(2);
+			expect(displayWidth(`${String.fromCodePoint(0x2764)}${String.fromCharCode(0xfe0f)}`)).toBe(2);
+			// Without FE0F the bare text symbol stays width 1.
+			expect(displayWidth(String.fromCodePoint(0x2600))).toBe(1);
+		});
+
+		it("counts a keycap sequence (digit + FE0F + U+20E3) as width 2", () => {
+			// 1️⃣ = "1" + U+FE0F + U+20E3 (combining enclosing keycap).
+			const keycap = `1${String.fromCharCode(0xfe0f)}${String.fromCharCode(0x20e3)}`;
+			expect(displayWidth(keycap)).toBe(2);
+		});
+
 		it("treats non-Latin combining marks as zero width", () => {
 			// Arabic fatha (U+064E), Hebrew point (U+05B0), Thai sara-i (U+0E34).
 			expect(displayWidth(`a${String.fromCharCode(0x064e)}`)).toBe(1);

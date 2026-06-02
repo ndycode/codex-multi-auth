@@ -124,7 +124,7 @@ function clusterWidthAt(cps: number[], i: number): [number, number] {
 		return [2, i + 1];
 	}
 
-	const width = codePointWidth(cp);
+	let width = codePointWidth(cp);
 	let j = i + 1;
 	// Absorb trailing modifiers / combining marks / ZWJ-joined code points so the
 	// whole cluster counts as the width of its leading glyph.
@@ -144,6 +144,14 @@ function clusterWidthAt(cps: number[], i: number): [number, number] {
 				continue;
 			}
 			break;
+		}
+		// U+FE0F (variation selector-16) requests EMOJI presentation, which renders
+		// at full width 2 even for bases that are otherwise text-width 1 (e.g. ☀️
+		// U+2600, ❤️ U+2764). U+20E3 (combining enclosing keycap) forms keycap
+		// emoji like 1️⃣ / #️⃣, also width 2. Promote the cluster accordingly.
+		if (nxt === 0xfe0f || nxt === 0x20e3) {
+			width = 2;
+			continue;
 		}
 		if (isZeroWidthCodePoint(nxt) || isEmojiModifier(nxt)) {
 			continue;

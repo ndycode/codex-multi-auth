@@ -17,21 +17,38 @@ const OAUTH_PORT = 1455;
  * without waiting for release the next bind can intermittently hit EADDRINUSE under
  * full-suite load. This polls a throwaway listener until the port binds cleanly,
  * making teardown deterministic (hardens the tests-ci-03 fragility).
+ *
+ * startLocalOAuthServer binds "localhost", which on a dual-stack host can resolve to
+ * ::1 (IPv6) rather than 127.0.0.1. Probing 127.0.0.1 alone would miss a lingering
+ * IPv6 bind, so we probe BOTH 127.0.0.1 and ::1 and only return once each is free.
+ * Where IPv6 is unavailable the ::1 probe fails with a non-EADDRINUSE error
+ * (EADDRNOTAVAIL/EAFNOSUPPORT) — that means nothing is bound there, so it counts as
+ * free. Only EADDRINUSE keeps us waiting.
  */
+async function probeHostFree(port: number, host: string): Promise<boolean> {
+	return await new Promise<boolean>((resolve) => {
+		const probe = http.createServer();
+		probe.once("error", (err: NodeJS.ErrnoException) => {
+			probe.close();
+			// EADDRINUSE = something still owns this host:port, keep waiting. Any other
+			// error (e.g. ::1 EADDRNOTAVAIL on an IPv4-only host) means nothing is bound
+			// here, so treat the host as free rather than looping forever.
+			resolve(err.code !== "EADDRINUSE");
+		});
+		probe.listen(port, host, () => {
+			probe.close(() => resolve(true));
+		});
+	});
+}
+
 async function waitForPortFree(port: number, timeoutMs = 2000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	for (;;) {
-		const free = await new Promise<boolean>((resolve) => {
-			const probe = http.createServer();
-			probe.once("error", () => {
-				probe.close();
-				resolve(false);
-			});
-			probe.listen(port, "127.0.0.1", () => {
-				probe.close(() => resolve(true));
-			});
-		});
-		if (free) return;
+		const [ipv4Free, ipv6Free] = await Promise.all([
+			probeHostFree(port, "127.0.0.1"),
+			probeHostFree(port, "::1"),
+		]);
+		if (ipv4Free && ipv6Free) return;
 		if (Date.now() >= deadline) {
 			// Fail loudly instead of returning best-effort: a port that never frees
 			// means the next case starts with 1455 occupied and hits the same

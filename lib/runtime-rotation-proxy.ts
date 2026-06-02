@@ -76,11 +76,6 @@ export interface RuntimeRotationProxyStatus {
 export interface RuntimeRotationProxyOptions {
 	host?: string;
 	port?: number;
-	/**
-	 * Escape hatch to bind a non-loopback host. Off by default: the proxy forwards
-	 * managed OAuth tokens and is loopback-only unless a caller explicitly opts in.
-	 */
-	allowNonLoopbackHost?: boolean;
 	upstreamBaseUrl?: string;
 	clientApiKey: string;
 	accountManager?: AccountManager;
@@ -1324,14 +1319,13 @@ export async function startRuntimeRotationProxy(
 	const fetchImpl = options.fetchImpl ?? fetch;
 	const host = options.host ?? DEFAULT_HOST;
 	// Defense in depth (runtime-proxy-01): the proxy presents managed OAuth tokens
-	// and must never be reachable off-box. Callers default to 127.0.0.1, but an
-	// explicit non-loopback host would expose every managed account to the network.
-	// Refuse to bind unless the caller has explicitly opted into a non-loopback host.
-	if (!isLoopbackHost(host) && options.allowNonLoopbackHost !== true) {
+	// and must never be reachable off-box. It is loopback-only with NO opt-out —
+	// binding a non-loopback host would expose every managed account to the
+	// network, so it is refused unconditionally.
+	if (!isLoopbackHost(host)) {
 		throw new Error(
 			`Runtime rotation proxy refuses to bind non-loopback host "${host}". ` +
-				"It forwards managed OAuth tokens and must stay loopback-only. " +
-				"Set allowNonLoopbackHost:true only if you fully understand the exposure.",
+				"It forwards managed OAuth tokens and is loopback-only.",
 		);
 	}
 	// Normalize the validated host into its two representations exactly once so the

@@ -10333,14 +10333,23 @@ describe("codex manager cli commands", () => {
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
+		// settings-hub-01: the interval step is the backend schema's value (not a test
+		// literal) so this stays aligned if the schema step changes.
+		const { BACKEND_NUMBER_OPTION_BY_KEY } = await import(
+			"../lib/codex-manager/backend-settings-schema.js"
+		);
+		const intervalStep = BACKEND_NUMBER_OPTION_BY_KEY.get(
+			"proactiveRefreshIntervalMs",
+		)?.step;
+
 		expect(exitCode).toBe(0);
 		expect(selectSequence.remaining()).toBe(0);
 		expect(savePluginConfigMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				proactiveRefreshGuardian: !(defaults.proactiveRefreshGuardian ?? false),
-				// settings-hub-01: interval step unified to the backend schema's 5000
-				// (was 60000): 180000 -5000 -5000 +5000 = 175000.
-				proactiveRefreshIntervalMs: 175_000,
+				// Two decreases + one increase = net one decrease step, pulled from the
+				// backend schema: 180000 - step.
+				proactiveRefreshIntervalMs: 180_000 - (intervalStep ?? 5_000),
 			}),
 		);
 	});
@@ -10578,15 +10587,23 @@ describe("codex manager cli commands", () => {
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
 
+		// settings-hub-01: pull the increase step from the backend schema rather than a
+		// literal so the experimental and backend panels stay unified automatically.
+		const { BACKEND_NUMBER_OPTION_BY_KEY } = await import(
+			"../lib/codex-manager/backend-settings-schema.js"
+		);
+		const intervalStep =
+			BACKEND_NUMBER_OPTION_BY_KEY.get("proactiveRefreshIntervalMs")?.step ??
+			5_000;
+
 		expect(exitCode).toBe(0);
 		expect(selectSequence.remaining()).toBe(0);
 		expect(savePluginConfigMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				proactiveRefreshGuardian: !(defaults.proactiveRefreshGuardian ?? false),
-				// settings-hub-01: one increase step is now the backend schema's 5000
-				// (was 60000), unifying the experimental and backend panels.
+				// One increase = one backend-schema step above the default.
 				proactiveRefreshIntervalMs:
-					(defaults.proactiveRefreshIntervalMs ?? 60000) + 5000,
+					(defaults.proactiveRefreshIntervalMs ?? 60000) + intervalStep,
 			}),
 		);
 	});

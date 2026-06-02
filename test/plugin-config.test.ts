@@ -317,6 +317,54 @@ describe("Plugin Configuration", () => {
 			}
 		});
 
+		// Regression: a SET-but-NON-EXISTENT CODEX_MULTI_AUTH_CONFIG_PATH must be
+		// treated as ABSENT, not honored unconditionally. Previously
+		// resolvePluginConfigPath returned the env path even when the file did not
+		// exist, so the subsequent read threw ENOENT and the load collapsed to
+		// DEFAULT_PLUGIN_CONFIG — masking the real legacy/primary config on disk.
+		// The fix falls through to the on-disk config, so its values must win.
+		it("falls through to the on-disk config when CODEX_MULTI_AUTH_CONFIG_PATH is set but does not exist", () => {
+			const prev = process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
+			const missingEnvPath = path.join(
+				os.tmpdir(),
+				"codex-multi-auth-env-override-does-not-exist.json",
+			);
+			process.env.CODEX_MULTI_AUTH_CONFIG_PATH = missingEnvPath;
+			try {
+				// Only the primary CONFIG_PATH (multi-auth/config.json) exists on disk;
+				// the env override path and the unified settings.json are both absent.
+				mockExistsSync.mockImplementation((p: unknown) => {
+					if (typeof p !== "string") return false;
+					if (p === missingEnvPath) return false;
+					return p.replace(/\\/g, "/").endsWith("/multi-auth/config.json");
+				});
+				mockReadFileSync.mockImplementation((p: unknown) => {
+					if (
+						typeof p === "string" &&
+						p.replace(/\\/g, "/").endsWith("/multi-auth/config.json")
+					) {
+						return JSON.stringify({ codexMode: false, fetchTimeoutMs: 12_345 });
+					}
+					// Any other read (e.g. the unified settings.json probe) is a miss.
+					throw new Error("ENOENT");
+				});
+
+				const config = loadPluginConfig();
+
+				// Proves the load did NOT revert to defaults: the on-disk config's
+				// values survived even though the env override pointed at a missing file.
+				expect(config.codexMode).toBe(false);
+				expect(config.fetchTimeoutMs).toBe(12_345);
+				expect(mockReadFileSync).toHaveBeenCalledWith(
+					expect.stringMatching(/multi-auth[\\/]config\.json$/),
+					"utf-8",
+				);
+			} finally {
+				if (prev === undefined) delete process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
+				else process.env.CODEX_MULTI_AUTH_CONFIG_PATH = prev;
+			}
+		});
+
 		it("should detect CODEX_HOME legacy auth config path before global legacy path", async () => {
 			const runWithCodexHome = async (codexHomePath: string) => {
 				vi.resetModules();

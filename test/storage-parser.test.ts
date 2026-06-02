@@ -67,11 +67,13 @@ describe("storage parser helpers", () => {
 		const ebusy = Object.assign(new Error("EBUSY: resource busy or locked"), {
 			code: "EBUSY",
 		});
+		// lib/storage/storage-parser.ts calls readFile(path, "utf-8"), which resolves a
+		// string. Resolve the string directly (no Buffer cast) so the mock matches runtime.
 		const validJson = JSON.stringify({ version: 3, activeIndex: 0, accounts: [] });
 		const readSpy = vi
 			.spyOn(fs, "readFile")
 			.mockRejectedValueOnce(ebusy)
-			.mockResolvedValueOnce(validJson as unknown as Buffer);
+			.mockResolvedValueOnce(validJson);
 
 		const result = await loadAccountsFromPath("/virtual/accounts.json", {
 			normalizeAccountStorage,
@@ -90,11 +92,13 @@ describe("storage parser helpers", () => {
 		const eperm = Object.assign(new Error("EPERM: operation not permitted"), {
 			code: "EPERM",
 		});
+		// readFile(path, "utf-8") resolves a string at runtime; resolve the string
+		// directly (no Buffer cast) so the mock matches runtime.
 		const validJson = JSON.stringify({ version: 3, activeIndex: 0, accounts: [] });
 		const readSpy = vi
 			.spyOn(fs, "readFile")
 			.mockRejectedValueOnce(eperm)
-			.mockResolvedValueOnce(validJson as unknown as Buffer);
+			.mockResolvedValueOnce(validJson);
 
 		const result = await loadAccountsFromPath("/virtual/accounts.json", {
 			normalizeAccountStorage,

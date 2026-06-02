@@ -342,24 +342,22 @@ describe("runtime rotation proxy", () => {
 		).rejects.toThrow(/non-loopback/i);
 	});
 
-	it("allows a non-loopback host only with the explicit opt-in", async () => {
+	it("refuses a non-loopback host unconditionally (no opt-out)", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now));
 		const { fetchImpl } = createRecordingFetch(() => textEventStream());
 
-		// Use a genuinely non-loopback bind (0.0.0.0) so this actually exercises the
-		// allowNonLoopbackHost branch — 127.0.0.1 is already loopback and would pass
-		// even if the opt-in were ignored.
-		const proxy = await startRuntimeRotationProxy({
-			accountManager,
-			fetchImpl,
-			clientApiKey: DEFAULT_CLIENT_API_KEY,
-			host: "0.0.0.0",
-			allowNonLoopbackHost: true,
-			upstreamBaseUrl: "https://example.test/backend-api",
-		});
-		expect(proxy.port).toBeGreaterThan(0);
-		await proxy.close();
+		// The proxy forwards managed OAuth tokens, so binding off-box is refused with
+		// no escape hatch — 0.0.0.0 must throw rather than expose accounts.
+		await expect(
+			startRuntimeRotationProxy({
+				accountManager,
+				fetchImpl,
+				clientApiKey: DEFAULT_CLIENT_API_KEY,
+				host: "0.0.0.0",
+				upstreamBaseUrl: "https://example.test/backend-api",
+			}),
+		).rejects.toThrow(/loopback-only/i);
 	});
 
 	// Regression (runtime-proxy IPv6 bug): the loopback guard accepted both "::1"

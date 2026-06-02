@@ -271,6 +271,36 @@ describe("RecoveryStorage", () => {
 			);
 		});
 
+		it("quarantines a record with a non-numeric time.created (recovery-02)", () => {
+			// readMessages sorts on time.created; a parseable record with a non-numeric
+			// created (e.g. "oops") makes the comparator return NaN and falls back to
+			// scan order, mis-pointing index-based recovery. It must be quarantined.
+			storage.__resetRecoveryCorruptionStats();
+			const sessionID = "sess";
+			const messageDir = join(MESSAGE_STORAGE, sessionID);
+
+			fsMock.existsSync.mockImplementation(
+				(path: string) => path === MESSAGE_STORAGE || path === messageDir,
+			);
+			fsMock.readdirSync.mockReturnValue(["good.json", "badtime.json"]);
+			fsMock.readFileSync.mockImplementation((path: string) => {
+				if (path === join(messageDir, "good.json")) {
+					return JSON.stringify({ id: "good", sessionID, role: "assistant", time: { created: 1 } });
+				}
+				if (path === join(messageDir, "badtime.json")) {
+					return JSON.stringify({ id: "msg_1", sessionID, role: "assistant", time: { created: "oops" } });
+				}
+				return "";
+			});
+
+			const result = storage.readMessages(sessionID);
+			expect(result.map((msg) => msg.id)).toEqual(["good"]);
+			expect(fsMock.renameSync).toHaveBeenCalledWith(
+				join(messageDir, "badtime.json"),
+				expect.stringContaining(".corrupt-"),
+			);
+		});
+
 		it("quarantines a part whose string id is path-unsafe (recovery-02)", () => {
 			storage.__resetRecoveryCorruptionStats();
 			const messageID = "msg";

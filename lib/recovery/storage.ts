@@ -121,16 +121,27 @@ const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
  * like a parse failure (quarantine via handleUnreadableFile).
  */
 function isValidStoredMessage(value: unknown): value is StoredMessageMeta {
-	const id = (value as { id?: unknown } | null)?.id;
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		typeof id === "string" &&
+	if (typeof value !== "object" || value === null) return false;
+	const id = (value as { id?: unknown }).id;
+	if (typeof id !== "string" || !SAFE_ID_PATTERN.test(id)) {
 		// recovery-02: the id is later used to build filesystem paths (readParts(
 		// msg.id)), so a parseable-but-string id like "../poison" must be rejected
 		// here and quarantined, not allowed to escape into a path-traversal read.
-		SAFE_ID_PATTERN.test(id)
-	);
+		return false;
+	}
+	// recovery-02: readMessages sorts on time.created; a parseable record with a
+	// non-numeric created (e.g. "oops") makes the comparator return NaN and falls
+	// back to scan order, mis-pointing the index-based recovery paths. When time is
+	// present it must carry a finite numeric `created`.
+	const time = (value as { time?: unknown }).time;
+	if (time !== undefined) {
+		if (typeof time !== "object" || time === null) return false;
+		const created = (time as { created?: unknown }).created;
+		if (created !== undefined && (typeof created !== "number" || !Number.isFinite(created))) {
+			return false;
+		}
+	}
+	return true;
 }
 
 function isValidStoredPart(value: unknown): value is StoredPart {

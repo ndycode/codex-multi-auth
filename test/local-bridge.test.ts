@@ -233,6 +233,44 @@ describe("local bridge", () => {
 		expect(headers.get("authorization")).toBe("Bearer runtime-secret-key");
 	});
 
+	// runtime-proxy-02/03: the x-api-key strip must hold even when auth is enabled and
+	// a runtime key is injected. The runtime key lands as Authorization (above), so a
+	// regression that only strips on the no-runtime-key path would leak the inbound
+	// x-api-key upstream here. Assert it is dropped on the auth-enabled runtime-proxy flow.
+	it("strips an inbound x-api-key on the auth-enabled runtime-proxy path", async () => {
+		const { calls, fetchImpl } = createFetch();
+		const server = await startLocalBridge({
+			runtimeBaseUrl: "http://127.0.0.1:9999/",
+			fetchImpl,
+			requireAuth: true,
+			verifyBearerToken: async () => ({
+				id: "test-id",
+				label: "test",
+				prefix: "tst",
+				tokenHash: "hash",
+				createdAt: 0,
+				lastUsedAt: null,
+				revokedAt: null,
+			}),
+			runtimeClientApiKey: "runtime-secret-key",
+		});
+		openServers.push(server);
+
+		await fetch(`${server.baseUrl}/v1/models`, {
+			headers: {
+				authorization: "Bearer inbound-client-token",
+				"x-api-key": "inbound-secret-key",
+			},
+		});
+
+		const forwarded = calls.find((c) => c.url.endsWith("/v1/models"));
+		const headers = new Headers(forwarded?.init?.headers as HeadersInit);
+		// The runtime key is injected as Authorization, but the inbound x-api-key is
+		// still stripped — it must never cross the bridge, runtime key or not.
+		expect(headers.get("authorization")).toBe("Bearer runtime-secret-key");
+		expect(headers.get("x-api-key")).toBeNull();
+	});
+
 	it("refuses to start with a runtimeClientApiKey when auth is disabled", async () => {
 		const { fetchImpl } = createFetch();
 		// Security regression: a configured runtime key + requireAuth:false would

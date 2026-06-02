@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { mkdtemp, stat, readFile } from "node:fs/promises";
+import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
@@ -296,11 +297,15 @@ describe("oc-chatgpt orchestrator", () => {
 	});
 
 	// Cross-platform atomicity check: the destination must only ever appear via an
-	// atomic rename, so a no-leftover-temp + valid-JSON destination proves the temp+
-	// rename path ran (the pre-fix code wrote the destination directly, non-atomically).
-	it("default persister leaves no temp file and a complete destination", async () => {
+	// atomic rename. Spy on the shared node:fs promises object (the module imports
+	// `promises as fs` and writes through it) with call-through, and prove the temp+
+	// rename path: writeFile targets a ".tmp" sibling and rename commits that exact tmp
+	// → the destination. A direct (non-atomic) write would fail the ".tmp" assertion.
+	it("default persister writes via a .tmp file then renames it onto the destination", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "codex-oc-persist-atomic-"));
 		const accountPath = join(dir, "openai-codex-accounts.json");
+		const writeFileSpy = vi.spyOn(fs, "writeFile");
+		const renameSpy = vi.spyOn(fs, "rename");
 		try {
 			const result = await applyOcChatgptSync({
 				source: sourceStorage,
@@ -321,15 +326,27 @@ describe("oc-chatgpt orchestrator", () => {
 			});
 			expect(result.kind).toBe("applied");
 
-			// Destination is complete + parseable (rename committed).
+			// writeFile wrote to a ".tmp" sibling, never directly to the destination.
+			const writeTarget = String(writeFileSpy.mock.calls[0]?.[0]);
+			expect(writeFileSpy).toHaveBeenCalledTimes(1);
+			expect(writeTarget.endsWith(".tmp")).toBe(true);
+			expect(writeTarget).not.toBe(accountPath);
+
+			// rename committed that exact tmp → the destination.
+			const renameArgs = renameSpy.mock.calls[0];
+			expect(renameSpy).toHaveBeenCalledTimes(1);
+			expect(String(renameArgs?.[0])).toBe(writeTarget);
+			expect(String(renameArgs?.[1])).toBe(accountPath);
+
+			// Destination is complete + parseable (rename committed) and no .tmp leaked.
 			const parsed = JSON.parse(await readFile(accountPath, "utf-8"));
 			expect(parsed.version).toBe(3);
-
-			// No .tmp sibling leaked behind.
 			const { readdir } = await import("node:fs/promises");
 			const leftovers = (await readdir(dir)).filter((f) => f.endsWith(".tmp"));
 			expect(leftovers).toEqual([]);
 		} finally {
+			writeFileSpy.mockRestore();
+			renameSpy.mockRestore();
 			await removeWithRetry(dir, { recursive: true, force: true });
 		}
 	});

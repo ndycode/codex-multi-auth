@@ -155,11 +155,15 @@ describe("host-codex-prompt", () => {
       
       expect(result).toBe("Cached content");
       // prompts-08: requests now carry User-Agent + Accept; assert the meaningful
-      // conditional header is present without pinning the full header set.
+      // conditional header plus the hardened Accept are present without pinning the
+      // full header set (Accept covers fetch-utils.ts Accept-header hardening).
       expect(mockFetch).toHaveBeenCalledWith(
         expect.any(String),
         expect.objectContaining({
-          headers: expect.objectContaining({ "If-None-Match": '"old-etag"' }),
+          headers: expect.objectContaining({
+            "If-None-Match": '"old-etag"',
+            Accept: "text/plain, */*",
+          }),
         })
       );
     });

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { vi } from "vitest";
 import type { AccountInfo } from "../lib/ui/auth-menu.js";
 import type { MenuItem } from "../lib/ui/select.js";
 import type { AuthMenuAction } from "../lib/ui/auth-menu.js";
@@ -75,6 +75,19 @@ async function renderQuotaHint(
 }
 
 describe("auth-menu quota bar glyph modes", () => {
+	// beforeEach forces process.stdin/stdout isTTY to false (non-tty) to pin the
+	// renderer's terminal-capability path. Capture the original property descriptors
+	// up front so afterEach can restore them — otherwise the forced non-tty state
+	// leaks into later suites that inspect isTTY.
+	const stdinIsTTYDescriptor = Object.getOwnPropertyDescriptor(
+		process.stdin,
+		"isTTY",
+	);
+	const stdoutIsTTYDescriptor = Object.getOwnPropertyDescriptor(
+		process.stdout,
+		"isTTY",
+	);
+
 	beforeEach(() => {
 		vi.resetModules();
 		selectMock.mockReset();
@@ -94,6 +107,18 @@ describe("auth-menu quota bar glyph modes", () => {
 		// Restore default runtime options so other suites are unaffected.
 		const { resetUiRuntimeOptions } = await import("../lib/ui/runtime.js");
 		resetUiRuntimeOptions();
+		// Restore the original isTTY descriptors so the forced non-tty state cannot
+		// leak into later suites. Delete when there was no own descriptor originally.
+		if (stdinIsTTYDescriptor) {
+			Object.defineProperty(process.stdin, "isTTY", stdinIsTTYDescriptor);
+		} else {
+			delete (process.stdin as unknown as { isTTY?: boolean }).isTTY;
+		}
+		if (stdoutIsTTYDescriptor) {
+			Object.defineProperty(process.stdout, "isTTY", stdoutIsTTYDescriptor);
+		} else {
+			delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
+		}
 		vi.restoreAllMocks();
 	});
 
