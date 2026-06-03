@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexUnavailableError } from "../lib/errors.js";
+import { DEFAULT_MODEL } from "../lib/request/helpers/model-map.js";
 // quota-probe is mocked below; reference the note as a literal to avoid a
 // top-level import racing the hoisted vi.mock factory.
 const CODEX_UNAVAILABLE_PROBE_NOTE_LITERAL = "Codex not available for this account";
@@ -745,7 +746,7 @@ describe("codex manager cli commands", () => {
 		confirmMock.mockResolvedValue(true);
 		fetchCodexQuotaSnapshotMock.mockResolvedValue({
 			status: 200,
-			model: "gpt-5.5",
+			model: DEFAULT_MODEL,
 			primary: {},
 			secondary: {},
 		});
@@ -1772,7 +1773,7 @@ describe("codex manager cli commands", () => {
 				acc_forecast: {
 					updatedAt: expect.any(Number),
 					status: 200,
-					model: "gpt-5.5",
+					model: DEFAULT_MODEL,
 					planType: undefined,
 					primary: {
 						usedPercent: undefined,
@@ -3266,7 +3267,7 @@ describe("codex manager cli commands", () => {
 		expect(saveAccountsMock).not.toHaveBeenCalled();
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(1);
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledWith(
-			expect.objectContaining({ model: "gpt-5.5" }),
+			expect.objectContaining({ model: DEFAULT_MODEL }),
 		);
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
 		expect(
@@ -3398,7 +3399,7 @@ describe("codex manager cli commands", () => {
 				acc_live: {
 					updatedAt: expect.any(Number),
 					status: 200,
-					model: "gpt-5.5",
+					model: DEFAULT_MODEL,
 					planType: undefined,
 					primary: {
 						usedPercent: undefined,
@@ -7195,7 +7196,7 @@ describe("codex manager cli commands", () => {
 				acc_a: {
 					updatedAt: expect.any(Number),
 					status: 200,
-					model: "gpt-5.5",
+					model: DEFAULT_MODEL,
 					planType: undefined,
 					primary: {
 						usedPercent: undefined,
@@ -7408,12 +7409,12 @@ describe("codex manager cli commands", () => {
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenNthCalledWith(1, {
 			accountId: "workspace-alpha",
 			accessToken: "access-alpha",
-			model: "gpt-5.5",
+			model: DEFAULT_MODEL,
 		});
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenNthCalledWith(2, {
 			accountId: "workspace-beta",
 			accessToken: "access-beta",
-			model: "gpt-5.5",
+			model: DEFAULT_MODEL,
 		});
 		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
 		expect(saveQuotaCacheMock).toHaveBeenCalledWith({

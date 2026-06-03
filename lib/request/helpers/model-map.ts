@@ -81,6 +81,18 @@ const TOOL_CAPABILITIES = {
 
 export const CURRENT_CODEX_MODEL = "gpt-5.3-codex";
 export const DEFAULT_MODEL = "gpt-5.5";
+
+// Single source of truth for the live/quota probe fallback chain. Both the
+// manager probe (lib/quota-probe.ts) and the runtime probe (lib/runtime/quota-probe.ts)
+// import this so the ordered candidate list cannot drift between them.
+export const QUOTA_PROBE_MODEL_CHAIN = [
+	DEFAULT_MODEL,
+	"gpt-5.4",
+	"gpt-5.3-codex",
+	"gpt-5.2-codex",
+	"gpt-5-codex",
+] as const;
+
 const LEGACY_CODEX_MODEL = "gpt-5-codex";
 const GPT_5_5_CANONICAL_MODEL = "gpt-5.5";
 const GPT_5_5_PRO_CANONICAL_MODEL = "gpt-5.5-pro";

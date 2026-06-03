@@ -1,6 +1,6 @@
 import { CODEX_BASE_URL } from "./constants.js";
 import { createCodexHeaders, getUnsupportedCodexModelInfo } from "./request/fetch-helpers.js";
-import { DEFAULT_MODEL } from "./request/helpers/model-map.js";
+import { QUOTA_PROBE_MODEL_CHAIN } from "./request/helpers/model-map.js";
 import { CodexUnavailableError, isCodexUnavailableError } from "./errors.js";
 import { getCodexInstructions } from "./prompts/codex.js";
 import { mutateRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
@@ -54,13 +54,7 @@ export interface CodexQuotaSnapshot {
 	model: string;
 }
 
-const DEFAULT_QUOTA_PROBE_MODELS = [
-	DEFAULT_MODEL,
-	"gpt-5.4",
-	"gpt-5.3-codex",
-	"gpt-5.2-codex",
-	"gpt-5-codex",
-] as const;
+const DEFAULT_QUOTA_PROBE_MODELS = QUOTA_PROBE_MODEL_CHAIN;
 
 /**
  * Parse an HTTP header value and return it as a finite number.
