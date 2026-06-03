@@ -131,6 +131,14 @@ export async function runBudgetCommand(
 	}
 
 	if (command === "check") {
+		// rest[0] is the budget key; a missing or flag-like first token (e.g.
+		// `budget check --json`) must not be consumed as the key name.
+		if (!rest[0] || rest[0].startsWith("-")) {
+			logError(
+				"Missing budget key. Usage: codex-multi-auth budget check <key> [--json]",
+			);
+			return 1;
+		}
 		const limit = store.limits[key];
 		if (!limit) {
 			logError(`Budget limit not found: ${key}`);

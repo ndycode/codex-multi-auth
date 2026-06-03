@@ -76,6 +76,26 @@ describe("budget command", () => {
 		expect(payload.evaluation.reasons[0]).toContain("request limit reached");
 	});
 
+	it("rejects a flag-like budget key in check instead of consuming it", async () => {
+		// "budget check --json" must not treat --json as the budget key.
+		const logError = vi.fn();
+		const logInfo = vi.fn();
+		const exitCode = await runBudgetCommand(["check", "--json"], {
+			loadStore: async () => ({ version: 1, limits: {} }),
+			logInfo,
+			logError,
+			getNow: () => Date.UTC(2026, 3, 29, 12),
+		});
+		expect(exitCode).toBe(1);
+		expect(logError).toHaveBeenCalledWith(
+			"Missing budget key. Usage: codex-multi-auth budget check <key> [--json]",
+		);
+		// It must NOT report the flag as a missing limit name.
+		expect(logError).not.toHaveBeenCalledWith(
+			expect.stringContaining("Budget limit not found"),
+		);
+	});
+
 	it("lists limits", async () => {
 		const logInfo = vi.fn();
 		const exitCode = await runBudgetCommand(["list"], {
