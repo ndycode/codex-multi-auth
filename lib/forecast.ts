@@ -258,11 +258,36 @@ export function evaluateForecastAccount(
 		overlay?.accountSkipReasons?.[String(index)] ??
 		overlay?.lastPoolExhaustionSkipReasons?.[String(index)] ??
 		null;
+	// Time-bounded overlay reasons ("rate-limited", "cooling-down:...") are
+	// persisted to runtime-observability.json on pool exhaustion and only ever
+	// cleared by an explicit runtime reset, never on a subsequent successful
+	// request. That leaves a stale reason on disk after the underlying window
+	// expires, so the forecast would keep marking a working account as
+	// unavailable. Cross-reference the time-aware disk state before applying:
+	// drop the overlay reason when the condition it describes is no longer
+	// active. Each reason validates only against its own backing disk state
+	// ("rate-limited" -> rateLimitResetTimes, "cooling-down" -> coolingDownUntil)
+	// so we never substitute a misleading reason string. Non-time-bounded
+	// reasons ("circuit-open", "token-exhausted", "policy-blocked") have no disk
+	// expiry to check and are always applied.
+	const coolingDownActive =
+		typeof account.coolingDownUntil === "number" &&
+		account.coolingDownUntil > now;
+	const isStaleOverlayReason =
+		overlayReason === "rate-limited"
+			? rateLimitResetAt === null
+			: overlayReason?.startsWith("cooling-down")
+				? !coolingDownActive
+				: false;
 	if (overlay?.policyBlockedIndexes?.includes(index)) {
 		availability = "unavailable";
 		riskScore += 95;
 		reasons.push("runtime policy blocked account");
-	} else if (overlayReason && overlayReason !== "already-attempted") {
+	} else if (
+		overlayReason &&
+		overlayReason !== "already-attempted" &&
+		!isStaleOverlayReason
+	) {
 		availability = "unavailable";
 		riskScore +=
 			overlayReason === "circuit-open"

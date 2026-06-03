@@ -182,8 +182,8 @@ describe("forecast helpers", () => {
 		expect(overlaid.reasons).toContain("runtime skip: circuit-open");
 	});
 
-	it.each(["rate-limited", "cooling-down:server-error", "workspace-disabled"])(
-		"marks runtime skip reason %s as unavailable",
+	it.each(["circuit-open", "token-exhausted", "workspace-disabled"])(
+		"marks non-time-bounded runtime skip reason %s as unavailable",
 		(reason) => {
 			const now = 1_700_000_000_000;
 			const result = evaluateForecastAccount({
@@ -204,6 +204,116 @@ describe("forecast helpers", () => {
 			expect(result.reasons).toContain(`runtime skip: ${reason}`);
 		},
 	);
+
+	it("ignores a stale rate-limited overlay when no rate limit is active on disk", () => {
+		const now = 1_700_000_000_000;
+		const account = {
+			refreshToken: "refresh-1",
+			addedAt: now - 10_000,
+			lastUsed: now - 10_000,
+			// Expired entry: clearExpiredRateLimits-equivalent semantics mean this
+			// is no longer an active rate limit.
+			rateLimitResetTimes: { codex: now - 30_000 },
+		};
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account,
+			runtimeOverlay: {
+				lastPoolExhaustionSkipReasons: { "0": "rate-limited" },
+			},
+		});
+
+		expect(result.availability).toBe("ready");
+		expect(result.reasons).not.toContain("runtime skip: rate-limited");
+	});
+
+	it("applies a rate-limited overlay when the rate limit is still active on disk", () => {
+		const now = 1_700_000_000_000;
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account: {
+				refreshToken: "refresh-1",
+				addedAt: now - 10_000,
+				lastUsed: now - 10_000,
+				rateLimitResetTimes: { codex: now + 30_000 },
+			},
+			runtimeOverlay: {
+				lastPoolExhaustionSkipReasons: { "0": "rate-limited" },
+			},
+		});
+
+		expect(result.availability).toBe("unavailable");
+		expect(result.reasons).toContain("runtime skip: rate-limited");
+	});
+
+	it("applies a rate-limited overlay when a model-scoped limit is active on disk", () => {
+		const now = 1_700_000_000_000;
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account: {
+				refreshToken: "refresh-1",
+				addedAt: now - 10_000,
+				lastUsed: now - 10_000,
+				rateLimitResetTimes: { "codex:5h": now + 30_000 },
+			},
+			runtimeOverlay: {
+				lastPoolExhaustionSkipReasons: { "0": "rate-limited" },
+			},
+		});
+
+		expect(result.availability).toBe("unavailable");
+		expect(result.reasons).toContain("runtime skip: rate-limited");
+	});
+
+	it("ignores a stale cooling-down overlay when cooldown has elapsed on disk", () => {
+		const now = 1_700_000_000_000;
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account: {
+				refreshToken: "refresh-1",
+				addedAt: now - 10_000,
+				lastUsed: now - 10_000,
+				coolingDownUntil: now - 1,
+			},
+			runtimeOverlay: {
+				lastPoolExhaustionSkipReasons: { "0": "cooling-down:server-error" },
+			},
+		});
+
+		expect(result.availability).toBe("ready");
+		expect(result.reasons).not.toContain(
+			"runtime skip: cooling-down:server-error",
+		);
+	});
+
+	it("applies a cooling-down overlay when cooldown is still active on disk", () => {
+		const now = 1_700_000_000_000;
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account: {
+				refreshToken: "refresh-1",
+				addedAt: now - 10_000,
+				lastUsed: now - 10_000,
+				coolingDownUntil: now + 60_000,
+			},
+			runtimeOverlay: {
+				lastPoolExhaustionSkipReasons: { "0": "cooling-down:server-error" },
+			},
+		});
+
+		expect(result.availability).toBe("unavailable");
+		expect(result.reasons).toContain("runtime skip: cooling-down:server-error");
+	});
 
 	it("recommends the best ready account", () => {
 		const now = 1_700_000_000_000;
