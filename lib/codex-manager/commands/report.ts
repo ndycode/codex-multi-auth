@@ -128,7 +128,7 @@ function printReportUsage(logInfo: (message: string) => void): void {
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
 			"  --explain          Print per-account reasoning in text mode",
-			"  --model, -m        Probe model for live mode (default: gpt-5.5)",
+			`  --model, -m        Probe model for live mode (default: ${DEFAULT_MODEL})`,
 			"  --max-accounts N   Limit how many enabled accounts live mode can consider",
 			"  --max-probes N     Limit how many live quota probes can run",
 			"  --cached-only      Skip refreshes and only use already-usable access tokens",
