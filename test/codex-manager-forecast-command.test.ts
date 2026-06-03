@@ -149,6 +149,13 @@ describe("runForecastCommand", () => {
 		expect(deps.logError).toHaveBeenCalledWith("Missing value for --model");
 	});
 
+	it("rejects a whitespace-only --model value", async () => {
+		const deps = createDeps();
+		const result = await runForecastCommand(["--model", "   "], deps);
+		expect(result).toBe(1);
+		expect(deps.logError).toHaveBeenCalledWith("Missing value for --model");
+	});
+
 	it("prints json output for populated storage", async () => {
 		const deps = createDeps();
 		const result = await runForecastCommand(["--json"], deps);

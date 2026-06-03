@@ -213,7 +213,7 @@ export function parseFixArgs(args: string[]): ParsedArgsResult<FixCliOptions> {
 			continue;
 		}
 		if (argValue === "--model" || argValue === "-m") {
-			const value = args[i + 1];
+			const value = args[i + 1]?.trim();
 			if (!value || value.startsWith("-")) {
 				return { ok: false, message: "Missing value for --model" };
 			}

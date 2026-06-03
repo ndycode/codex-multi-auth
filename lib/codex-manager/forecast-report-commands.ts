@@ -143,7 +143,7 @@ export function parseForecastArgs(args: string[]): ParsedArgsResult<ForecastCliO
 			continue;
 		}
 		if (arg === "--model" || arg === "-m") {
-			const value = args[i + 1];
+			const value = args[i + 1]?.trim();
 			if (!value || value.startsWith("-")) {
 				return { ok: false, message: "Missing value for --model" };
 			}
@@ -184,7 +184,7 @@ export function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptio
 			continue;
 		}
 		if (arg === "--model" || arg === "-m") {
-			const value = args[i + 1];
+			const value = args[i + 1]?.trim();
 			if (!value || value.startsWith("-")) {
 				return { ok: false, message: "Missing value for --model" };
 			}

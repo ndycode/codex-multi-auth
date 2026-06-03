@@ -176,6 +176,11 @@ describe("repair-commands direct deps coverage", () => {
 			ok: false,
 			message: "Missing value for --model",
 		});
+		// A whitespace-only value trims to empty and must be rejected too.
+		expect(parseFixArgs(["--model", "   "])).toEqual({
+			ok: false,
+			message: "Missing value for --model",
+		});
 		// The short -m form is first-class too and must reject flag-like values.
 		expect(parseFixArgs(["-m", "--json"])).toEqual({
 			ok: false,

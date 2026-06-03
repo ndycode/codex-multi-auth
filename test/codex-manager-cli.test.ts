@@ -7020,6 +7020,55 @@ describe("codex manager cli commands", () => {
 		).toBe(true);
 	});
 
+	it("deep-check counts a refresh failure with a still-valid session as signed-in-only", async () => {
+		// forceRefresh + liveProbe + queuedRefresh failure while the session token is
+		// still usable must take the "refresh failed but works right now" path and
+		// land in the live summary as "signed in only", not "need re-login".
+		const now = Date.now();
+		const storage = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "a@example.com",
+					accountId: "acc_a",
+					refreshToken: "refresh-a",
+					accessToken: "access-a",
+					// Unexpired access token => hasUsableAccessToken() true =>
+					// sessionLikelyValid true.
+					expiresAt: now + 3_600_000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		};
+		loadAccountsMock.mockResolvedValue(storage);
+		promptLoginModeMock
+			.mockResolvedValueOnce({ mode: "deep-check" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		// Refresh fails transiently (NOT a hard/revoked failure) so the session
+		// stays valid and the account is signed-in-only, not need-re-login.
+		queuedRefreshMock.mockResolvedValueOnce({
+			type: "error",
+			reason: "network",
+			message: "temporary network failure",
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "login"]);
+		expect(exitCode).toBe(0);
+		const output = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		// Per-account warning row.
+		expect(output).toContain("refresh failed");
+		expect(output).toContain("but this account still works right now");
+		// Live summary: signed-in-only, not need-re-login.
+		expect(output).toContain("signed in only");
+		expect(output).not.toContain("1 need re-login");
+	});
+
 	it("runs quick check from login menu with live probe", async () => {
 		const now = Date.now();
 		const storage = {

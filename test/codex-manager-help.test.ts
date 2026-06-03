@@ -143,6 +143,12 @@ describe("codex-manager help parsers", () => {
 			reason: "error",
 			message: "Missing value for --model",
 		});
+		// A whitespace-only value trims to empty and must be rejected too.
+		expect(parseBestArgs(["--model", "   "])).toEqual({
+			ok: false,
+			reason: "error",
+			message: "Missing value for --model",
+		});
 		// The short -m alias is first-class too.
 		expect(parseBestArgs(["-m", "--json"])).toEqual({
 			ok: false,

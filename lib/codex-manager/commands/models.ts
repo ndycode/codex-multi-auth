@@ -43,7 +43,7 @@ export async function runModelsCommand(
 			continue;
 		}
 		if (arg === "--model") {
-			const value = args[i + 1];
+			const value = args[i + 1]?.trim();
 			if (!value || value.startsWith("-")) {
 				logError("Missing value for --model");
 				return 1;

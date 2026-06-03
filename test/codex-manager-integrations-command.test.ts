@@ -28,4 +28,24 @@ describe("integrations command", () => {
 		expect(exitCode).toBe(1);
 		expect(String(logError.mock.calls[0]?.[0])).toContain("invalid value");
 	});
+
+	it("rejects a flag-like value after --model instead of consuming it", async () => {
+		const logError = vi.fn();
+		const exitCode = await runIntegrationsCommand(["--model", "-x"], {
+			logInfo: vi.fn(),
+			logError,
+		});
+		expect(exitCode).toBe(1);
+		expect(logError).toHaveBeenCalledWith("Missing value for --model");
+	});
+
+	it("rejects a whitespace-only --model value", async () => {
+		const logError = vi.fn();
+		const exitCode = await runIntegrationsCommand(["--model", "   "], {
+			logInfo: vi.fn(),
+			logError,
+		});
+		expect(exitCode).toBe(1);
+		expect(logError).toHaveBeenCalledWith("Missing value for --model");
+	});
 });

@@ -183,7 +183,7 @@ export function parseBestArgs(args: string[]): ParsedBestArgs {
 			continue;
 		}
 		if (arg === "--model" || arg === "-m") {
-			const value = args[i + 1];
+			const value = args[i + 1]?.trim();
 			if (!value || value.startsWith("-")) {
 				return {
 					ok: false,
