@@ -118,6 +118,37 @@ describe("Codex Prompts Module", () => {
 	});
 
 	describe("getCodexInstructions", () => {
+		it("uses gpt-5.5 prompt family by default", async () => {
+			mockedReadFile.mockRejectedValue(new Error("ENOENT"));
+			mockFetch.mockImplementation((input) => {
+				if (typeof input === "string" && input.includes("api.github.com")) {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({ tag_name: "rust-v0.120.0" }),
+					});
+				}
+				return Promise.resolve({
+					ok: true,
+					text: () => Promise.resolve("default model instructions"),
+					headers: { get: () => "etag" },
+				});
+			});
+			mockedMkdir.mockResolvedValue(undefined);
+			mockedWriteFile.mockResolvedValue(undefined);
+
+			const result = await getCodexInstructions();
+
+			expect(result).toBe("default model instructions");
+			const rawUrls = mockFetch.mock.calls
+				.map((call) => call[0])
+				.filter(
+					(url): url is string =>
+						typeof url === "string" && url.includes("raw.githubusercontent.com"),
+				);
+			expect(rawUrls.some((url) => url.includes("gpt_5_2_prompt.md"))).toBe(true);
+			expect(rawUrls.some((url) => url.includes("gpt_5_codex_prompt.md"))).toBe(false);
+		});
+
 		describe("Memory cache behavior", () => {
 			it("should return cached content within TTL", async () => {
 				const recentTimestamp = Date.now() - 5 * 60 * 1000;

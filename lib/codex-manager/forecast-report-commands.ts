@@ -103,7 +103,7 @@ export function printForecastUsage(): void {
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
-			"  --model, -m        Probe model for live mode (default: gpt-5.3-codex)",
+			"  --model, -m        Probe model for live mode (default: gpt-5.5)",
 		].join("\n"),
 	);
 }
@@ -117,7 +117,7 @@ export function printReportUsage(): void {
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
-			"  --model, -m        Probe model for live mode (default: gpt-5.3-codex)",
+			"  --model, -m        Probe model for live mode (default: gpt-5.5)",
 			"  --out              Write JSON report to a file path",
 		].join("\n"),
 	);
@@ -127,7 +127,7 @@ export function parseForecastArgs(args: string[]): ParsedArgsResult<ForecastCliO
 	const options: ForecastCliOptions = {
 		live: false,
 		json: false,
-		model: "gpt-5.3-codex",
+		model: "gpt-5.5",
 	};
 
 	for (let i = 0; i < args.length; i += 1) {
@@ -168,7 +168,7 @@ export function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptio
 	const options: ReportCliOptions = {
 		live: false,
 		json: false,
-		model: "gpt-5.3-codex",
+		model: "gpt-5.5",
 	};
 
 	for (let i = 0; i < args.length; i += 1) {

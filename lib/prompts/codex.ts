@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import type { CacheMetadata, GitHubRelease } from "../types.js";
 import { logWarn, logError, logDebug } from "../logger.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
-import { getModelProfile, type PromptModelFamily } from "../request/helpers/model-map.js";
+import { DEFAULT_MODEL, getModelProfile, type PromptModelFamily } from "../request/helpers/model-map.js";
 import { fetchWithTimeout, readBodyTextGuarded, withBodyTimeout } from "./fetch-utils.js";
 import { withFileOperationRetry } from "../fs-retry.js";
 
@@ -234,11 +234,11 @@ async function getLatestReleaseTag(): Promise<string> {
  *
  * Rate limit protection: Only checks GitHub if cache is older than 15 minutes
  *
- * @param normalizedModel - The normalized model name (optional, defaults to "gpt-5.3-codex")
+ * @param normalizedModel - The normalized model name (optional, defaults to DEFAULT_MODEL)
  * @returns Codex instructions for the specified model family
  */
 export async function getCodexInstructions(
-	normalizedModel = "gpt-5.3-codex",
+	normalizedModel = DEFAULT_MODEL,
 ): Promise<string> {
 	const modelFamily = getModelFamily(normalizedModel);
 	const now = Date.now();
@@ -466,7 +466,7 @@ function refreshInstructionsInBackground(
  * Prewarm instruction caches for the provided models/families.
  */
 export function prewarmCodexInstructions(models: string[] = []): void {
-	const candidates = models.length > 0 ? models : ["gpt-5.3-codex", "gpt-5.5", "gpt-5.1"];
+	const candidates = models.length > 0 ? models : [DEFAULT_MODEL, "gpt-5.3-codex", "gpt-5.1"];
 	const prewarmTargets = new Map<string, string>();
 	for (const model of candidates) {
 		const promptFamily = getModelFamily(model);

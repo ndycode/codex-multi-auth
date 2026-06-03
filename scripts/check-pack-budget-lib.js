@@ -14,6 +14,7 @@ const execAsync = promisify(exec);
 
 export const MAX_PACKAGE_SIZE = 8 * 1024 * 1024;
 export const REQUIRED_PREFIXES = [
+	".codex-plugin/plugin.json",
 	"dist/",
 	"assets/",
 	"config/",

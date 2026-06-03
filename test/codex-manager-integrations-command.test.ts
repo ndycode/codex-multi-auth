@@ -15,6 +15,7 @@ describe("integrations command", () => {
 		expect(payload.snippets).toHaveLength(1);
 		expect(payload.snippets[0]?.kind).toBe("python");
 		expect(payload.snippets[0]?.body).toContain("client.responses.create");
+		expect(payload.snippets[0]?.body).toContain('model="gpt-5.5"');
 		expect(payload.snippets[0]?.body).toContain("CODEX_MULTI_AUTH_LOCAL_KEY");
 	});
 

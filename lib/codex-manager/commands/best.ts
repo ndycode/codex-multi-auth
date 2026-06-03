@@ -103,9 +103,7 @@ export async function runBestCommand(
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const probeModel = resolveNormalizedModel(
-		options.model?.trim() || "gpt-5.3-codex",
-	);
+	const probeModel = resolveNormalizedModel(options.model?.trim() || "gpt-5.5");
 	if (options.modelProvided && !options.live) {
 		logError("--model requires --live for codex-multi-auth best");
 		deps.printBestUsage();

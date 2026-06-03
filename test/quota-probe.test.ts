@@ -84,6 +84,22 @@ describe("quota-probe", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("uses gpt-5.5 as the default quota probe model", async () => {
+		const fetchMock = vi.fn(async () =>
+			new Response("", { status: 200, headers: makeQuotaHeaders() }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const snapshot = await fetchCodexQuotaSnapshot({
+			accountId: "acc-1",
+			accessToken: "token-1",
+		});
+
+		expect(snapshot.model).toBe("gpt-5.5");
+		expect(getCodexInstructionsMock).toHaveBeenCalledWith("gpt-5.5");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("falls back to next model when first model is unsupported", async () => {
 		const unsupported = new Response(
 			JSON.stringify({

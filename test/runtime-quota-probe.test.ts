@@ -42,7 +42,7 @@ describe("fetchRuntimeCodexQuotaSnapshot", () => {
 			getUnsupportedCodexModelInfo: () => ({ isUnsupported: false }),
 		});
 
-		expect(snapshot.model).toBe("gpt-5.3-codex");
+		expect(snapshot.model).toBe("gpt-5.5");
 		expect(snapshot.planType).toBe("plus");
 		expect(parseCodexQuotaSnapshot).toHaveBeenCalledOnce();
 	});
@@ -90,7 +90,7 @@ describe("fetchRuntimeCodexQuotaSnapshot", () => {
 			}),
 		});
 
-		expect(snapshot.model).toBe("gpt-5.2-codex");
+		expect(snapshot.model).toBe("gpt-5.4");
 		expect(fetchImpl).toHaveBeenCalledTimes(2);
 	});
 });

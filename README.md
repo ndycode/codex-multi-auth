@@ -196,7 +196,7 @@ For remote or headless shells, prefer `codex-multi-auth login --device-auth`.
 | Command | What it answers |
 | --- | --- |
 | `codex-multi-auth report --live --json` | How do I get the full machine-readable health report? |
-| `codex-multi-auth fix --live --model gpt-5.3-codex` | How do I run live repair probes with a chosen model? |
+| `codex-multi-auth fix --live --model gpt-5.5` | How do I run live repair probes with a chosen model? |
 | `codex-multi-auth why-selected --json` | Which account does the selector pick now, and why? |
 | `codex-multi-auth usage --since 24h --by project` | What local usage has been recorded recently? |
 | `codex-multi-auth monitor --json` | What is the combined usage, policy, quota, runtime, and project state? |

@@ -120,6 +120,7 @@
 		"codex-multi-auth": "scripts/codex-multi-auth.js"
 	},
 	"files": [
+		".codex-plugin/plugin.json",
 		"dist/",
 		"assets/",
 		"config/",

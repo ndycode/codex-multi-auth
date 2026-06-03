@@ -33,6 +33,7 @@ import {
 	URL_PATHS,
 } from "./constants.js";
 import { getModelFamily, type ModelFamily } from "./prompts/codex.js";
+import { DEFAULT_MODEL } from "./request/helpers/model-map.js";
 import { queuedRefresh } from "./refresh-queue.js";
 import {
 	mutateRuntimeObservabilitySnapshot,
@@ -725,7 +726,7 @@ function buildResponsesRequestContext(
 		method: "POST",
 		upstreamPath: URL_PATHS.CODEX_RESPONSES,
 		model,
-		family: getModelFamily(model ?? "gpt-5.3-codex"),
+		family: getModelFamily(model ?? DEFAULT_MODEL),
 		stream: parsedBody?.stream === true,
 		sessionKey: resolveSessionKey(headers, parsedBody),
 	};

@@ -96,6 +96,7 @@ describe("validatePackMetadata", () => {
 			validatePackMetadata({
 				packageSize: 123,
 				paths: [
+					".codex-plugin/plugin.json",
 					"dist/index.js",
 					"assets/logo.svg",
 					"config/default.json",
@@ -107,11 +108,31 @@ describe("validatePackMetadata", () => {
 			}),
 		).toThrow(/vendor\/codex-ai-sdk/);
 	});
+
+	it("rejects packages missing the Codex plugin image manifest", () => {
+		expect(() =>
+			validatePackMetadata({
+				packageSize: 123,
+				paths: [
+					"dist/index.js",
+					"assets/logo.svg",
+					"config/default.json",
+					"scripts/codex.js",
+					"vendor/codex-ai-plugin/index.js",
+					"vendor/codex-ai-sdk/index.js",
+					"README.md",
+					"LICENSE",
+				],
+			}),
+		).toThrow(/\.codex-plugin\/plugin\.json/);
+	});
+
 	it("rejects forbidden lib sources in the packed file list", () => {
 		expect(() =>
 			validatePackMetadata({
 				packageSize: 123,
 				paths: [
+					".codex-plugin/plugin.json",
 					"dist/index.js",
 					"assets/logo.svg",
 					"config/default.json",
@@ -137,6 +158,7 @@ describe("runPackBudgetCheck", () => {
 						{
 							size: 321,
 							files: [
+								{ path: ".codex-plugin/plugin.json" },
 								{ path: "dist/index.js" },
 								{ path: "assets/logo.svg" },
 								{ path: "config/default.json" },
@@ -151,7 +173,7 @@ describe("runPackBudgetCheck", () => {
 				})),
 				log,
 			}),
-		).resolves.toBe("Pack budget ok: 321 bytes across 8 files");
-		expect(log).toHaveBeenCalledWith("Pack budget ok: 321 bytes across 8 files");
+		).resolves.toBe("Pack budget ok: 321 bytes across 9 files");
+		expect(log).toHaveBeenCalledWith("Pack budget ok: 321 bytes across 9 files");
 	});
 });

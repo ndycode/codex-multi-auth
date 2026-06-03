@@ -136,7 +136,7 @@ function printForecastUsage(logInfo: (message: string) => void): void {
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
 			"  --explain          Include structured recommendation reasoning",
-			"  --model, -m        Probe model for live mode (default: gpt-5.3-codex)",
+			"  --model, -m        Probe model for live mode (default: gpt-5.5)",
 			"  --no-runtime-overlay  Ignore persisted runtime skip diagnostics",
 		].join("\n"),
 	);
@@ -149,7 +149,7 @@ function parseForecastArgs(
 		live: false,
 		json: false,
 		explain: false,
-		model: "gpt-5.3-codex",
+		model: "gpt-5.5",
 		runtimeOverlay: true,
 	};
 
@@ -211,7 +211,7 @@ export async function runForecastCommand(
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const requestedModel = options.model?.trim() || "gpt-5.3-codex";
+	const requestedModel = options.model?.trim() || "gpt-5.5";
 	const probeModel = resolveNormalizedModel(requestedModel);
 	const display = deps.loadDashboardDisplaySettings
 		? (await deps.loadDashboardDisplaySettings().catch(() => null)) ??

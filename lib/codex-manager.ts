@@ -698,7 +698,7 @@ function getPersistedQuotaViewForAccount(
 	return {
 		updatedAt: cachedEntry?.updatedAt ?? now,
 		status: 429,
-		model: cachedEntry?.model ?? "gpt-5.3-codex",
+		model: cachedEntry?.model ?? "gpt-5.5",
 		planType: cachedEntry?.planType,
 		primary: {
 			...cachedEntry?.primary,
@@ -787,7 +787,8 @@ function pruneUnsafeQuotaEmailCacheEntry(
 }
 
 const DEFAULT_MENU_QUOTA_REFRESH_TTL_MS = 5 * 60_000;
-const MENU_QUOTA_REFRESH_MODEL = "gpt-5.3-codex";
+const DEFAULT_LIVE_PROBE_MODEL = "gpt-5.5";
+const MENU_QUOTA_REFRESH_MODEL = DEFAULT_LIVE_PROBE_MODEL;
 
 interface MenuQuotaProbeTarget {
 	account: AccountMetadataV3;
@@ -2181,7 +2182,7 @@ interface HealthCheckOptions {
 async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 	const forceRefresh = options.forceRefresh === true;
 	const liveProbe = options.liveProbe === true;
-	const probeModel = options.model?.trim() || "gpt-5.3-codex";
+	const probeModel = options.model?.trim() || DEFAULT_LIVE_PROBE_MODEL;
 	const modelInspection = inspectRequestedModel(probeModel);
 	const display = options.display ?? DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
 	const quotaCache = liveProbe ? await loadQuotaCache() : null;
@@ -2202,6 +2203,8 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 	let ok = 0;
 	let failed = 0;
 	let warnings = 0;
+	let codexAvailable = 0;
+	let signedInOnly = 0;
 	const activeIndex = resolveActiveIndex(storage, "codex");
 	let activeAccountRefreshed = false;
 	const now = Date.now();
@@ -2236,6 +2239,7 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 				activeAccountRefreshed = true;
 			}
 			let healthDetail = "signed in and working";
+			let healthTone: "success" | "warning" = "success";
 			if (liveProbe) {
 				const currentAccessToken = account.accessToken;
 				const probeAccountId = currentAccessToken
@@ -2243,8 +2247,10 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 					: undefined;
 				if (!probeAccountId || !currentAccessToken) {
 					warnings += 1;
+					signedInOnly += 1;
+					healthTone = "warning";
 					healthDetail =
-						"signed in and working (live check skipped: missing account ID)";
+						"signed in (live check skipped: missing account ID)";
 				} else {
 					try {
 						const snapshot = await fetchCodexQuotaSnapshot({
@@ -2263,17 +2269,20 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 								) || quotaCacheChanged;
 						}
 						healthDetail = formatQuotaSnapshotForDashboard(snapshot, display);
+						codexAvailable += 1;
 					} catch (error) {
 						warnings += 1;
+						signedInOnly += 1;
+						healthTone = "warning";
 						if (isCodexUnavailableError(error)) {
 							healthDetail =
-								`signed in and working (${CODEX_UNAVAILABLE_PROBE_NOTE})`;
+								`signed in; ${CODEX_UNAVAILABLE_PROBE_NOTE}`;
 						} else {
 							const message = normalizeFailureDetail(
 								error instanceof Error ? error.message : String(error),
 								undefined,
 							);
-							healthDetail = `signed in and working (live check failed: ${message})`;
+							healthDetail = `signed in (live check failed: ${message})`;
 						}
 					}
 				}
@@ -2283,8 +2292,9 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 			}
 			ok += 1;
 			if (display.showPerAccountRows) {
+				const healthMarker = healthTone === "success" ? "✓" : "!";
 				console.log(
-					`  ${stylePromptText("✓", "success")} ${labelText} ${stylePromptText("|", "muted")} ${styleAccountDetailText(healthDetail)}`,
+					`  ${stylePromptText(healthMarker, healthTone)} ${labelText} ${stylePromptText("|", "muted")} ${styleAccountDetailText(healthDetail, healthTone)}`,
 				);
 			}
 			continue;
@@ -2340,12 +2350,15 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 			}
 			ok += 1;
 			let healthyMessage = "working now";
+			let healthyTone: "success" | "warning" = "success";
 			if (liveProbe) {
 				const probeAccountId = account.accountId ?? tokenAccountId;
 				if (!probeAccountId) {
 					warnings += 1;
+					signedInOnly += 1;
+					healthyTone = "warning";
 					healthyMessage =
-						"working now (live check skipped: missing account ID)";
+						"signed in (live check skipped: missing account ID)";
 				} else {
 					try {
 						const snapshot = await fetchCodexQuotaSnapshot({
@@ -2364,30 +2377,37 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 								) || quotaCacheChanged;
 						}
 						healthyMessage = formatQuotaSnapshotForDashboard(snapshot, display);
+						codexAvailable += 1;
 					} catch (error) {
 						warnings += 1;
+						signedInOnly += 1;
+						healthyTone = "warning";
 						if (isCodexUnavailableError(error)) {
 							healthyMessage =
-								`working now (${CODEX_UNAVAILABLE_PROBE_NOTE})`;
+								`signed in; ${CODEX_UNAVAILABLE_PROBE_NOTE}`;
 						} else {
 							const message = normalizeFailureDetail(
 								error instanceof Error ? error.message : String(error),
 								undefined,
 							);
-							healthyMessage = `working now (live check failed: ${message})`;
+							healthyMessage = `signed in (live check failed: ${message})`;
 						}
 					}
 				}
 			}
 			if (display.showPerAccountRows) {
+				const healthyMarker = healthyTone === "success" ? "✓" : "!";
 				console.log(
-					`  ${stylePromptText("✓", "success")} ${labelText} ${stylePromptText("|", "muted")} ${styleAccountDetailText(healthyMessage)}`,
+					`  ${stylePromptText(healthyMarker, healthyTone)} ${labelText} ${stylePromptText("|", "muted")} ${styleAccountDetailText(healthyMessage, healthyTone)}`,
 				);
 			}
 		} else {
 			const detail = normalizeFailureDetail(result.message, result.reason);
 			if (sessionLikelyValid) {
 				warnings += 1;
+				if (liveProbe) {
+					signedInOnly += 1;
+				}
 				if (display.showPerAccountRows) {
 					console.log(
 						`  ${stylePromptText("!", "warning")} ${labelText} ${stylePromptText("|", "muted")} ${stylePromptText(`refresh failed (${detail}) but this account still works right now`, "warning")}`,
@@ -2447,17 +2467,38 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 
 	console.log("");
 	console.log(
-		formatResultSummary([
-			{ text: `${ok} working`, tone: "success" },
-			{
-				text: `${failed} need re-login`,
-				tone: failed > 0 ? "danger" : "muted",
-			},
-			{
-				text: `${warnings} warning${warnings === 1 ? "" : "s"}`,
-				tone: warnings > 0 ? "warning" : "muted",
-			},
-		]),
+		formatResultSummary(
+			liveProbe
+				? [
+						{
+							text: `${codexAvailable} Codex available`,
+							tone: codexAvailable > 0 ? "success" : "muted",
+						},
+						{
+							text: `${signedInOnly} signed in only`,
+							tone: signedInOnly > 0 ? "warning" : "muted",
+						},
+						{
+							text: `${failed} need re-login`,
+							tone: failed > 0 ? "danger" : "muted",
+						},
+						{
+							text: `${warnings} warning${warnings === 1 ? "" : "s"}`,
+							tone: warnings > 0 ? "warning" : "muted",
+						},
+					]
+				: [
+						{ text: `${ok} working`, tone: "success" },
+						{
+							text: `${failed} need re-login`,
+							tone: failed > 0 ? "danger" : "muted",
+						},
+						{
+							text: `${warnings} warning${warnings === 1 ? "" : "s"}`,
+							tone: warnings > 0 ? "warning" : "muted",
+						},
+					],
+		),
 	);
 }
 
@@ -2474,7 +2515,7 @@ function printBestUsage(): void {
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend before switching",
 			"  --json, -j         Print machine-readable JSON output",
-			"  --model, -m        Probe model for live mode (default: gpt-5.3-codex)",
+			`  --model, -m        Probe model for live mode (default: ${DEFAULT_LIVE_PROBE_MODEL})`,
 			"",
 			"Behavior:",
 			"  - Chooses the healthiest account using forecast scoring",
@@ -2486,7 +2527,7 @@ function parseBestArgs(args: string[]): ParsedArgsResult<BestCliOptions> {
 	const options: BestCliOptions = {
 		live: false,
 		json: false,
-		model: "gpt-5.3-codex",
+		model: DEFAULT_LIVE_PROBE_MODEL,
 		modelProvided: false,
 	};
 

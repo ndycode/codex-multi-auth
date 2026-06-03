@@ -1,3 +1,5 @@
+import { DEFAULT_MODEL } from "./request/helpers/model-map.js";
+
 export type IntegrationSnippetKind = "opencode" | "openclaw" | "python" | "curl" | "env";
 
 export interface IntegrationSnippetInput {
@@ -13,7 +15,6 @@ export interface IntegrationSnippet {
 }
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:1456/v1";
-const DEFAULT_MODEL = "gpt-5.3-codex";
 const DEFAULT_ENV_VAR = "CODEX_MULTI_AUTH_LOCAL_KEY";
 
 function normalizeInput(input: IntegrationSnippetInput = {}): Required<IntegrationSnippetInput> {

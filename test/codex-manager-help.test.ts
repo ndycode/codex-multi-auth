@@ -89,6 +89,15 @@ describe("codex-manager help parsers", () => {
 	});
 
 	it("parses best args and treats help as a first-class result", () => {
+		expect(parseBestArgs([])).toEqual({
+			ok: true,
+			options: {
+				live: false,
+				json: false,
+				model: "gpt-5.5",
+				modelProvided: false,
+			},
+		});
 		expect(parseBestArgs(["--live", "--json", "--model", "gpt-5"])).toEqual({
 			ok: true,
 			options: {
