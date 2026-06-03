@@ -143,5 +143,12 @@ describe("codex-manager help parsers", () => {
 			reason: "error",
 			message: "Missing value for --model",
 		});
+		// The short -m alias is first-class too.
+		expect(parseBestArgs(["-m", "--json"])).toEqual({
+			ok: false,
+			reason: "error",
+			message: "Missing value for --model",
+		});
+		expect(parseBestArgs(["-m", "gpt-5.5"]).ok).toBe(true);
 	});
 });

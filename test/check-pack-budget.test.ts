@@ -127,6 +127,27 @@ describe("validatePackMetadata", () => {
 		).toThrow(/\.codex-plugin\/plugin\.json/);
 	});
 
+	it("does not accept a .bak sibling as the plugin manifest (exact-file match)", () => {
+		// A prefix match would let ".codex-plugin/plugin.json.bak" satisfy the gate
+		// while the real manifest is missing — the exact-file check must reject it.
+		expect(() =>
+			validatePackMetadata({
+				packageSize: 123,
+				paths: [
+					".codex-plugin/plugin.json.bak",
+					"dist/index.js",
+					"assets/logo.svg",
+					"config/default.json",
+					"scripts/codex.js",
+					"vendor/codex-ai-plugin/index.js",
+					"vendor/codex-ai-sdk/index.js",
+					"README.md",
+					"LICENSE",
+				],
+			}),
+		).toThrow(/\.codex-plugin\/plugin\.json/);
+	});
+
 	it("rejects forbidden lib sources in the packed file list", () => {
 		expect(() =>
 			validatePackMetadata({

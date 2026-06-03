@@ -13,16 +13,21 @@ import { promisify } from "node:util";
 const execAsync = promisify(exec);
 
 export const MAX_PACKAGE_SIZE = 8 * 1024 * 1024;
-export const REQUIRED_PREFIXES = [
+// Exact files that must be present (matched by full path equality, so a sibling
+// like ".codex-plugin/plugin.json.bak" or "README.md.bak" cannot satisfy them).
+export const REQUIRED_FILES = [
 	".codex-plugin/plugin.json",
+	"README.md",
+	"LICENSE",
+];
+// Directory prefixes that must contribute at least one packed file.
+export const REQUIRED_PREFIXES = [
 	"dist/",
 	"assets/",
 	"config/",
 	"scripts/",
 	"vendor/codex-ai-plugin/",
 	"vendor/codex-ai-sdk/",
-	"README.md",
-	"LICENSE",
 ];
 
 export const FORBIDDEN_PREFIXES = [
@@ -97,6 +102,14 @@ export function validatePackMetadata({ packageSize, paths }) {
 		);
 		if (leaked) {
 			throw new Error(`Forbidden file leaked into package: ${leaked}`);
+		}
+	}
+
+	for (const requiredFile of REQUIRED_FILES) {
+		if (!paths.includes(requiredFile)) {
+			throw new Error(
+				`Required package file missing from npm pack output: ${requiredFile}`,
+			);
 		}
 	}
 
