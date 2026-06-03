@@ -125,4 +125,23 @@ describe("codex-manager help parsers", () => {
 			message: "Unknown option: --bogus",
 		});
 	});
+
+	it("rejects a flag-like value after --model instead of consuming it", () => {
+		// "best --model --json" / "--model --live" must not swallow the next flag.
+		expect(parseBestArgs(["--model", "--json"])).toEqual({
+			ok: false,
+			reason: "error",
+			message: "Missing value for --model",
+		});
+		expect(parseBestArgs(["--model", "--live"])).toEqual({
+			ok: false,
+			reason: "error",
+			message: "Missing value for --model",
+		});
+		expect(parseBestArgs(["--model=--json"])).toEqual({
+			ok: false,
+			reason: "error",
+			message: "Missing value for --model",
+		});
+	});
 });

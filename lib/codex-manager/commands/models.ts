@@ -44,7 +44,7 @@ export async function runModelsCommand(
 		}
 		if (arg === "--model") {
 			const value = args[i + 1];
-			if (!value) {
+			if (!value || value.startsWith("-")) {
 				logError("Missing value for --model");
 				return 1;
 			}
@@ -54,7 +54,7 @@ export async function runModelsCommand(
 		}
 		if (arg?.startsWith("--model=")) {
 			const value = arg.slice("--model=".length).trim();
-			if (!value) {
+			if (!value || value.startsWith("-")) {
 				logError("Missing value for --model");
 				return 1;
 			}

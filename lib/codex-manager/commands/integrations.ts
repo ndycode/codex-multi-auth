@@ -69,7 +69,7 @@ export function runIntegrationsCommand(
 		}
 		if (arg === "--model") {
 			const value = args[i + 1];
-			if (!value) {
+			if (!value || value.startsWith("-")) {
 				logError("Missing value for --model");
 				return 1;
 			}

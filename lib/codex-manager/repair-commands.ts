@@ -214,7 +214,7 @@ export function parseFixArgs(args: string[]): ParsedArgsResult<FixCliOptions> {
 		}
 		if (argValue === "--model" || argValue === "-m") {
 			const value = args[i + 1];
-			if (!value) {
+			if (!value || value.startsWith("-")) {
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;
@@ -223,7 +223,7 @@ export function parseFixArgs(args: string[]): ParsedArgsResult<FixCliOptions> {
 		}
 		if (argValue.startsWith("--model=")) {
 			const value = argValue.slice("--model=".length).trim();
-			if (!value) {
+			if (!value || value.startsWith("-")) {
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;

@@ -184,7 +184,7 @@ export function parseBestArgs(args: string[]): ParsedBestArgs {
 		}
 		if (arg === "--model" || arg === "-m") {
 			const value = args[i + 1];
-			if (!value) {
+			if (!value || value.startsWith("-")) {
 				return {
 					ok: false,
 					reason: "error",
@@ -198,7 +198,7 @@ export function parseBestArgs(args: string[]): ParsedBestArgs {
 		}
 		if (arg.startsWith("--model=")) {
 			const value = arg.slice("--model=".length).trim();
-			if (!value) {
+			if (!value || value.startsWith("-")) {
 				return {
 					ok: false,
 					reason: "error",
