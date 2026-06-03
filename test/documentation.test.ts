@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { UI_COPY } from "../lib/ui/copy.js";
+import { DEFAULT_MODEL } from "../lib/request/helpers/model-map.js";
 
 const projectRoot = resolve(process.cwd());
 
@@ -336,7 +337,9 @@ describe("Documentation Integrity", () => {
 		const help = read(helpPath);
 		const switchCommand = read(switchPath);
 
-		expect(readme).toContain("codex-multi-auth fix --live --model gpt-5.5");
+		expect(readme).toContain(
+			`codex-multi-auth fix --live --model ${DEFAULT_MODEL}`,
+		);
 		expect(commandRef).toContain(
 			"| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle |",
 		);

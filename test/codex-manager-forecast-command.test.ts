@@ -5,6 +5,7 @@ import {
 } from "../lib/codex-manager/commands/forecast.js";
 import { CodexUnavailableError } from "../lib/errors.js";
 import { CODEX_UNAVAILABLE_PROBE_NOTE } from "../lib/quota-probe.js";
+import { DEFAULT_MODEL } from "../lib/request/helpers/model-map.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 
 function createStorage(): AccountStorageV3 {
@@ -124,6 +125,9 @@ describe("runForecastCommand", () => {
 		expect(result).toBe(0);
 		expect(deps.logInfo).toHaveBeenCalledWith(
 			expect.stringContaining("codex-multi-auth forecast"),
+		);
+		expect(deps.logInfo).toHaveBeenCalledWith(
+			expect.stringContaining(`(default: ${DEFAULT_MODEL})`),
 		);
 	});
 

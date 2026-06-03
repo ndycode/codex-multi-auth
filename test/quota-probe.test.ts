@@ -30,6 +30,7 @@ import {
 	CODEX_UNAVAILABLE_PROBE_NOTE,
 } from "../lib/quota-probe.js";
 import { CodexUnavailableError } from "../lib/errors.js";
+import { DEFAULT_MODEL } from "../lib/request/helpers/model-map.js";
 
 function makeQuotaHeaders(overrides: Record<string, string> = {}): Headers {
 	const headers = new Headers({
@@ -95,9 +96,51 @@ describe("quota-probe", () => {
 			accessToken: "token-1",
 		});
 
-		expect(snapshot.model).toBe("gpt-5.5");
-		expect(getCodexInstructionsMock).toHaveBeenCalledWith("gpt-5.5");
+		expect(snapshot.model).toBe(DEFAULT_MODEL);
+		expect(getCodexInstructionsMock).toHaveBeenCalledWith(DEFAULT_MODEL);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("falls back from the default model to gpt-5.4 when the default is unsupported", async () => {
+		// The default probe chain leads with DEFAULT_MODEL; if the account cannot
+		// use it, the next candidate (gpt-5.4) must be tried before any codex model.
+		const unsupported = new Response(
+			JSON.stringify({
+				error: {
+					message: `Model ${DEFAULT_MODEL} unsupported`,
+					type: "invalid_request_error",
+				},
+			}),
+			{ status: 400, headers: new Headers({ "content-type": "application/json" }) },
+		);
+		const ok = new Response("", {
+			status: 200,
+			headers: makeQuotaHeaders({ "x-codex-primary-used-percent": "11" }),
+		});
+		const fetchMock = vi.fn().mockResolvedValueOnce(unsupported).mockResolvedValueOnce(ok);
+		vi.stubGlobal("fetch", fetchMock);
+
+		getUnsupportedCodexModelInfoMock
+			.mockReturnValueOnce({
+				isUnsupported: true,
+				unsupportedModel: DEFAULT_MODEL,
+				message: "unsupported",
+			})
+			.mockReturnValue({
+				isUnsupported: false,
+				unsupportedModel: undefined,
+				message: undefined,
+			});
+
+		const snapshot = await fetchCodexQuotaSnapshot({
+			accountId: "acc-1",
+			accessToken: "token-1",
+		});
+
+		expect(snapshot.model).toBe("gpt-5.4");
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(getCodexInstructionsMock).toHaveBeenNthCalledWith(1, DEFAULT_MODEL);
+		expect(getCodexInstructionsMock).toHaveBeenNthCalledWith(2, "gpt-5.4");
 	});
 
 	it("falls back to next model when first model is unsupported", async () => {

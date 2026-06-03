@@ -136,7 +136,7 @@ function printForecastUsage(logInfo: (message: string) => void): void {
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
 			"  --explain          Include structured recommendation reasoning",
-			"  --model, -m        Probe model for live mode (default: gpt-5.5)",
+			`  --model, -m        Probe model for live mode (default: ${DEFAULT_MODEL})`,
 			"  --no-runtime-overlay  Ignore persisted runtime skip diagnostics",
 		].join("\n"),
 	);

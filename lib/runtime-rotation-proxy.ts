@@ -33,7 +33,7 @@ import {
 	URL_PATHS,
 } from "./constants.js";
 import { getModelFamily, type ModelFamily } from "./prompts/codex.js";
-import { DEFAULT_MODEL } from "./request/helpers/model-map.js";
+import { CURRENT_CODEX_MODEL } from "./request/helpers/model-map.js";
 import { queuedRefresh } from "./refresh-queue.js";
 import {
 	mutateRuntimeObservabilitySnapshot,
@@ -726,7 +726,11 @@ function buildResponsesRequestContext(
 		method: "POST",
 		upstreamPath: URL_PATHS.CODEX_RESPONSES,
 		model,
-		family: getModelFamily(model ?? DEFAULT_MODEL),
+		// The /codex/responses path is codex-family. A model-less request must
+		// bucket into the codex family (rotation/cooldown/budget), so fall back to
+		// the current codex model — NOT the general DEFAULT_MODEL (gpt-5.5), whose
+		// family is gpt-5.2 and would mis-account a pass-through codex request.
+		family: getModelFamily(model ?? CURRENT_CODEX_MODEL),
 		stream: parsedBody?.stream === true,
 		sessionKey: resolveSessionKey(headers, parsedBody),
 	};

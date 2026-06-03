@@ -142,7 +142,7 @@ export function printFixUsage(): void {
 			"  --dry-run, -n      Preview changes without writing storage",
 			"  --json, -j         Print machine-readable JSON output",
 			"  --live, -l         Run live session probe before deciding health",
-			"  --model, -m        Probe model for live mode (default: gpt-5.5)",
+			`  --model, -m        Probe model for live mode (default: ${DEFAULT_MODEL})`,
 			"",
 			"Behavior:",
 			"  - Refreshes tokens for enabled accounts",

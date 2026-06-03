@@ -104,7 +104,7 @@ export function printForecastUsage(): void {
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
-			"  --model, -m        Probe model for live mode (default: gpt-5.5)",
+			`  --model, -m        Probe model for live mode (default: ${DEFAULT_MODEL})`,
 		].join("\n"),
 	);
 }
@@ -118,7 +118,7 @@ export function printReportUsage(): void {
 			"Options:",
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
-			"  --model, -m        Probe model for live mode (default: gpt-5.5)",
+			`  --model, -m        Probe model for live mode (default: ${DEFAULT_MODEL})`,
 			"  --out              Write JSON report to a file path",
 		].join("\n"),
 	);

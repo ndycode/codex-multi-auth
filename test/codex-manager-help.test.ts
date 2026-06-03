@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	parseAuthLoginArgs,
 	parseBestArgs,
+	printBestUsage,
 } from "../lib/codex-manager/help.js";
+import { DEFAULT_MODEL } from "../lib/request/helpers/model-map.js";
 
 describe("codex-manager help parsers", () => {
 	it("parses login flags without printing usage", () => {
@@ -94,7 +96,7 @@ describe("codex-manager help parsers", () => {
 			options: {
 				live: false,
 				json: false,
-				model: "gpt-5.5",
+				model: DEFAULT_MODEL,
 				modelProvided: false,
 			},
 		});
@@ -111,6 +113,17 @@ describe("codex-manager help parsers", () => {
 			ok: false,
 			reason: "help",
 		});
+	});
+
+	it("renders the default probe model from DEFAULT_MODEL in best usage", () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+		printBestUsage();
+
+		expect(logSpy).toHaveBeenCalledTimes(1);
+		const usage = String(logSpy.mock.calls[0]?.[0]);
+		expect(usage).toContain(`(default: ${DEFAULT_MODEL})`);
+		logSpy.mockRestore();
 	});
 
 	it("reports missing model values and unknown flags", () => {
