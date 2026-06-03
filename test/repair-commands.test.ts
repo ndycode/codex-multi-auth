@@ -176,9 +176,14 @@ describe("repair-commands direct deps coverage", () => {
 			ok: false,
 			message: "Missing value for --model",
 		});
-		// A real model value is still accepted.
-		const okParse = parseFixArgs(["--model", "gpt-5.5"]);
-		expect(okParse.ok).toBe(true);
+		// The short -m form is first-class too and must reject flag-like values.
+		expect(parseFixArgs(["-m", "--json"])).toEqual({
+			ok: false,
+			message: "Missing value for --model",
+		});
+		// A real model value is still accepted (both long and short forms).
+		expect(parseFixArgs(["--model", "gpt-5.5"]).ok).toBe(true);
+		expect(parseFixArgs(["-m", "gpt-5.5"]).ok).toBe(true);
 	});
 
 	it("runVerifyFlagged uses the injected identity resolver in the direct no-restore flow", async () => {
