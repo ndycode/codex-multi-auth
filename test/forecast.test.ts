@@ -229,6 +229,29 @@ describe("forecast helpers", () => {
 		expect(result.reasons).not.toContain("runtime skip: rate-limited");
 	});
 
+	it("ignores a stale rate-limited overlay when rateLimitResetTimes is absent", () => {
+		const now = 1_700_000_000_000;
+		const account = {
+			refreshToken: "refresh-1",
+			addedAt: now - 10_000,
+			lastUsed: now - 10_000,
+			// No rateLimitResetTimes field at all: the limit was cleared (runtime
+			// reset or a successful request) after the overlay was written.
+		};
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account,
+			runtimeOverlay: {
+				lastPoolExhaustionSkipReasons: { "0": "rate-limited" },
+			},
+		});
+
+		expect(result.availability).toBe("ready");
+		expect(result.reasons).not.toContain("runtime skip: rate-limited");
+	});
+
 	it("applies a rate-limited overlay when the rate limit is still active on disk", () => {
 		const now = 1_700_000_000_000;
 		const result = evaluateForecastAccount({
@@ -282,6 +305,30 @@ describe("forecast helpers", () => {
 				addedAt: now - 10_000,
 				lastUsed: now - 10_000,
 				coolingDownUntil: now - 1,
+			},
+			runtimeOverlay: {
+				lastPoolExhaustionSkipReasons: { "0": "cooling-down:server-error" },
+			},
+		});
+
+		expect(result.availability).toBe("ready");
+		expect(result.reasons).not.toContain(
+			"runtime skip: cooling-down:server-error",
+		);
+	});
+
+	it("ignores a stale cooling-down overlay when coolingDownUntil is absent", () => {
+		const now = 1_700_000_000_000;
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account: {
+				refreshToken: "refresh-1",
+				addedAt: now - 10_000,
+				lastUsed: now - 10_000,
+				// No coolingDownUntil field at all: cooldown cleared after the
+				// overlay was written.
 			},
 			runtimeOverlay: {
 				lastPoolExhaustionSkipReasons: { "0": "cooling-down:server-error" },
