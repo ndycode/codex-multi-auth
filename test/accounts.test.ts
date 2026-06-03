@@ -4396,4 +4396,82 @@ describe("AccountManager", () => {
 			expect(manager.getActiveIndexForFamily("gpt-5-codex")).toBe(2);
 		});
 	});
+
+	describe("getCurrentOrNextForFamilySequential (issue #509 drain-first)", () => {
+		const makeStored = (count: number) => {
+			const now = Date.now();
+			return {
+				version: 3 as const,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: Array.from({ length: count }, (_, i) => ({
+					refreshToken: `token-${i}`,
+					addedAt: now,
+					lastUsed: now - i * 1000,
+				})),
+			};
+		};
+
+		it("sticks to the active account across calls while it stays available", () => {
+			const manager = new AccountManager(undefined, makeStored(2) as never);
+			manager.setActiveIndex(0);
+
+			const first = manager.getCurrentOrNextForFamilySequential("codex");
+			const second = manager.getCurrentOrNextForFamilySequential("codex");
+			const third = manager.getCurrentOrNextForFamilySequential("codex");
+
+			expect(first?.index).toBe(0);
+			expect(second?.index).toBe(0);
+			expect(third?.index).toBe(0);
+			// Cursor does NOT advance while draining the active account.
+			expect(manager.getActiveIndexForFamily("codex")).toBe(0);
+		});
+
+		it("advances to the next account only once the active one is exhausted", () => {
+			const manager = new AccountManager(undefined, makeStored(2) as never);
+			const account0 = manager.setActiveIndex(0)!;
+
+			expect(manager.getCurrentOrNextForFamilySequential("codex")?.index).toBe(0);
+
+			// Drain account 0 to 100% (rate-limited): selector must move to account 1.
+			manager.markRateLimited(account0, 60_000, "codex");
+
+			const afterDrain = manager.getCurrentOrNextForFamilySequential("codex");
+			expect(afterDrain?.index).toBe(1);
+			expect(afterDrain?.refreshToken).toBe("token-1");
+			expect(manager.getActiveIndexForFamily("codex")).toBe(1);
+
+			// And it now sticks to account 1.
+			expect(manager.getCurrentOrNextForFamilySequential("codex")?.index).toBe(1);
+		});
+
+		it("wraps back to a recovered earlier account when the current one drains", () => {
+			const manager = new AccountManager(undefined, makeStored(2) as never);
+			const account0 = manager.setActiveIndex(0)!;
+
+			// A drains -> switch to B.
+			manager.markRateLimited(account0, 60_000, "codex");
+			expect(manager.getCurrentOrNextForFamilySequential("codex")?.index).toBe(1);
+
+			// A's quota window recovers; B then drains.
+			account0.rateLimitResetTimes = {};
+			const account1 = manager.getAccountByIndex(1)!;
+			manager.markRateLimited(account1, 60_000, "codex");
+
+			// Sequential wraps forward from B (index 1) and reclaims recovered A.
+			const reclaimed = manager.getCurrentOrNextForFamilySequential("codex");
+			expect(reclaimed?.index).toBe(0);
+			expect(manager.getActiveIndexForFamily("codex")).toBe(0);
+		});
+
+		it("returns null when every account is exhausted", () => {
+			const manager = new AccountManager(undefined, makeStored(2) as never);
+			const account0 = manager.setActiveIndex(0)!;
+			const account1 = manager.getAccountByIndex(1)!;
+			manager.markRateLimited(account0, 60_000, "codex");
+			manager.markRateLimited(account1, 60_000, "codex");
+
+			expect(manager.getCurrentOrNextForFamilySequential("codex")).toBeNull();
+		});
+	});
 });

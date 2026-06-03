@@ -23,6 +23,7 @@ import {
 	getTokenRefreshSkewMs,
 	getPidOffsetEnabled,
 	getRoutingMutexMode,
+	getSchedulingStrategy,
 	loadPluginConfig,
 } from "./config.js";
 import {
@@ -1162,6 +1163,7 @@ export function chooseAccount(params: {
 	skipReasons?: Map<number, string>;
 	stickyBoostByAccount?: Record<number, number>;
 	pidOffsetEnabled?: boolean;
+	schedulingStrategy?: "hybrid" | "sequential";
 }): ManagedAccount | null {
 	const {
 		accountManager,
@@ -1176,6 +1178,7 @@ export function chooseAccount(params: {
 		skipReasons,
 		stickyBoostByAccount,
 		pidOffsetEnabled,
+		schedulingStrategy,
 	} = params;
 
 	// Manual pin (from `codex-multi-auth switch <n>`) overrides every other
@@ -1209,6 +1212,44 @@ export function chooseAccount(params: {
 			return null;
 		}
 		return pinned;
+	}
+
+	// Sequential / drain-first mode (issue #509): the active account governs ALL
+	// new requests, so we deliberately SKIP the per-session affinity tier — there
+	// is no per-chat stickiness, every request follows the single active account.
+	// The manual pin above still wins (handled first). When the active account is
+	// exhausted the selector advances to the next available account and earlier
+	// accounts reclaim the slot once their quota recovers.
+	if (schedulingStrategy === "sequential") {
+		const selected = accountManager.getCurrentOrNextForFamilySequential(
+			family,
+			model,
+		);
+		if (
+			selected &&
+			!attemptedIndexes.has(selected.index) &&
+			!policy?.blockedAccountIndexes.has(selected.index)
+		) {
+			const reason = accountManager.getAccountRuntimeSkipReason(
+				selected.index,
+				family,
+				model,
+			);
+			if (!reason) return selected;
+			skipReasons?.set(selected.index, reason);
+		}
+
+		// Active account was attempted/blocked/skipped this request (e.g. it just
+		// rate-limited mid-loop): fall through to the shared linear scan below to
+		// find the next eligible account.
+		return chooseLinearScanFallback({
+			accountManager,
+			family,
+			model,
+			attemptedIndexes,
+			policy,
+			skipReasons,
+		});
 	}
 
 	const preferredIndex = sessionAffinityStore?.getPreferredAccountIndex(sessionKey, now);
@@ -1258,6 +1299,35 @@ export function chooseAccount(params: {
 		if (!reason) return selected;
 		skipReasons?.set(selected.index, reason);
 	}
+
+	return chooseLinearScanFallback({
+		accountManager,
+		family,
+		model,
+		attemptedIndexes,
+		policy,
+		skipReasons,
+	});
+}
+
+/**
+ * Shared linear-scan fallback used by both the hybrid and sequential selection
+ * paths in `chooseAccount`. Walks every account in pool order and returns the
+ * first one that is not already attempted, not policy-blocked, and has no
+ * runtime skip reason (rate-limited / cooling down / circuit-open), recording a
+ * skip reason for each rejected candidate. Mutates the round-robin cursor via
+ * `markSwitched` on the winner. Returns null when no eligible account remains.
+ */
+function chooseLinearScanFallback(params: {
+	accountManager: AccountManager;
+	family: ModelFamily;
+	model: string | null;
+	attemptedIndexes: ReadonlySet<number>;
+	policy: RuntimePolicyDecision | null;
+	skipReasons?: Map<number, string>;
+}): ManagedAccount | null {
+	const { accountManager, family, model, attemptedIndexes, policy, skipReasons } =
+		params;
 
 	for (const account of accountManager.getAccountsSnapshot()) {
 		if (attemptedIndexes.has(account.index)) {
@@ -1472,6 +1542,7 @@ export async function startRuntimeRotationProxy(
 	// mutations when routingMutex="enabled". Legacy mode keeps the inline fast path.
 	const routingMutexMode = getRoutingMutexMode(pluginConfig);
 	activeAccountManager.setRoutingMutexMode(routingMutexMode);
+	const schedulingStrategy = getSchedulingStrategy(pluginConfig);
 	const fetchImpl = options.fetchImpl ?? fetch;
 	const host = options.host ?? DEFAULT_HOST;
 	// Defense in depth (runtime-proxy-01): the proxy presents managed OAuth tokens
@@ -1771,6 +1842,7 @@ export async function startRuntimeRotationProxy(
 						skipReasons: accountSkipReasons,
 						stickyBoostByAccount: rotationStickyBoost,
 						pidOffsetEnabled,
+						schedulingStrategy,
 					});
 				const selected =
 					routingMutexMode === "enabled"

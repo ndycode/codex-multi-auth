@@ -65,6 +65,7 @@ Used only for host plugin mode through the host runtime config file.
 
 | Key | Default |
 | --- | --- |
+| `schedulingStrategy` | `hybrid` |
 | `retryAllAccountsRateLimited` | `true` |
 | `retryAllAccountsMaxWaitMs` | `0` |
 | `retryAllAccountsMaxRetries` | `Infinity` |
@@ -72,6 +73,8 @@ Used only for host plugin mode through the host runtime config file.
 | `fallbackOnUnsupportedCodexModel` | `false` |
 | `fallbackToGpt52OnUnsupportedGpt53` | `true` |
 | `unsupportedCodexFallbackChain` | `{}` |
+
+`schedulingStrategy` selects how the runtime proxy picks an account per request. `hybrid` (default) keeps the weighted health/token/freshness selection that spreads load across all available accounts. `sequential` (drain-first) sticks to one active account and only advances to the next available account once the current one is fully exhausted (rate-limited / cooling down / circuit-open); earlier accounts become eligible again as soon as their quota window recovers, staggering recovery across the pool. A manual pin still overrides this, and sequential mode intentionally ignores per-session affinity so all new requests follow the single active account. Overridable per-process via `CODEX_AUTH_SCHEDULING_STRATEGY`.
 
 ### Token / Recovery
 
@@ -220,6 +223,7 @@ Upgrade note:
 | `CODEX_TUI_GLYPHS` | TUI glyph mode |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS` | Request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` | Stream stall timeout override |
+| `CODEX_AUTH_SCHEDULING_STRATEGY` | Account scheduling strategy override (`hybrid` or `sequential`/drain-first) |
 | `CODEX_MULTI_AUTH_SYNC_CODEX_CLI` | Toggle Codex CLI state sync |
 | `CODEX_MULTI_AUTH_REAL_CODEX_BIN` | Force official Codex binary path |
 | `CODEX_MULTI_AUTH_BYPASS` | Bypass local auth handling |

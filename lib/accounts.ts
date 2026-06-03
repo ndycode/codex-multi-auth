@@ -789,6 +789,75 @@ export class AccountManager {
 		return null;
 	}
 
+	/**
+	 * Sequential / drain-first selection (issue #509).
+	 *
+	 * Unlike the round-robin and hybrid selectors, this does NOT advance on
+	 * every pick. It sticks to the current active account for the family and
+	 * keeps returning it while it is available; only when the active account is
+	 * fully exhausted (rate-limited / cooling down / circuit-open / disabled)
+	 * does it scan forward — wrapping around the pool — for the next available
+	 * account and make THAT the new active account. Because the scan starts from
+	 * the active index and wraps, an earlier account that has recovered its
+	 * quota window becomes eligible again as soon as the current account drains,
+	 * producing the staggered-recovery pattern requested in #509.
+	 *
+	 * Concurrency: mutates `currentAccountIndexByFamily` / `cursorByFamily` like
+	 * the sibling selectors; callers that need serialization wrap the call in the
+	 * routing mutex (see the proxy hot path). No I/O.
+	 */
+	getCurrentOrNextForFamilySequential(
+		family: ModelFamily,
+		model?: string | null,
+	): ManagedAccount | null {
+		const count = this.accounts.length;
+		if (count === 0) return null;
+
+		const isUsable = (
+			account: ManagedAccount | undefined,
+		): account is ManagedAccount => {
+			if (!account) return false;
+			if (account.enabled === false) return false;
+			if (!this.hasEnabledWorkspaces(account)) return false;
+			clearExpiredRateLimits(account);
+			return (
+				!isRateLimitedForFamily(account, family, model) &&
+				!this.isAccountCoolingDown(account) &&
+				this.isCircuitAvailable(account)
+			);
+		};
+
+		// Sticky: stay on the current active account while it is still usable so
+		// we drain it fully before moving on. A negative/unset active index falls
+		// through to the forward scan below.
+		const activeIndex = this.currentAccountIndexByFamily[family];
+		if (activeIndex >= 0 && activeIndex < count) {
+			const active = this.accounts[activeIndex];
+			if (isUsable(active)) {
+				active.lastUsed = nowMs();
+				return active;
+			}
+		}
+
+		// Active account is exhausted (or none set): scan forward from the active
+		// index, wrapping, for the next usable account and pin it as the new
+		// active account. Starting at the active index (not active+1) lets a
+		// recovered earlier account reclaim the active slot on wrap-around.
+		const start = activeIndex >= 0 && activeIndex < count ? activeIndex : 0;
+		for (let i = 0; i < count; i++) {
+			const idx = (start + i) % count;
+			const account = this.accounts[idx];
+			if (!isUsable(account)) continue;
+
+			this.currentAccountIndexByFamily[family] = idx;
+			this.cursorByFamily[family] = (idx + 1) % count;
+			account.lastUsed = nowMs();
+			return account;
+		}
+
+		return null;
+	}
+
 	getCurrentOrNextForFamilyHybrid(
 		family: ModelFamily,
 		model?: string | null,

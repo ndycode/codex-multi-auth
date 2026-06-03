@@ -5,8 +5,10 @@ import { HTTP_STATUS, OPENAI_HEADERS } from "../lib/constants.js";
 import {
 	startRuntimeRotationProxy,
 	buildTokenInvalidationBody,
+	chooseAccount,
 	type RuntimeRotationProxyServer,
 } from "../lib/runtime-rotation-proxy.js";
+import { SessionAffinityStore } from "../lib/session-affinity.js";
 import { clearCircuitBreakers } from "../lib/circuit-breaker.js";
 import {
 	__resetRoutingMutexForTests,
@@ -2404,5 +2406,93 @@ describe("buildTokenInvalidationBody", () => {
 	it("falls back to the stable message when no usable message field exists", () => {
 		const body = JSON.stringify({ error: { code: "something_else" } });
 		expect(parse(buildTokenInvalidationBody(body)).error.message).toBe(FALLBACK);
+	});
+});
+
+describe("chooseAccount sequential mode (issue #509)", () => {
+	beforeEach(() => {
+		resetTrackers();
+		clearCircuitBreakers();
+	});
+
+	const makeManager = (count: number) => {
+		const now = Date.now();
+		const stored = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: Array.from({ length: count }, (_, i) => ({
+				refreshToken: `token-${i}`,
+				addedAt: now,
+				lastUsed: now - i * 1000,
+			})),
+		};
+		return new AccountManager(undefined, stored as never);
+	};
+
+	it("ignores session affinity and follows the active account", () => {
+		const manager = makeManager(2);
+		manager.setActiveIndex(0);
+
+		// Affinity store points this session at account 1 — sequential must NOT honor it.
+		const affinity = new SessionAffinityStore();
+		affinity.remember("session-xyz", 1);
+
+		const selected = chooseAccount({
+			accountManager: manager,
+			sessionAffinityStore: affinity,
+			sessionKey: "session-xyz",
+			family: "codex",
+			model: null,
+			attemptedIndexes: new Set(),
+			now: Date.now(),
+			policy: null,
+			pinnedIndex: null,
+			schedulingStrategy: "sequential",
+		});
+
+		expect(selected?.index).toBe(0);
+	});
+
+	it("honors a manual pin over sequential mode", () => {
+		const manager = makeManager(2);
+		manager.setActiveIndex(0);
+
+		const selected = chooseAccount({
+			accountManager: manager,
+			sessionAffinityStore: null,
+			sessionKey: null,
+			family: "codex",
+			model: null,
+			attemptedIndexes: new Set(),
+			now: Date.now(),
+			policy: null,
+			pinnedIndex: 1,
+			schedulingStrategy: "sequential",
+		});
+
+		// Pin tier runs first, so the pinned account wins regardless of the active one.
+		expect(selected?.index).toBe(1);
+	});
+
+	it("advances to the next account when the active one is exhausted", () => {
+		const manager = makeManager(2);
+		const account0 = manager.setActiveIndex(0)!;
+		manager.markRateLimited(account0, 60_000, "codex");
+
+		const selected = chooseAccount({
+			accountManager: manager,
+			sessionAffinityStore: null,
+			sessionKey: null,
+			family: "codex",
+			model: null,
+			attemptedIndexes: new Set(),
+			now: Date.now(),
+			policy: null,
+			pinnedIndex: null,
+			schedulingStrategy: "sequential",
+		});
+
+		expect(selected?.index).toBe(1);
 	});
 });
