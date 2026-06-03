@@ -14,7 +14,7 @@ import {
 } from "../forecast-report-shared.js";
 import type { QuotaCacheData } from "../../quota-cache.js";
 import { type CodexQuotaSnapshot, describeCodexProbeFailure } from "../../quota-probe.js";
-import { resolveNormalizedModel } from "../../request/helpers/model-map.js";
+import { DEFAULT_MODEL, resolveNormalizedModel } from "../../request/helpers/model-map.js";
 import { type AccountMetadataV3, type AccountStorageV3 } from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 
@@ -149,7 +149,7 @@ function parseForecastArgs(
 		live: false,
 		json: false,
 		explain: false,
-		model: "gpt-5.5",
+		model: DEFAULT_MODEL,
 		runtimeOverlay: true,
 	};
 
@@ -174,14 +174,18 @@ function parseForecastArgs(
 		}
 		if (arg === "--model" || arg === "-m") {
 			const value = args[i + 1];
-			if (!value) return { ok: false, message: "Missing value for --model" };
+			if (!value || value.startsWith("-")) {
+				return { ok: false, message: "Missing value for --model" };
+			}
 			options.model = value;
 			i += 1;
 			continue;
 		}
 		if (arg.startsWith("--model=")) {
 			const value = arg.slice("--model=".length).trim();
-			if (!value) return { ok: false, message: "Missing value for --model" };
+			if (!value || value.startsWith("-")) {
+				return { ok: false, message: "Missing value for --model" };
+			}
 			options.model = value;
 			continue;
 		}
@@ -211,7 +215,7 @@ export async function runForecastCommand(
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const requestedModel = options.model?.trim() || "gpt-5.5";
+	const requestedModel = options.model?.trim() || DEFAULT_MODEL;
 	const probeModel = resolveNormalizedModel(requestedModel);
 	const display = deps.loadDashboardDisplaySettings
 		? (await deps.loadDashboardDisplaySettings().catch(() => null)) ??

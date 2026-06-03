@@ -134,6 +134,21 @@ describe("runForecastCommand", () => {
 		expect(deps.logError).toHaveBeenCalledWith("Unknown option: --bogus");
 	});
 
+	it("rejects a flag-like value after --model instead of consuming it", async () => {
+		// "--model --json" must NOT swallow --json as the model value.
+		const deps = createDeps();
+		const result = await runForecastCommand(["--model", "--json"], deps);
+		expect(result).toBe(1);
+		expect(deps.logError).toHaveBeenCalledWith("Missing value for --model");
+	});
+
+	it("rejects an empty flag-like --model= value", async () => {
+		const deps = createDeps();
+		const result = await runForecastCommand(["--model=--json"], deps);
+		expect(result).toBe(1);
+		expect(deps.logError).toHaveBeenCalledWith("Missing value for --model");
+	});
+
 	it("prints json output for populated storage", async () => {
 		const deps = createDeps();
 		const result = await runForecastCommand(["--json"], deps);

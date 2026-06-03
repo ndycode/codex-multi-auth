@@ -520,7 +520,7 @@ describe("runReportCommand", () => {
 		expect(deps.fetchCodexQuotaSnapshot).toHaveBeenCalledWith({
 			accountId: "acct-live",
 			accessToken: "access-token-1",
-			model: "gpt-5.3-codex",
+			model: "gpt-5.5",
 		});
 	});
 

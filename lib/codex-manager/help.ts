@@ -1,4 +1,6 @@
-const DEFAULT_LIVE_PROBE_MODEL = "gpt-5.5";
+import { DEFAULT_MODEL } from "../request/helpers/model-map.js";
+
+const DEFAULT_LIVE_PROBE_MODEL = DEFAULT_MODEL;
 
 export function printUsage(): void {
 	console.log(

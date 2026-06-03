@@ -2006,6 +2006,26 @@ describe("codex manager cli commands", () => {
 		expect(logSpy.mock.calls[0]?.[0]).toContain("codex-multi-auth best");
 	});
 
+	it("rejects a flag-like value after best --model instead of consuming it", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		// "--model --live" must NOT swallow --live as the model value.
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"best",
+			"--model",
+			"--live",
+		]);
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith("Missing value for --model");
+		expect(loadAccountsMock).not.toHaveBeenCalled();
+		expect(saveAccountsMock).not.toHaveBeenCalled();
+		expect(logSpy.mock.calls[0]?.[0]).toContain("codex-multi-auth best");
+	});
+
 	it("rejects unknown best args before switching accounts", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});

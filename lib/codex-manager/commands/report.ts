@@ -25,6 +25,7 @@ import {
 } from "../../quota-probe.js";
 import { type ModelFamily } from "../../prompts/codex.js";
 import {
+	DEFAULT_MODEL,
 	getModelCapabilities,
 	getModelProfile,
 	resolveNormalizedModel,
@@ -141,7 +142,7 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 		live: false,
 		json: false,
 		explain: false,
-		model: "gpt-5.5",
+		model: DEFAULT_MODEL,
 		cachedOnly: false,
 	};
 
@@ -166,14 +167,18 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 		}
 		if (arg === "--model" || arg === "-m") {
 			const value = args[i + 1];
-			if (!value) return { ok: false, message: "Missing value for --model" };
+			if (!value || value.startsWith("-")) {
+				return { ok: false, message: "Missing value for --model" };
+			}
 			options.model = value;
 			i += 1;
 			continue;
 		}
 		if (arg.startsWith("--model=")) {
 			const value = arg.slice("--model=".length).trim();
-			if (!value) return { ok: false, message: "Missing value for --model" };
+			if (!value || value.startsWith("-")) {
+				return { ok: false, message: "Missing value for --model" };
+			}
 			options.model = value;
 			continue;
 		}
@@ -305,7 +310,7 @@ export async function runReportCommand(
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const requestedModel = options.model?.trim() || "gpt-5.5";
+	const requestedModel = options.model?.trim() || DEFAULT_MODEL;
 	const modelInspection = inspectRequestedModel(requestedModel);
 
 	deps.setStoragePath(null);

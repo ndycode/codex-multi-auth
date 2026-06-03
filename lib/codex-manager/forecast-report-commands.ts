@@ -19,6 +19,7 @@ import {
 	describeCodexProbeFailure,
 } from "../quota-probe.js";
 import { queuedRefresh } from "../refresh-queue.js";
+import { DEFAULT_MODEL } from "../request/helpers/model-map.js";
 import {
 	getStoragePath,
 	loadAccounts,
@@ -127,7 +128,7 @@ export function parseForecastArgs(args: string[]): ParsedArgsResult<ForecastCliO
 	const options: ForecastCliOptions = {
 		live: false,
 		json: false,
-		model: "gpt-5.5",
+		model: DEFAULT_MODEL,
 	};
 
 	for (let i = 0; i < args.length; i += 1) {
@@ -143,7 +144,7 @@ export function parseForecastArgs(args: string[]): ParsedArgsResult<ForecastCliO
 		}
 		if (arg === "--model" || arg === "-m") {
 			const value = args[i + 1];
-			if (!value) {
+			if (!value || value.startsWith("-")) {
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;
@@ -152,7 +153,7 @@ export function parseForecastArgs(args: string[]): ParsedArgsResult<ForecastCliO
 		}
 		if (arg.startsWith("--model=")) {
 			const value = arg.slice("--model=".length).trim();
-			if (!value) {
+			if (!value || value.startsWith("-")) {
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;
@@ -168,7 +169,7 @@ export function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptio
 	const options: ReportCliOptions = {
 		live: false,
 		json: false,
-		model: "gpt-5.5",
+		model: DEFAULT_MODEL,
 	};
 
 	for (let i = 0; i < args.length; i += 1) {
@@ -184,7 +185,7 @@ export function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptio
 		}
 		if (arg === "--model" || arg === "-m") {
 			const value = args[i + 1];
-			if (!value) {
+			if (!value || value.startsWith("-")) {
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;
@@ -193,7 +194,7 @@ export function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptio
 		}
 		if (arg.startsWith("--model=")) {
 			const value = arg.slice("--model=".length).trim();
-			if (!value) {
+			if (!value || value.startsWith("-")) {
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;

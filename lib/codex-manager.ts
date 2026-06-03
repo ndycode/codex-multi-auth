@@ -129,6 +129,7 @@ import {
 import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import {
+	DEFAULT_MODEL,
 	getModelCapabilities,
 	getModelProfile,
 	resolveNormalizedModel,
@@ -698,7 +699,7 @@ function getPersistedQuotaViewForAccount(
 	return {
 		updatedAt: cachedEntry?.updatedAt ?? now,
 		status: 429,
-		model: cachedEntry?.model ?? "gpt-5.5",
+		model: cachedEntry?.model ?? DEFAULT_MODEL,
 		planType: cachedEntry?.planType,
 		primary: {
 			...cachedEntry?.primary,
@@ -787,7 +788,7 @@ function pruneUnsafeQuotaEmailCacheEntry(
 }
 
 const DEFAULT_MENU_QUOTA_REFRESH_TTL_MS = 5 * 60_000;
-const DEFAULT_LIVE_PROBE_MODEL = "gpt-5.5";
+const DEFAULT_LIVE_PROBE_MODEL = DEFAULT_MODEL;
 const MENU_QUOTA_REFRESH_MODEL = DEFAULT_LIVE_PROBE_MODEL;
 
 interface MenuQuotaProbeTarget {
@@ -2482,10 +2483,6 @@ async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
 							text: `${failed} need re-login`,
 							tone: failed > 0 ? "danger" : "muted",
 						},
-						{
-							text: `${warnings} warning${warnings === 1 ? "" : "s"}`,
-							tone: warnings > 0 ? "warning" : "muted",
-						},
 					]
 				: [
 						{ text: `${ok} working`, tone: "success" },
@@ -2544,7 +2541,7 @@ function parseBestArgs(args: string[]): ParsedArgsResult<BestCliOptions> {
 		}
 		if (arg === "--model" || arg === "-m") {
 			const value = args[i + 1];
-			if (!value) {
+			if (!value || value.startsWith("-")) {
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;
@@ -2554,7 +2551,7 @@ function parseBestArgs(args: string[]): ParsedArgsResult<BestCliOptions> {
 		}
 		if (arg.startsWith("--model=")) {
 			const value = arg.slice("--model=".length).trim();
-			if (!value) {
+			if (!value || value.startsWith("-")) {
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;

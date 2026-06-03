@@ -40,7 +40,7 @@ import {
 } from "../codex-cli/state.js";
 import { setCodexCliActiveSelection } from "../codex-cli/writer.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
-import { resolveNormalizedModel } from "../request/helpers/model-map.js";
+import { DEFAULT_MODEL, resolveNormalizedModel } from "../request/helpers/model-map.js";
 import { loadPersistedRuntimeObservabilitySnapshot } from "../runtime/runtime-observability.js";
 import type { AccountIdSource, TokenFailure, TokenResult } from "../types.js";
 
@@ -194,7 +194,7 @@ export function parseFixArgs(args: string[]): ParsedArgsResult<FixCliOptions> {
 		dryRun: false,
 		json: false,
 		live: false,
-		model: "gpt-5.5",
+		model: DEFAULT_MODEL,
 	};
 
 	for (let i = 0; i < args.length; i += 1) {
@@ -1197,7 +1197,7 @@ export async function runFix(
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const probeModel = resolveNormalizedModel(options.model.trim() || "gpt-5.5");
+	const probeModel = resolveNormalizedModel(options.model.trim() || DEFAULT_MODEL);
 	const display = DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
 	const quotaCache = options.live ? await loadQuotaCache() : null;
 	const workingQuotaCache = quotaCache ? deps.cloneQuotaCacheData(quotaCache) : null;
