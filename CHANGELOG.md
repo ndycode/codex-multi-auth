@@ -7,6 +7,19 @@ This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
+## [2.2.2] - 2026-06-03
+
+Patch release for a stale runtime-overlay false positive in `forecast --live`.
+See [docs/releases/v2.2.2.md](docs/releases/v2.2.2.md) for full details.
+
+### Fixed
+
+- `forecast --live` no longer marks working accounts as unavailable when a
+  time-bounded runtime overlay reason (`rate-limited`, `cooling-down:...`)
+  persists on disk after its window has expired; the overlay is now
+  cross-referenced against the time-aware disk state before being applied, and
+  `doctor`'s `forecast-runtime-alignment` warning clears with it (#507)
+
 ## [2.1.3] - 2026-05-01
 
 Patch release for Codex Desktop app-bind history visibility and merged-main
