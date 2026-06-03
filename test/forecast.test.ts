@@ -252,6 +252,55 @@ describe("forecast helpers", () => {
 		expect(result.reasons).not.toContain("runtime skip: rate-limited");
 	});
 
+	it("ignores a stale overlay reason resolved from accountSkipReasons (precedence path)", () => {
+		const now = 1_700_000_000_000;
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account: {
+				refreshToken: "refresh-1",
+				addedAt: now - 10_000,
+				lastUsed: now - 10_000,
+				// No active rate limit or cooldown on disk.
+			},
+			runtimeOverlay: {
+				// accountSkipReasons takes precedence over
+				// lastPoolExhaustionSkipReasons in the resolver; the staleness guard
+				// must apply to whichever key wins.
+				accountSkipReasons: { "0": "rate-limited" },
+				lastPoolExhaustionSkipReasons: { "0": "cooling-down:server-error" },
+			},
+		});
+
+		expect(result.availability).toBe("ready");
+		expect(result.reasons).not.toContain("runtime skip: rate-limited");
+		expect(result.reasons).not.toContain(
+			"runtime skip: cooling-down:server-error",
+		);
+	});
+
+	it("applies an active overlay reason resolved from accountSkipReasons (precedence path)", () => {
+		const now = 1_700_000_000_000;
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account: {
+				refreshToken: "refresh-1",
+				addedAt: now - 10_000,
+				lastUsed: now - 10_000,
+				rateLimitResetTimes: { codex: now + 30_000 },
+			},
+			runtimeOverlay: {
+				accountSkipReasons: { "0": "rate-limited" },
+			},
+		});
+
+		expect(result.availability).toBe("unavailable");
+		expect(result.reasons).toContain("runtime skip: rate-limited");
+	});
+
 	it("applies a rate-limited overlay when the rate limit is still active on disk", () => {
 		const now = 1_700_000_000_000;
 		const result = evaluateForecastAccount({
