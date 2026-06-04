@@ -4599,5 +4599,31 @@ describe("AccountManager", () => {
 			).toBe(0);
 			expect(manager.getActiveIndexForFamily("gpt-5.1")).toBe(0);
 		});
+
+		it("never anchors the active pointer on a policy-blocked account (#509 review P1)", () => {
+			const manager = new AccountManager(undefined, makeStored(2) as never);
+			const account0 = manager.setActiveIndex(0)!;
+			// Account 0 is exhausted; account 1 is otherwise usable but policy-blocked
+			// (e.g. paused/drained) for this request.
+			manager.markRateLimited(account0, 60_000, "codex");
+			const blocked = new Set([1]);
+
+			// Selector must NOT commit the active pointer to the blocked account.
+			const selected = manager.getCurrentOrNextForFamilySequential(
+				"codex",
+				null,
+				blocked,
+			);
+			expect(selected).toBeNull();
+			expect(manager.getActiveIndexForFamily("codex")).toBe(0);
+
+			// Once the block clears, account 1 becomes selectable normally.
+			const afterUnblock = manager.getCurrentOrNextForFamilySequential(
+				"codex",
+				null,
+				new Set(),
+			);
+			expect(afterUnblock?.index).toBe(1);
+		});
 	});
 });

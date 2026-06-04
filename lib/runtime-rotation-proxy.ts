@@ -1224,6 +1224,7 @@ export function chooseAccount(params: {
 		const selected = accountManager.getCurrentOrNextForFamilySequential(
 			family,
 			model,
+			policy?.blockedAccountIndexes,
 		);
 		if (
 			selected &&

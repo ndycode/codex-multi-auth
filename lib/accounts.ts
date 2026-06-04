@@ -805,10 +805,19 @@ export class AccountManager {
 	 * Concurrency: mutates `currentAccountIndexByFamily` / `cursorByFamily` like
 	 * the sibling selectors; callers that need serialization wrap the call in the
 	 * routing mutex (see the proxy hot path). No I/O.
+	 *
+	 * `blockedIndexes` (optional) is the request's policy block set
+	 * (`RuntimePolicyDecision.blockedAccountIndexes`: paused / drained / lacking
+	 * capability for the model). Blocked accounts are treated as NOT usable so the
+	 * selector never commits the active pointer to an account that `chooseAccount`
+	 * would immediately reject — otherwise the drain-first primary could anchor on
+	 * a permanently-blocked account and degrade every future request to the linear
+	 * scan fallback (#509 review P1).
 	 */
 	getCurrentOrNextForFamilySequential(
 		family: ModelFamily,
 		model?: string | null,
+		blockedIndexes?: ReadonlySet<number>,
 	): ManagedAccount | null {
 		const count = this.accounts.length;
 		if (count === 0) return null;
@@ -818,6 +827,7 @@ export class AccountManager {
 		): account is ManagedAccount => {
 			if (!account) return false;
 			if (account.enabled === false) return false;
+			if (blockedIndexes?.has(account.index)) return false;
 			if (!this.hasEnabledWorkspaces(account)) return false;
 			clearExpiredRateLimits(account);
 			return (
