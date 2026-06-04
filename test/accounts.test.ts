@@ -4396,4 +4396,234 @@ describe("AccountManager", () => {
 			expect(manager.getActiveIndexForFamily("gpt-5-codex")).toBe(2);
 		});
 	});
+
+	describe("getCurrentOrNextForFamilySequential (issue #509 drain-first)", () => {
+		// The circuit-open case below trips a breaker via recordFailure; the global
+		// beforeEach resets trackers but NOT circuit breakers, so clear them here to
+		// keep each sequential case isolated (otherwise an open breaker leaks into
+		// later cases and the selector skips a still-healthy account).
+		beforeEach(() => {
+			clearCircuitBreakers();
+		});
+
+		const makeStored = (count: number) => {
+			const now = Date.now();
+			return {
+				version: 3 as const,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+				accounts: Array.from({ length: count }, (_, i) => ({
+					refreshToken: `token-${i}`,
+					addedAt: now,
+					lastUsed: now - i * 1000,
+				})),
+			};
+		};
+
+		it("sticks to the active account across calls while it stays available", () => {
+			const manager = new AccountManager(undefined, makeStored(2) as never);
+			manager.setActiveIndex(0);
+
+			const first = manager.getCurrentOrNextForFamilySequential("codex");
+			const second = manager.getCurrentOrNextForFamilySequential("codex");
+			const third = manager.getCurrentOrNextForFamilySequential("codex");
+
+			expect(first?.index).toBe(0);
+			expect(second?.index).toBe(0);
+			expect(third?.index).toBe(0);
+			// Cursor does NOT advance while draining the active account.
+			expect(manager.getActiveIndexForFamily("codex")).toBe(0);
+		});
+
+		it("advances to the next account only once the active one is exhausted", () => {
+			const manager = new AccountManager(undefined, makeStored(2) as never);
+			const account0 = manager.setActiveIndex(0)!;
+
+			expect(manager.getCurrentOrNextForFamilySequential("codex")?.index).toBe(0);
+
+			// Drain account 0 to 100% (rate-limited): selector must move to account 1.
+			manager.markRateLimited(account0, 60_000, "codex");
+
+			const afterDrain = manager.getCurrentOrNextForFamilySequential("codex");
+			expect(afterDrain?.index).toBe(1);
+			expect(afterDrain?.refreshToken).toBe("token-1");
+			expect(manager.getActiveIndexForFamily("codex")).toBe(1);
+
+			// And it now sticks to account 1.
+			expect(manager.getCurrentOrNextForFamilySequential("codex")?.index).toBe(1);
+		});
+
+		it("wraps back to a recovered earlier account when the current one drains", () => {
+			const manager = new AccountManager(undefined, makeStored(2) as never);
+			const account0 = manager.setActiveIndex(0)!;
+
+			// A drains -> switch to B.
+			manager.markRateLimited(account0, 60_000, "codex");
+			expect(manager.getCurrentOrNextForFamilySequential("codex")?.index).toBe(1);
+
+			// A's quota window recovers; B then drains.
+			account0.rateLimitResetTimes = {};
+			const account1 = manager.getAccountByIndex(1)!;
+			manager.markRateLimited(account1, 60_000, "codex");
+
+			// Sequential wraps forward from B (index 1) and reclaims recovered A.
+			const reclaimed = manager.getCurrentOrNextForFamilySequential("codex");
+			expect(reclaimed?.index).toBe(0);
+			expect(manager.getActiveIndexForFamily("codex")).toBe(0);
+		});
+
+		it("returns null when every account is exhausted", () => {
+			const manager = new AccountManager(undefined, makeStored(2) as never);
+			const account0 = manager.setActiveIndex(0)!;
+			const account1 = manager.getAccountByIndex(1)!;
+			manager.markRateLimited(account0, 60_000, "codex");
+			manager.markRateLimited(account1, 60_000, "codex");
+
+			expect(manager.getCurrentOrNextForFamilySequential("codex")).toBeNull();
+		});
+
+		it("advances when the active account is cooling down, then reclaims it on recovery", () => {
+			const manager = new AccountManager(undefined, makeStored(2) as never);
+			const account0 = manager.setActiveIndex(0)!;
+
+			// Cooldown is a non-rate-limit exhaustion path: selector must advance.
+			manager.markAccountCoolingDown(account0, 30_000, "auth-failure");
+			expect(manager.isAccountCoolingDown(account0)).toBe(true);
+
+			const afterCooldown = manager.getCurrentOrNextForFamilySequential("codex");
+			expect(afterCooldown?.index).toBe(1);
+			expect(manager.getActiveIndexForFamily("codex")).toBe(1);
+
+			// Account 0 recovers; account 1 then cools down -> wrap back to 0.
+			manager.clearAccountCooldown(account0);
+			const account1 = manager.getAccountByIndex(1)!;
+			manager.markAccountCoolingDown(account1, 30_000, "network-error");
+
+			const reclaimed = manager.getCurrentOrNextForFamilySequential("codex");
+			expect(reclaimed?.index).toBe(0);
+		});
+
+		it("advances when the active account's circuit is open", () => {
+			const manager = new AccountManager(undefined, makeStored(2) as never);
+			const account0 = manager.setActiveIndex(0)!;
+
+			// Trip the circuit breaker on the active account (3 consecutive failures).
+			manager.recordFailure(account0, "codex");
+			manager.recordFailure(account0, "codex");
+			manager.recordFailure(account0, "codex");
+
+			const selected = manager.getCurrentOrNextForFamilySequential("codex");
+			expect(selected?.index).toBe(1);
+			expect(manager.getActiveIndexForFamily("codex")).toBe(1);
+		});
+
+		it("drains a 3-account pool in order and wraps to a recovered account", () => {
+			const manager = new AccountManager(undefined, makeStored(3) as never);
+			const account0 = manager.setActiveIndex(0)!;
+
+			// A is primary.
+			expect(manager.getCurrentOrNextForFamilySequential("codex")?.index).toBe(0);
+
+			// A drains -> B.
+			manager.markRateLimited(account0, 60_000, "codex");
+			expect(manager.getCurrentOrNextForFamilySequential("codex")?.index).toBe(1);
+
+			// B drains -> C (forward scan past A which is still down).
+			const account1 = manager.getAccountByIndex(1)!;
+			manager.markRateLimited(account1, 60_000, "codex");
+			expect(manager.getCurrentOrNextForFamilySequential("codex")?.index).toBe(2);
+			expect(manager.getActiveIndexForFamily("codex")).toBe(2);
+
+			// A recovers; C drains -> wrap forward from C (index 2) past 0... A is the
+			// next usable, so it reclaims. Proves the scan wraps in a 3+ pool rather
+			// than just toggling between two accounts.
+			account0.rateLimitResetTimes = {};
+			const account2 = manager.getAccountByIndex(2)!;
+			manager.markRateLimited(account2, 60_000, "codex");
+			expect(manager.getCurrentOrNextForFamilySequential("codex")?.index).toBe(0);
+		});
+
+		it("skips a disabled active account and advances", () => {
+			const manager = new AccountManager(undefined, makeStored(2) as never);
+			manager.setActiveIndex(0);
+
+			// Disable the active account: isUsable must reject it and advance.
+			manager.setAccountEnabled(0, false);
+
+			const selected = manager.getCurrentOrNextForFamilySequential("codex");
+			expect(selected?.index).toBe(1);
+		});
+
+		it("selects the first usable account when activeIndex is unset (-1)", () => {
+			const stored = {
+				version: 3 as const,
+				activeIndex: -1,
+				activeIndexByFamily: { codex: -1 },
+				accounts: [
+					{ refreshToken: "token-0", addedAt: Date.now(), lastUsed: Date.now() },
+					{ refreshToken: "token-1", addedAt: Date.now(), lastUsed: Date.now() },
+				],
+			};
+			const manager = new AccountManager(undefined, stored as never);
+
+			// With no active account set, the forward scan starts at index 0.
+			const selected = manager.getCurrentOrNextForFamilySequential("codex");
+			expect(selected?.index).toBe(0);
+			expect(manager.getActiveIndexForFamily("codex")).toBe(0);
+		});
+
+		it("advances each ModelFamily independently (per-family cursor)", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0, "gpt-5.1": 0 },
+				accounts: [
+					{ refreshToken: "token-0", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-1", addedAt: now, lastUsed: now - 1000 },
+				],
+			};
+			const manager = new AccountManager(undefined, stored as never);
+			const account0 = manager.getAccountByIndex(0)!;
+
+			// Exhaust account 0 for the codex family ONLY.
+			manager.markRateLimited(account0, 60_000, "codex");
+
+			// codex must advance to account 1...
+			expect(manager.getCurrentOrNextForFamilySequential("codex")?.index).toBe(1);
+			expect(manager.getActiveIndexForFamily("codex")).toBe(1);
+
+			// ...but gpt-5.1 is unaffected and still drains account 0.
+			expect(
+				manager.getCurrentOrNextForFamilySequential("gpt-5.1")?.index,
+			).toBe(0);
+			expect(manager.getActiveIndexForFamily("gpt-5.1")).toBe(0);
+		});
+
+		it("never anchors the active pointer on a policy-blocked account (#509 review P1)", () => {
+			const manager = new AccountManager(undefined, makeStored(2) as never);
+			const account0 = manager.setActiveIndex(0)!;
+			// Account 0 is exhausted; account 1 is otherwise usable but policy-blocked
+			// (e.g. paused/drained) for this request.
+			manager.markRateLimited(account0, 60_000, "codex");
+			const blocked = new Set([1]);
+
+			// Selector must NOT commit the active pointer to the blocked account.
+			const selected = manager.getCurrentOrNextForFamilySequential(
+				"codex",
+				null,
+				blocked,
+			);
+			expect(selected).toBeNull();
+			expect(manager.getActiveIndexForFamily("codex")).toBe(0);
+
+			// Once the block clears, account 1 becomes selectable normally.
+			const afterUnblock = manager.getCurrentOrNextForFamilySequential(
+				"codex",
+				null,
+				new Set(),
+			);
+			expect(afterUnblock?.index).toBe(1);
+		});
+	});
 });

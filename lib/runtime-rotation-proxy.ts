@@ -23,6 +23,7 @@ import {
 	getTokenRefreshSkewMs,
 	getPidOffsetEnabled,
 	getRoutingMutexMode,
+	getSchedulingStrategy,
 	loadPluginConfig,
 } from "./config.js";
 import {
@@ -1162,6 +1163,7 @@ export function chooseAccount(params: {
 	skipReasons?: Map<number, string>;
 	stickyBoostByAccount?: Record<number, number>;
 	pidOffsetEnabled?: boolean;
+	schedulingStrategy?: "hybrid" | "sequential";
 }): ManagedAccount | null {
 	const {
 		accountManager,
@@ -1176,6 +1178,7 @@ export function chooseAccount(params: {
 		skipReasons,
 		stickyBoostByAccount,
 		pidOffsetEnabled,
+		schedulingStrategy,
 	} = params;
 
 	// Manual pin (from `codex-multi-auth switch <n>`) overrides every other
@@ -1209,6 +1212,50 @@ export function chooseAccount(params: {
 			return null;
 		}
 		return pinned;
+	}
+
+	// Sequential / drain-first mode (issue #509): the active account governs ALL
+	// new requests, so we deliberately SKIP the per-session affinity tier — there
+	// is no per-chat stickiness, every request follows the single active account.
+	// The manual pin above still wins (handled first). When the active account is
+	// exhausted the selector advances to the next available account and earlier
+	// accounts reclaim the slot once their quota recovers.
+	if (schedulingStrategy === "sequential") {
+		const selected = accountManager.getCurrentOrNextForFamilySequential(
+			family,
+			model,
+			policy?.blockedAccountIndexes,
+		);
+		if (
+			selected &&
+			!attemptedIndexes.has(selected.index) &&
+			!policy?.blockedAccountIndexes.has(selected.index)
+		) {
+			const reason = accountManager.getAccountRuntimeSkipReason(
+				selected.index,
+				family,
+				model,
+			);
+			if (!reason) return selected;
+			skipReasons?.set(selected.index, reason);
+		}
+
+		// Active account was attempted/blocked/skipped this request (e.g. it just
+		// rate-limited mid-loop): fall through to the shared linear scan to find
+		// the next eligible account to TRY. Pass advanceActivePointer=false so a
+		// transient, non-exhausting failure on the active account does not
+		// permanently move the drain-first primary — only
+		// getCurrentOrNextForFamilySequential advances it, and only on true
+		// exhaustion.
+		return chooseLinearScanFallback({
+			accountManager,
+			family,
+			model,
+			attemptedIndexes,
+			policy,
+			skipReasons,
+			advanceActivePointer: false,
+		});
 	}
 
 	const preferredIndex = sessionAffinityStore?.getPreferredAccountIndex(sessionKey, now);
@@ -1259,6 +1306,54 @@ export function chooseAccount(params: {
 		skipReasons?.set(selected.index, reason);
 	}
 
+	return chooseLinearScanFallback({
+		accountManager,
+		family,
+		model,
+		attemptedIndexes,
+		policy,
+		skipReasons,
+	});
+}
+
+/**
+ * Shared linear-scan fallback used by both the hybrid and sequential selection
+ * paths in `chooseAccount`. Walks every account in pool order and returns the
+ * first one that is not already attempted, not policy-blocked, and has no
+ * runtime skip reason (rate-limited / cooling down / circuit-open), recording a
+ * skip reason for each rejected candidate. Returns null when no eligible
+ * account remains.
+ *
+ * `advanceActivePointer` (default `true`) controls whether the winner is
+ * committed as the new active/cursor position via `markSwitched`. The hybrid
+ * path wants this (round-robin advance). The sequential path passes `false`:
+ * its within-request fallback only needs an account to TRY this request, and
+ * must NOT move `currentAccountIndexByFamily` — otherwise a transient,
+ * non-exhausting failure on the active account (which leaves it `isUsable` but
+ * present in `attemptedIndexes`) would permanently switch the drain-first
+ * primary even though it was never exhausted (issue #509 regression caught in
+ * review). In sequential mode only `getCurrentOrNextForFamilySequential` is
+ * allowed to advance the active pointer, and only on true exhaustion.
+ */
+function chooseLinearScanFallback(params: {
+	accountManager: AccountManager;
+	family: ModelFamily;
+	model: string | null;
+	attemptedIndexes: ReadonlySet<number>;
+	policy: RuntimePolicyDecision | null;
+	skipReasons?: Map<number, string>;
+	advanceActivePointer?: boolean;
+}): ManagedAccount | null {
+	const {
+		accountManager,
+		family,
+		model,
+		attemptedIndexes,
+		policy,
+		skipReasons,
+		advanceActivePointer = true,
+	} = params;
+
 	for (const account of accountManager.getAccountsSnapshot()) {
 		if (attemptedIndexes.has(account.index)) {
 			skipReasons?.set(account.index, "already-attempted");
@@ -1277,7 +1372,11 @@ export function chooseAccount(params: {
 			const live = accountManager.getAccountByIndex(account.index);
 			if (!live) continue;
 			// L4 (deferred): unlocked cursor mutation — see chooseAccount header.
-			accountManager.markSwitched(live, "rotation", family);
+			// Skipped in sequential mode (advanceActivePointer=false) so a
+			// within-request retry never reassigns the drain-first primary.
+			if (advanceActivePointer) {
+				accountManager.markSwitched(live, "rotation", family);
+			}
 			return live;
 		}
 		skipReasons?.set(account.index, reason);
@@ -1472,6 +1571,7 @@ export async function startRuntimeRotationProxy(
 	// mutations when routingMutex="enabled". Legacy mode keeps the inline fast path.
 	const routingMutexMode = getRoutingMutexMode(pluginConfig);
 	activeAccountManager.setRoutingMutexMode(routingMutexMode);
+	const schedulingStrategy = getSchedulingStrategy(pluginConfig);
 	const fetchImpl = options.fetchImpl ?? fetch;
 	const host = options.host ?? DEFAULT_HOST;
 	// Defense in depth (runtime-proxy-01): the proxy presents managed OAuth tokens
@@ -1771,17 +1871,26 @@ export async function startRuntimeRotationProxy(
 						skipReasons: accountSkipReasons,
 						stickyBoostByAccount: rotationStickyBoost,
 						pidOffsetEnabled,
+						schedulingStrategy,
 					});
 				const selected =
 					routingMutexMode === "enabled"
 						? await withRoutingMutex(routingMutexMode, async () => {
 								const candidate = selectAccount();
-								if (candidate && pinnedIndex === null) {
+								if (
+									candidate &&
+									pinnedIndex === null &&
+									schedulingStrategy !== "sequential"
+								) {
 									// Re-commit the cursor under the held mutex. Skipped when a
 									// manual pin is active so the proxy never clobbers the pin
 									// (see #474); pinned selections are deterministic and need no
-									// cursor advance. Runs inline via reentrancy — see comment
-									// above.
+									// cursor advance. Also skipped in sequential mode: the
+									// sequential selector already committed the correct active
+									// index inside this held mutex, and re-committing `candidate`
+									// would wrongly advance the drain-first primary when the pick
+									// came from the non-advancing linear-scan fallback (#509).
+									// Runs inline via reentrancy — see comment above.
 									await accountManager.markSwitchedLocked(
 										candidate,
 										"rotation",

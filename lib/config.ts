@@ -252,6 +252,7 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	preemptiveQuotaRemainingPercent7d: 5,
 	preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
 	routingMutex: "legacy",
+	schedulingStrategy: "hybrid",
 };
 
 const PLUGIN_CONFIG_FIELD_SCHEMAS = PluginConfigSchema.shape;
@@ -1887,6 +1888,36 @@ export function getRoutingMutexMode(
 	);
 }
 
+const SCHEDULING_STRATEGY_MODES = new Set<string>(["hybrid", "sequential"]);
+
+/**
+ * Resolve the account scheduling strategy (issue #509).
+ *
+ * - `"hybrid"` (default) keeps the existing weighted health/token/freshness
+ *   selection that spreads load across all available accounts.
+ * - `"sequential"` (a.k.a. drain-first) sticks to one active account and only
+ *   advances to the next available account once the current one is fully
+ *   exhausted (rate-limited / cooling down / circuit-open). Earlier accounts
+ *   become eligible again as soon as their quota window recovers, producing the
+ *   staggered-recovery pattern requested in #509. A manual pin still overrides
+ *   this; sequential mode ignores per-session affinity so all new requests
+ *   follow the single active account. The `CODEX_AUTH_SCHEDULING_STRATEGY` env
+ *   var accepts the same two values for opt-in trials without editing settings.
+ *
+ * Concurrency: pure read; safe for concurrent callers. Performs no I/O and is
+ * unaffected by Windows filesystem semantics. Contains no secrets.
+ */
+export function getSchedulingStrategy(
+	pluginConfig: PluginConfig,
+): "hybrid" | "sequential" {
+	return resolveStringSetting(
+		"CODEX_AUTH_SCHEDULING_STRATEGY",
+		pluginConfig.schedulingStrategy,
+		"hybrid",
+		SCHEDULING_STRATEGY_MODES,
+	);
+}
+
 type ConfigExplainMeta = {
 	key: keyof PluginConfig;
 	envNames: string[];
@@ -2236,6 +2267,11 @@ const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
 		key: "routingMutex",
 		envNames: ["CODEX_AUTH_ROUTING_MUTEX"],
 		getValue: getRoutingMutexMode,
+	},
+	{
+		key: "schedulingStrategy",
+		envNames: ["CODEX_AUTH_SCHEDULING_STRATEGY"],
+		getValue: getSchedulingStrategy,
 	},
 ];
 

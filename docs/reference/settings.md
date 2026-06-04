@@ -143,6 +143,7 @@ Named backup behavior:
 | Key | Default | Effect |
 | --- | --- | --- |
 | `codexRuntimeRotationProxy` | `true` | Enable the default-on localhost Responses proxy for forwarded official Codex CLI/app sessions |
+| `schedulingStrategy` | `hybrid` | Account scheduling: `hybrid` spreads load across all available accounts; `sequential` (drain-first) keeps one active account until it is fully exhausted, then advances to the next |
 | `preemptiveQuotaEnabled` | `true` | Defer requests before remaining quota is critically low |
 | `preemptiveQuotaRemainingPercent5h` | `5` | 5-hour quota threshold |
 | `preemptiveQuotaRemainingPercent7d` | `5` | 7-day quota threshold |
@@ -207,6 +208,7 @@ Maintainer/debug-focused overrides include:
 - `CODEX_MULTI_AUTH_SYNC_CODEX_CLI`
 - `CODEX_MULTI_AUTH_REAL_CODEX_BIN`
 - `CODEX_MULTI_AUTH_BYPASS`
+- `CODEX_AUTH_SCHEDULING_STRATEGY` (`hybrid` | `sequential`; opt-in drain-first scheduling without editing settings)
 - `CODEX_CLI_ACCOUNTS_PATH`
 - `CODEX_CLI_AUTH_PATH`
 - refresh lease controls (`CODEX_AUTH_REFRESH_LEASE*`)

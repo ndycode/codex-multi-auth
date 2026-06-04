@@ -74,6 +74,7 @@ These are safe for most operators and frequently used in day-to-day workflows.
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | HTTP request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=<ms>` | Stream stall timeout override |
 | `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS=<ms>` | Minimum time between global account switches (default `60000`). The proxy biases selection toward the last-served account within this window to reduce the rate at which different OAuth tokens appear from the same IP. Set to `0` to disable. |
+| `CODEX_AUTH_SCHEDULING_STRATEGY=hybrid/sequential` | Account scheduling strategy (default `hybrid`). `sequential` (drain-first) keeps one active account until it is fully exhausted before advancing to the next; see [Sequential / drain-first scheduling](#sequential--drain-first-scheduling). |
 | `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS=<ms>` | Cooldown applied to an account when the upstream or token-refresh endpoint explicitly revokes its OAuth token (default `300000`, 5 minutes). Raise this if accounts continue to be re-invalidated after re-login. |
 
 ---
@@ -116,6 +117,15 @@ The proxy preserves request bodies and streaming responses, replaces outbound au
 
 - **Token-invalidation detection**: when the upstream or the token-refresh endpoint returns an explicit OAuth revocation message, the proxy returns the error directly to the client instead of rotating to the next account. The affected account receives a 5-minute cooldown (`tokenInvalidationCooldownMs`, default `300000`) instead of the generic 30-second auth-failure cooldown. Configure via `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS`.
 - **Rotation-rate throttle**: the proxy biases account selection toward the last-served account for a configurable window (default 60 seconds, `minRotationIntervalMs`). Accounts that are rate-limited or cooling down are still rotated around. Configure via `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS` or set to `0` to disable.
+
+### Sequential / drain-first scheduling
+
+`schedulingStrategy` controls how the proxy picks an account for each request:
+
+- `hybrid` (default) spreads load across all available accounts using a weighted health/token/freshness score. Both accounts tend to consume quota at a similar pace.
+- `sequential` (drain-first) routes every new request to one active account and only advances to the next available account once the current one is fully exhausted (rate-limited, cooling down, or circuit-open). Because the scan wraps the pool, an earlier account that has recovered its quota window is reclaimed as soon as the current account drains. This staggers quota recovery across accounts for longer uninterrupted sessions.
+
+In `sequential` mode a manual pin (`codex-multi-auth switch <index>`) still takes precedence and is never overridden. Sequential mode intentionally ignores per-session affinity: once the active account changes, all subsequent requests follow the new active account regardless of which account originally handled a conversation. Enable it with `schedulingStrategy: "sequential"` in settings or `CODEX_AUTH_SCHEDULING_STRATEGY=sequential` for a per-process trial.
 
 Microsoft/Outlook SSO accounts may be more sensitive to proxy-mediated token use. If an Outlook-linked account is invalidated on every first request through the proxy but works normally on ChatGPT web, the root cause is likely IP or device binding on the Microsoft side. Raising `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS` and re-logging in the affected account typically resolves the cascade. If the problem persists, consider excluding the Microsoft account from the rotation pool via `codex-multi-auth switch`.
 

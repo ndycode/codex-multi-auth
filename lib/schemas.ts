@@ -78,6 +78,7 @@ export const PluginConfigSchema = z.object({
 	preemptiveQuotaRemainingPercent7d: z.number().min(0).max(100).optional(),
 	preemptiveQuotaMaxDeferralMs: z.number().min(1_000).optional(),
 	routingMutex: z.enum(["enabled", "legacy"]).optional(),
+	schedulingStrategy: z.enum(["hybrid", "sequential"]).optional(),
 });
 
 export type PluginConfigFromSchema = z.infer<typeof PluginConfigSchema>;
