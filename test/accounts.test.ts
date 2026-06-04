@@ -4473,5 +4473,40 @@ describe("AccountManager", () => {
 
 			expect(manager.getCurrentOrNextForFamilySequential("codex")).toBeNull();
 		});
+
+		it("advances when the active account is cooling down, then reclaims it on recovery", () => {
+			const manager = new AccountManager(undefined, makeStored(2) as never);
+			const account0 = manager.setActiveIndex(0)!;
+
+			// Cooldown is a non-rate-limit exhaustion path: selector must advance.
+			manager.markAccountCoolingDown(account0, 30_000, "auth-failure");
+			expect(manager.isAccountCoolingDown(account0)).toBe(true);
+
+			const afterCooldown = manager.getCurrentOrNextForFamilySequential("codex");
+			expect(afterCooldown?.index).toBe(1);
+			expect(manager.getActiveIndexForFamily("codex")).toBe(1);
+
+			// Account 0 recovers; account 1 then cools down -> wrap back to 0.
+			manager.clearAccountCooldown(account0);
+			const account1 = manager.getAccountByIndex(1)!;
+			manager.markAccountCoolingDown(account1, 30_000, "network-error");
+
+			const reclaimed = manager.getCurrentOrNextForFamilySequential("codex");
+			expect(reclaimed?.index).toBe(0);
+		});
+
+		it("advances when the active account's circuit is open", () => {
+			const manager = new AccountManager(undefined, makeStored(2) as never);
+			const account0 = manager.setActiveIndex(0)!;
+
+			// Trip the circuit breaker on the active account (3 consecutive failures).
+			manager.recordFailure(account0, "codex");
+			manager.recordFailure(account0, "codex");
+			manager.recordFailure(account0, "codex");
+
+			const selected = manager.getCurrentOrNextForFamilySequential("codex");
+			expect(selected?.index).toBe(1);
+			expect(manager.getActiveIndexForFamily("codex")).toBe(1);
+		});
 	});
 });

@@ -63,4 +63,15 @@ describe("schedulingStrategy config flag (issue #509)", () => {
 		};
 		expect(getSchedulingStrategy(cfg)).toBe("sequential");
 	});
+
+	it("rejects an invalid persisted config value and falls back to the default", () => {
+		const cfg = {
+			...DEFAULT_PLUGIN_CONFIG,
+			schedulingStrategy: "bogus",
+		} as unknown as PluginConfig;
+		expect(getSchedulingStrategy(cfg)).toBe(
+			DEFAULT_PLUGIN_CONFIG.schedulingStrategy,
+		);
+		expect(getSchedulingStrategy(cfg)).toBe("hybrid");
+	});
 });

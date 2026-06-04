@@ -1240,8 +1240,12 @@ export function chooseAccount(params: {
 		}
 
 		// Active account was attempted/blocked/skipped this request (e.g. it just
-		// rate-limited mid-loop): fall through to the shared linear scan below to
-		// find the next eligible account.
+		// rate-limited mid-loop): fall through to the shared linear scan to find
+		// the next eligible account to TRY. Pass advanceActivePointer=false so a
+		// transient, non-exhausting failure on the active account does not
+		// permanently move the drain-first primary — only
+		// getCurrentOrNextForFamilySequential advances it, and only on true
+		// exhaustion.
 		return chooseLinearScanFallback({
 			accountManager,
 			family,
@@ -1249,6 +1253,7 @@ export function chooseAccount(params: {
 			attemptedIndexes,
 			policy,
 			skipReasons,
+			advanceActivePointer: false,
 		});
 	}
 
@@ -1315,8 +1320,19 @@ export function chooseAccount(params: {
  * paths in `chooseAccount`. Walks every account in pool order and returns the
  * first one that is not already attempted, not policy-blocked, and has no
  * runtime skip reason (rate-limited / cooling down / circuit-open), recording a
- * skip reason for each rejected candidate. Mutates the round-robin cursor via
- * `markSwitched` on the winner. Returns null when no eligible account remains.
+ * skip reason for each rejected candidate. Returns null when no eligible
+ * account remains.
+ *
+ * `advanceActivePointer` (default `true`) controls whether the winner is
+ * committed as the new active/cursor position via `markSwitched`. The hybrid
+ * path wants this (round-robin advance). The sequential path passes `false`:
+ * its within-request fallback only needs an account to TRY this request, and
+ * must NOT move `currentAccountIndexByFamily` — otherwise a transient,
+ * non-exhausting failure on the active account (which leaves it `isUsable` but
+ * present in `attemptedIndexes`) would permanently switch the drain-first
+ * primary even though it was never exhausted (issue #509 regression caught in
+ * review). In sequential mode only `getCurrentOrNextForFamilySequential` is
+ * allowed to advance the active pointer, and only on true exhaustion.
  */
 function chooseLinearScanFallback(params: {
 	accountManager: AccountManager;
@@ -1325,9 +1341,17 @@ function chooseLinearScanFallback(params: {
 	attemptedIndexes: ReadonlySet<number>;
 	policy: RuntimePolicyDecision | null;
 	skipReasons?: Map<number, string>;
+	advanceActivePointer?: boolean;
 }): ManagedAccount | null {
-	const { accountManager, family, model, attemptedIndexes, policy, skipReasons } =
-		params;
+	const {
+		accountManager,
+		family,
+		model,
+		attemptedIndexes,
+		policy,
+		skipReasons,
+		advanceActivePointer = true,
+	} = params;
 
 	for (const account of accountManager.getAccountsSnapshot()) {
 		if (attemptedIndexes.has(account.index)) {
@@ -1347,7 +1371,11 @@ function chooseLinearScanFallback(params: {
 			const live = accountManager.getAccountByIndex(account.index);
 			if (!live) continue;
 			// L4 (deferred): unlocked cursor mutation — see chooseAccount header.
-			accountManager.markSwitched(live, "rotation", family);
+			// Skipped in sequential mode (advanceActivePointer=false) so a
+			// within-request retry never reassigns the drain-first primary.
+			if (advanceActivePointer) {
+				accountManager.markSwitched(live, "rotation", family);
+			}
 			return live;
 		}
 		skipReasons?.set(account.index, reason);
@@ -1848,12 +1876,20 @@ export async function startRuntimeRotationProxy(
 					routingMutexMode === "enabled"
 						? await withRoutingMutex(routingMutexMode, async () => {
 								const candidate = selectAccount();
-								if (candidate && pinnedIndex === null) {
+								if (
+									candidate &&
+									pinnedIndex === null &&
+									schedulingStrategy !== "sequential"
+								) {
 									// Re-commit the cursor under the held mutex. Skipped when a
 									// manual pin is active so the proxy never clobbers the pin
 									// (see #474); pinned selections are deterministic and need no
-									// cursor advance. Runs inline via reentrancy — see comment
-									// above.
+									// cursor advance. Also skipped in sequential mode: the
+									// sequential selector already committed the correct active
+									// index inside this held mutex, and re-committing `candidate`
+									// would wrongly advance the drain-first primary when the pick
+									// came from the non-advancing linear-scan fallback (#509).
+									// Runs inline via reentrancy — see comment above.
 									await accountManager.markSwitchedLocked(
 										candidate,
 										"rotation",

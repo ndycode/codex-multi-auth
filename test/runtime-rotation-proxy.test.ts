@@ -2352,6 +2352,66 @@ describe("routing mutex serializes selection + cursor commit (issue #14 / L4)", 
 	});
 });
 
+describe("sequential mode survives the routing-mutex path (issue #509)", () => {
+	const prevMutex = process.env.CODEX_AUTH_ROUTING_MUTEX;
+	const prevStrategy = process.env.CODEX_AUTH_SCHEDULING_STRATEGY;
+
+	afterEach(() => {
+		if (prevMutex === undefined) delete process.env.CODEX_AUTH_ROUTING_MUTEX;
+		else process.env.CODEX_AUTH_ROUTING_MUTEX = prevMutex;
+		if (prevStrategy === undefined)
+			delete process.env.CODEX_AUTH_SCHEDULING_STRATEGY;
+		else process.env.CODEX_AUTH_SCHEDULING_STRATEGY = prevStrategy;
+		__resetRoutingMutexForTests();
+	});
+
+	// Regression for the P1 caught in review: under routingMutex="enabled" the hot
+	// path re-commits the selected account via markSwitchedLocked after
+	// chooseAccount. In sequential mode the sequential selector already committed
+	// the active index inside the held mutex, so the re-commit must be skipped;
+	// otherwise the drain-first primary could double-advance. This test drives the
+	// real proxy with both flags on and asserts three back-to-back requests all
+	// stick to the SAME account while it stays healthy.
+	it("keeps sticking to one account across requests under enabled mutex", async () => {
+		process.env.CODEX_AUTH_ROUTING_MUTEX = "enabled";
+		process.env.CODEX_AUTH_SCHEDULING_STRATEGY = "sequential";
+		__resetRoutingMutexForTests();
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+
+		const { calls, fetchImpl } = createRecordingFetch(async () =>
+			textEventStream("data: forwarded\n\n"),
+		);
+
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		expect(accountManager.getRoutingMutexMode()).toBe("enabled");
+
+		const bodyFor = (session: string) => ({
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+			metadata: { session_id: session },
+		});
+
+		// Distinct sessions so any per-session affinity would scatter them; sequential
+		// mode must ignore affinity and keep all three on the same active account.
+		for (const session of ["s-1", "s-2", "s-3"]) {
+			const res = await postResponses(proxy, bodyFor(session));
+			expect(res.status).toBe(HTTP_STATUS.OK);
+			await res.text();
+		}
+
+		expect(calls).toHaveLength(3);
+		const servedAuth = calls.map((c) => c.headers.get("authorization"));
+		expect(servedAuth).toEqual([
+			"Bearer access-1",
+			"Bearer access-1",
+			"Bearer access-1",
+		]);
+		expect(accountManager.getActiveIndexForFamily("codex")).toBe(0);
+	});
+});
+
 describe("buildTokenInvalidationBody", () => {
 	const FALLBACK = "OAuth token has been invalidated. Please re-login.";
 	const parse = (raw: string) =>
@@ -2494,5 +2554,69 @@ describe("chooseAccount sequential mode (issue #509)", () => {
 		});
 
 		expect(selected?.index).toBe(1);
+	});
+
+	it("does not move the active primary when a healthy active account is only attempted (P1 #509)", () => {
+		const manager = makeManager(2);
+		manager.setActiveIndex(0);
+
+		// Simulate a transient, non-exhausting failure on the active account: it
+		// is still usable but already in attemptedIndexes for THIS request, so the
+		// sequential tier falls through to the linear-scan fallback.
+		const tried = chooseAccount({
+			accountManager: manager,
+			sessionAffinityStore: null,
+			sessionKey: null,
+			family: "codex",
+			model: null,
+			attemptedIndexes: new Set([0]),
+			now: Date.now(),
+			policy: null,
+			pinnedIndex: null,
+			schedulingStrategy: "sequential",
+		});
+
+		// The fallback hands account 1 to TRY this request...
+		expect(tried?.index).toBe(1);
+		// ...but the drain-first primary must NOT have advanced: account 0 was
+		// never exhausted, so the next fresh request must stick to it again.
+		expect(manager.getActiveIndexForFamily("codex")).toBe(0);
+
+		const nextRequest = chooseAccount({
+			accountManager: manager,
+			sessionAffinityStore: null,
+			sessionKey: null,
+			family: "codex",
+			model: null,
+			attemptedIndexes: new Set(),
+			now: Date.now(),
+			policy: null,
+			pinnedIndex: null,
+			schedulingStrategy: "sequential",
+		});
+		expect(nextRequest?.index).toBe(0);
+	});
+
+	it("returns null when every account is exhausted in sequential mode", () => {
+		const manager = makeManager(2);
+		const account0 = manager.setActiveIndex(0)!;
+		const account1 = manager.getAccountByIndex(1)!;
+		manager.markRateLimited(account0, 60_000, "codex");
+		manager.markRateLimited(account1, 60_000, "codex");
+
+		const selected = chooseAccount({
+			accountManager: manager,
+			sessionAffinityStore: null,
+			sessionKey: null,
+			family: "codex",
+			model: null,
+			attemptedIndexes: new Set(),
+			now: Date.now(),
+			policy: null,
+			pinnedIndex: null,
+			schedulingStrategy: "sequential",
+		});
+
+		expect(selected).toBeNull();
 	});
 });
