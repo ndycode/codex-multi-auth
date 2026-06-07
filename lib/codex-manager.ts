@@ -10,6 +10,7 @@ import {
 	sanitizeEmail,
 	selectBestAccountCandidate,
 	shouldUpdateAccountIdFromToken,
+	type Workspace,
 } from "./accounts.js";
 import {
 	createAuthorizationFlow,
@@ -39,6 +40,12 @@ import {
 } from "./codex-manager/commands/best.js";
 import { runAccountCommand } from "./codex-manager/commands/account.js";
 import { ACCOUNT_MANAGER_COMMANDS } from "./codex-manager/account-manager-commands.js";
+import {
+	type AccountPoolWriteOutcome,
+	buildInsertedAccount,
+	buildUpdatedAccount,
+	type ResolvedAccountWrite,
+} from "./codex-manager/account-pool-write.js";
 import { runBudgetCommand } from "./codex-manager/commands/budget.js";
 import { runBridgeCommand } from "./codex-manager/commands/bridge.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
@@ -203,6 +210,7 @@ type TokenSuccessWithAccount = TokenSuccess & {
 	accountIdOverride?: string;
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;
+	workspaces?: Workspace[];
 };
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
 const log = createLogger("codex-manager");
@@ -1303,6 +1311,17 @@ function resolveAccountSelection(
 		return tokens;
 	}
 
+	// Surface every workspace/organization exposed by the token so the saved
+	// account can track them (issue #491/#512). Without this, same-email
+	// multi-workspace logins persisted rows with `workspaces: null` and
+	// `workspace <account>` was unusable.
+	const workspaces: Workspace[] = candidates.map((candidate) => ({
+		id: candidate.accountId,
+		name: candidate.label,
+		enabled: true,
+		isDefault: candidate.isDefault,
+	}));
+
 	if (candidates.length === 1) {
 		const [candidate] = candidates;
 		if (candidate) {
@@ -1311,6 +1330,7 @@ function resolveAccountSelection(
 				accountIdOverride: candidate.accountId,
 				accountIdSource: candidate.source,
 				accountLabel: candidate.label,
+				workspaces,
 			};
 		}
 	}
@@ -1325,6 +1345,7 @@ function resolveAccountSelection(
 		accountIdOverride: best.accountId,
 		accountIdSource: best.source ?? "token",
 		accountLabel: best.label,
+		workspaces,
 	};
 }
 
@@ -2046,17 +2067,20 @@ async function runSignInFlow(
 	return runOAuthFlow(forceNewLogin, signInMode);
 }
 
+type PersistAccountPoolOutcome = AccountPoolWriteOutcome;
+
 async function persistAccountPool(
 	results: TokenSuccessWithAccount[],
 	replaceAll: boolean,
-): Promise<void> {
-	if (results.length === 0) return;
+): Promise<PersistAccountPoolOutcome | null> {
+	if (results.length === 0) return null;
 
-	await withAccountStorageTransaction(async (loadedStorage, persist) => {
+	return await withAccountStorageTransaction(async (loadedStorage, persist) => {
 		const stored = replaceAll ? null : loadedStorage;
 		const now = Date.now();
 		const accounts = stored?.accounts ? [...stored.accounts] : [];
 		let selectedAccountIndex: number | null = null;
+		let selectedOutcome: PersistAccountPoolOutcome | null = null;
 
 		for (const result of results) {
 			const tokenAccountId = extractAccountId(result.access);
@@ -2069,7 +2093,6 @@ async function persistAccountPool(
 				? (result.accountIdSource ??
 					(result.accountIdOverride ? "manual" : "token"))
 				: undefined;
-			const accountLabel = result.accountLabel;
 			const accountEmail = sanitizeEmail(
 				extractAccountEmail(result.access, result.idToken),
 			);
@@ -2085,46 +2108,33 @@ async function persistAccountPool(
 				},
 			);
 
+			const write: ResolvedAccountWrite = {
+				accountId,
+				accountIdSource,
+				accountLabel: result.accountLabel,
+				email: accountEmail,
+				refreshToken: result.refresh,
+				accessToken: result.access,
+				expiresAt: result.expires,
+				workspaces: result.workspaces,
+				now,
+			};
+
 			if (existingIndex === undefined) {
-				const newIndex = accounts.length;
-				accounts.push({
-					accountId,
-					accountIdSource,
-					accountLabel,
-					email: accountEmail,
-					refreshToken: result.refresh,
-					accessToken: result.access,
-					expiresAt: result.expires,
-					enabled: true,
-					addedAt: now,
-					lastUsed: now,
-				});
-				selectedAccountIndex = newIndex;
+				const { account, outcome } = buildInsertedAccount(write);
+				selectedAccountIndex = accounts.length;
+				accounts.push(account);
+				selectedOutcome = outcome;
 				continue;
 			}
 
 			const existing = accounts[existingIndex];
 			if (!existing) continue;
 
-			const nextEmail = accountEmail ?? existing.email;
-			const nextAccountId = accountId ?? existing.accountId;
-			const nextAccountIdSource = accountId
-				? (accountIdSource ?? existing.accountIdSource)
-				: existing.accountIdSource;
-
-			accounts[existingIndex] = {
-				...existing,
-				accountId: nextAccountId,
-				accountIdSource: nextAccountIdSource,
-				accountLabel: accountLabel ?? existing.accountLabel,
-				email: nextEmail,
-				refreshToken: result.refresh,
-				accessToken: result.access,
-				expiresAt: result.expires,
-				enabled: true,
-				lastUsed: now,
-			};
+			const { account, outcome } = buildUpdatedAccount(existing, write);
+			accounts[existingIndex] = account;
 			selectedAccountIndex = existingIndex;
+			selectedOutcome = outcome;
 		}
 
 		const fallbackActiveIndex =
@@ -2148,6 +2158,8 @@ async function persistAccountPool(
 			activeIndex: nextActiveIndex,
 			activeIndexByFamily,
 		});
+
+		return selectedOutcome;
 	});
 }
 
@@ -3226,7 +3238,7 @@ async function runAuthLoginFlow(
 			}
 
 			const resolved = resolveAccountSelection(tokenResult, loginOptions.org);
-			await persistAccountPool([resolved], false);
+			const persistOutcome = await persistAccountPool([resolved], false);
 			await syncSelectionToCodex(resolved);
 
 			const latestStorage = await loadAccounts();
@@ -3234,7 +3246,16 @@ async function runAuthLoginFlow(
 			existingCount = count;
 			namedBackups = [];
 			onboardingBackupDiscoveryWarning = null;
-			console.log(`Added account. Total: ${count}`);
+			// Only claim a new saved slot when one was actually appended. A
+			// same-email login that maps onto an existing entry updates or
+			// rebinds it instead of growing the pool (issue #512).
+			const outcomeMessage =
+				persistOutcome === "rebound"
+					? `Rebound workspace for existing account. Total: ${count}`
+					: persistOutcome === "updated"
+						? `Updated existing account. Total: ${count}`
+						: `Added account. Total: ${count}`;
+			console.log(outcomeMessage);
 			console.log("Next steps:");
 			console.log("  codex-multi-auth status  Check that the wrapper is active.");
 			console.log(
