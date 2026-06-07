@@ -79,6 +79,10 @@ export const UI_COPY = {
 		callbackMissed: "No callback received. Paste manually.",
 		cancelled: "Sign-in cancelled.",
 		cancelledBackToMenu: "Sign-in cancelled. Going back to menu.",
+		callbackInvalid:
+			"That callback URL is missing the code or state parameter. Paste the full URL you were redirected to (it should contain both code= and state=).",
+		callbackStateMismatch:
+			"OAuth state mismatch. That callback URL was generated for a different login attempt. Restart login and paste the callback URL from this attempt.",
 	},
 	returnFlow: {
 		continuePrompt: "Press Enter to go back.",

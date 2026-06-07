@@ -10,11 +10,11 @@ import {
 	sanitizeEmail,
 	selectBestAccountCandidate,
 	shouldUpdateAccountIdFromToken,
+	type Workspace,
 } from "./accounts.js";
 import {
 	createAuthorizationFlow,
 	exchangeAuthorizationCode,
-	parseAuthorizationInput,
 	redactOAuthUrlForLog,
 	REDIRECT_URI,
 } from "./auth/auth.js";
@@ -39,6 +39,15 @@ import {
 } from "./codex-manager/commands/best.js";
 import { runAccountCommand } from "./codex-manager/commands/account.js";
 import { ACCOUNT_MANAGER_COMMANDS } from "./codex-manager/account-manager-commands.js";
+import {
+	type AccountPoolWriteOutcome,
+	applyAccountPoolResults,
+	type ResolvedAccountWrite,
+} from "./codex-manager/account-pool-write.js";
+import {
+	classifyManualCallbackInput,
+	type ManualCallbackClassification,
+} from "./codex-manager/manual-callback.js";
 import { runBudgetCommand } from "./codex-manager/commands/budget.js";
 import { runBridgeCommand } from "./codex-manager/commands/bridge.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
@@ -203,6 +212,7 @@ type TokenSuccessWithAccount = TokenSuccess & {
 	accountIdOverride?: string;
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;
+	workspaces?: Workspace[];
 };
 type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
 const log = createLogger("codex-manager");
@@ -1289,16 +1299,39 @@ function resolveAccountSelection(
 	tokens: TokenSuccess,
 	orgOverride?: string,
 ): TokenSuccessWithAccount {
+	const candidates = getAccountIdCandidates(tokens.access, tokens.idToken);
+
+	// Surface every workspace/organization exposed by the token so the saved
+	// account can track them (issue #491/#512). Without this, same-email
+	// multi-workspace logins persisted rows with `workspaces: null` and
+	// `workspace <account>` was unusable. Built before the `--org` override
+	// branch so the explicit-binding flow persists workspaces too (#512).
+	const workspaces: Workspace[] | undefined =
+		candidates.length > 0
+			? candidates.map((candidate) => ({
+					id: candidate.accountId,
+					name: candidate.label,
+					enabled: true,
+					isDefault: candidate.isDefault,
+				}))
+			: undefined;
+
 	const override = resolveOrgOverride(orgOverride);
 	if (override) {
+		// Prefer the token candidate's human label for the chosen org so the
+		// saved row is identifiable, falling back to a bare manual binding.
+		const matched = candidates.find(
+			(candidate) => candidate.accountId === override,
+		);
 		return {
 			...tokens,
 			accountIdOverride: override,
 			accountIdSource: "manual",
+			accountLabel: matched?.label,
+			workspaces,
 		};
 	}
 
-	const candidates = getAccountIdCandidates(tokens.access, tokens.idToken);
 	if (candidates.length === 0) {
 		return tokens;
 	}
@@ -1311,6 +1344,7 @@ function resolveAccountSelection(
 				accountIdOverride: candidate.accountId,
 				accountIdSource: candidate.source,
 				accountLabel: candidate.label,
+				workspaces,
 			};
 		}
 	}
@@ -1325,6 +1359,7 @@ function resolveAccountSelection(
 		accountIdOverride: best.accountId,
 		accountIdSource: best.source ?? "token",
 		accountLabel: best.label,
+		workspaces,
 	};
 }
 
@@ -1380,13 +1415,20 @@ function applyTokenAccountIdentity(
 	return true;
 }
 
+/**
+ * Result of prompting for a manual OAuth callback URL. The classification lives
+ * in {@link classifyManualCallbackInput}; this alias keeps the prompt's return
+ * type tied to that single source of truth (issue #512 follow-up).
+ */
+type ManualCallbackResult = ManualCallbackClassification;
+
 async function promptManualCallback(
 	state: string,
 	options: { allowNonTty?: boolean } = {},
-): Promise<string | null> {
+): Promise<ManualCallbackResult> {
 	const useInteractivePrompt = input.isTTY && output.isTTY;
 	if (!useInteractivePrompt && !options.allowNonTty) {
-		return null;
+		return { type: "cancelled" };
 	}
 
 	const rl = createInterface({ input, output });
@@ -1436,29 +1478,10 @@ async function promptManualCallback(
 					input.once("end", handleInputClosed);
 					input.once("close", handleInputClosed);
 				});
-		if (answer === null) {
-			return null;
-		}
-		if (answer.includes("\u001b")) {
-			return null;
-		}
-		const normalized = answer.trim().toLowerCase();
-		if (
-			normalized.length === 0 ||
-			normalized === "q" ||
-			normalized === "quit" ||
-			normalized === "cancel" ||
-			normalized === "back"
-		) {
-			return null;
-		}
-		const parsed = parseAuthorizationInput(answer);
-		if (!parsed.code || !parsed.state) return null;
-		if (parsed.state !== state) return null;
-		return parsed.code;
+		return classifyManualCallbackInput(answer, state);
 	} catch (error) {
 		if (isAbortError(error) || isReadlineClosedError(error)) {
-			return null;
+			return { type: "cancelled" };
 		}
 		throw error;
 	} finally {
@@ -2007,9 +2030,28 @@ async function runOAuthFlow(
 					"warning",
 				),
 			);
-			code = await promptManualCallback(state, {
+			const manualResult = await promptManualCallback(state, {
 				allowNonTty: signInMode === "manual",
 			});
+			// A parse/state failure must surface its own validation error instead
+			// of being reported as `Cancelled.` like a genuine user abort
+			// (issue #512 follow-up). Only an actual cancellation falls through to
+			// the cancelled path below.
+			if (manualResult.type === "invalid") {
+				return {
+					type: "failed",
+					reason: "invalid_response",
+					message: UI_COPY.oauth.callbackInvalid,
+				};
+			}
+			if (manualResult.type === "state-mismatch") {
+				return {
+					type: "failed",
+					reason: "invalid_response",
+					message: UI_COPY.oauth.callbackStateMismatch,
+				};
+			}
+			code = manualResult.type === "code" ? manualResult.code : null;
 		}
 	} finally {
 		oauthServer?.close();
@@ -2046,19 +2088,20 @@ async function runSignInFlow(
 	return runOAuthFlow(forceNewLogin, signInMode);
 }
 
+type PersistAccountPoolOutcome = AccountPoolWriteOutcome;
+
 async function persistAccountPool(
 	results: TokenSuccessWithAccount[],
 	replaceAll: boolean,
-): Promise<void> {
-	if (results.length === 0) return;
+): Promise<PersistAccountPoolOutcome | null> {
+	if (results.length === 0) return null;
 
-	await withAccountStorageTransaction(async (loadedStorage, persist) => {
+	return await withAccountStorageTransaction(async (loadedStorage, persist) => {
 		const stored = replaceAll ? null : loadedStorage;
 		const now = Date.now();
-		const accounts = stored?.accounts ? [...stored.accounts] : [];
-		let selectedAccountIndex: number | null = null;
+		const existing = stored?.accounts ? [...stored.accounts] : [];
 
-		for (const result of results) {
+		const writes: ResolvedAccountWrite[] = results.map((result) => {
 			const tokenAccountId = extractAccountId(result.access);
 			const accountId = resolveRequestAccountId(
 				result.accountIdOverride,
@@ -2069,85 +2112,41 @@ async function persistAccountPool(
 				? (result.accountIdSource ??
 					(result.accountIdOverride ? "manual" : "token"))
 				: undefined;
-			const accountLabel = result.accountLabel;
-			const accountEmail = sanitizeEmail(
-				extractAccountEmail(result.access, result.idToken),
-			);
-			const existingIndex = findMatchingAccountIndex(
-				accounts,
-				{
-					accountId,
-					email: accountEmail,
-					refreshToken: result.refresh,
-				},
-				{
-					allowUniqueAccountIdFallbackWithoutEmail: true,
-				},
-			);
-
-			if (existingIndex === undefined) {
-				const newIndex = accounts.length;
-				accounts.push({
-					accountId,
-					accountIdSource,
-					accountLabel,
-					email: accountEmail,
-					refreshToken: result.refresh,
-					accessToken: result.access,
-					expiresAt: result.expires,
-					enabled: true,
-					addedAt: now,
-					lastUsed: now,
-				});
-				selectedAccountIndex = newIndex;
-				continue;
-			}
-
-			const existing = accounts[existingIndex];
-			if (!existing) continue;
-
-			const nextEmail = accountEmail ?? existing.email;
-			const nextAccountId = accountId ?? existing.accountId;
-			const nextAccountIdSource = accountId
-				? (accountIdSource ?? existing.accountIdSource)
-				: existing.accountIdSource;
-
-			accounts[existingIndex] = {
-				...existing,
-				accountId: nextAccountId,
-				accountIdSource: nextAccountIdSource,
-				accountLabel: accountLabel ?? existing.accountLabel,
-				email: nextEmail,
+			return {
+				accountId,
+				accountIdSource,
+				accountLabel: result.accountLabel,
+				email: sanitizeEmail(
+					extractAccountEmail(result.access, result.idToken),
+				),
 				refreshToken: result.refresh,
 				accessToken: result.access,
 				expiresAt: result.expires,
-				enabled: true,
-				lastUsed: now,
+				workspaces: result.workspaces,
+				now,
 			};
-			selectedAccountIndex = existingIndex;
-		}
+		});
 
-		const fallbackActiveIndex =
-			accounts.length === 0
-				? 0
-				: Math.max(0, Math.min(stored?.activeIndex ?? 0, accounts.length - 1));
-		const nextActiveIndex =
-			accounts.length === 0
-				? 0
-				: selectedAccountIndex === null
-					? fallbackActiveIndex
-					: Math.max(0, Math.min(selectedAccountIndex, accounts.length - 1));
+		const { accounts, activeIndex, outcome } = applyAccountPoolResults({
+			existing,
+			writes,
+			priorActiveIndex: stored?.activeIndex,
+			findMatchingAccountIndex,
+		});
+
 		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
 		for (const family of MODEL_FAMILIES) {
-			activeIndexByFamily[family] = nextActiveIndex;
+			activeIndexByFamily[family] = activeIndex;
 		}
 
 		await persist({
 			version: 3,
 			accounts,
-			activeIndex: nextActiveIndex,
+			activeIndex,
 			activeIndexByFamily,
 		});
+
+		return outcome;
 	});
 }
 
@@ -3226,7 +3225,7 @@ async function runAuthLoginFlow(
 			}
 
 			const resolved = resolveAccountSelection(tokenResult, loginOptions.org);
-			await persistAccountPool([resolved], false);
+			const persistOutcome = await persistAccountPool([resolved], false);
 			await syncSelectionToCodex(resolved);
 
 			const latestStorage = await loadAccounts();
@@ -3234,7 +3233,16 @@ async function runAuthLoginFlow(
 			existingCount = count;
 			namedBackups = [];
 			onboardingBackupDiscoveryWarning = null;
-			console.log(`Added account. Total: ${count}`);
+			// Only claim a new saved slot when one was actually appended. A
+			// same-email login that maps onto an existing entry updates or
+			// rebinds it instead of growing the pool (issue #512).
+			const outcomeMessage =
+				persistOutcome === "rebound"
+					? `Rebound workspace for existing account. Total: ${count}`
+					: persistOutcome === "updated"
+						? `Updated existing account. Total: ${count}`
+						: `Added account. Total: ${count}`;
+			console.log(outcomeMessage);
 			console.log("Next steps:");
 			console.log("  codex-multi-auth status  Check that the wrapper is active.");
 			console.log(
