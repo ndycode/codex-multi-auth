@@ -15,7 +15,6 @@ import {
 import {
 	createAuthorizationFlow,
 	exchangeAuthorizationCode,
-	parseAuthorizationInput,
 	redactOAuthUrlForLog,
 	REDIRECT_URI,
 } from "./auth/auth.js";
@@ -42,10 +41,13 @@ import { runAccountCommand } from "./codex-manager/commands/account.js";
 import { ACCOUNT_MANAGER_COMMANDS } from "./codex-manager/account-manager-commands.js";
 import {
 	type AccountPoolWriteOutcome,
-	buildInsertedAccount,
-	buildUpdatedAccount,
+	applyAccountPoolResults,
 	type ResolvedAccountWrite,
 } from "./codex-manager/account-pool-write.js";
+import {
+	classifyManualCallbackInput,
+	type ManualCallbackClassification,
+} from "./codex-manager/manual-callback.js";
 import { runBudgetCommand } from "./codex-manager/commands/budget.js";
 import { runBridgeCommand } from "./codex-manager/commands/bridge.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
@@ -1401,13 +1403,20 @@ function applyTokenAccountIdentity(
 	return true;
 }
 
+/**
+ * Result of prompting for a manual OAuth callback URL. The classification lives
+ * in {@link classifyManualCallbackInput}; this alias keeps the prompt's return
+ * type tied to that single source of truth (issue #512 follow-up).
+ */
+type ManualCallbackResult = ManualCallbackClassification;
+
 async function promptManualCallback(
 	state: string,
 	options: { allowNonTty?: boolean } = {},
-): Promise<string | null> {
+): Promise<ManualCallbackResult> {
 	const useInteractivePrompt = input.isTTY && output.isTTY;
 	if (!useInteractivePrompt && !options.allowNonTty) {
-		return null;
+		return { type: "cancelled" };
 	}
 
 	const rl = createInterface({ input, output });
@@ -1457,29 +1466,10 @@ async function promptManualCallback(
 					input.once("end", handleInputClosed);
 					input.once("close", handleInputClosed);
 				});
-		if (answer === null) {
-			return null;
-		}
-		if (answer.includes("\u001b")) {
-			return null;
-		}
-		const normalized = answer.trim().toLowerCase();
-		if (
-			normalized.length === 0 ||
-			normalized === "q" ||
-			normalized === "quit" ||
-			normalized === "cancel" ||
-			normalized === "back"
-		) {
-			return null;
-		}
-		const parsed = parseAuthorizationInput(answer);
-		if (!parsed.code || !parsed.state) return null;
-		if (parsed.state !== state) return null;
-		return parsed.code;
+		return classifyManualCallbackInput(answer, state);
 	} catch (error) {
 		if (isAbortError(error) || isReadlineClosedError(error)) {
-			return null;
+			return { type: "cancelled" };
 		}
 		throw error;
 	} finally {
@@ -2028,9 +2018,28 @@ async function runOAuthFlow(
 					"warning",
 				),
 			);
-			code = await promptManualCallback(state, {
+			const manualResult = await promptManualCallback(state, {
 				allowNonTty: signInMode === "manual",
 			});
+			// A parse/state failure must surface its own validation error instead
+			// of being reported as `Cancelled.` like a genuine user abort
+			// (issue #512 follow-up). Only an actual cancellation falls through to
+			// the cancelled path below.
+			if (manualResult.type === "invalid") {
+				return {
+					type: "failed",
+					reason: "invalid_response",
+					message: UI_COPY.oauth.callbackInvalid,
+				};
+			}
+			if (manualResult.type === "state-mismatch") {
+				return {
+					type: "failed",
+					reason: "invalid_response",
+					message: UI_COPY.oauth.callbackStateMismatch,
+				};
+			}
+			code = manualResult.type === "code" ? manualResult.code : null;
 		}
 	} finally {
 		oauthServer?.close();
@@ -2078,11 +2087,9 @@ async function persistAccountPool(
 	return await withAccountStorageTransaction(async (loadedStorage, persist) => {
 		const stored = replaceAll ? null : loadedStorage;
 		const now = Date.now();
-		const accounts = stored?.accounts ? [...stored.accounts] : [];
-		let selectedAccountIndex: number | null = null;
-		let selectedOutcome: PersistAccountPoolOutcome | null = null;
+		const existing = stored?.accounts ? [...stored.accounts] : [];
 
-		for (const result of results) {
+		const writes: ResolvedAccountWrite[] = results.map((result) => {
 			const tokenAccountId = extractAccountId(result.access);
 			const accountId = resolveRequestAccountId(
 				result.accountIdOverride,
@@ -2093,73 +2100,41 @@ async function persistAccountPool(
 				? (result.accountIdSource ??
 					(result.accountIdOverride ? "manual" : "token"))
 				: undefined;
-			const accountEmail = sanitizeEmail(
-				extractAccountEmail(result.access, result.idToken),
-			);
-			const existingIndex = findMatchingAccountIndex(
-				accounts,
-				{
-					accountId,
-					email: accountEmail,
-					refreshToken: result.refresh,
-				},
-				{
-					allowUniqueAccountIdFallbackWithoutEmail: true,
-				},
-			);
-
-			const write: ResolvedAccountWrite = {
+			return {
 				accountId,
 				accountIdSource,
 				accountLabel: result.accountLabel,
-				email: accountEmail,
+				email: sanitizeEmail(
+					extractAccountEmail(result.access, result.idToken),
+				),
 				refreshToken: result.refresh,
 				accessToken: result.access,
 				expiresAt: result.expires,
 				workspaces: result.workspaces,
 				now,
 			};
+		});
 
-			if (existingIndex === undefined) {
-				const { account, outcome } = buildInsertedAccount(write);
-				selectedAccountIndex = accounts.length;
-				accounts.push(account);
-				selectedOutcome = outcome;
-				continue;
-			}
+		const { accounts, activeIndex, outcome } = applyAccountPoolResults({
+			existing,
+			writes,
+			priorActiveIndex: stored?.activeIndex,
+			findMatchingAccountIndex,
+		});
 
-			const existing = accounts[existingIndex];
-			if (!existing) continue;
-
-			const { account, outcome } = buildUpdatedAccount(existing, write);
-			accounts[existingIndex] = account;
-			selectedAccountIndex = existingIndex;
-			selectedOutcome = outcome;
-		}
-
-		const fallbackActiveIndex =
-			accounts.length === 0
-				? 0
-				: Math.max(0, Math.min(stored?.activeIndex ?? 0, accounts.length - 1));
-		const nextActiveIndex =
-			accounts.length === 0
-				? 0
-				: selectedAccountIndex === null
-					? fallbackActiveIndex
-					: Math.max(0, Math.min(selectedAccountIndex, accounts.length - 1));
 		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
 		for (const family of MODEL_FAMILIES) {
-			activeIndexByFamily[family] = nextActiveIndex;
+			activeIndexByFamily[family] = activeIndex;
 		}
 
 		await persist({
 			version: 3,
 			accounts,
-			activeIndex: nextActiveIndex,
+			activeIndex,
 			activeIndexByFamily,
 		});
 
-		return selectedOutcome;
+		return outcome;
 	});
 }
 

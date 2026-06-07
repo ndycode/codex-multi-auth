@@ -190,3 +190,75 @@ export function buildUpdatedAccount(
 		},
 	};
 }
+
+/**
+ * Fold a batch of resolved login writes into the saved account list, returning
+ * the next account array, the selected index, and the outcome of the last
+ * write. This is the pure core of `persistAccountPool`: it owns the dedup →
+ * insert/update → workspace-tracking → active-index decisions that issue #512
+ * depends on, with the matching strategy injected so the production path and
+ * tests share the exact same behaviour.
+ */
+export function applyAccountPoolResults(params: {
+	existing: AccountMetadataV3[];
+	writes: ResolvedAccountWrite[];
+	priorActiveIndex?: number;
+	findMatchingAccountIndex: (
+		accounts: AccountMetadataV3[],
+		identity: {
+			accountId?: string;
+			email?: string;
+			refreshToken?: string;
+		},
+		options: { allowUniqueAccountIdFallbackWithoutEmail: boolean },
+	) => number | undefined;
+}): {
+	accounts: AccountMetadataV3[];
+	activeIndex: number;
+	outcome: AccountPoolWriteOutcome | null;
+} {
+	const accounts = [...params.existing];
+	let selectedAccountIndex: number | null = null;
+	let selectedOutcome: AccountPoolWriteOutcome | null = null;
+
+	for (const write of params.writes) {
+		const existingIndex = params.findMatchingAccountIndex(
+			accounts,
+			{
+				accountId: write.accountId,
+				email: write.email,
+				refreshToken: write.refreshToken,
+			},
+			{ allowUniqueAccountIdFallbackWithoutEmail: true },
+		);
+
+		if (existingIndex === undefined) {
+			const { account, outcome } = buildInsertedAccount(write);
+			selectedAccountIndex = accounts.length;
+			accounts.push(account);
+			selectedOutcome = outcome;
+			continue;
+		}
+
+		const existing = accounts[existingIndex];
+		if (!existing) continue;
+
+		const { account, outcome } = buildUpdatedAccount(existing, write);
+		accounts[existingIndex] = account;
+		selectedAccountIndex = existingIndex;
+		selectedOutcome = outcome;
+	}
+
+	const fallbackActiveIndex =
+		accounts.length === 0
+			? 0
+			: Math.max(0, Math.min(params.priorActiveIndex ?? 0, accounts.length - 1));
+	const activeIndex =
+		accounts.length === 0
+			? 0
+			: selectedAccountIndex === null
+				? fallbackActiveIndex
+				: Math.max(0, Math.min(selectedAccountIndex, accounts.length - 1));
+
+	return { accounts, activeIndex, outcome: selectedOutcome };
+}

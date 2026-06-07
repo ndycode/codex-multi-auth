@@ -6405,10 +6405,17 @@ describe("codex manager cli commands", () => {
 		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
 		const serverModule = await import("../lib/auth/server.js");
 
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
 		const exitCode = await runCodexMultiAuthCli(["auth", "login", "--manual"]);
 
-		expect(exitCode).toBe(0);
+		// Regression for issue #512 follow-up: a state mismatch is a validation
+		// failure, not a cancellation. It must exit non-zero and surface the real
+		// error instead of silently printing "Cancelled." and exiting 0.
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("OAuth state mismatch"),
+		);
 		expect(promptQuestionMock).toHaveBeenCalledWith("");
 		expect(openBrowserUrlMock).not.toHaveBeenCalled();
 		expect(
@@ -6416,6 +6423,7 @@ describe("codex manager cli commands", () => {
 		).not.toHaveBeenCalled();
 		expect(exchangeAuthorizationCodeMock).not.toHaveBeenCalled();
 		expect(storageState.accounts).toHaveLength(0);
+		errorSpy.mockRestore();
 	});
 
 	it("skips manual callback prompting when stdin is already closed in non-tty mode", async () => {
