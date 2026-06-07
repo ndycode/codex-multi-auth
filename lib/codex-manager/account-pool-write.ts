@@ -162,11 +162,18 @@ export function buildUpdatedAccount(
 		(existing.workspaces ?? []).map((workspace) => workspace.id),
 	);
 	const mergedWorkspaces = mergeAccountWorkspaces(existing, write.workspaces);
-	const introducedNewWorkspace = Boolean(
-		write.workspaces?.some(
-			(workspace) => !previousWorkspaceIds.has(workspace.id),
-		),
-	);
+	// Only a genuine *rebind* counts as "rebound": the account already tracked
+	// workspaces and the login surfaced one it had never seen. First-time
+	// enrichment of a pre-#491 row (no prior workspaces) is a plain `updated`,
+	// so the user is not told "Rebound workspace" on their first workspace-aware
+	// re-login (#512 follow-up).
+	const introducedNewWorkspace =
+		previousWorkspaceIds.size > 0 &&
+		Boolean(
+			write.workspaces?.some(
+				(workspace) => !previousWorkspaceIds.has(workspace.id),
+			),
+		);
 	const nextCurrentWorkspaceIndex = resolveCurrentWorkspaceIndex(
 		existing,
 		mergedWorkspaces,

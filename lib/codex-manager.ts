@@ -1299,30 +1299,42 @@ function resolveAccountSelection(
 	tokens: TokenSuccess,
 	orgOverride?: string,
 ): TokenSuccessWithAccount {
-	const override = resolveOrgOverride(orgOverride);
-	if (override) {
-		return {
-			...tokens,
-			accountIdOverride: override,
-			accountIdSource: "manual",
-		};
-	}
-
 	const candidates = getAccountIdCandidates(tokens.access, tokens.idToken);
-	if (candidates.length === 0) {
-		return tokens;
-	}
 
 	// Surface every workspace/organization exposed by the token so the saved
 	// account can track them (issue #491/#512). Without this, same-email
 	// multi-workspace logins persisted rows with `workspaces: null` and
-	// `workspace <account>` was unusable.
-	const workspaces: Workspace[] = candidates.map((candidate) => ({
-		id: candidate.accountId,
-		name: candidate.label,
-		enabled: true,
-		isDefault: candidate.isDefault,
-	}));
+	// `workspace <account>` was unusable. Built before the `--org` override
+	// branch so the explicit-binding flow persists workspaces too (#512).
+	const workspaces: Workspace[] | undefined =
+		candidates.length > 0
+			? candidates.map((candidate) => ({
+					id: candidate.accountId,
+					name: candidate.label,
+					enabled: true,
+					isDefault: candidate.isDefault,
+				}))
+			: undefined;
+
+	const override = resolveOrgOverride(orgOverride);
+	if (override) {
+		// Prefer the token candidate's human label for the chosen org so the
+		// saved row is identifiable, falling back to a bare manual binding.
+		const matched = candidates.find(
+			(candidate) => candidate.accountId === override,
+		);
+		return {
+			...tokens,
+			accountIdOverride: override,
+			accountIdSource: "manual",
+			accountLabel: matched?.label,
+			workspaces,
+		};
+	}
+
+	if (candidates.length === 0) {
+		return tokens;
+	}
 
 	if (candidates.length === 1) {
 		const [candidate] = candidates;

@@ -221,5 +221,32 @@ describe("account-pool-write helper (issue #512)", () => {
 			expect(outcome).toBe("updated");
 			expect(account.workspaces).toBeUndefined();
 		});
+
+		it("treats first-time workspace enrichment of a legacy row as 'updated', not 'rebound'", () => {
+			// Pre-#491 account row: no tracked workspaces yet. The first
+			// workspace-aware re-login should enrich it quietly, not tell the user
+			// "Rebound workspace for existing account" (#512 follow-up).
+			const legacy: AccountMetadataV3 = {
+				...existing,
+				workspaces: undefined,
+				currentWorkspaceIndex: undefined,
+			};
+			const { account, outcome } = buildUpdatedAccount(
+				legacy,
+				write({
+					workspaces: [
+						{ id: "acct_default", name: "Default", enabled: true },
+						{ id: "ws_personal", name: "Personal", enabled: true },
+					],
+				}),
+			);
+			expect(outcome).toBe("updated");
+			expect(account.workspaces?.map((w) => w.id)).toEqual([
+				"acct_default",
+				"ws_personal",
+			]);
+			// `currentWorkspaceIndex: undefined` falls back to the default/0 slot.
+			expect(account.currentWorkspaceIndex).toBe(0);
+		});
 	});
 });

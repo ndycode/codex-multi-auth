@@ -6909,6 +6909,92 @@ describe("codex manager cli commands", () => {
 		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("persists tracked workspaces when logging in with an explicit --org override (#512)", async () => {
+		const now = Date.now();
+		let storageState = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [] as Array<Record<string, unknown>>,
+		};
+		loadAccountsMock.mockImplementation(async () =>
+			structuredClone(storageState),
+		);
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		// First login starts with an empty pool, so the dashboard menu is
+		// skipped and sign-in runs directly. After the account is saved and the
+		// user declines "add another", the flow re-enters with one account and
+		// shows the menu — answer `cancel` there to exit.
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		promptAddAnotherAccountMock.mockResolvedValue(false);
+
+		const authModule = await import("../lib/auth/auth.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-org",
+			refresh: "refresh-org",
+			expires: now + 7_200_000,
+			idToken: "id-token-org",
+			multiAccount: true,
+		});
+		const browserModule = await import("../lib/auth/browser.js");
+		vi.mocked(browserModule.openBrowserUrl).mockReturnValue(true);
+		const serverModule = await import("../lib/auth/server.js");
+		vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValueOnce({
+			ready: true,
+			waitForCode: vi.fn(async () => ({ code: "oauth-code" })),
+			close: vi.fn(),
+		});
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(accountsModule.extractAccountEmail).mockImplementationOnce(
+			() => "user@example.com",
+		);
+		// The token exposes two same-email orgs; the user pins the non-default
+		// one via --org. Before the fix the override path returned early and
+		// persisted workspaces: undefined, leaving `workspace <account>` unusable.
+		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValueOnce([
+			{
+				accountId: "org-default",
+				source: "org",
+				label: "Default Workspace [id:efault]",
+				isDefault: true,
+			},
+			{
+				accountId: "org-personal",
+				source: "org",
+				label: "Personal Workspace [id:rsonal]",
+			},
+		]);
+
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli([
+			"auth",
+			"login",
+			"--org",
+			"org-personal",
+		]);
+
+		expect(exitCode).toBe(0);
+		expect(storageState.accounts).toHaveLength(1);
+		const saved = storageState.accounts[0];
+		// The explicit binding is honored...
+		expect(saved?.accountId).toBe("org-personal");
+		expect(saved?.accountIdSource).toBe("manual");
+		// ...and both workspaces are tracked so `workspace <account>` works.
+		expect(
+			(saved?.workspaces as Array<{ id: string }> | undefined)?.map(
+				(workspace) => workspace.id,
+			),
+		).toEqual(["org-default", "org-personal"]);
+	});
+
 	it("updates a unique shared-accountId login when the email claim is missing", async () => {
 		const now = Date.now();
 		let storageState: {
