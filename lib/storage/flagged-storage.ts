@@ -46,12 +46,14 @@ export function normalizeFlaggedStorage(
 			value === "initial" ||
 			value === "rotation" ||
 			value === "best" ||
-			value === "restore";
+			value === "restore" ||
+			value === "manual";
 		const isCooldownReason = (
 			value: unknown,
 		): value is AccountMetadataV3["cooldownReason"] =>
 			value === "auth-failure" ||
 			value === "network-error" ||
+			value === "server-error" ||
 			value === "rate-limit";
 
 		let rateLimitResetTimes:
