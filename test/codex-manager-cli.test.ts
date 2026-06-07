@@ -6426,6 +6426,61 @@ describe("codex manager cli commands", () => {
 		errorSpy.mockRestore();
 	});
 
+	it("rejects a malformed manual callback URL in non-tty mode without persisting login", async () => {
+		setInteractiveTTY(false);
+		let storageState = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [] as Array<Record<string, unknown>>,
+		};
+		loadAccountsMock.mockImplementation(async () =>
+			structuredClone(storageState),
+		);
+		saveAccountsMock.mockImplementation(async (nextStorage) => {
+			storageState = structuredClone(nextStorage);
+		});
+		promptLoginModeMock.mockResolvedValueOnce({ mode: "cancel" });
+		// Callback URL is missing the `state` parameter entirely.
+		promptQuestionMock.mockResolvedValueOnce(
+			"http://127.0.0.1:1455/auth/callback?code=oauth-code",
+		);
+
+		const authModule = await import("../lib/auth/auth.js");
+		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
+			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
+			state: "oauth-state",
+			url: "https://auth.openai.com/mock",
+		});
+		const exchangeAuthorizationCodeMock = vi.mocked(
+			authModule.exchangeAuthorizationCode,
+		);
+
+		const browserModule = await import("../lib/auth/browser.js");
+		const openBrowserUrlMock = vi.mocked(browserModule.openBrowserUrl);
+		const serverModule = await import("../lib/auth/server.js");
+
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		const exitCode = await runCodexMultiAuthCli(["auth", "login", "--manual"]);
+
+		// A malformed callback (missing code/state) is a validation failure, not a
+		// cancellation: it must exit non-zero and surface the `callbackInvalid`
+		// message — distinct from the state-mismatch wording — instead of
+		// silently printing "Cancelled." (#512 follow-up).
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("missing the code or state parameter"),
+		);
+		expect(openBrowserUrlMock).not.toHaveBeenCalled();
+		expect(
+			vi.mocked(serverModule.startLocalOAuthServer),
+		).not.toHaveBeenCalled();
+		expect(exchangeAuthorizationCodeMock).not.toHaveBeenCalled();
+		expect(storageState.accounts).toHaveLength(0);
+		errorSpy.mockRestore();
+	});
+
 	it("skips manual callback prompting when stdin is already closed in non-tty mode", async () => {
 		setInteractiveTTY(false);
 		setOpenStdinState();
