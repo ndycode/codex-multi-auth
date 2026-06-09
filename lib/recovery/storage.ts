@@ -4,6 +4,7 @@
  * Based on Codex-antigravity-auth recovery module.
  */
 
+import { randomBytes } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -22,6 +23,7 @@ import {
 } from "./constants.js";
 import { createLogger } from "../logger.js";
 import type { StoredMessageMeta, StoredPart, StoredTextPart } from "./types.js";
+import { tempFileNonce } from "../temp-path.js";
 
 const recoveryLog = createLogger("recovery-storage");
 
@@ -230,7 +232,7 @@ function atomicWriteFileSync(
 	data: string,
 	options: { mode?: number } = {},
 ): void {
-	const tempSuffix = `.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 10)}`;
+	const tempSuffix = `.tmp.${tempFileNonce()}`;
 	const tempPath = `${path}${tempSuffix}`;
 	try {
 		writeFileSync(tempPath, data, { mode: options.mode ?? 0o600 });
@@ -283,7 +285,7 @@ function safeUnlinkWithRetry(filePath: string, maxAttempts = 4): boolean {
 
 export function generatePartId(): string {
 	const timestamp = Date.now().toString(16);
-	const random = Math.random().toString(36).substring(2, 10);
+	const random = randomBytes(4).toString("hex");
 	return `prt_${timestamp}${random}`;
 }
 
@@ -310,7 +312,7 @@ let thinkingPartCounter = 0;
 export function generateThinkingPartId(): string {
 	const timestamp = Date.now().toString(16);
 	const counter = (thinkingPartCounter++).toString(36);
-	const random = Math.random().toString(36).substring(2, 8);
+	const random = randomBytes(3).toString("hex");
 	return `prt_0000000000_thinking_${timestamp}_${counter}_${random}`;
 }
 

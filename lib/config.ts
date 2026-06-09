@@ -15,6 +15,7 @@ import {
 	loadUnifiedPluginConfigSync,
 	saveUnifiedPluginConfig,
 } from "./unified-settings.js";
+import { tempPathFor } from "./temp-path.js";
 
 const CONFIG_DIR = getCodexMultiAuthDir();
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
@@ -489,7 +490,7 @@ async function writeJsonFileAtomicWithRetry(
 	payload: Record<string, unknown>,
 	options?: { expectedMtimeMs?: number | null },
 ): Promise<void> {
-	const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+	const tempPath = tempPathFor(filePath);
 	await fs.mkdir(dirname(filePath), { recursive: true });
 	await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 	let renamed = false;

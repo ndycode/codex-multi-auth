@@ -4,6 +4,7 @@ import { FlaggedAccountStorageV1Schema, safeParseJson } from "../schemas.js";
 import type { FlaggedAccountStorageV1 } from "../storage.js";
 import { readFileWithRetry } from "./flagged-storage-file.js";
 import { FILE_RETRY_CODES } from "../fs-retry.js";
+import { tempPathFor } from "../temp-path.js";
 
 // storage-07: align with the single shared retryable-code set (adds ENOTEMPTY/
 // EACCES) instead of a local subset.
@@ -244,8 +245,7 @@ export async function saveFlaggedAccountsUnlockedToDisk(
 		logError: (message: string, details: Record<string, unknown>) => void;
 	},
 ): Promise<void> {
-	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
-	const tempPath = `${params.path}.${uniqueSuffix}.tmp`;
+	const tempPath = tempPathFor(params.path);
 
 	try {
 		await fs.mkdir(dirname(params.path), { recursive: true });

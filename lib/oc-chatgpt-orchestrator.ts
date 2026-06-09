@@ -18,6 +18,7 @@ import {
 	exportNamedBackup,
 	normalizeAccountStorage,
 } from "./storage.js";
+import { tempPathFor } from "./temp-path.js";
 
 type BlockedAmbiguous = {
 	kind: "blocked-ambiguous";
@@ -201,7 +202,7 @@ async function persistMergedDefault(
 	if (process.platform !== "win32") {
 		await fs.chmod(dir, 0o700).catch(() => undefined);
 	}
-	const tempPath = `${path}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+	const tempPath = tempPathFor(path);
 	const content = `${JSON.stringify(merged, null, 2)}\n`;
 	try {
 		await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });

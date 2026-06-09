@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { AnyAccountStorageSchema, safeParseJson } from "../schemas.js";
 import { shouldRetryFileOperation } from "../fs-retry.js";
 import type { AccountStorageV3 } from "../storage.js";
+import { tempPathFor } from "../temp-path.js";
 
 const EXPORT_RENAME_MAX_ATTEMPTS = 4;
 const EXPORT_RENAME_BASE_DELAY_MS = 25;
@@ -86,8 +87,7 @@ export async function exportAccountsToFile(params: {
 		null,
 		2,
 	);
-	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
-	const tempPath = `${params.resolvedPath}.${uniqueSuffix}.tmp`;
+	const tempPath = tempPathFor(params.resolvedPath);
 	try {
 		await fs.writeFile(tempPath, content, {
 			encoding: "utf-8",

@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import { logWarn } from "./logger.js";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
 import { isRecord, sleep } from "./utils.js";
+import { tempPathFor } from "./temp-path.js";
 
 export interface LocalClientTokenRecord {
 	id: string;
@@ -177,7 +178,7 @@ async function writeStoreToDisk(store: LocalClientTokenStore): Promise<void> {
 			// Best-effort hardening only.
 		}
 	}
-	const tempPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+	const tempPath = tempPathFor(path);
 	let moved = false;
 	try {
 		await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {

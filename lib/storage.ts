@@ -69,6 +69,7 @@ import {
 	readImportFile,
 } from "./storage/import-export.js";
 import { formatStorageErrorHint } from "./storage/error-hints.js";
+import { tempFileNonce, tempPathFor } from "./temp-path.js";
 export { StorageError } from "./errors.js";
 export {
 	formatStorageErrorHint,
@@ -317,7 +318,7 @@ async function createRotatingAccountsBackup(path: string): Promise<void> {
 		path,
 		ACCOUNTS_BACKUP_HISTORY_DEPTH,
 	);
-	const rotationNonce = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+	const rotationNonce = tempFileNonce();
 	const stagedWrites: Array<{ targetPath: string; stagedPath: string }> = [];
 	const buildStagedPath = (targetPath: string, label: string): string =>
 		`${targetPath}.rotate.${rotationNonce}.${label}.tmp`;
@@ -1926,8 +1927,7 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 			);
 		},
 		backupPath: getAccountsBackupPath(path),
-		createTempPath: () =>
-			`${path}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`,
+		createTempPath: () => tempPathFor(path),
 	});
 }
 
