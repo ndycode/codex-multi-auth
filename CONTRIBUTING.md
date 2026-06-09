@@ -29,7 +29,7 @@ npm test
 npm run build
 ```
 
-Node requirement: `>=18`.
+Node requirement: `>=18.17`.
 
 ---
 

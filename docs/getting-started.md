@@ -6,7 +6,7 @@ Install the Codex CLI multi-account OAuth manager, add your first ChatGPT-authen
 
 ## Prerequisites
 
-- Node.js `18+`
+- Node.js `18.17+`
 - The official `@openai/codex` CLI
 - A ChatGPT plan with access to the models you want to use
 

@@ -152,10 +152,7 @@
 		]
 	},
 	"engines": {
-		"node": ">=18.0.0"
-	},
-	"peerDependencies": {
-		"typescript": "^5"
+		"node": ">=18.17.0"
 	},
 	"devDependencies": {
 		"@fast-check/vitest": "^0.2.4",
