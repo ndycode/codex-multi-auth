@@ -3204,6 +3204,246 @@ function buildSelectAccountTraced(): (
 	};
 }
 
+/**
+ * Uniform handler signature for the `auth` subcommand registry: every entry
+ * receives the already-parsed argument tail (everything after the subcommand)
+ * and resolves to the process exit code. Dependencies are closure-captured
+ * from this module exactly as the previous if/else dispatch chain did.
+ */
+type CliCommandHandler = (rest: string[]) => number | Promise<number>;
+
+/**
+ * Shared handler for `list` and `status` (aliases of the same view).
+ */
+const runListOrStatusCommand: CliCommandHandler = (rest) =>
+	runStatusCommand({
+		setStoragePath,
+		getStoragePath,
+		loadAccounts,
+		inspectStorageHealth,
+		resolveActiveIndex,
+		formatRateLimitEntry,
+		loadRuntimeObservabilitySnapshot: loadPersistedRuntimeObservabilitySnapshot,
+		loadAppBindStatus: async () =>
+			getAppBindStatus()
+				.then((status) => (status.running ? status.router : null))
+				.catch(() => null),
+		loadAppHelperStatus: readAppRuntimeHelperAccountSignal,
+		loadQuotaCache,
+		json: rest.includes("--json") || rest.includes("-j"),
+	});
+
+/**
+ * Command registry for the `auth` dispatcher (audit roadmap §4.1.1 phase 2).
+ *
+ * Replaces the former `if (command === …)` chain in runCodexMultiAuthCli with
+ * a lookup map. Aliases (`status` → `list` view) point at the same handler.
+ * Per-invocation dependency factories (createRepairCommandDeps,
+ * buildSelectAccountTraced) are still invoked inside each handler so they are
+ * constructed at dispatch time, not at module load — identical to the old
+ * chain. Keys are exact-match and unique, so lookup order cannot change
+ * semantics relative to the sequential chain it replaces.
+ */
+const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
+	string,
+	CliCommandHandler
+>([
+	["login", (rest) => runAuthLogin(rest)],
+	["list", runListOrStatusCommand],
+	["status", runListOrStatusCommand],
+	[
+		"switch",
+		(rest) =>
+			runSwitchCommand(rest, {
+				setStoragePath,
+				loadAccounts,
+				persistAndSyncSelectedAccount,
+			}),
+	],
+	[
+		"unpin",
+		() =>
+			runUnpinCommand({
+				setStoragePath,
+				loadAccounts,
+				saveAccounts,
+				getStoragePath,
+			}),
+	],
+	[
+		"workspace",
+		(rest) =>
+			runWorkspaceCommand(rest, {
+				setStoragePath,
+				loadAccounts,
+				saveAccounts,
+			}),
+	],
+	["check", () => runCheckCommand({ runHealthCheck })],
+	[
+		"features",
+		() => runFeaturesCommand({ implementedFeatures: IMPLEMENTED_FEATURES }),
+	],
+	[
+		"verify-flagged",
+		(rest) => runRepairVerifyFlagged(rest, createRepairCommandDeps()),
+	],
+	["forecast", (rest) => runForecast(rest)],
+	["best", (rest) => runBest(rest)],
+	[
+		"account",
+		(rest) =>
+			runAccountCommand(rest, {
+				setStoragePath,
+				loadAccounts,
+			}),
+	],
+	["budget", (rest) => runBudgetCommand(rest)],
+	["bridge", (rest) => runBridgeCommand(rest)],
+	["integrations", (rest) => runIntegrationsCommand(rest)],
+	[
+		"models",
+		(rest) =>
+			runModelsCommand(rest, {
+				setStoragePath,
+				loadAccounts,
+				loadQuotaCache,
+			}),
+	],
+	[
+		"monitor",
+		(rest) =>
+			runMonitorCommand(rest, {
+				setStoragePath,
+				loadAccounts,
+			}),
+	],
+	[
+		"report",
+		(rest) =>
+			runReportCommand(rest, {
+				setStoragePath,
+				getStoragePath,
+				loadAccounts,
+				inspectStorageHealth,
+				saveAccounts,
+				resolveActiveIndex,
+				hasUsableAccessToken,
+				queuedRefresh,
+				fetchCodexQuotaSnapshot,
+				formatRateLimitEntry,
+				normalizeFailureDetail,
+				loadRuntimeObservabilitySnapshot:
+					loadPersistedRuntimeObservabilitySnapshot,
+				loadQuotaCache,
+			}),
+	],
+	["usage", (rest) => runUsageCommand(rest)],
+	[
+		"rotation",
+		(rest) =>
+			runRotationCommand(rest, {
+				loadPluginConfig,
+				savePluginConfig,
+				getCodexRuntimeRotationProxy,
+				setStoragePath,
+				getStoragePath,
+				loadAccounts,
+				saveAccounts,
+				resolveActiveIndex,
+				bindCodexApp: bindCodexAppRuntimeRotation,
+				unbindCodexApp: unbindCodexAppRuntimeRotation,
+				getCodexAppBindStatus: getAppBindStatus,
+				loadRuntimeObservabilitySnapshot:
+					loadPersistedRuntimeObservabilitySnapshot,
+				loadQuotaCache,
+			}),
+	],
+	[
+		"why-selected",
+		(rest) =>
+			runWhySelectedCommand(rest, {
+				parseWhySelectedArgs,
+				printWhySelectedUsage,
+				setStoragePath,
+				loadAccounts,
+				resolveActiveIndex,
+				selectAccountTraced: buildSelectAccountTraced(),
+				loadRuntimeObservabilitySnapshot: async () => {
+					const snapshot = await loadPersistedRuntimeObservabilitySnapshot();
+					if (!snapshot) return null;
+					const generatedAt =
+						typeof (snapshot as { generatedAt?: unknown }).generatedAt ===
+							"number" ||
+						typeof (snapshot as { generatedAt?: unknown }).generatedAt ===
+							"string"
+							? (snapshot as { generatedAt?: number | string }).generatedAt
+							: undefined;
+					return { generatedAt };
+				},
+				sanitizeEmail,
+			}),
+	],
+	[
+		"verify",
+		(rest) =>
+			runVerifyCommand(rest, {
+				parseVerifyArgs,
+				printVerifyUsage,
+				runVerifyFlagged: async (flaggedArgs: string[]) =>
+					runRepairVerifyFlagged(flaggedArgs, createRepairCommandDeps()),
+				setStoragePath,
+				verifyPathsDeps: {
+					getCwd: () => process.cwd(),
+					findProjectRoot,
+					resolveProjectStorageIdentityRoot,
+					getProjectStorageKey,
+					getProjectConfigDir,
+					getProjectGlobalConfigDir,
+					resolvePath: resolveStoragePath,
+				},
+			}),
+	],
+	["fix", (rest) => runRepairFix(rest, createRepairCommandDeps())],
+	["doctor", (rest) => runRepairDoctor(rest, createRepairCommandDeps())],
+	["uninstall", (rest) => runUninstallCommand(rest, { clearAccounts })],
+	[
+		"config",
+		(rest) => {
+			const [subcommand, ...configArgs] = rest;
+			if (subcommand === "explain") {
+				return runConfigExplainCommand(configArgs, {
+					getReport: getPluginConfigExplainReport,
+				});
+			}
+			if (subcommand === "template") {
+				return runInitConfigCommand(configArgs);
+			}
+			console.error(`Unknown config command: ${subcommand ?? "(missing)"}`);
+			return 1;
+		},
+	],
+	["init-config", (rest) => runInitConfigCommand(rest)],
+	[
+		"debug",
+		(rest) => {
+			const [subcommand, ...debugArgs] = rest;
+			if (subcommand === "bundle") {
+				return runDebugBundleCommand(debugArgs, {
+					getConfigReport: getPluginConfigExplainReport,
+					getStoragePath,
+					loadAccounts,
+					loadFlaggedAccounts,
+					loadCodexCliState,
+					getLastAccountsSaveTimestamp,
+				});
+			}
+			console.error(`Unknown debug command: ${subcommand ?? "(missing)"}`);
+			return 1;
+		},
+	],
+]);
+
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	const startupDisplaySettings = await loadDashboardDisplaySettings();
 	applyUiThemeFromDashboardSettings(startupDisplaySettings);
@@ -3232,212 +3472,10 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		printUsage();
 		return 0;
 	}
-	if (command === "login") {
-		return runAuthLogin(rest);
-	}
-	if (command === "list" || command === "status") {
-		return runStatusCommand({
-			setStoragePath,
-			getStoragePath,
-			loadAccounts,
-			inspectStorageHealth,
-			resolveActiveIndex,
-			formatRateLimitEntry,
-			loadRuntimeObservabilitySnapshot:
-				loadPersistedRuntimeObservabilitySnapshot,
-			loadAppBindStatus: async () =>
-				getAppBindStatus()
-					.then((status) => (status.running ? status.router : null))
-					.catch(() => null),
-			loadAppHelperStatus: readAppRuntimeHelperAccountSignal,
-			loadQuotaCache,
-			json: rest.includes("--json") || rest.includes("-j"),
-		});
-	}
-	if (command === "switch") {
-		return runSwitchCommand(rest, {
-			setStoragePath,
-			loadAccounts,
-			persistAndSyncSelectedAccount,
-		});
-	}
-	if (command === "unpin") {
-		return runUnpinCommand({
-			setStoragePath,
-			loadAccounts,
-			saveAccounts,
-			getStoragePath,
-		});
-	}
-	if (command === "workspace") {
-		return runWorkspaceCommand(rest, {
-			setStoragePath,
-			loadAccounts,
-			saveAccounts,
-		});
-	}
-	if (command === "check") {
-		return runCheckCommand({ runHealthCheck });
-	}
-	if (command === "features") {
-		return runFeaturesCommand({ implementedFeatures: IMPLEMENTED_FEATURES });
-	}
-	if (command === "verify-flagged") {
-		return runRepairVerifyFlagged(rest, createRepairCommandDeps());
-	}
-	if (command === "forecast") {
-		return runForecast(rest);
-	}
-	if (command === "best") {
-		return runBest(rest);
-	}
-	if (command === "account") {
-		return runAccountCommand(rest, {
-			setStoragePath,
-			loadAccounts,
-		});
-	}
-	if (command === "budget") {
-		return runBudgetCommand(rest);
-	}
-	if (command === "bridge") {
-		return runBridgeCommand(rest);
-	}
-	if (command === "integrations") {
-		return runIntegrationsCommand(rest);
-	}
-	if (command === "models") {
-		return runModelsCommand(rest, {
-			setStoragePath,
-			loadAccounts,
-			loadQuotaCache,
-		});
-	}
-	if (command === "monitor") {
-		return runMonitorCommand(rest, {
-			setStoragePath,
-			loadAccounts,
-		});
-	}
-	if (command === "report") {
-		return runReportCommand(rest, {
-			setStoragePath,
-			getStoragePath,
-			loadAccounts,
-			inspectStorageHealth,
-			saveAccounts,
-			resolveActiveIndex,
-			hasUsableAccessToken,
-			queuedRefresh,
-			fetchCodexQuotaSnapshot,
-			formatRateLimitEntry,
-			normalizeFailureDetail,
-			loadRuntimeObservabilitySnapshot:
-				loadPersistedRuntimeObservabilitySnapshot,
-			loadQuotaCache,
-		});
-	}
-	if (command === "usage") {
-		return runUsageCommand(rest);
-	}
-	if (command === "rotation") {
-		return runRotationCommand(rest, {
-			loadPluginConfig,
-			savePluginConfig,
-			getCodexRuntimeRotationProxy,
-			setStoragePath,
-			getStoragePath,
-			loadAccounts,
-			saveAccounts,
-			resolveActiveIndex,
-			bindCodexApp: bindCodexAppRuntimeRotation,
-			unbindCodexApp: unbindCodexAppRuntimeRotation,
-			getCodexAppBindStatus: getAppBindStatus,
-			loadRuntimeObservabilitySnapshot:
-				loadPersistedRuntimeObservabilitySnapshot,
-			loadQuotaCache,
-		});
-	}
-	if (command === "why-selected") {
-		return runWhySelectedCommand(rest, {
-			parseWhySelectedArgs,
-			printWhySelectedUsage,
-			setStoragePath,
-			loadAccounts,
-			resolveActiveIndex,
-			selectAccountTraced: buildSelectAccountTraced(),
-			loadRuntimeObservabilitySnapshot: async () => {
-				const snapshot = await loadPersistedRuntimeObservabilitySnapshot();
-				if (!snapshot) return null;
-				const generatedAt =
-					typeof (snapshot as { generatedAt?: unknown }).generatedAt ===
-						"number" ||
-					typeof (snapshot as { generatedAt?: unknown }).generatedAt ===
-						"string"
-						? (snapshot as { generatedAt?: number | string }).generatedAt
-						: undefined;
-				return { generatedAt };
-			},
-			sanitizeEmail,
-		});
-	}
-	if (command === "verify") {
-		return runVerifyCommand(rest, {
-			parseVerifyArgs,
-			printVerifyUsage,
-			runVerifyFlagged: async (flaggedArgs: string[]) =>
-				runRepairVerifyFlagged(flaggedArgs, createRepairCommandDeps()),
-			setStoragePath,
-			verifyPathsDeps: {
-				getCwd: () => process.cwd(),
-				findProjectRoot,
-				resolveProjectStorageIdentityRoot,
-				getProjectStorageKey,
-				getProjectConfigDir,
-				getProjectGlobalConfigDir,
-				resolvePath: resolveStoragePath,
-			},
-		});
-	}
-	if (command === "fix") {
-		return runRepairFix(rest, createRepairCommandDeps());
-	}
-	if (command === "doctor") {
-		return runRepairDoctor(rest, createRepairCommandDeps());
-	}
-	if (command === "uninstall") {
-		return runUninstallCommand(rest, { clearAccounts });
-	}
-	if (command === "config") {
-		const [subcommand, ...configArgs] = rest;
-		if (subcommand === "explain") {
-			return runConfigExplainCommand(configArgs, {
-				getReport: getPluginConfigExplainReport,
-			});
-		}
-		if (subcommand === "template") {
-			return runInitConfigCommand(configArgs);
-		}
-		console.error(`Unknown config command: ${subcommand ?? "(missing)"}`);
-		return 1;
-	}
-	if (command === "init-config") {
-		return runInitConfigCommand(rest);
-	}
-	if (command === "debug") {
-		const [subcommand, ...debugArgs] = rest;
-		if (subcommand === "bundle") {
-			return runDebugBundleCommand(debugArgs, {
-				getConfigReport: getPluginConfigExplainReport,
-				getStoragePath,
-				loadAccounts,
-				loadFlaggedAccounts,
-				loadCodexCliState,
-				getLastAccountsSaveTimestamp,
-			});
-		}
-		console.error(`Unknown debug command: ${subcommand ?? "(missing)"}`);
-		return 1;
+
+	const handler = CLI_COMMAND_HANDLERS.get(command);
+	if (handler) {
+		return handler(rest);
 	}
 
 	console.error(`Unknown command: ${command}`);
