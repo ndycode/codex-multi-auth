@@ -1,5 +1,4 @@
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import {
@@ -8,7 +7,6 @@ import {
 	type ManagedAccount,
 } from "./accounts.js";
 import { withRoutingMutex } from "./routing-mutex.js";
-import { getStoragePath } from "./storage.js";
 import {
 	getFetchTimeoutMs,
 	getNetworkErrorCooldownMs,
@@ -35,13 +33,10 @@ import {
 } from "./constants.js";
 import { getModelFamily, type ModelFamily } from "./prompts/codex.js";
 import { CURRENT_CODEX_MODEL } from "./request/helpers/model-map.js";
-import { queuedRefresh } from "./refresh-queue.js";
 import {
 	mutateRuntimeObservabilitySnapshot,
 	recordRuntimeAccountRecovery,
 	recordRuntimePoolExhaustion,
-	recordRuntimeReload,
-	recordRuntimeReset,
 } from "./runtime/runtime-observability.js";
 import {
 	createRuntimeUsageRecorder,
@@ -57,7 +52,6 @@ import {
 	extractErrorCodeFromBody,
 	getQuotaNearExhaustionWaitMs,
 	isTokenInvalidationError,
-	isTokenRefreshRetryable,
 	normalizeExhaustionStatus,
 	parseRetryAfterBodyMs,
 	parseRetryAfterHeaderMs,
@@ -69,6 +63,12 @@ import {
 	responseHeadersForClient,
 	withTimeout,
 } from "./request/stream-failover-runtime.js";
+import { chooseAccount } from "./runtime/rotation-account-selection.js";
+import {
+	createRotationProxyState,
+	recoverStaleRuntimeState,
+	type RotationProxyState,
+} from "./runtime/rotation-proxy-state.js";
 import type {
 	ExhaustionReason,
 	RequestContext,
@@ -78,14 +78,20 @@ import type {
 	RuntimeRotationProxyServer,
 	RuntimeRotationProxyStatus,
 } from "./runtime/rotation-server-types.js";
+import { readStorageMetaFromDisk } from "./runtime/rotation-storage-meta.js";
+import {
+	applyMonotonicAuthCooldown,
+	DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
+	ensureFreshAccessToken,
+} from "./runtime/rotation-token-refresh.js";
 import { SessionAffinityStore } from "./session-affinity.js";
-import type { OAuthAuthDetails, RequestBody } from "./types.js";
+import type { RequestBody } from "./types.js";
 import { isRecord } from "./utils.js";
 
 // Re-exports: these symbols were defined in this module before the §4.1.3
-// phase-1 carve and are part of its public surface (lib/index.ts star-exports
-// this file; tests and scripts import them from here). Keep every existing
-// import path working.
+// phase-1 and phase-2 carves and are part of its public surface (lib/index.ts
+// star-exports this file; tests and scripts import them from here). Keep every
+// existing import path working.
 export type {
 	RuntimeRotationProxyOptions,
 	RuntimeRotationProxyServer,
@@ -96,6 +102,14 @@ export {
 	buildTokenInvalidationBody,
 } from "./request/rate-limit-decision.js";
 export type { PinnedUnavailableErrorBody } from "./request/rate-limit-decision.js";
+export { chooseAccount } from "./runtime/rotation-account-selection.js";
+export {
+	maybeInvalidateAffinityFromDisk,
+	readPinnedAccountIndexFromDisk,
+	readStorageMetaFromDisk,
+	resetPinCacheForTesting,
+} from "./runtime/rotation-storage-meta.js";
+export type { StorageMeta } from "./runtime/rotation-storage-meta.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 
@@ -143,7 +157,6 @@ function toUrlHost(host: string): string {
 // level-gated and carry the per-request correlation id set in handleRequest.
 const proxyLog = createLogger("runtime-proxy");
 const DEFAULT_QUOTA_REMAINING_THRESHOLD = 10;
-const DEFAULT_AUTH_FAILURE_COOLDOWN_MS = 30_000;
 
 const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
 
@@ -273,208 +286,6 @@ function recordLastRuntimeAccount(
 		snapshot.lastAccountId = identity.accountId;
 		snapshot.lastAccountUpdatedAt = identity.updatedAt;
 	});
-}
-
-/**
- * Content-hash-keyed snapshot of on-disk storage metadata. The proxy is a
- * long-running process; the `switch`/`unpin`/`best` CLI runs in a different
- * process and mutates the storage file. We re-read only the top-level
- * `pinnedAccountIndex` and `affinityGeneration` fields on each request so
- * manual changes are honored without doing a full AccountManager reload
- * (which would lose in-memory cooldown state).
- *
- * We key the cache on a sha1 of the file bytes rather than `mtimeMs` because
- * Windows file systems can report sub-millisecond mtime granularity that is
- * coarser than our atomic-rename writes — two CLI bumps that happen close
- * together can land on the same `mtimeMs` and silently bypass an mtime-based
- * cache. The hashing cost is negligible for the small accounts.json file
- * (typically < 50KB) and keeps cache correctness independent of FS mtime
- * resolution. See #474.
- *
- * We additionally retain the last-seen `mtimeMs`/`size` so the hot path can
- * skip the `readFileSync` + sha1 entirely when neither has changed since the
- * previous read AND the cached mtime has settled past
- * `MTIME_SHORTCIRCUIT_SETTLE_MS` (the common case — the proxy reads on every
- * request but the file only mutates on a `switch`/`unpin`/`best` CLI
- * invocation, then sits quiescent). The sha1 remains the source of truth:
- * when `mtimeMs`/`size` differ, were never cached, or the mtime is too recent
- * to trust against same-tick writes, we re-read and hash, so the content-hash
- * path still protects against the coarse-mtime collision described above
- * whenever the file is re-read.
- */
-interface StorageMetaSnapshot {
-	mtimeMs: number;
-	size: number;
-	contentHash: string;
-	pinnedAccountIndex: number | null;
-	affinityGeneration: number;
-}
-
-export interface StorageMeta {
-	pinnedAccountIndex: number | null;
-	affinityGeneration: number;
-}
-
-// Keyed by absolute storage path so multiple proxy instances and concurrent
-// vitest workers (each pointing at their own temp storage file) cannot
-// corrupt each other's snapshots. See issue #474.
-const STORAGE_META_CACHE: Map<string, StorageMetaSnapshot> = new Map();
-
-// The mtime+size short-circuit (L3) may only be trusted once the cached
-// mtime is far enough in the past that no *subsequent* write could share the
-// same coarse mtime tick. Filesystems report mtime at wildly different
-// granularities (ext4 ns, FAT 2s, some network/Windows volumes ~1s, and CI
-// containers occasionally coarser), and our writers use atomic rename, so two
-// rapid CLI bumps can land on an identical mtimeMs. Within this settle window
-// we therefore ignore mtime equality and fall back to the read + sha1 path
-// (the real source of truth). Outside it, the file has been quiescent long
-// enough that mtime equality provably means "unchanged", so we skip the read.
-// 2s comfortably exceeds the coarsest mtime granularity we expect in practice.
-const MTIME_SHORTCIRCUIT_SETTLE_MS = 2_000;
-
-function hashStorageBytes(bytes: Buffer): string {
-	return createHash("sha1").update(bytes).digest("hex");
-}
-
-function metaFromSnapshot(snapshot: StorageMetaSnapshot): StorageMeta {
-	return {
-		pinnedAccountIndex: snapshot.pinnedAccountIndex,
-		affinityGeneration: snapshot.affinityGeneration,
-	};
-}
-
-/**
- * Cheap, hot-path-safe single read with mtime-cache short-circuit. When the
- * file's `mtimeMs` and `size` match the cached snapshot for this path we
- * return the cached value WITHOUT reading or hashing the file. Only when
- * mtime/size differ (or were never cached) do we `readFileSync` + sha1 and,
- * if the content hash still matches, skip the `JSON.parse`. Transient
- * failures (EBUSY/EPERM/EACCES/EAGAIN, partial-write SyntaxError) fall through
- * to the last cached value for this path; defaults are only returned when the
- * file has never been successfully read.
- *
- * Replaces an earlier retry loop with a sub-15ms busy-wait that blocked the
- * event loop on every transient failure. The proxy is on the request hot
- * path; serving a slightly stale (but consistent) value is strictly better
- * than blocking. See #474.
- */
-export function readStorageMetaFromDisk(
-	storagePath: string = getStoragePath(),
-): StorageMeta {
-	if (!existsSync(storagePath)) {
-		STORAGE_META_CACHE.delete(storagePath);
-		return { pinnedAccountIndex: null, affinityGeneration: 0 };
-	}
-	try {
-		// mtime+size short-circuit (L3): when neither has changed since the last
-		// successful read AND the cached mtime has settled (see
-		// MTIME_SHORTCIRCUIT_SETTLE_MS) we return the cached snapshot without
-		// reading or hashing the file. During the settle window we deliberately
-		// fall through to the read + sha1 path below, which stays the source of
-		// truth and protects against the coarse-mtime collision described on
-		// StorageMetaSnapshot. So this is a pure fast path for the common
-		// "file quiescent, proxy polling every request" case.
-		const stats = statSync(storagePath);
-		const cachedByStat = STORAGE_META_CACHE.get(storagePath);
-		if (
-			cachedByStat &&
-			cachedByStat.mtimeMs === stats.mtimeMs &&
-			cachedByStat.size === stats.size &&
-			Date.now() - stats.mtimeMs > MTIME_SHORTCIRCUIT_SETTLE_MS
-		) {
-			return metaFromSnapshot(cachedByStat);
-		}
-		const bytes = readFileSync(storagePath);
-		const contentHash = hashStorageBytes(bytes);
-		const cached = STORAGE_META_CACHE.get(storagePath);
-		if (cached && cached.contentHash === contentHash) {
-			// Content is byte-identical despite the mtime/size change (e.g. an
-			// atomic-rename rewrite of the same bytes). Refresh the stat fields so
-			// the next request takes the fast path, but skip the JSON.parse.
-			const refreshed: StorageMetaSnapshot = {
-				...cached,
-				mtimeMs: stats.mtimeMs,
-				size: stats.size,
-			};
-			STORAGE_META_CACHE.set(storagePath, refreshed);
-			return metaFromSnapshot(refreshed);
-		}
-		const parsed = JSON.parse(bytes.toString("utf8")) as {
-			pinnedAccountIndex?: unknown;
-			affinityGeneration?: unknown;
-		};
-		const pinnedAccountIndex =
-			typeof parsed.pinnedAccountIndex === "number" &&
-			Number.isFinite(parsed.pinnedAccountIndex)
-				? Math.trunc(parsed.pinnedAccountIndex)
-				: null;
-		const affinityGeneration =
-			typeof parsed.affinityGeneration === "number" &&
-			Number.isFinite(parsed.affinityGeneration) &&
-			Number.isInteger(parsed.affinityGeneration) &&
-			parsed.affinityGeneration >= 0
-				? parsed.affinityGeneration
-				: 0;
-		const snapshot: StorageMetaSnapshot = {
-			mtimeMs: stats.mtimeMs,
-			size: stats.size,
-			contentHash,
-			pinnedAccountIndex,
-			affinityGeneration,
-		};
-		STORAGE_META_CACHE.set(storagePath, snapshot);
-		return { pinnedAccountIndex, affinityGeneration };
-	} catch (error) {
-		// On any failure, prefer the last good snapshot for this path so we
-		// don't blow away affinity unnecessarily. Defensive: even non-transient
-		// errors fall back to the cache when one exists — better stale than
-		// wrong. Defaults are only returned when this file has never been read
-		// successfully (cache miss).
-		void error;
-		const cached = STORAGE_META_CACHE.get(storagePath);
-		if (cached) {
-			return metaFromSnapshot(cached);
-		}
-		return { pinnedAccountIndex: null, affinityGeneration: 0 };
-	}
-}
-
-/**
- * Backwards-compatible helper retained for tests. Prefer `readStorageMetaFromDisk`
- * for new callers that also need `affinityGeneration`.
- */
-export function readPinnedAccountIndexFromDisk(
-	storagePath: string = getStoragePath(),
-): number | null {
-	return readStorageMetaFromDisk(storagePath).pinnedAccountIndex;
-}
-
-/**
- * Test-only: reset the storage-meta content-hash cache between scenarios so
- * each test starts from a clean read-from-disk state.
- */
-export function resetPinCacheForTesting(): void {
-	STORAGE_META_CACHE.clear();
-}
-
-/**
- * If the on-disk `affinityGeneration` is greater than `lastObservedGeneration`,
- * drop every entry in `sessionAffinityStore` and return the new generation so
- * the caller can update its tracker. Otherwise returns `lastObservedGeneration`
- * unchanged. Extracted so the request-flow logic can be unit-tested without
- * spinning up the full proxy. See issue #474.
- */
-export function maybeInvalidateAffinityFromDisk(
-	sessionAffinityStore: SessionAffinityStore | null,
-	lastObservedGeneration: number,
-	storagePath: string = getStoragePath(),
-): number {
-	const meta = readStorageMetaFromDisk(storagePath);
-	if (meta.affinityGeneration > lastObservedGeneration) {
-		sessionAffinityStore?.clearAll();
-		return meta.affinityGeneration;
-	}
-	return lastObservedGeneration;
 }
 
 async function persistRuntimeActiveAccount(
@@ -717,391 +528,10 @@ function buildUpstreamUrl(
 	return upstream.toString();
 }
 
-// Monotonic auth-failure cooldown: only extend, never shorten. Two concurrent
-// requests on the same account can race so that an invalidation path sets a
-// long cooldown (5 min) and a subsequent generic 401 truncates it (30 s).
-// Reading the live coolingDownUntil before writing prevents that race.
-function applyMonotonicAuthCooldown(
-	accountManager: AccountManager,
-	account: ManagedAccount,
-	cooldownMs: number,
-): void {
-	const existing = accountManager.getAccountByIndex(account.index)?.coolingDownUntil ?? 0;
-	// Intentionally Date.now(), not the proxy's injected now(): coolingDownUntil is
-	// written by markAccountCoolingDown via nowMs() (== Date.now()), so both sides of
-	// this comparison must live in the same real-wall-clock domain. Switching to the
-	// injected now() would mis-compare an injected-clock value against a real-clock
-	// deadline and silently defeat the monotonic guard.
-	if (Date.now() + cooldownMs > existing) {
-		accountManager.markAccountCoolingDown(account, cooldownMs, "auth-failure");
-	}
-}
-
-function hasUsableAccessToken(
-	account: ManagedAccount,
-	now: number,
-	skewMs: number,
-): boolean {
-	return (
-		typeof account.access === "string" &&
-		account.access.trim().length > 0 &&
-		typeof account.expires === "number" &&
-		account.expires > now + Math.max(0, skewMs)
-	);
-}
-
-const runtimeRefreshCommitQueues = new WeakMap<
-	AccountManager,
-	Map<string, Promise<ManagedAccount | null>>
->();
-
-async function commitRefreshedAuthOnce(
-	accountManager: AccountManager,
-	account: ManagedAccount,
-	auth: OAuthAuthDetails,
-): Promise<ManagedAccount | null> {
-	const key = [
-		account.index,
-		account.accountId ?? "",
-		account.email ?? "",
-		account.refreshToken,
-	].join("\0");
-	let queue = runtimeRefreshCommitQueues.get(accountManager);
-	if (!queue) {
-		queue = new Map();
-		runtimeRefreshCommitQueues.set(accountManager, queue);
-	}
-	const existing = queue.get(key);
-	if (existing) return existing;
-	const pending = accountManager
-		.commitRefreshedAuth(account, auth)
-		.finally(() => queue?.delete(key));
-	queue.set(key, pending);
-	return pending;
-}
-
-async function ensureFreshAccessToken(params: {
-	accountManager: AccountManager;
-	account: ManagedAccount;
-	family: ModelFamily;
-	model: string | null;
-	now: number;
-	tokenRefreshSkewMs: number;
-	tokenInvalidationCooldownMs: number;
-}): Promise<
-	| { ok: true; accessToken: string; account: ManagedAccount }
-	| { ok: false; retryable: boolean; invalidated?: boolean }
-> {
-	const { accountManager, account, family, model, now, tokenRefreshSkewMs, tokenInvalidationCooldownMs } =
-		params;
-	if (hasUsableAccessToken(account, now, tokenRefreshSkewMs)) {
-		return { ok: true, accessToken: account.access ?? "", account };
-	}
-
-	const refreshResult = await queuedRefresh(account.refreshToken);
-	if (refreshResult.type === "failed") {
-		accountManager.recordFailure(account, family, model);
-		accountManager.incrementAuthFailures(account);
-		// If the refresh endpoint itself returns an explicit invalidation message
-		// (e.g. Microsoft/Outlook SSO revokes the refresh token server-side), apply
-		// the long cooldown and signal to the caller to stop rotating rather than
-		// presenting other accounts' tokens from the same IP.
-		const invalidated = isTokenInvalidationError(refreshResult.message ?? "");
-		applyMonotonicAuthCooldown(
-			accountManager,
-			account,
-			invalidated ? tokenInvalidationCooldownMs : DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
-		);
-		accountManager.saveToDiskDebounced();
-		return { ok: false, retryable: isTokenRefreshRetryable(refreshResult), invalidated };
-	}
-
-	const auth: OAuthAuthDetails = {
-		type: "oauth",
-		access: refreshResult.access,
-		refresh: refreshResult.refresh,
-		expires: refreshResult.expires,
-	};
-	try {
-		const updatedAccount = (await commitRefreshedAuthOnce(
-			accountManager,
-			account,
-			auth,
-		)) ?? account;
-		return {
-			ok: true,
-			accessToken: updatedAccount.access ?? refreshResult.access,
-			account: updatedAccount,
-		};
-	} catch {
-		accountManager.recordFailure(account, family, model);
-		accountManager.markAccountCoolingDown(
-			account,
-			DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
-			"auth-failure",
-		);
-		accountManager.saveToDiskDebounced();
-		return { ok: false, retryable: true };
-	}
-}
-
 function resolveAccountId(account: ManagedAccount, accessToken: string): string | null {
 	const stored = account.accountId?.trim();
 	if (stored) return stored;
 	return extractAccountId(accessToken)?.trim() || null;
-}
-
-/**
- * `chooseAccount` is a SYNC selector that internally advances the rotation
- * cursor (the session-affinity-preferred branch and the round-robin fallback
- * both call `accountManager.markSwitched(...)`, and the hybrid selector advances
- * its own cursor). It does NOT acquire the routing mutex itself.
- *
- * Concurrency (L4): when `routingMutex === "enabled"`, the proxy hot path runs
- * this whole call AND the subsequent `markSwitchedLocked` commit inside a single
- * `withRoutingMutex` acquisition, so concurrent requests serialize selection +
- * cursor advance and cannot stampede the same account. `withRoutingMutex` is
- * reentrant (AsyncLocalStorage), so the nested `markSwitchedLocked` — and the
- * later one in `persistRuntimeActiveAccount` — run inline without re-acquiring
- * the non-reentrant FIFO queue (no deadlock). In legacy mode the inline
- * `markSwitched` calls below are used unchanged and no lock is taken, so default
- * behavior and perf are identical. See the hot-path caller in
- * `startRuntimeRotationProxy` and the regression in
- * `test/runtime-rotation-proxy.test.ts`.
- */
-export function chooseAccount(params: {
-	accountManager: AccountManager;
-	sessionAffinityStore: SessionAffinityStore | null;
-	sessionKey: string | null;
-	family: ModelFamily;
-	model: string | null;
-	attemptedIndexes: ReadonlySet<number>;
-	now: number;
-	policy: RuntimePolicyDecision | null;
-	pinnedIndex: number | null;
-	skipReasons?: Map<number, string>;
-	stickyBoostByAccount?: Record<number, number>;
-	pidOffsetEnabled?: boolean;
-	schedulingStrategy?: "hybrid" | "sequential";
-}): ManagedAccount | null {
-	const {
-		accountManager,
-		sessionAffinityStore,
-		sessionKey,
-		family,
-		model,
-		attemptedIndexes,
-		now,
-		policy,
-		pinnedIndex,
-		skipReasons,
-		stickyBoostByAccount,
-		pidOffsetEnabled,
-		schedulingStrategy,
-	} = params;
-
-	// Manual pin (from `codex-multi-auth switch <n>`) overrides every other
-	// selection signal. We do NOT call markSwitched here — the proxy must not
-	// clobber the pin set by the CLI. See issue #474.
-	if (typeof pinnedIndex === "number") {
-		if (attemptedIndexes.has(pinnedIndex)) {
-			skipReasons?.set(pinnedIndex, "already-attempted");
-			return null;
-		}
-		if (pinnedIndex < 0 || pinnedIndex >= accountManager.getAccountCount()) {
-			skipReasons?.set(pinnedIndex, "missing");
-			return null;
-		}
-		if (policy?.blockedAccountIndexes.has(pinnedIndex)) {
-			skipReasons?.set(pinnedIndex, "policy-blocked");
-			return null;
-		}
-		const pinned = accountManager.getAccountByIndex(pinnedIndex);
-		if (!pinned || pinned.enabled === false) {
-			skipReasons?.set(pinnedIndex, "disabled");
-			return null;
-		}
-		const reason = accountManager.getAccountRuntimeSkipReason(
-			pinnedIndex,
-			family,
-			model,
-		);
-		if (reason) {
-			skipReasons?.set(pinnedIndex, reason);
-			return null;
-		}
-		return pinned;
-	}
-
-	// Sequential / drain-first mode (issue #509): the active account governs ALL
-	// new requests, so we deliberately SKIP the per-session affinity tier — there
-	// is no per-chat stickiness, every request follows the single active account.
-	// The manual pin above still wins (handled first). When the active account is
-	// exhausted the selector advances to the next available account and earlier
-	// accounts reclaim the slot once their quota recovers.
-	if (schedulingStrategy === "sequential") {
-		const selected = accountManager.getCurrentOrNextForFamilySequential(
-			family,
-			model,
-			policy?.blockedAccountIndexes,
-		);
-		if (
-			selected &&
-			!attemptedIndexes.has(selected.index) &&
-			!policy?.blockedAccountIndexes.has(selected.index)
-		) {
-			const reason = accountManager.getAccountRuntimeSkipReason(
-				selected.index,
-				family,
-				model,
-			);
-			if (!reason) return selected;
-			skipReasons?.set(selected.index, reason);
-		}
-
-		// Active account was attempted/blocked/skipped this request (e.g. it just
-		// rate-limited mid-loop): fall through to the shared linear scan to find
-		// the next eligible account to TRY. Pass advanceActivePointer=false so a
-		// transient, non-exhausting failure on the active account does not
-		// permanently move the drain-first primary — only
-		// getCurrentOrNextForFamilySequential advances it, and only on true
-		// exhaustion.
-		return chooseLinearScanFallback({
-			accountManager,
-			family,
-			model,
-			attemptedIndexes,
-			policy,
-			skipReasons,
-			advanceActivePointer: false,
-		});
-	}
-
-	const preferredIndex = sessionAffinityStore?.getPreferredAccountIndex(sessionKey, now);
-	if (
-		typeof preferredIndex === "number" &&
-		!attemptedIndexes.has(preferredIndex) &&
-		!policy?.blockedAccountIndexes.has(preferredIndex)
-	) {
-		const preferred = accountManager.getAccountByIndex(preferredIndex);
-		if (
-			preferred) {
-			const reason = accountManager.getAccountRuntimeSkipReason(
-				preferred.index,
-				family,
-				model,
-			);
-			if (reason) {
-				skipReasons?.set(preferred.index, reason);
-			} else {
-			// L4 (deferred): unlocked cursor mutation — see chooseAccount header.
-			accountManager.markSwitched(preferred, "rotation", family);
-			return preferred;
-			}
-		}
-	}
-
-	const selected = accountManager.getCurrentOrNextForFamilyHybrid(family, model, {
-		scoreBoostByAccount: {
-			...(policy?.scoreBoostByAccount ?? {}),
-			...(stickyBoostByAccount ?? {}),
-		},
-		// accounts-05: carry the PID-offset distribution into the default-on proxy
-		// path too (index.ts already does). Without it, parallel proxy processes can
-		// stampede the same account instead of spreading across the pool.
-		pidOffsetEnabled,
-	});
-	if (
-		selected &&
-		!attemptedIndexes.has(selected.index) &&
-		!policy?.blockedAccountIndexes.has(selected.index)
-	) {
-		const reason = accountManager.getAccountRuntimeSkipReason(
-			selected.index,
-			family,
-			model,
-		);
-		if (!reason) return selected;
-		skipReasons?.set(selected.index, reason);
-	}
-
-	return chooseLinearScanFallback({
-		accountManager,
-		family,
-		model,
-		attemptedIndexes,
-		policy,
-		skipReasons,
-	});
-}
-
-/**
- * Shared linear-scan fallback used by both the hybrid and sequential selection
- * paths in `chooseAccount`. Walks every account in pool order and returns the
- * first one that is not already attempted, not policy-blocked, and has no
- * runtime skip reason (rate-limited / cooling down / circuit-open), recording a
- * skip reason for each rejected candidate. Returns null when no eligible
- * account remains.
- *
- * `advanceActivePointer` (default `true`) controls whether the winner is
- * committed as the new active/cursor position via `markSwitched`. The hybrid
- * path wants this (round-robin advance). The sequential path passes `false`:
- * its within-request fallback only needs an account to TRY this request, and
- * must NOT move `currentAccountIndexByFamily` — otherwise a transient,
- * non-exhausting failure on the active account (which leaves it `isUsable` but
- * present in `attemptedIndexes`) would permanently switch the drain-first
- * primary even though it was never exhausted (issue #509 regression caught in
- * review). In sequential mode only `getCurrentOrNextForFamilySequential` is
- * allowed to advance the active pointer, and only on true exhaustion.
- */
-function chooseLinearScanFallback(params: {
-	accountManager: AccountManager;
-	family: ModelFamily;
-	model: string | null;
-	attemptedIndexes: ReadonlySet<number>;
-	policy: RuntimePolicyDecision | null;
-	skipReasons?: Map<number, string>;
-	advanceActivePointer?: boolean;
-}): ManagedAccount | null {
-	const {
-		accountManager,
-		family,
-		model,
-		attemptedIndexes,
-		policy,
-		skipReasons,
-		advanceActivePointer = true,
-	} = params;
-
-	for (const account of accountManager.getAccountsSnapshot()) {
-		if (attemptedIndexes.has(account.index)) {
-			skipReasons?.set(account.index, "already-attempted");
-			continue;
-		}
-		if (policy?.blockedAccountIndexes.has(account.index)) {
-			skipReasons?.set(account.index, "policy-blocked");
-			continue;
-		}
-		const reason = accountManager.getAccountRuntimeSkipReason(
-			account.index,
-			family,
-			model,
-		);
-		if (!reason) {
-			const live = accountManager.getAccountByIndex(account.index);
-			if (!live) continue;
-			// L4 (deferred): unlocked cursor mutation — see chooseAccount header.
-			// Skipped in sequential mode (advanceActivePointer=false) so a
-			// within-request retry never reassigns the drain-first primary.
-			if (advanceActivePointer) {
-				accountManager.markSwitched(live, "rotation", family);
-			}
-			return live;
-		}
-		skipReasons?.set(account.index, reason);
-	}
-
-	return null;
 }
 
 function writeJson(res: ServerResponse, status: number, payload: Record<string, unknown>): void {
@@ -1166,8 +596,7 @@ export async function startRuntimeRotationProxy(
 	options: RuntimeRotationProxyOptions,
 ): Promise<RuntimeRotationProxyServer> {
 	const pluginConfig = loadPluginConfig();
-	let activeAccountManager = options.accountManager ?? (await AccountManager.loadFromDisk());
-	const knownAccountManagers = new Set<AccountManager>([activeAccountManager]);
+	const activeAccountManager = options.accountManager ?? (await AccountManager.loadFromDisk());
 	// accounts-01/08: apply the configured routing-mutex mode so the proxy's
 	// async select->commit path (persistRuntimeActiveAccount) can serialize cursor
 	// mutations when routingMutex="enabled". Legacy mode keeps the inline fast path.
@@ -1209,8 +638,6 @@ export async function startRuntimeRotationProxy(
 	const tokenInvalidationCooldownMs = getTokenInvalidationCooldownMs(pluginConfig);
 	const minRotationIntervalMs = getMinRotationIntervalMs(pluginConfig);
 	const pidOffsetEnabled = getPidOffsetEnabled(pluginConfig);
-	let lastGlobalAccountIndex: number | null = null;
-	let lastGlobalSwitchAt = 0;
 	const fetchTimeoutMs = options.fetchTimeoutMs ?? getFetchTimeoutMs(pluginConfig);
 	const streamStallTimeoutMs =
 		options.streamStallTimeoutMs ?? getStreamStallTimeoutMs(pluginConfig);
@@ -1232,805 +659,33 @@ export async function startRuntimeRotationProxy(
 	// Initialize from disk so the proxy starts in sync with whatever generation
 	// the storage file already shows. Subsequent disk bumps (from CLI commands)
 	// are detected per-request via `maybeInvalidateAffinityFromDisk`.
-	let lastObservedAffinityGeneration =
+	const lastObservedAffinityGeneration =
 		readStorageMetaFromDisk().affinityGeneration;
-	const status: RuntimeRotationProxyStatus = {
-		startedAt: now(),
-		totalRequests: 0,
-		upstreamRequests: 0,
-		retries: 0,
-		rotations: 0,
-		streamsStarted: 0,
-		lastError: null,
-		lastAccountIndex: null,
-		lastAccountLabel: null,
-		lastAccountId: null,
-		lastAccountUpdatedAt: null,
-	};
-	const threadGoalFallbacks = new Map<string, string | null>();
-	let staleRuntimeReloadPromise: Promise<AccountManager | null> | null = null;
-	let lastStaleRuntimeReloadAt = 0;
-	const staleRuntimeReloadDedupeMs = 1_000;
-
-	const recoverStaleRuntimeState = async (): Promise<AccountManager | null> => {
-		if (Date.now() - lastStaleRuntimeReloadAt <= staleRuntimeReloadDedupeMs) {
-			return activeAccountManager;
-		}
-		if (staleRuntimeReloadPromise) {
-			return staleRuntimeReloadPromise;
-		}
-		staleRuntimeReloadPromise = (async () => {
-			AccountManager.resetVolatileRuntimeState();
-			recordRuntimeReset("pool-exhausted-no-account");
-			const reloaded = await AccountManager.loadFromDisk();
-			reloaded.setRoutingMutexMode(routingMutexMode);
-			activeAccountManager = reloaded;
-			knownAccountManagers.add(reloaded);
-			lastStaleRuntimeReloadAt = Date.now();
-			recordRuntimeReload("pool-exhausted-no-account");
-			return reloaded;
-		})()
-			.catch((error) => {
-				status.lastError = error instanceof Error ? error.message : String(error);
-				return null;
-			})
-			.finally(() => {
-				staleRuntimeReloadPromise = null;
-			});
-		return staleRuntimeReloadPromise;
-	};
-
-	const handleRequest = async (
-		req: IncomingMessage,
-		res: ServerResponse,
-	): Promise<void> => {
-		// Per-request trace id (errors-logging-03): distinct from sessionKey, which
-		// is shared across a thread's requests. Bound to this request's async context
-		// so every proxyLog line and usage row can be correlated to one request.
-		const traceId = randomUUID();
-		return runWithCorrelationId(traceId, () => handleRequestInner(req, res, traceId));
-	};
-
-	const handleRequestInner = async (
-		req: IncomingMessage,
-		res: ServerResponse,
-		traceId: string,
-	): Promise<void> => {
-		let usageRecorder: ReturnType<typeof createRuntimeUsageRecorder> | null = null;
-		let accountManager = activeAccountManager;
-		try {
-			const incomingUrl = new URL(req.url ?? "/", "http://127.0.0.1");
-			// Authenticate before discriminating path/method so an unauthenticated
-			// caller cannot enumerate which endpoints exist: an unknown caller always
-			// gets 401, never a 404 that would confirm a path is invalid (vs. just
-			// unauthorized). Authorized callers still fall through to the 404 below
-			// when they hit an unsupported path/method.
-			const incomingHeaders = headersFromIncoming(req);
-			if (!isAuthorizedClient(incomingHeaders, clientApiKey)) {
-				writeUnauthorized(res);
-				return;
-			}
-
-			const isResponsesRequest =
-				req.method === "POST" && isResponsesPath(incomingUrl.pathname);
-			const isModelsRequest =
-				req.method === "GET" && isModelsPath(incomingUrl.pathname);
-			const isThreadGoalRequest =
-				(req.method === "GET" || req.method === "POST") &&
-				isThreadGoalPath(incomingUrl.pathname);
-			if (!isResponsesRequest && !isModelsRequest && !isThreadGoalRequest) {
-				writeMethodOrPathError(res);
-				return;
-			}
-
-			status.totalRequests += 1;
-			const requestBody =
-				isResponsesRequest || (isThreadGoalRequest && req.method === "POST")
-					? await readRequestBody(req, maxRequestBodyBytes)
-					: Buffer.alloc(0);
-			const context = isModelsRequest
-				? buildModelsRequestContext(req)
-				: isThreadGoalRequest
-					? buildThreadGoalRequestContext(req, requestBody, incomingUrl.pathname)
-					: buildResponsesRequestContext(req, requestBody);
-			const requestStartedAt = now();
-			let policyDecision: RuntimePolicyDecision | null = null;
-			let projectKey: string | null = null;
-			let policyError: string | null = null;
-			try {
-				const policyState = await loadRuntimePolicyState();
-				projectKey = policyState.project.projectKey;
-				policyDecision = await evaluateRuntimePolicy({
-					state: policyState,
-					accounts: accountManager.getAccountsSnapshot(),
-					model: context.model,
-					now: requestStartedAt,
-				});
-				mutateRuntimeObservabilitySnapshot((snapshot) => {
-					snapshot.policyBlockedIndexes = [
-						...(policyDecision?.blockedAccountIndexes ?? new Set<number>()),
-					];
-					snapshot.policyBlockedReasons = Object.fromEntries(
-						[...(policyDecision?.blockedAccountIndexes ?? new Set<number>())].map(
-							(index) => [String(index), "policy-blocked"],
-						),
-					);
-				});
-			} catch (error) {
-				policyError = error instanceof Error ? error.message : String(error);
-				status.lastError = policyError;
-			}
-			usageRecorder = createRuntimeUsageRecorder({
-				source: "runtime-proxy",
-				operation: isModelsRequest
-					? "models"
-					: isThreadGoalRequest
-						? "thread-goal"
-						: "responses",
-				model: context.model,
-				projectKey,
-				requestId: traceId,
-				startedAt: requestStartedAt,
-			});
-			if (policyError) {
-				await usageRecorder.record({
-					outcome: "failure",
-					statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
-					errorCode: "runtime_policy_unavailable",
-				});
-				writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, {
-					error: {
-						message: "Runtime policy could not be loaded for this local request.",
-						code: "runtime_policy_unavailable",
-					},
-				});
-				return;
-			}
-			if (policyDecision && !policyDecision.allowed) {
-				await usageRecorder.record({
-					outcome: "blocked",
-					statusCode: policyDecision.statusCode,
-					errorCode: policyDecision.errorCode,
-				});
-				writeJson(res, policyDecision.statusCode, {
-					error: {
-						message: "Runtime policy blocked this local request.",
-						code: policyDecision.errorCode ?? "policy_blocked",
-						reasons: policyDecision.reasons,
-					},
-				});
-				return;
-			}
-			const upstreamUrl = buildUpstreamUrl(
-				req,
-				upstreamBaseUrl,
-				context.upstreamPath,
-			);
-			const attemptedIndexes = new Set<number>();
-			let exhaustionReason: ExhaustionReason = "no-account";
-			let accountCount = accountManager.getAccountCount();
-			let transientAttemptLimit = Math.max(
-				1,
-				Math.min(accountCount, maxRuntimeAccountAttempts),
-			);
-			let transientAttempts = 0;
-			let transientExhaustionReason: ExhaustionReason | null = null;
-			const accountSkipReasons = new Map<number, string>();
-			let reloadedAfterNoAccount = false;
-
-			// Read the manual pin and affinity generation from disk (mtime-cached)
-			// on each request so a `codex-multi-auth switch|unpin|best` invocation
-			// in another process is honored without forcing a full AccountManager
-			// reload. The CLI bumps `affinityGeneration` on user-initiated changes
-			// so the proxy can invalidate sticky session affinity that would
-			// otherwise glue an in-flight chat thread to the previously selected
-			// account. The proxy itself never bumps the generation, so its own
-			// debounced disk writes do not clear affinity. See issue #474.
-			const storageMeta = readStorageMetaFromDisk();
-			const pinnedIndex = storageMeta.pinnedAccountIndex;
-			const isPinned = typeof pinnedIndex === "number";
-			if (storageMeta.affinityGeneration > lastObservedAffinityGeneration) {
-				sessionAffinityStore?.clearAll();
-				lastObservedAffinityGeneration = storageMeta.affinityGeneration;
-			}
-
-			while (
-				attemptedIndexes.size < accountCount &&
-				transientAttempts < transientAttemptLimit
-			) {
-				const rotationStickyBoost: Record<number, number> =
-					minRotationIntervalMs > 0 &&
-					lastGlobalAccountIndex !== null &&
-					now() - lastGlobalSwitchAt < minRotationIntervalMs
-						? { [lastGlobalAccountIndex]: 1000 }
-						: {};
-				// L4 fix (routing mutex): when `routingMutex === "enabled"`, run the
-				// selection AND the cursor commit inside ONE mutex acquisition so two
-				// concurrent requests cannot read the same cursor and stampede before
-				// the locked commit lands. `chooseAccount` is sync and mutates the
-				// cursor internally (session-affinity `markSwitched`, the hybrid
-				// selector's own advance, and the round-robin fallback `markSwitched`);
-				// holding the mutex across the whole call serializes all of those.
-				// We then `markSwitchedLocked` the winner to (a) re-commit the cursor
-				// under the lock across the await boundary and (b) hand
-				// `persistRuntimeActiveAccount` a cursor that is already correct. That
-				// later `markSwitchedLocked` runs INLINE (reentrant) within this held
-				// section, so there is no double-acquire and no deadlock on the
-				// non-reentrant FIFO queue. In legacy mode the inline `markSwitched`
-				// calls inside `chooseAccount` are used unchanged and no lock is taken,
-				// so default behavior and perf are identical to before.
-				const selectAccount = (): ManagedAccount | null =>
-					chooseAccount({
-						accountManager,
-						sessionAffinityStore,
-						sessionKey: context.sessionKey,
-						family: context.family,
-						model: context.model,
-						attemptedIndexes,
-						now: now(),
-						policy: policyDecision,
-						pinnedIndex,
-						skipReasons: accountSkipReasons,
-						stickyBoostByAccount: rotationStickyBoost,
-						pidOffsetEnabled,
-						schedulingStrategy,
-					});
-				const selected =
-					routingMutexMode === "enabled"
-						? await withRoutingMutex(routingMutexMode, async () => {
-								const candidate = selectAccount();
-								if (
-									candidate &&
-									pinnedIndex === null &&
-									schedulingStrategy !== "sequential"
-								) {
-									// Re-commit the cursor under the held mutex. Skipped when a
-									// manual pin is active so the proxy never clobbers the pin
-									// (see #474); pinned selections are deterministic and need no
-									// cursor advance. Also skipped in sequential mode: the
-									// sequential selector already committed the correct active
-									// index inside this held mutex, and re-committing `candidate`
-									// would wrongly advance the drain-first primary when the pick
-									// came from the non-advancing linear-scan fallback (#509).
-									// Runs inline via reentrancy — see comment above.
-									await accountManager.markSwitchedLocked(
-										candidate,
-										"rotation",
-										context.family,
-									);
-								}
-								return candidate;
-							})
-						: selectAccount();
-				if (!selected) {
-					if (
-						!reloadedAfterNoAccount &&
-						!isPinned &&
-						accountCount > 0 &&
-						exhaustionReason === "no-account" &&
-						(policyDecision?.blockedAccountIndexes.size ?? 0) === 0 &&
-						![...accountSkipReasons.values()].some(
-							(reason) =>
-								reason === "rate-limited" ||
-								reason.startsWith("cooling-down") ||
-								reason === "policy-blocked",
-						)
-					) {
-						reloadedAfterNoAccount = true;
-						const reloadedManager = await recoverStaleRuntimeState();
-						if (reloadedManager) {
-							accountManager = reloadedManager;
-							accountCount = accountManager.getAccountCount();
-							transientAttemptLimit = Math.max(
-								1,
-								Math.min(accountCount, maxRuntimeAccountAttempts),
-							);
-							accountSkipReasons.clear();
-							attemptedIndexes.clear();
-							continue;
-						}
-					}
-					break;
-				}
-				attemptedIndexes.add(selected.index);
-
-				if (!accountManager.consumeToken(selected, context.family, context.model)) {
-					accountSkipReasons.set(selected.index, "token-exhausted");
-					exhaustionReason = "rate-limit";
-					continue;
-				}
-
-				const refreshed = await ensureFreshAccessToken({
-					accountManager,
-					account: selected,
-					family: context.family,
-					model: context.model,
-					now: now(),
-					tokenRefreshSkewMs,
-					tokenInvalidationCooldownMs,
-				});
-				if (!refreshed.ok) {
-					accountManager.refundToken(selected, context.family, context.model);
-					exhaustionReason = "auth-failure";
-					if (refreshed.invalidated) {
-						// Refresh endpoint explicitly revoked the token. Stop cascade:
-						// return auth error to client instead of rotating to the next account.
-						sessionAffinityStore?.forgetSession(context.sessionKey);
-						res.writeHead(HTTP_STATUS.UNAUTHORIZED, { "content-type": "application/json" });
-						// Route through the shared builder so both invalidation exit paths stay
-						// in lockstep — empty input yields { error: { message: <fallback>,
-						// code: "token_invalidated" } }.
-						res.end(buildTokenInvalidationBody(""));
-						await usageRecorder.record({
-							outcome: "failure",
-							statusCode: HTTP_STATUS.UNAUTHORIZED,
-							errorCode: "token_invalidated",
-							account: selected,
-						});
-						return;
-					}
-					if (!refreshed.retryable) continue;
-					transientAttempts += 1;
-					transientExhaustionReason = "auth-failure";
-					status.retries += 1;
-					status.rotations += 1;
-					continue;
-				}
-
-				const accountId = resolveAccountId(refreshed.account, refreshed.accessToken);
-				if (!accountId) {
-					accountManager.refundToken(refreshed.account, context.family, context.model);
-					accountManager.recordFailure(refreshed.account, context.family, context.model);
-					accountManager.markAccountCoolingDown(
-						refreshed.account,
-						DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
-						"auth-failure",
-					);
-					exhaustionReason = "auth-failure";
-					transientAttempts += 1;
-					transientExhaustionReason = "auth-failure";
-					status.retries += 1;
-					status.rotations += 1;
-					continue;
-				}
-
-				const accountIdentity = accountIdentityFromAccount(refreshed.account, now());
-				recordLastRuntimeAccount(status, accountIdentity);
-
-				const outboundHeaders = createOutboundHeaders(
-					context.headers,
-					refreshed.account,
-					refreshed.accessToken,
-					accountId,
-				);
-
-				let upstream: Response;
-				try {
-					status.upstreamRequests += 1;
-					const fetchAbortController = new AbortController();
-					const upstreamRequestInit: RequestInit = {
-						method: context.method,
-						headers: outboundHeaders,
-						signal: fetchAbortController.signal,
-					};
-					if (context.method === "POST") {
-						upstreamRequestInit.body = context.body;
-					}
-					upstream = await withTimeout(
-						fetchImpl(upstreamUrl, upstreamRequestInit),
-						fetchTimeoutMs,
-						() => fetchAbortController.abort(),
-						`upstream fetch timed out after ${fetchTimeoutMs}ms`,
-					);
-				} catch (error) {
-					status.lastError = error instanceof Error ? error.message : String(error);
-					accountManager.refundToken(refreshed.account, context.family, context.model);
-					accountManager.recordFailure(refreshed.account, context.family, context.model);
-					accountManager.markAccountCoolingDown(
-						refreshed.account,
-						networkErrorCooldownMs,
-						"network-error",
-					);
-					accountManager.saveToDiskDebounced();
-					exhaustionReason = "network-error";
-					transientAttempts += 1;
-					transientExhaustionReason = "network-error";
-					status.retries += 1;
-					status.rotations += 1;
-					continue;
-				}
-
-				if (upstream.status === HTTP_STATUS.TOO_MANY_REQUESTS) {
-					const bodyText = await readErrorBody(upstream, streamStallTimeoutMs);
-					const retryAfterMs =
-						parseRetryAfterHeaderMs(upstream.headers, now()) ??
-						parseRetryAfterBodyMs(bodyText, now()) ??
-						60_000;
-					// A 429 is the upstream quota signal for the attempted account, so
-					// keep the consumed runtime token drained.
-					accountManager.recordRateLimit(refreshed.account, context.family, context.model);
-					accountManager.markRateLimitedWithReason(
-						refreshed.account,
-						retryAfterMs,
-						context.family,
-						"quota",
-						context.model,
-					);
-					accountManager.saveToDiskDebounced();
-					exhaustionReason = "rate-limit";
-					transientAttempts += 1;
-					transientExhaustionReason = "rate-limit";
-					status.retries += 1;
-					status.rotations += 1;
-					continue;
-				}
-
-				if (upstream.status === 402 || upstream.status === HTTP_STATUS.FORBIDDEN) {
-					const bodyText = await readErrorBody(upstream, streamStallTimeoutMs);
-					const errorCode = extractErrorCodeFromBody(bodyText);
-					if (isWorkspaceDisabledError(upstream.status, errorCode, bodyText)) {
-						const accountWasEnabled =
-							accountManager.getAccountByIndex(refreshed.account.index)?.enabled !==
-							false;
-						accountManager.refundToken(
-							refreshed.account,
-							context.family,
-							context.model,
-						);
-						if (accountWasEnabled) {
-							accountManager.recordFailure(
-								refreshed.account,
-								context.family,
-								context.model,
-							);
-							accountManager.setAccountEnabled(refreshed.account.index, false);
-							accountManager.saveToDiskDebounced();
-						}
-						sessionAffinityStore?.forgetSession(context.sessionKey);
-						exhaustionReason = "deactivated";
-						status.retries += 1;
-						status.rotations += 1;
-						continue;
-					}
-
-					if (isThreadGoalRequest && isThreadGoalFallbackStatus(upstream.status)) {
-						const parsedGoalBody = parseRequestBody(context.body);
-						const fallbackKey = context.sessionKey;
-						const goal =
-							typeof parsedGoalBody?.goal === "string" ? parsedGoalBody.goal : null;
-						if (!fallbackKey) {
-							if (context.upstreamPath.endsWith("/get")) {
-								writeJson(res, HTTP_STATUS.OK, { goal: null });
-								await usageRecorder.record({
-									outcome: "failure",
-									statusCode: upstream.status,
-									errorCode: "thread_goal_session_key_required",
-									account: refreshed.account,
-								});
-								return;
-							}
-							await usageRecorder.record({
-								outcome: "failure",
-								statusCode: HTTP_STATUS.BAD_REQUEST,
-								errorCode: "thread_goal_session_key_required",
-								account: refreshed.account,
-							});
-							writeJson(res, HTTP_STATUS.BAD_REQUEST, {
-								error: {
-									message:
-										"Thread goal fallback requires a thread_id, threadId, or session header.",
-									code: "thread_goal_session_key_required",
-								},
-							});
-							return;
-						}
-						await usageRecorder.record({
-							outcome: "failure",
-							statusCode: upstream.status,
-							errorCode: "thread_goal_upstream_blocked",
-							account: refreshed.account,
-						});
-						if (context.upstreamPath.endsWith("/set")) {
-							setThreadGoalFallback(threadGoalFallbacks, fallbackKey, goal);
-							writeJson(res, HTTP_STATUS.OK, { ok: true, goal });
-							return;
-						}
-						writeJson(res, HTTP_STATUS.OK, {
-							goal: getThreadGoalFallback(threadGoalFallbacks, fallbackKey),
-						});
-						return;
-					}
-
-					if (isThreadGoalRequest && context.upstreamPath.endsWith("/get")) {
-						writeJson(res, HTTP_STATUS.OK, { goal: null });
-						await usageRecorder.record({
-							outcome: "failure",
-							statusCode: upstream.status,
-							errorCode,
-							account: refreshed.account,
-						});
-						return;
-					}
-					res.writeHead(upstream.status, responseHeadersForClient(upstream.headers));
-					res.end(bodyText);
-					await usageRecorder.record({
-						outcome: "failure",
-						statusCode: upstream.status,
-						errorCode,
-						account: refreshed.account,
-					});
-					return;
-				}
-
-				if (upstream.status === HTTP_STATUS.UNAUTHORIZED) {
-					const bodyText = await readErrorBody(upstream, streamStallTimeoutMs);
-					accountManager.refundToken(refreshed.account, context.family, context.model);
-					accountManager.recordFailure(refreshed.account, context.family, context.model);
-					if (isTokenInvalidationError(bodyText)) {
-						// The upstream explicitly revoked this OAuth token. Applying a long
-						// cooldown prevents cascade invalidation: rapidly presenting each
-						// account's token from the same IP triggers OpenAI's anti-abuse
-						// detection and invalidates them in sequence. Return the 401 directly
-						// rather than rotating so the client can prompt for re-login.
-						applyMonotonicAuthCooldown(
-							accountManager,
-							refreshed.account,
-							tokenInvalidationCooldownMs,
-						);
-						sessionAffinityStore?.forgetSession(context.sessionKey);
-						accountManager.saveToDiskDebounced();
-						// Emit the same machine-readable shape as the refresh-failure path
-						// (code: "token_invalidated") instead of forwarding the raw upstream
-						// body, so the client contract is consistent across both vectors.
-						const clientHeaders = responseHeadersForClient(upstream.headers);
-						clientHeaders["content-type"] = "application/json";
-						res.writeHead(upstream.status, clientHeaders);
-						res.end(buildTokenInvalidationBody(bodyText));
-						await usageRecorder.record({
-							outcome: "failure",
-							statusCode: upstream.status,
-							errorCode: "token_invalidated",
-							account: refreshed.account,
-						});
-						return;
-					}
-					applyMonotonicAuthCooldown(
-						accountManager,
-						refreshed.account,
-						DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
-					);
-					accountManager.saveToDiskDebounced();
-					exhaustionReason = "auth-failure";
-					transientAttempts += 1;
-					transientExhaustionReason = "auth-failure";
-					status.retries += 1;
-					status.rotations += 1;
-					continue;
-				}
-
-				if (upstream.status >= 500) {
-					await readErrorBody(upstream, streamStallTimeoutMs);
-					accountManager.refundToken(refreshed.account, context.family, context.model);
-					accountManager.recordFailure(refreshed.account, context.family, context.model);
-					accountManager.markAccountCoolingDown(
-						refreshed.account,
-						serverErrorCooldownMs,
-						"server-error",
-					);
-					accountManager.saveToDiskDebounced();
-					exhaustionReason = "server-error";
-					transientAttempts += 1;
-					transientExhaustionReason = "server-error";
-					status.retries += 1;
-					status.rotations += 1;
-					continue;
-				}
-
-				if (isThreadGoalRequest && upstream.status >= 400) {
-					if (context.upstreamPath.endsWith("/get")) {
-						writeJson(res, HTTP_STATUS.OK, { goal: null });
-						await usageRecorder.record({
-							outcome: "failure",
-							statusCode: upstream.status,
-							errorCode: "thread_goal_upstream_error",
-							account: refreshed.account,
-						});
-						return;
-					}
-					const forwarded = await forwardStreamingResponse(
-						upstream,
-						res,
-						status,
-						() => undefined,
-						streamStallTimeoutMs,
-					);
-					await usageRecorder.record({
-						outcome: "failure",
-						statusCode: upstream.status,
-						errorCode: forwarded ? "thread_goal_upstream_error" : "stream_forward_failed",
-						account: refreshed.account,
-					});
-					return;
-				}
-
-				accountManager.recordSuccess(refreshed.account, context.family, context.model);
-				// A successful request proves the account is usable, so clear any
-				// stale runtime skip reason persisted for it on a prior pool
-				// exhaustion. Without this the overlay reason (e.g. "token-exhausted",
-				// "rate-limited") lingers on disk until an explicit runtime reset and
-				// the forecast keeps reporting this working account as unavailable.
-				// No-op when no reason is recorded, so the hot path stays write-free.
-				recordRuntimeAccountRecovery(refreshed.account.index);
-				const nearExhaustionWaitMs = getQuotaNearExhaustionWaitMs(
-					upstream.headers,
-					quotaRemainingPercentThreshold,
-					now(),
-				);
-				if (nearExhaustionWaitMs > 0) {
-					accountManager.markRateLimitedWithReason(
-						refreshed.account,
-						nearExhaustionWaitMs,
-						context.family,
-						"quota",
-						context.model,
-					);
-					sessionAffinityStore?.forgetSession(context.sessionKey);
-					accountManager.saveToDiskDebounced();
-				} else {
-					sessionAffinityStore?.remember(
-						context.sessionKey,
-						refreshed.account.index,
-						now(),
-					);
-					if (refreshed.account.index !== lastGlobalAccountIndex) {
-						lastGlobalAccountIndex = refreshed.account.index;
-					}
-					lastGlobalSwitchAt = now();
-				}
-				await persistRuntimeActiveAccount(
-					accountManager,
-					refreshed.account,
-					context.family,
-					isPinned && refreshed.account.index === pinnedIndex,
-				);
-
-				const forwarded = await forwardStreamingResponse(
-					upstream,
-					res,
-					status,
-					() => {
-						accountManager.recordFailure(
-							refreshed.account,
-							context.family,
-							context.model,
-						);
-						accountManager.markAccountCoolingDown(
-							refreshed.account,
-							networkErrorCooldownMs,
-							"network-error",
-						);
-						sessionAffinityStore?.forgetSession(context.sessionKey);
-						accountManager.saveToDiskDebounced();
-					},
-					streamStallTimeoutMs,
-				);
-				await usageRecorder.record({
-					outcome: forwarded ? "success" : "failure",
-					statusCode: upstream.status,
-					errorCode: forwarded ? null : "stream_forward_failed",
-					account: refreshed.account,
-				});
-				return;
-			}
-
-			if (
-				transientAttempts >= transientAttemptLimit &&
-				attemptedIndexes.size < accountCount
-			) {
-				exhaustionReason = "budget";
-			} else if (
-				exhaustionReason === "deactivated" &&
-				transientExhaustionReason
-			) {
-				exhaustionReason = transientExhaustionReason;
-			}
-
-			// When a manual pin is set and the pinned account is unavailable, do
-			// NOT silently fall through to rotation. Hard-fail with a 503 so the
-			// user is informed the pin cannot be honored. See issue #474.
-			//
-			// Surface the runtime skip reason in both the human-readable message
-			// and a structured `reason` field, mirroring `writePoolExhausted`. A
-			// null reason indicates a forecast/runtime state desync (the pinned
-			// account was selected but no skip reason was recorded) — see #486.
-			if (isPinned) {
-				const errorBody = buildPinnedUnavailableErrorBody(
-					pinnedIndex,
-					accountSkipReasons,
-				);
-				if (errorBody.reason === null) {
-					status.lastError = `pinned-503 missing skip reason (pinnedIndex=${pinnedIndex})`;
-				}
-				await usageRecorder?.record({
-					outcome: "failure",
-					statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
-					errorCode: "codex_pinned_account_unavailable",
-				});
-				writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, { error: errorBody });
-				return;
-			}
-
-			await usageRecorder?.record({
-				outcome: "failure",
-				statusCode: normalizeExhaustionStatus(exhaustionReason),
-				errorCode: isThreadGoalRequest && context.upstreamPath.endsWith("/get") ? "thread_goal_pool_exhausted" : exhaustionReason,
-			});
-			if (isThreadGoalRequest && context.upstreamPath.endsWith("/get")) {
-				writeJson(res, HTTP_STATUS.OK, { goal: null });
-			} else {
-				writePoolExhausted({
-					res,
-					accountManager,
-					family: context.family,
-					model: context.model,
-					reason: exhaustionReason,
-					accountSkipReasons: Object.fromEntries(
-						[...accountSkipReasons.entries()].map(([index, reason]) => [
-							String(index),
-							reason,
-						]),
-					),
-				});
-			}
-		} catch (error) {
-			const rawErrorMessage = error instanceof Error ? error.message : String(error);
-			// errors-logging-08: redact any email/token material that leaked into a
-			// raw upstream or refresh error string before it reaches status consumers
-			// or the structured log. maskString is a no-op for clean diagnostic text.
-			const maskedErrorMessage = maskString(rawErrorMessage);
-			status.lastError = maskedErrorMessage;
-			// errors-logging-01: surface the failure through the structured logger
-			// (redaction-safe) with the request trace id, instead of only stashing a
-			// last-write-wins status string.
-			proxyLog.error("runtime proxy request failed", {
-				traceId,
-				code: isRuntimeProxyHttpError(error) ? error.code : "codex_runtime_rotation_proxy_error",
-				error: maskedErrorMessage,
-			});
-			if (!res.headersSent) {
-				if (isRuntimeProxyHttpError(error)) {
-					await usageRecorder?.record({
-						outcome: "failure",
-						statusCode: error.statusCode,
-						errorCode: error.code,
-					});
-					writeJson(res, error.statusCode, {
-						error: {
-							message: error.message,
-							code: error.code,
-						},
-					});
-					return;
-				}
-				await usageRecorder?.record({
-					outcome: "failure",
-					statusCode: 500,
-					errorCode: "codex_runtime_rotation_proxy_error",
-				});
-				writeJson(res, 500, {
-					error: {
-						message: "Runtime rotation proxy failed before forwarding the request.",
-						code: "codex_runtime_rotation_proxy_error",
-					},
-				});
-			} else if (!res.destroyed) {
-				res.destroy(error instanceof Error ? error : undefined);
-			}
-		}
-	};
+	const state = createRotationProxyState({
+		activeAccountManager,
+		routingMutexMode,
+		schedulingStrategy,
+		fetchImpl,
+		upstreamBaseUrl,
+		clientApiKey,
+		now,
+		tokenRefreshSkewMs,
+		networkErrorCooldownMs,
+		serverErrorCooldownMs,
+		tokenInvalidationCooldownMs,
+		minRotationIntervalMs,
+		pidOffsetEnabled,
+		fetchTimeoutMs,
+		streamStallTimeoutMs,
+		maxRuntimeAccountAttempts,
+		maxRequestBodyBytes,
+		quotaRemainingPercentThreshold,
+		sessionAffinityStore,
+		lastObservedAffinityGeneration,
+	});
 
 	const server = createServer((req, res) => {
-		void handleRequest(req, res);
+		void handleRequest(state, req, res);
 	});
 	const sockets = new Set<Socket>();
 	server.on("connection", (socket) => {
@@ -2040,7 +695,7 @@ export async function startRuntimeRotationProxy(
 		});
 	});
 	const onPostStartupServerError = (error: Error): void => {
-		status.lastError = error.message;
+		state.status.lastError = error.message;
 	};
 
 	await new Promise<void>((resolve, reject) => {
@@ -2068,16 +723,767 @@ export async function startRuntimeRotationProxy(
 		baseUrl: `http://${urlHost}:${resolvedPort}`,
 		close: async () => {
 			await closeServer(server, sockets);
-			await activeAccountManager.flushPendingSave();
+			await state.activeAccountManager.flushPendingSave();
 		},
 		getStatus: () => ({
-			...status,
+			...state.status,
 			// Redact any email/token material that leaked into a raw upstream or
 			// refresh error string before exposing it to status/report consumers
 			// (errors-logging-08). maskString is a no-op for clean diagnostic text.
-			lastError: status.lastError === null ? null : maskString(status.lastError),
+			lastError: state.status.lastError === null ? null : maskString(state.status.lastError),
 		}),
 	};
+}
+
+async function handleRequest(
+	state: RotationProxyState,
+	req: IncomingMessage,
+	res: ServerResponse,
+): Promise<void> {
+	// Per-request trace id (errors-logging-03): distinct from sessionKey, which
+	// is shared across a thread's requests. Bound to this request's async context
+	// so every proxyLog line and usage row can be correlated to one request.
+	const traceId = randomUUID();
+	return runWithCorrelationId(traceId, () => handleRequestInner(state, req, res, traceId));
+}
+
+async function handleRequestInner(
+	state: RotationProxyState,
+	req: IncomingMessage,
+	res: ServerResponse,
+	traceId: string,
+): Promise<void> {
+	let usageRecorder: ReturnType<typeof createRuntimeUsageRecorder> | null = null;
+	let accountManager = state.activeAccountManager;
+	try {
+		const incomingUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+		// Authenticate before discriminating path/method so an unauthenticated
+		// caller cannot enumerate which endpoints exist: an unknown caller always
+		// gets 401, never a 404 that would confirm a path is invalid (vs. just
+		// unauthorized). Authorized callers still fall through to the 404 below
+		// when they hit an unsupported path/method.
+		const incomingHeaders = headersFromIncoming(req);
+		if (!isAuthorizedClient(incomingHeaders, state.clientApiKey)) {
+			writeUnauthorized(res);
+			return;
+		}
+
+		const isResponsesRequest =
+			req.method === "POST" && isResponsesPath(incomingUrl.pathname);
+		const isModelsRequest =
+			req.method === "GET" && isModelsPath(incomingUrl.pathname);
+		const isThreadGoalRequest =
+			(req.method === "GET" || req.method === "POST") &&
+			isThreadGoalPath(incomingUrl.pathname);
+		if (!isResponsesRequest && !isModelsRequest && !isThreadGoalRequest) {
+			writeMethodOrPathError(res);
+			return;
+		}
+
+		state.status.totalRequests += 1;
+		const requestBody =
+			isResponsesRequest || (isThreadGoalRequest && req.method === "POST")
+				? await readRequestBody(req, state.maxRequestBodyBytes)
+				: Buffer.alloc(0);
+		const context = isModelsRequest
+			? buildModelsRequestContext(req)
+			: isThreadGoalRequest
+				? buildThreadGoalRequestContext(req, requestBody, incomingUrl.pathname)
+				: buildResponsesRequestContext(req, requestBody);
+		const requestStartedAt = state.now();
+		let policyDecision: RuntimePolicyDecision | null = null;
+		let projectKey: string | null = null;
+		let policyError: string | null = null;
+		try {
+			const policyState = await loadRuntimePolicyState();
+			projectKey = policyState.project.projectKey;
+			policyDecision = await evaluateRuntimePolicy({
+				state: policyState,
+				accounts: accountManager.getAccountsSnapshot(),
+				model: context.model,
+				now: requestStartedAt,
+			});
+			mutateRuntimeObservabilitySnapshot((snapshot) => {
+				snapshot.policyBlockedIndexes = [
+					...(policyDecision?.blockedAccountIndexes ?? new Set<number>()),
+				];
+				snapshot.policyBlockedReasons = Object.fromEntries(
+					[...(policyDecision?.blockedAccountIndexes ?? new Set<number>())].map(
+						(index) => [String(index), "policy-blocked"],
+					),
+				);
+			});
+		} catch (error) {
+			policyError = error instanceof Error ? error.message : String(error);
+			state.status.lastError = policyError;
+		}
+		usageRecorder = createRuntimeUsageRecorder({
+			source: "runtime-proxy",
+			operation: isModelsRequest
+				? "models"
+				: isThreadGoalRequest
+					? "thread-goal"
+					: "responses",
+			model: context.model,
+			projectKey,
+			requestId: traceId,
+			startedAt: requestStartedAt,
+		});
+		if (policyError) {
+			await usageRecorder.record({
+				outcome: "failure",
+				statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
+				errorCode: "runtime_policy_unavailable",
+			});
+			writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, {
+				error: {
+					message: "Runtime policy could not be loaded for this local request.",
+					code: "runtime_policy_unavailable",
+				},
+			});
+			return;
+		}
+		if (policyDecision && !policyDecision.allowed) {
+			await usageRecorder.record({
+				outcome: "blocked",
+				statusCode: policyDecision.statusCode,
+				errorCode: policyDecision.errorCode,
+			});
+			writeJson(res, policyDecision.statusCode, {
+				error: {
+					message: "Runtime policy blocked this local request.",
+					code: policyDecision.errorCode ?? "policy_blocked",
+					reasons: policyDecision.reasons,
+				},
+			});
+			return;
+		}
+		const upstreamUrl = buildUpstreamUrl(
+			req,
+			state.upstreamBaseUrl,
+			context.upstreamPath,
+		);
+		const attemptedIndexes = new Set<number>();
+		let exhaustionReason: ExhaustionReason = "no-account";
+		let accountCount = accountManager.getAccountCount();
+		let transientAttemptLimit = Math.max(
+			1,
+			Math.min(accountCount, state.maxRuntimeAccountAttempts),
+		);
+		let transientAttempts = 0;
+		let transientExhaustionReason: ExhaustionReason | null = null;
+		const accountSkipReasons = new Map<number, string>();
+		let reloadedAfterNoAccount = false;
+
+		// Read the manual pin and affinity generation from disk (mtime-cached)
+		// on each request so a `codex-multi-auth switch|unpin|best` invocation
+		// in another process is honored without forcing a full AccountManager
+		// reload. The CLI bumps `affinityGeneration` on user-initiated changes
+		// so the proxy can invalidate sticky session affinity that would
+		// otherwise glue an in-flight chat thread to the previously selected
+		// account. The proxy itself never bumps the generation, so its own
+		// debounced disk writes do not clear affinity. See issue #474.
+		const storageMeta = readStorageMetaFromDisk();
+		const pinnedIndex = storageMeta.pinnedAccountIndex;
+		const isPinned = typeof pinnedIndex === "number";
+		if (storageMeta.affinityGeneration > state.lastObservedAffinityGeneration) {
+			state.sessionAffinityStore?.clearAll();
+			state.lastObservedAffinityGeneration = storageMeta.affinityGeneration;
+		}
+
+		while (
+			attemptedIndexes.size < accountCount &&
+			transientAttempts < transientAttemptLimit
+		) {
+			const rotationStickyBoost: Record<number, number> =
+				state.minRotationIntervalMs > 0 &&
+				state.lastGlobalAccountIndex !== null &&
+				state.now() - state.lastGlobalSwitchAt < state.minRotationIntervalMs
+					? { [state.lastGlobalAccountIndex]: 1000 }
+					: {};
+			// L4 fix (routing mutex): when `routingMutex === "enabled"`, run the
+			// selection AND the cursor commit inside ONE mutex acquisition so two
+			// concurrent requests cannot read the same cursor and stampede before
+			// the locked commit lands. `chooseAccount` is sync and mutates the
+			// cursor internally (session-affinity `markSwitched`, the hybrid
+			// selector's own advance, and the round-robin fallback `markSwitched`);
+			// holding the mutex across the whole call serializes all of those.
+			// We then `markSwitchedLocked` the winner to (a) re-commit the cursor
+			// under the lock across the await boundary and (b) hand
+			// `persistRuntimeActiveAccount` a cursor that is already correct. That
+			// later `markSwitchedLocked` runs INLINE (reentrant) within this held
+			// section, so there is no double-acquire and no deadlock on the
+			// non-reentrant FIFO queue. In legacy mode the inline `markSwitched`
+			// calls inside `chooseAccount` are used unchanged and no lock is taken,
+			// so default behavior and perf are identical to before.
+			const selectAccount = (): ManagedAccount | null =>
+				chooseAccount({
+					accountManager,
+					sessionAffinityStore: state.sessionAffinityStore,
+					sessionKey: context.sessionKey,
+					family: context.family,
+					model: context.model,
+					attemptedIndexes,
+					now: state.now(),
+					policy: policyDecision,
+					pinnedIndex,
+					skipReasons: accountSkipReasons,
+					stickyBoostByAccount: rotationStickyBoost,
+					pidOffsetEnabled: state.pidOffsetEnabled,
+					schedulingStrategy: state.schedulingStrategy,
+				});
+			const selected =
+				state.routingMutexMode === "enabled"
+					? await withRoutingMutex(state.routingMutexMode, async () => {
+							const candidate = selectAccount();
+							if (
+								candidate &&
+								pinnedIndex === null &&
+								state.schedulingStrategy !== "sequential"
+							) {
+								// Re-commit the cursor under the held mutex. Skipped when a
+								// manual pin is active so the proxy never clobbers the pin
+								// (see #474); pinned selections are deterministic and need no
+								// cursor advance. Also skipped in sequential mode: the
+								// sequential selector already committed the correct active
+								// index inside this held mutex, and re-committing `candidate`
+								// would wrongly advance the drain-first primary when the pick
+								// came from the non-advancing linear-scan fallback (#509).
+								// Runs inline via reentrancy — see comment above.
+								await accountManager.markSwitchedLocked(
+									candidate,
+									"rotation",
+									context.family,
+								);
+							}
+							return candidate;
+						})
+					: selectAccount();
+			if (!selected) {
+				if (
+					!reloadedAfterNoAccount &&
+					!isPinned &&
+					accountCount > 0 &&
+					exhaustionReason === "no-account" &&
+					(policyDecision?.blockedAccountIndexes.size ?? 0) === 0 &&
+					![...accountSkipReasons.values()].some(
+						(reason) =>
+							reason === "rate-limited" ||
+							reason.startsWith("cooling-down") ||
+							reason === "policy-blocked",
+					)
+				) {
+					reloadedAfterNoAccount = true;
+					const reloadedManager = await recoverStaleRuntimeState(state);
+					if (reloadedManager) {
+						accountManager = reloadedManager;
+						accountCount = accountManager.getAccountCount();
+						transientAttemptLimit = Math.max(
+							1,
+							Math.min(accountCount, state.maxRuntimeAccountAttempts),
+						);
+						accountSkipReasons.clear();
+						attemptedIndexes.clear();
+						continue;
+					}
+				}
+				break;
+			}
+			attemptedIndexes.add(selected.index);
+
+			if (!accountManager.consumeToken(selected, context.family, context.model)) {
+				accountSkipReasons.set(selected.index, "token-exhausted");
+				exhaustionReason = "rate-limit";
+				continue;
+			}
+
+			const refreshed = await ensureFreshAccessToken({
+				accountManager,
+				account: selected,
+				family: context.family,
+				model: context.model,
+				now: state.now(),
+				tokenRefreshSkewMs: state.tokenRefreshSkewMs,
+				tokenInvalidationCooldownMs: state.tokenInvalidationCooldownMs,
+			});
+			if (!refreshed.ok) {
+				accountManager.refundToken(selected, context.family, context.model);
+				exhaustionReason = "auth-failure";
+				if (refreshed.invalidated) {
+					// Refresh endpoint explicitly revoked the token. Stop cascade:
+					// return auth error to client instead of rotating to the next account.
+					state.sessionAffinityStore?.forgetSession(context.sessionKey);
+					res.writeHead(HTTP_STATUS.UNAUTHORIZED, { "content-type": "application/json" });
+					// Route through the shared builder so both invalidation exit paths stay
+					// in lockstep — empty input yields { error: { message: <fallback>,
+					// code: "token_invalidated" } }.
+					res.end(buildTokenInvalidationBody(""));
+					await usageRecorder.record({
+						outcome: "failure",
+						statusCode: HTTP_STATUS.UNAUTHORIZED,
+						errorCode: "token_invalidated",
+						account: selected,
+					});
+					return;
+				}
+				if (!refreshed.retryable) continue;
+				transientAttempts += 1;
+				transientExhaustionReason = "auth-failure";
+				state.status.retries += 1;
+				state.status.rotations += 1;
+				continue;
+			}
+
+			const accountId = resolveAccountId(refreshed.account, refreshed.accessToken);
+			if (!accountId) {
+				accountManager.refundToken(refreshed.account, context.family, context.model);
+				accountManager.recordFailure(refreshed.account, context.family, context.model);
+				accountManager.markAccountCoolingDown(
+					refreshed.account,
+					DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
+					"auth-failure",
+				);
+				exhaustionReason = "auth-failure";
+				transientAttempts += 1;
+				transientExhaustionReason = "auth-failure";
+				state.status.retries += 1;
+				state.status.rotations += 1;
+				continue;
+			}
+
+			const accountIdentity = accountIdentityFromAccount(refreshed.account, state.now());
+			recordLastRuntimeAccount(state.status, accountIdentity);
+
+			const outboundHeaders = createOutboundHeaders(
+				context.headers,
+				refreshed.account,
+				refreshed.accessToken,
+				accountId,
+			);
+
+			let upstream: Response;
+			try {
+				state.status.upstreamRequests += 1;
+				const fetchAbortController = new AbortController();
+				const upstreamRequestInit: RequestInit = {
+					method: context.method,
+					headers: outboundHeaders,
+					signal: fetchAbortController.signal,
+				};
+				if (context.method === "POST") {
+					upstreamRequestInit.body = context.body;
+				}
+				upstream = await withTimeout(
+					state.fetchImpl(upstreamUrl, upstreamRequestInit),
+					state.fetchTimeoutMs,
+					() => fetchAbortController.abort(),
+					`upstream fetch timed out after ${state.fetchTimeoutMs}ms`,
+				);
+			} catch (error) {
+				state.status.lastError = error instanceof Error ? error.message : String(error);
+				accountManager.refundToken(refreshed.account, context.family, context.model);
+				accountManager.recordFailure(refreshed.account, context.family, context.model);
+				accountManager.markAccountCoolingDown(
+					refreshed.account,
+					state.networkErrorCooldownMs,
+					"network-error",
+				);
+				accountManager.saveToDiskDebounced();
+				exhaustionReason = "network-error";
+				transientAttempts += 1;
+				transientExhaustionReason = "network-error";
+				state.status.retries += 1;
+				state.status.rotations += 1;
+				continue;
+			}
+
+			if (upstream.status === HTTP_STATUS.TOO_MANY_REQUESTS) {
+				const bodyText = await readErrorBody(upstream, state.streamStallTimeoutMs);
+				const retryAfterMs =
+					parseRetryAfterHeaderMs(upstream.headers, state.now()) ??
+					parseRetryAfterBodyMs(bodyText, state.now()) ??
+					60_000;
+				// A 429 is the upstream quota signal for the attempted account, so
+				// keep the consumed runtime token drained.
+				accountManager.recordRateLimit(refreshed.account, context.family, context.model);
+				accountManager.markRateLimitedWithReason(
+					refreshed.account,
+					retryAfterMs,
+					context.family,
+					"quota",
+					context.model,
+				);
+				accountManager.saveToDiskDebounced();
+				exhaustionReason = "rate-limit";
+				transientAttempts += 1;
+				transientExhaustionReason = "rate-limit";
+				state.status.retries += 1;
+				state.status.rotations += 1;
+				continue;
+			}
+
+			if (upstream.status === 402 || upstream.status === HTTP_STATUS.FORBIDDEN) {
+				const bodyText = await readErrorBody(upstream, state.streamStallTimeoutMs);
+				const errorCode = extractErrorCodeFromBody(bodyText);
+				if (isWorkspaceDisabledError(upstream.status, errorCode, bodyText)) {
+					const accountWasEnabled =
+						accountManager.getAccountByIndex(refreshed.account.index)?.enabled !==
+						false;
+					accountManager.refundToken(
+						refreshed.account,
+						context.family,
+						context.model,
+					);
+					if (accountWasEnabled) {
+						accountManager.recordFailure(
+							refreshed.account,
+							context.family,
+							context.model,
+						);
+						accountManager.setAccountEnabled(refreshed.account.index, false);
+						accountManager.saveToDiskDebounced();
+					}
+					state.sessionAffinityStore?.forgetSession(context.sessionKey);
+					exhaustionReason = "deactivated";
+					state.status.retries += 1;
+					state.status.rotations += 1;
+					continue;
+				}
+
+				if (isThreadGoalRequest && isThreadGoalFallbackStatus(upstream.status)) {
+					const parsedGoalBody = parseRequestBody(context.body);
+					const fallbackKey = context.sessionKey;
+					const goal =
+						typeof parsedGoalBody?.goal === "string" ? parsedGoalBody.goal : null;
+					if (!fallbackKey) {
+						if (context.upstreamPath.endsWith("/get")) {
+							writeJson(res, HTTP_STATUS.OK, { goal: null });
+							await usageRecorder.record({
+								outcome: "failure",
+								statusCode: upstream.status,
+								errorCode: "thread_goal_session_key_required",
+								account: refreshed.account,
+							});
+							return;
+						}
+						await usageRecorder.record({
+							outcome: "failure",
+							statusCode: HTTP_STATUS.BAD_REQUEST,
+							errorCode: "thread_goal_session_key_required",
+							account: refreshed.account,
+						});
+						writeJson(res, HTTP_STATUS.BAD_REQUEST, {
+							error: {
+								message:
+									"Thread goal fallback requires a thread_id, threadId, or session header.",
+								code: "thread_goal_session_key_required",
+							},
+						});
+						return;
+					}
+					await usageRecorder.record({
+						outcome: "failure",
+						statusCode: upstream.status,
+						errorCode: "thread_goal_upstream_blocked",
+						account: refreshed.account,
+					});
+					if (context.upstreamPath.endsWith("/set")) {
+						setThreadGoalFallback(state.threadGoalFallbacks, fallbackKey, goal);
+						writeJson(res, HTTP_STATUS.OK, { ok: true, goal });
+						return;
+					}
+					writeJson(res, HTTP_STATUS.OK, {
+						goal: getThreadGoalFallback(state.threadGoalFallbacks, fallbackKey),
+					});
+					return;
+				}
+
+				if (isThreadGoalRequest && context.upstreamPath.endsWith("/get")) {
+					writeJson(res, HTTP_STATUS.OK, { goal: null });
+					await usageRecorder.record({
+						outcome: "failure",
+						statusCode: upstream.status,
+						errorCode,
+						account: refreshed.account,
+					});
+					return;
+				}
+				res.writeHead(upstream.status, responseHeadersForClient(upstream.headers));
+				res.end(bodyText);
+				await usageRecorder.record({
+					outcome: "failure",
+					statusCode: upstream.status,
+					errorCode,
+					account: refreshed.account,
+				});
+				return;
+			}
+
+			if (upstream.status === HTTP_STATUS.UNAUTHORIZED) {
+				const bodyText = await readErrorBody(upstream, state.streamStallTimeoutMs);
+				accountManager.refundToken(refreshed.account, context.family, context.model);
+				accountManager.recordFailure(refreshed.account, context.family, context.model);
+				if (isTokenInvalidationError(bodyText)) {
+					// The upstream explicitly revoked this OAuth token. Applying a long
+					// cooldown prevents cascade invalidation: rapidly presenting each
+					// account's token from the same IP triggers OpenAI's anti-abuse
+					// detection and invalidates them in sequence. Return the 401 directly
+					// rather than rotating so the client can prompt for re-login.
+					applyMonotonicAuthCooldown(
+						accountManager,
+						refreshed.account,
+						state.tokenInvalidationCooldownMs,
+					);
+					state.sessionAffinityStore?.forgetSession(context.sessionKey);
+					accountManager.saveToDiskDebounced();
+					// Emit the same machine-readable shape as the refresh-failure path
+					// (code: "token_invalidated") instead of forwarding the raw upstream
+					// body, so the client contract is consistent across both vectors.
+					const clientHeaders = responseHeadersForClient(upstream.headers);
+					clientHeaders["content-type"] = "application/json";
+					res.writeHead(upstream.status, clientHeaders);
+					res.end(buildTokenInvalidationBody(bodyText));
+					await usageRecorder.record({
+						outcome: "failure",
+						statusCode: upstream.status,
+						errorCode: "token_invalidated",
+						account: refreshed.account,
+					});
+					return;
+				}
+				applyMonotonicAuthCooldown(
+					accountManager,
+					refreshed.account,
+					DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
+				);
+				accountManager.saveToDiskDebounced();
+				exhaustionReason = "auth-failure";
+				transientAttempts += 1;
+				transientExhaustionReason = "auth-failure";
+				state.status.retries += 1;
+				state.status.rotations += 1;
+				continue;
+			}
+
+			if (upstream.status >= 500) {
+				await readErrorBody(upstream, state.streamStallTimeoutMs);
+				accountManager.refundToken(refreshed.account, context.family, context.model);
+				accountManager.recordFailure(refreshed.account, context.family, context.model);
+				accountManager.markAccountCoolingDown(
+					refreshed.account,
+					state.serverErrorCooldownMs,
+					"server-error",
+				);
+				accountManager.saveToDiskDebounced();
+				exhaustionReason = "server-error";
+				transientAttempts += 1;
+				transientExhaustionReason = "server-error";
+				state.status.retries += 1;
+				state.status.rotations += 1;
+				continue;
+			}
+
+			if (isThreadGoalRequest && upstream.status >= 400) {
+				if (context.upstreamPath.endsWith("/get")) {
+					writeJson(res, HTTP_STATUS.OK, { goal: null });
+					await usageRecorder.record({
+						outcome: "failure",
+						statusCode: upstream.status,
+						errorCode: "thread_goal_upstream_error",
+						account: refreshed.account,
+					});
+					return;
+				}
+				const forwarded = await forwardStreamingResponse(
+					upstream,
+					res,
+					state.status,
+					() => undefined,
+					state.streamStallTimeoutMs,
+				);
+				await usageRecorder.record({
+					outcome: "failure",
+					statusCode: upstream.status,
+					errorCode: forwarded ? "thread_goal_upstream_error" : "stream_forward_failed",
+					account: refreshed.account,
+				});
+				return;
+			}
+
+			accountManager.recordSuccess(refreshed.account, context.family, context.model);
+			// A successful request proves the account is usable, so clear any
+			// stale runtime skip reason persisted for it on a prior pool
+			// exhaustion. Without this the overlay reason (e.g. "token-exhausted",
+			// "rate-limited") lingers on disk until an explicit runtime reset and
+			// the forecast keeps reporting this working account as unavailable.
+			// No-op when no reason is recorded, so the hot path stays write-free.
+			recordRuntimeAccountRecovery(refreshed.account.index);
+			const nearExhaustionWaitMs = getQuotaNearExhaustionWaitMs(
+				upstream.headers,
+				state.quotaRemainingPercentThreshold,
+				state.now(),
+			);
+			if (nearExhaustionWaitMs > 0) {
+				accountManager.markRateLimitedWithReason(
+					refreshed.account,
+					nearExhaustionWaitMs,
+					context.family,
+					"quota",
+					context.model,
+				);
+				state.sessionAffinityStore?.forgetSession(context.sessionKey);
+				accountManager.saveToDiskDebounced();
+			} else {
+				state.sessionAffinityStore?.remember(
+					context.sessionKey,
+					refreshed.account.index,
+					state.now(),
+				);
+				if (refreshed.account.index !== state.lastGlobalAccountIndex) {
+					state.lastGlobalAccountIndex = refreshed.account.index;
+				}
+				state.lastGlobalSwitchAt = state.now();
+			}
+			await persistRuntimeActiveAccount(
+				accountManager,
+				refreshed.account,
+				context.family,
+				isPinned && refreshed.account.index === pinnedIndex,
+			);
+
+			const forwarded = await forwardStreamingResponse(
+				upstream,
+				res,
+				state.status,
+				() => {
+					accountManager.recordFailure(
+						refreshed.account,
+						context.family,
+						context.model,
+					);
+					accountManager.markAccountCoolingDown(
+						refreshed.account,
+						state.networkErrorCooldownMs,
+						"network-error",
+					);
+					state.sessionAffinityStore?.forgetSession(context.sessionKey);
+					accountManager.saveToDiskDebounced();
+				},
+				state.streamStallTimeoutMs,
+			);
+			await usageRecorder.record({
+				outcome: forwarded ? "success" : "failure",
+				statusCode: upstream.status,
+				errorCode: forwarded ? null : "stream_forward_failed",
+				account: refreshed.account,
+			});
+			return;
+		}
+
+		if (
+			transientAttempts >= transientAttemptLimit &&
+			attemptedIndexes.size < accountCount
+		) {
+			exhaustionReason = "budget";
+		} else if (
+			exhaustionReason === "deactivated" &&
+			transientExhaustionReason
+		) {
+			exhaustionReason = transientExhaustionReason;
+		}
+
+		// When a manual pin is set and the pinned account is unavailable, do
+		// NOT silently fall through to rotation. Hard-fail with a 503 so the
+		// user is informed the pin cannot be honored. See issue #474.
+		//
+		// Surface the runtime skip reason in both the human-readable message
+		// and a structured `reason` field, mirroring `writePoolExhausted`. A
+		// null reason indicates a forecast/runtime state desync (the pinned
+		// account was selected but no skip reason was recorded) — see #486.
+		if (isPinned) {
+			const errorBody = buildPinnedUnavailableErrorBody(
+				pinnedIndex,
+				accountSkipReasons,
+			);
+			if (errorBody.reason === null) {
+				state.status.lastError = `pinned-503 missing skip reason (pinnedIndex=${pinnedIndex})`;
+			}
+			await usageRecorder?.record({
+				outcome: "failure",
+				statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
+				errorCode: "codex_pinned_account_unavailable",
+			});
+			writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, { error: errorBody });
+			return;
+		}
+
+		await usageRecorder?.record({
+			outcome: "failure",
+			statusCode: normalizeExhaustionStatus(exhaustionReason),
+			errorCode: isThreadGoalRequest && context.upstreamPath.endsWith("/get") ? "thread_goal_pool_exhausted" : exhaustionReason,
+		});
+		if (isThreadGoalRequest && context.upstreamPath.endsWith("/get")) {
+			writeJson(res, HTTP_STATUS.OK, { goal: null });
+		} else {
+			writePoolExhausted({
+				res,
+				accountManager,
+				family: context.family,
+				model: context.model,
+				reason: exhaustionReason,
+				accountSkipReasons: Object.fromEntries(
+					[...accountSkipReasons.entries()].map(([index, reason]) => [
+						String(index),
+						reason,
+					]),
+				),
+			});
+		}
+	} catch (error) {
+		const rawErrorMessage = error instanceof Error ? error.message : String(error);
+		// errors-logging-08: redact any email/token material that leaked into a
+		// raw upstream or refresh error string before it reaches state.status consumers
+		// or the structured log. maskString is a no-op for clean diagnostic text.
+		const maskedErrorMessage = maskString(rawErrorMessage);
+		state.status.lastError = maskedErrorMessage;
+		// errors-logging-01: surface the failure through the structured logger
+		// (redaction-safe) with the request trace id, instead of only stashing a
+		// last-write-wins status string.
+		proxyLog.error("runtime proxy request failed", {
+			traceId,
+			code: isRuntimeProxyHttpError(error) ? error.code : "codex_runtime_rotation_proxy_error",
+			error: maskedErrorMessage,
+		});
+		if (!res.headersSent) {
+			if (isRuntimeProxyHttpError(error)) {
+				await usageRecorder?.record({
+					outcome: "failure",
+					statusCode: error.statusCode,
+					errorCode: error.code,
+				});
+				writeJson(res, error.statusCode, {
+					error: {
+						message: error.message,
+						code: error.code,
+					},
+				});
+				return;
+			}
+			await usageRecorder?.record({
+				outcome: "failure",
+				statusCode: 500,
+				errorCode: "codex_runtime_rotation_proxy_error",
+			});
+			writeJson(res, 500, {
+				error: {
+					message: "Runtime rotation proxy failed before forwarding the request.",
+					code: "codex_runtime_rotation_proxy_error",
+				},
+			});
+		} else if (!res.destroyed) {
+			res.destroy(error instanceof Error ? error : undefined);
+		}
+	}
 }
 
 async function closeServer(server: Server, sockets: Set<Socket>): Promise<void> {
