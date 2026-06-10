@@ -222,6 +222,35 @@ describe("deduplicateAccounts properties", () => {
 		expect(deduplicated).toStrictEqual([relogin]);
 	});
 
+	// Longer chain needing three shrinking passes, one per matching tier: the
+	// super record first absorbs the email-only record (email tier), the
+	// replacement then matches the refresh-only record (refresh tier), and
+	// that replacement finally matches the emailless accountId record
+	// (unique-id tier). Pins that the fixpoint loop is a real loop, not a
+	// hardcoded second pass.
+	it("converges across chains that need more than two passes", () => {
+		const idOnly = {
+			accountId: "acc-1",
+			refreshToken: "rt-9",
+			lastUsed: 1_000,
+		};
+		const refreshOnly = { refreshToken: "rt-1", lastUsed: 2_000 };
+		const emailOnly = { email: "carol@example.com", lastUsed: 3_000 };
+		const superRecord = {
+			accountId: "acc-1",
+			email: "carol@example.com",
+			refreshToken: "rt-1",
+			lastUsed: 4_000,
+		};
+		const deduplicated = deduplicateAccounts([
+			idOnly,
+			refreshOnly,
+			emailOnly,
+			superRecord,
+		]);
+		expect(deduplicated).toStrictEqual([superRecord]);
+	});
+
 	it("returns a subset of the input accounts and is idempotent", () => {
 		fc.assert(
 			fc.property(arbPoolWithPermutation, ({ pool }) => {
