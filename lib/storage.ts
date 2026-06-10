@@ -1052,8 +1052,8 @@ export function resolveAccountSelectionIndex<
 	return clampIndex(fallbackIndex, accounts.length);
 }
 
-function deduplicateAccountsByIdentity<T extends AccountLike>(
-	accounts: T[],
+function deduplicateAccountsByIdentityPass<T extends AccountLike>(
+	accounts: readonly T[],
 ): T[] {
 	const deduplicated: T[] = [];
 	for (const account of accounts) {
@@ -1069,6 +1069,23 @@ function deduplicateAccountsByIdentity<T extends AccountLike>(
 		);
 	}
 	return deduplicated;
+}
+
+function deduplicateAccountsByIdentity<T extends AccountLike>(
+	accounts: T[],
+): T[] {
+	// A single pass is not a fixpoint: a newest-wins merge can replace a kept
+	// entry with an account that itself duplicates an earlier survivor through
+	// a different matching tier (e.g. an email-tier merge installs an account
+	// whose accountId + refresh token already match a record that carried no
+	// email). Re-run until stable; every merge strictly shrinks the array, so
+	// this terminates after at most accounts.length passes.
+	let current = deduplicateAccountsByIdentityPass(accounts);
+	for (;;) {
+		const next = deduplicateAccountsByIdentityPass(current);
+		if (next.length === current.length) return next;
+		current = next;
+	}
 }
 
 /**
