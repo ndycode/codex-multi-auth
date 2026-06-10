@@ -1,40 +1,55 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OAuthAuthDetails } from "../lib/types.js";
+import {
+	createCodexCliStateMocks,
+	createCodexCliSyncMocks,
+	createCodexCliWriterMocks,
+	createStorageMocks,
+	pickMocks,
+	storageAccountFixture,
+} from "./helpers/cli-test-fixtures.js";
 
-const mockLoadAccounts = vi.fn();
-const mockSaveAccounts = vi.fn();
-const mockWithAccountStorageTransaction = vi.fn();
-const mockLoadCodexCliState = vi.fn();
-const mockSyncAccountStorageFromCodexCli = vi.fn();
-const mockSetCodexCliActiveSelection = vi.fn();
+// Shared mock groups (test/helpers/cli-test-fixtures.ts); the vi.mock
+// factories below resolve the helper lazily so hoisting stays safe. Storage
+// and codex-cli state are narrowed to the exact set this suite used to
+// override so every other export stays the actual implementation.
+const storageMocks = pickMocks(createStorageMocks(), [
+	"loadAccounts",
+	"saveAccounts",
+	"withAccountStorageTransaction",
+]);
+const codexCliStateMocks = pickMocks(createCodexCliStateMocks(), [
+	"loadCodexCliState",
+]);
+const codexCliSyncMocks = createCodexCliSyncMocks();
+const codexCliWriterMocks = createCodexCliWriterMocks();
+// Bespoke: only this suite overrides rotation's hybrid selector on top of the
+// actual module, so it stays outside the shared factories.
 const mockSelectHybridAccount = vi.fn();
 
-vi.mock("../lib/storage.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/storage.js")>();
-  return {
-    ...actual,
-    loadAccounts: mockLoadAccounts,
-    saveAccounts: mockSaveAccounts,
-    withAccountStorageTransaction: mockWithAccountStorageTransaction,
-  };
-});
+vi.mock("../lib/storage.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).storageModuleMock(
+		storageMocks,
+	),
+);
 
-vi.mock("../lib/codex-cli/state.js", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("../lib/codex-cli/state.js")>();
-  return {
-    ...actual,
-    loadCodexCliState: mockLoadCodexCliState,
-  };
-});
+vi.mock("../lib/codex-cli/state.js", async () =>
+	(
+		await import("./helpers/cli-test-fixtures.js")
+	).codexCliStateActualModuleMock(codexCliStateMocks),
+);
 
-vi.mock("../lib/codex-cli/sync.js", () => ({
-  syncAccountStorageFromCodexCli: mockSyncAccountStorageFromCodexCli,
-}));
+vi.mock("../lib/codex-cli/sync.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).codexCliSyncModuleMock(
+		codexCliSyncMocks,
+	),
+);
 
-vi.mock("../lib/codex-cli/writer.js", () => ({
-  setCodexCliActiveSelection: mockSetCodexCliActiveSelection,
-}));
+vi.mock("../lib/codex-cli/writer.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).codexCliWriterModuleMock(
+		codexCliWriterMocks,
+	),
+);
 
 vi.mock("../lib/rotation.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/rotation.js")>();
@@ -47,12 +62,15 @@ vi.mock("../lib/rotation.js", async (importOriginal) => {
 function buildStoredAccount(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
-  return {
+  // Shared minimal account fixture with this suite's historical timestamps
+  // (addedAt/lastUsed offsets) preserved so ordering-sensitive branches see
+  // the exact same data as before the migration.
+  return storageAccountFixture({
     refreshToken: "stored-refresh",
     addedAt: Date.now() - 10_000,
     lastUsed: Date.now() - 5_000,
     ...overrides,
-  };
+  });
 }
 
 function buildStored(
@@ -81,19 +99,19 @@ async function importAccountsModule() {
 describe("accounts edge branches", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockLoadAccounts.mockResolvedValue(null);
-    mockSaveAccounts.mockResolvedValue(undefined);
-    mockWithAccountStorageTransaction.mockImplementation(async (handler) =>
+    storageMocks.loadAccounts.mockResolvedValue(null);
+    storageMocks.saveAccounts.mockResolvedValue(undefined);
+    storageMocks.withAccountStorageTransaction.mockImplementation(async (handler) =>
       handler(null, async (storage) => {
-        await mockSaveAccounts(storage);
+        await storageMocks.saveAccounts(storage);
       }),
     );
-    mockLoadCodexCliState.mockResolvedValue(null);
-    mockSyncAccountStorageFromCodexCli.mockImplementation(async (storage) => ({
+    codexCliStateMocks.loadCodexCliState.mockResolvedValue(null);
+    codexCliSyncMocks.syncAccountStorageFromCodexCli.mockImplementation(async (storage) => ({
       storage,
       changed: false,
     }));
-    mockSetCodexCliActiveSelection.mockResolvedValue(undefined);
+    codexCliWriterMocks.setCodexCliActiveSelection.mockResolvedValue(undefined);
     mockSelectHybridAccount.mockImplementation(
       (accounts: { index: number; isAvailable: boolean }[]) => {
         const available = accounts.find((candidate) => candidate.isAvailable);
@@ -110,58 +128,58 @@ describe("accounts edge branches", () => {
     const stored = buildStored([
       buildStoredAccount({ refreshToken: "stored-1" }),
     ]);
-    mockLoadAccounts.mockResolvedValue(stored);
-    mockSyncAccountStorageFromCodexCli.mockResolvedValue({
+    storageMocks.loadAccounts.mockResolvedValue(stored);
+    codexCliSyncMocks.syncAccountStorageFromCodexCli.mockResolvedValue({
       storage: stored,
       changed: true,
     });
-    mockSaveAccounts.mockRejectedValueOnce(new Error("persist failed"));
-    mockLoadCodexCliState.mockResolvedValue({ accounts: [] });
+    storageMocks.saveAccounts.mockRejectedValueOnce(new Error("persist failed"));
+    codexCliStateMocks.loadCodexCliState.mockResolvedValue({ accounts: [] });
 
     const { AccountManager } = await importAccountsModule();
     const manager = await AccountManager.loadFromDisk();
 
     expect(manager.getAccountCount()).toBe(1);
     // Non-retryable error (no errno code) → single attempt, then debug-logged.
-    expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+    expect(storageMocks.saveAccounts).toHaveBeenCalledTimes(1);
   });
 
   it("loadFromDisk retries source-of-truth persist on transient EBUSY", async () => {
     const stored = buildStored([
       buildStoredAccount({ refreshToken: "stored-1" }),
     ]);
-    mockLoadAccounts.mockResolvedValue(stored);
-    mockSyncAccountStorageFromCodexCli.mockResolvedValue({
+    storageMocks.loadAccounts.mockResolvedValue(stored);
+    codexCliSyncMocks.syncAccountStorageFromCodexCli.mockResolvedValue({
       storage: stored,
       changed: true,
     });
     const ebusy = Object.assign(new Error("file busy"), { code: "EBUSY" });
-    mockSaveAccounts.mockRejectedValueOnce(ebusy);
-    mockSaveAccounts.mockResolvedValueOnce(undefined);
-    mockLoadCodexCliState.mockResolvedValue({ accounts: [] });
+    storageMocks.saveAccounts.mockRejectedValueOnce(ebusy);
+    storageMocks.saveAccounts.mockResolvedValueOnce(undefined);
+    codexCliStateMocks.loadCodexCliState.mockResolvedValue({ accounts: [] });
 
     const { AccountManager } = await importAccountsModule();
     const manager = await AccountManager.loadFromDisk();
 
     expect(manager.getAccountCount()).toBe(1);
     // First attempt EBUSY, second succeeds — retry helper should have called twice.
-    expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+    expect(storageMocks.saveAccounts).toHaveBeenCalledTimes(2);
   });
 
   it("loadFromDisk exhausts retries on persistent EPERM and continues", async () => {
     const stored = buildStored([
       buildStoredAccount({ refreshToken: "stored-1" }),
     ]);
-    mockLoadAccounts.mockResolvedValue(stored);
-    mockSyncAccountStorageFromCodexCli.mockResolvedValue({
+    storageMocks.loadAccounts.mockResolvedValue(stored);
+    codexCliSyncMocks.syncAccountStorageFromCodexCli.mockResolvedValue({
       storage: stored,
       changed: true,
     });
     const eperm = Object.assign(new Error("permission denied"), {
       code: "EPERM",
     });
-    mockSaveAccounts.mockRejectedValue(eperm);
-    mockLoadCodexCliState.mockResolvedValue({ accounts: [] });
+    storageMocks.saveAccounts.mockRejectedValue(eperm);
+    codexCliStateMocks.loadCodexCliState.mockResolvedValue({ accounts: [] });
 
     const { AccountManager } = await importAccountsModule();
     const manager = await AccountManager.loadFromDisk();
@@ -169,7 +187,7 @@ describe("accounts edge branches", () => {
     expect(manager.getAccountCount()).toBe(1);
     // Persistent EPERM exhausts the retry budget (initial + 3 retries = 4
     // attempts) before lib/accounts.ts catches and continues.
-    expect(mockSaveAccounts).toHaveBeenCalledTimes(4);
+    expect(storageMocks.saveAccounts).toHaveBeenCalledTimes(4);
   });
 
   it("hydrates from Codex CLI cache and catches save failures", async () => {
@@ -201,7 +219,7 @@ describe("accounts edge branches", () => {
     const { AccountManager } = await importAccountsModule();
     const manager = new AccountManager(undefined, stored as never);
 
-    mockLoadCodexCliState.mockResolvedValue({
+    codexCliStateMocks.loadCodexCliState.mockResolvedValue({
       accounts: [
         { email: "", accessToken: "invalid" },
         {
@@ -225,7 +243,7 @@ describe("accounts edge branches", () => {
       ],
     });
 
-    mockSaveAccounts.mockRejectedValueOnce(new Error("save failed"));
+    storageMocks.saveAccounts.mockRejectedValueOnce(new Error("save failed"));
 
     const hydrate = getPrivate<() => Promise<void>>(
       manager as object,
@@ -261,7 +279,7 @@ describe("accounts edge branches", () => {
     const { AccountManager } = await importAccountsModule();
     const manager = new AccountManager(undefined, stored as never);
 
-    mockLoadCodexCliState.mockResolvedValue({
+    codexCliStateMocks.loadCodexCliState.mockResolvedValue({
       sourceUpdatedAtMs: now - 60_000,
       accounts: [
         {
@@ -282,7 +300,7 @@ describe("accounts edge branches", () => {
     const snapshot = manager.getAccountsSnapshot();
     expect(snapshot[0]?.refreshToken).toBe("local-refresh-new");
     expect(snapshot[0]?.access).toBe("local-access");
-    expect(mockSaveAccounts).not.toHaveBeenCalled();
+    expect(storageMocks.saveAccounts).not.toHaveBeenCalled();
   });
 
   it("does not hydrate from an expired CLI cache entry", async () => {
@@ -301,7 +319,7 @@ describe("accounts edge branches", () => {
     const account = manager.getAccountByIndex(0)!;
     account.refreshToken = "";
 
-    mockLoadCodexCliState.mockResolvedValue({
+    codexCliStateMocks.loadCodexCliState.mockResolvedValue({
       sourceUpdatedAtMs: now - 60_000,
       accounts: [
         {
@@ -324,7 +342,7 @@ describe("accounts edge branches", () => {
     expect(snapshot[0]?.refreshToken).toBe("");
     expect(snapshot[0]?.access).toBe("local-access");
     expect(snapshot[0]?.accountId).toBeUndefined();
-    expect(mockSaveAccounts).not.toHaveBeenCalled();
+    expect(storageMocks.saveAccounts).not.toHaveBeenCalled();
   });
 
   it("returns early when Codex CLI state has no usable cache entries", async () => {
@@ -338,7 +356,7 @@ describe("accounts edge branches", () => {
     const { AccountManager } = await importAccountsModule();
     const manager = new AccountManager(undefined, stored as never);
 
-    mockLoadCodexCliState.mockResolvedValue({
+    codexCliStateMocks.loadCodexCliState.mockResolvedValue({
       accounts: [
         { email: "", accessToken: "x" },
         { email: "missing-token@example.com", accessToken: "" },
@@ -351,7 +369,7 @@ describe("accounts edge branches", () => {
     );
     await hydrate.call(manager);
 
-    expect(mockSaveAccounts).not.toHaveBeenCalled();
+    expect(storageMocks.saveAccounts).not.toHaveBeenCalled();
   });
 
   it("handles invalid indices and sparse accounts for active selection sync", async () => {
@@ -368,11 +386,11 @@ describe("accounts edge branches", () => {
     await manager.syncCodexCliActiveSelectionForIndex(Number.NaN);
     await manager.syncCodexCliActiveSelectionForIndex(-1);
     await manager.syncCodexCliActiveSelectionForIndex(99);
-    expect(mockSetCodexCliActiveSelection).not.toHaveBeenCalled();
+    expect(codexCliWriterMocks.setCodexCliActiveSelection).not.toHaveBeenCalled();
 
     setPrivate(manager as object, "accounts", new Array(1));
     await manager.syncCodexCliActiveSelectionForIndex(0);
-    expect(mockSetCodexCliActiveSelection).not.toHaveBeenCalled();
+    expect(codexCliWriterMocks.setCodexCliActiveSelection).not.toHaveBeenCalled();
 
     setPrivate(manager as object, "accounts", [
       {
@@ -388,7 +406,7 @@ describe("accounts edge branches", () => {
     ]);
 
     await manager.syncCodexCliActiveSelectionForIndex(0);
-    expect(mockSetCodexCliActiveSelection).toHaveBeenCalledTimes(1);
+    expect(codexCliWriterMocks.setCodexCliActiveSelection).toHaveBeenCalledTimes(1);
   });
 
   it("covers sparse and disabled account branches in family selectors", async () => {
@@ -473,7 +491,7 @@ describe("accounts edge branches", () => {
     const manager = new AccountManager(undefined, stored as never);
 
     await manager.saveToDisk();
-    const payload = mockSaveAccounts.mock.calls[0]?.[0] as {
+    const payload = storageMocks.saveAccounts.mock.calls[0]?.[0] as {
       accounts: Array<{ enabled?: boolean }>;
     };
     expect(payload.accounts[0]?.enabled).toBe(false);
@@ -504,13 +522,13 @@ describe("accounts edge branches", () => {
     });
     setPrivate(manager as object, "pendingSave", pendingSave);
 
-    mockSaveAccounts.mockRejectedValueOnce("string-save-failure");
+    storageMocks.saveAccounts.mockRejectedValueOnce("string-save-failure");
 
     manager.saveToDiskDebounced(20);
     resolvePending?.();
     await vi.advanceTimersByTimeAsync(100);
 
-    expect(mockSaveAccounts).toHaveBeenCalled();
+    expect(storageMocks.saveAccounts).toHaveBeenCalled();
   });
 
   it("covers getMinWaitTimeForFamily when all accounts are disabled", async () => {

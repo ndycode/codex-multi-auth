@@ -18,6 +18,7 @@ import {
 	setStoragePathDirect,
 	type AccountStorageV3,
 } from "../lib/storage.js";
+import { accountStorageV3Fixture } from "./helpers/cli-test-fixtures.js";
 
 /**
  * End-to-end HTTP integration test for issue #474. Spins up a real
@@ -26,22 +27,27 @@ import {
  * pin contract and affinity invalidation hold across real network requests.
  */
 
-const {
-	saveAccountsMock,
-	withAccountStorageTransactionMock,
-} = vi.hoisted(() => ({
-	saveAccountsMock: vi.fn(),
-	withAccountStorageTransactionMock: vi.fn(),
-}));
-
-vi.mock("../lib/storage.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../lib/storage.js")>();
+// Shared mock group (test/helpers/cli-test-fixtures.ts), narrowed to the exact
+// set this suite used to override so every other storage export (including
+// loadAccounts, which the proxy reads from the real tmp file) stays the actual
+// implementation. This suite imports the mocked storage module statically, so
+// the group must be created inside vi.hoisted (which also resolves the helper
+// itself) rather than in a module-level const.
+const { storageMocks } = await vi.hoisted(async () => {
+	const fixtures = await import("./helpers/cli-test-fixtures.js");
 	return {
-		...actual,
-		saveAccounts: saveAccountsMock,
-		withAccountStorageTransaction: withAccountStorageTransactionMock,
+		storageMocks: fixtures.pickMocks(fixtures.createStorageMocks(), [
+			"saveAccounts",
+			"withAccountStorageTransaction",
+		]),
 	};
 });
+
+vi.mock("../lib/storage.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).storageModuleMock(
+		storageMocks,
+	),
+);
 
 const CLIENT_API_KEY = "runtime-secret";
 const ACCOUNT_COUNT = 2;
@@ -50,11 +56,8 @@ function createStorage(
 	now: number,
 	overrides: Partial<AccountStorageV3> = {},
 ): AccountStorageV3 {
-	return {
-		version: 3,
-		activeIndex: 0,
-		activeIndexByFamily: { codex: 0 },
-		accounts: Array.from({ length: ACCOUNT_COUNT }, (_, index) => ({
+	return accountStorageV3Fixture(
+		Array.from({ length: ACCOUNT_COUNT }, (_, index) => ({
 			email: `account-${index + 1}@example.com`,
 			accountId: `acc_${index + 1}`,
 			refreshToken: `refresh-${index + 1}`,
@@ -64,8 +67,8 @@ function createStorage(
 			lastUsed: now - (ACCOUNT_COUNT - index) * 60_000,
 			enabled: true,
 		})),
-		...overrides,
-	};
+		overrides,
+	);
 }
 
 interface ProxyPostResult {
@@ -130,10 +133,10 @@ beforeEach(() => {
 	clearCircuitBreakers();
 	resetRefreshQueue();
 	resetPinCacheForTesting();
-	saveAccountsMock.mockReset();
-	saveAccountsMock.mockResolvedValue(undefined);
-	withAccountStorageTransactionMock.mockReset();
-	withAccountStorageTransactionMock.mockImplementation(async (handler) =>
+	storageMocks.saveAccounts.mockReset();
+	storageMocks.saveAccounts.mockResolvedValue(undefined);
+	storageMocks.withAccountStorageTransaction.mockReset();
+	storageMocks.withAccountStorageTransaction.mockImplementation(async (handler) =>
 		handler(null, async () => undefined),
 	);
 });

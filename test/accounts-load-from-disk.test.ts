@@ -1,58 +1,72 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountManager } from "../lib/accounts.js";
 
+// Shared mock groups (test/helpers/cli-test-fixtures.ts). This suite imports
+// the module under test statically, so the mocked-module factories run while
+// the imports above evaluate — the groups must be created inside vi.hoisted
+// (which also resolves the helper itself) rather than in module-level consts.
+// Storage is narrowed to the exact set this suite used to override so every
+// other storage export stays the actual implementation.
 const {
-  mockLoadAccounts,
-  mockSaveAccounts,
-  mockWithAccountStorageTransaction,
-} = vi.hoisted(() => ({
-  mockLoadAccounts: vi.fn(),
-  mockSaveAccounts: vi.fn(),
-  mockWithAccountStorageTransaction: vi.fn(),
-}));
-
-vi.mock("../lib/storage.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/storage.js")>();
-  return {
-    ...actual,
-    loadAccounts: mockLoadAccounts,
-    saveAccounts: mockSaveAccounts,
-    withAccountStorageTransaction: mockWithAccountStorageTransaction,
-  };
+	storageMocks,
+	codexCliStateMocks,
+	codexCliSyncMocks,
+	codexCliWriterMocks,
+} = await vi.hoisted(async () => {
+	const fixtures = await import("./helpers/cli-test-fixtures.js");
+	return {
+		storageMocks: fixtures.pickMocks(fixtures.createStorageMocks(), [
+			"loadAccounts",
+			"saveAccounts",
+			"withAccountStorageTransaction",
+		]),
+		codexCliStateMocks: fixtures.createCodexCliStateMocks(),
+		codexCliSyncMocks: fixtures.createCodexCliSyncMocks(),
+		codexCliWriterMocks: fixtures.createCodexCliWriterMocks(),
+	};
 });
 
-vi.mock("../lib/codex-cli/sync.js", () => ({
-  syncAccountStorageFromCodexCli: vi.fn(),
-}));
+vi.mock("../lib/storage.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).storageModuleMock(
+		storageMocks,
+	),
+);
 
-vi.mock("../lib/codex-cli/state.js", () => ({
-  loadCodexCliState: vi.fn(),
-}));
+vi.mock("../lib/codex-cli/sync.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).codexCliSyncModuleMock(
+		codexCliSyncMocks,
+	),
+);
 
-vi.mock("../lib/codex-cli/writer.js", () => ({
-  setCodexCliActiveSelection: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("../lib/codex-cli/state.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).codexCliStateModuleMock(
+		codexCliStateMocks,
+	),
+);
 
-import { syncAccountStorageFromCodexCli } from "../lib/codex-cli/sync.js";
-import { loadCodexCliState } from "../lib/codex-cli/state.js";
-import { setCodexCliActiveSelection } from "../lib/codex-cli/writer.js";
+vi.mock("../lib/codex-cli/writer.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).codexCliWriterModuleMock(
+		codexCliWriterMocks,
+	),
+);
 
 describe("AccountManager loadFromDisk", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockLoadAccounts.mockResolvedValue(null);
-    mockSaveAccounts.mockResolvedValue(undefined);
-    mockWithAccountStorageTransaction.mockImplementation(async (handler) =>
-      handler(null, async (storage) => {
-        await mockSaveAccounts(storage);
-      }),
+    storageMocks.loadAccounts.mockResolvedValue(null);
+    storageMocks.saveAccounts.mockResolvedValue(undefined);
+    storageMocks.withAccountStorageTransaction.mockImplementation(
+      async (handler) =>
+        handler(null, async (storage) => {
+          await storageMocks.saveAccounts(storage);
+        }),
     );
-    vi.mocked(syncAccountStorageFromCodexCli).mockResolvedValue({
+    codexCliSyncMocks.syncAccountStorageFromCodexCli.mockResolvedValue({
       changed: false,
       storage: null,
     });
-    vi.mocked(loadCodexCliState).mockResolvedValue(null);
-    vi.mocked(setCodexCliActiveSelection).mockResolvedValue(undefined);
+    codexCliStateMocks.loadCodexCliState.mockResolvedValue(null);
+    codexCliWriterMocks.setCodexCliActiveSelection.mockResolvedValue(undefined);
   });
 
   it("persists Codex CLI source-of-truth storage when sync reports change", async () => {
@@ -71,15 +85,15 @@ describe("AccountManager loadFromDisk", () => {
       ],
     };
 
-    mockLoadAccounts.mockResolvedValue(stored);
-    vi.mocked(syncAccountStorageFromCodexCli).mockResolvedValue({
+    storageMocks.loadAccounts.mockResolvedValue(stored);
+    codexCliSyncMocks.syncAccountStorageFromCodexCli.mockResolvedValue({
       changed: true,
       storage: synced,
     });
 
     const manager = await AccountManager.loadFromDisk();
 
-    expect(mockSaveAccounts).toHaveBeenCalledWith(synced);
+    expect(storageMocks.saveAccounts).toHaveBeenCalledWith(synced);
     expect(manager.getAccountCount()).toBe(2);
     expect(manager.getCurrentAccount()?.refreshToken).toBe("stored-refresh");
   });
@@ -92,11 +106,11 @@ describe("AccountManager loadFromDisk", () => {
       accounts: [{ refreshToken: "synced-refresh", addedAt: now, lastUsed: now }],
     };
 
-    vi.mocked(syncAccountStorageFromCodexCli).mockResolvedValue({
+    codexCliSyncMocks.syncAccountStorageFromCodexCli.mockResolvedValue({
       changed: true,
       storage: synced,
     });
-    mockSaveAccounts.mockRejectedValueOnce(new Error("forced persist failure"));
+    storageMocks.saveAccounts.mockRejectedValueOnce(new Error("forced persist failure"));
 
     const manager = await AccountManager.loadFromDisk();
 
@@ -106,7 +120,7 @@ describe("AccountManager loadFromDisk", () => {
 
   it("hydrates missing access/accountId fields from Codex CLI token cache", async () => {
     const now = Date.now();
-    mockLoadAccounts.mockResolvedValue({
+    storageMocks.loadAccounts.mockResolvedValue({
       version: 3 as const,
       activeIndex: 0,
       accounts: [
@@ -118,7 +132,7 @@ describe("AccountManager loadFromDisk", () => {
         },
       ],
     });
-    vi.mocked(loadCodexCliState).mockResolvedValue({
+    codexCliStateMocks.loadCodexCliState.mockResolvedValue({
       path: "codex-state.json",
       accounts: [
         {
@@ -137,12 +151,12 @@ describe("AccountManager loadFromDisk", () => {
     expect(account?.expires).toBe(now + 120_000);
     expect(account?.accountId).toBe("acct-123");
     expect(account?.accountIdSource).toBe("token");
-    expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+    expect(storageMocks.saveAccounts).toHaveBeenCalledTimes(1);
   });
 
   it("ignores expired Codex CLI cache entries entirely", async () => {
     const now = Date.now();
-    mockLoadAccounts.mockResolvedValue({
+    storageMocks.loadAccounts.mockResolvedValue({
       version: 3 as const,
       activeIndex: 0,
       accounts: [
@@ -154,7 +168,7 @@ describe("AccountManager loadFromDisk", () => {
         },
       ],
     });
-    vi.mocked(loadCodexCliState).mockResolvedValue({
+    codexCliStateMocks.loadCodexCliState.mockResolvedValue({
       path: "codex-state.json",
       accounts: [
         {
@@ -172,7 +186,7 @@ describe("AccountManager loadFromDisk", () => {
     expect(account?.access).toBeUndefined();
     expect(account?.accountId).toBeUndefined();
     expect(account?.accountIdSource).toBeUndefined();
-    expect(mockSaveAccounts).not.toHaveBeenCalled();
+    expect(storageMocks.saveAccounts).not.toHaveBeenCalled();
   });
 
   it("syncCodexCliActiveSelectionForIndex ignores invalid indices and syncs a valid one", async () => {
@@ -195,11 +209,15 @@ describe("AccountManager loadFromDisk", () => {
 
     await manager.syncCodexCliActiveSelectionForIndex(-1);
     await manager.syncCodexCliActiveSelectionForIndex(9);
-    expect(setCodexCliActiveSelection).not.toHaveBeenCalled();
+    expect(
+      codexCliWriterMocks.setCodexCliActiveSelection,
+    ).not.toHaveBeenCalled();
 
     await manager.syncCodexCliActiveSelectionForIndex(0);
-    expect(setCodexCliActiveSelection).toHaveBeenCalledTimes(1);
-    expect(setCodexCliActiveSelection).toHaveBeenCalledWith(
+    expect(
+      codexCliWriterMocks.setCodexCliActiveSelection,
+    ).toHaveBeenCalledTimes(1);
+    expect(codexCliWriterMocks.setCodexCliActiveSelection).toHaveBeenCalledWith(
       expect.objectContaining({
         accountId: "acct-1",
         email: "one@example.com",

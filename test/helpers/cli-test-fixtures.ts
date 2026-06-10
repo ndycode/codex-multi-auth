@@ -223,6 +223,40 @@ export function codexCliStateModuleMock(
 	};
 }
 
+/**
+ * Actual codex-cli/state module spread plus the given overrides — for suites
+ * (e.g. accounts-edge) that only override `loadCodexCliState` and keep every
+ * other export real.
+ */
+export async function codexCliStateActualModuleMock(
+	overrides: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+	const actual = await vi.importActual<Record<string, unknown>>(
+		"../../lib/codex-cli/state.js",
+	);
+	return { ...actual, ...overrides };
+}
+
+// ---------------------------------------------------------------------------
+// lib/codex-cli/sync.js
+// ---------------------------------------------------------------------------
+
+export function createCodexCliSyncMocks() {
+	return {
+		syncAccountStorageFromCodexCli: vi.fn(),
+	};
+}
+
+export type CodexCliSyncMocks = ReturnType<typeof createCodexCliSyncMocks>;
+
+export function codexCliSyncModuleMock(
+	mocks: CodexCliSyncMocks,
+): Record<string, unknown> {
+	return {
+		syncAccountStorageFromCodexCli: mocks.syncAccountStorageFromCodexCli,
+	};
+}
+
 // ---------------------------------------------------------------------------
 // lib/codex-cli/writer.js
 // ---------------------------------------------------------------------------
