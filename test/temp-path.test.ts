@@ -28,6 +28,15 @@ describe("temp-path", () => {
 			expect(tempPath).toMatch(/^\/data\/accounts\.json\.\d+\.\d+\.[0-9a-f]{8}\.tmp$/);
 		});
 
+		it("handles Windows-style targets (drive letter and backslashes)", () => {
+			const tempPath = tempPathFor("C:\\Users\\dev\\.codex\\accounts.json");
+			expect(tempPath.startsWith("C:\\Users\\dev\\.codex\\accounts.json.")).toBe(true);
+			expect(tempPath.endsWith(".tmp")).toBe(true);
+			expect(tempPath).toMatch(
+				/^C:\\Users\\dev\\\.codex\\accounts\.json\.\d+\.\d+\.[0-9a-f]{8}\.tmp$/,
+			);
+		});
+
 		it("never collides for the same target across rapid calls", () => {
 			const seen = new Set<string>();
 			for (let i = 0; i < 200; i += 1) {
