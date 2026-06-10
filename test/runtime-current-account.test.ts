@@ -8,6 +8,7 @@ import {
 	resolveAccountCurrentMarkers,
 	resolveRuntimeCurrentAccount,
 } from "../lib/runtime/runtime-current-account.js";
+import { APP_RUNTIME_HELPER_STATUS_FILE } from "../lib/runtime-constants.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
@@ -460,7 +461,7 @@ describe("resolveRuntimeCurrentAccount", () => {
 describe("readAppRuntimeHelperStatus", () => {
 	let tempDir: string;
 	let originalDir: string | undefined;
-	const statusFileName = "runtime-rotation-app-helper.json";
+	const statusFileName = APP_RUNTIME_HELPER_STATUS_FILE;
 
 	beforeEach(async () => {
 		originalDir = process.env.CODEX_MULTI_AUTH_DIR;
