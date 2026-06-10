@@ -3,7 +3,7 @@ import type {
 	DashboardDisplaySettings,
 	DashboardStatuslineField,
 } from "../dashboard-settings.js";
-import type { UI_COPY } from "../ui/copy.js";
+import type { UI_COPY } from "../ui/ui-copy.js";
 import { getUiRuntimeOptions } from "../ui/runtime.js";
 import { type MenuItem, select } from "../ui/select.js";
 

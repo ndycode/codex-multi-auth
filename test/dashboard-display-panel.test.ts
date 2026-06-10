@@ -3,7 +3,7 @@ import {
 	type DashboardDisplaySettings,
 	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
 } from "../lib/dashboard-settings.js";
-import { UI_COPY } from "../lib/ui/copy.js";
+import { UI_COPY } from "../lib/ui/ui-copy.js";
 import {
 	type DashboardDisplayPanelDeps,
 	promptDashboardDisplayPanel,

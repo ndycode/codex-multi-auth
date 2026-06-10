@@ -7,7 +7,7 @@ import {
 	isTTY,
 	type AccountStatus,
 } from "./ui/auth-menu.js";
-import { UI_COPY } from "./ui/copy.js";
+import { UI_COPY } from "./ui/ui-copy.js";
 import type { AccountCurrentMarker } from "./runtime/runtime-current-account.js";
 
 /**

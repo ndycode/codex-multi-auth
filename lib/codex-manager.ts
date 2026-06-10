@@ -107,23 +107,6 @@ import {
 	printUsage,
 } from "./codex-manager/help.js";
 import {
-	availabilityTone,
-	formatAccountQuotaSummary,
-	formatBackupSavedAt,
-	formatCompactQuotaSnapshot,
-	formatModelInspection,
-	formatQuotaSnapshotForDashboard,
-	formatRateLimitEntry,
-	formatResultSummary,
-	inspectRequestedModel,
-	normalizeFailureDetail,
-	riskTone,
-	stringifyLogArgs,
-	styleAccountDetailText,
-	stylePromptText,
-	styleQuotaSummary,
-} from "./codex-manager/formatters/index.js";
-import {
 	applyUiThemeFromDashboardSettings,
 	configureUnifiedSettings,
 	resolveMenuLayoutMode,
@@ -148,13 +131,20 @@ import {
 } from "./dashboard-settings.js";
 import {
 	evaluateForecastAccounts,
+	type ForecastAccountResult,
 	recommendForecastAccount,
 	summarizeForecast,
 } from "./forecast.js";
 import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
-import { DEFAULT_MODEL } from "./request/helpers/model-map.js";
 import {
+	DEFAULT_MODEL,
+	getModelCapabilities,
+	getModelProfile,
+	resolveNormalizedModel,
+} from "./request/helpers/model-map.js";
+import {
+	formatRateLimitEntry as formatAccountRateLimitEntry,
 	getRateLimitResetTimeForFamily,
 	resolveActiveIndex,
 } from "./runtime/account-status.js";
@@ -212,7 +202,8 @@ import type { PersistedSwitchReason } from "./schemas.js";
 import type { AccountIdSource, TokenResult } from "./types.js";
 import { ANSI } from "./ui/ansi.js";
 import { confirm } from "./ui/confirm.js";
-import { UI_COPY } from "./ui/copy.js";
+import { UI_COPY } from "./ui/ui-copy.js";
+import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
 import { getUiRuntimeOptions } from "./ui/runtime.js";
 import { type MenuItem, select } from "./ui/select.js";
 
@@ -223,12 +214,150 @@ type TokenSuccessWithAccount = TokenSuccess & {
 	accountLabel?: string;
 	workspaces?: Workspace[];
 };
-// Formatter implementations moved to lib/codex-manager/formatters/ (audit
-// roadmap §4.1.1 phase 1). Re-exported here so existing consumers importing
-// from lib/codex-manager.js keep working unchanged.
-export { formatBackupSavedAt, styleAccountDetailText };
-
+type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
 const log = createLogger("codex-manager");
+
+interface ModelInspection {
+	requested: string;
+	normalized: string;
+	remapped: boolean;
+	promptFamily: ModelFamily;
+	capabilities: ReturnType<typeof getModelCapabilities>;
+}
+
+function stylePromptText(text: string, tone: PromptTone): string {
+	if (!output.isTTY) return text;
+	const ui = getUiRuntimeOptions();
+	if (ui.v2Enabled) {
+		if (tone === "muted") {
+			return `${ui.theme.colors.dim}${paintUiText(ui, text, "muted")}${ui.theme.colors.reset}`;
+		}
+		const mapped = tone === "accent" ? "primary" : tone;
+		return paintUiText(ui, text, mapped);
+	}
+	const legacyCode =
+		tone === "accent"
+			? ANSI.green
+			: tone === "success"
+				? ANSI.green
+				: tone === "warning"
+					? ANSI.yellow
+					: tone === "danger"
+						? ANSI.red
+						: ANSI.dim;
+	return `${legacyCode}${text}${ANSI.reset}`;
+}
+
+function inspectRequestedModel(requestedModel: string): ModelInspection {
+	const normalized = resolveNormalizedModel(requestedModel);
+	const profile = getModelProfile(normalized);
+	return {
+		requested: requestedModel,
+		normalized,
+		remapped: requestedModel !== normalized,
+		promptFamily: profile.promptFamily,
+		capabilities: getModelCapabilities(normalized),
+	};
+}
+
+function formatModelInspection(model: ModelInspection): string {
+	const route = model.remapped
+		? `${model.requested} -> ${model.normalized}`
+		: model.normalized;
+	return [
+		route,
+		`prompt family ${model.promptFamily}`,
+		`tool search ${model.capabilities.toolSearch ? "yes" : "no"}`,
+		`computer use ${model.capabilities.computerUse ? "yes" : "no"}`,
+	].join(" | ");
+}
+
+function collapseWhitespace(value: string): string {
+	return value.replace(/\s+/g, " ").trim();
+}
+
+function formatReasonLabel(reason: string | undefined): string | undefined {
+	if (!reason) return undefined;
+	const normalized = collapseWhitespace(reason.replace(/_/g, " "));
+	return normalized.length > 0 ? normalized : undefined;
+}
+
+function extractErrorMessageFromPayload(payload: unknown): string | undefined {
+	if (!payload || typeof payload !== "object") return undefined;
+	const record = payload as Record<string, unknown>;
+
+	const directMessage =
+		typeof record.message === "string"
+			? collapseWhitespace(record.message)
+			: "";
+	const directCode =
+		typeof record.code === "string" ? collapseWhitespace(record.code) : "";
+	if (directMessage) {
+		if (
+			directCode &&
+			!directMessage.toLowerCase().includes(directCode.toLowerCase())
+		) {
+			return `${directMessage} [${directCode}]`;
+		}
+		return directMessage;
+	}
+
+	const nested = record.error;
+	if (nested && typeof nested === "object") {
+		return extractErrorMessageFromPayload(nested);
+	}
+	return undefined;
+}
+
+function parseStructuredErrorMessage(raw: string): string | undefined {
+	const trimmed = raw.trim();
+	if (!trimmed) return undefined;
+	const candidates = new Set<string>([trimmed]);
+	const firstBrace = trimmed.indexOf("{");
+	const lastBrace = trimmed.lastIndexOf("}");
+	if (firstBrace >= 0 && lastBrace > firstBrace) {
+		candidates.add(trimmed.slice(firstBrace, lastBrace + 1));
+	}
+
+	for (const candidate of candidates) {
+		try {
+			const parsed = JSON.parse(candidate) as unknown;
+			const message = extractErrorMessageFromPayload(parsed);
+			if (message) return message;
+		} catch {
+			// ignore non-JSON candidates
+		}
+	}
+	return undefined;
+}
+
+function normalizeFailureDetail(
+	message: string | undefined,
+	reason: string | undefined,
+): string {
+	const reasonLabel = formatReasonLabel(reason);
+	const raw = message?.trim() || reasonLabel || "refresh failed";
+	const structured = parseStructuredErrorMessage(raw);
+	const normalized = collapseWhitespace(structured ?? raw);
+	const bounded =
+		normalized.length > 260 ? `${normalized.slice(0, 257)}...` : normalized;
+	return bounded.length > 0 ? bounded : "refresh failed";
+}
+
+function joinStyledSegments(parts: string[]): string {
+	if (parts.length === 0) return "";
+	const separator = stylePromptText(" | ", "muted");
+	return parts.join(separator);
+}
+
+function formatResultSummary(
+	segments: ReadonlyArray<{ text: string; tone: PromptTone }>,
+): string {
+	const rendered = segments.map((segment) =>
+		stylePromptText(segment.text, segment.tone),
+	);
+	return `${stylePromptText("Result:", "accent")} ${joinStyledSegments(rendered)}`;
+}
 
 function createRepairCommandDeps(): RepairCommandDeps {
 	return {
@@ -254,6 +383,113 @@ function isOAuthCancellation(
 ): boolean {
 	const message = (result.message ?? result.reason ?? "").trim().toLowerCase();
 	return message.includes("cancelled") || message.includes("canceled");
+}
+
+function styleQuotaSummary(summary: string): string {
+	const normalized = collapseWhitespace(summary);
+	if (!normalized) return stylePromptText(summary, "muted");
+	const segments = normalized
+		.split("|")
+		.map((segment) => segment.trim())
+		.filter(Boolean);
+	if (segments.length === 0) return stylePromptText(normalized, "muted");
+
+	const rendered = segments.map((segment) => {
+		if (/rate-limited/i.test(segment)) {
+			return stylePromptText(segment, "danger");
+		}
+		const match = segment.match(/^([0-9a-zA-Z]+)\s+(\d{1,3})%$/);
+		if (!match) {
+			return stylePromptText(segment, "muted");
+		}
+		const windowLabel = match[1] ?? "";
+		const leftPercent = Math.max(
+			0,
+			Math.min(100, Number.parseInt(match[2] ?? "", 10)),
+		);
+		if (!Number.isFinite(leftPercent)) {
+			return stylePromptText(segment, "muted");
+		}
+		const tone = quotaToneFromLeftPercent(leftPercent);
+		return `${stylePromptText(windowLabel, "muted")} ${stylePromptText(`${leftPercent}%`, tone)}`;
+	});
+
+	return joinStyledSegments(rendered);
+}
+
+// Exported for unit tests: tone precedence (danger before warning) is
+// security/UX-relevant — a failure whose text contains "unavailable" must
+// render red, not be downgraded to yellow. See test/codex-manager-detail-tone.test.ts.
+export function styleAccountDetailText(
+	detail: string,
+	fallbackTone: PromptTone = "muted",
+): string {
+	const compact = collapseWhitespace(detail);
+	if (!compact) return stylePromptText("", fallbackTone);
+
+	const quotaMatch = compact.match(/^(.*?)\(([^()]*\d{1,3}%[^()]*)\)(.*)$/);
+	if (quotaMatch) {
+		const prefix = (quotaMatch[1] ?? "").trim();
+		const quota = (quotaMatch[2] ?? "").trim();
+		const suffix = (quotaMatch[3] ?? "").trim();
+
+		// danger wins across the WHOLE detail: a failure keyword anywhere — even
+		// trapped inside the (…%) quota segment, e.g.
+		// "signed in and working (live check failed: … 0%)" — must keep the prefix
+		// red, never let a "working"/"ok" prefix render green over a real failure.
+		const detailHasFailure = /failed|error|rate-limited/i.test(compact);
+		const prefixTone: PromptTone = detailHasFailure
+			? "danger"
+			: /\b(ok|working|succeeded|valid)\b/i.test(prefix)
+				? "success"
+				: fallbackTone;
+		const suffixTone: PromptTone =
+			// danger wins first: a real failure whose text happens to contain
+			// "unavailable"/"not available" (e.g. a 5xx "service not available")
+			// must render red, not be downgraded to a yellow warning.
+			/failed|error/i.test(suffix)
+				? "danger"
+				: /re-login|stale|warning|retry|fallback|unavailable|not available/i.test(suffix)
+					? "warning"
+					: "muted";
+
+		const chunks: string[] = [];
+		if (prefix) chunks.push(stylePromptText(prefix, prefixTone));
+		chunks.push(`(${styleQuotaSummary(quota)})`);
+		if (suffix) chunks.push(stylePromptText(suffix, suffixTone));
+		return chunks.join(" ");
+	}
+
+	if (/rate-limited/i.test(compact)) return stylePromptText(compact, "danger");
+	if (/failed|error/i.test(compact)) return stylePromptText(compact, "danger");
+	if (/re-login|stale|warning|fallback|unavailable|not available/i.test(compact))
+		return stylePromptText(compact, "warning");
+	if (/\b(ok|working|succeeded|valid)\b/i.test(compact))
+		return stylePromptText(compact, "success");
+	return stylePromptText(compact, fallbackTone);
+}
+
+function riskTone(
+	level: ForecastAccountResult["riskLevel"],
+): "success" | "warning" | "danger" {
+	if (level === "low") return "success";
+	if (level === "medium") return "warning";
+	return "danger";
+}
+
+function availabilityTone(
+	availability: ForecastAccountResult["availability"],
+): "success" | "warning" | "danger" {
+	if (availability === "ready") return "success";
+	if (availability === "delayed") return "warning";
+	return "danger";
+}
+function formatQuotaSnapshotForDashboard(
+	snapshot: Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>,
+	settings: DashboardDisplaySettings,
+): string {
+	if (!settings.showQuotaDetails) return "live session OK";
+	return `live session OK (${formatCompactQuotaSnapshot(snapshot)})`;
 }
 
 function isAbortError(error: unknown): boolean {
@@ -310,6 +546,111 @@ const IMPLEMENTED_FEATURES: ImplementedFeature[] = [
 	{ id: 40, name: "OAuth browser-first flow with manual callback fallback" },
 	{ id: 41, name: "Auto-switch to best account command" },
 ];
+
+function formatRateLimitEntry(
+	account: { rateLimitResetTimes?: Record<string, number | undefined> },
+	now: number,
+	family: ModelFamily = "codex",
+): string | null {
+	return formatAccountRateLimitEntry(account, now, formatWaitTime, family);
+}
+
+function quotaCacheEntryToSnapshot(entry: QuotaCacheEntry): CodexQuotaSnapshot {
+	return {
+		status: entry.status,
+		planType: entry.planType,
+		model: entry.model,
+		primary: {
+			usedPercent: entry.primary.usedPercent,
+			windowMinutes: entry.primary.windowMinutes,
+			resetAtMs: entry.primary.resetAtMs,
+		},
+		secondary: {
+			usedPercent: entry.secondary.usedPercent,
+			windowMinutes: entry.secondary.windowMinutes,
+			resetAtMs: entry.secondary.resetAtMs,
+		},
+	};
+}
+
+function formatCompactQuotaWindowLabel(
+	windowMinutes: number | undefined,
+): string {
+	if (!windowMinutes || !Number.isFinite(windowMinutes) || windowMinutes <= 0) {
+		return "quota";
+	}
+	if (windowMinutes % 1440 === 0) return `${windowMinutes / 1440}d`;
+	if (windowMinutes % 60 === 0) return `${windowMinutes / 60}h`;
+	return `${windowMinutes}m`;
+}
+
+function formatCompactQuotaPart(
+	windowMinutes: number | undefined,
+	usedPercent: number | undefined,
+): string | null {
+	const label = formatCompactQuotaWindowLabel(windowMinutes);
+	if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) {
+		return null;
+	}
+	const left = quotaLeftPercentFromUsed(usedPercent);
+	return `${label} ${left}%`;
+}
+
+function formatCompactQuotaSnapshot(
+	snapshot: CodexQuotaSnapshot,
+	now = Date.now(),
+): string {
+	const parts = [
+		formatCompactQuotaPart(
+			snapshot.primary.windowMinutes,
+			snapshot.primary.usedPercent,
+		),
+		formatCompactQuotaPart(
+			snapshot.secondary.windowMinutes,
+			snapshot.secondary.usedPercent,
+		),
+	].filter(
+		(value): value is string => typeof value === "string" && value.length > 0,
+	);
+	if (snapshot.status === 429) {
+		parts.push("rate-limited");
+	}
+	if (isQuotaCacheEntryExhausted(snapshot, now)) {
+		parts.push("quota-exhausted");
+	}
+	if (parts.length > 0) {
+		return parts.join(" | ");
+	}
+	return formatQuotaSnapshotLine(snapshot);
+}
+
+function formatAccountQuotaSummary(
+	entry: QuotaCacheEntry,
+	now = Date.now(),
+): string {
+	const parts = [
+		formatCompactQuotaPart(
+			entry.primary.windowMinutes,
+			entry.primary.usedPercent,
+		),
+		formatCompactQuotaPart(
+			entry.secondary.windowMinutes,
+			entry.secondary.usedPercent,
+		),
+	].filter(
+		(value): value is string => typeof value === "string" && value.length > 0,
+	);
+	if (entry.status === 429) {
+		parts.push("rate-limited");
+	}
+	if (isQuotaCacheEntryExhausted(entry, now)) {
+		parts.push("quota-exhausted");
+	}
+	if (parts.length > 0) {
+		return parts.join(" | ");
+	}
+	return formatQuotaSnapshotLine(quotaCacheEntryToSnapshot(entry));
+}
 
 function getQuotaCacheEntryForAccount(
 	cache: QuotaCacheData,
@@ -1173,6 +1514,16 @@ type SignInFlowOptions = {
 	timeoutMs?: number;
 };
 
+export function formatBackupSavedAt(mtimeMs: number): string {
+	return new Date(mtimeMs).toLocaleString(undefined, {
+		month: "short",
+		day: "numeric",
+		year: "numeric",
+		hour: "numeric",
+		minute: "2-digit",
+	});
+}
+
 async function promptOAuthSignInMode(
 	backupOption: NamedBackupSummary | null,
 	backupDiscoveryWarning: string | null = null,
@@ -1457,6 +1808,19 @@ async function waitForMenuReturn(
 		rl.close();
 		clearInlineStatus();
 	}
+}
+
+function stringifyLogArgs(args: unknown[]): string {
+	return args
+		.map((value) => {
+			if (typeof value === "string") return value;
+			try {
+				return JSON.stringify(value);
+			} catch {
+				return String(value);
+			}
+		})
+		.join(" ");
 }
 
 async function runActionPanel(

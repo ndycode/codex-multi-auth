@@ -7,7 +7,7 @@ import {
 import { detectOcChatgptMultiAuthTarget } from "../../oc-chatgpt-target-detection.js";
 import { loadAccounts, normalizeAccountStorage } from "../../storage.js";
 import type { PluginConfig } from "../../types.js";
-import { UI_COPY } from "../../ui/copy.js";
+import { UI_COPY } from "../../ui/ui-copy.js";
 import { getUiRuntimeOptions } from "../../ui/runtime.js";
 import { select } from "../../ui/select.js";
 import { sleep } from "../../utils.js";
