@@ -672,7 +672,7 @@ export function findEmptyMessageByIndex(
 		if (idx < 0 || idx >= messages.length) continue;
 
 		const targetMsg = messages[idx];
-		if (!targetMsg) continue;
+		if (!targetMsg || targetMsg.role !== "assistant") continue;
 
 		if (!messageHasContent(targetMsg.id)) {
 			return targetMsg.id;
