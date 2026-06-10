@@ -142,7 +142,7 @@ describe("settings hub shared helpers", () => {
 			expect(result.menuShowLastUsed).toBe(false);
 		});
 
-		it("warns and returns the selection as fallback when the write keeps failing", async () => {
+		it("gives up immediately on a non-retryable error, warning with the fallback", async () => {
 			saveDashboardDisplaySettingsMock.mockRejectedValue(
 				new Error("disk gone"),
 			);
@@ -161,6 +161,23 @@ describe("settings hub shared helpers", () => {
 			expect(result).toStrictEqual(cloneDashboardSettings(selected));
 			expect(result.menuShowLastUsed).toBe(false);
 			expect(result).not.toBe(selected);
+			// Non-retryable: the write must fail on the first attempt, no retries.
+			expect(saveDashboardDisplaySettingsMock).toHaveBeenCalledTimes(1);
+		});
+
+		it("exhausts all four attempts on persistent EBUSY before falling back", async () => {
+			saveDashboardDisplaySettingsMock.mockRejectedValue(busyError());
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+			const result = await persistDashboardSettingsSelectionForTests(
+				{ menuShowLastUsed: false },
+				["menuShowLastUsed"],
+				"dashboard",
+			);
+			expect(saveDashboardDisplaySettingsMock).toHaveBeenCalledTimes(4);
+			expect(warnSpy).toHaveBeenCalledWith(
+				"Settings save failed (dashboard) after retries: locked",
+			);
+			expect(result.menuShowLastUsed).toBe(false);
 		});
 	});
 
@@ -191,6 +208,21 @@ describe("settings hub shared helpers", () => {
 			);
 			expect(warnSpy).toHaveBeenCalledWith(
 				"Settings save failed (backend) after retries: config locked",
+			);
+			expect(backendSettingsEqual(result, selected)).toBe(true);
+		});
+
+		it("exhausts all four attempts on persistent EBUSY for the backend path too", async () => {
+			savePluginConfigMock.mockRejectedValue(busyError());
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+			const selected = {} as PluginConfig;
+			const result = await persistBackendConfigSelectionForTests(
+				selected,
+				"backend",
+			);
+			expect(savePluginConfigMock).toHaveBeenCalledTimes(4);
+			expect(warnSpy).toHaveBeenCalledWith(
+				"Settings save failed (backend) after retries: locked",
 			);
 			expect(backendSettingsEqual(result, selected)).toBe(true);
 		});
