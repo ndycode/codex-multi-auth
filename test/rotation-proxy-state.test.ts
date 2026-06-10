@@ -128,17 +128,31 @@ describe("recoverStaleRuntimeState", () => {
 		);
 	});
 
-	it("returns the current manager inside the dedupe window without reloading", async () => {
-		const state = createRotationProxyState(stateInit());
-		const reloaded = new AccountManager(undefined, storageWith(2));
-		loadFromDisk.mockResolvedValue(reloaded);
+	it("dedupes within the 1s window and reloads again once it expires", async () => {
+		// The dedupe guard runs on the real wall clock (deliberately not the
+		// injected now()), so fake timers make the window deterministic.
+		vi.useFakeTimers();
+		try {
+			const state = createRotationProxyState(stateInit());
+			const reloaded = new AccountManager(undefined, storageWith(2));
+			loadFromDisk.mockResolvedValue(reloaded);
 
-		await recoverStaleRuntimeState(state);
-		const second = await recoverStaleRuntimeState(state);
+			await recoverStaleRuntimeState(state);
+			const second = await recoverStaleRuntimeState(state);
 
-		// The second call lands inside the 1s dedupe window: no second reload.
-		expect(second).toBe(reloaded);
-		expect(loadFromDisk).toHaveBeenCalledTimes(1);
+			// The second call lands inside the 1s dedupe window: no second reload.
+			expect(second).toBe(reloaded);
+			expect(loadFromDisk).toHaveBeenCalledTimes(1);
+
+			// Once the window expires, the next call reloads from disk again.
+			vi.advanceTimersByTime(1_001);
+			const freshest = new AccountManager(undefined, storageWith(3));
+			loadFromDisk.mockResolvedValue(freshest);
+			await expect(recoverStaleRuntimeState(state)).resolves.toBe(freshest);
+			expect(loadFromDisk).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("shares one in-flight reload between concurrent callers", async () => {
@@ -171,6 +185,8 @@ describe("recoverStaleRuntimeState", () => {
 
 		expect(failed).toBeNull();
 		expect(state.status.lastError).toBe("disk exploded");
+		// The failure must not arm the dedupe window.
+		expect(state.lastStaleRuntimeReloadAt).toBe(0);
 		// The failure does not arm the dedupe window or leak a stale promise:
 		// the next call retries the reload.
 		const reloaded = new AccountManager(undefined, storageWith(2));
