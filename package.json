@@ -156,7 +156,6 @@
 		"node": ">=18.17.0"
 	},
 	"devDependencies": {
-		"@fast-check/vitest": "^0.2.4",
 		"@types/node": "^20.19.42",
 		"@typescript-eslint/eslint-plugin": "^8.56.0",
 		"@typescript-eslint/parser": "^8.56.0",
