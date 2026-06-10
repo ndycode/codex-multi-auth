@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { promptLoginMode } from "../lib/cli.js";
+import { UI_COPY } from "../lib/ui/ui-copy.js";
 import type {
 	AccountMetadataV3,
 	AccountStorageV3,
@@ -14,6 +15,7 @@ const {
 	persistAccountPoolMock,
 	syncSelectionToCodexMock,
 	persistAndSyncSelectedAccountMock,
+	selectMock,
 } = vi.hoisted(() => ({
 	withAccountStorageTransactionMock: vi.fn(),
 	runSwitchCommandMock: vi.fn(),
@@ -22,6 +24,7 @@ const {
 	persistAccountPoolMock: vi.fn(),
 	syncSelectionToCodexMock: vi.fn(),
 	persistAndSyncSelectedAccountMock: vi.fn(),
+	selectMock: vi.fn(),
 }));
 
 // Keep the real findMatchingAccountIndex (the identity matching under test)
@@ -49,6 +52,13 @@ vi.mock("../lib/codex-manager/login-oauth.js", () => ({
 vi.mock("../lib/codex-manager/persist-selected-account.js", () => ({
 	persistAndSyncSelectedAccount: persistAndSyncSelectedAccountMock,
 }));
+
+// The sign-in mode prompt lives in the module under test, so its cancel and
+// manual branches are reached by flipping TTY on and stubbing the UI select.
+vi.mock("../lib/ui/select.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../lib/ui/select.js")>();
+	return { ...actual, select: selectMock };
+});
 
 const {
 	handleManageAction,
@@ -288,6 +298,27 @@ describe("handleManageAction toggle", () => {
 		expect(logSpy).toHaveBeenCalledWith("Enabled account 1.");
 	});
 
+	it("re-resolves the account by identity when on-disk storage was reordered", async () => {
+		// The menu showed [a, b] and the user toggled row 1 (account a), but a
+		// concurrent writer reordered storage to [x, a]: account a must be
+		// toggled at its new position, not whatever now sits at index 0.
+		const storage = storageWith([account("a"), account("b")]);
+		loadedStorage = storageWith([account("x"), account("a")]);
+
+		await handleManageAction(storage, {
+			mode: "manage",
+			toggleAccountIndex: 0,
+		} satisfies MenuResult);
+
+		expect(persisted).toHaveLength(1);
+		expect(persisted[0].accounts[1]).toMatchObject({
+			accountId: "acc_a",
+			enabled: false,
+		});
+		expect(persisted[0].accounts[0].enabled).toBeUndefined();
+		expect(logSpy).toHaveBeenCalledWith("Disabled account 1.");
+	});
+
 	it("becomes a no-op when the account vanished from storage", async () => {
 		const storage = storageWith([account("a")]);
 		loadedStorage = storageWith([]);
@@ -298,6 +329,9 @@ describe("handleManageAction toggle", () => {
 		} satisfies MenuResult);
 
 		expect(persisted).toHaveLength(0);
+		// The in-memory menu storage is left untouched too.
+		expect(storage.accounts.map((entry) => entry.accountId)).toEqual(["acc_a"]);
+		expect(storage.accounts[0].enabled).toBeUndefined();
 		expect(logSpy).not.toHaveBeenCalled();
 	});
 });
@@ -351,5 +385,57 @@ describe("handleManageAction refresh", () => {
 		} satisfies MenuResult);
 
 		expect(runOAuthFlowMock).not.toHaveBeenCalled();
+	});
+
+	it("returns to the menu when the sign-in mode prompt is cancelled", async () => {
+		process.stdin.isTTY = true;
+		process.stdout.isTTY = true;
+		selectMock.mockResolvedValue("cancel");
+		const storage = storageWith([account("a")]);
+
+		await handleManageAction(storage, {
+			mode: "manage",
+			refreshAccountIndex: 0,
+		} satisfies MenuResult);
+
+		expect(runOAuthFlowMock).not.toHaveBeenCalled();
+		expect(String(logSpy.mock.calls[0]?.[0])).toContain(
+			UI_COPY.oauth.cancelledBackToMenu,
+		);
+	});
+
+	it("runs the OAuth flow in manual mode when the prompt selects it", async () => {
+		process.stdin.isTTY = true;
+		process.stdout.isTTY = true;
+		selectMock.mockResolvedValue("manual");
+		const storage = storageWith([account("a")]);
+		const resolved = { type: "success" as const, accountIdOverride: "acc_a" };
+		runOAuthFlowMock.mockResolvedValue({ type: "success" });
+		resolveAccountSelectionMock.mockReturnValue(resolved);
+		persistAccountPoolMock.mockResolvedValue(undefined);
+		syncSelectionToCodexMock.mockResolvedValue(undefined);
+
+		await handleManageAction(storage, {
+			mode: "manage",
+			refreshAccountIndex: 0,
+		} satisfies MenuResult);
+
+		expect(runOAuthFlowMock).toHaveBeenCalledWith(true, "manual");
+		expect(syncSelectionToCodexMock).toHaveBeenCalledWith(resolved);
+	});
+
+	it("bails out silently on a non-transport prompt selection", async () => {
+		process.stdin.isTTY = true;
+		process.stdout.isTTY = true;
+		selectMock.mockResolvedValue("restore-backup");
+		const storage = storageWith([account("a")]);
+
+		await handleManageAction(storage, {
+			mode: "manage",
+			refreshAccountIndex: 0,
+		} satisfies MenuResult);
+
+		expect(runOAuthFlowMock).not.toHaveBeenCalled();
+		expect(logSpy).not.toHaveBeenCalled();
 	});
 });
