@@ -6,13 +6,18 @@ import {
 	authMenuFocusKey,
 	currentMarkerLabel,
 	formatAccountHint,
+	formatDate,
 	formatRelativeTime,
 	mainMenuTitleWithVersion,
 	statusBadge,
 	type AccountInfo,
 	type AuthMenuAction,
 } from "../lib/ui/auth-menu-builder.js";
-import { getUiRuntimeOptions } from "../lib/ui/runtime.js";
+import {
+	getUiRuntimeOptions,
+	resetUiRuntimeOptions,
+	setUiRuntimeOptions,
+} from "../lib/ui/runtime.js";
 import { UI_COPY } from "../lib/ui/ui-copy.js";
 
 const NOW = Date.now();
@@ -96,12 +101,18 @@ describe("accountTitle", () => {
 		).toBe("2. a@b.c");
 	});
 
-	it("strips ANSI escapes and control characters from identity fields", () => {
-		// A hostile accountLabel must not be able to repaint the menu row.
-		const title = accountTitle(
-			account({ accountLabel: "\x1b[31mEvil\x1b[0m Label" }),
+	it("strips ANSI escapes and control characters from every identity field", () => {
+		// Hostile identity values must not be able to repaint the menu row,
+		// regardless of which field carries them.
+		expect(
+			accountTitle(account({ accountLabel: "\x1b[31mEvil\x1b[0m Label" })),
+		).toBe("1. Evil Label");
+		expect(
+			accountTitle(account({ email: "\x1b[2Jevil@example.com" })),
+		).toBe("1. evil@example.com");
+		expect(accountTitle(account({ accountId: "acc\x1b[31m_red" }))).toBe(
+			"1. acc_red",
 		);
-		expect(title).toBe("1. Evil Label");
 	});
 });
 
@@ -163,6 +174,14 @@ describe("statusBadge", () => {
 
 	it("labels missing statuses unknown", () => {
 		expect(stripAnsi(statusBadge(undefined))).toContain("unknown");
+	});
+});
+
+describe("formatDate", () => {
+	it("renders unknown for missing timestamps and a locale date otherwise", () => {
+		expect(formatDate(undefined)).toBe("unknown");
+		const ts = NOW - 10 * DAY_MS;
+		expect(formatDate(ts)).toBe(new Date(ts).toLocaleDateString());
 	});
 });
 
@@ -245,6 +264,33 @@ describe("formatAccountHint", () => {
 		expect(
 			formatAccountHint(account({ showLastUsed: false }), ui),
 		).toBe("");
+	});
+});
+
+describe("legacy (v1) palette rendering", () => {
+	it("renders badges and hints with the same text content when v2 is off", () => {
+		setUiRuntimeOptions({ v2Enabled: false });
+		try {
+			expect(stripAnsi(statusBadge("rate-limited"))).toContain(
+				"rate-limited",
+			);
+			expect(stripAnsi(statusBadge(undefined))).toContain("unknown");
+
+			const hint = stripAnsi(
+				formatAccountHint(
+					account({
+						lastUsed: NOW - 1_000,
+						quota5hLeftPercent: 50,
+						quota5hResetAtMs: NOW + 30_000,
+					}),
+					getUiRuntimeOptions(),
+				),
+			);
+			expect(hint).toMatch(/^Last used: today \| Limits: 5h /);
+			expect(hint).toContain("50%");
+		} finally {
+			resetUiRuntimeOptions();
+		}
 	});
 });
 
