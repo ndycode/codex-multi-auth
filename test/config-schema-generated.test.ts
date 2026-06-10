@@ -69,6 +69,18 @@ describe("config.schema.json is generated from PluginConfigSchema", () => {
 		);
 		expect(schema.title).toBe("codex-multi-auth config template");
 
+		// Structural invariants of the document (cheap stand-in for a full
+		// metaschema validation, which would require a new validator dep).
+		const doc = schema as unknown as {
+			type?: unknown;
+			properties?: unknown;
+			required?: unknown;
+		};
+		expect(doc.type).toBe("object");
+		expect(doc.properties).toBeTypeOf("object");
+		expect(doc.required).toEqual(["plugin", "provider"]);
+		expect(schema.$defs?.pluginConfig?.properties).toBeTypeOf("object");
+
 		const generatedKeys = Object.keys(
 			schema.$defs?.pluginConfig?.properties ?? {},
 		).sort();

@@ -9,6 +9,10 @@
  *   (see `scripts/generate-config-schema.mjs`).
  * - Drift is a test failure: `test/config-schema-generated.test.ts`
  *   regenerates the schema in-memory and compares it to the committed file.
+ *
+ * @internal Generator/tooling module: deliberately NOT re-exported from
+ * lib/index.ts. Its only consumers are scripts/generate-config-schema.mjs
+ * (via the compiled dist output) and the drift-guard test.
  */
 import { z } from "zod";
 import { PluginConfigSchema } from "./schemas.js";
@@ -38,10 +42,20 @@ type JsonObject = Record<string, unknown>;
  * so output is deterministic.
  */
 export function buildConfigJsonSchema(): JsonObject {
-	const pluginConfig = z.toJSONSchema(PluginConfigSchema, {
+	const pluginConfigRaw: unknown = z.toJSONSchema(PluginConfigSchema, {
 		target: "draft-2020-12",
 		io: "input",
-	}) as JsonObject;
+	});
+	// Guard before mutating: a zod behavior change returning a non-object
+	// here should fail loudly, not via a confusing delete/??= throw below.
+	if (
+		!pluginConfigRaw ||
+		typeof pluginConfigRaw !== "object" ||
+		Array.isArray(pluginConfigRaw)
+	) {
+		throw new Error("z.toJSONSchema(PluginConfigSchema) returned a non-object");
+	}
+	const pluginConfig = pluginConfigRaw as JsonObject;
 	// The embedded definition inherits the root document's dialect; a nested
 	// `$schema` keyword would be redundant noise.
 	delete pluginConfig.$schema;
