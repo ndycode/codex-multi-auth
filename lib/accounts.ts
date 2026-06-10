@@ -14,7 +14,7 @@ import {
 } from "./storage.js";
 import type { AccountIdSource, OAuthAuthDetails } from "./types.js";
 import type { Workspace } from "./storage/public-types.js";
-import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
+import { MODEL_FAMILIES, type ModelFamily } from "./request/helpers/model-map.js";
 import {
 	getHealthTracker,
 	getTokenTracker,

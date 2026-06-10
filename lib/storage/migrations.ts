@@ -7,7 +7,7 @@
  * ./public-types.ts.
  */
 
-import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
+import { MODEL_FAMILIES, type ModelFamily } from "../request/helpers/model-map.js";
 import type { AccountIdSource } from "../types.js";
 import type {
 	AccountStorageV3,

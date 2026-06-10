@@ -1,5 +1,5 @@
 import { createLogger } from "../logger.js";
-import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
+import { MODEL_FAMILIES, type ModelFamily } from "../request/helpers/model-map.js";
 import { type AccountStorageV3 } from "../storage/public-types.js";
 import { incrementCodexCliMetric } from "./observability.js";
 
