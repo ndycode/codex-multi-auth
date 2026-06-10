@@ -125,6 +125,18 @@ describe("applyRefreshedAccountPatch", () => {
 		expect(target.accountId).toBe("acc_new");
 		expect(target.accountIdSource).toBe("token");
 	});
+
+	it("clears accountIdSource when a patch rebinds the id without a source", () => {
+		// Deliberate behavior pin: accountIdSource follows patch.accountId, so a
+		// patch that rebinds the id without declaring a source strips the old
+		// one rather than leaving a stale "token"/"manual" attribution behind.
+		const target = account("a", { accountIdSource: "token" });
+
+		applyRefreshedAccountPatch(target, { ...PATCH, accountId: "acc_new" });
+
+		expect(target.accountId).toBe("acc_new");
+		expect(target.accountIdSource).toBeUndefined();
+	});
 });
 
 describe("persistRefreshedAccountPatch", () => {
@@ -176,6 +188,33 @@ describe("persistRefreshedAccountPatch", () => {
 
 		expect(saved[0].accounts[0].refreshToken).toBe("refresh-rotated");
 		expect(inMemory.accounts[0].refreshToken).toBe("refresh-a");
+	});
+
+	it("matches on the first pass when identity survives a concurrent rotation", async () => {
+		// The common case: a concurrent writer rotated the tokens but the
+		// account kept its accountId/email, so the first identity pass matches
+		// without falling back to the patch credentials.
+		const onDisk = storageWith([
+			account("a", { refreshToken: "refresh-already-rotated" }),
+		]);
+		const saved: AccountStorageV3[] = [];
+
+		await persistRefreshedAccountPatch(
+			storageWith([account("a")]),
+			match,
+			PATCH,
+			async () => onDisk,
+			async (storage) => {
+				saved.push(storage);
+			},
+		);
+
+		expect(saved).toHaveLength(1);
+		expect(saved[0].accounts[0]).toMatchObject({
+			accountId: "acc_a",
+			refreshToken: "refresh-rotated",
+			accessToken: "access-rotated",
+		});
 	});
 
 	it("matches by the patched credentials when the on-disk copy already rotated", async () => {
