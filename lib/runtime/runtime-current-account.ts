@@ -48,7 +48,7 @@ export interface RuntimeCurrentAccountSources {
 	appHelperStatus?: RuntimeAccountSignal | null;
 }
 
-export const RUNTIME_CURRENT_ACCOUNT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const RUNTIME_CURRENT_ACCOUNT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const APP_RUNTIME_HELPER_KIND = "codex-app-runtime-rotation-helper";
 const MAX_STATUS_FILE_BYTES = 1024 * 1024; // 1 MB sanity cap
 

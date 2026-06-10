@@ -6,7 +6,7 @@ import type {
 import { ANSI } from "../ui/ansi.js";
 import type { UiRuntimeOptions } from "../ui/runtime.js";
 
-export const DEFAULT_STATUSLINE_FIELDS: DashboardStatuslineField[] = [
+const DEFAULT_STATUSLINE_FIELDS: DashboardStatuslineField[] = [
 	"last-used",
 	"limits",
 	"status",

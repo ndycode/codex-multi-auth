@@ -1,7 +1,7 @@
-export const SETTINGS_WRITE_MAX_ATTEMPTS = 4;
-export const SETTINGS_WRITE_BASE_DELAY_MS = 50;
-export const SETTINGS_WRITE_MAX_DELAY_MS = 30_000;
-export const RETRYABLE_SETTINGS_WRITE_CODES = new Set([
+const SETTINGS_WRITE_MAX_ATTEMPTS = 4;
+const SETTINGS_WRITE_BASE_DELAY_MS = 50;
+const SETTINGS_WRITE_MAX_DELAY_MS = 30_000;
+const RETRYABLE_SETTINGS_WRITE_CODES = new Set([
 	"EBUSY",
 	"EPERM",
 	"EAGAIN",
@@ -11,7 +11,7 @@ export const RETRYABLE_SETTINGS_WRITE_CODES = new Set([
 
 const settingsWriteQueues = new Map<string, Promise<void>>();
 
-export function readErrorNumber(value: unknown): number | undefined {
+function readErrorNumber(value: unknown): number | undefined {
 	if (typeof value === "number" && Number.isFinite(value)) return value;
 	if (typeof value === "string" && value.trim().length > 0) {
 		const parsed = Number.parseInt(value, 10);
@@ -20,13 +20,13 @@ export function readErrorNumber(value: unknown): number | undefined {
 	return undefined;
 }
 
-export function getErrorStatusCode(error: unknown): number | undefined {
+function getErrorStatusCode(error: unknown): number | undefined {
 	if (!error || typeof error !== "object") return undefined;
 	const record = error as Record<string, unknown>;
 	return readErrorNumber(record.status) ?? readErrorNumber(record.statusCode);
 }
 
-export function getRetryAfterMs(error: unknown): number | undefined {
+function getRetryAfterMs(error: unknown): number | undefined {
 	if (!error || typeof error !== "object") return undefined;
 	const record = error as Record<string, unknown>;
 	return (
@@ -37,14 +37,14 @@ export function getRetryAfterMs(error: unknown): number | undefined {
 	);
 }
 
-export function isRetryableSettingsWriteError(error: unknown): boolean {
+function isRetryableSettingsWriteError(error: unknown): boolean {
 	const statusCode = getErrorStatusCode(error);
 	if (statusCode === 429) return true;
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
 	return typeof code === "string" && RETRYABLE_SETTINGS_WRITE_CODES.has(code);
 }
 
-export function resolveRetryDelayMs(error: unknown, attempt: number): number {
+function resolveRetryDelayMs(error: unknown, attempt: number): number {
 	const retryAfterMs = getRetryAfterMs(error);
 	if (
 		typeof retryAfterMs === "number" &&
@@ -62,7 +62,7 @@ export function resolveRetryDelayMs(error: unknown, attempt: number): number {
 	);
 }
 
-export async function enqueueSettingsWrite<T>(
+async function enqueueSettingsWrite<T>(
 	pathKey: string,
 	task: () => Promise<T>,
 ): Promise<T> {

@@ -51,7 +51,7 @@ export type ParsedUninstallArgs =
 	| { ok: false; reason: "help" }
 	| { ok: false; reason: "error"; message: string };
 
-export function printUninstallUsage(): void {
+function printUninstallUsage(): void {
 	console.log(
 		[
 			"Usage:",

@@ -37,7 +37,7 @@ import {
 } from "./shared.js";
 
 /* c8 ignore start - interactive prompt flows are covered by integration tests */
-export async function promptBackendCategorySettings(
+async function promptBackendCategorySettings(
 	initial: PluginConfig,
 	category: BackendCategoryOption,
 	initialFocus: BackendSettingFocusKey,

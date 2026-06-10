@@ -4,7 +4,7 @@ export type { CodexQuotaSnapshot, CodexQuotaWindow } from "../quota-probe.js";
 
 export type ParsedCodexQuotaSnapshot = Omit<CodexQuotaSnapshot, "model">;
 
-export function parseFiniteNumberHeader(
+function parseFiniteNumberHeader(
 	headers: Headers,
 	name: string,
 ): number | undefined {
@@ -14,7 +14,7 @@ export function parseFiniteNumberHeader(
 	return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-export function parseFiniteIntHeader(
+function parseFiniteIntHeader(
 	headers: Headers,
 	name: string,
 ): number | undefined {
@@ -55,7 +55,7 @@ export function parseResetAtMs(
 	return Number.isFinite(parsedDate) ? parsedDate : undefined;
 }
 
-export function hasCodexQuotaHeaders(headers: Headers): boolean {
+function hasCodexQuotaHeaders(headers: Headers): boolean {
 	const keys = [
 		"x-codex-primary-used-percent",
 		"x-codex-primary-window-minutes",
@@ -108,7 +108,7 @@ export function parseCodexQuotaSnapshot(
 	return { status, planType, activeLimit, primary, secondary };
 }
 
-export function formatQuotaWindowLabel(
+function formatQuotaWindowLabel(
 	windowMinutes: number | undefined,
 ): string {
 	if (!windowMinutes || !Number.isFinite(windowMinutes) || windowMinutes <= 0) {
@@ -119,7 +119,7 @@ export function formatQuotaWindowLabel(
 	return `${windowMinutes}m`;
 }
 
-export function formatResetAt(
+function formatResetAt(
 	resetAtMs: number | undefined,
 ): string | undefined {
 	if (!resetAtMs || !Number.isFinite(resetAtMs) || resetAtMs <= 0)

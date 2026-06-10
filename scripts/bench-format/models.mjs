@@ -10,16 +10,16 @@ const FALLBACK_OPENAI_CODEX_STABLE = [
 
 const OPENAI_CODEX_PREFIXES = ["openai/", "openai-multi/"];
 
-export function isOpenAiCodexProviderPrefix(modelId) {
+function isOpenAiCodexProviderPrefix(modelId) {
   return OPENAI_CODEX_PREFIXES.some((prefix) => modelId.startsWith(prefix));
 }
 
-export function codexTail(modelId) {
+function codexTail(modelId) {
   const slash = modelId.indexOf("/");
   return slash >= 0 ? modelId.slice(slash + 1) : modelId;
 }
 
-export function canonicalCodexModelId(modelId) {
+function canonicalCodexModelId(modelId) {
   return `openai/${codexTail(modelId)}`;
 }
 
@@ -32,7 +32,7 @@ export function aliasCandidatesForCodexModel(modelId) {
   return [...new Set([tail, modelId, ...candidates])];
 }
 
-export function isStableOpenAiCodexModel(modelId) {
+function isStableOpenAiCodexModel(modelId) {
   if (!isOpenAiCodexProviderPrefix(modelId)) {
     return false;
   }

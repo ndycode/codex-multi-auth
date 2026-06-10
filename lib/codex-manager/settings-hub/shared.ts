@@ -47,7 +47,7 @@ export function isTtyInteractive(): boolean {
 	return Boolean(input.isTTY && output.isTTY);
 }
 
-export function copyDashboardSettingValue(
+function copyDashboardSettingValue(
 	target: DashboardDisplaySettings,
 	source: DashboardDisplaySettings,
 	key: DashboardSettingKey,
@@ -70,7 +70,7 @@ export function applyDashboardDefaultsForKeys(
 	return next;
 }
 
-export function mergeDashboardSettingsForKeys(
+function mergeDashboardSettingsForKeys(
 	base: DashboardDisplaySettings,
 	selected: DashboardDisplaySettings,
 	keys: readonly DashboardSettingKey[],

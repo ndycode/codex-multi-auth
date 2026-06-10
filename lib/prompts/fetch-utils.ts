@@ -14,9 +14,9 @@
  *     Accept, applied to every request (prompts-08)
  */
 
-export const PROMPT_FETCH_TIMEOUT_MS = 10_000;
+const PROMPT_FETCH_TIMEOUT_MS = 10_000;
 export const PROMPT_FETCH_MAX_BYTES = 1_000_000; // 1 MB ceiling for a prompt body
-export const PROMPT_FETCH_USER_AGENT = "codex-multi-auth";
+const PROMPT_FETCH_USER_AGENT = "codex-multi-auth";
 
 export interface PromptFetchOptions {
 	headers?: Record<string, string>;

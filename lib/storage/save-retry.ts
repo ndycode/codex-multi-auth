@@ -10,7 +10,7 @@ import type { AccountStorageV3 } from "./public-types.js";
 
 const RETRYABLE_STORAGE_WRITE_CODES = new Set(["EBUSY", "EPERM"]);
 
-export function isRetryableStorageWriteError(error: unknown): boolean {
+function isRetryableStorageWriteError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
 	return typeof code === "string" && RETRYABLE_STORAGE_WRITE_CODES.has(code);
 }

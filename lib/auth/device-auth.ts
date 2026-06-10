@@ -5,12 +5,12 @@ import {
 	sanitizeOAuthResponseBodyForLog,
 } from "./auth.js";
 
-export const DEVICE_AUTH_BASE_URL = "https://auth.openai.com";
-export const DEVICE_AUTH_API_BASE_URL = `${DEVICE_AUTH_BASE_URL}/api/accounts`;
+const DEVICE_AUTH_BASE_URL = "https://auth.openai.com";
+const DEVICE_AUTH_API_BASE_URL = `${DEVICE_AUTH_BASE_URL}/api/accounts`;
 export const DEVICE_AUTH_VERIFICATION_URL = `${DEVICE_AUTH_BASE_URL}/codex/device`;
 export const DEVICE_AUTH_REDIRECT_URI = `${DEVICE_AUTH_BASE_URL}/deviceauth/callback`;
-export const DEVICE_AUTH_TIMEOUT_MS = 15 * 60 * 1000;
-export const DEVICE_AUTH_DEFAULT_INTERVAL_MS = 5_000;
+const DEVICE_AUTH_TIMEOUT_MS = 15 * 60 * 1000;
+const DEVICE_AUTH_DEFAULT_INTERVAL_MS = 5_000;
 const DEVICE_AUTH_ABORTED_MESSAGE = "aborted";
 const DEVICE_AUTH_TRANSIENT_PENDING_STATUSES = new Set([
 	408,
@@ -407,7 +407,7 @@ export async function requestDeviceAuthorization(
 	}
 }
 
-export function printDeviceAuthorizationPrompt(
+function printDeviceAuthorizationPrompt(
 	deviceCode: DeviceAuthCode,
 	log: (message: string) => void = console.log,
 	timeoutMs = DEVICE_AUTH_TIMEOUT_MS,

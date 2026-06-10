@@ -23,12 +23,12 @@ export function tomlStringLiteral(value: string): string {
 	})}"`;
 }
 
-export function readTomlTableName(line: string): string | null {
+function readTomlTableName(line: string): string | null {
 	const match = /^\s*\[{1,2}\s*([^\]]+?)\s*\]{1,2}\s*$/.exec(line);
 	return match?.[1]?.trim() ?? null;
 }
 
-export function removeRuntimeRotationProviderBlock(rawConfig: string): string {
+function removeRuntimeRotationProviderBlock(rawConfig: string): string {
 	const lines = rawConfig.split(/\r?\n/);
 	const output: string[] = [];
 	let skipping = false;
@@ -50,7 +50,7 @@ export function removeRuntimeRotationProviderBlock(rawConfig: string): string {
 	return output.join(rawConfig.includes("\r\n") ? "\r\n" : "\n");
 }
 
-export function rewriteTopLevelModelProvider(rawConfig: string): string {
+function rewriteTopLevelModelProvider(rawConfig: string): string {
 	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
 	const lines = rawConfig.length > 0 ? rawConfig.split(/\r?\n/) : [];
 	const rewrittenLine = `model_provider = ${tomlStringLiteral(RUNTIME_ROTATION_PROXY_PROVIDER_ID)}`;
@@ -75,7 +75,7 @@ export function rewriteTopLevelModelProvider(rawConfig: string): string {
 	return output.join(lineEnding);
 }
 
-export function enableTopLevelResponseStorage(rawConfig: string): string {
+function enableTopLevelResponseStorage(rawConfig: string): string {
 	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
 	const lines = rawConfig.length > 0 ? rawConfig.split(/\r?\n/) : [];
 	const output: string[] = [];
@@ -206,11 +206,11 @@ export function restoreTopLevelResponseStorage(
 	return output.join(lineEnding);
 }
 
-export function ensureTomlTrailingNewline(value: string): string {
+function ensureTomlTrailingNewline(value: string): string {
 	return value.replace(/[\r\n]*$/, "\n");
 }
 
-export function createRuntimeRotationProviderBlock(
+function createRuntimeRotationProviderBlock(
 	baseUrl: string,
 	clientApiKey = "",
 ): string[] {

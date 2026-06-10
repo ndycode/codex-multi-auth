@@ -46,8 +46,6 @@ export interface DashboardDisplaySettings {
 
 export type DashboardStatuslineField = "last-used" | "limits" | "status";
 
-export const DASHBOARD_DISPLAY_SETTINGS_VERSION = 1 as const;
-
 export const DEFAULT_DASHBOARD_DISPLAY_SETTINGS: DashboardDisplaySettings = {
 	showPerAccountRows: true,
 	showQuotaDetails: true,

@@ -90,7 +90,7 @@ export type PluginConfigFromSchema = z.infer<typeof PluginConfigSchema>;
 /**
  * Source of the accountId used for ChatGPT requests.
  */
-export const AccountIdSourceSchema = z.enum([
+const AccountIdSourceSchema = z.enum([
 	"token",
 	"id_token",
 	"org",
@@ -102,7 +102,7 @@ export type AccountIdSourceFromSchema = z.infer<typeof AccountIdSourceSchema>;
 /**
  * Cooldown reason for temporary account suspension.
  */
-export const CooldownReasonSchema = z.enum([
+const CooldownReasonSchema = z.enum([
 	"auth-failure",
 	"network-error",
 	"server-error",
@@ -114,7 +114,7 @@ export type CooldownReasonFromSchema = z.infer<typeof CooldownReasonSchema>;
 /**
  * Last switch reason for account rotation tracking.
  */
-export const SwitchReasonSchema = z.enum([
+const SwitchReasonSchema = z.enum([
 	"rate-limit",
 	"initial",
 	"rotation",
@@ -142,7 +142,7 @@ export type PersistedSwitchReason = z.infer<typeof PersistedSwitchReasonSchema>;
 /**
  * Rate limit state - maps model family to reset timestamp.
  */
-export const RateLimitStateV3Schema = z.record(
+const RateLimitStateV3Schema = z.record(
 	z.string(),
 	z.number().optional(),
 );
@@ -155,7 +155,7 @@ export type RateLimitStateV3FromSchema = z.infer<typeof RateLimitStateV3Schema>;
  * business/team workspace), each a distinct quota pool keyed by its org_id
  * (`id`). Mirrors the `Workspace` TS interface in `lib/accounts.ts`. See #491.
  */
-export const WorkspaceSchema = z.object({
+const WorkspaceSchema = z.object({
 	id: z.string(),
 	name: z.string().optional(),
 	enabled: z.boolean(),
@@ -201,7 +201,7 @@ const modelFamilyEntries = MODEL_FAMILIES.map((family) => [
 	family,
 	z.number().optional(),
 ]);
-export const ActiveIndexByFamilySchema = z
+const ActiveIndexByFamilySchema = z
 	.object(
 		Object.fromEntries(modelFamilyEntries) as Record<
 			ModelFamily,
@@ -231,7 +231,7 @@ export type AccountStorageV3FromSchema = z.infer<typeof AccountStorageV3Schema>;
 /**
  * Legacy V1 account metadata for migration support.
  */
-export const AccountMetadataV1Schema = z.object({
+const AccountMetadataV1Schema = z.object({
 	accountId: z.string().optional(),
 	accountIdSource: AccountIdSourceSchema.optional(),
 	accountLabel: z.string().optional(),
@@ -334,7 +334,7 @@ export type AccountsJournalEntryFromSchema = z.infer<
 /**
  * Token failure reason codes.
  */
-export const TokenFailureReasonSchema = z.enum([
+const TokenFailureReasonSchema = z.enum([
 	"http_error",
 	"invalid_response",
 	"network_error",

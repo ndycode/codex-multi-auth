@@ -132,7 +132,7 @@ export interface RepairCommandDeps {
 	) => boolean;
 }
 
-export function printFixUsage(): void {
+function printFixUsage(): void {
 	console.log(
 		[
 			"Usage:",
@@ -152,7 +152,7 @@ export function printFixUsage(): void {
 	);
 }
 
-export function printVerifyFlaggedUsage(): void {
+function printVerifyFlaggedUsage(): void {
 	console.log(
 		[
 			"Usage:",
@@ -170,7 +170,7 @@ export function printVerifyFlaggedUsage(): void {
 	);
 }
 
-export function printDoctorUsage(): void {
+function printDoctorUsage(): void {
 	console.log(
 		[
 			"Usage:",
@@ -235,7 +235,7 @@ export function parseFixArgs(args: string[]): ParsedArgsResult<FixCliOptions> {
 	return { ok: true, options };
 }
 
-export function parseVerifyFlaggedArgs(
+function parseVerifyFlaggedArgs(
 	args: string[],
 ): ParsedArgsResult<VerifyFlaggedCliOptions> {
 	const options: VerifyFlaggedCliOptions = {
@@ -263,7 +263,7 @@ export function parseVerifyFlaggedArgs(
 	return { ok: true, options };
 }
 
-export function parseDoctorArgs(
+function parseDoctorArgs(
 	args: string[],
 ): ParsedArgsResult<DoctorCliOptions> {
 	const options: DoctorCliOptions = { json: false, fix: false, dryRun: false };

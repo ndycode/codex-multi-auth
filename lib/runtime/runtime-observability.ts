@@ -344,7 +344,3 @@ export async function loadPersistedRuntimeObservabilitySnapshot(): Promise<Runti
 	}
 }
 
-export function resetRuntimeObservabilitySnapshotForTests(): void {
-	snapshotState = createDefaultSnapshot();
-	pendingWrite = null;
-}

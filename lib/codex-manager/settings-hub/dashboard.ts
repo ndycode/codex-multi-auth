@@ -42,7 +42,7 @@ import {
 	resolveMenuLayoutMode,
 } from "./shared.js";
 
-export const DASHBOARD_DISPLAY_OPTIONS: DashboardDisplaySettingOption[] = [
+const DASHBOARD_DISPLAY_OPTIONS: DashboardDisplaySettingOption[] = [
 	{
 		key: "menuShowStatusBadge",
 		label: "Show Status Badges",
@@ -95,7 +95,7 @@ export const DASHBOARD_DISPLAY_OPTIONS: DashboardDisplaySettingOption[] = [
 	},
 ];
 
-export const STATUSLINE_FIELD_OPTIONS: Array<{
+const STATUSLINE_FIELD_OPTIONS: Array<{
 	key: DashboardStatuslineField;
 	label: string;
 	description: string;
@@ -117,21 +117,21 @@ export const STATUSLINE_FIELD_OPTIONS: Array<{
 	},
 ];
 
-export const AUTO_RETURN_OPTIONS_MS = [1_000, 2_000, 4_000] as const;
-export const MENU_QUOTA_TTL_OPTIONS_MS = [
+const AUTO_RETURN_OPTIONS_MS = [1_000, 2_000, 4_000] as const;
+const MENU_QUOTA_TTL_OPTIONS_MS = [
 	60_000,
 	5 * 60_000,
 	10 * 60_000,
 ] as const;
-export const THEME_PRESET_OPTIONS: DashboardThemePreset[] = ["green", "blue"];
-export const ACCENT_COLOR_OPTIONS: DashboardAccentColor[] = [
+const THEME_PRESET_OPTIONS: DashboardThemePreset[] = ["green", "blue"];
+const ACCENT_COLOR_OPTIONS: DashboardAccentColor[] = [
 	"green",
 	"cyan",
 	"blue",
 	"yellow",
 ];
 
-export const ACCOUNT_LIST_PANEL_KEYS = [
+const ACCOUNT_LIST_PANEL_KEYS = [
 	"menuShowStatusBadge",
 	"menuShowCurrentBadge",
 	"menuShowLastUsed",
@@ -147,7 +147,7 @@ export const ACCOUNT_LIST_PANEL_KEYS = [
 	"menuLayoutMode",
 ] as const satisfies readonly DashboardSettingKey[];
 
-export const STATUSLINE_PANEL_KEYS = [
+const STATUSLINE_PANEL_KEYS = [
 	"menuStatuslineFields",
 ] as const satisfies readonly DashboardSettingKey[];
 export const BEHAVIOR_PANEL_KEYS = [
