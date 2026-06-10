@@ -4,7 +4,7 @@ import type { UI_COPY } from "../ui/ui-copy.js";
 import { getUiRuntimeOptions } from "../ui/runtime.js";
 import { type MenuItem, select } from "../ui/select.js";
 
-export type BehaviorConfigAction =
+type BehaviorConfigAction =
 	| { type: "set-delay"; delayMs: number }
 	| { type: "toggle-pause" }
 	| { type: "toggle-menu-limit-fetch" }

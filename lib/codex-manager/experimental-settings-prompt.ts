@@ -21,7 +21,7 @@ import type {
 	mapExperimentalStatusHotkey,
 } from "./experimental-settings-schema.js";
 
-export type ExperimentalSettingsCopy = {
+type ExperimentalSettingsCopy = {
 	experimentalSync: string;
 	experimentalBackup: string;
 	experimentalRefreshGuard: string;

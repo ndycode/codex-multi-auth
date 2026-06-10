@@ -130,7 +130,7 @@ export function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
 	return { ok: true, options };
 }
 
-export interface BestCliOptions {
+interface BestCliOptions {
 	live: boolean;
 	json: boolean;
 	model: string;

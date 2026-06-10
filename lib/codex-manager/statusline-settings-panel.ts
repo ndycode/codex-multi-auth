@@ -7,7 +7,7 @@ import type { UI_COPY } from "../ui/ui-copy.js";
 import { getUiRuntimeOptions } from "../ui/runtime.js";
 import { type MenuItem, select } from "../ui/select.js";
 
-export type StatuslineConfigAction =
+type StatuslineConfigAction =
 	| { type: "toggle"; key: DashboardStatuslineField }
 	| { type: "move-up"; key: DashboardStatuslineField }
 	| { type: "move-down"; key: DashboardStatuslineField }
@@ -15,7 +15,7 @@ export type StatuslineConfigAction =
 	| { type: "save" }
 	| { type: "cancel" };
 
-export interface StatuslineFieldOption {
+interface StatuslineFieldOption {
 	key: DashboardStatuslineField;
 	label: string;
 	description: string;

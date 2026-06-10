@@ -12,8 +12,8 @@ import {
 export type DashboardThemePreset = "green" | "blue";
 export type DashboardAccentColor = "green" | "cyan" | "blue" | "yellow";
 export type DashboardAccountSortMode = "manual" | "ready-first";
-export type DashboardLayoutMode = "compact-details" | "expanded-rows";
-export type DashboardFocusStyle = "row-invert";
+type DashboardLayoutMode = "compact-details" | "expanded-rows";
+type DashboardFocusStyle = "row-invert";
 
 export interface DashboardDisplaySettings {
 	showPerAccountRows: boolean;

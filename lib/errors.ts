@@ -16,8 +16,6 @@ export const ErrorCode = {
 	CODEX_UNAVAILABLE: "CODEX_UNAVAILABLE",
 } as const;
 
-export type ErrorCodeType = (typeof ErrorCode)[keyof typeof ErrorCode];
-
 /**
  * Options for creating a CodexError.
  */

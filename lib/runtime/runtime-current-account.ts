@@ -8,12 +8,12 @@ import { getCodexMultiAuthDir } from "../runtime-paths.js";
 import type { AccountStorageV3 } from "../storage.js";
 import { isRecord } from "../utils.js";
 
-export type RuntimeCurrentAccountSource =
+type RuntimeCurrentAccountSource =
 	| "runtime-observability"
 	| "app-bind"
 	| "app-helper";
 
-export type RuntimeCurrentAccountMatch = "account-id" | "email" | "index";
+type RuntimeCurrentAccountMatch = "account-id" | "email" | "index";
 
 export type AccountCurrentMarker = "current" | "in-use" | "selected";
 
