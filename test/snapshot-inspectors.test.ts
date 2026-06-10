@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { describeAccountsWalSnapshot } from "../lib/storage/snapshot-inspectors.js";
 import type { SnapshotStats } from "../lib/storage/backup-metadata.js";
+import { isRecord } from "../lib/utils.js";
 
 type WalDeps = Parameters<typeof describeAccountsWalSnapshot>[1];
 
@@ -36,7 +37,7 @@ function createDeps(overrides: Partial<WalDeps> = {}): WalDeps {
 		readFile: vi.fn(async () =>
 			makeJournalEntry(makeInnerStorage()),
 		) as unknown as WalDeps["readFile"],
-		isRecord: (value: unknown) => typeof value === "object" && value !== null,
+		isRecord,
 		computeSha256: fakeSha256,
 		parseAndNormalizeStorage: vi.fn((data: unknown) => ({
 			normalized: { accounts: (data as { accounts: unknown[] }).accounts },
