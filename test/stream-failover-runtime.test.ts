@@ -96,6 +96,19 @@ describe("responseHeadersForClient", () => {
 		});
 	});
 
+	it("blocks any header under the private account prefix, not just known names", () => {
+		// Regression: the filter used to be an exact-name allowlist, so a future
+		// x-codex-multi-auth-account-* header would have leaked by default.
+		const upstream = new Headers({
+			"content-type": "application/json",
+			"x-codex-multi-auth-account-plan": "pro",
+			"X-Codex-Multi-Auth-Account-Future-Field": "secret",
+		});
+		expect(responseHeadersForClient(upstream)).toEqual({
+			"content-type": "application/json",
+		});
+	});
+
 	it("covers every hop-by-hop header in the exported set", () => {
 		const upstream = new Headers();
 		for (const name of HOP_BY_HOP_HEADERS) {

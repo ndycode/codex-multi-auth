@@ -13,12 +13,11 @@ export const HOP_BY_HOP_HEADERS = new Set([
 	"transfer-encoding",
 	"upgrade",
 ]);
-const PRIVATE_CLIENT_RESPONSE_HEADERS = new Set([
-	"x-codex-multi-auth-account-index",
-	"x-codex-multi-auth-account-label",
-	"x-codex-multi-auth-account-email",
-	"x-codex-multi-auth-account-id",
-]);
+// Any header under this prefix carries account-identifying rotation metadata
+// (index/label/email/id today) and must never reach the client; matching by
+// prefix means a future header added under it is blocked by default instead
+// of leaking until someone remembers to extend an allowlist.
+const PRIVATE_CLIENT_RESPONSE_HEADER_PREFIX = "x-codex-multi-auth-account-";
 const DECODED_UPSTREAM_RESPONSE_HEADERS = new Set([
 	// Node fetch returns decoded bytes while preserving the upstream encoding header.
 	"content-encoding",
@@ -29,7 +28,7 @@ export function responseHeadersForClient(upstreamHeaders: Headers): Record<strin
 	for (const [key, value] of upstreamHeaders.entries()) {
 		const normalizedKey = key.toLowerCase();
 		if (HOP_BY_HOP_HEADERS.has(normalizedKey)) continue;
-		if (PRIVATE_CLIENT_RESPONSE_HEADERS.has(normalizedKey)) continue;
+		if (normalizedKey.startsWith(PRIVATE_CLIENT_RESPONSE_HEADER_PREFIX)) continue;
 		if (DECODED_UPSTREAM_RESPONSE_HEADERS.has(normalizedKey)) continue;
 		headers[key] = value;
 	}

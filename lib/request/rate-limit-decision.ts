@@ -195,9 +195,14 @@ export function buildPinnedUnavailableErrorBody(
 			? accountSkipReasons.get(normalizedPinnedIndex) ?? null
 			: null;
 	const reasonSuffix = skipReason ? ` (${skipReason})` : "";
-	const displayIndex = (normalizedPinnedIndex ?? 0) + 1;
+	// On the desync path the pin index is unknown (null); claiming "account 1"
+	// there would contradict the machine-readable pinnedAccountIndex: null.
+	const accountPhrase =
+		normalizedPinnedIndex === null
+			? "The pinned account"
+			: `Pinned account ${normalizedPinnedIndex + 1}`;
 	return {
-		message: `Pinned account ${displayIndex} is currently unavailable${reasonSuffix}; run \`codex-multi-auth status\` for details, or \`codex-multi-auth unpin\` to allow rotation.`,
+		message: `${accountPhrase} is currently unavailable${reasonSuffix}; run \`codex-multi-auth status\` for details, or \`codex-multi-auth unpin\` to allow rotation.`,
 		code: "codex_pinned_account_unavailable",
 		pinnedAccountIndex: normalizedPinnedIndex,
 		reason: skipReason,

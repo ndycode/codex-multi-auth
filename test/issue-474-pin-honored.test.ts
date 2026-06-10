@@ -719,7 +719,10 @@ describe("issue #474 — manual pin honored by runtime proxy", () => {
 			);
 			expect(body.pinnedAccountIndex).toBeNull();
 			expect(body.reason).toBeNull();
-			expect(body.message).toContain("Pinned account 1");
+			// The desync path must not fabricate an index that contradicts the
+			// machine-readable pinnedAccountIndex: null.
+			expect(body.message).toContain("The pinned account is currently unavailable;");
+			expect(body.message).not.toContain("Pinned account 1");
 		});
 
 		it("mirrors the full accountSkipReasons map even when the pinned entry is unknown", () => {
