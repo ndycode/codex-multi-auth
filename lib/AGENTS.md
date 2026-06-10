@@ -27,7 +27,6 @@ lib/
 │   ├── config-toml.ts             # provider config rewrite helpers
 │   ├── runtime-observability.ts   # persisted runtime counters
 │   ├── live-sync.ts               # runtime account sync
-│   ├── session-affinity.ts        # runtime session stickiness entrypoints
 │   ├── quota-probe.ts             # live quota probes
 │   └── ...                        # account status, app/server helpers, UI runtime support
 ├── runtime-rotation-proxy.ts      # loopback Responses/model proxy with account rotation
