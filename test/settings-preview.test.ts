@@ -19,10 +19,13 @@ function summary(
 	return buildSummaryPreviewText(settings, UI, resolveMenuLayoutMode, focus);
 }
 
+// Mutates process-global state: the TTY-sensitive tests below rely on the
+// suite running sequentially (vitest's default); do not mark them concurrent.
 function setStdoutTty(value: boolean | undefined): () => void {
 	const original = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 	Object.defineProperty(process.stdout, "isTTY", {
 		value,
+		writable: true,
 		configurable: true,
 	});
 	return () => {
@@ -37,9 +40,9 @@ function setStdoutTty(value: boolean | undefined): () => void {
 describe("settings preview builders", () => {
 	describe("normalizeStatuslineFields", () => {
 		it("falls back to the documented defaults for undefined and empty input", () => {
-			expect(normalizeStatuslineFields(undefined)).toStrictEqual(
-				DEFAULT_STATUSLINE_FIELDS,
-			);
+			const fromUndefined = normalizeStatuslineFields(undefined);
+			expect(fromUndefined).toStrictEqual(DEFAULT_STATUSLINE_FIELDS);
+			expect(fromUndefined).not.toBe(DEFAULT_STATUSLINE_FIELDS);
 			const fromEmpty = normalizeStatuslineFields([]);
 			expect(fromEmpty).toStrictEqual(DEFAULT_STATUSLINE_FIELDS);
 			// Defensive copy: mutating the result must not corrupt the defaults.
