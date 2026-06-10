@@ -3,6 +3,7 @@ import { type CodexQuotaSnapshot, describeCodexProbeFailure } from "../../quota-
 import { DEFAULT_MODEL, resolveNormalizedModel } from "../../request/helpers/model-map.js";
 import type { AccountStorageV3 } from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
+import { DEFAULT_LIVE_PROBE_MODEL } from "../quota-cache-helpers.js";
 
 export interface BestCliOptions {
 	live: boolean;
@@ -14,6 +15,74 @@ export interface BestCliOptions {
 type ParsedArgsResult<T> =
 	| { ok: true; options: T }
 	| { ok: false; message: string };
+
+/**
+ * Usage text and argument parsing for `best`. Previously module-private in
+ * lib/codex-manager.ts and injected into {@link runBestCommand}; moved here so
+ * the command owns its CLI surface (audit roadmap §4.1.1 phase 3). Still
+ * injected through {@link BestCommandDeps} by the dispatcher, unchanged.
+ */
+export function printBestUsage(): void {
+	console.log(
+		[
+			"Usage:",
+			"  codex-multi-auth best [--live] [--json] [--model <model>]",
+			"",
+			"Options:",
+			"  --live, -l         Probe live quota headers via Codex backend before switching",
+			"  --json, -j         Print machine-readable JSON output",
+			`  --model, -m        Probe model for live mode (default: ${DEFAULT_LIVE_PROBE_MODEL})`,
+			"",
+			"Behavior:",
+			"  - Chooses the healthiest account using forecast scoring",
+			"  - Switches to the recommended account when it is not already active",
+		].join("\n"),
+	);
+}
+
+export function parseBestArgs(args: string[]): ParsedArgsResult<BestCliOptions> {
+	const options: BestCliOptions = {
+		live: false,
+		json: false,
+		model: DEFAULT_LIVE_PROBE_MODEL,
+		modelProvided: false,
+	};
+
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i];
+		if (!arg) continue;
+		if (arg === "--live" || arg === "-l") {
+			options.live = true;
+			continue;
+		}
+		if (arg === "--json" || arg === "-j") {
+			options.json = true;
+			continue;
+		}
+		if (arg === "--model" || arg === "-m") {
+			const value = args[i + 1]?.trim();
+			if (!value || value.startsWith("-")) {
+				return { ok: false, message: "Missing value for --model" };
+			}
+			options.model = value;
+			options.modelProvided = true;
+			i += 1;
+			continue;
+		}
+		if (arg.startsWith("--model=")) {
+			const value = arg.slice("--model=".length).trim();
+			if (!value || value.startsWith("-")) {
+				return { ok: false, message: "Missing value for --model" };
+			}
+			options.model = value;
+			options.modelProvided = true;
+			continue;
+		}
+		return { ok: false, message: `Unknown option: ${arg}` };
+	}
+
+	return { ok: true, options };
+}
 
 export interface BestCommandDeps {
 	setStoragePath: (path: string | null) => void;

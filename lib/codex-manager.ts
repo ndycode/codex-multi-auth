@@ -9,7 +9,6 @@ import {
 	resolveRequestAccountId,
 	sanitizeEmail,
 	selectBestAccountCandidate,
-	shouldUpdateAccountIdFromToken,
 	type Workspace,
 } from "./accounts.js";
 import {
@@ -26,17 +25,35 @@ import {
 	openBrowserUrl,
 } from "./auth/browser.js";
 import { startLocalOAuthServer } from "./auth/server.js";
-import {
-	type ExistingAccountInfo,
-	promptAddAnotherAccount,
-	promptLoginMode,
-} from "./cli.js";
+import { promptAddAnotherAccount, promptLoginMode } from "./cli.js";
 import { loadCodexCliState } from "./codex-cli/state.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 import {
-	type BestCliOptions,
+	parseBestArgs,
+	printBestUsage,
 	runBestCommand,
 } from "./codex-manager/commands/best.js";
+import {
+	applyTokenAccountIdentity,
+	hasLikelyInvalidRefreshToken,
+	hasUsableAccessToken,
+	resolveStoredAccountIdentity,
+} from "./codex-manager/account-credentials.js";
+import { runHealthCheck } from "./codex-manager/health-check.js";
+import {
+	countMenuQuotaRefreshTargets,
+	DEFAULT_MENU_QUOTA_REFRESH_TTL_MS,
+	loadRuntimeCurrentSelectionForStorage,
+	refreshQuotaCacheForMenu,
+	syncCodexCliActiveSelectionIfDrifted,
+	toExistingAccountInfo,
+} from "./codex-manager/login-menu-data.js";
+import { persistAndSyncSelectedAccount } from "./codex-manager/persist-selected-account.js";
+import {
+	cloneQuotaCacheData,
+	pruneUnsafeQuotaEmailCacheEntry,
+	updateQuotaCacheForAccount,
+} from "./codex-manager/quota-cache-helpers.js";
 import { runAccountCommand } from "./codex-manager/commands/account.js";
 import { ACCOUNT_MANAGER_COMMANDS } from "./codex-manager/account-manager-commands.js";
 import {
@@ -55,7 +72,6 @@ import { runIntegrationsCommand } from "./codex-manager/commands/integrations.js
 import { runModelsCommand } from "./codex-manager/commands/models.js";
 import { runMonitorCommand } from "./codex-manager/commands/monitor.js";
 import { runConfigExplainCommand } from "./codex-manager/commands/config-explain.js";
-import { saveAccountsWithRetry } from "./codex-manager/forecast-report-shared.js";
 import { runDebugBundleCommand } from "./codex-manager/commands/debug-bundle.js";
 import {
 	parseWhySelectedArgs,
@@ -107,9 +123,21 @@ import {
 	printUsage,
 } from "./codex-manager/help.js";
 import {
+	availabilityTone,
+	formatBackupSavedAt,
+	formatCompactQuotaSnapshot,
+	formatRateLimitEntry,
+	formatResultSummary,
+	normalizeFailureDetail,
+	riskTone,
+	stringifyLogArgs,
+	styleAccountDetailText,
+	stylePromptText,
+	styleQuotaSummary,
+} from "./codex-manager/formatters/index.js";
+import {
 	applyUiThemeFromDashboardSettings,
 	configureUnifiedSettings,
-	resolveMenuLayoutMode,
 } from "./codex-manager/settings-hub.js";
 import {
 	getCodexRuntimeRotationProxy,
@@ -122,62 +150,27 @@ import {
 	getAppBindStatus,
 	unbindCodexAppRuntimeRotation,
 } from "./runtime/app-bind.js";
-import { ensureFirstRunSetup } from "./runtime/first-run.js";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import {
-	type DashboardAccountSortMode,
 	type DashboardDisplaySettings,
 	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
 	loadDashboardDisplaySettings,
 } from "./dashboard-settings.js";
 import {
 	evaluateForecastAccounts,
-	type ForecastAccountResult,
 	recommendForecastAccount,
 	summarizeForecast,
 } from "./forecast.js";
 import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
+import { resolveActiveIndex } from "./runtime/account-status.js";
+import { buildQuotaEmailFallbackState } from "./quota-readiness.js";
+import { loadQuotaCache, saveQuotaCache } from "./quota-cache.js";
+import { readAppRuntimeHelperAccountSignal } from "./runtime/runtime-current-account.js";
 import {
-	DEFAULT_MODEL,
-	getModelCapabilities,
-	getModelProfile,
-	resolveNormalizedModel,
-} from "./request/helpers/model-map.js";
-import {
-	formatRateLimitEntry as formatAccountRateLimitEntry,
-	getRateLimitResetTimeForFamily,
-	resolveActiveIndex,
-} from "./runtime/account-status.js";
-import {
-	buildQuotaEmailFallbackState,
-	hasSafeQuotaEmailFallback,
-	hasUniqueQuotaAccountId,
-	isQuotaCacheEntryExhausted,
-	normalizeQuotaAccountId,
-	normalizeQuotaEmail,
-	quotaLeftPercentFromUsed,
-} from "./quota-readiness.js";
-import {
-	loadQuotaCache,
-	type QuotaCacheData,
-	type QuotaCacheEntry,
-	saveQuotaCache,
-} from "./quota-cache.js";
-import {
-	isDisplayCurrentAccount,
-	readAppRuntimeHelperAccountSignal,
-	resolveAccountCurrentMarkers,
-	resolveRuntimeCurrentAccount,
-	type RuntimeCurrentAccountSelection,
-} from "./runtime/runtime-current-account.js";
-import {
-	type CodexQuotaSnapshot,
 	fetchCodexQuotaSnapshot,
 	formatQuotaSnapshotLine,
-	CODEX_UNAVAILABLE_PROBE_NOTE,
 } from "./quota-probe.js";
-import { isCodexUnavailableError } from "./errors.js";
 import { queuedRefresh } from "./refresh-queue.js";
 import {
 	type AccountMetadataV3,
@@ -192,19 +185,16 @@ import {
 	loadAccounts,
 	loadFlaggedAccounts,
 	type NamedBackupSummary,
-	readAffinityGenerationFromDisk,
 	restoreAccountsFromBackup,
 	StorageError,
 	saveAccounts,
 	setStoragePath,
 	withAccountStorageTransaction,
 } from "./storage.js";
-import type { PersistedSwitchReason } from "./schemas.js";
 import type { AccountIdSource, TokenResult } from "./types.js";
 import { ANSI } from "./ui/ansi.js";
 import { confirm } from "./ui/confirm.js";
 import { UI_COPY } from "./ui/ui-copy.js";
-import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
 import { getUiRuntimeOptions } from "./ui/runtime.js";
 import { type MenuItem, select } from "./ui/select.js";
 
@@ -215,150 +205,12 @@ type TokenSuccessWithAccount = TokenSuccess & {
 	accountLabel?: string;
 	workspaces?: Workspace[];
 };
-type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
+// Formatter implementations moved to lib/codex-manager/formatters/ (audit
+// roadmap §4.1.1 phase 1). Re-exported here so existing consumers importing
+// from lib/codex-manager.js keep working unchanged.
+export { formatBackupSavedAt, styleAccountDetailText };
+
 const log = createLogger("codex-manager");
-
-interface ModelInspection {
-	requested: string;
-	normalized: string;
-	remapped: boolean;
-	promptFamily: ModelFamily;
-	capabilities: ReturnType<typeof getModelCapabilities>;
-}
-
-function stylePromptText(text: string, tone: PromptTone): string {
-	if (!output.isTTY) return text;
-	const ui = getUiRuntimeOptions();
-	if (ui.v2Enabled) {
-		if (tone === "muted") {
-			return `${ui.theme.colors.dim}${paintUiText(ui, text, "muted")}${ui.theme.colors.reset}`;
-		}
-		const mapped = tone === "accent" ? "primary" : tone;
-		return paintUiText(ui, text, mapped);
-	}
-	const legacyCode =
-		tone === "accent"
-			? ANSI.green
-			: tone === "success"
-				? ANSI.green
-				: tone === "warning"
-					? ANSI.yellow
-					: tone === "danger"
-						? ANSI.red
-						: ANSI.dim;
-	return `${legacyCode}${text}${ANSI.reset}`;
-}
-
-function inspectRequestedModel(requestedModel: string): ModelInspection {
-	const normalized = resolveNormalizedModel(requestedModel);
-	const profile = getModelProfile(normalized);
-	return {
-		requested: requestedModel,
-		normalized,
-		remapped: requestedModel !== normalized,
-		promptFamily: profile.promptFamily,
-		capabilities: getModelCapabilities(normalized),
-	};
-}
-
-function formatModelInspection(model: ModelInspection): string {
-	const route = model.remapped
-		? `${model.requested} -> ${model.normalized}`
-		: model.normalized;
-	return [
-		route,
-		`prompt family ${model.promptFamily}`,
-		`tool search ${model.capabilities.toolSearch ? "yes" : "no"}`,
-		`computer use ${model.capabilities.computerUse ? "yes" : "no"}`,
-	].join(" | ");
-}
-
-function collapseWhitespace(value: string): string {
-	return value.replace(/\s+/g, " ").trim();
-}
-
-function formatReasonLabel(reason: string | undefined): string | undefined {
-	if (!reason) return undefined;
-	const normalized = collapseWhitespace(reason.replace(/_/g, " "));
-	return normalized.length > 0 ? normalized : undefined;
-}
-
-function extractErrorMessageFromPayload(payload: unknown): string | undefined {
-	if (!payload || typeof payload !== "object") return undefined;
-	const record = payload as Record<string, unknown>;
-
-	const directMessage =
-		typeof record.message === "string"
-			? collapseWhitespace(record.message)
-			: "";
-	const directCode =
-		typeof record.code === "string" ? collapseWhitespace(record.code) : "";
-	if (directMessage) {
-		if (
-			directCode &&
-			!directMessage.toLowerCase().includes(directCode.toLowerCase())
-		) {
-			return `${directMessage} [${directCode}]`;
-		}
-		return directMessage;
-	}
-
-	const nested = record.error;
-	if (nested && typeof nested === "object") {
-		return extractErrorMessageFromPayload(nested);
-	}
-	return undefined;
-}
-
-function parseStructuredErrorMessage(raw: string): string | undefined {
-	const trimmed = raw.trim();
-	if (!trimmed) return undefined;
-	const candidates = new Set<string>([trimmed]);
-	const firstBrace = trimmed.indexOf("{");
-	const lastBrace = trimmed.lastIndexOf("}");
-	if (firstBrace >= 0 && lastBrace > firstBrace) {
-		candidates.add(trimmed.slice(firstBrace, lastBrace + 1));
-	}
-
-	for (const candidate of candidates) {
-		try {
-			const parsed = JSON.parse(candidate) as unknown;
-			const message = extractErrorMessageFromPayload(parsed);
-			if (message) return message;
-		} catch {
-			// ignore non-JSON candidates
-		}
-	}
-	return undefined;
-}
-
-function normalizeFailureDetail(
-	message: string | undefined,
-	reason: string | undefined,
-): string {
-	const reasonLabel = formatReasonLabel(reason);
-	const raw = message?.trim() || reasonLabel || "refresh failed";
-	const structured = parseStructuredErrorMessage(raw);
-	const normalized = collapseWhitespace(structured ?? raw);
-	const bounded =
-		normalized.length > 260 ? `${normalized.slice(0, 257)}...` : normalized;
-	return bounded.length > 0 ? bounded : "refresh failed";
-}
-
-function joinStyledSegments(parts: string[]): string {
-	if (parts.length === 0) return "";
-	const separator = stylePromptText(" | ", "muted");
-	return parts.join(separator);
-}
-
-function formatResultSummary(
-	segments: ReadonlyArray<{ text: string; tone: PromptTone }>,
-): string {
-	const rendered = segments.map((segment) =>
-		stylePromptText(segment.text, segment.tone),
-	);
-	return `${stylePromptText("Result:", "accent")} ${joinStyledSegments(rendered)}`;
-}
 
 function createRepairCommandDeps(): RepairCommandDeps {
 	return {
@@ -384,113 +236,6 @@ function isOAuthCancellation(
 ): boolean {
 	const message = (result.message ?? result.reason ?? "").trim().toLowerCase();
 	return message.includes("cancelled") || message.includes("canceled");
-}
-
-function styleQuotaSummary(summary: string): string {
-	const normalized = collapseWhitespace(summary);
-	if (!normalized) return stylePromptText(summary, "muted");
-	const segments = normalized
-		.split("|")
-		.map((segment) => segment.trim())
-		.filter(Boolean);
-	if (segments.length === 0) return stylePromptText(normalized, "muted");
-
-	const rendered = segments.map((segment) => {
-		if (/rate-limited/i.test(segment)) {
-			return stylePromptText(segment, "danger");
-		}
-		const match = segment.match(/^([0-9a-zA-Z]+)\s+(\d{1,3})%$/);
-		if (!match) {
-			return stylePromptText(segment, "muted");
-		}
-		const windowLabel = match[1] ?? "";
-		const leftPercent = Math.max(
-			0,
-			Math.min(100, Number.parseInt(match[2] ?? "", 10)),
-		);
-		if (!Number.isFinite(leftPercent)) {
-			return stylePromptText(segment, "muted");
-		}
-		const tone = quotaToneFromLeftPercent(leftPercent);
-		return `${stylePromptText(windowLabel, "muted")} ${stylePromptText(`${leftPercent}%`, tone)}`;
-	});
-
-	return joinStyledSegments(rendered);
-}
-
-// Exported for unit tests: tone precedence (danger before warning) is
-// security/UX-relevant — a failure whose text contains "unavailable" must
-// render red, not be downgraded to yellow. See test/codex-manager-detail-tone.test.ts.
-export function styleAccountDetailText(
-	detail: string,
-	fallbackTone: PromptTone = "muted",
-): string {
-	const compact = collapseWhitespace(detail);
-	if (!compact) return stylePromptText("", fallbackTone);
-
-	const quotaMatch = compact.match(/^(.*?)\(([^()]*\d{1,3}%[^()]*)\)(.*)$/);
-	if (quotaMatch) {
-		const prefix = (quotaMatch[1] ?? "").trim();
-		const quota = (quotaMatch[2] ?? "").trim();
-		const suffix = (quotaMatch[3] ?? "").trim();
-
-		// danger wins across the WHOLE detail: a failure keyword anywhere — even
-		// trapped inside the (…%) quota segment, e.g.
-		// "signed in and working (live check failed: … 0%)" — must keep the prefix
-		// red, never let a "working"/"ok" prefix render green over a real failure.
-		const detailHasFailure = /failed|error|rate-limited/i.test(compact);
-		const prefixTone: PromptTone = detailHasFailure
-			? "danger"
-			: /\b(ok|working|succeeded|valid)\b/i.test(prefix)
-				? "success"
-				: fallbackTone;
-		const suffixTone: PromptTone =
-			// danger wins first: a real failure whose text happens to contain
-			// "unavailable"/"not available" (e.g. a 5xx "service not available")
-			// must render red, not be downgraded to a yellow warning.
-			/failed|error/i.test(suffix)
-				? "danger"
-				: /re-login|stale|warning|retry|fallback|unavailable|not available/i.test(suffix)
-					? "warning"
-					: "muted";
-
-		const chunks: string[] = [];
-		if (prefix) chunks.push(stylePromptText(prefix, prefixTone));
-		chunks.push(`(${styleQuotaSummary(quota)})`);
-		if (suffix) chunks.push(stylePromptText(suffix, suffixTone));
-		return chunks.join(" ");
-	}
-
-	if (/rate-limited/i.test(compact)) return stylePromptText(compact, "danger");
-	if (/failed|error/i.test(compact)) return stylePromptText(compact, "danger");
-	if (/re-login|stale|warning|fallback|unavailable|not available/i.test(compact))
-		return stylePromptText(compact, "warning");
-	if (/\b(ok|working|succeeded|valid)\b/i.test(compact))
-		return stylePromptText(compact, "success");
-	return stylePromptText(compact, fallbackTone);
-}
-
-function riskTone(
-	level: ForecastAccountResult["riskLevel"],
-): "success" | "warning" | "danger" {
-	if (level === "low") return "success";
-	if (level === "medium") return "warning";
-	return "danger";
-}
-
-function availabilityTone(
-	availability: ForecastAccountResult["availability"],
-): "success" | "warning" | "danger" {
-	if (availability === "ready") return "success";
-	if (availability === "delayed") return "warning";
-	return "danger";
-}
-function formatQuotaSnapshotForDashboard(
-	snapshot: Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>,
-	settings: DashboardDisplaySettings,
-): string {
-	if (!settings.showQuotaDetails) return "live session OK";
-	return `live session OK (${formatCompactQuotaSnapshot(snapshot)})`;
 }
 
 function isAbortError(error: unknown): boolean {
@@ -547,745 +292,6 @@ const IMPLEMENTED_FEATURES: ImplementedFeature[] = [
 	{ id: 40, name: "OAuth browser-first flow with manual callback fallback" },
 	{ id: 41, name: "Auto-switch to best account command" },
 ];
-
-function formatRateLimitEntry(
-	account: { rateLimitResetTimes?: Record<string, number | undefined> },
-	now: number,
-	family: ModelFamily = "codex",
-): string | null {
-	return formatAccountRateLimitEntry(account, now, formatWaitTime, family);
-}
-
-function quotaCacheEntryToSnapshot(entry: QuotaCacheEntry): CodexQuotaSnapshot {
-	return {
-		status: entry.status,
-		planType: entry.planType,
-		model: entry.model,
-		primary: {
-			usedPercent: entry.primary.usedPercent,
-			windowMinutes: entry.primary.windowMinutes,
-			resetAtMs: entry.primary.resetAtMs,
-		},
-		secondary: {
-			usedPercent: entry.secondary.usedPercent,
-			windowMinutes: entry.secondary.windowMinutes,
-			resetAtMs: entry.secondary.resetAtMs,
-		},
-	};
-}
-
-function formatCompactQuotaWindowLabel(
-	windowMinutes: number | undefined,
-): string {
-	if (!windowMinutes || !Number.isFinite(windowMinutes) || windowMinutes <= 0) {
-		return "quota";
-	}
-	if (windowMinutes % 1440 === 0) return `${windowMinutes / 1440}d`;
-	if (windowMinutes % 60 === 0) return `${windowMinutes / 60}h`;
-	return `${windowMinutes}m`;
-}
-
-function formatCompactQuotaPart(
-	windowMinutes: number | undefined,
-	usedPercent: number | undefined,
-): string | null {
-	const label = formatCompactQuotaWindowLabel(windowMinutes);
-	if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) {
-		return null;
-	}
-	const left = quotaLeftPercentFromUsed(usedPercent);
-	return `${label} ${left}%`;
-}
-
-function formatCompactQuotaSnapshot(
-	snapshot: CodexQuotaSnapshot,
-	now = Date.now(),
-): string {
-	const parts = [
-		formatCompactQuotaPart(
-			snapshot.primary.windowMinutes,
-			snapshot.primary.usedPercent,
-		),
-		formatCompactQuotaPart(
-			snapshot.secondary.windowMinutes,
-			snapshot.secondary.usedPercent,
-		),
-	].filter(
-		(value): value is string => typeof value === "string" && value.length > 0,
-	);
-	if (snapshot.status === 429) {
-		parts.push("rate-limited");
-	}
-	if (isQuotaCacheEntryExhausted(snapshot, now)) {
-		parts.push("quota-exhausted");
-	}
-	if (parts.length > 0) {
-		return parts.join(" | ");
-	}
-	return formatQuotaSnapshotLine(snapshot);
-}
-
-function formatAccountQuotaSummary(
-	entry: QuotaCacheEntry,
-	now = Date.now(),
-): string {
-	const parts = [
-		formatCompactQuotaPart(
-			entry.primary.windowMinutes,
-			entry.primary.usedPercent,
-		),
-		formatCompactQuotaPart(
-			entry.secondary.windowMinutes,
-			entry.secondary.usedPercent,
-		),
-	].filter(
-		(value): value is string => typeof value === "string" && value.length > 0,
-	);
-	if (entry.status === 429) {
-		parts.push("rate-limited");
-	}
-	if (isQuotaCacheEntryExhausted(entry, now)) {
-		parts.push("quota-exhausted");
-	}
-	if (parts.length > 0) {
-		return parts.join(" | ");
-	}
-	return formatQuotaSnapshotLine(quotaCacheEntryToSnapshot(entry));
-}
-
-function getQuotaCacheEntryForAccount(
-	cache: QuotaCacheData,
-	account: Pick<AccountMetadataV3, "accountId" | "email">,
-	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
-	emailFallbackState = buildQuotaEmailFallbackState(accounts),
-): QuotaCacheEntry | null {
-	const accountId = normalizeQuotaAccountId(account.accountId);
-	if (
-		accountId &&
-		hasUniqueQuotaAccountId(accounts, account) &&
-		cache.byAccountId[accountId]
-	) {
-		return cache.byAccountId[accountId] ?? null;
-	}
-	const email = normalizeQuotaEmail(account.email);
-	if (
-		email &&
-		hasSafeQuotaEmailFallback(emailFallbackState, account) &&
-		cache.byEmail[email]
-	) {
-		return cache.byEmail[email] ?? null;
-	}
-	return null;
-}
-
-function getPersistedQuotaViewForAccount(
-	cache: QuotaCacheData | null,
-	account: Pick<
-		AccountMetadataV3,
-		"accountId" | "email" | "rateLimitResetTimes"
-	>,
-	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
-	now: number,
-	emailFallbackState = buildQuotaEmailFallbackState(accounts),
-): QuotaCacheEntry | null {
-	const cachedEntry = cache
-		? getQuotaCacheEntryForAccount(cache, account, accounts, emailFallbackState)
-		: null;
-	const persistedResetAt = getRateLimitResetTimeForFamily(
-		account,
-		now,
-		"codex",
-	);
-	if (typeof persistedResetAt !== "number") {
-		return cachedEntry;
-	}
-	const cachedPrimaryResetAt = cachedEntry?.primary.resetAtMs ?? 0;
-	const cachedSecondaryResetAt = cachedEntry?.secondary.resetAtMs ?? 0;
-	if (
-		cachedEntry?.status === 429 &&
-		Math.max(cachedPrimaryResetAt, cachedSecondaryResetAt) >= persistedResetAt
-	) {
-		return cachedEntry;
-	}
-	return {
-		updatedAt: cachedEntry?.updatedAt ?? now,
-		status: 429,
-		model: cachedEntry?.model ?? DEFAULT_MODEL,
-		planType: cachedEntry?.planType,
-		primary: {
-			...cachedEntry?.primary,
-			resetAtMs: Math.max(cachedPrimaryResetAt, persistedResetAt),
-		},
-		secondary: cachedEntry?.secondary ?? {},
-	};
-}
-
-function updateQuotaCacheForAccount(
-	cache: QuotaCacheData,
-	account: Pick<AccountMetadataV3, "accountId" | "email">,
-	snapshot: CodexQuotaSnapshot,
-	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
-	emailFallbackState = buildQuotaEmailFallbackState(accounts),
-): boolean {
-	const nextEntry: QuotaCacheEntry = {
-		updatedAt: Date.now(),
-		status: snapshot.status,
-		model: snapshot.model,
-		planType: snapshot.planType,
-		primary: {
-			usedPercent: snapshot.primary.usedPercent,
-			windowMinutes: snapshot.primary.windowMinutes,
-			resetAtMs: snapshot.primary.resetAtMs,
-		},
-		secondary: {
-			usedPercent: snapshot.secondary.usedPercent,
-			windowMinutes: snapshot.secondary.windowMinutes,
-			resetAtMs: snapshot.secondary.resetAtMs,
-		},
-	};
-
-	let changed = false;
-	const accountId = normalizeQuotaAccountId(account.accountId);
-	const hasUniqueAccountId =
-		accountId !== null && hasUniqueQuotaAccountId(accounts, account);
-	if (hasUniqueAccountId) {
-		cache.byAccountId[accountId] = nextEntry;
-		changed = true;
-	}
-	const email = normalizeQuotaEmail(account.email);
-	if (
-		email &&
-		hasSafeQuotaEmailFallback(emailFallbackState, account) &&
-		!hasUniqueAccountId
-	) {
-		cache.byEmail[email] = nextEntry;
-		changed = true;
-	} else if (email && cache.byEmail[email]) {
-		delete cache.byEmail[email];
-		changed = true;
-	}
-	return changed;
-}
-
-function cloneQuotaCacheData(cache: QuotaCacheData): QuotaCacheData {
-	// Shallow spreading is safe because quota cache entries are always replaced,
-	// never mutated in-place.
-	return {
-		byAccountId: { ...cache.byAccountId },
-		byEmail: { ...cache.byEmail },
-	};
-}
-
-function pruneUnsafeQuotaEmailCacheEntry(
-	cache: QuotaCacheData,
-	email: string | undefined,
-	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
-	emailFallbackState = buildQuotaEmailFallbackState(accounts),
-): boolean {
-	const normalizedEmail = normalizeQuotaEmail(email);
-	if (!normalizedEmail || !cache.byEmail[normalizedEmail]) {
-		return false;
-	}
-	const hasSafeFallbackAccount = accounts.some(
-		(account) =>
-			normalizeQuotaEmail(account.email) === normalizedEmail &&
-			hasSafeQuotaEmailFallback(emailFallbackState, account),
-	);
-	if (hasSafeFallbackAccount) {
-		return false;
-	}
-	delete cache.byEmail[normalizedEmail];
-	return true;
-}
-
-const DEFAULT_MENU_QUOTA_REFRESH_TTL_MS = 5 * 60_000;
-const DEFAULT_LIVE_PROBE_MODEL = DEFAULT_MODEL;
-const MENU_QUOTA_REFRESH_MODEL = DEFAULT_LIVE_PROBE_MODEL;
-
-interface MenuQuotaProbeTarget {
-	account: AccountMetadataV3;
-	accountId: string;
-	accessToken: string;
-}
-
-function resolveMenuQuotaProbeInput(
-	account: AccountMetadataV3,
-	cache: QuotaCacheData,
-	maxAgeMs: number,
-	now: number,
-	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
-	emailFallbackState = buildQuotaEmailFallbackState(accounts),
-): { accountId: string; accessToken: string } | null {
-	if (account.enabled === false) return null;
-	if (!hasUsableAccessToken(account, now)) return null;
-
-	const existing = getPersistedQuotaViewForAccount(
-		cache,
-		account,
-		accounts,
-		now,
-		emailFallbackState,
-	);
-	if (
-		existing &&
-		typeof existing.updatedAt === "number" &&
-		Number.isFinite(existing.updatedAt) &&
-		now - existing.updatedAt < maxAgeMs
-	) {
-		return null;
-	}
-
-	// Menu auto-refresh is cache-backed, so only probe when the result can be
-	// written behind a safe lookup key for later reuse.
-	const canStore =
-		(normalizeQuotaAccountId(account.accountId) !== null &&
-			hasUniqueQuotaAccountId(accounts, account)) ||
-		hasSafeQuotaEmailFallback(emailFallbackState, account);
-	if (!canStore) return null;
-
-	const accessToken = account.accessToken;
-	const accountId = accessToken
-		? (account.accountId ?? extractAccountId(accessToken))
-		: account.accountId;
-	if (!accountId || !accessToken) return null;
-	return { accountId, accessToken };
-}
-
-function collectMenuQuotaRefreshTargets(
-	storage: AccountStorageV3,
-	cache: QuotaCacheData,
-	maxAgeMs: number,
-	now = Date.now(),
-	emailFallbackState = buildQuotaEmailFallbackState(storage.accounts),
-): MenuQuotaProbeTarget[] {
-	const targets: MenuQuotaProbeTarget[] = [];
-	for (const account of storage.accounts) {
-		const probeInput = resolveMenuQuotaProbeInput(
-			account,
-			cache,
-			maxAgeMs,
-			now,
-			storage.accounts,
-			emailFallbackState,
-		);
-		if (!probeInput) continue;
-		targets.push({
-			account,
-			accountId: probeInput.accountId,
-			accessToken: probeInput.accessToken,
-		});
-	}
-	return targets;
-}
-
-function countMenuQuotaRefreshTargets(
-	storage: AccountStorageV3,
-	cache: QuotaCacheData,
-	maxAgeMs: number,
-	now = Date.now(),
-): number {
-	const emailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
-	let count = 0;
-	for (const account of storage.accounts) {
-		if (
-			resolveMenuQuotaProbeInput(
-				account,
-				cache,
-				maxAgeMs,
-				now,
-				storage.accounts,
-				emailFallbackState,
-			)
-		) {
-			count += 1;
-		}
-	}
-	return count;
-}
-
-async function refreshQuotaCacheForMenu(
-	storage: AccountStorageV3,
-	cache: QuotaCacheData,
-	maxAgeMs: number,
-	onProgress?: (current: number, total: number) => void,
-): Promise<QuotaCacheData> {
-	if (storage.accounts.length === 0) {
-		return cache;
-	}
-
-	const emailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
-	const nextCache = cloneQuotaCacheData(cache);
-	const now = Date.now();
-	const targets = collectMenuQuotaRefreshTargets(
-		storage,
-		nextCache,
-		maxAgeMs,
-		now,
-		emailFallbackState,
-	);
-	const total = targets.length;
-	let processed = 0;
-	onProgress?.(processed, total);
-	let changed = false;
-	for (const target of targets) {
-		processed += 1;
-		onProgress?.(processed, total);
-
-		try {
-			const snapshot = await fetchCodexQuotaSnapshot({
-				accountId: target.accountId,
-				accessToken: target.accessToken,
-				model: MENU_QUOTA_REFRESH_MODEL,
-			});
-			changed =
-				updateQuotaCacheForAccount(
-					nextCache,
-					target.account,
-					snapshot,
-					storage.accounts,
-					emailFallbackState,
-				) || changed;
-		} catch {
-			// Keep existing cached values if probing fails.
-		}
-	}
-
-	if (changed) {
-		await saveQuotaCache(nextCache);
-	}
-
-	return nextCache;
-}
-
-const ACCESS_TOKEN_FRESH_WINDOW_MS = 5 * 60 * 1000;
-
-function hasUsableAccessToken(
-	account: Pick<AccountMetadataV3, "accessToken" | "expiresAt">,
-	now: number,
-): boolean {
-	if (!account.accessToken) return false;
-	if (
-		typeof account.expiresAt !== "number" ||
-		!Number.isFinite(account.expiresAt)
-	)
-		return false;
-	return account.expiresAt - now > ACCESS_TOKEN_FRESH_WINDOW_MS;
-}
-
-function hasLikelyInvalidRefreshToken(
-	refreshToken: string | undefined,
-): boolean {
-	if (!refreshToken) return true;
-	const trimmed = refreshToken.trim();
-	if (trimmed.length < 20) return true;
-	return trimmed.startsWith("token-");
-}
-
-function mapAccountStatus(
-	account: AccountMetadataV3,
-	isCurrentAccount: boolean,
-	now: number,
-	persistedQuotaEntry?: QuotaCacheEntry | null,
-): ExistingAccountInfo["status"] {
-	if (account.enabled === false) return "disabled";
-	if (
-		typeof account.coolingDownUntil === "number" &&
-		account.coolingDownUntil > now
-	) {
-		return "cooldown";
-	}
-	if (persistedQuotaEntry && isQuotaCacheEntryExhausted(persistedQuotaEntry, now)) {
-		return "quota-exhausted";
-	}
-	if (persistedQuotaEntry?.status === 429) return "rate-limited";
-	const rateLimit = formatRateLimitEntry(account, now, "codex");
-	if (rateLimit) return "rate-limited";
-	if (isCurrentAccount) return "active";
-	return "ok";
-}
-
-function parseLeftPercentFromQuotaSummary(
-	summary: string | undefined,
-	windowLabel: "5h" | "7d",
-): number {
-	if (!summary) return -1;
-	const match = summary.match(
-		new RegExp(`(?:^|\\|)\\s*${windowLabel}\\s+(\\d{1,3})%`, "i"),
-	);
-	const value = Number.parseInt(match?.[1] ?? "", 10);
-	if (!Number.isFinite(value)) return -1;
-	return Math.max(0, Math.min(100, value));
-}
-
-function readQuotaLeftPercent(
-	account: ExistingAccountInfo,
-	windowLabel: "5h" | "7d",
-): number {
-	const direct =
-		windowLabel === "5h"
-			? account.quota5hLeftPercent
-			: account.quota7dLeftPercent;
-	if (typeof direct === "number" && Number.isFinite(direct)) {
-		return Math.max(0, Math.min(100, Math.round(direct)));
-	}
-	return parseLeftPercentFromQuotaSummary(account.quotaSummary, windowLabel);
-}
-
-function readQuotaFloorPercent(account: ExistingAccountInfo): number {
-	return Math.min(
-		readQuotaLeftPercent(account, "5h"),
-		readQuotaLeftPercent(account, "7d"),
-	);
-}
-
-function accountStatusSortBucket(
-	status: ExistingAccountInfo["status"],
-): number {
-	switch (status) {
-		case "active":
-		case "ok":
-			return 0;
-		case "unknown":
-			return 1;
-		case "quota-exhausted":
-		case "cooldown":
-		case "rate-limited":
-			return 2;
-		case "disabled":
-		case "error":
-		case "flagged":
-			return 3;
-		default:
-			return 1;
-	}
-}
-
-function accountReadinessSortBucket(account: ExistingAccountInfo): number {
-	const statusBucket = accountStatusSortBucket(account.status);
-	if (statusBucket >= 2) return statusBucket;
-	return account.quotaRateLimited || account.quotaExhausted ? 2 : statusBucket;
-}
-
-function compareReadyFirstAccounts(
-	left: ExistingAccountInfo,
-	right: ExistingAccountInfo,
-): number {
-	const bucketDelta =
-		accountReadinessSortBucket(left) - accountReadinessSortBucket(right);
-	if (bucketDelta !== 0) return bucketDelta;
-
-	const leftFloor = readQuotaFloorPercent(left);
-	const rightFloor = readQuotaFloorPercent(right);
-	if (leftFloor !== rightFloor) return rightFloor - leftFloor;
-
-	const left5h = readQuotaLeftPercent(left, "5h");
-	const right5h = readQuotaLeftPercent(right, "5h");
-	if (left5h !== right5h) return right5h - left5h;
-
-	const left7d = readQuotaLeftPercent(left, "7d");
-	const right7d = readQuotaLeftPercent(right, "7d");
-	if (left7d !== right7d) return right7d - left7d;
-
-	const leftLastUsed = left.lastUsed ?? 0;
-	const rightLastUsed = right.lastUsed ?? 0;
-	if (leftLastUsed !== rightLastUsed) return rightLastUsed - leftLastUsed;
-
-	const leftSource = left.sourceIndex ?? left.index;
-	const rightSource = right.sourceIndex ?? right.index;
-	return leftSource - rightSource;
-}
-
-function applyAccountMenuOrdering(
-	accounts: ExistingAccountInfo[],
-	displaySettings: DashboardDisplaySettings,
-): ExistingAccountInfo[] {
-	const sortEnabled =
-		displaySettings.menuSortEnabled ??
-		DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortEnabled ??
-		true;
-	const sortMode: DashboardAccountSortMode =
-		displaySettings.menuSortMode ??
-		DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortMode ??
-		"ready-first";
-	if (!sortEnabled || sortMode !== "ready-first") {
-		return [...accounts];
-	}
-
-	const sorted = [...accounts].sort(compareReadyFirstAccounts);
-	const pinCurrent =
-		displaySettings.menuSortPinCurrent ??
-		DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortPinCurrent ??
-		false;
-	if (pinCurrent) {
-		const currentIndex = sorted.findIndex(
-			(account) => account.isCurrentAccount,
-		);
-		if (currentIndex > 0) {
-			const current = sorted.splice(currentIndex, 1)[0];
-			const first = sorted[0];
-			if (current && first && compareReadyFirstAccounts(current, first) <= 0) {
-				sorted.unshift(current);
-			} else if (current) {
-				sorted.splice(currentIndex, 0, current);
-			}
-		}
-	}
-	return sorted;
-}
-
-function toExistingAccountInfo(
-	storage: AccountStorageV3,
-	quotaCache: QuotaCacheData | null,
-	displaySettings: DashboardDisplaySettings,
-	runtimeCurrent: RuntimeCurrentAccountSelection | null = null,
-): ExistingAccountInfo[] {
-	const now = Date.now();
-	const activeIndex = resolveActiveIndex(storage, "codex");
-	const layoutMode = resolveMenuLayoutMode(displaySettings);
-	const emailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
-	const baseAccounts = storage.accounts.map((account, index) => {
-		const entry = getPersistedQuotaViewForAccount(
-			quotaCache,
-			account,
-			storage.accounts,
-			now,
-			emailFallbackState,
-		);
-		const currentMarkers = resolveAccountCurrentMarkers(
-			index,
-			activeIndex,
-			runtimeCurrent,
-		);
-		const isCurrentAccount = isDisplayCurrentAccount(
-			index,
-			activeIndex,
-			runtimeCurrent,
-		);
-		const quotaExhausted = entry ? isQuotaCacheEntryExhausted(entry, now) : false;
-		return {
-			index,
-			sourceIndex: index,
-			accountId: account.accountId,
-			accountLabel: account.accountLabel,
-			email: account.email,
-			addedAt: account.addedAt,
-			lastUsed: account.lastUsed,
-			status: mapAccountStatus(account, isCurrentAccount, now, entry),
-			quotaSummary:
-				(displaySettings.menuShowQuotaSummary ?? true) && entry
-					? formatAccountQuotaSummary(entry, now)
-					: undefined,
-			quota5hLeftPercent: quotaLeftPercentFromUsed(entry?.primary.usedPercent),
-			quota5hResetAtMs: entry?.primary.resetAtMs,
-			quota7dLeftPercent: quotaLeftPercentFromUsed(
-				entry?.secondary.usedPercent,
-			),
-			quota7dResetAtMs: entry?.secondary.resetAtMs,
-			quotaRateLimited: entry?.status === 429,
-			quotaExhausted,
-			isCurrentAccount,
-			isDefaultAccount: index === activeIndex,
-			isRuntimeCurrentAccount: runtimeCurrent?.index === index,
-			currentMarkers,
-			enabled: account.enabled !== false,
-			showStatusBadge: displaySettings.menuShowStatusBadge ?? true,
-			showCurrentBadge: displaySettings.menuShowCurrentBadge ?? true,
-			showLastUsed: displaySettings.menuShowLastUsed ?? true,
-			showQuotaCooldown: displaySettings.menuShowQuotaCooldown ?? true,
-			showHintsForUnselectedRows: layoutMode === "expanded-rows",
-			highlightCurrentRow: displaySettings.menuHighlightCurrentRow ?? true,
-			focusStyle: displaySettings.menuFocusStyle ?? "row-invert",
-			statuslineFields: displaySettings.menuStatuslineFields ?? [
-				"last-used",
-				"limits",
-				"status",
-			],
-		};
-	});
-	const orderedAccounts = applyAccountMenuOrdering(
-		baseAccounts,
-		displaySettings,
-	);
-	const quickSwitchUsesVisibleRows =
-		displaySettings.menuSortQuickSwitchVisibleRow ?? true;
-	return orderedAccounts.map((account, displayIndex) => ({
-		...account,
-		index: displayIndex,
-		quickSwitchNumber: quickSwitchUsesVisibleRows
-			? displayIndex + 1
-			: (account.sourceIndex ?? displayIndex) + 1,
-		}));
-}
-
-async function loadRuntimeCurrentSelectionForStorage(
-	storage: AccountStorageV3,
-	now = Date.now(),
-): Promise<RuntimeCurrentAccountSelection | null> {
-	const [runtimeSnapshot, appBindStatus] = await Promise.all([
-		loadPersistedRuntimeObservabilitySnapshot().catch(() => null),
-		getAppBindStatus()
-			.then((status) => (status.running ? status.router : null))
-			.catch(() => null),
-	]);
-	return resolveRuntimeCurrentAccount(
-		storage,
-		{
-			runtimeSnapshot,
-			appBindStatus,
-			appHelperStatus: readAppRuntimeHelperAccountSignal(),
-		},
-		{ now },
-	);
-}
-
-function activeAccountMatchesCodexCliState(
-	account: AccountMetadataV3,
-	state: Awaited<ReturnType<typeof loadCodexCliState>>,
-): boolean {
-	if (!state) return true;
-	const accountId = account.accountId?.trim();
-	const activeAccountId = state.activeAccountId?.trim();
-	if (accountId && activeAccountId) {
-		return accountId === activeAccountId;
-	}
-
-	const email = sanitizeEmail(account.email);
-	const activeEmail = sanitizeEmail(state.activeEmail);
-	if (email && activeEmail) {
-		return email === activeEmail;
-	}
-
-	return false;
-}
-
-async function syncCodexCliActiveSelectionIfDrifted(
-	storage: AccountStorageV3,
-): Promise<boolean> {
-	const activeIndex = resolveActiveIndex(storage, "codex");
-	if (activeIndex < 0 || activeIndex >= storage.accounts.length) {
-		return false;
-	}
-	const account = storage.accounts[activeIndex];
-	if (!account) {
-		return false;
-	}
-
-	try {
-		const cliState = await loadCodexCliState({ forceRefresh: true });
-		if (!cliState || activeAccountMatchesCodexCliState(account, cliState)) {
-			return false;
-		}
-		return setCodexCliActiveSelection({
-			accountId: account.accountId,
-			email: account.email,
-			accessToken: account.accessToken,
-			refreshToken: account.refreshToken,
-			expiresAt: account.expiresAt,
-		});
-	} catch {
-		return false;
-	}
-}
 
 /**
  * Resolve the account-id selection for freshly-minted tokens.
@@ -1362,58 +368,6 @@ function resolveAccountSelection(
 		accountLabel: best.label,
 		workspaces,
 	};
-}
-
-function resolveStoredAccountIdentity(
-	storedAccountId: string | undefined,
-	storedAccountIdSource: AccountIdSource | undefined,
-	tokenAccountId: string | undefined,
-): { accountId?: string; accountIdSource?: AccountIdSource } {
-	const accountId = resolveRequestAccountId(
-		storedAccountId,
-		storedAccountIdSource,
-		tokenAccountId,
-	);
-	if (!accountId) {
-		return {};
-	}
-
-	if (!shouldUpdateAccountIdFromToken(storedAccountIdSource, storedAccountId)) {
-		return {
-			accountId,
-			accountIdSource: storedAccountIdSource,
-		};
-	}
-
-	return {
-		accountId,
-		accountIdSource:
-			accountId === tokenAccountId ? "token" : storedAccountIdSource,
-	};
-}
-
-function applyTokenAccountIdentity(
-	account: { accountId?: string; accountIdSource?: AccountIdSource },
-	tokenAccountId: string | undefined,
-): boolean {
-	const nextIdentity = resolveStoredAccountIdentity(
-		account.accountId,
-		account.accountIdSource,
-		tokenAccountId,
-	);
-	if (!nextIdentity.accountId) {
-		return false;
-	}
-	if (
-		nextIdentity.accountId === account.accountId &&
-		nextIdentity.accountIdSource === account.accountIdSource
-	) {
-		return false;
-	}
-
-	account.accountId = nextIdentity.accountId;
-	account.accountIdSource = nextIdentity.accountIdSource;
-	return true;
 }
 
 /**
@@ -1514,16 +468,6 @@ type BackupRestoreMode = "latest" | "manual" | "back";
 type SignInFlowOptions = {
 	timeoutMs?: number;
 };
-
-export function formatBackupSavedAt(mtimeMs: number): string {
-	return new Date(mtimeMs).toLocaleString(undefined, {
-		month: "short",
-		day: "numeric",
-		year: "numeric",
-		hour: "numeric",
-		minute: "2-digit",
-	});
-}
 
 async function promptOAuthSignInMode(
 	backupOption: NamedBackupSummary | null,
@@ -1809,19 +753,6 @@ async function waitForMenuReturn(
 		rl.close();
 		clearInlineStatus();
 	}
-}
-
-function stringifyLogArgs(args: unknown[]): string {
-	return args
-		.map((value) => {
-			if (typeof value === "string") return value;
-			try {
-				return JSON.stringify(value);
-			} catch {
-				return String(value);
-			}
-		})
-		.join(" ");
 }
 
 async function runActionPanel(
@@ -2171,397 +1102,6 @@ async function syncSelectionToCodex(
 		expiresAt: tokens.expires,
 		idToken: tokens.idToken,
 	});
-}
-
-interface HealthCheckOptions {
-	forceRefresh?: boolean;
-	liveProbe?: boolean;
-	model?: string;
-	display?: DashboardDisplaySettings;
-}
-
-async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
-	const forceRefresh = options.forceRefresh === true;
-	const liveProbe = options.liveProbe === true;
-	const probeModel = options.model?.trim() || DEFAULT_LIVE_PROBE_MODEL;
-	const modelInspection = inspectRequestedModel(probeModel);
-	const display = options.display ?? DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
-	const quotaCache = liveProbe ? await loadQuotaCache() : null;
-	const workingQuotaCache = quotaCache ? cloneQuotaCacheData(quotaCache) : null;
-	let quotaCacheChanged = false;
-	setStoragePath(null);
-	const storage = await loadAccounts();
-	if (!storage || storage.accounts.length === 0) {
-		console.log("No accounts configured.");
-		return;
-	}
-	let quotaEmailFallbackState =
-		liveProbe && quotaCache
-			? buildQuotaEmailFallbackState(storage.accounts)
-			: null;
-
-	let changed = false;
-	let ok = 0;
-	let failed = 0;
-	let warnings = 0;
-	let codexAvailable = 0;
-	let signedInOnly = 0;
-	const activeIndex = resolveActiveIndex(storage, "codex");
-	let activeAccountRefreshed = false;
-	const now = Date.now();
-	console.log(
-		stylePromptText(
-			forceRefresh
-				? `Checking ${storage.accounts.length} account(s) with full refresh test...`
-				: `Checking ${storage.accounts.length} account(s) with quick check${liveProbe ? " + live check" : ""}...`,
-			"accent",
-		),
-	);
-	if (liveProbe) {
-		console.log(
-			stylePromptText(
-				`Model probe: ${formatModelInspection(modelInspection)}`,
-				"muted",
-			),
-		);
-	}
-	for (let i = 0; i < storage.accounts.length; i += 1) {
-		const account = storage.accounts[i];
-		if (!account) continue;
-		const label = formatAccountLabel(account, i);
-		const labelText = stylePromptText(label, "accent");
-		const sessionLikelyValid = hasUsableAccessToken(account, now);
-		if (!forceRefresh && sessionLikelyValid) {
-			if (account.enabled === false) {
-				account.enabled = true;
-				changed = true;
-			}
-			if (i === activeIndex) {
-				activeAccountRefreshed = true;
-			}
-			let healthDetail = "signed in and working";
-			let healthTone: "success" | "warning" = "success";
-			if (liveProbe) {
-				const currentAccessToken = account.accessToken;
-				const probeAccountId = currentAccessToken
-					? (account.accountId ?? extractAccountId(currentAccessToken))
-					: undefined;
-				if (!probeAccountId || !currentAccessToken) {
-					warnings += 1;
-					signedInOnly += 1;
-					healthTone = "warning";
-					healthDetail =
-						"signed in (live check skipped: missing account ID)";
-				} else {
-					try {
-						const snapshot = await fetchCodexQuotaSnapshot({
-							accountId: probeAccountId,
-							accessToken: currentAccessToken,
-							model: modelInspection.normalized,
-						});
-						if (workingQuotaCache) {
-							quotaCacheChanged =
-								updateQuotaCacheForAccount(
-									workingQuotaCache,
-									account,
-									snapshot,
-									storage.accounts,
-									quotaEmailFallbackState ?? undefined,
-								) || quotaCacheChanged;
-						}
-						healthDetail = formatQuotaSnapshotForDashboard(snapshot, display);
-						codexAvailable += 1;
-					} catch (error) {
-						warnings += 1;
-						signedInOnly += 1;
-						healthTone = "warning";
-						if (isCodexUnavailableError(error)) {
-							healthDetail =
-								`signed in; ${CODEX_UNAVAILABLE_PROBE_NOTE}`;
-						} else {
-							const message = normalizeFailureDetail(
-								error instanceof Error ? error.message : String(error),
-								undefined,
-							);
-							healthDetail = `signed in (live check failed: ${message})`;
-						}
-					}
-				}
-			}
-			if (hasLikelyInvalidRefreshToken(account.refreshToken)) {
-				healthDetail += " (re-login suggested soon)";
-			}
-			ok += 1;
-			if (display.showPerAccountRows) {
-				const healthMarker = healthTone === "success" ? "✓" : "!";
-				console.log(
-					`  ${stylePromptText(healthMarker, healthTone)} ${labelText} ${stylePromptText("|", "muted")} ${styleAccountDetailText(healthDetail, healthTone)}`,
-				);
-			}
-			continue;
-		}
-		const result = await queuedRefresh(account.refreshToken);
-		if (result.type === "success") {
-			const tokenAccountId = extractAccountId(result.access);
-			const nextEmail = sanitizeEmail(
-				extractAccountEmail(result.access, result.idToken),
-			);
-			const previousEmail = account.email;
-			let accountIdentityChanged = false;
-			if (account.refreshToken !== result.refresh) {
-				account.refreshToken = result.refresh;
-				changed = true;
-			}
-			if (account.accessToken !== result.access) {
-				account.accessToken = result.access;
-				changed = true;
-			}
-			if (account.expiresAt !== result.expires) {
-				account.expiresAt = result.expires;
-				changed = true;
-			}
-			if (nextEmail && nextEmail !== account.email) {
-				account.email = nextEmail;
-				changed = true;
-				accountIdentityChanged = true;
-			}
-			if (applyTokenAccountIdentity(account, tokenAccountId)) {
-				changed = true;
-				accountIdentityChanged = true;
-			}
-			if (account.enabled === false) {
-				account.enabled = true;
-				changed = true;
-			}
-			if (accountIdentityChanged && liveProbe && workingQuotaCache) {
-				quotaEmailFallbackState = buildQuotaEmailFallbackState(
-					storage.accounts,
-				);
-				quotaCacheChanged =
-					pruneUnsafeQuotaEmailCacheEntry(
-						workingQuotaCache,
-						previousEmail,
-						storage.accounts,
-						quotaEmailFallbackState,
-					) || quotaCacheChanged;
-			}
-			account.lastUsed = Date.now();
-			if (i === activeIndex) {
-				activeAccountRefreshed = true;
-			}
-			ok += 1;
-			let healthyMessage = "working now";
-			let healthyTone: "success" | "warning" = "success";
-			if (liveProbe) {
-				const probeAccountId = account.accountId ?? tokenAccountId;
-				if (!probeAccountId) {
-					warnings += 1;
-					signedInOnly += 1;
-					healthyTone = "warning";
-					healthyMessage =
-						"signed in (live check skipped: missing account ID)";
-				} else {
-					try {
-						const snapshot = await fetchCodexQuotaSnapshot({
-							accountId: probeAccountId,
-							accessToken: result.access,
-							model: modelInspection.normalized,
-						});
-						if (workingQuotaCache) {
-							quotaCacheChanged =
-								updateQuotaCacheForAccount(
-									workingQuotaCache,
-									account,
-									snapshot,
-									storage.accounts,
-									quotaEmailFallbackState ?? undefined,
-								) || quotaCacheChanged;
-						}
-						healthyMessage = formatQuotaSnapshotForDashboard(snapshot, display);
-						codexAvailable += 1;
-					} catch (error) {
-						warnings += 1;
-						signedInOnly += 1;
-						healthyTone = "warning";
-						if (isCodexUnavailableError(error)) {
-							healthyMessage =
-								`signed in; ${CODEX_UNAVAILABLE_PROBE_NOTE}`;
-						} else {
-							const message = normalizeFailureDetail(
-								error instanceof Error ? error.message : String(error),
-								undefined,
-							);
-							healthyMessage = `signed in (live check failed: ${message})`;
-						}
-					}
-				}
-			}
-			if (display.showPerAccountRows) {
-				const healthyMarker = healthyTone === "success" ? "✓" : "!";
-				console.log(
-					`  ${stylePromptText(healthyMarker, healthyTone)} ${labelText} ${stylePromptText("|", "muted")} ${styleAccountDetailText(healthyMessage, healthyTone)}`,
-				);
-			}
-		} else {
-			const detail = normalizeFailureDetail(result.message, result.reason);
-			if (sessionLikelyValid) {
-				warnings += 1;
-				if (liveProbe) {
-					signedInOnly += 1;
-				}
-				if (display.showPerAccountRows) {
-					console.log(
-						`  ${stylePromptText("!", "warning")} ${labelText} ${stylePromptText("|", "muted")} ${stylePromptText(`refresh failed (${detail}) but this account still works right now`, "warning")}`,
-					);
-				}
-			} else {
-				failed += 1;
-				if (display.showPerAccountRows) {
-					console.log(
-						`  ${stylePromptText("✗", "danger")} ${labelText} ${stylePromptText("|", "muted")} ${stylePromptText(detail, "danger")}`,
-					);
-				}
-			}
-		}
-	}
-
-	if (!display.showPerAccountRows) {
-		console.log(
-			stylePromptText(
-				"Per-account lines are hidden in dashboard settings.",
-				"muted",
-			),
-		);
-	}
-	if (workingQuotaCache && quotaCacheChanged) {
-		try {
-			await saveQuotaCache(workingQuotaCache);
-		} catch (error) {
-			// Quota cache is a derived artifact; a transient Windows EBUSY/EPERM
-			// here must not abort the health check before account fixes commit.
-			console.warn(
-				`Quota cache save failed: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-	}
-
-	if (changed) {
-		await saveAccountsWithRetry(storage, saveAccounts);
-	}
-
-	if (
-		activeAccountRefreshed &&
-		activeIndex >= 0 &&
-		activeIndex < storage.accounts.length
-	) {
-		const activeAccount = storage.accounts[activeIndex];
-		if (activeAccount) {
-			await setCodexCliActiveSelection({
-				accountId: activeAccount.accountId,
-				email: activeAccount.email,
-				accessToken: activeAccount.accessToken,
-				refreshToken: activeAccount.refreshToken,
-				expiresAt: activeAccount.expiresAt,
-			});
-		}
-	}
-
-	console.log("");
-	console.log(
-		formatResultSummary(
-			liveProbe
-				? [
-						{
-							text: `${codexAvailable} Codex available`,
-							tone: codexAvailable > 0 ? "success" : "muted",
-						},
-						{
-							text: `${signedInOnly} signed in only`,
-							tone: signedInOnly > 0 ? "warning" : "muted",
-						},
-						{
-							text: `${failed} need re-login`,
-							tone: failed > 0 ? "danger" : "muted",
-						},
-					]
-				: [
-						{ text: `${ok} working`, tone: "success" },
-						{
-							text: `${failed} need re-login`,
-							tone: failed > 0 ? "danger" : "muted",
-						},
-						{
-							text: `${warnings} warning${warnings === 1 ? "" : "s"}`,
-							tone: warnings > 0 ? "warning" : "muted",
-						},
-					],
-		),
-	);
-}
-
-type ParsedArgsResult<T> =
-	| { ok: true; options: T }
-	| { ok: false; message: string };
-
-function printBestUsage(): void {
-	console.log(
-		[
-			"Usage:",
-			"  codex-multi-auth best [--live] [--json] [--model <model>]",
-			"",
-			"Options:",
-			"  --live, -l         Probe live quota headers via Codex backend before switching",
-			"  --json, -j         Print machine-readable JSON output",
-			`  --model, -m        Probe model for live mode (default: ${DEFAULT_LIVE_PROBE_MODEL})`,
-			"",
-			"Behavior:",
-			"  - Chooses the healthiest account using forecast scoring",
-			"  - Switches to the recommended account when it is not already active",
-		].join("\n"),
-	);
-}
-function parseBestArgs(args: string[]): ParsedArgsResult<BestCliOptions> {
-	const options: BestCliOptions = {
-		live: false,
-		json: false,
-		model: DEFAULT_LIVE_PROBE_MODEL,
-		modelProvided: false,
-	};
-
-	for (let i = 0; i < args.length; i += 1) {
-		const arg = args[i];
-		if (!arg) continue;
-		if (arg === "--live" || arg === "-l") {
-			options.live = true;
-			continue;
-		}
-		if (arg === "--json" || arg === "-j") {
-			options.json = true;
-			continue;
-		}
-		if (arg === "--model" || arg === "-m") {
-			const value = args[i + 1]?.trim();
-			if (!value || value.startsWith("-")) {
-				return { ok: false, message: "Missing value for --model" };
-			}
-			options.model = value;
-			options.modelProvided = true;
-			i += 1;
-			continue;
-		}
-		if (arg.startsWith("--model=")) {
-			const value = arg.slice("--model=".length).trim();
-			if (!value || value.startsWith("-")) {
-				return { ok: false, message: "Missing value for --model" };
-			}
-			options.model = value;
-			options.modelProvided = true;
-			continue;
-		}
-		return { ok: false, message: `Unknown option: ${arg}` };
-	}
-
-	return { ok: true, options };
 }
 
 async function runForecast(args: string[]): Promise<number> {
@@ -3281,129 +1821,6 @@ async function runAuthLoginFlow(
 	}
 }
 
-async function persistAndSyncSelectedAccount({
-	storage,
-	targetIndex,
-	parsed,
-	switchReason,
-	initialSyncIdToken,
-	preserveActiveIndexByFamily = false,
-	setPin = false,
-	clearPin = false,
-	bumpAffinityGeneration = false,
-}: {
-	storage: NonNullable<Awaited<ReturnType<typeof loadAccounts>>>;
-	targetIndex: number;
-	parsed: number;
-	switchReason: PersistedSwitchReason;
-	initialSyncIdToken?: string;
-	preserveActiveIndexByFamily?: boolean;
-	setPin?: boolean;
-	clearPin?: boolean;
-	bumpAffinityGeneration?: boolean;
-}): Promise<{ synced: boolean; wasDisabled: boolean }> {
-	const account = storage.accounts[targetIndex];
-	if (!account) {
-		throw new Error(`Account ${parsed} not found.`);
-	}
-
-	const shouldPreserveActiveIndexByFamily =
-		preserveActiveIndexByFamily &&
-		!!storage.activeIndexByFamily &&
-		targetIndex === storage.activeIndex;
-	storage.activeIndex = targetIndex;
-	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	if (shouldPreserveActiveIndexByFamily) {
-		const maxIndex = Math.max(0, storage.accounts.length - 1);
-		for (const family of MODEL_FAMILIES) {
-			const raw = storage.activeIndexByFamily[family];
-			const candidate =
-				typeof raw === "number" && Number.isFinite(raw) ? raw : targetIndex;
-			storage.activeIndexByFamily[family] = Math.max(
-				0,
-				Math.min(candidate, maxIndex),
-			);
-		}
-	} else {
-		storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-		for (const family of MODEL_FAMILIES) {
-			storage.activeIndexByFamily[family] = targetIndex;
-		}
-	}
-	const wasDisabled = account.enabled === false;
-	if (wasDisabled) {
-		account.enabled = true;
-	}
-	const switchNow = Date.now();
-	let syncAccessToken = account.accessToken;
-	let syncRefreshToken = account.refreshToken;
-	let syncExpiresAt = account.expiresAt;
-	let syncIdToken = initialSyncIdToken;
-
-	if (!hasUsableAccessToken(account, switchNow)) {
-		const refreshResult = await queuedRefresh(account.refreshToken);
-		if (refreshResult.type === "success") {
-			const tokenAccountId = extractAccountId(refreshResult.access);
-			const nextEmail = sanitizeEmail(
-				extractAccountEmail(refreshResult.access, refreshResult.idToken),
-			);
-			if (account.refreshToken !== refreshResult.refresh) {
-				account.refreshToken = refreshResult.refresh;
-			}
-			if (account.accessToken !== refreshResult.access) {
-				account.accessToken = refreshResult.access;
-			}
-			if (account.expiresAt !== refreshResult.expires) {
-				account.expiresAt = refreshResult.expires;
-			}
-			if (nextEmail && nextEmail !== account.email) {
-				account.email = nextEmail;
-			}
-			applyTokenAccountIdentity(account, tokenAccountId);
-			syncAccessToken = refreshResult.access;
-			syncRefreshToken = refreshResult.refresh;
-			syncExpiresAt = refreshResult.expires;
-			syncIdToken = refreshResult.idToken;
-		} else {
-			console.warn(
-				`Switch validation refresh failed for account ${parsed}: ${normalizeFailureDetail(refreshResult.message, refreshResult.reason)}.`,
-			);
-		}
-	}
-
-	account.lastUsed = switchNow;
-	account.lastSwitchReason = switchReason;
-	if (setPin) {
-		storage.pinnedAccountIndex = targetIndex;
-	} else if (clearPin) {
-		delete storage.pinnedAccountIndex;
-	}
-	if (bumpAffinityGeneration) {
-		// Re-read the on-disk generation right before saving so concurrent CLI
-		// processes don't lose increments via lost-update on the load+mutate
-		// pair. Math.max keeps the counter monotonically increasing — extra
-		// bumps are harmless (just an additional affinity invalidation), but a
-		// missed bump can let the proxy cling to the wrong account. The save
-		// itself is serialized by withStorageLock; this only narrows the
-		// lost-update window. See issue #474.
-		const diskGeneration = readAffinityGenerationFromDisk(getStoragePath());
-		const inMemoryGeneration = storage.affinityGeneration ?? 0;
-		storage.affinityGeneration =
-			Math.max(inMemoryGeneration, diskGeneration) + 1;
-	}
-	await saveAccountsWithRetry(storage, saveAccounts);
-
-	const synced = await setCodexCliActiveSelection({
-		accountId: account.accountId,
-		email: account.email,
-		accessToken: syncAccessToken,
-		refreshToken: syncRefreshToken,
-		expiresAt: syncExpiresAt,
-		...(syncIdToken ? { idToken: syncIdToken } : {}),
-	});
-	return { synced, wasDisabled };
-}
-
 async function runBest(args: string[]): Promise<number> {
 	return runBestCommand(args, {
 		setStoragePath,
@@ -3810,13 +2227,6 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 ]);
 
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
-	// Lazy install setup (audit roadmap §4.5.4): app detection, Codex app bind,
-	// and launcher routing moved out of npm postinstall to the first CLI run.
-	// ensureFirstRunSetup never throws; the catch is belt-and-braces so no
-	// command can ever fail because of first-run housekeeping.
-	await ensureFirstRunSetup({
-		notify: (message) => console.error(`codex-multi-auth: ${message}`),
-	}).catch(() => undefined);
 	const startupDisplaySettings = await loadDashboardDisplaySettings();
 	applyUiThemeFromDashboardSettings(startupDisplaySettings);
 
@@ -3854,3 +2264,4 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	printUsage();
 	return 1;
 }
+
