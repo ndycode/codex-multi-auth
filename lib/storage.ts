@@ -2,7 +2,7 @@ import { existsSync, promises as fs, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { StorageError } from "./errors.js";
-import { shouldRetryFileOperation, withFileOperationRetry } from "./fs-retry.js";
+import { withFileOperationRetry, withRetry } from "./fs-retry.js";
 import { createLogger } from "./logger.js";
 import {
 	exportNamedBackupFile,
@@ -265,51 +265,29 @@ async function copyFileWithRetry(
 	options?: { allowMissingSource?: boolean },
 ): Promise<void> {
 	const allowMissingSource = options?.allowMissingSource ?? false;
-	for (let attempt = 0; attempt < BACKUP_COPY_MAX_ATTEMPTS; attempt += 1) {
-		try {
-			await fs.copyFile(sourcePath, destinationPath);
+	try {
+		await withRetry(() => fs.copyFile(sourcePath, destinationPath), {
+			maxAttempts: BACKUP_COPY_MAX_ATTEMPTS,
+			backoffMs: (attempt) => BACKUP_COPY_BASE_DELAY_MS * 2 ** (attempt - 1),
+		});
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (allowMissingSource && code === "ENOENT") {
 			return;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (allowMissingSource && code === "ENOENT") {
-				return;
-			}
-			const canRetry =
-				shouldRetryFileOperation(error) && attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
-			if (canRetry) {
-				await new Promise((resolve) =>
-					setTimeout(resolve, BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt),
-				);
-				continue;
-			}
-			throw error;
 		}
+		throw error;
 	}
 }
 
-async function renameFileWithRetry(
+function renameFileWithRetry(
 	sourcePath: string,
 	destinationPath: string,
 ): Promise<void> {
-	for (let attempt = 0; attempt < BACKUP_COPY_MAX_ATTEMPTS; attempt += 1) {
-		try {
-			await fs.rename(sourcePath, destinationPath);
-			return;
-		} catch (error) {
-			const canRetry =
-				shouldRetryFileOperation(error) && attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
-			if (!canRetry) {
-				throw error;
-			}
-			const jitterMs = Math.floor(Math.random() * BACKUP_COPY_BASE_DELAY_MS);
-			await new Promise((resolve) =>
-				setTimeout(
-					resolve,
-					BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt + jitterMs,
-				),
-			);
-		}
-	}
+	return withRetry(() => fs.rename(sourcePath, destinationPath), {
+		maxAttempts: BACKUP_COPY_MAX_ATTEMPTS,
+		backoffMs: (attempt) => BACKUP_COPY_BASE_DELAY_MS * 2 ** (attempt - 1),
+		jitterMs: BACKUP_COPY_BASE_DELAY_MS,
+	});
 }
 
 async function createRotatingAccountsBackup(path: string): Promise<void> {

@@ -2,6 +2,7 @@ import { existsSync, promises as fs, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { parseBooleanEnv } from "./env-parsing.js";
+import { withRetry, withRetrySync } from "./fs-retry.js";
 import { logWarn } from "./logger.js";
 import {
 	getCodexHomeDir,
@@ -55,34 +56,19 @@ const RETRYABLE_CONFIG_READ_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
  * attempts). ENOENT and SyntaxError are not retryable and propagate unchanged.
  */
 function readFileSyncWithConfigRetry(configPath: string): string {
-	const maxAttempts = 5;
-	let lastError: unknown;
-	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-		try {
-			return readFileSync(configPath, "utf-8");
-		} catch (error) {
-			lastError = error;
-			const code = (error as NodeJS.ErrnoException | undefined)?.code;
-			if (
-				typeof code === "string" &&
-				RETRYABLE_CONFIG_READ_CODES.has(code) &&
-				attempt < maxAttempts - 1
-			) {
-				// Immediate retry — NOT a blocking sleep. loadPluginConfig() is
-				// synchronous and runs on startup, so the previous Atomics.wait froze
-				// the entire event loop for up to ~150ms on a transient Windows AV /
-				// indexer lock. An immediate re-read costs microseconds and a brief
-				// exclusive lock is typically released by the next attempt; if it
-				// genuinely persists we fail fast (the caller falls back to defaults)
-				// rather than stalling the process.
-				continue;
-			}
-			throw error;
-		}
-	}
-	// Exhausted attempts on a retryable code: surface the last error so the caller
-	// classifies it (unreadable) instead of silently returning stale/empty content.
-	throw lastError;
+	// Immediate retry (backoffMs: 0) — NOT a blocking sleep. loadPluginConfig()
+	// is synchronous and runs on startup, so the previous Atomics.wait froze the
+	// entire event loop for up to ~150ms on a transient Windows AV / indexer
+	// lock. An immediate re-read costs microseconds and a brief exclusive lock
+	// is typically released by the next attempt; if it genuinely persists we
+	// fail fast (the caller falls back to defaults) rather than stalling the
+	// process. On exhaustion the last error surfaces so the caller classifies it
+	// (unreadable) instead of silently returning stale/empty content.
+	return withRetrySync(() => readFileSync(configPath, "utf-8"), {
+		maxAttempts: 5,
+		backoffMs: 0,
+		retryableCodes: RETRYABLE_CONFIG_READ_CODES,
+	});
 }
 
 type ConfigReadState =
@@ -443,11 +429,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function isRetryableFsError(error: unknown): boolean {
-	const code = (error as NodeJS.ErrnoException | undefined)?.code;
-	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
-}
-
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -457,31 +438,26 @@ async function getConfigFileMtimeMs(filePath: string): Promise<number | null> {
 	// run on the Windows-sensitive save path, where a transient EBUSY/EPERM/EAGAIN
 	// from an AV/indexer lock on a single fs.stat would abort the entire save.
 	// Mirror readConfigRecordForSave's bounded transient-FS retry (same code set,
-	// same backoff, 5 attempts). ENOENT still returns null immediately.
-	let lastError: unknown;
-	for (let attempt = 0; attempt < 5; attempt += 1) {
-		try {
-			return (await fs.stat(filePath)).mtimeMs;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException | undefined)?.code;
-			if (code === "ENOENT") {
-				return null;
+	// same backoff, 5 attempts). ENOENT still returns null immediately. On
+	// exhaustion the last failure surfaces so the caller treats it as a real
+	// save error rather than a phantom missing file.
+	return withRetry(
+		async () => {
+			try {
+				return (await fs.stat(filePath)).mtimeMs;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+					return null;
+				}
+				throw error;
 			}
-			lastError = error;
-			if (
-				typeof code === "string" &&
-				RETRYABLE_CONFIG_READ_CODES.has(code) &&
-				attempt < 4
-			) {
-				await sleep(10 * 2 ** attempt);
-				continue;
-			}
-			throw error;
-		}
-	}
-	// Exhausted retries on a transient code: surface the last failure so the caller
-	// treats it as a real save error rather than a phantom missing file.
-	throw lastError;
+		},
+		{
+			maxAttempts: 5,
+			backoffMs: (attempt) => 10 * 2 ** (attempt - 1),
+			retryableCodes: RETRYABLE_CONFIG_READ_CODES,
+		},
+	);
 }
 
 async function writeJsonFileAtomicWithRetry(
@@ -507,18 +483,12 @@ async function writeJsonFileAtomicWithRetry(
 				throw staleError;
 			}
 		}
-		for (let attempt = 0; attempt < 5; attempt += 1) {
-			try {
-				await fs.rename(tempPath, filePath);
-				renamed = true;
-				return;
-			} catch (error) {
-				if (!isRetryableFsError(error) || attempt >= 4) {
-					throw error;
-				}
-				await sleep(10 * 2 ** attempt);
-			}
-		}
+		await withRetry(() => fs.rename(tempPath, filePath), {
+			maxAttempts: 5,
+			backoffMs: (attempt) => 10 * 2 ** (attempt - 1),
+			retryableCodes: RETRYABLE_FS_CODES,
+		});
+		renamed = true;
 	} finally {
 		if (!renamed) {
 			try {
@@ -568,25 +538,16 @@ interface ConfigLockPayload {
 }
 
 async function unlinkConfigLockWithRetry(lockPath: string): Promise<void> {
-	for (let attempt = 0; attempt < 5; attempt += 1) {
-		try {
-			await fs.unlink(lockPath);
-			return;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException | undefined)?.code;
-			if (code === "ENOENT") return;
-			if (
-				typeof code === "string" &&
-				RETRYABLE_FS_CODES.has(code) &&
-				attempt < 4
-			) {
-				await sleep(10 * 2 ** attempt);
-				continue;
-			}
-			// Best-effort release: a leftover lockfile is recovered as stale by the
-			// next acquirer via its expiry/mtime, so never fail the save over this.
-			return;
-		}
+	try {
+		await withRetry(() => fs.unlink(lockPath), {
+			maxAttempts: 5,
+			backoffMs: (attempt) => 10 * 2 ** (attempt - 1),
+			retryableCodes: RETRYABLE_FS_CODES,
+		});
+	} catch {
+		// ENOENT (already released) or best-effort release failure: a leftover
+		// lockfile is recovered as stale by the next acquirer via its
+		// expiry/mtime, so never fail the save over this.
 	}
 }
 
@@ -745,47 +706,42 @@ async function readConfigRecordForSave(
 		return { status: "missing" };
 	}
 
-	for (let attempt = 0; attempt < 5; attempt += 1) {
-		try {
-			const fileContent = await fs.readFile(configPath, "utf-8");
-			const normalizedFileContent = stripUtf8Bom(fileContent);
-			const parsed = JSON.parse(normalizedFileContent) as unknown;
-			if (!isRecord(parsed)) {
-				const errorMessage = `Config at ${configPath} must contain a JSON object at the root.`;
-				logConfigWarnOnce(errorMessage);
-				return { status: "invalid", errorMessage };
-			}
-			return { status: "ok", record: parsed };
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException | undefined)?.code;
-			if (code === "ENOENT") {
-				return { status: "missing" };
-			}
-			if (
-				typeof code === "string" &&
-				RETRYABLE_CONFIG_READ_CODES.has(code) &&
-				attempt < 4
-			) {
-				await sleep(10 * 2 ** attempt);
-				continue;
-			}
-			const errorMessage = `Failed to read config from ${configPath}: ${
-				error instanceof Error ? error.message : String(error)
-			}`;
-			logConfigWarnOnce(errorMessage);
-			if (error instanceof SyntaxError) {
-				return { status: "invalid", errorMessage };
-			}
-			if (typeof code === "string") {
-				return { status: "unreadable", errorMessage };
-			}
+	try {
+		return await withRetry<ConfigReadState>(
+			async () => {
+				const fileContent = await fs.readFile(configPath, "utf-8");
+				const normalizedFileContent = stripUtf8Bom(fileContent);
+				const parsed = JSON.parse(normalizedFileContent) as unknown;
+				if (!isRecord(parsed)) {
+					const errorMessage = `Config at ${configPath} must contain a JSON object at the root.`;
+					logConfigWarnOnce(errorMessage);
+					return { status: "invalid", errorMessage };
+				}
+				return { status: "ok", record: parsed };
+			},
+			{
+				maxAttempts: 5,
+				backoffMs: (attempt) => 10 * 2 ** (attempt - 1),
+				retryableCodes: RETRYABLE_CONFIG_READ_CODES,
+			},
+		);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		if (code === "ENOENT") {
+			return { status: "missing" };
+		}
+		const errorMessage = `Failed to read config from ${configPath}: ${
+			error instanceof Error ? error.message : String(error)
+		}`;
+		logConfigWarnOnce(errorMessage);
+		if (error instanceof SyntaxError) {
 			return { status: "invalid", errorMessage };
 		}
+		if (typeof code === "string") {
+			return { status: "unreadable", errorMessage };
+		}
+		return { status: "invalid", errorMessage };
 	}
-
-	const errorMessage = `Failed to read config from ${configPath}.`;
-	logConfigWarnOnce(errorMessage);
-	return { status: "unreadable", errorMessage };
 }
 
 function resolveStoredPluginConfigRecord(): {

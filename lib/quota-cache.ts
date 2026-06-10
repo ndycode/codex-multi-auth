@@ -1,8 +1,9 @@
 import { existsSync, promises as fs } from "node:fs";
 import { basename, join } from "node:path";
+import { withRetry } from "./fs-retry.js";
 import { logWarn } from "./logger.js";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
-import { isRecord, sleep } from "./utils.js";
+import { isRecord } from "./utils.js";
 
 export interface QuotaCacheWindow {
 	usedPercent?: number;
@@ -32,22 +33,7 @@ interface QuotaCacheFile {
 
 const QUOTA_CACHE_PATH = join(getCodexMultiAuthDir(), "quota-cache.json");
 const QUOTA_CACHE_LABEL = basename(QUOTA_CACHE_PATH);
-// Align with the shared FILE_RETRY_CODES taxonomy (lib/fs-retry.ts) so a
-// transient Windows lock (AV/indexer/concurrent reader) on the quota cache is
-// retried consistently with every other fs path, not just EBUSY/EPERM.
-const RETRYABLE_FS_CODES = new Set([
-	"EBUSY",
-	"EPERM",
-	"EAGAIN",
-	"ENOTEMPTY",
-	"EACCES",
-]);
 let quotaCacheWriteQueue: Promise<void> = Promise.resolve();
-
-function isRetryableFsError(error: unknown): boolean {
-	const code = (error as NodeJS.ErrnoException | undefined)?.code;
-	return typeof code === "string" && RETRYABLE_FS_CODES.has(code);
-}
 
 /**
  * Normalizes an unknown value to a finite number.
@@ -129,20 +115,14 @@ function normalizeEntryMap(value: unknown): Record<string, QuotaCacheEntry> {
 	return entries;
 }
 
-async function readCacheFileWithRetry(path: string): Promise<string> {
-	let lastError: unknown;
-	for (let attempt = 0; attempt < 5; attempt += 1) {
-		try {
-			return await fs.readFile(path, "utf8");
-		} catch (error) {
-			lastError = error;
-			if (!isRetryableFsError(error) || attempt >= 4) {
-				throw error;
-			}
-			await sleep(10 * 2 ** attempt);
-		}
-	}
-	throw lastError instanceof Error ? lastError : new Error("quota cache read retry exhausted");
+function readCacheFileWithRetry(path: string): Promise<string> {
+	// Retries the shared FILE_RETRY_CODES taxonomy (lib/fs-retry.ts) so a
+	// transient Windows lock (AV/indexer/concurrent reader) on the quota cache
+	// is retried consistently with every other fs path, not just EBUSY/EPERM.
+	return withRetry(() => fs.readFile(path, "utf8"), {
+		maxAttempts: 5,
+		backoffMs: (attempt) => 10 * 2 ** (attempt - 1),
+	});
 }
 
 /**
@@ -257,16 +237,11 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 			});
 			let renamed = false;
 			try {
-				for (let attempt = 0; attempt < 5; attempt += 1) {
-					try {
-						await fs.rename(tempPath, QUOTA_CACHE_PATH);
-						renamed = true;
-						break;
-					} catch (error) {
-						if (!isRetryableFsError(error) || attempt >= 4) throw error;
-						await sleep(10 * 2 ** attempt);
-					}
-				}
+				await withRetry(() => fs.rename(tempPath, QUOTA_CACHE_PATH), {
+					maxAttempts: 5,
+					backoffMs: (attempt) => 10 * 2 ** (attempt - 1),
+				});
+				renamed = true;
 			} finally {
 				if (!renamed) {
 					try {

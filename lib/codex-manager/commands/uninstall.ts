@@ -2,41 +2,10 @@ import { readFile, writeFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
+import { withFileOperationRetry } from "../../fs-retry.js";
 import { unbindCodexAppRuntimeRotation } from "../../runtime/app-bind.js";
 
 const PLUGIN_NAME = "codex-multi-auth";
-
-const FILE_RETRY_CODES = new Set([
-	"EBUSY",
-	"EPERM",
-	"EAGAIN",
-	"ENOTEMPTY",
-	"EACCES",
-]);
-const FILE_RETRY_MAX_ATTEMPTS = 6;
-const FILE_RETRY_BASE_DELAY_MS = 25;
-const FILE_RETRY_JITTER_MS = 20;
-
-function isRetryableFsError(error: unknown): boolean {
-	if (!(error instanceof Error)) return false;
-	const code = (error as NodeJS.ErrnoException).code;
-	return typeof code === "string" && FILE_RETRY_CODES.has(code);
-}
-
-async function withFileOperationRetry<T>(operation: () => Promise<T>): Promise<T> {
-	for (let attempt = 1; ; attempt += 1) {
-		try {
-			return await operation();
-		} catch (error) {
-			if (!isRetryableFsError(error) || attempt >= FILE_RETRY_MAX_ATTEMPTS) {
-				throw error;
-			}
-			const jitter = Math.floor(Math.random() * FILE_RETRY_JITTER_MS);
-			const delayMs = FILE_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1) + jitter;
-			await new Promise((resolve) => setTimeout(resolve, delayMs));
-		}
-	}
-}
 
 export function resolveUninstallPaths(
 	platform: NodeJS.Platform = process.platform,

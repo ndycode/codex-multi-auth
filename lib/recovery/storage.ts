@@ -14,6 +14,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { withRetrySync } from "../fs-retry.js";
 import {
 	MESSAGE_STORAGE,
 	PART_STORAGE,
@@ -184,32 +185,15 @@ const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY", "EAGAIN"]);
  * synchronous recovery code paths where async rename is not available.
  */
 function renameSyncWithRetry(source: string, target: string): void {
-	const maxAttempts = 4;
-	let lastError: unknown;
-	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-		try {
-			renameSync(source, target);
-			return;
-		} catch (error) {
-			lastError = error;
-			const code = (error as NodeJS.ErrnoException | undefined)?.code;
-			if (!code || !RETRYABLE_FS_CODES.has(code)) {
-				throw error;
-			}
-			if (attempt === maxAttempts - 1) {
-				break;
-			}
-			// Exponential backoff: 10, 20, 40 ms before the next attempt.
-			// Synchronous wait is acceptable here because the recovery helper
-			// is already on a sync code path and retries only fire on genuine
-			// Windows lock contention.
-			const waitUntil = Date.now() + 10 * 2 ** attempt;
-			while (Date.now() < waitUntil) {
-				// busy-wait within budget (cumulative max ~70ms across attempts)
-			}
-		}
-	}
-	throw lastError as Error;
+	// Exponential backoff: 10, 20, 40 ms before the next attempt. The
+	// synchronous busy-wait inside withRetrySync is acceptable here because the
+	// recovery helper is already on a sync code path and retries only fire on
+	// genuine Windows lock contention (cumulative max ~70ms across attempts).
+	withRetrySync(() => renameSync(source, target), {
+		maxAttempts: 4,
+		backoffMs: (attempt) => 10 * 2 ** (attempt - 1),
+		retryableCodes: RETRYABLE_FS_CODES,
+	});
 }
 
 /**
@@ -252,29 +236,20 @@ function atomicWriteFileSync(
  * retries. Never throws.
  */
 function safeUnlinkWithRetry(filePath: string, maxAttempts = 4): boolean {
-	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-		try {
-			unlinkSync(filePath);
-			return true;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException | undefined)?.code;
-			if (code === "ENOENT") return false;
-			if (
-				!code ||
-				!RETRYABLE_FS_CODES.has(code) ||
-				attempt === maxAttempts - 1
-			) {
-				return false;
-			}
-			// Small synchronous backoff; recovery storage is not on a hot path, so
-			// a handful of milliseconds here is cheaper than leaving orphan files.
-			const waitUntil = Date.now() + 2 ** attempt * 5;
-			while (Date.now() < waitUntil) {
-				// busy-wait within budget (max ~40ms across four attempts)
-			}
-		}
+	try {
+		// Small synchronous backoff (5, 10, 20 ms); recovery storage is not on a
+		// hot path, so a handful of milliseconds here is cheaper than leaving
+		// orphan files (busy-wait budget max ~40ms across four attempts).
+		withRetrySync(() => unlinkSync(filePath), {
+			maxAttempts,
+			backoffMs: (attempt) => 2 ** (attempt - 1) * 5,
+			retryableCodes: RETRYABLE_FS_CODES,
+		});
+		return true;
+	} catch {
+		// ENOENT, a non-retryable code, or exhausted retries: best-effort delete.
+		return false;
 	}
-	return false;
 }
 
 // =============================================================================
