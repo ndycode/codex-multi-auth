@@ -98,17 +98,6 @@ Public documentation for the `codex-multi-auth` Codex CLI multi-account OAuth ma
 | [reference/storage-paths.md](reference/storage-paths.md) | Canonical and compatibility storage paths |
 | [reference/public-api.md](reference/public-api.md) | Public API stability and semver contract |
 | [reference/error-contracts.md](reference/error-contracts.md) | CLI, JSON, and helper error semantics |
-| [releases/v2.1.7.md](releases/v2.1.7.md) | Earlier stable release notes |
-| [releases/v2.1.6.md](releases/v2.1.6.md) | Earlier stable release notes |
-| [releases/v2.1.5.md](releases/v2.1.5.md) | Earlier stable release notes |
-| [releases/v2.1.4.md](releases/v2.1.4.md) | Earlier stable release notes |
-| [releases/v2.1.3.md](releases/v2.1.3.md) | Earlier stable release notes |
-| [releases/v2.1.2.md](releases/v2.1.2.md) | Earlier stable release notes |
-| [releases/v2.1.1.md](releases/v2.1.1.md) | Earlier stable release notes |
-| [releases/v2.1.0.md](releases/v2.1.0.md) | Earlier stable release notes |
-| [releases/v2.0.2.md](releases/v2.0.2.md) | Earlier stable release notes |
-| [releases/v2.0.1.md](releases/v2.0.1.md) | Earlier stable release notes |
-| [releases/v0.1.0-beta.0.md](releases/v0.1.0-beta.0.md) | Archived prerelease reference |
 | [Release history](#release-history) | Stable, previous, and archived release notes |
 
 ---

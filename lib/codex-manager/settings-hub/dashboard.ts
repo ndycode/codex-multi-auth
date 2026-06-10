@@ -7,7 +7,7 @@ import {
 	getDashboardSettingsPath,
 	loadDashboardDisplaySettings,
 } from "../../dashboard-settings.js";
-import { UI_COPY } from "../../ui/copy.js";
+import { UI_COPY } from "../../ui/ui-copy.js";
 import { getUiRuntimeOptions, setUiRuntimeOptions } from "../../ui/runtime.js";
 import { promptBehaviorSettingsPanel } from "../behavior-settings-panel.js";
 import {

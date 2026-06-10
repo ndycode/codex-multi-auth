@@ -62,7 +62,7 @@ export async function runPreuninstallCleanup(deps = {}) {
 	/** @type {"safe" | "uncertain"} */
 	let bunLockState = "uncertain";
 
-	// Unbind Codex app runtime rotation (reverses postinstall bind)
+	// Unbind Codex app runtime rotation (reverses install-time/first-run bind)
 	try {
 		if (deps.unbindCodexApp) {
 			await deps.unbindCodexApp(dryRun);
@@ -85,7 +85,7 @@ export async function runPreuninstallCleanup(deps = {}) {
 		);
 	}
 
-	// Remove OS-level launcher (reverses postinstall launcher install)
+	// Remove OS-level launcher (reverses install-time/first-run launcher install)
 	try {
 		if (deps.removeLauncher) {
 			await deps.removeLauncher({ dryRun, log });

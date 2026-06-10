@@ -1,53 +1,34 @@
-import { stdin as input, stdout as output } from "node:process";
-import { createInterface } from "node:readline/promises";
 import {
 	extractAccountEmail,
 	extractAccountId,
 	formatAccountLabel,
 	formatWaitTime,
-	getAccountIdCandidates,
-	resolveRequestAccountId,
 	sanitizeEmail,
-	selectBestAccountCandidate,
-	shouldUpdateAccountIdFromToken,
-	type Workspace,
 } from "./accounts.js";
-import {
-	createAuthorizationFlow,
-	exchangeAuthorizationCode,
-	redactOAuthUrlForLog,
-	REDIRECT_URI,
-} from "./auth/auth.js";
-import { runDeviceAuthFlow } from "./auth/device-auth.js";
-import { resolveOrgOverride } from "./auth/org-override.js";
-import {
-	copyTextToClipboard,
-	isBrowserLaunchSuppressed,
-	openBrowserUrl,
-} from "./auth/browser.js";
-import { startLocalOAuthServer } from "./auth/server.js";
-import {
-	type ExistingAccountInfo,
-	promptAddAnotherAccount,
-	promptLoginMode,
-} from "./cli.js";
 import { loadCodexCliState } from "./codex-cli/state.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 import {
-	type BestCliOptions,
+	parseBestArgs,
+	printBestUsage,
 	runBestCommand,
 } from "./codex-manager/commands/best.js";
+import {
+	applyTokenAccountIdentity,
+	hasLikelyInvalidRefreshToken,
+	hasUsableAccessToken,
+	resolveStoredAccountIdentity,
+} from "./codex-manager/account-credentials.js";
+import { runHealthCheck } from "./codex-manager/health-check.js";
+import { runAuthLogin } from "./codex-manager/login-flow.js";
+import { persistAndSyncSelectedAccount } from "./codex-manager/persist-selected-account.js";
+import {
+	cloneQuotaCacheData,
+	pruneUnsafeQuotaEmailCacheEntry,
+	updateQuotaCacheForAccount,
+} from "./codex-manager/quota-cache-helpers.js";
 import { runAccountCommand } from "./codex-manager/commands/account.js";
 import { ACCOUNT_MANAGER_COMMANDS } from "./codex-manager/account-manager-commands.js";
-import {
-	type AccountPoolWriteOutcome,
-	applyAccountPoolResults,
-	type ResolvedAccountWrite,
-} from "./codex-manager/account-pool-write.js";
-import {
-	classifyManualCallbackInput,
-	type ManualCallbackClassification,
-} from "./codex-manager/manual-callback.js";
+import { ensureFirstRunSetup } from "./runtime/first-run.js";
 import { runBudgetCommand } from "./codex-manager/commands/budget.js";
 import { runBridgeCommand } from "./codex-manager/commands/bridge.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
@@ -55,7 +36,6 @@ import { runIntegrationsCommand } from "./codex-manager/commands/integrations.js
 import { runModelsCommand } from "./codex-manager/commands/models.js";
 import { runMonitorCommand } from "./codex-manager/commands/monitor.js";
 import { runConfigExplainCommand } from "./codex-manager/commands/config-explain.js";
-import { saveAccountsWithRetry } from "./codex-manager/forecast-report-shared.js";
 import { runDebugBundleCommand } from "./codex-manager/commands/debug-bundle.js";
 import {
 	parseWhySelectedArgs,
@@ -101,16 +81,20 @@ import { runSwitchCommand } from "./codex-manager/commands/switch.js";
 import { runUnpinCommand } from "./codex-manager/commands/unpin.js";
 import { runWorkspaceCommand } from "./codex-manager/commands/workspace.js";
 import { runUsageCommand } from "./codex-manager/commands/usage.js";
+import { printUsage } from "./codex-manager/help.js";
 import {
-	type AuthLoginOptions,
-	parseAuthLoginArgs,
-	printUsage,
-} from "./codex-manager/help.js";
-import {
-	applyUiThemeFromDashboardSettings,
-	configureUnifiedSettings,
-	resolveMenuLayoutMode,
-} from "./codex-manager/settings-hub.js";
+	availabilityTone,
+	formatBackupSavedAt,
+	formatCompactQuotaSnapshot,
+	formatRateLimitEntry,
+	formatResultSummary,
+	normalizeFailureDetail,
+	riskTone,
+	styleAccountDetailText,
+	stylePromptText,
+	styleQuotaSummary,
+} from "./codex-manager/formatters/index.js";
+import { applyUiThemeFromDashboardSettings } from "./codex-manager/settings-hub.js";
 import {
 	getCodexRuntimeRotationProxy,
 	getPluginConfigExplainReport,
@@ -122,242 +106,43 @@ import {
 	getAppBindStatus,
 	unbindCodexAppRuntimeRotation,
 } from "./runtime/app-bind.js";
-import { ACCOUNT_LIMITS } from "./constants.js";
 import {
-	type DashboardAccountSortMode,
-	type DashboardDisplaySettings,
 	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
 	loadDashboardDisplaySettings,
 } from "./dashboard-settings.js";
 import {
 	evaluateForecastAccounts,
-	type ForecastAccountResult,
 	recommendForecastAccount,
 	summarizeForecast,
 } from "./forecast.js";
-import { createLogger } from "./logger.js";
-import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
+import { resolveActiveIndex } from "./runtime/account-status.js";
+import { buildQuotaEmailFallbackState } from "./quota-readiness.js";
+import { loadQuotaCache, saveQuotaCache } from "./quota-cache.js";
+import { readAppRuntimeHelperAccountSignal } from "./runtime/runtime-current-account.js";
 import {
-	DEFAULT_MODEL,
-	getModelCapabilities,
-	getModelProfile,
-	resolveNormalizedModel,
-} from "./request/helpers/model-map.js";
-import {
-	formatRateLimitEntry as formatAccountRateLimitEntry,
-	getRateLimitResetTimeForFamily,
-	resolveActiveIndex,
-} from "./runtime/account-status.js";
-import {
-	buildQuotaEmailFallbackState,
-	hasSafeQuotaEmailFallback,
-	hasUniqueQuotaAccountId,
-	isQuotaCacheEntryExhausted,
-	normalizeQuotaAccountId,
-	normalizeQuotaEmail,
-	quotaLeftPercentFromUsed,
-} from "./quota-readiness.js";
-import {
-	loadQuotaCache,
-	type QuotaCacheData,
-	type QuotaCacheEntry,
-	saveQuotaCache,
-} from "./quota-cache.js";
-import {
-	isDisplayCurrentAccount,
-	readAppRuntimeHelperAccountSignal,
-	resolveAccountCurrentMarkers,
-	resolveRuntimeCurrentAccount,
-	type RuntimeCurrentAccountSelection,
-} from "./runtime/runtime-current-account.js";
-import {
-	type CodexQuotaSnapshot,
 	fetchCodexQuotaSnapshot,
 	formatQuotaSnapshotLine,
-	CODEX_UNAVAILABLE_PROBE_NOTE,
 } from "./quota-probe.js";
-import { isCodexUnavailableError } from "./errors.js";
 import { queuedRefresh } from "./refresh-queue.js";
 import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
 	clearAccounts,
 	findMatchingAccountIndex,
-	formatStorageErrorHint,
 	inspectStorageHealth,
 	getLastAccountsSaveTimestamp,
-	getNamedBackups,
 	getStoragePath,
 	loadAccounts,
 	loadFlaggedAccounts,
-	type NamedBackupSummary,
-	readAffinityGenerationFromDisk,
-	restoreAccountsFromBackup,
-	StorageError,
 	saveAccounts,
 	setStoragePath,
 	withAccountStorageTransaction,
 } from "./storage.js";
-import type { PersistedSwitchReason } from "./schemas.js";
-import type { AccountIdSource, TokenResult } from "./types.js";
-import { ANSI } from "./ui/ansi.js";
-import { confirm } from "./ui/confirm.js";
-import { UI_COPY } from "./ui/copy.js";
-import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
-import { getUiRuntimeOptions } from "./ui/runtime.js";
-import { type MenuItem, select } from "./ui/select.js";
 
-type TokenSuccess = Extract<TokenResult, { type: "success" }>;
-type TokenSuccessWithAccount = TokenSuccess & {
-	accountIdOverride?: string;
-	accountIdSource?: AccountIdSource;
-	accountLabel?: string;
-	workspaces?: Workspace[];
-};
-type PromptTone = "accent" | "success" | "warning" | "danger" | "muted";
-const log = createLogger("codex-manager");
-
-interface ModelInspection {
-	requested: string;
-	normalized: string;
-	remapped: boolean;
-	promptFamily: ModelFamily;
-	capabilities: ReturnType<typeof getModelCapabilities>;
-}
-
-function stylePromptText(text: string, tone: PromptTone): string {
-	if (!output.isTTY) return text;
-	const ui = getUiRuntimeOptions();
-	if (ui.v2Enabled) {
-		if (tone === "muted") {
-			return `${ui.theme.colors.dim}${paintUiText(ui, text, "muted")}${ui.theme.colors.reset}`;
-		}
-		const mapped = tone === "accent" ? "primary" : tone;
-		return paintUiText(ui, text, mapped);
-	}
-	const legacyCode =
-		tone === "accent"
-			? ANSI.green
-			: tone === "success"
-				? ANSI.green
-				: tone === "warning"
-					? ANSI.yellow
-					: tone === "danger"
-						? ANSI.red
-						: ANSI.dim;
-	return `${legacyCode}${text}${ANSI.reset}`;
-}
-
-function inspectRequestedModel(requestedModel: string): ModelInspection {
-	const normalized = resolveNormalizedModel(requestedModel);
-	const profile = getModelProfile(normalized);
-	return {
-		requested: requestedModel,
-		normalized,
-		remapped: requestedModel !== normalized,
-		promptFamily: profile.promptFamily,
-		capabilities: getModelCapabilities(normalized),
-	};
-}
-
-function formatModelInspection(model: ModelInspection): string {
-	const route = model.remapped
-		? `${model.requested} -> ${model.normalized}`
-		: model.normalized;
-	return [
-		route,
-		`prompt family ${model.promptFamily}`,
-		`tool search ${model.capabilities.toolSearch ? "yes" : "no"}`,
-		`computer use ${model.capabilities.computerUse ? "yes" : "no"}`,
-	].join(" | ");
-}
-
-function collapseWhitespace(value: string): string {
-	return value.replace(/\s+/g, " ").trim();
-}
-
-function formatReasonLabel(reason: string | undefined): string | undefined {
-	if (!reason) return undefined;
-	const normalized = collapseWhitespace(reason.replace(/_/g, " "));
-	return normalized.length > 0 ? normalized : undefined;
-}
-
-function extractErrorMessageFromPayload(payload: unknown): string | undefined {
-	if (!payload || typeof payload !== "object") return undefined;
-	const record = payload as Record<string, unknown>;
-
-	const directMessage =
-		typeof record.message === "string"
-			? collapseWhitespace(record.message)
-			: "";
-	const directCode =
-		typeof record.code === "string" ? collapseWhitespace(record.code) : "";
-	if (directMessage) {
-		if (
-			directCode &&
-			!directMessage.toLowerCase().includes(directCode.toLowerCase())
-		) {
-			return `${directMessage} [${directCode}]`;
-		}
-		return directMessage;
-	}
-
-	const nested = record.error;
-	if (nested && typeof nested === "object") {
-		return extractErrorMessageFromPayload(nested);
-	}
-	return undefined;
-}
-
-function parseStructuredErrorMessage(raw: string): string | undefined {
-	const trimmed = raw.trim();
-	if (!trimmed) return undefined;
-	const candidates = new Set<string>([trimmed]);
-	const firstBrace = trimmed.indexOf("{");
-	const lastBrace = trimmed.lastIndexOf("}");
-	if (firstBrace >= 0 && lastBrace > firstBrace) {
-		candidates.add(trimmed.slice(firstBrace, lastBrace + 1));
-	}
-
-	for (const candidate of candidates) {
-		try {
-			const parsed = JSON.parse(candidate) as unknown;
-			const message = extractErrorMessageFromPayload(parsed);
-			if (message) return message;
-		} catch {
-			// ignore non-JSON candidates
-		}
-	}
-	return undefined;
-}
-
-function normalizeFailureDetail(
-	message: string | undefined,
-	reason: string | undefined,
-): string {
-	const reasonLabel = formatReasonLabel(reason);
-	const raw = message?.trim() || reasonLabel || "refresh failed";
-	const structured = parseStructuredErrorMessage(raw);
-	const normalized = collapseWhitespace(structured ?? raw);
-	const bounded =
-		normalized.length > 260 ? `${normalized.slice(0, 257)}...` : normalized;
-	return bounded.length > 0 ? bounded : "refresh failed";
-}
-
-function joinStyledSegments(parts: string[]): string {
-	if (parts.length === 0) return "";
-	const separator = stylePromptText(" | ", "muted");
-	return parts.join(separator);
-}
-
-function formatResultSummary(
-	segments: ReadonlyArray<{ text: string; tone: PromptTone }>,
-): string {
-	const rendered = segments.map((segment) =>
-		stylePromptText(segment.text, segment.tone),
-	);
-	return `${stylePromptText("Result:", "accent")} ${joinStyledSegments(rendered)}`;
-}
+// Formatter implementations moved to lib/codex-manager/formatters/ (audit
+// roadmap §4.1.1 phase 1). Re-exported here so existing consumers importing
+// from lib/codex-manager.js keep working unchanged.
+export { formatBackupSavedAt, styleAccountDetailText };
 
 function createRepairCommandDeps(): RepairCommandDeps {
 	return {
@@ -376,126 +161,6 @@ function createRepairCommandDeps(): RepairCommandDeps {
 		resolveStoredAccountIdentity,
 		applyTokenAccountIdentity,
 	};
-}
-
-function isOAuthCancellation(
-	result: Exclude<TokenResult, { type: "success" }>,
-): boolean {
-	const message = (result.message ?? result.reason ?? "").trim().toLowerCase();
-	return message.includes("cancelled") || message.includes("canceled");
-}
-
-function styleQuotaSummary(summary: string): string {
-	const normalized = collapseWhitespace(summary);
-	if (!normalized) return stylePromptText(summary, "muted");
-	const segments = normalized
-		.split("|")
-		.map((segment) => segment.trim())
-		.filter(Boolean);
-	if (segments.length === 0) return stylePromptText(normalized, "muted");
-
-	const rendered = segments.map((segment) => {
-		if (/rate-limited/i.test(segment)) {
-			return stylePromptText(segment, "danger");
-		}
-		const match = segment.match(/^([0-9a-zA-Z]+)\s+(\d{1,3})%$/);
-		if (!match) {
-			return stylePromptText(segment, "muted");
-		}
-		const windowLabel = match[1] ?? "";
-		const leftPercent = Math.max(
-			0,
-			Math.min(100, Number.parseInt(match[2] ?? "", 10)),
-		);
-		if (!Number.isFinite(leftPercent)) {
-			return stylePromptText(segment, "muted");
-		}
-		const tone = quotaToneFromLeftPercent(leftPercent);
-		return `${stylePromptText(windowLabel, "muted")} ${stylePromptText(`${leftPercent}%`, tone)}`;
-	});
-
-	return joinStyledSegments(rendered);
-}
-
-// Exported for unit tests: tone precedence (danger before warning) is
-// security/UX-relevant — a failure whose text contains "unavailable" must
-// render red, not be downgraded to yellow. See test/codex-manager-detail-tone.test.ts.
-export function styleAccountDetailText(
-	detail: string,
-	fallbackTone: PromptTone = "muted",
-): string {
-	const compact = collapseWhitespace(detail);
-	if (!compact) return stylePromptText("", fallbackTone);
-
-	const quotaMatch = compact.match(/^(.*?)\(([^()]*\d{1,3}%[^()]*)\)(.*)$/);
-	if (quotaMatch) {
-		const prefix = (quotaMatch[1] ?? "").trim();
-		const quota = (quotaMatch[2] ?? "").trim();
-		const suffix = (quotaMatch[3] ?? "").trim();
-
-		// danger wins across the WHOLE detail: a failure keyword anywhere — even
-		// trapped inside the (…%) quota segment, e.g.
-		// "signed in and working (live check failed: … 0%)" — must keep the prefix
-		// red, never let a "working"/"ok" prefix render green over a real failure.
-		const detailHasFailure = /failed|error|rate-limited/i.test(compact);
-		const prefixTone: PromptTone = detailHasFailure
-			? "danger"
-			: /\b(ok|working|succeeded|valid)\b/i.test(prefix)
-				? "success"
-				: fallbackTone;
-		const suffixTone: PromptTone =
-			// danger wins first: a real failure whose text happens to contain
-			// "unavailable"/"not available" (e.g. a 5xx "service not available")
-			// must render red, not be downgraded to a yellow warning.
-			/failed|error/i.test(suffix)
-				? "danger"
-				: /re-login|stale|warning|retry|fallback|unavailable|not available/i.test(suffix)
-					? "warning"
-					: "muted";
-
-		const chunks: string[] = [];
-		if (prefix) chunks.push(stylePromptText(prefix, prefixTone));
-		chunks.push(`(${styleQuotaSummary(quota)})`);
-		if (suffix) chunks.push(stylePromptText(suffix, suffixTone));
-		return chunks.join(" ");
-	}
-
-	if (/rate-limited/i.test(compact)) return stylePromptText(compact, "danger");
-	if (/failed|error/i.test(compact)) return stylePromptText(compact, "danger");
-	if (/re-login|stale|warning|fallback|unavailable|not available/i.test(compact))
-		return stylePromptText(compact, "warning");
-	if (/\b(ok|working|succeeded|valid)\b/i.test(compact))
-		return stylePromptText(compact, "success");
-	return stylePromptText(compact, fallbackTone);
-}
-
-function riskTone(
-	level: ForecastAccountResult["riskLevel"],
-): "success" | "warning" | "danger" {
-	if (level === "low") return "success";
-	if (level === "medium") return "warning";
-	return "danger";
-}
-
-function availabilityTone(
-	availability: ForecastAccountResult["availability"],
-): "success" | "warning" | "danger" {
-	if (availability === "ready") return "success";
-	if (availability === "delayed") return "warning";
-	return "danger";
-}
-function formatQuotaSnapshotForDashboard(
-	snapshot: Awaited<ReturnType<typeof fetchCodexQuotaSnapshot>>,
-	settings: DashboardDisplaySettings,
-): string {
-	if (!settings.showQuotaDetails) return "live session OK";
-	return `live session OK (${formatCompactQuotaSnapshot(snapshot)})`;
-}
-
-function isAbortError(error: unknown): boolean {
-	if (!(error instanceof Error)) return false;
-	const maybe = error as Error & { code?: string };
-	return maybe.name === "AbortError" || maybe.code === "ABORT_ERR";
 }
 
 interface ImplementedFeature {
@@ -547,2022 +212,6 @@ const IMPLEMENTED_FEATURES: ImplementedFeature[] = [
 	{ id: 41, name: "Auto-switch to best account command" },
 ];
 
-function formatRateLimitEntry(
-	account: { rateLimitResetTimes?: Record<string, number | undefined> },
-	now: number,
-	family: ModelFamily = "codex",
-): string | null {
-	return formatAccountRateLimitEntry(account, now, formatWaitTime, family);
-}
-
-function quotaCacheEntryToSnapshot(entry: QuotaCacheEntry): CodexQuotaSnapshot {
-	return {
-		status: entry.status,
-		planType: entry.planType,
-		model: entry.model,
-		primary: {
-			usedPercent: entry.primary.usedPercent,
-			windowMinutes: entry.primary.windowMinutes,
-			resetAtMs: entry.primary.resetAtMs,
-		},
-		secondary: {
-			usedPercent: entry.secondary.usedPercent,
-			windowMinutes: entry.secondary.windowMinutes,
-			resetAtMs: entry.secondary.resetAtMs,
-		},
-	};
-}
-
-function formatCompactQuotaWindowLabel(
-	windowMinutes: number | undefined,
-): string {
-	if (!windowMinutes || !Number.isFinite(windowMinutes) || windowMinutes <= 0) {
-		return "quota";
-	}
-	if (windowMinutes % 1440 === 0) return `${windowMinutes / 1440}d`;
-	if (windowMinutes % 60 === 0) return `${windowMinutes / 60}h`;
-	return `${windowMinutes}m`;
-}
-
-function formatCompactQuotaPart(
-	windowMinutes: number | undefined,
-	usedPercent: number | undefined,
-): string | null {
-	const label = formatCompactQuotaWindowLabel(windowMinutes);
-	if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) {
-		return null;
-	}
-	const left = quotaLeftPercentFromUsed(usedPercent);
-	return `${label} ${left}%`;
-}
-
-function formatCompactQuotaSnapshot(
-	snapshot: CodexQuotaSnapshot,
-	now = Date.now(),
-): string {
-	const parts = [
-		formatCompactQuotaPart(
-			snapshot.primary.windowMinutes,
-			snapshot.primary.usedPercent,
-		),
-		formatCompactQuotaPart(
-			snapshot.secondary.windowMinutes,
-			snapshot.secondary.usedPercent,
-		),
-	].filter(
-		(value): value is string => typeof value === "string" && value.length > 0,
-	);
-	if (snapshot.status === 429) {
-		parts.push("rate-limited");
-	}
-	if (isQuotaCacheEntryExhausted(snapshot, now)) {
-		parts.push("quota-exhausted");
-	}
-	if (parts.length > 0) {
-		return parts.join(" | ");
-	}
-	return formatQuotaSnapshotLine(snapshot);
-}
-
-function formatAccountQuotaSummary(
-	entry: QuotaCacheEntry,
-	now = Date.now(),
-): string {
-	const parts = [
-		formatCompactQuotaPart(
-			entry.primary.windowMinutes,
-			entry.primary.usedPercent,
-		),
-		formatCompactQuotaPart(
-			entry.secondary.windowMinutes,
-			entry.secondary.usedPercent,
-		),
-	].filter(
-		(value): value is string => typeof value === "string" && value.length > 0,
-	);
-	if (entry.status === 429) {
-		parts.push("rate-limited");
-	}
-	if (isQuotaCacheEntryExhausted(entry, now)) {
-		parts.push("quota-exhausted");
-	}
-	if (parts.length > 0) {
-		return parts.join(" | ");
-	}
-	return formatQuotaSnapshotLine(quotaCacheEntryToSnapshot(entry));
-}
-
-function getQuotaCacheEntryForAccount(
-	cache: QuotaCacheData,
-	account: Pick<AccountMetadataV3, "accountId" | "email">,
-	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
-	emailFallbackState = buildQuotaEmailFallbackState(accounts),
-): QuotaCacheEntry | null {
-	const accountId = normalizeQuotaAccountId(account.accountId);
-	if (
-		accountId &&
-		hasUniqueQuotaAccountId(accounts, account) &&
-		cache.byAccountId[accountId]
-	) {
-		return cache.byAccountId[accountId] ?? null;
-	}
-	const email = normalizeQuotaEmail(account.email);
-	if (
-		email &&
-		hasSafeQuotaEmailFallback(emailFallbackState, account) &&
-		cache.byEmail[email]
-	) {
-		return cache.byEmail[email] ?? null;
-	}
-	return null;
-}
-
-function getPersistedQuotaViewForAccount(
-	cache: QuotaCacheData | null,
-	account: Pick<
-		AccountMetadataV3,
-		"accountId" | "email" | "rateLimitResetTimes"
-	>,
-	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
-	now: number,
-	emailFallbackState = buildQuotaEmailFallbackState(accounts),
-): QuotaCacheEntry | null {
-	const cachedEntry = cache
-		? getQuotaCacheEntryForAccount(cache, account, accounts, emailFallbackState)
-		: null;
-	const persistedResetAt = getRateLimitResetTimeForFamily(
-		account,
-		now,
-		"codex",
-	);
-	if (typeof persistedResetAt !== "number") {
-		return cachedEntry;
-	}
-	const cachedPrimaryResetAt = cachedEntry?.primary.resetAtMs ?? 0;
-	const cachedSecondaryResetAt = cachedEntry?.secondary.resetAtMs ?? 0;
-	if (
-		cachedEntry?.status === 429 &&
-		Math.max(cachedPrimaryResetAt, cachedSecondaryResetAt) >= persistedResetAt
-	) {
-		return cachedEntry;
-	}
-	return {
-		updatedAt: cachedEntry?.updatedAt ?? now,
-		status: 429,
-		model: cachedEntry?.model ?? DEFAULT_MODEL,
-		planType: cachedEntry?.planType,
-		primary: {
-			...cachedEntry?.primary,
-			resetAtMs: Math.max(cachedPrimaryResetAt, persistedResetAt),
-		},
-		secondary: cachedEntry?.secondary ?? {},
-	};
-}
-
-function updateQuotaCacheForAccount(
-	cache: QuotaCacheData,
-	account: Pick<AccountMetadataV3, "accountId" | "email">,
-	snapshot: CodexQuotaSnapshot,
-	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
-	emailFallbackState = buildQuotaEmailFallbackState(accounts),
-): boolean {
-	const nextEntry: QuotaCacheEntry = {
-		updatedAt: Date.now(),
-		status: snapshot.status,
-		model: snapshot.model,
-		planType: snapshot.planType,
-		primary: {
-			usedPercent: snapshot.primary.usedPercent,
-			windowMinutes: snapshot.primary.windowMinutes,
-			resetAtMs: snapshot.primary.resetAtMs,
-		},
-		secondary: {
-			usedPercent: snapshot.secondary.usedPercent,
-			windowMinutes: snapshot.secondary.windowMinutes,
-			resetAtMs: snapshot.secondary.resetAtMs,
-		},
-	};
-
-	let changed = false;
-	const accountId = normalizeQuotaAccountId(account.accountId);
-	const hasUniqueAccountId =
-		accountId !== null && hasUniqueQuotaAccountId(accounts, account);
-	if (hasUniqueAccountId) {
-		cache.byAccountId[accountId] = nextEntry;
-		changed = true;
-	}
-	const email = normalizeQuotaEmail(account.email);
-	if (
-		email &&
-		hasSafeQuotaEmailFallback(emailFallbackState, account) &&
-		!hasUniqueAccountId
-	) {
-		cache.byEmail[email] = nextEntry;
-		changed = true;
-	} else if (email && cache.byEmail[email]) {
-		delete cache.byEmail[email];
-		changed = true;
-	}
-	return changed;
-}
-
-function cloneQuotaCacheData(cache: QuotaCacheData): QuotaCacheData {
-	// Shallow spreading is safe because quota cache entries are always replaced,
-	// never mutated in-place.
-	return {
-		byAccountId: { ...cache.byAccountId },
-		byEmail: { ...cache.byEmail },
-	};
-}
-
-function pruneUnsafeQuotaEmailCacheEntry(
-	cache: QuotaCacheData,
-	email: string | undefined,
-	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
-	emailFallbackState = buildQuotaEmailFallbackState(accounts),
-): boolean {
-	const normalizedEmail = normalizeQuotaEmail(email);
-	if (!normalizedEmail || !cache.byEmail[normalizedEmail]) {
-		return false;
-	}
-	const hasSafeFallbackAccount = accounts.some(
-		(account) =>
-			normalizeQuotaEmail(account.email) === normalizedEmail &&
-			hasSafeQuotaEmailFallback(emailFallbackState, account),
-	);
-	if (hasSafeFallbackAccount) {
-		return false;
-	}
-	delete cache.byEmail[normalizedEmail];
-	return true;
-}
-
-const DEFAULT_MENU_QUOTA_REFRESH_TTL_MS = 5 * 60_000;
-const DEFAULT_LIVE_PROBE_MODEL = DEFAULT_MODEL;
-const MENU_QUOTA_REFRESH_MODEL = DEFAULT_LIVE_PROBE_MODEL;
-
-interface MenuQuotaProbeTarget {
-	account: AccountMetadataV3;
-	accountId: string;
-	accessToken: string;
-}
-
-function resolveMenuQuotaProbeInput(
-	account: AccountMetadataV3,
-	cache: QuotaCacheData,
-	maxAgeMs: number,
-	now: number,
-	accounts: readonly Pick<AccountMetadataV3, "accountId" | "email">[],
-	emailFallbackState = buildQuotaEmailFallbackState(accounts),
-): { accountId: string; accessToken: string } | null {
-	if (account.enabled === false) return null;
-	if (!hasUsableAccessToken(account, now)) return null;
-
-	const existing = getPersistedQuotaViewForAccount(
-		cache,
-		account,
-		accounts,
-		now,
-		emailFallbackState,
-	);
-	if (
-		existing &&
-		typeof existing.updatedAt === "number" &&
-		Number.isFinite(existing.updatedAt) &&
-		now - existing.updatedAt < maxAgeMs
-	) {
-		return null;
-	}
-
-	// Menu auto-refresh is cache-backed, so only probe when the result can be
-	// written behind a safe lookup key for later reuse.
-	const canStore =
-		(normalizeQuotaAccountId(account.accountId) !== null &&
-			hasUniqueQuotaAccountId(accounts, account)) ||
-		hasSafeQuotaEmailFallback(emailFallbackState, account);
-	if (!canStore) return null;
-
-	const accessToken = account.accessToken;
-	const accountId = accessToken
-		? (account.accountId ?? extractAccountId(accessToken))
-		: account.accountId;
-	if (!accountId || !accessToken) return null;
-	return { accountId, accessToken };
-}
-
-function collectMenuQuotaRefreshTargets(
-	storage: AccountStorageV3,
-	cache: QuotaCacheData,
-	maxAgeMs: number,
-	now = Date.now(),
-	emailFallbackState = buildQuotaEmailFallbackState(storage.accounts),
-): MenuQuotaProbeTarget[] {
-	const targets: MenuQuotaProbeTarget[] = [];
-	for (const account of storage.accounts) {
-		const probeInput = resolveMenuQuotaProbeInput(
-			account,
-			cache,
-			maxAgeMs,
-			now,
-			storage.accounts,
-			emailFallbackState,
-		);
-		if (!probeInput) continue;
-		targets.push({
-			account,
-			accountId: probeInput.accountId,
-			accessToken: probeInput.accessToken,
-		});
-	}
-	return targets;
-}
-
-function countMenuQuotaRefreshTargets(
-	storage: AccountStorageV3,
-	cache: QuotaCacheData,
-	maxAgeMs: number,
-	now = Date.now(),
-): number {
-	const emailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
-	let count = 0;
-	for (const account of storage.accounts) {
-		if (
-			resolveMenuQuotaProbeInput(
-				account,
-				cache,
-				maxAgeMs,
-				now,
-				storage.accounts,
-				emailFallbackState,
-			)
-		) {
-			count += 1;
-		}
-	}
-	return count;
-}
-
-async function refreshQuotaCacheForMenu(
-	storage: AccountStorageV3,
-	cache: QuotaCacheData,
-	maxAgeMs: number,
-	onProgress?: (current: number, total: number) => void,
-): Promise<QuotaCacheData> {
-	if (storage.accounts.length === 0) {
-		return cache;
-	}
-
-	const emailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
-	const nextCache = cloneQuotaCacheData(cache);
-	const now = Date.now();
-	const targets = collectMenuQuotaRefreshTargets(
-		storage,
-		nextCache,
-		maxAgeMs,
-		now,
-		emailFallbackState,
-	);
-	const total = targets.length;
-	let processed = 0;
-	onProgress?.(processed, total);
-	let changed = false;
-	for (const target of targets) {
-		processed += 1;
-		onProgress?.(processed, total);
-
-		try {
-			const snapshot = await fetchCodexQuotaSnapshot({
-				accountId: target.accountId,
-				accessToken: target.accessToken,
-				model: MENU_QUOTA_REFRESH_MODEL,
-			});
-			changed =
-				updateQuotaCacheForAccount(
-					nextCache,
-					target.account,
-					snapshot,
-					storage.accounts,
-					emailFallbackState,
-				) || changed;
-		} catch {
-			// Keep existing cached values if probing fails.
-		}
-	}
-
-	if (changed) {
-		await saveQuotaCache(nextCache);
-	}
-
-	return nextCache;
-}
-
-const ACCESS_TOKEN_FRESH_WINDOW_MS = 5 * 60 * 1000;
-
-function hasUsableAccessToken(
-	account: Pick<AccountMetadataV3, "accessToken" | "expiresAt">,
-	now: number,
-): boolean {
-	if (!account.accessToken) return false;
-	if (
-		typeof account.expiresAt !== "number" ||
-		!Number.isFinite(account.expiresAt)
-	)
-		return false;
-	return account.expiresAt - now > ACCESS_TOKEN_FRESH_WINDOW_MS;
-}
-
-function hasLikelyInvalidRefreshToken(
-	refreshToken: string | undefined,
-): boolean {
-	if (!refreshToken) return true;
-	const trimmed = refreshToken.trim();
-	if (trimmed.length < 20) return true;
-	return trimmed.startsWith("token-");
-}
-
-function mapAccountStatus(
-	account: AccountMetadataV3,
-	isCurrentAccount: boolean,
-	now: number,
-	persistedQuotaEntry?: QuotaCacheEntry | null,
-): ExistingAccountInfo["status"] {
-	if (account.enabled === false) return "disabled";
-	if (
-		typeof account.coolingDownUntil === "number" &&
-		account.coolingDownUntil > now
-	) {
-		return "cooldown";
-	}
-	if (persistedQuotaEntry && isQuotaCacheEntryExhausted(persistedQuotaEntry, now)) {
-		return "quota-exhausted";
-	}
-	if (persistedQuotaEntry?.status === 429) return "rate-limited";
-	const rateLimit = formatRateLimitEntry(account, now, "codex");
-	if (rateLimit) return "rate-limited";
-	if (isCurrentAccount) return "active";
-	return "ok";
-}
-
-function parseLeftPercentFromQuotaSummary(
-	summary: string | undefined,
-	windowLabel: "5h" | "7d",
-): number {
-	if (!summary) return -1;
-	const match = summary.match(
-		new RegExp(`(?:^|\\|)\\s*${windowLabel}\\s+(\\d{1,3})%`, "i"),
-	);
-	const value = Number.parseInt(match?.[1] ?? "", 10);
-	if (!Number.isFinite(value)) return -1;
-	return Math.max(0, Math.min(100, value));
-}
-
-function readQuotaLeftPercent(
-	account: ExistingAccountInfo,
-	windowLabel: "5h" | "7d",
-): number {
-	const direct =
-		windowLabel === "5h"
-			? account.quota5hLeftPercent
-			: account.quota7dLeftPercent;
-	if (typeof direct === "number" && Number.isFinite(direct)) {
-		return Math.max(0, Math.min(100, Math.round(direct)));
-	}
-	return parseLeftPercentFromQuotaSummary(account.quotaSummary, windowLabel);
-}
-
-function readQuotaFloorPercent(account: ExistingAccountInfo): number {
-	return Math.min(
-		readQuotaLeftPercent(account, "5h"),
-		readQuotaLeftPercent(account, "7d"),
-	);
-}
-
-function accountStatusSortBucket(
-	status: ExistingAccountInfo["status"],
-): number {
-	switch (status) {
-		case "active":
-		case "ok":
-			return 0;
-		case "unknown":
-			return 1;
-		case "quota-exhausted":
-		case "cooldown":
-		case "rate-limited":
-			return 2;
-		case "disabled":
-		case "error":
-		case "flagged":
-			return 3;
-		default:
-			return 1;
-	}
-}
-
-function accountReadinessSortBucket(account: ExistingAccountInfo): number {
-	const statusBucket = accountStatusSortBucket(account.status);
-	if (statusBucket >= 2) return statusBucket;
-	return account.quotaRateLimited || account.quotaExhausted ? 2 : statusBucket;
-}
-
-function compareReadyFirstAccounts(
-	left: ExistingAccountInfo,
-	right: ExistingAccountInfo,
-): number {
-	const bucketDelta =
-		accountReadinessSortBucket(left) - accountReadinessSortBucket(right);
-	if (bucketDelta !== 0) return bucketDelta;
-
-	const leftFloor = readQuotaFloorPercent(left);
-	const rightFloor = readQuotaFloorPercent(right);
-	if (leftFloor !== rightFloor) return rightFloor - leftFloor;
-
-	const left5h = readQuotaLeftPercent(left, "5h");
-	const right5h = readQuotaLeftPercent(right, "5h");
-	if (left5h !== right5h) return right5h - left5h;
-
-	const left7d = readQuotaLeftPercent(left, "7d");
-	const right7d = readQuotaLeftPercent(right, "7d");
-	if (left7d !== right7d) return right7d - left7d;
-
-	const leftLastUsed = left.lastUsed ?? 0;
-	const rightLastUsed = right.lastUsed ?? 0;
-	if (leftLastUsed !== rightLastUsed) return rightLastUsed - leftLastUsed;
-
-	const leftSource = left.sourceIndex ?? left.index;
-	const rightSource = right.sourceIndex ?? right.index;
-	return leftSource - rightSource;
-}
-
-function applyAccountMenuOrdering(
-	accounts: ExistingAccountInfo[],
-	displaySettings: DashboardDisplaySettings,
-): ExistingAccountInfo[] {
-	const sortEnabled =
-		displaySettings.menuSortEnabled ??
-		DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortEnabled ??
-		true;
-	const sortMode: DashboardAccountSortMode =
-		displaySettings.menuSortMode ??
-		DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortMode ??
-		"ready-first";
-	if (!sortEnabled || sortMode !== "ready-first") {
-		return [...accounts];
-	}
-
-	const sorted = [...accounts].sort(compareReadyFirstAccounts);
-	const pinCurrent =
-		displaySettings.menuSortPinCurrent ??
-		DEFAULT_DASHBOARD_DISPLAY_SETTINGS.menuSortPinCurrent ??
-		false;
-	if (pinCurrent) {
-		const currentIndex = sorted.findIndex(
-			(account) => account.isCurrentAccount,
-		);
-		if (currentIndex > 0) {
-			const current = sorted.splice(currentIndex, 1)[0];
-			const first = sorted[0];
-			if (current && first && compareReadyFirstAccounts(current, first) <= 0) {
-				sorted.unshift(current);
-			} else if (current) {
-				sorted.splice(currentIndex, 0, current);
-			}
-		}
-	}
-	return sorted;
-}
-
-function toExistingAccountInfo(
-	storage: AccountStorageV3,
-	quotaCache: QuotaCacheData | null,
-	displaySettings: DashboardDisplaySettings,
-	runtimeCurrent: RuntimeCurrentAccountSelection | null = null,
-): ExistingAccountInfo[] {
-	const now = Date.now();
-	const activeIndex = resolveActiveIndex(storage, "codex");
-	const layoutMode = resolveMenuLayoutMode(displaySettings);
-	const emailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
-	const baseAccounts = storage.accounts.map((account, index) => {
-		const entry = getPersistedQuotaViewForAccount(
-			quotaCache,
-			account,
-			storage.accounts,
-			now,
-			emailFallbackState,
-		);
-		const currentMarkers = resolveAccountCurrentMarkers(
-			index,
-			activeIndex,
-			runtimeCurrent,
-		);
-		const isCurrentAccount = isDisplayCurrentAccount(
-			index,
-			activeIndex,
-			runtimeCurrent,
-		);
-		const quotaExhausted = entry ? isQuotaCacheEntryExhausted(entry, now) : false;
-		return {
-			index,
-			sourceIndex: index,
-			accountId: account.accountId,
-			accountLabel: account.accountLabel,
-			email: account.email,
-			addedAt: account.addedAt,
-			lastUsed: account.lastUsed,
-			status: mapAccountStatus(account, isCurrentAccount, now, entry),
-			quotaSummary:
-				(displaySettings.menuShowQuotaSummary ?? true) && entry
-					? formatAccountQuotaSummary(entry, now)
-					: undefined,
-			quota5hLeftPercent: quotaLeftPercentFromUsed(entry?.primary.usedPercent),
-			quota5hResetAtMs: entry?.primary.resetAtMs,
-			quota7dLeftPercent: quotaLeftPercentFromUsed(
-				entry?.secondary.usedPercent,
-			),
-			quota7dResetAtMs: entry?.secondary.resetAtMs,
-			quotaRateLimited: entry?.status === 429,
-			quotaExhausted,
-			isCurrentAccount,
-			isDefaultAccount: index === activeIndex,
-			isRuntimeCurrentAccount: runtimeCurrent?.index === index,
-			currentMarkers,
-			enabled: account.enabled !== false,
-			showStatusBadge: displaySettings.menuShowStatusBadge ?? true,
-			showCurrentBadge: displaySettings.menuShowCurrentBadge ?? true,
-			showLastUsed: displaySettings.menuShowLastUsed ?? true,
-			showQuotaCooldown: displaySettings.menuShowQuotaCooldown ?? true,
-			showHintsForUnselectedRows: layoutMode === "expanded-rows",
-			highlightCurrentRow: displaySettings.menuHighlightCurrentRow ?? true,
-			focusStyle: displaySettings.menuFocusStyle ?? "row-invert",
-			statuslineFields: displaySettings.menuStatuslineFields ?? [
-				"last-used",
-				"limits",
-				"status",
-			],
-		};
-	});
-	const orderedAccounts = applyAccountMenuOrdering(
-		baseAccounts,
-		displaySettings,
-	);
-	const quickSwitchUsesVisibleRows =
-		displaySettings.menuSortQuickSwitchVisibleRow ?? true;
-	return orderedAccounts.map((account, displayIndex) => ({
-		...account,
-		index: displayIndex,
-		quickSwitchNumber: quickSwitchUsesVisibleRows
-			? displayIndex + 1
-			: (account.sourceIndex ?? displayIndex) + 1,
-		}));
-}
-
-async function loadRuntimeCurrentSelectionForStorage(
-	storage: AccountStorageV3,
-	now = Date.now(),
-): Promise<RuntimeCurrentAccountSelection | null> {
-	const [runtimeSnapshot, appBindStatus] = await Promise.all([
-		loadPersistedRuntimeObservabilitySnapshot().catch(() => null),
-		getAppBindStatus()
-			.then((status) => (status.running ? status.router : null))
-			.catch(() => null),
-	]);
-	return resolveRuntimeCurrentAccount(
-		storage,
-		{
-			runtimeSnapshot,
-			appBindStatus,
-			appHelperStatus: readAppRuntimeHelperAccountSignal(),
-		},
-		{ now },
-	);
-}
-
-function activeAccountMatchesCodexCliState(
-	account: AccountMetadataV3,
-	state: Awaited<ReturnType<typeof loadCodexCliState>>,
-): boolean {
-	if (!state) return true;
-	const accountId = account.accountId?.trim();
-	const activeAccountId = state.activeAccountId?.trim();
-	if (accountId && activeAccountId) {
-		return accountId === activeAccountId;
-	}
-
-	const email = sanitizeEmail(account.email);
-	const activeEmail = sanitizeEmail(state.activeEmail);
-	if (email && activeEmail) {
-		return email === activeEmail;
-	}
-
-	return false;
-}
-
-async function syncCodexCliActiveSelectionIfDrifted(
-	storage: AccountStorageV3,
-): Promise<boolean> {
-	const activeIndex = resolveActiveIndex(storage, "codex");
-	if (activeIndex < 0 || activeIndex >= storage.accounts.length) {
-		return false;
-	}
-	const account = storage.accounts[activeIndex];
-	if (!account) {
-		return false;
-	}
-
-	try {
-		const cliState = await loadCodexCliState({ forceRefresh: true });
-		if (!cliState || activeAccountMatchesCodexCliState(account, cliState)) {
-			return false;
-		}
-		return setCodexCliActiveSelection({
-			accountId: account.accountId,
-			email: account.email,
-			accessToken: account.accessToken,
-			refreshToken: account.refreshToken,
-			expiresAt: account.expiresAt,
-		});
-	} catch {
-		return false;
-	}
-}
-
-/**
- * Resolve the account-id selection for freshly-minted tokens.
- *
- * The org-override precedence (explicit `login --org` wins over the ambient
- * CODEX_AUTH_ACCOUNT_ID env, for this call only) lives in the internal
- * lib/auth/org-override.ts module so it can be unit-tested without exporting this
- * CLI-internal function. Threading the org as a parameter avoids mutating
- * process.env for the duration of a login, which raced on concurrent re-entry.
- */
-function resolveAccountSelection(
-	tokens: TokenSuccess,
-	orgOverride?: string,
-): TokenSuccessWithAccount {
-	const candidates = getAccountIdCandidates(tokens.access, tokens.idToken);
-
-	// Surface every workspace/organization exposed by the token so the saved
-	// account can track them (issue #491/#512). Without this, same-email
-	// multi-workspace logins persisted rows with `workspaces: null` and
-	// `workspace <account>` was unusable. Built before the `--org` override
-	// branch so the explicit-binding flow persists workspaces too (#512).
-	const workspaces: Workspace[] | undefined =
-		candidates.length > 0
-			? candidates.map((candidate) => ({
-					id: candidate.accountId,
-					name: candidate.label,
-					enabled: true,
-					isDefault: candidate.isDefault,
-				}))
-			: undefined;
-
-	const override = resolveOrgOverride(orgOverride);
-	if (override) {
-		// Prefer the token candidate's human label for the chosen org so the
-		// saved row is identifiable, falling back to a bare manual binding.
-		const matched = candidates.find(
-			(candidate) => candidate.accountId === override,
-		);
-		return {
-			...tokens,
-			accountIdOverride: override,
-			accountIdSource: "manual",
-			accountLabel: matched?.label,
-			workspaces,
-		};
-	}
-
-	if (candidates.length === 0) {
-		return tokens;
-	}
-
-	if (candidates.length === 1) {
-		const [candidate] = candidates;
-		if (candidate) {
-			return {
-				...tokens,
-				accountIdOverride: candidate.accountId,
-				accountIdSource: candidate.source,
-				accountLabel: candidate.label,
-				workspaces,
-			};
-		}
-	}
-
-	const best = selectBestAccountCandidate(candidates);
-	if (!best) {
-		return tokens;
-	}
-
-	return {
-		...tokens,
-		accountIdOverride: best.accountId,
-		accountIdSource: best.source ?? "token",
-		accountLabel: best.label,
-		workspaces,
-	};
-}
-
-function resolveStoredAccountIdentity(
-	storedAccountId: string | undefined,
-	storedAccountIdSource: AccountIdSource | undefined,
-	tokenAccountId: string | undefined,
-): { accountId?: string; accountIdSource?: AccountIdSource } {
-	const accountId = resolveRequestAccountId(
-		storedAccountId,
-		storedAccountIdSource,
-		tokenAccountId,
-	);
-	if (!accountId) {
-		return {};
-	}
-
-	if (!shouldUpdateAccountIdFromToken(storedAccountIdSource, storedAccountId)) {
-		return {
-			accountId,
-			accountIdSource: storedAccountIdSource,
-		};
-	}
-
-	return {
-		accountId,
-		accountIdSource:
-			accountId === tokenAccountId ? "token" : storedAccountIdSource,
-	};
-}
-
-function applyTokenAccountIdentity(
-	account: { accountId?: string; accountIdSource?: AccountIdSource },
-	tokenAccountId: string | undefined,
-): boolean {
-	const nextIdentity = resolveStoredAccountIdentity(
-		account.accountId,
-		account.accountIdSource,
-		tokenAccountId,
-	);
-	if (!nextIdentity.accountId) {
-		return false;
-	}
-	if (
-		nextIdentity.accountId === account.accountId &&
-		nextIdentity.accountIdSource === account.accountIdSource
-	) {
-		return false;
-	}
-
-	account.accountId = nextIdentity.accountId;
-	account.accountIdSource = nextIdentity.accountIdSource;
-	return true;
-}
-
-/**
- * Result of prompting for a manual OAuth callback URL. The classification lives
- * in {@link classifyManualCallbackInput}; this alias keeps the prompt's return
- * type tied to that single source of truth (issue #512 follow-up).
- */
-type ManualCallbackResult = ManualCallbackClassification;
-
-async function promptManualCallback(
-	state: string,
-	options: { allowNonTty?: boolean } = {},
-): Promise<ManualCallbackResult> {
-	const useInteractivePrompt = input.isTTY && output.isTTY;
-	if (!useInteractivePrompt && !options.allowNonTty) {
-		return { type: "cancelled" };
-	}
-
-	const rl = createInterface({ input, output });
-	try {
-		if (useInteractivePrompt) {
-			console.log("");
-			console.log(stylePromptText(UI_COPY.oauth.pastePrompt, "accent"));
-		}
-		const answer = useInteractivePrompt
-			? await rl.question("◆  ")
-			: await new Promise<string | null>((resolve, reject) => {
-					if (input.readableEnded || input.destroyed) {
-						resolve(null);
-						return;
-					}
-					let settled = false;
-					const handleInputClosed = () => {
-						if (settled) return;
-						settled = true;
-						input.off("end", handleInputClosed);
-						input.off("close", handleInputClosed);
-						resolve(null);
-					};
-					const finish = (value: string) => {
-						if (settled) return;
-						settled = true;
-						input.off("end", handleInputClosed);
-						input.off("close", handleInputClosed);
-						resolve(value);
-					};
-					const fail = (error: unknown) => {
-						if (settled) return;
-						settled = true;
-						input.off("end", handleInputClosed);
-						input.off("close", handleInputClosed);
-						reject(error);
-					};
-					rl.question("")
-						.then((value) => finish(value))
-						.catch((error) => {
-							if (isAbortError(error) || isReadlineClosedError(error)) {
-								handleInputClosed();
-								return;
-							}
-							fail(error);
-						});
-					input.once("end", handleInputClosed);
-					input.once("close", handleInputClosed);
-				});
-		return classifyManualCallbackInput(answer, state);
-	} catch (error) {
-		if (isAbortError(error) || isReadlineClosedError(error)) {
-			return { type: "cancelled" };
-		}
-		throw error;
-	} finally {
-		rl.close();
-	}
-}
-
-function isReadlineClosedError(error: unknown): boolean {
-	if (!(error instanceof Error)) {
-		return false;
-	}
-	const errorCode =
-		typeof error === "object" && error !== null && "code" in error
-			? String((error as { code?: unknown }).code)
-			: "";
-	return (
-		errorCode === "ERR_USE_AFTER_CLOSE" ||
-		/readline was closed/i.test(error.message)
-	);
-}
-
-type OAuthSignInMode =
-	| "browser"
-	| "manual"
-	| "device"
-	| "restore-backup"
-	| "cancel";
-type BackupRestoreMode = "latest" | "manual" | "back";
-type SignInFlowOptions = {
-	timeoutMs?: number;
-};
-
-export function formatBackupSavedAt(mtimeMs: number): string {
-	return new Date(mtimeMs).toLocaleString(undefined, {
-		month: "short",
-		day: "numeric",
-		year: "numeric",
-		hour: "numeric",
-		minute: "2-digit",
-	});
-}
-
-async function promptOAuthSignInMode(
-	backupOption: NamedBackupSummary | null,
-	backupDiscoveryWarning: string | null = null,
-): Promise<OAuthSignInMode> {
-	if (!input.isTTY || !output.isTTY) {
-		return "browser";
-	}
-
-	const ui = getUiRuntimeOptions();
-	const items: MenuItem<OAuthSignInMode>[] = [
-		{
-			label: UI_COPY.oauth.signInHeading,
-			value: "cancel" as const,
-			kind: "heading",
-		},
-		{ label: UI_COPY.oauth.openBrowser, value: "browser", color: "green" },
-		{ label: UI_COPY.oauth.manualMode, value: "manual", color: "yellow" },
-		...(backupOption
-			? [
-					{ separator: true, label: "", value: "cancel" as const },
-					{
-						label: UI_COPY.oauth.restoreHeading,
-						value: "cancel" as const,
-						kind: "heading" as const,
-					},
-					{
-						label: UI_COPY.oauth.restoreSavedBackup,
-						value: "restore-backup" as const,
-						hint: UI_COPY.oauth.loadLastBackupHint(
-							backupOption.fileName,
-							backupOption.accountCount,
-							formatBackupSavedAt(backupOption.mtimeMs),
-						),
-						color: "cyan" as const,
-					},
-				]
-			: []),
-		{ separator: true, label: "", value: "cancel" as const },
-		{ label: UI_COPY.oauth.back, value: "cancel", color: "red" },
-	];
-
-	const selected = await select<OAuthSignInMode>(items, {
-		message: UI_COPY.oauth.chooseModeTitle,
-		subtitle: backupDiscoveryWarning
-			? `${UI_COPY.oauth.chooseModeSubtitle} ${backupDiscoveryWarning}`
-			: UI_COPY.oauth.chooseModeSubtitle,
-		help: backupOption
-			? UI_COPY.oauth.chooseModeHelpWithBackup
-			: UI_COPY.oauth.chooseModeHelp,
-		clearScreen: true,
-		theme: ui.theme,
-		selectedEmphasis: "minimal",
-		allowEscape: false,
-		onInput: (raw) => {
-			const lower = raw.toLowerCase();
-			if (lower === "q") return "cancel";
-			if (lower === "1") return "browser";
-			if (lower === "2") return "manual";
-			if (lower === "3" && backupOption) return "restore-backup";
-			return undefined;
-		},
-	});
-
-	return selected ?? "cancel";
-}
-
-async function promptBackupRestoreMode(
-	latestBackup: NamedBackupSummary,
-): Promise<BackupRestoreMode> {
-	if (!input.isTTY || !output.isTTY) {
-		return "latest";
-	}
-
-	const ui = getUiRuntimeOptions();
-	const items: MenuItem<BackupRestoreMode>[] = [
-		{
-			label: UI_COPY.oauth.loadLastBackup,
-			value: "latest",
-			hint: `${UI_COPY.oauth.restoreBackupLatestHint}\n${UI_COPY.oauth.manualBackupHint(
-				latestBackup.accountCount,
-				formatBackupSavedAt(latestBackup.mtimeMs),
-			)}`,
-			color: "cyan",
-		},
-		{
-			label: UI_COPY.oauth.chooseBackupManually,
-			value: "manual",
-			color: "yellow",
-		},
-		{ label: UI_COPY.oauth.back, value: "back", color: "red" },
-	];
-
-	const selected = await select<BackupRestoreMode>(items, {
-		message: UI_COPY.oauth.restoreBackupTitle,
-		subtitle: UI_COPY.oauth.restoreBackupSubtitle,
-		help: UI_COPY.oauth.restoreBackupHelp,
-		clearScreen: true,
-		theme: ui.theme,
-		selectedEmphasis: "minimal",
-		allowEscape: false,
-		onInput: (raw) => {
-			const lower = raw.toLowerCase();
-			if (lower === "q") return "back";
-			if (lower === "1") return "latest";
-			if (lower === "2") return "manual";
-			return undefined;
-		},
-	});
-
-	return selected ?? "back";
-}
-
-async function promptManualBackupSelection(
-	backups: NamedBackupSummary[],
-): Promise<NamedBackupSummary | null> {
-	if (!input.isTTY || !output.isTTY) {
-		return backups[0] ?? null;
-	}
-
-	const ui = getUiRuntimeOptions();
-	const items: MenuItem<NamedBackupSummary | null>[] = backups.map(
-		(backup) => ({
-			label: backup.fileName,
-			value: backup,
-			hint: UI_COPY.oauth.manualBackupHint(
-				backup.accountCount,
-				formatBackupSavedAt(backup.mtimeMs),
-			),
-			color: "cyan",
-		}),
-	);
-	items.push({ label: UI_COPY.oauth.back, value: null, color: "red" });
-
-	const selected = await select<NamedBackupSummary | null>(items, {
-		message: UI_COPY.oauth.manualBackupTitle,
-		subtitle: UI_COPY.oauth.manualBackupSubtitle,
-		help: UI_COPY.oauth.manualBackupHelp,
-		clearScreen: true,
-		theme: ui.theme,
-		selectedEmphasis: "minimal",
-		allowEscape: false,
-		onInput: (raw) => {
-			if (raw.toLowerCase() === "q") return null;
-			return undefined;
-		},
-	});
-
-	return selected;
-}
-
-interface WaitForReturnOptions {
-	promptText?: string;
-	autoReturnMs?: number;
-	pauseOnAnyKey?: boolean;
-}
-
-async function waitForMenuReturn(
-	options: WaitForReturnOptions = {},
-): Promise<void> {
-	if (!input.isTTY || !output.isTTY) {
-		return;
-	}
-
-	const promptText = options.promptText ?? UI_COPY.returnFlow.continuePrompt;
-	const autoReturnMs = options.autoReturnMs ?? 0;
-	const pauseOnAnyKey = options.pauseOnAnyKey ?? true;
-
-	try {
-		let chunk: Buffer | string | null;
-		do {
-			chunk = input.read();
-		} while (chunk !== null);
-	} catch {
-		// best effort buffer drain
-	}
-
-	const writeInlineStatus = (message: string): void => {
-		output.write(`\r${ANSI.clearLine}${stylePromptText(message, "muted")}`);
-	};
-
-	const clearInlineStatus = (): void => {
-		output.write(`\r${ANSI.clearLine}`);
-	};
-
-	if (autoReturnMs > 0) {
-		if (!pauseOnAnyKey) {
-			await new Promise<void>((resolve) => setTimeout(resolve, autoReturnMs));
-			return;
-		}
-		const wasRaw = input.isRaw ?? false;
-		const endAt = Date.now() + autoReturnMs;
-		let lastShownSeconds: number | null = null;
-		const renderCountdown = () => {
-			const remainingMs = Math.max(0, endAt - Date.now());
-			const remainingSeconds = Math.max(1, Math.ceil(remainingMs / 1000));
-			if (lastShownSeconds === remainingSeconds) return;
-			lastShownSeconds = remainingSeconds;
-			writeInlineStatus(UI_COPY.returnFlow.autoReturn(remainingSeconds));
-		};
-		renderCountdown();
-		const pinned = await new Promise<boolean>((resolve) => {
-			let done = false;
-			const interval = setInterval(renderCountdown, 80);
-			let timeout: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-				timeout = null;
-				if (!done) {
-					done = true;
-					cleanup();
-					resolve(false);
-				}
-			}, autoReturnMs);
-			const onData = () => {
-				if (done) return;
-				done = true;
-				cleanup();
-				resolve(true);
-			};
-			const cleanup = () => {
-				clearInterval(interval);
-				if (timeout) {
-					clearTimeout(timeout);
-					timeout = null;
-				}
-				input.removeListener("data", onData);
-				try {
-					input.setRawMode(wasRaw);
-				} catch {
-					// best effort restore
-				}
-			};
-			try {
-				input.setRawMode(true);
-			} catch {
-				// if raw mode fails, keep countdown behavior
-			}
-			input.on("data", onData);
-			input.resume();
-		});
-		clearInlineStatus();
-		if (!pinned) {
-			return;
-		}
-		const paused = stylePromptText(UI_COPY.returnFlow.paused, "muted");
-		writeInlineStatus(paused);
-		await new Promise<void>((resolve) => {
-			const wasRaw = input.isRaw ?? false;
-			const onData = () => {
-				cleanup();
-				resolve();
-			};
-			const cleanup = () => {
-				input.removeListener("data", onData);
-				try {
-					input.setRawMode(wasRaw);
-				} catch {
-					// best effort restore
-				}
-			};
-			try {
-				input.setRawMode(true);
-			} catch {
-				// best effort fallback
-			}
-			input.on("data", onData);
-			input.resume();
-		});
-		clearInlineStatus();
-		return;
-	}
-
-	const rl = createInterface({ input, output });
-	try {
-		const question =
-			promptText.length > 0 ? `${stylePromptText(promptText, "muted")} ` : "";
-		output.write(`\r${ANSI.clearLine}`);
-		await rl.question(question);
-	} catch (error) {
-		if (!isAbortError(error)) {
-			throw error;
-		}
-	} finally {
-		rl.close();
-		clearInlineStatus();
-	}
-}
-
-function stringifyLogArgs(args: unknown[]): string {
-	return args
-		.map((value) => {
-			if (typeof value === "string") return value;
-			try {
-				return JSON.stringify(value);
-			} catch {
-				return String(value);
-			}
-		})
-		.join(" ");
-}
-
-async function runActionPanel(
-	title: string,
-	stage: string,
-	action: () => Promise<void> | void,
-	settings?: DashboardDisplaySettings,
-): Promise<void> {
-	if (!input.isTTY || !output.isTTY) {
-		await action();
-		return;
-	}
-
-	const spinnerFrames = ["-", "\\", "|", "/"];
-	let frame = 0;
-	let running = true;
-	let failed: unknown = null;
-	const captured: string[] = [];
-	const maxVisibleLines = Math.max(8, (output.rows ?? 24) - 8);
-	const previousLog = console.log;
-	const previousWarn = console.warn;
-	const previousError = console.error;
-
-	const capture = (prefix: string, args: unknown[]): void => {
-		const line = stringifyLogArgs(args).trim();
-		if (!line) return;
-		captured.push(prefix ? `${prefix}${line}` : line);
-		if (captured.length > 400) {
-			captured.splice(0, captured.length - 400);
-		}
-	};
-
-	const render = () => {
-		output.write(ANSI.clearScreen + ANSI.moveTo(1, 1));
-		const spinner = running
-			? `${spinnerFrames[frame % spinnerFrames.length] ?? "-"} `
-			: failed
-				? "x "
-				: "+ ";
-		const stageText = running
-			? `${spinner}${stage}`
-			: failed
-				? UI_COPY.returnFlow.failed
-				: UI_COPY.returnFlow.done;
-		previousLog(stylePromptText(title, "accent"));
-		previousLog(
-			stylePromptText(
-				stageText,
-				failed ? "danger" : running ? "accent" : "success",
-			),
-		);
-		previousLog("");
-
-		const lines = captured.slice(-maxVisibleLines);
-		for (const line of lines) {
-			previousLog(line);
-		}
-
-		const remainingLines = Math.max(0, maxVisibleLines - lines.length);
-		for (let i = 0; i < remainingLines; i += 1) {
-			previousLog("");
-		}
-		previousLog("");
-		if (running)
-			previousLog(stylePromptText(UI_COPY.returnFlow.working, "muted"));
-		frame += 1;
-	};
-
-	console.log = (...args: unknown[]) => {
-		capture("", args);
-	};
-	console.warn = (...args: unknown[]) => {
-		capture("! ", args);
-	};
-	console.error = (...args: unknown[]) => {
-		capture("x ", args);
-	};
-
-	output.write(ANSI.altScreenOn + ANSI.hide);
-	let timer: ReturnType<typeof setInterval> | null = null;
-	try {
-		render();
-		timer = setInterval(() => {
-			if (!running) return;
-			render();
-		}, 120);
-
-		await action();
-	} catch (error) {
-		failed = error;
-		capture("x ", [error instanceof Error ? error.message : String(error)]);
-	} finally {
-		running = false;
-		if (timer) {
-			clearInterval(timer);
-			timer = null;
-		}
-		render();
-		console.log = previousLog;
-		console.warn = previousWarn;
-		console.error = previousError;
-	}
-
-	if (failed) {
-		await waitForMenuReturn({
-			promptText: UI_COPY.returnFlow.actionFailedPrompt,
-		});
-	} else {
-		await waitForMenuReturn({
-			autoReturnMs: settings?.actionAutoReturnMs ?? 2_000,
-			pauseOnAnyKey: settings?.actionPauseOnKey ?? true,
-		});
-	}
-	output.write(
-		ANSI.altScreenOff + ANSI.show + ANSI.clearScreen + ANSI.moveTo(1, 1),
-	);
-	if (failed) {
-		throw failed;
-	}
-}
-
-async function runOAuthFlow(
-	forceNewLogin: boolean,
-	signInMode: Extract<OAuthSignInMode, "browser" | "manual">,
-): Promise<TokenResult> {
-	const { pkce, state, url } = await createAuthorizationFlow({ forceNewLogin });
-	let code: string | null = null;
-	let oauthServer: Awaited<ReturnType<typeof startLocalOAuthServer>> | null =
-		null;
-	try {
-		if (signInMode === "browser") {
-			try {
-				oauthServer = await startLocalOAuthServer({ state });
-			} catch (serverError) {
-				log.warn(
-					"Local OAuth callback server unavailable; falling back to manual callback entry.",
-					serverError instanceof Error
-						? {
-								message: serverError.message,
-								stack: serverError.stack,
-								code:
-									typeof serverError === "object" &&
-									serverError !== null &&
-									"code" in serverError
-										? String(serverError.code)
-										: undefined,
-							}
-						: { error: String(serverError) },
-				);
-				oauthServer = null;
-			}
-		}
-
-		// Display the OAuth URL with sensitive query parameters (state,
-		// code, code_challenge, code_verifier) redacted so they do not leak
-		// into shell history, screen captures, CI transcripts, or clipboard
-		// managers. The full URL is still handed to the browser opener and
-		// the clipboard so sign-in continues to work end-to-end.
-		const displayUrl = redactOAuthUrlForLog(url);
-
-		if (signInMode === "browser") {
-			const opened = openBrowserUrl(url);
-			if (opened) {
-				console.log(stylePromptText(UI_COPY.oauth.browserOpened, "success"));
-			} else {
-				console.log(stylePromptText(UI_COPY.oauth.browserOpenFail, "warning"));
-				console.log(
-					`${stylePromptText(UI_COPY.oauth.goTo, "accent")} ${displayUrl}`,
-				);
-				const copied = copyTextToClipboard(url);
-				console.log(
-					stylePromptText(
-						copied ? UI_COPY.oauth.copyOk : UI_COPY.oauth.copyFail,
-						copied ? "success" : "warning",
-					),
-				);
-			}
-		} else {
-			console.log(
-				`${stylePromptText(UI_COPY.oauth.goTo, "accent")} ${displayUrl}`,
-			);
-			const copied = copyTextToClipboard(url);
-			console.log(
-				stylePromptText(
-					copied ? UI_COPY.oauth.copyOk : UI_COPY.oauth.copyFail,
-					copied ? "success" : "warning",
-				),
-			);
-		}
-
-		const waitingForCallback =
-			signInMode === "browser" && oauthServer?.ready === true;
-		if (waitingForCallback && oauthServer) {
-			console.log(stylePromptText(UI_COPY.oauth.waitingCallback, "muted"));
-			const callbackResult = await oauthServer.waitForCode(state);
-			code = callbackResult?.code ?? null;
-		}
-
-		if (!code) {
-			console.log(
-				stylePromptText(
-					waitingForCallback
-						? UI_COPY.oauth.callbackMissed
-						: signInMode === "manual"
-							? UI_COPY.oauth.callbackBypassed
-							: UI_COPY.oauth.callbackUnavailable,
-					"warning",
-				),
-			);
-			const manualResult = await promptManualCallback(state, {
-				allowNonTty: signInMode === "manual",
-			});
-			// A parse/state failure must surface its own validation error instead
-			// of being reported as `Cancelled.` like a genuine user abort
-			// (issue #512 follow-up). Only an actual cancellation falls through to
-			// the cancelled path below.
-			if (manualResult.type === "invalid") {
-				return {
-					type: "failed",
-					reason: "invalid_response",
-					message: UI_COPY.oauth.callbackInvalid,
-				};
-			}
-			if (manualResult.type === "state-mismatch") {
-				return {
-					type: "failed",
-					reason: "invalid_response",
-					message: UI_COPY.oauth.callbackStateMismatch,
-				};
-			}
-			code = manualResult.type === "code" ? manualResult.code : null;
-		}
-	} finally {
-		oauthServer?.close();
-	}
-
-	if (!code) {
-		return {
-			type: "failed",
-			reason: "unknown",
-			message: UI_COPY.oauth.cancelled,
-		};
-	}
-	return exchangeAuthorizationCode(code, pkce.verifier, REDIRECT_URI);
-}
-
-async function runSignInFlow(
-	forceNewLogin: boolean,
-	signInMode: Extract<OAuthSignInMode, "browser" | "manual" | "device">,
-	options: SignInFlowOptions = {},
-): Promise<TokenResult> {
-	if (signInMode === "device") {
-		// OpenAI owns the device-code account picker; there is no force-new-login
-		// equivalent to pass through for this mode.
-		// TODO: Thread a manager-level AbortSignal when login cancellation exists.
-		return runDeviceAuthFlow({
-			log: console.log,
-			timeoutMs: options.timeoutMs,
-			// CLI invocations rely on top-level await in scripts/codex-multi-auth.js;
-			// without keepAlive the polling timers unref and Node exits before the
-			// user can complete the browser step (issue #477).
-			keepAlive: true,
-		});
-	}
-	return runOAuthFlow(forceNewLogin, signInMode);
-}
-
-type PersistAccountPoolOutcome = AccountPoolWriteOutcome;
-
-async function persistAccountPool(
-	results: TokenSuccessWithAccount[],
-	replaceAll: boolean,
-): Promise<PersistAccountPoolOutcome | null> {
-	if (results.length === 0) return null;
-
-	return await withAccountStorageTransaction(async (loadedStorage, persist) => {
-		const stored = replaceAll ? null : loadedStorage;
-		const now = Date.now();
-		const existing = stored?.accounts ? [...stored.accounts] : [];
-
-		const writes: ResolvedAccountWrite[] = results.map((result) => {
-			const tokenAccountId = extractAccountId(result.access);
-			const accountId = resolveRequestAccountId(
-				result.accountIdOverride,
-				result.accountIdSource,
-				tokenAccountId,
-			);
-			const accountIdSource = accountId
-				? (result.accountIdSource ??
-					(result.accountIdOverride ? "manual" : "token"))
-				: undefined;
-			return {
-				accountId,
-				accountIdSource,
-				accountLabel: result.accountLabel,
-				email: sanitizeEmail(
-					extractAccountEmail(result.access, result.idToken),
-				),
-				refreshToken: result.refresh,
-				accessToken: result.access,
-				expiresAt: result.expires,
-				workspaces: result.workspaces,
-				now,
-			};
-		});
-
-		const { accounts, activeIndex, outcome } = applyAccountPoolResults({
-			existing,
-			writes,
-			priorActiveIndex: stored?.activeIndex,
-			findMatchingAccountIndex,
-		});
-
-		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-		for (const family of MODEL_FAMILIES) {
-			activeIndexByFamily[family] = activeIndex;
-		}
-
-		await persist({
-			version: 3,
-			accounts,
-			activeIndex,
-			activeIndexByFamily,
-		});
-
-		return outcome;
-	});
-}
-
-async function syncSelectionToCodex(
-	tokens: TokenSuccessWithAccount,
-): Promise<void> {
-	const tokenAccountId = extractAccountId(tokens.access);
-	const accountId = resolveRequestAccountId(
-		tokens.accountIdOverride,
-		tokens.accountIdSource,
-		tokenAccountId,
-	);
-	const email = sanitizeEmail(
-		extractAccountEmail(tokens.access, tokens.idToken),
-	);
-	await setCodexCliActiveSelection({
-		accountId,
-		email,
-		accessToken: tokens.access,
-		refreshToken: tokens.refresh,
-		expiresAt: tokens.expires,
-		idToken: tokens.idToken,
-	});
-}
-
-interface HealthCheckOptions {
-	forceRefresh?: boolean;
-	liveProbe?: boolean;
-	model?: string;
-	display?: DashboardDisplaySettings;
-}
-
-async function runHealthCheck(options: HealthCheckOptions = {}): Promise<void> {
-	const forceRefresh = options.forceRefresh === true;
-	const liveProbe = options.liveProbe === true;
-	const probeModel = options.model?.trim() || DEFAULT_LIVE_PROBE_MODEL;
-	const modelInspection = inspectRequestedModel(probeModel);
-	const display = options.display ?? DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
-	const quotaCache = liveProbe ? await loadQuotaCache() : null;
-	const workingQuotaCache = quotaCache ? cloneQuotaCacheData(quotaCache) : null;
-	let quotaCacheChanged = false;
-	setStoragePath(null);
-	const storage = await loadAccounts();
-	if (!storage || storage.accounts.length === 0) {
-		console.log("No accounts configured.");
-		return;
-	}
-	let quotaEmailFallbackState =
-		liveProbe && quotaCache
-			? buildQuotaEmailFallbackState(storage.accounts)
-			: null;
-
-	let changed = false;
-	let ok = 0;
-	let failed = 0;
-	let warnings = 0;
-	let codexAvailable = 0;
-	let signedInOnly = 0;
-	const activeIndex = resolveActiveIndex(storage, "codex");
-	let activeAccountRefreshed = false;
-	const now = Date.now();
-	console.log(
-		stylePromptText(
-			forceRefresh
-				? `Checking ${storage.accounts.length} account(s) with full refresh test...`
-				: `Checking ${storage.accounts.length} account(s) with quick check${liveProbe ? " + live check" : ""}...`,
-			"accent",
-		),
-	);
-	if (liveProbe) {
-		console.log(
-			stylePromptText(
-				`Model probe: ${formatModelInspection(modelInspection)}`,
-				"muted",
-			),
-		);
-	}
-	for (let i = 0; i < storage.accounts.length; i += 1) {
-		const account = storage.accounts[i];
-		if (!account) continue;
-		const label = formatAccountLabel(account, i);
-		const labelText = stylePromptText(label, "accent");
-		const sessionLikelyValid = hasUsableAccessToken(account, now);
-		if (!forceRefresh && sessionLikelyValid) {
-			if (account.enabled === false) {
-				account.enabled = true;
-				changed = true;
-			}
-			if (i === activeIndex) {
-				activeAccountRefreshed = true;
-			}
-			let healthDetail = "signed in and working";
-			let healthTone: "success" | "warning" = "success";
-			if (liveProbe) {
-				const currentAccessToken = account.accessToken;
-				const probeAccountId = currentAccessToken
-					? (account.accountId ?? extractAccountId(currentAccessToken))
-					: undefined;
-				if (!probeAccountId || !currentAccessToken) {
-					warnings += 1;
-					signedInOnly += 1;
-					healthTone = "warning";
-					healthDetail =
-						"signed in (live check skipped: missing account ID)";
-				} else {
-					try {
-						const snapshot = await fetchCodexQuotaSnapshot({
-							accountId: probeAccountId,
-							accessToken: currentAccessToken,
-							model: modelInspection.normalized,
-						});
-						if (workingQuotaCache) {
-							quotaCacheChanged =
-								updateQuotaCacheForAccount(
-									workingQuotaCache,
-									account,
-									snapshot,
-									storage.accounts,
-									quotaEmailFallbackState ?? undefined,
-								) || quotaCacheChanged;
-						}
-						healthDetail = formatQuotaSnapshotForDashboard(snapshot, display);
-						codexAvailable += 1;
-					} catch (error) {
-						warnings += 1;
-						signedInOnly += 1;
-						healthTone = "warning";
-						if (isCodexUnavailableError(error)) {
-							healthDetail =
-								`signed in; ${CODEX_UNAVAILABLE_PROBE_NOTE}`;
-						} else {
-							const message = normalizeFailureDetail(
-								error instanceof Error ? error.message : String(error),
-								undefined,
-							);
-							healthDetail = `signed in (live check failed: ${message})`;
-						}
-					}
-				}
-			}
-			if (hasLikelyInvalidRefreshToken(account.refreshToken)) {
-				healthDetail += " (re-login suggested soon)";
-			}
-			ok += 1;
-			if (display.showPerAccountRows) {
-				const healthMarker = healthTone === "success" ? "✓" : "!";
-				console.log(
-					`  ${stylePromptText(healthMarker, healthTone)} ${labelText} ${stylePromptText("|", "muted")} ${styleAccountDetailText(healthDetail, healthTone)}`,
-				);
-			}
-			continue;
-		}
-		const result = await queuedRefresh(account.refreshToken);
-		if (result.type === "success") {
-			const tokenAccountId = extractAccountId(result.access);
-			const nextEmail = sanitizeEmail(
-				extractAccountEmail(result.access, result.idToken),
-			);
-			const previousEmail = account.email;
-			let accountIdentityChanged = false;
-			if (account.refreshToken !== result.refresh) {
-				account.refreshToken = result.refresh;
-				changed = true;
-			}
-			if (account.accessToken !== result.access) {
-				account.accessToken = result.access;
-				changed = true;
-			}
-			if (account.expiresAt !== result.expires) {
-				account.expiresAt = result.expires;
-				changed = true;
-			}
-			if (nextEmail && nextEmail !== account.email) {
-				account.email = nextEmail;
-				changed = true;
-				accountIdentityChanged = true;
-			}
-			if (applyTokenAccountIdentity(account, tokenAccountId)) {
-				changed = true;
-				accountIdentityChanged = true;
-			}
-			if (account.enabled === false) {
-				account.enabled = true;
-				changed = true;
-			}
-			if (accountIdentityChanged && liveProbe && workingQuotaCache) {
-				quotaEmailFallbackState = buildQuotaEmailFallbackState(
-					storage.accounts,
-				);
-				quotaCacheChanged =
-					pruneUnsafeQuotaEmailCacheEntry(
-						workingQuotaCache,
-						previousEmail,
-						storage.accounts,
-						quotaEmailFallbackState,
-					) || quotaCacheChanged;
-			}
-			account.lastUsed = Date.now();
-			if (i === activeIndex) {
-				activeAccountRefreshed = true;
-			}
-			ok += 1;
-			let healthyMessage = "working now";
-			let healthyTone: "success" | "warning" = "success";
-			if (liveProbe) {
-				const probeAccountId = account.accountId ?? tokenAccountId;
-				if (!probeAccountId) {
-					warnings += 1;
-					signedInOnly += 1;
-					healthyTone = "warning";
-					healthyMessage =
-						"signed in (live check skipped: missing account ID)";
-				} else {
-					try {
-						const snapshot = await fetchCodexQuotaSnapshot({
-							accountId: probeAccountId,
-							accessToken: result.access,
-							model: modelInspection.normalized,
-						});
-						if (workingQuotaCache) {
-							quotaCacheChanged =
-								updateQuotaCacheForAccount(
-									workingQuotaCache,
-									account,
-									snapshot,
-									storage.accounts,
-									quotaEmailFallbackState ?? undefined,
-								) || quotaCacheChanged;
-						}
-						healthyMessage = formatQuotaSnapshotForDashboard(snapshot, display);
-						codexAvailable += 1;
-					} catch (error) {
-						warnings += 1;
-						signedInOnly += 1;
-						healthyTone = "warning";
-						if (isCodexUnavailableError(error)) {
-							healthyMessage =
-								`signed in; ${CODEX_UNAVAILABLE_PROBE_NOTE}`;
-						} else {
-							const message = normalizeFailureDetail(
-								error instanceof Error ? error.message : String(error),
-								undefined,
-							);
-							healthyMessage = `signed in (live check failed: ${message})`;
-						}
-					}
-				}
-			}
-			if (display.showPerAccountRows) {
-				const healthyMarker = healthyTone === "success" ? "✓" : "!";
-				console.log(
-					`  ${stylePromptText(healthyMarker, healthyTone)} ${labelText} ${stylePromptText("|", "muted")} ${styleAccountDetailText(healthyMessage, healthyTone)}`,
-				);
-			}
-		} else {
-			const detail = normalizeFailureDetail(result.message, result.reason);
-			if (sessionLikelyValid) {
-				warnings += 1;
-				if (liveProbe) {
-					signedInOnly += 1;
-				}
-				if (display.showPerAccountRows) {
-					console.log(
-						`  ${stylePromptText("!", "warning")} ${labelText} ${stylePromptText("|", "muted")} ${stylePromptText(`refresh failed (${detail}) but this account still works right now`, "warning")}`,
-					);
-				}
-			} else {
-				failed += 1;
-				if (display.showPerAccountRows) {
-					console.log(
-						`  ${stylePromptText("✗", "danger")} ${labelText} ${stylePromptText("|", "muted")} ${stylePromptText(detail, "danger")}`,
-					);
-				}
-			}
-		}
-	}
-
-	if (!display.showPerAccountRows) {
-		console.log(
-			stylePromptText(
-				"Per-account lines are hidden in dashboard settings.",
-				"muted",
-			),
-		);
-	}
-	if (workingQuotaCache && quotaCacheChanged) {
-		try {
-			await saveQuotaCache(workingQuotaCache);
-		} catch (error) {
-			// Quota cache is a derived artifact; a transient Windows EBUSY/EPERM
-			// here must not abort the health check before account fixes commit.
-			console.warn(
-				`Quota cache save failed: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-	}
-
-	if (changed) {
-		await saveAccountsWithRetry(storage, saveAccounts);
-	}
-
-	if (
-		activeAccountRefreshed &&
-		activeIndex >= 0 &&
-		activeIndex < storage.accounts.length
-	) {
-		const activeAccount = storage.accounts[activeIndex];
-		if (activeAccount) {
-			await setCodexCliActiveSelection({
-				accountId: activeAccount.accountId,
-				email: activeAccount.email,
-				accessToken: activeAccount.accessToken,
-				refreshToken: activeAccount.refreshToken,
-				expiresAt: activeAccount.expiresAt,
-			});
-		}
-	}
-
-	console.log("");
-	console.log(
-		formatResultSummary(
-			liveProbe
-				? [
-						{
-							text: `${codexAvailable} Codex available`,
-							tone: codexAvailable > 0 ? "success" : "muted",
-						},
-						{
-							text: `${signedInOnly} signed in only`,
-							tone: signedInOnly > 0 ? "warning" : "muted",
-						},
-						{
-							text: `${failed} need re-login`,
-							tone: failed > 0 ? "danger" : "muted",
-						},
-					]
-				: [
-						{ text: `${ok} working`, tone: "success" },
-						{
-							text: `${failed} need re-login`,
-							tone: failed > 0 ? "danger" : "muted",
-						},
-						{
-							text: `${warnings} warning${warnings === 1 ? "" : "s"}`,
-							tone: warnings > 0 ? "warning" : "muted",
-						},
-					],
-		),
-	);
-}
-
-type ParsedArgsResult<T> =
-	| { ok: true; options: T }
-	| { ok: false; message: string };
-
-function printBestUsage(): void {
-	console.log(
-		[
-			"Usage:",
-			"  codex-multi-auth best [--live] [--json] [--model <model>]",
-			"",
-			"Options:",
-			"  --live, -l         Probe live quota headers via Codex backend before switching",
-			"  --json, -j         Print machine-readable JSON output",
-			`  --model, -m        Probe model for live mode (default: ${DEFAULT_LIVE_PROBE_MODEL})`,
-			"",
-			"Behavior:",
-			"  - Chooses the healthiest account using forecast scoring",
-			"  - Switches to the recommended account when it is not already active",
-		].join("\n"),
-	);
-}
-function parseBestArgs(args: string[]): ParsedArgsResult<BestCliOptions> {
-	const options: BestCliOptions = {
-		live: false,
-		json: false,
-		model: DEFAULT_LIVE_PROBE_MODEL,
-		modelProvided: false,
-	};
-
-	for (let i = 0; i < args.length; i += 1) {
-		const arg = args[i];
-		if (!arg) continue;
-		if (arg === "--live" || arg === "-l") {
-			options.live = true;
-			continue;
-		}
-		if (arg === "--json" || arg === "-j") {
-			options.json = true;
-			continue;
-		}
-		if (arg === "--model" || arg === "-m") {
-			const value = args[i + 1]?.trim();
-			if (!value || value.startsWith("-")) {
-				return { ok: false, message: "Missing value for --model" };
-			}
-			options.model = value;
-			options.modelProvided = true;
-			i += 1;
-			continue;
-		}
-		if (arg.startsWith("--model=")) {
-			const value = arg.slice("--model=".length).trim();
-			if (!value || value.startsWith("-")) {
-				return { ok: false, message: "Missing value for --model" };
-			}
-			options.model = value;
-			options.modelProvided = true;
-			continue;
-		}
-		return { ok: false, message: `Unknown option: ${arg}` };
-	}
-
-	return { ok: true, options };
-}
-
 async function runForecast(args: string[]): Promise<number> {
 	return runForecastCommand(args, {
 		setStoragePath,
@@ -2595,812 +244,6 @@ async function runForecast(args: string[]): Promise<number> {
 		formatQuotaSnapshotLine,
 		loadRuntimeObservabilitySnapshot: loadPersistedRuntimeObservabilitySnapshot,
 	});
-}
-
-async function clearAccountsAndReset(): Promise<void> {
-	await clearAccounts();
-}
-
-function adjustManageActionSelectionIndex(
-	currentIndex: number | undefined,
-	removedIndex: number,
-	remainingCount: number,
-): number {
-	if (remainingCount <= 0) {
-		return 0;
-	}
-	if (typeof currentIndex !== "number" || currentIndex < 0) {
-		return 0;
-	}
-	if (currentIndex < removedIndex) {
-		return Math.min(currentIndex, remainingCount - 1);
-	}
-	if (currentIndex > removedIndex) {
-		return currentIndex - 1;
-	}
-	return Math.min(removedIndex, remainingCount - 1);
-}
-
-function resetManageActionSelection(
-	storage: AccountStorageV3,
-	removedIndex: number,
-): void {
-	const remainingCount = storage.accounts.length;
-	if (remainingCount <= 0) {
-		storage.activeIndex = 0;
-		storage.activeIndexByFamily = {};
-		for (const family of MODEL_FAMILIES) {
-			storage.activeIndexByFamily[family] = 0;
-		}
-		return;
-	}
-
-	const previousActiveIndex = storage.activeIndex;
-	const previousByFamily = { ...storage.activeIndexByFamily };
-	storage.activeIndex = adjustManageActionSelectionIndex(
-		previousActiveIndex,
-		removedIndex,
-		remainingCount,
-	);
-	storage.activeIndexByFamily = {};
-	for (const family of MODEL_FAMILIES) {
-		storage.activeIndexByFamily[family] = adjustManageActionSelectionIndex(
-			previousByFamily[family] ?? previousActiveIndex,
-			removedIndex,
-			remainingCount,
-		);
-	}
-}
-
-function replaceManageActionStorage(
-	target: AccountStorageV3,
-	source: AccountStorageV3,
-): void {
-	target.version = source.version;
-	target.accounts = structuredClone(source.accounts);
-	target.activeIndex = source.activeIndex;
-	target.activeIndexByFamily = {
-		...source.activeIndexByFamily,
-	};
-}
-
-function resolveManageActionAccountIndex(
-	storage: AccountStorageV3,
-	fallbackIndex: number,
-	account: AccountMetadataV3 | undefined,
-): number | null {
-	if (account) {
-		const matchedIndex = findMatchingAccountIndex(
-			storage.accounts,
-			{
-				accountId: account.accountId,
-				email: account.email,
-				refreshToken: account.refreshToken,
-			},
-			{
-				allowUniqueAccountIdFallbackWithoutEmail: true,
-			},
-		);
-		if (typeof matchedIndex === "number" && matchedIndex >= 0) {
-			return matchedIndex;
-		}
-		return null;
-	}
-	return fallbackIndex >= 0 && fallbackIndex < storage.accounts.length
-		? fallbackIndex
-		: null;
-}
-
-function matchesManageActionAccount(
-	account: AccountMetadataV3 | undefined,
-	candidate: AccountMetadataV3 | undefined,
-): boolean {
-	if (!account || !candidate) {
-		return false;
-	}
-	if (account.accountId || candidate.accountId) {
-		return account.accountId === candidate.accountId;
-	}
-	return (
-		account.refreshToken === candidate.refreshToken &&
-		sanitizeEmail(account.email) === sanitizeEmail(candidate.email)
-	);
-}
-async function handleManageAction(
-	storage: AccountStorageV3,
-	menuResult: Awaited<ReturnType<typeof promptLoginMode>>,
-): Promise<void> {
-	if (typeof menuResult.switchAccountIndex === "number") {
-		const index = menuResult.switchAccountIndex;
-		await runSwitchCommand([String(index + 1)], {
-			setStoragePath,
-			loadAccounts,
-			persistAndSyncSelectedAccount,
-		});
-		return;
-	}
-
-	if (typeof menuResult.deleteAccountIndex === "number") {
-		const idx = menuResult.deleteAccountIndex;
-		const selectedAccount = storage.accounts[idx];
-		let deleted = false;
-		if (selectedAccount) {
-			await withAccountStorageTransaction(async (loadedStorage, persist) => {
-				const nextStorage = loadedStorage
-					? structuredClone(loadedStorage)
-					: structuredClone(storage);
-				const nextIndex = resolveManageActionAccountIndex(
-					nextStorage,
-					idx,
-					selectedAccount,
-				);
-				if (nextIndex === null) {
-					return;
-				}
-				const nextAccount = nextStorage.accounts[nextIndex];
-				if (!matchesManageActionAccount(selectedAccount, nextAccount)) {
-					return;
-				}
-				nextStorage.accounts.splice(nextIndex, 1);
-				resetManageActionSelection(nextStorage, nextIndex);
-				await persist(nextStorage);
-				replaceManageActionStorage(storage, nextStorage);
-				deleted = true;
-			});
-		}
-		if (deleted) {
-			console.log(`Deleted account ${idx + 1}.`);
-		}
-		return;
-	}
-
-	if (typeof menuResult.toggleAccountIndex === "number") {
-		const idx = menuResult.toggleAccountIndex;
-		const selectedAccount = storage.accounts[idx];
-		let nextEnabledState: boolean | null = null;
-		if (selectedAccount) {
-			await withAccountStorageTransaction(async (loadedStorage, persist) => {
-				const nextStorage = loadedStorage
-					? structuredClone(loadedStorage)
-					: structuredClone(storage);
-				const nextIndex = resolveManageActionAccountIndex(
-					nextStorage,
-					idx,
-					selectedAccount,
-				);
-				if (nextIndex === null) {
-					return;
-				}
-				const nextAccount = nextStorage.accounts[nextIndex];
-				if (
-					!nextAccount ||
-					!matchesManageActionAccount(selectedAccount, nextAccount)
-				) {
-					return;
-				}
-				nextAccount.enabled = nextAccount.enabled === false;
-				await persist(nextStorage);
-				replaceManageActionStorage(storage, nextStorage);
-				nextEnabledState = nextAccount.enabled !== false;
-			});
-		}
-		if (nextEnabledState !== null) {
-			console.log(
-				`${nextEnabledState ? "Enabled" : "Disabled"} account ${idx + 1}.`,
-			);
-		}
-		return;
-	}
-
-	if (typeof menuResult.refreshAccountIndex === "number") {
-		const idx = menuResult.refreshAccountIndex;
-		const existing = storage.accounts[idx];
-		if (!existing) return;
-
-		const signInMode = await promptOAuthSignInMode(null);
-		if (signInMode === "cancel") {
-			console.log(stylePromptText(UI_COPY.oauth.cancelledBackToMenu, "muted"));
-			return;
-		}
-		if (signInMode !== "browser" && signInMode !== "manual") {
-			return;
-		}
-
-		const tokenResult = await runOAuthFlow(true, signInMode);
-		if (tokenResult.type !== "success") {
-			console.error(
-				`Refresh failed: ${tokenResult.message ?? tokenResult.reason ?? "unknown error"}`,
-			);
-			return;
-		}
-
-		const resolved = resolveAccountSelection(tokenResult);
-		await persistAccountPool([resolved], false);
-		await syncSelectionToCodex(resolved);
-		console.log(`Refreshed account ${idx + 1}.`);
-	}
-}
-
-async function runAuthLogin(args: string[]): Promise<number> {
-	const parsedArgs = parseAuthLoginArgs(args);
-	if (!parsedArgs.ok) {
-		if (parsedArgs.reason === "error") {
-			console.error(parsedArgs.message);
-			printUsage();
-			return 1;
-		}
-		return 0;
-	}
-
-	const loginOptions = parsedArgs.options;
-	// `--org <id>` binds this login to a specific workspace/org so the same
-	// email's personal vs business/team workspace can be registered on demand
-	// (issue #491). The org is threaded explicitly into resolveAccountSelection
-	// (no process.env mutation), so concurrent re-entry (menu re-entry, a reused
-	// test worker) can never bind a login to a stale org via a shared global.
-	if (loginOptions.org) {
-		console.log(`Binding this login to workspace org id: ${loginOptions.org}`);
-	}
-	return runAuthLoginFlow(loginOptions);
-}
-
-async function runAuthLoginFlow(
-	loginOptions: AuthLoginOptions,
-): Promise<number> {
-	setStoragePath(null);
-	let pendingMenuQuotaRefresh: Promise<void> | null = null;
-	let menuQuotaRefreshStatus: string | undefined;
-	let skipNextMenuQuotaAutoRefresh = false;
-	let menuQuotaRefreshGeneration = 0;
-	const clearMenuQuotaAutoRefreshSkip = () => {
-		skipNextMenuQuotaAutoRefresh = false;
-		menuQuotaRefreshGeneration += 1;
-	};
-	// When the user explicitly picks a sign-in transport on the command line
-	// (--device-auth, --manual, --no-browser), they want to add a new account
-	// directly. Skipping the dashboard menu keeps `login --device-auth`
-	// usable from scripts and matches the documented behavior of the help text.
-	const explicitSignInMode = loginOptions.deviceAuth || loginOptions.manual;
-	loginFlow: while (true) {
-		let existingStorage = await loadAccounts();
-		if (
-			!explicitSignInMode &&
-			existingStorage &&
-			existingStorage.accounts.length > 0
-		) {
-			while (true) {
-				existingStorage = await loadAccounts();
-				if (!existingStorage || existingStorage.accounts.length === 0) {
-					break;
-				}
-				const currentStorage = existingStorage;
-				const displaySettings = await loadDashboardDisplaySettings();
-				applyUiThemeFromDashboardSettings(displaySettings);
-				const quotaCache = await loadQuotaCache();
-				const shouldAutoFetchLimits =
-					displaySettings.menuAutoFetchLimits ?? true;
-				const showFetchStatus = displaySettings.menuShowFetchStatus ?? true;
-				const quotaTtlMs =
-					displaySettings.menuQuotaTtlMs ?? DEFAULT_MENU_QUOTA_REFRESH_TTL_MS;
-				const shouldSkipAutoFetchThisPass =
-					!pendingMenuQuotaRefresh && skipNextMenuQuotaAutoRefresh;
-				if (shouldSkipAutoFetchThisPass) {
-					skipNextMenuQuotaAutoRefresh = false;
-				}
-				if (
-					shouldAutoFetchLimits &&
-					!pendingMenuQuotaRefresh &&
-					!shouldSkipAutoFetchThisPass
-				) {
-					const staleCount = countMenuQuotaRefreshTargets(
-						currentStorage,
-						quotaCache,
-						quotaTtlMs,
-					);
-					if (staleCount > 0) {
-						if (showFetchStatus) {
-							menuQuotaRefreshStatus = `${UI_COPY.mainMenu.loadingLimits} [0/${staleCount}]`;
-						}
-						const refreshGeneration = menuQuotaRefreshGeneration;
-						pendingMenuQuotaRefresh = refreshQuotaCacheForMenu(
-							currentStorage,
-							quotaCache,
-							quotaTtlMs,
-							(current, total) => {
-								if (!showFetchStatus) return;
-								menuQuotaRefreshStatus = `${UI_COPY.mainMenu.loadingLimits} [${current}/${total}]`;
-							},
-						)
-							.then(() => {
-								if (refreshGeneration === menuQuotaRefreshGeneration) {
-									skipNextMenuQuotaAutoRefresh = true;
-								}
-								return undefined;
-							})
-							.catch(() => undefined)
-							.finally(() => {
-								menuQuotaRefreshStatus = undefined;
-								pendingMenuQuotaRefresh = null;
-							});
-					}
-				}
-				const flaggedStorage = await loadFlaggedAccounts();
-				await syncCodexCliActiveSelectionIfDrifted(currentStorage);
-				const runtimeCurrent = await loadRuntimeCurrentSelectionForStorage(
-					currentStorage,
-				);
-
-				const menuResult = await promptLoginMode(
-					toExistingAccountInfo(
-						currentStorage,
-						quotaCache,
-						displaySettings,
-						runtimeCurrent,
-					),
-					{
-						flaggedCount: flaggedStorage.accounts.length,
-						statusMessage: showFetchStatus
-							? () => menuQuotaRefreshStatus
-							: undefined,
-					},
-				);
-
-				if (menuResult.mode === "cancel") {
-					console.log("Cancelled.");
-					return 0;
-				}
-				if (menuResult.mode === "check") {
-					clearMenuQuotaAutoRefreshSkip();
-					await runActionPanel(
-						"Quick Check",
-						"Checking local session + live status",
-						async () => {
-							await runHealthCheck({ forceRefresh: false, liveProbe: true });
-						},
-						displaySettings,
-					);
-					continue;
-				}
-				if (menuResult.mode === "deep-check") {
-					clearMenuQuotaAutoRefreshSkip();
-					await runActionPanel(
-						"Deep Check",
-						"Refreshing and testing all accounts",
-						async () => {
-							await runHealthCheck({ forceRefresh: true, liveProbe: true });
-						},
-						displaySettings,
-					);
-					continue;
-				}
-				if (menuResult.mode === "forecast") {
-					clearMenuQuotaAutoRefreshSkip();
-					await runActionPanel(
-						"Best Account",
-						"Comparing accounts",
-						async () => {
-							await runForecast(["--live"]);
-						},
-						displaySettings,
-					);
-					continue;
-				}
-				if (menuResult.mode === "fix") {
-					clearMenuQuotaAutoRefreshSkip();
-					await runActionPanel(
-						"Auto-Fix",
-						"Checking and fixing common issues",
-						async () => {
-							await runRepairFix(["--live"], createRepairCommandDeps());
-						},
-						displaySettings,
-					);
-					continue;
-				}
-				if (menuResult.mode === "settings") {
-					clearMenuQuotaAutoRefreshSkip();
-					await configureUnifiedSettings(displaySettings);
-					continue;
-				}
-				if (menuResult.mode === "verify-flagged") {
-					clearMenuQuotaAutoRefreshSkip();
-					await runActionPanel(
-						"Problem Account Check",
-						"Checking problem accounts",
-						async () => {
-							await runRepairVerifyFlagged([], createRepairCommandDeps());
-						},
-						displaySettings,
-					);
-					continue;
-				}
-				if (menuResult.mode === "fresh" && menuResult.deleteAll) {
-					clearMenuQuotaAutoRefreshSkip();
-					await runActionPanel(
-						"Reset Accounts",
-						"Deleting all saved accounts",
-						async () => {
-							await clearAccountsAndReset();
-							console.log(
-								"Cleared saved accounts from active storage. Recovery snapshots remain available.",
-							);
-						},
-						displaySettings,
-					);
-					continue;
-				}
-				if (menuResult.mode === "manage") {
-					clearMenuQuotaAutoRefreshSkip();
-					const requiresInteractiveOAuth =
-						typeof menuResult.refreshAccountIndex === "number";
-					if (requiresInteractiveOAuth) {
-						await handleManageAction(currentStorage, menuResult);
-						continue;
-					}
-					await runActionPanel(
-						"Applying Change",
-						"Updating selected account",
-						async () => {
-							await handleManageAction(currentStorage, menuResult);
-						},
-						displaySettings,
-					);
-					continue;
-				}
-				if (menuResult.mode === "add") {
-					break;
-				}
-			}
-		}
-
-		const refreshedStorage = await loadAccounts();
-		let existingCount = refreshedStorage?.accounts.length ?? 0;
-		let forceNewLogin = existingCount > 0;
-		let onboardingBackupDiscoveryWarning: string | null = null;
-		const loadNamedBackupsForOnboarding = async (): Promise<
-			NamedBackupSummary[]
-		> => {
-			if (existingCount > 0) {
-				onboardingBackupDiscoveryWarning = null;
-				return [];
-			}
-			try {
-				onboardingBackupDiscoveryWarning = null;
-				return await getNamedBackups();
-			} catch (error) {
-				const code = (error as NodeJS.ErrnoException).code;
-				log.debug("getNamedBackups failed, skipping restore option", {
-					code,
-					error: error instanceof Error ? error.message : String(error),
-				});
-				if (code && code !== "ENOENT") {
-					onboardingBackupDiscoveryWarning =
-						"Named backup discovery failed. Continuing with browser or manual sign-in only.";
-					console.warn(onboardingBackupDiscoveryWarning);
-				} else {
-					onboardingBackupDiscoveryWarning = null;
-				}
-				return [];
-			}
-		};
-		let namedBackups = await loadNamedBackupsForOnboarding();
-		while (true) {
-			const latestNamedBackup = namedBackups[0] ?? null;
-			const preferManualMode =
-				loginOptions.manual || isBrowserLaunchSuppressed();
-			const signInMode: OAuthSignInMode = loginOptions.deviceAuth
-				? "device"
-				: preferManualMode
-					? "manual"
-					: await promptOAuthSignInMode(
-							latestNamedBackup,
-							onboardingBackupDiscoveryWarning,
-						);
-			if (signInMode === "cancel") {
-				if (existingCount > 0) {
-					console.log(
-						stylePromptText(UI_COPY.oauth.cancelledBackToMenu, "muted"),
-					);
-					continue loginFlow;
-				}
-				console.log("Cancelled.");
-				return 0;
-			}
-			if (signInMode === "restore-backup") {
-				const latestAvailableBackup = namedBackups[0] ?? null;
-				if (!latestAvailableBackup) {
-					namedBackups = await loadNamedBackupsForOnboarding();
-					continue;
-				}
-				const restoreMode = await promptBackupRestoreMode(
-					latestAvailableBackup,
-				);
-				if (restoreMode === "back") {
-					namedBackups = await loadNamedBackupsForOnboarding();
-					continue;
-				}
-
-				const selectedBackup =
-					restoreMode === "manual"
-						? await promptManualBackupSelection(namedBackups)
-						: latestAvailableBackup;
-				if (!selectedBackup) {
-					namedBackups = await loadNamedBackupsForOnboarding();
-					continue;
-				}
-
-				const confirmed = await confirm(
-					UI_COPY.oauth.restoreBackupConfirm(
-						selectedBackup.fileName,
-						selectedBackup.accountCount,
-					),
-				);
-				if (!confirmed) {
-					namedBackups = await loadNamedBackupsForOnboarding();
-					continue;
-				}
-
-				const displaySettings = await loadDashboardDisplaySettings();
-				applyUiThemeFromDashboardSettings(displaySettings);
-				try {
-					await runActionPanel(
-						"Load Backup",
-						`Loading ${selectedBackup.fileName}`,
-						async () => {
-							const restoredStorage = await restoreAccountsFromBackup(
-								selectedBackup.path,
-								{ persist: false },
-							);
-							const targetIndex = resolveActiveIndex(restoredStorage);
-							const { synced } = await persistAndSyncSelectedAccount({
-								storage: restoredStorage,
-								targetIndex,
-								parsed: targetIndex + 1,
-								switchReason: "restore",
-								preserveActiveIndexByFamily: true,
-							});
-							console.log(
-								UI_COPY.oauth.restoreBackupLoaded(
-									selectedBackup.fileName,
-									restoredStorage.accounts.length,
-								),
-							);
-							if (!synced) {
-								console.warn(UI_COPY.oauth.restoreBackupSyncWarning);
-							}
-						},
-						displaySettings,
-					);
-				} catch (error) {
-					const message =
-						error instanceof Error ? error.message : String(error);
-					if (error instanceof StorageError) {
-						console.error(formatStorageErrorHint(error, selectedBackup.path));
-					} else {
-						console.error(`Backup restore failed: ${message}`);
-					}
-					const storageAfterRestoreAttempt = await loadAccounts().catch(
-						() => null,
-					);
-					if ((storageAfterRestoreAttempt?.accounts.length ?? 0) > 0) {
-						continue loginFlow;
-					}
-					namedBackups = await loadNamedBackupsForOnboarding();
-					continue;
-				}
-				continue loginFlow;
-			}
-
-			if (
-				signInMode !== "browser" &&
-				signInMode !== "manual" &&
-				signInMode !== "device"
-			) {
-				continue;
-			}
-
-			const tokenResult = await runSignInFlow(forceNewLogin, signInMode);
-			if (tokenResult.type !== "success") {
-				if (isOAuthCancellation(tokenResult)) {
-					// In explicit-mode invocations the dashboard was bypassed,
-					// so falling back to it on cancel would re-enter the same
-					// transport flow and trap the user. Exit cleanly instead.
-					if (explicitSignInMode) {
-						console.log("Cancelled.");
-						return 0;
-					}
-					if (existingCount > 0) {
-						console.log(
-							stylePromptText(UI_COPY.oauth.cancelledBackToMenu, "muted"),
-						);
-						continue loginFlow;
-					}
-					console.log("Cancelled.");
-					return 0;
-				}
-				console.error(
-					`Login failed: ${tokenResult.message ?? tokenResult.reason ?? "unknown error"}`,
-				);
-				return 1;
-			}
-
-			const resolved = resolveAccountSelection(tokenResult, loginOptions.org);
-			const persistOutcome = await persistAccountPool([resolved], false);
-			await syncSelectionToCodex(resolved);
-
-			const latestStorage = await loadAccounts();
-			const count = latestStorage?.accounts.length ?? 1;
-			existingCount = count;
-			namedBackups = [];
-			onboardingBackupDiscoveryWarning = null;
-			// Only claim a new saved slot when one was actually appended. A
-			// same-email login that maps onto an existing entry updates or
-			// rebinds it instead of growing the pool (issue #512).
-			const outcomeMessage =
-				persistOutcome === "rebound"
-					? `Rebound workspace for existing account. Total: ${count}`
-					: persistOutcome === "updated"
-						? `Updated existing account. Total: ${count}`
-						: `Added account. Total: ${count}`;
-			console.log(outcomeMessage);
-			console.log("Next steps:");
-			console.log("  codex-multi-auth status  Check that the wrapper is active.");
-			console.log(
-				"  codex-multi-auth check   Confirm your saved accounts look healthy.",
-			);
-			console.log(
-				"  codex-multi-auth list    Review saved accounts before switching.",
-			);
-			if (count >= ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-				console.log(
-					`Reached maximum account limit (${ACCOUNT_LIMITS.MAX_ACCOUNTS}).`,
-				);
-				// Same reasoning as the addAnother=false branch below: in
-				// explicit mode the dashboard is bypassed, so falling out of
-				// the inner loop would re-enter loginFlow and silently start
-				// another sign-in session despite the cap.
-				if (explicitSignInMode) {
-					return 0;
-				}
-				break;
-			}
-
-			const addAnother = await promptAddAnotherAccount(count);
-			if (!addAnother) {
-				// With an explicit transport flag the dashboard was bypassed,
-				// so falling back to it after declining would loop into a fresh
-				// sign-in instead of exiting. Return directly in that case.
-				if (explicitSignInMode) {
-					return 0;
-				}
-				break;
-			}
-			forceNewLogin = true;
-		}
-	}
-}
-
-async function persistAndSyncSelectedAccount({
-	storage,
-	targetIndex,
-	parsed,
-	switchReason,
-	initialSyncIdToken,
-	preserveActiveIndexByFamily = false,
-	setPin = false,
-	clearPin = false,
-	bumpAffinityGeneration = false,
-}: {
-	storage: NonNullable<Awaited<ReturnType<typeof loadAccounts>>>;
-	targetIndex: number;
-	parsed: number;
-	switchReason: PersistedSwitchReason;
-	initialSyncIdToken?: string;
-	preserveActiveIndexByFamily?: boolean;
-	setPin?: boolean;
-	clearPin?: boolean;
-	bumpAffinityGeneration?: boolean;
-}): Promise<{ synced: boolean; wasDisabled: boolean }> {
-	const account = storage.accounts[targetIndex];
-	if (!account) {
-		throw new Error(`Account ${parsed} not found.`);
-	}
-
-	const shouldPreserveActiveIndexByFamily =
-		preserveActiveIndexByFamily &&
-		!!storage.activeIndexByFamily &&
-		targetIndex === storage.activeIndex;
-	storage.activeIndex = targetIndex;
-	storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-	if (shouldPreserveActiveIndexByFamily) {
-		const maxIndex = Math.max(0, storage.accounts.length - 1);
-		for (const family of MODEL_FAMILIES) {
-			const raw = storage.activeIndexByFamily[family];
-			const candidate =
-				typeof raw === "number" && Number.isFinite(raw) ? raw : targetIndex;
-			storage.activeIndexByFamily[family] = Math.max(
-				0,
-				Math.min(candidate, maxIndex),
-			);
-		}
-	} else {
-		storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-		for (const family of MODEL_FAMILIES) {
-			storage.activeIndexByFamily[family] = targetIndex;
-		}
-	}
-	const wasDisabled = account.enabled === false;
-	if (wasDisabled) {
-		account.enabled = true;
-	}
-	const switchNow = Date.now();
-	let syncAccessToken = account.accessToken;
-	let syncRefreshToken = account.refreshToken;
-	let syncExpiresAt = account.expiresAt;
-	let syncIdToken = initialSyncIdToken;
-
-	if (!hasUsableAccessToken(account, switchNow)) {
-		const refreshResult = await queuedRefresh(account.refreshToken);
-		if (refreshResult.type === "success") {
-			const tokenAccountId = extractAccountId(refreshResult.access);
-			const nextEmail = sanitizeEmail(
-				extractAccountEmail(refreshResult.access, refreshResult.idToken),
-			);
-			if (account.refreshToken !== refreshResult.refresh) {
-				account.refreshToken = refreshResult.refresh;
-			}
-			if (account.accessToken !== refreshResult.access) {
-				account.accessToken = refreshResult.access;
-			}
-			if (account.expiresAt !== refreshResult.expires) {
-				account.expiresAt = refreshResult.expires;
-			}
-			if (nextEmail && nextEmail !== account.email) {
-				account.email = nextEmail;
-			}
-			applyTokenAccountIdentity(account, tokenAccountId);
-			syncAccessToken = refreshResult.access;
-			syncRefreshToken = refreshResult.refresh;
-			syncExpiresAt = refreshResult.expires;
-			syncIdToken = refreshResult.idToken;
-		} else {
-			console.warn(
-				`Switch validation refresh failed for account ${parsed}: ${normalizeFailureDetail(refreshResult.message, refreshResult.reason)}.`,
-			);
-		}
-	}
-
-	account.lastUsed = switchNow;
-	account.lastSwitchReason = switchReason;
-	if (setPin) {
-		storage.pinnedAccountIndex = targetIndex;
-	} else if (clearPin) {
-		delete storage.pinnedAccountIndex;
-	}
-	if (bumpAffinityGeneration) {
-		// Re-read the on-disk generation right before saving so concurrent CLI
-		// processes don't lose increments via lost-update on the load+mutate
-		// pair. Math.max keeps the counter monotonically increasing — extra
-		// bumps are harmless (just an additional affinity invalidation), but a
-		// missed bump can let the proxy cling to the wrong account. The save
-		// itself is serialized by withStorageLock; this only narrows the
-		// lost-update window. See issue #474.
-		const diskGeneration = readAffinityGenerationFromDisk(getStoragePath());
-		const inMemoryGeneration = storage.affinityGeneration ?? 0;
-		storage.affinityGeneration =
-			Math.max(inMemoryGeneration, diskGeneration) + 1;
-	}
-	await saveAccountsWithRetry(storage, saveAccounts);
-
-	const synced = await setCodexCliActiveSelection({
-		accountId: account.accountId,
-		email: account.email,
-		accessToken: syncAccessToken,
-		refreshToken: syncRefreshToken,
-		expiresAt: syncExpiresAt,
-		...(syncIdToken ? { idToken: syncIdToken } : {}),
-	});
-	return { synced, wasDisabled };
 }
 
 async function runBest(args: string[]): Promise<number> {
@@ -3568,7 +411,254 @@ function buildSelectAccountTraced(): (
 	};
 }
 
+/**
+ * Uniform handler signature for the `auth` subcommand registry: every entry
+ * receives the already-parsed argument tail (everything after the subcommand)
+ * and resolves to the process exit code. Dependencies are closure-captured
+ * from this module exactly as the previous if/else dispatch chain did.
+ */
+type CliCommandHandler = (rest: string[]) => number | Promise<number>;
+
+/**
+ * Shared handler for `list` and `status` (aliases of the same view).
+ */
+const runListOrStatusCommand: CliCommandHandler = (rest) =>
+	runStatusCommand({
+		setStoragePath,
+		getStoragePath,
+		loadAccounts,
+		inspectStorageHealth,
+		resolveActiveIndex,
+		formatRateLimitEntry,
+		loadRuntimeObservabilitySnapshot: loadPersistedRuntimeObservabilitySnapshot,
+		loadAppBindStatus: async () =>
+			getAppBindStatus()
+				.then((status) => (status.running ? status.router : null))
+				.catch(() => null),
+		loadAppHelperStatus: readAppRuntimeHelperAccountSignal,
+		loadQuotaCache,
+		json: rest.includes("--json") || rest.includes("-j"),
+	});
+
+/**
+ * Command registry for the `auth` dispatcher (audit roadmap §4.1.1 phase 2).
+ *
+ * Replaces the former `if (command === …)` chain in runCodexMultiAuthCli with
+ * a lookup map. Aliases (`status` → `list` view) point at the same handler.
+ * Per-invocation dependency factories (createRepairCommandDeps,
+ * buildSelectAccountTraced) are still invoked inside each handler so they are
+ * constructed at dispatch time, not at module load — identical to the old
+ * chain. Keys are exact-match and unique, so lookup order cannot change
+ * semantics relative to the sequential chain it replaces.
+ */
+const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
+	string,
+	CliCommandHandler
+>([
+	["login", (rest) => runAuthLogin(rest, { runForecast, createRepairCommandDeps })],
+	["list", runListOrStatusCommand],
+	["status", runListOrStatusCommand],
+	[
+		"switch",
+		(rest) =>
+			runSwitchCommand(rest, {
+				setStoragePath,
+				loadAccounts,
+				persistAndSyncSelectedAccount,
+			}),
+	],
+	[
+		"unpin",
+		() =>
+			runUnpinCommand({
+				setStoragePath,
+				loadAccounts,
+				saveAccounts,
+				getStoragePath,
+			}),
+	],
+	[
+		"workspace",
+		(rest) =>
+			runWorkspaceCommand(rest, {
+				setStoragePath,
+				loadAccounts,
+				saveAccounts,
+			}),
+	],
+	["check", () => runCheckCommand({ runHealthCheck })],
+	[
+		"features",
+		() => runFeaturesCommand({ implementedFeatures: IMPLEMENTED_FEATURES }),
+	],
+	[
+		"verify-flagged",
+		(rest) => runRepairVerifyFlagged(rest, createRepairCommandDeps()),
+	],
+	["forecast", (rest) => runForecast(rest)],
+	["best", (rest) => runBest(rest)],
+	[
+		"account",
+		(rest) =>
+			runAccountCommand(rest, {
+				setStoragePath,
+				loadAccounts,
+			}),
+	],
+	["budget", (rest) => runBudgetCommand(rest)],
+	["bridge", (rest) => runBridgeCommand(rest)],
+	["integrations", (rest) => runIntegrationsCommand(rest)],
+	[
+		"models",
+		(rest) =>
+			runModelsCommand(rest, {
+				setStoragePath,
+				loadAccounts,
+				loadQuotaCache,
+			}),
+	],
+	[
+		"monitor",
+		(rest) =>
+			runMonitorCommand(rest, {
+				setStoragePath,
+				loadAccounts,
+			}),
+	],
+	[
+		"report",
+		(rest) =>
+			runReportCommand(rest, {
+				setStoragePath,
+				getStoragePath,
+				loadAccounts,
+				inspectStorageHealth,
+				saveAccounts,
+				resolveActiveIndex,
+				hasUsableAccessToken,
+				queuedRefresh,
+				fetchCodexQuotaSnapshot,
+				formatRateLimitEntry,
+				normalizeFailureDetail,
+				loadRuntimeObservabilitySnapshot:
+					loadPersistedRuntimeObservabilitySnapshot,
+				loadQuotaCache,
+			}),
+	],
+	["usage", (rest) => runUsageCommand(rest)],
+	[
+		"rotation",
+		(rest) =>
+			runRotationCommand(rest, {
+				loadPluginConfig,
+				savePluginConfig,
+				getCodexRuntimeRotationProxy,
+				setStoragePath,
+				getStoragePath,
+				loadAccounts,
+				saveAccounts,
+				resolveActiveIndex,
+				bindCodexApp: bindCodexAppRuntimeRotation,
+				unbindCodexApp: unbindCodexAppRuntimeRotation,
+				getCodexAppBindStatus: getAppBindStatus,
+				loadRuntimeObservabilitySnapshot:
+					loadPersistedRuntimeObservabilitySnapshot,
+				loadQuotaCache,
+			}),
+	],
+	[
+		"why-selected",
+		(rest) =>
+			runWhySelectedCommand(rest, {
+				parseWhySelectedArgs,
+				printWhySelectedUsage,
+				setStoragePath,
+				loadAccounts,
+				resolveActiveIndex,
+				selectAccountTraced: buildSelectAccountTraced(),
+				loadRuntimeObservabilitySnapshot: async () => {
+					const snapshot = await loadPersistedRuntimeObservabilitySnapshot();
+					if (!snapshot) return null;
+					const generatedAt =
+						typeof (snapshot as { generatedAt?: unknown }).generatedAt ===
+							"number" ||
+						typeof (snapshot as { generatedAt?: unknown }).generatedAt ===
+							"string"
+							? (snapshot as { generatedAt?: number | string }).generatedAt
+							: undefined;
+					return { generatedAt };
+				},
+				sanitizeEmail,
+			}),
+	],
+	[
+		"verify",
+		(rest) =>
+			runVerifyCommand(rest, {
+				parseVerifyArgs,
+				printVerifyUsage,
+				runVerifyFlagged: async (flaggedArgs: string[]) =>
+					runRepairVerifyFlagged(flaggedArgs, createRepairCommandDeps()),
+				setStoragePath,
+				verifyPathsDeps: {
+					getCwd: () => process.cwd(),
+					findProjectRoot,
+					resolveProjectStorageIdentityRoot,
+					getProjectStorageKey,
+					getProjectConfigDir,
+					getProjectGlobalConfigDir,
+					resolvePath: resolveStoragePath,
+				},
+			}),
+	],
+	["fix", (rest) => runRepairFix(rest, createRepairCommandDeps())],
+	["doctor", (rest) => runRepairDoctor(rest, createRepairCommandDeps())],
+	["uninstall", (rest) => runUninstallCommand(rest, { clearAccounts })],
+	[
+		"config",
+		(rest) => {
+			const [subcommand, ...configArgs] = rest;
+			if (subcommand === "explain") {
+				return runConfigExplainCommand(configArgs, {
+					getReport: getPluginConfigExplainReport,
+				});
+			}
+			if (subcommand === "template") {
+				return runInitConfigCommand(configArgs);
+			}
+			console.error(`Unknown config command: ${subcommand ?? "(missing)"}`);
+			return 1;
+		},
+	],
+	["init-config", (rest) => runInitConfigCommand(rest)],
+	[
+		"debug",
+		(rest) => {
+			const [subcommand, ...debugArgs] = rest;
+			if (subcommand === "bundle") {
+				return runDebugBundleCommand(debugArgs, {
+					getConfigReport: getPluginConfigExplainReport,
+					getStoragePath,
+					loadAccounts,
+					loadFlaggedAccounts,
+					loadCodexCliState,
+					getLastAccountsSaveTimestamp,
+				});
+			}
+			console.error(`Unknown debug command: ${subcommand ?? "(missing)"}`);
+			return 1;
+		},
+	],
+]);
+
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
+	// Lazy install setup (audit roadmap §4.5.4): app detection, Codex app bind,
+	// and launcher routing moved out of npm postinstall to the first CLI run.
+	// ensureFirstRunSetup never throws; the catch is belt-and-braces so no
+	// command can ever fail because of first-run housekeeping.
+	await ensureFirstRunSetup({
+		notify: (message) => console.error(`codex-multi-auth: ${message}`),
+	}).catch(() => undefined);
 	const startupDisplaySettings = await loadDashboardDisplaySettings();
 	applyUiThemeFromDashboardSettings(startupDisplaySettings);
 
@@ -3596,212 +686,10 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 		printUsage();
 		return 0;
 	}
-	if (command === "login") {
-		return runAuthLogin(rest);
-	}
-	if (command === "list" || command === "status") {
-		return runStatusCommand({
-			setStoragePath,
-			getStoragePath,
-			loadAccounts,
-			inspectStorageHealth,
-			resolveActiveIndex,
-			formatRateLimitEntry,
-			loadRuntimeObservabilitySnapshot:
-				loadPersistedRuntimeObservabilitySnapshot,
-			loadAppBindStatus: async () =>
-				getAppBindStatus()
-					.then((status) => (status.running ? status.router : null))
-					.catch(() => null),
-			loadAppHelperStatus: readAppRuntimeHelperAccountSignal,
-			loadQuotaCache,
-			json: rest.includes("--json") || rest.includes("-j"),
-		});
-	}
-	if (command === "switch") {
-		return runSwitchCommand(rest, {
-			setStoragePath,
-			loadAccounts,
-			persistAndSyncSelectedAccount,
-		});
-	}
-	if (command === "unpin") {
-		return runUnpinCommand({
-			setStoragePath,
-			loadAccounts,
-			saveAccounts,
-			getStoragePath,
-		});
-	}
-	if (command === "workspace") {
-		return runWorkspaceCommand(rest, {
-			setStoragePath,
-			loadAccounts,
-			saveAccounts,
-		});
-	}
-	if (command === "check") {
-		return runCheckCommand({ runHealthCheck });
-	}
-	if (command === "features") {
-		return runFeaturesCommand({ implementedFeatures: IMPLEMENTED_FEATURES });
-	}
-	if (command === "verify-flagged") {
-		return runRepairVerifyFlagged(rest, createRepairCommandDeps());
-	}
-	if (command === "forecast") {
-		return runForecast(rest);
-	}
-	if (command === "best") {
-		return runBest(rest);
-	}
-	if (command === "account") {
-		return runAccountCommand(rest, {
-			setStoragePath,
-			loadAccounts,
-		});
-	}
-	if (command === "budget") {
-		return runBudgetCommand(rest);
-	}
-	if (command === "bridge") {
-		return runBridgeCommand(rest);
-	}
-	if (command === "integrations") {
-		return runIntegrationsCommand(rest);
-	}
-	if (command === "models") {
-		return runModelsCommand(rest, {
-			setStoragePath,
-			loadAccounts,
-			loadQuotaCache,
-		});
-	}
-	if (command === "monitor") {
-		return runMonitorCommand(rest, {
-			setStoragePath,
-			loadAccounts,
-		});
-	}
-	if (command === "report") {
-		return runReportCommand(rest, {
-			setStoragePath,
-			getStoragePath,
-			loadAccounts,
-			inspectStorageHealth,
-			saveAccounts,
-			resolveActiveIndex,
-			hasUsableAccessToken,
-			queuedRefresh,
-			fetchCodexQuotaSnapshot,
-			formatRateLimitEntry,
-			normalizeFailureDetail,
-			loadRuntimeObservabilitySnapshot:
-				loadPersistedRuntimeObservabilitySnapshot,
-			loadQuotaCache,
-		});
-	}
-	if (command === "usage") {
-		return runUsageCommand(rest);
-	}
-	if (command === "rotation") {
-		return runRotationCommand(rest, {
-			loadPluginConfig,
-			savePluginConfig,
-			getCodexRuntimeRotationProxy,
-			setStoragePath,
-			getStoragePath,
-			loadAccounts,
-			saveAccounts,
-			resolveActiveIndex,
-			bindCodexApp: bindCodexAppRuntimeRotation,
-			unbindCodexApp: unbindCodexAppRuntimeRotation,
-			getCodexAppBindStatus: getAppBindStatus,
-			loadRuntimeObservabilitySnapshot:
-				loadPersistedRuntimeObservabilitySnapshot,
-			loadQuotaCache,
-		});
-	}
-	if (command === "why-selected") {
-		return runWhySelectedCommand(rest, {
-			parseWhySelectedArgs,
-			printWhySelectedUsage,
-			setStoragePath,
-			loadAccounts,
-			resolveActiveIndex,
-			selectAccountTraced: buildSelectAccountTraced(),
-			loadRuntimeObservabilitySnapshot: async () => {
-				const snapshot = await loadPersistedRuntimeObservabilitySnapshot();
-				if (!snapshot) return null;
-				const generatedAt =
-					typeof (snapshot as { generatedAt?: unknown }).generatedAt ===
-						"number" ||
-					typeof (snapshot as { generatedAt?: unknown }).generatedAt ===
-						"string"
-						? (snapshot as { generatedAt?: number | string }).generatedAt
-						: undefined;
-				return { generatedAt };
-			},
-			sanitizeEmail,
-		});
-	}
-	if (command === "verify") {
-		return runVerifyCommand(rest, {
-			parseVerifyArgs,
-			printVerifyUsage,
-			runVerifyFlagged: async (flaggedArgs: string[]) =>
-				runRepairVerifyFlagged(flaggedArgs, createRepairCommandDeps()),
-			setStoragePath,
-			verifyPathsDeps: {
-				getCwd: () => process.cwd(),
-				findProjectRoot,
-				resolveProjectStorageIdentityRoot,
-				getProjectStorageKey,
-				getProjectConfigDir,
-				getProjectGlobalConfigDir,
-				resolvePath: resolveStoragePath,
-			},
-		});
-	}
-	if (command === "fix") {
-		return runRepairFix(rest, createRepairCommandDeps());
-	}
-	if (command === "doctor") {
-		return runRepairDoctor(rest, createRepairCommandDeps());
-	}
-	if (command === "uninstall") {
-		return runUninstallCommand(rest, { clearAccounts });
-	}
-	if (command === "config") {
-		const [subcommand, ...configArgs] = rest;
-		if (subcommand === "explain") {
-			return runConfigExplainCommand(configArgs, {
-				getReport: getPluginConfigExplainReport,
-			});
-		}
-		if (subcommand === "template") {
-			return runInitConfigCommand(configArgs);
-		}
-		console.error(`Unknown config command: ${subcommand ?? "(missing)"}`);
-		return 1;
-	}
-	if (command === "init-config") {
-		return runInitConfigCommand(rest);
-	}
-	if (command === "debug") {
-		const [subcommand, ...debugArgs] = rest;
-		if (subcommand === "bundle") {
-			return runDebugBundleCommand(debugArgs, {
-				getConfigReport: getPluginConfigExplainReport,
-				getStoragePath,
-				loadAccounts,
-				loadFlaggedAccounts,
-				loadCodexCliState,
-				getLastAccountsSaveTimestamp,
-			});
-		}
-		console.error(`Unknown debug command: ${subcommand ?? "(missing)"}`);
-		return 1;
+
+	const handler = CLI_COMMAND_HANDLERS.get(command);
+	if (handler) {
+		return handler(rest);
 	}
 
 	console.error(`Unknown command: ${command}`);

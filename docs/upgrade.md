@@ -34,6 +34,26 @@ wrapper from this package, use `codex-multi-auth-codex ...`.
 
 ---
 
+## First-Run Setup Note (Unreleased)
+
+Installing the package no longer performs desktop-app detection, app bind, or
+launcher-shortcut setup during `npm install`. That work now runs once on your
+first `codex-multi-auth` invocation from a durable global install:
+
+```bash
+npm i -g codex-multi-auth
+codex-multi-auth status
+```
+
+Expected outcome: the first command claims a one-time marker at
+`~/.codex/multi-auth/first-run-setup.json` and performs the app bind and
+launcher setup (best-effort — a failure never blocks the command). `npx` runs
+and project-local installs deliberately skip this setup and do not consume the
+marker. The existing opt-outs are unchanged: `CODEX_MULTI_AUTH_APP_BIND=0`,
+`CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0`, and CI environments always skip.
+
+---
+
 ## Migration Checklist
 
 1. Install official Codex CLI:

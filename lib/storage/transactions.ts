@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { AccountStorageV3, FlaggedAccountStorageV1 } from "../storage.js";
+import type { AccountStorageV3, FlaggedAccountStorageV1 } from "./public-types.js";
 
 export type TransactionSnapshotState = {
 	snapshot: AccountStorageV3 | null;

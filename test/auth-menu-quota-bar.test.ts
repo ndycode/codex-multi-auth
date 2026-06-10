@@ -1,5 +1,6 @@
 import { vi } from "vitest";
 import type { AccountInfo } from "../lib/ui/auth-menu.js";
+import { createUiPromptMocks } from "./helpers/cli-test-fixtures.js";
 import type { MenuItem } from "../lib/ui/select.js";
 import type { AuthMenuAction } from "../lib/ui/auth-menu.js";
 
@@ -13,16 +14,16 @@ import type { AuthMenuAction } from "../lib/ui/auth-menu.js";
 // which avoids guessing the terminal's capabilities. These tests pin each mode so a
 // regression that leaks block glyphs into ascii output is caught.
 
-const selectMock = vi.fn();
-const confirmMock = vi.fn(async () => true);
+const uiMocks = createUiPromptMocks();
+const { select: selectMock, confirm: confirmMock } = uiMocks;
 
-vi.mock("../lib/ui/select.js", () => ({
-	select: selectMock,
-}));
+vi.mock("../lib/ui/select.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).uiSelectModuleMock(uiMocks),
+);
 
-vi.mock("../lib/ui/confirm.js", () => ({
-	confirm: confirmMock,
-}));
+vi.mock("../lib/ui/confirm.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).uiConfirmModuleMock(uiMocks),
+);
 
 const UNICODE_FILL = "█"; // █
 const UNICODE_EMPTY = "▒"; // ▒

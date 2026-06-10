@@ -39,6 +39,7 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | `codex-multi-auth forecast` | Forecast best account by readiness/risk |
 | `codex-multi-auth best` | Pick and optionally sync the best account (clears any manual pin) |
 | `codex-multi-auth account ...` | Manage local account policy metadata |
+| `codex-multi-auth workspace <account> [workspace]` | List an account's tracked workspaces, or set its active workspace |
 
 > Sticky session affinity: `switch`, `unpin`, and `best` all bump an
 > `affinityGeneration` counter in storage that the runtime rotation proxy
@@ -136,6 +137,22 @@ Notes:
   runtime policy integration PR.
 - `weight` accepts values from `0` to `10`; default is `1`.
 - `tag` values are normalized to lowercase filesystem-safe labels.
+
+---
+
+## `codex-multi-auth workspace`
+
+```bash
+codex-multi-auth workspace <account>             # list the account's tracked workspaces
+codex-multi-auth workspace <account> <workspace> # set the active workspace for that account
+```
+
+Lists or sets the active workspace for one saved account. Both arguments are
+1-based indexes as shown by `codex-multi-auth list` and the workspace listing.
+With only an account index, prints the workspaces that account can rotate
+between (for example a personal Plus seat and a business/team seat under the
+same email, issue #491). With a workspace index too, persists that workspace
+as the account's active selection.
 
 ---
 

@@ -8,7 +8,7 @@ import {
 	type ResolvedAccountWrite,
 	resolveCurrentWorkspaceIndex,
 } from "../lib/codex-manager/account-pool-write.js";
-import type { AccountMetadataV3 } from "../lib/storage/migrations.js";
+import type { AccountMetadataV3 } from "../lib/storage/public-types.js";
 
 // Regression coverage for issue #512: the CLI `login` path persists through
 // persistAccountPool() in codex-manager.ts, which delegates the workspace

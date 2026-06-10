@@ -2,7 +2,7 @@ import { existsSync, promises as fs, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { StorageError } from "./errors.js";
-import { shouldRetryFileOperation, withFileOperationRetry } from "./fs-retry.js";
+import { withFileOperationRetry, withRetry } from "./fs-retry.js";
 import { createLogger } from "./logger.js";
 import {
 	exportNamedBackupFile,
@@ -30,9 +30,10 @@ import { saveAccountsToDisk } from "./storage/account-save.js";
 import { saveAccountsEntry } from "./storage/account-save-entry.js";
 import { buildBackupMetadata } from "./storage/backup-metadata-builder.js";
 import {
-	type BackupMetadataSection,
+	type BackupMetadata,
 	type BackupSnapshotKind,
 	type BackupSnapshotMetadata,
+	type RestoreAssessment,
 	buildMetadataSection,
 } from "./storage/backup-metadata.js";
 import { isCacheLikeBackupArtifactName } from "./storage/cache-artifacts.js";
@@ -88,14 +89,17 @@ import {
 	getLegacyFlaggedAccountsPath as buildLegacyFlaggedAccountsPath,
 } from "./storage/file-paths.js";
 import {
-	type AccountMetadataV1,
-	type AccountMetadataV3,
 	type AccountStorageV1,
-	type AccountStorageV3,
-	type CooldownReason,
 	migrateV1ToV3,
-	type RateLimitStateV3,
 } from "./storage/migrations.js";
+import type {
+	AccountMetadataV3,
+	AccountStorageV3,
+	CooldownReason,
+	FlaggedAccountMetadataV1,
+	FlaggedAccountStorageV1,
+	RateLimitStateV3,
+} from "./storage/public-types.js";
 import { exportNamedBackupEntry } from "./storage/named-backup-entry.js";
 import {
 	collectNamedBackups,
@@ -146,10 +150,12 @@ export type {
 	StorageHealthSummary,
 	CooldownReason,
 	RateLimitStateV3,
-	AccountMetadataV1,
-	AccountStorageV1,
 	AccountMetadataV3,
 	AccountStorageV3,
+	FlaggedAccountMetadataV1,
+	FlaggedAccountStorageV1,
+	BackupMetadata,
+	RestoreAssessment,
 	NamedBackupSummary,
 };
 
@@ -162,32 +168,6 @@ const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
-
-export interface FlaggedAccountMetadataV1 extends AccountMetadataV3 {
-	flaggedAt: number;
-	flaggedReason?: string;
-	lastError?: string;
-}
-
-export interface FlaggedAccountStorageV1 {
-	version: 1;
-	accounts: FlaggedAccountMetadataV1[];
-}
-
-type RestoreReason = "empty-storage" | "intentional-reset" | "missing-storage";
-
-export type BackupMetadata = {
-	accounts: BackupMetadataSection;
-	flaggedAccounts: BackupMetadataSection;
-};
-
-export type RestoreAssessment = {
-	storagePath: string;
-	restoreEligible: boolean;
-	restoreReason?: RestoreReason;
-	latestSnapshot?: BackupSnapshotMetadata;
-	backupMetadata: BackupMetadata;
-};
 
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
 
@@ -266,51 +246,29 @@ async function copyFileWithRetry(
 	options?: { allowMissingSource?: boolean },
 ): Promise<void> {
 	const allowMissingSource = options?.allowMissingSource ?? false;
-	for (let attempt = 0; attempt < BACKUP_COPY_MAX_ATTEMPTS; attempt += 1) {
-		try {
-			await fs.copyFile(sourcePath, destinationPath);
+	try {
+		await withRetry(() => fs.copyFile(sourcePath, destinationPath), {
+			maxAttempts: BACKUP_COPY_MAX_ATTEMPTS,
+			backoffMs: (attempt) => BACKUP_COPY_BASE_DELAY_MS * 2 ** (attempt - 1),
+		});
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (allowMissingSource && code === "ENOENT") {
 			return;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (allowMissingSource && code === "ENOENT") {
-				return;
-			}
-			const canRetry =
-				shouldRetryFileOperation(error) && attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
-			if (canRetry) {
-				await new Promise((resolve) =>
-					setTimeout(resolve, BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt),
-				);
-				continue;
-			}
-			throw error;
 		}
+		throw error;
 	}
 }
 
-async function renameFileWithRetry(
+function renameFileWithRetry(
 	sourcePath: string,
 	destinationPath: string,
 ): Promise<void> {
-	for (let attempt = 0; attempt < BACKUP_COPY_MAX_ATTEMPTS; attempt += 1) {
-		try {
-			await fs.rename(sourcePath, destinationPath);
-			return;
-		} catch (error) {
-			const canRetry =
-				shouldRetryFileOperation(error) && attempt + 1 < BACKUP_COPY_MAX_ATTEMPTS;
-			if (!canRetry) {
-				throw error;
-			}
-			const jitterMs = Math.floor(Math.random() * BACKUP_COPY_BASE_DELAY_MS);
-			await new Promise((resolve) =>
-				setTimeout(
-					resolve,
-					BACKUP_COPY_BASE_DELAY_MS * 2 ** attempt + jitterMs,
-				),
-			);
-		}
-	}
+	return withRetry(() => fs.rename(sourcePath, destinationPath), {
+		maxAttempts: BACKUP_COPY_MAX_ATTEMPTS,
+		backoffMs: (attempt) => BACKUP_COPY_BASE_DELAY_MS * 2 ** (attempt - 1),
+		jitterMs: BACKUP_COPY_BASE_DELAY_MS,
+	});
 }
 
 async function createRotatingAccountsBackup(path: string): Promise<void> {

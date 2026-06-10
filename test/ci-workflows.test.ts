@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -21,47 +21,83 @@ function extractJobBlock(workflow: string, jobName: string): string {
 }
 
 describe("CI workflow parity", () => {
-	it("keeps push CI aligned with the PR release harness checks", () => {
+	// Audit roadmap §4.4.1: ci.yml and pr-ci.yml were consolidated into a
+	// single workflow. The old parity checks now assert the consolidated
+	// workflow covers both events.
+	it("is the single consolidated workflow (pr-ci.yml removed) covering push and PR", () => {
 		const ci = readWorkflow("ci.yml");
-		const prCi = readWorkflow("pr-ci.yml");
+
+		expect(existsSync(join(projectRoot, ".github", "workflows", "pr-ci.yml"))).toBe(
+			false,
+		);
+		expect(ci).toContain("push:");
+		expect(ci).toContain("pull_request:");
+	});
+
+	it("keeps the release harness checks for both push and PR runs", () => {
+		const ci = readWorkflow("ci.yml");
 		const requiredCommands = [
 			"npm run typecheck:scripts",
 			"npm run pack:check",
 			"npm run vendor:verify",
 		];
 
+		const releaseHarnessJob = extractJobBlock(ci, "release-harness");
+		const prValidationJob = extractJobBlock(ci, "validate");
 		for (const command of requiredCommands) {
-			expect(prCi).toContain(command);
-			expect(ci).toContain(command);
+			expect(releaseHarnessJob).toContain(command);
+			expect(prValidationJob).toContain(command);
 		}
 	});
 
-	it("keeps push CI using the same stale-run cancellation as PR CI", () => {
+	it("keeps stale-run cancellation across push and PR runs", () => {
 		const ci = readWorkflow("ci.yml");
-		const prCi = readWorkflow("pr-ci.yml");
 
-		expect(prCi).toContain("concurrency:");
-		expect(prCi).toContain("cancel-in-progress: true");
 		expect(ci).toContain("concurrency:");
 		expect(ci).toContain("cancel-in-progress: true");
+		// PR runs must key the concurrency group on the PR number so pushes to
+		// main never cancel (or get cancelled by) PR runs.
+		expect(ci).toContain("github.event.pull_request.number || github.ref");
 	});
 
 	// tests-ci-05: PR CI must run coverage so the 80% threshold gates PRs, not
 	// only the post-merge push-to-main run.
 	it("runs coverage on PRs (not only push-to-main)", () => {
-		const prCi = readWorkflow("pr-ci.yml");
-		expect(prCi).toContain("npm run coverage");
+		const ci = readWorkflow("ci.yml");
+		const prValidationJob = extractJobBlock(ci, "validate");
+
+		expect(prValidationJob).toContain("github.event_name == 'pull_request'");
+		expect(prValidationJob).toContain("npm run coverage");
 	});
 
-	it("keeps Windows script typecheck coverage in push and PR CI", () => {
+	it("keeps Windows script typecheck coverage", () => {
 		const ci = readWorkflow("ci.yml");
-		const prCi = readWorkflow("pr-ci.yml");
-		const ciWindowsJob = extractJobBlock(ci, "scripts-windows");
-		const prWindowsJob = extractJobBlock(prCi, "scripts-windows");
+		const windowsJob = extractJobBlock(ci, "scripts-windows");
 
-		expect(ciWindowsJob).toContain("runs-on: windows-latest");
-		expect(ciWindowsJob).toContain("npm run typecheck:scripts");
-		expect(prWindowsJob).toContain("runs-on: windows-latest");
-		expect(prWindowsJob).toContain("npm run typecheck:scripts");
+		expect(windowsJob).toContain("runs-on: windows-latest");
+		expect(windowsJob).toContain("npm run typecheck:scripts");
+		// Not PR-gated: must run on push-to-main and on PRs alike.
+		expect(windowsJob).not.toContain("github.event_name");
+	});
+
+	// Issue #523: validate the engines floor (node >=18) with a runtime smoke
+	// job that installs the packed tarball on Node 18 without devDependencies.
+	it("smoke-tests the packed CLI on the Node 18 engines floor", () => {
+		const ci = readWorkflow("ci.yml");
+		const builderJob = extractJobBlock(ci, "build-package");
+		const smokeJob = extractJobBlock(ci, "node18-smoke");
+
+		expect(builderJob).toContain("npm pack");
+		expect(builderJob).toContain("actions/upload-artifact@");
+
+		expect(smokeJob).toContain("needs: build-package");
+		expect(smokeJob).toContain("node-version: 18.17.x");
+		expect(smokeJob).toContain("actions/download-artifact@");
+		expect(smokeJob).toContain("npm install -g ./codex-multi-auth-*.tgz");
+		expect(smokeJob).toContain("codex-multi-auth --help");
+		// The smoke job must exercise the published package, not the repo
+		// working tree: no checkout and no devDependency install.
+		expect(smokeJob).not.toContain("actions/checkout@");
+		expect(smokeJob).not.toContain("npm ci");
 	});
 });

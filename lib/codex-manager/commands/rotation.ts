@@ -49,6 +49,7 @@ import {
 import { isRateLimitedMarker } from "../rate-limit-markers.js";
 import type { PluginConfig } from "../../types.js";
 import type { AccountMetadataV3, AccountStorageV3 } from "../../storage.js";
+import { isRecord } from "../../utils.js";
 
 type LoadedStorage = AccountStorageV3 | null;
 
@@ -498,10 +499,6 @@ function formatEnvOverride(): string {
 	const parsed = parseBooleanEnv(raw);
 	if (parsed === undefined) return `invalid (${raw})`;
 	return parsed ? "enabled" : "disabled";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
 }
 
 function readOptionalNumber(record: Record<string, unknown>, key: string): number | null {

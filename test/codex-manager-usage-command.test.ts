@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { UsageLedgerRow, UsageSummary } from "../lib/usage/index.js";
 import { runUsageCommand } from "../lib/codex-manager/commands/usage.js";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 function makeSummary(overrides: Partial<UsageSummary> = {}): UsageSummary {
 	return {
@@ -225,6 +229,138 @@ describe("usage command", () => {
 		expect(String(logError.mock.calls[0]?.[0])).toContain(
 			"Failed to write usage report: disk full",
 		);
+	});
+});
+
+describe("usage command --since parsing", () => {
+	const NOW = 1_750_000_000_000;
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	async function sinceSentToLedger(
+		args: string[],
+	): Promise<number | Date | string | undefined> {
+		let captured: number | Date | string | undefined;
+		const exitCode = await runUsageCommand(args, {
+			logInfo: vi.fn(),
+			summarizeUsage: async (query) => {
+				captured = query?.since;
+				return makeSummary();
+			},
+		});
+		expect(exitCode).toBe(0);
+		return captured;
+	}
+
+	it("resolves relative durations against the current clock", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(NOW);
+
+		await expect(sinceSentToLedger(["--since", "30m"])).resolves.toBe(
+			NOW - 30 * 60_000,
+		);
+		await expect(sinceSentToLedger(["--since=24h"])).resolves.toBe(
+			NOW - 24 * 3_600_000,
+		);
+		await expect(sinceSentToLedger(["--since", "7d"])).resolves.toBe(
+			NOW - 7 * 86_400_000,
+		);
+		await expect(sinceSentToLedger(["--since", "2W"])).resolves.toBe(
+			NOW - 2 * 604_800_000,
+		);
+	});
+
+	it("passes epoch numbers through as numbers and dates as strings", async () => {
+		await expect(sinceSentToLedger(["--since", "12345"])).resolves.toBe(12345);
+		await expect(sinceSentToLedger(["--since", " 2026-01-02 "])).resolves.toBe(
+			"2026-01-02",
+		);
+	});
+
+	it("rejects --since without a value", async () => {
+		const logError = vi.fn();
+		const logInfo = vi.fn();
+		const exitCode = await runUsageCommand(["--since"], { logError, logInfo });
+		expect(exitCode).toBe(1);
+		expect(String(logError.mock.calls[0]?.[0])).toContain(
+			"Missing value for --since",
+		);
+		// parse failures also re-print the usage help
+		expect(String(logInfo.mock.calls[0]?.[0])).toContain("Usage:");
+	});
+});
+
+describe("usage command default file writer", () => {
+	let tempDir: string;
+
+	afterEach(async () => {
+		vi.restoreAllMocks();
+		await removeWithRetry(tempDir, { recursive: true, force: true });
+	});
+
+	function deps(overrides: { logError?: ReturnType<typeof vi.fn> } = {}) {
+		return {
+			logInfo: vi.fn(),
+			logError: vi.fn(),
+			getCwd: () => tempDir,
+			summarizeUsage: async () => makeSummary(),
+			...overrides,
+		};
+	}
+
+	it("writes the rendered report atomically into nested directories", async () => {
+		tempDir = await fs.mkdtemp(join(tmpdir(), "codex-usage-write-"));
+		const commandDeps = deps();
+		const exitCode = await runUsageCommand(
+			["--out", join("reports", "usage.txt")],
+			commandDeps,
+		);
+
+		expect(exitCode).toBe(0);
+		const written = await fs.readFile(
+			join(tempDir, "reports", "usage.txt"),
+			"utf8",
+		);
+		expect(written).toContain("Usage summary by model");
+		expect(written.endsWith("\n")).toBe(true);
+		// the staged .tmp file must be consumed by the rename
+		const leftovers = await fs.readdir(join(tempDir, "reports"));
+		expect(leftovers).toEqual(["usage.txt"]);
+	});
+
+	it("retries the final rename on transient EBUSY and still succeeds", async () => {
+		tempDir = await fs.mkdtemp(join(tmpdir(), "codex-usage-retry-"));
+		const renameSpy = vi
+			.spyOn(fs, "rename")
+			.mockRejectedValueOnce(Object.assign(new Error("busy"), { code: "EBUSY" }));
+		const exitCode = await runUsageCommand(["--out", "usage.txt"], deps());
+
+		expect(exitCode).toBe(0);
+		expect(renameSpy).toHaveBeenCalledTimes(2);
+		const written = await fs.readFile(join(tempDir, "usage.txt"), "utf8");
+		expect(written).toContain("Usage summary by model");
+		expect(await fs.readdir(tempDir)).toEqual(["usage.txt"]);
+	});
+
+	it("fails fast on non-retryable rename errors and removes the staged temp file", async () => {
+		tempDir = await fs.mkdtemp(join(tmpdir(), "codex-usage-fail-"));
+		vi.spyOn(fs, "rename").mockRejectedValue(
+			Object.assign(new Error("no space"), { code: "ENOSPC" }),
+		);
+		const logError = vi.fn();
+		const exitCode = await runUsageCommand(
+			["--out", "usage.txt"],
+			deps({ logError }),
+		);
+
+		expect(exitCode).toBe(1);
+		expect(String(logError.mock.calls[0]?.[0])).toContain(
+			"Failed to write usage report: no space",
+		);
+		// neither the target nor any secret/staging .tmp file may survive
+		expect(await fs.readdir(tempDir)).toEqual([]);
 	});
 });
 

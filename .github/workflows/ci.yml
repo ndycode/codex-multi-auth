@@ -1,14 +1,16 @@
-name: CI
+﻿name: CI
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -22,10 +24,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
@@ -61,10 +63,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20.x
           cache: npm
@@ -81,10 +83,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20.x
           cache: npm
@@ -107,10 +109,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20.x
           cache: npm
@@ -127,10 +129,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20.x
           cache: npm
@@ -140,3 +142,119 @@ jobs:
 
       - name: Run Codex compatibility tests
         run: npm run test -- test/codex.test.ts test/host-codex-prompt.test.ts test/request-transformer.test.ts test/fetch-helpers.test.ts
+
+  validate:
+    name: PR Validation
+    # tests-ci-05: PR-only gate — runs coverage so the 80% threshold blocks the
+    # PR itself, not only the post-merge push-to-main run of the test matrix.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Security audit (CI policy)
+        run: npm run audit:ci
+
+      - name: Lockfile floor guard
+        run: npm run test -- test/lockfile-version-floor.test.ts
+
+      - name: Repository hygiene check
+        run: npm run clean:repo:check
+
+      - name: Run type check
+        run: npm run typecheck
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run tests with coverage
+        # tests-ci-05: run coverage on PRs so the 80% threshold gates the PR,
+        # not only the post-merge push-to-main run of the test matrix.
+        run: npm run coverage
+
+      - name: Build
+        run: npm run build
+
+      - name: Typecheck scripts
+        run: npm run typecheck:scripts
+
+      - name: Pack budget check
+        run: npm run pack:check
+
+      - name: Verify vendor provenance
+        run: npm run vendor:verify
+
+  build-package:
+    name: Build Package Tarball
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack tarball
+        run: npm pack
+
+      - name: Upload package tarball
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-package
+          path: codex-multi-auth-*.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+  node18-smoke:
+    name: Node 18 Runtime Smoke
+    # Issue #523: validate the package.json engines floor (node >=18) by
+    # installing the packed tarball on the oldest supported runtime and
+    # smoke-running the published CLI entrypoints. No repo checkout and no
+    # devDependencies — only what a real `npm install -g` consumer gets.
+    needs: build-package
+    runs-on: ubuntu-latest
+    # CI=1 must cover the install step too: postinstall.js runs during
+    # `npm install -g`, and local runners like act do not auto-inject CI.
+    env:
+      CI: 1
+
+    steps:
+      - name: Setup Node.js 18.17.x
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 18.17.x
+
+      - name: Download package tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-package
+
+      - name: Install package globally from tarball
+        run: npm install -g ./codex-multi-auth-*.tgz
+
+      - name: Smoke-run CLI entrypoints
+        run: |
+          node --version
+          codex-multi-auth --version
+          codex-multi-auth --help

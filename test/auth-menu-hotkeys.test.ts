@@ -1,16 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AccountInfo } from "../lib/ui/auth-menu.js";
+import { createUiPromptMocks } from "./helpers/cli-test-fixtures.js";
 
-const selectMock = vi.fn();
-const confirmMock = vi.fn(async () => true);
+const uiMocks = createUiPromptMocks();
+const { select: selectMock, confirm: confirmMock } = uiMocks;
 
-vi.mock("../lib/ui/select.js", () => ({
-	select: selectMock,
-}));
+vi.mock("../lib/ui/select.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).uiSelectModuleMock(uiMocks),
+);
 
-vi.mock("../lib/ui/confirm.js", () => ({
-	confirm: confirmMock,
-}));
+vi.mock("../lib/ui/confirm.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).uiConfirmModuleMock(uiMocks),
+);
 
 function createAccounts(): AccountInfo[] {
 	const baseTime = 1_700_000_000_000;

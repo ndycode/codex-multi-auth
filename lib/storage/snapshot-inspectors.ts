@@ -3,7 +3,7 @@ import {
 	AnyAccountStorageSchema,
 	safeParseJson,
 } from "../schemas.js";
-import type { FlaggedAccountStorageV1 } from "../storage.js";
+import type { FlaggedAccountStorageV1 } from "./public-types.js";
 import type {
 	BackupSnapshotMetadata,
 	SnapshotStats,

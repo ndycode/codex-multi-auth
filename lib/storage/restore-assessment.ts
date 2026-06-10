@@ -1,4 +1,4 @@
-import type { BackupMetadata, RestoreAssessment } from "../storage.js";
+import type { BackupMetadata, RestoreAssessment } from "./backup-metadata.js";
 
 function findLatestSnapshot(backupMetadata: BackupMetadata) {
 	return backupMetadata.accounts.latestValidPath

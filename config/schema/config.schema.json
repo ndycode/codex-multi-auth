@@ -2,11 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://codex-multi-auth.local/schema/config.schema.json",
   "title": "codex-multi-auth config template",
+  "description": "GENERATED FILE — do not edit by hand. Regenerate with `npm run generate:schema` (source: lib/config-schema.ts + PluginConfigSchema in lib/schemas.ts).",
   "type": "object",
   "properties": {
     "plugin": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "provider": {
       "type": "object",
@@ -14,8 +17,252 @@
     },
     "model": {
       "type": "string"
+    },
+    "pluginConfig": {
+      "$ref": "#/$defs/pluginConfig"
     }
   },
-  "required": ["plugin", "provider"],
-  "additionalProperties": true
+  "required": [
+    "plugin",
+    "provider"
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "pluginConfig": {
+      "type": "object",
+      "properties": {
+        "codexMode": {
+          "type": "boolean"
+        },
+        "codexRuntimeRotationProxy": {
+          "type": "boolean"
+        },
+        "codexTuiV2": {
+          "type": "boolean"
+        },
+        "codexTuiColorProfile": {
+          "type": "string",
+          "enum": [
+            "truecolor",
+            "ansi16",
+            "ansi256"
+          ]
+        },
+        "codexTuiGlyphMode": {
+          "type": "string",
+          "enum": [
+            "ascii",
+            "unicode",
+            "auto"
+          ]
+        },
+        "fastSession": {
+          "type": "boolean"
+        },
+        "fastSessionStrategy": {
+          "type": "string",
+          "enum": [
+            "hybrid",
+            "always"
+          ]
+        },
+        "fastSessionMaxInputItems": {
+          "type": "number",
+          "minimum": 8,
+          "maximum": 200
+        },
+        "retryAllAccountsRateLimited": {
+          "type": "boolean"
+        },
+        "retryAllAccountsMaxWaitMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "retryAllAccountsMaxRetries": {
+          "type": "number",
+          "minimum": 0
+        },
+        "unsupportedCodexPolicy": {
+          "type": "string",
+          "enum": [
+            "strict",
+            "fallback"
+          ]
+        },
+        "fallbackOnUnsupportedCodexModel": {
+          "type": "boolean"
+        },
+        "fallbackToGpt52OnUnsupportedGpt53": {
+          "type": "boolean"
+        },
+        "unsupportedCodexFallbackChain": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "tokenRefreshSkewMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "rateLimitToastDebounceMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "toastDurationMs": {
+          "type": "number",
+          "minimum": 1000
+        },
+        "perProjectAccounts": {
+          "type": "boolean"
+        },
+        "sessionRecovery": {
+          "type": "boolean"
+        },
+        "autoResume": {
+          "type": "boolean"
+        },
+        "parallelProbing": {
+          "type": "boolean"
+        },
+        "parallelProbingMaxConcurrency": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "emptyResponseMaxRetries": {
+          "type": "number",
+          "minimum": 0
+        },
+        "emptyResponseRetryDelayMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "rateLimitDedupWindowMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "rateLimitStateResetMs": {
+          "type": "number",
+          "minimum": 1000
+        },
+        "rateLimitMaxBackoffMs": {
+          "type": "number",
+          "minimum": 1000
+        },
+        "rateLimitShortRetryThresholdMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "pidOffsetEnabled": {
+          "type": "boolean"
+        },
+        "fetchTimeoutMs": {
+          "type": "number",
+          "minimum": 1000
+        },
+        "streamStallTimeoutMs": {
+          "type": "number",
+          "minimum": 1000
+        },
+        "liveAccountSync": {
+          "type": "boolean"
+        },
+        "liveAccountSyncDebounceMs": {
+          "type": "number",
+          "minimum": 50
+        },
+        "liveAccountSyncPollMs": {
+          "type": "number",
+          "minimum": 500
+        },
+        "sessionAffinity": {
+          "type": "boolean"
+        },
+        "sessionAffinityTtlMs": {
+          "type": "number",
+          "minimum": 1000
+        },
+        "sessionAffinityMaxEntries": {
+          "type": "number",
+          "minimum": 8
+        },
+        "responseContinuation": {
+          "type": "boolean"
+        },
+        "backgroundResponses": {
+          "type": "boolean"
+        },
+        "proactiveRefreshGuardian": {
+          "type": "boolean"
+        },
+        "proactiveRefreshIntervalMs": {
+          "type": "number",
+          "minimum": 5000
+        },
+        "proactiveRefreshBufferMs": {
+          "type": "number",
+          "minimum": 30000
+        },
+        "networkErrorCooldownMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "serverErrorCooldownMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tokenInvalidationCooldownMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "minRotationIntervalMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "storageBackupEnabled": {
+          "type": "boolean"
+        },
+        "preemptiveQuotaEnabled": {
+          "type": "boolean"
+        },
+        "preemptiveQuotaRemainingPercent5h": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "preemptiveQuotaRemainingPercent7d": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "preemptiveQuotaMaxDeferralMs": {
+          "type": "number",
+          "minimum": 1000
+        },
+        "routingMutex": {
+          "type": "string",
+          "enum": [
+            "enabled",
+            "legacy"
+          ]
+        },
+        "schedulingStrategy": {
+          "type": "string",
+          "enum": [
+            "hybrid",
+            "sequential"
+          ]
+        }
+      },
+      "description": "Runtime plugin configuration (the `pluginConfig` section of unified settings.json, also accepted flat in CODEX_MULTI_AUTH_CONFIG_PATH overrides). Generated from PluginConfigSchema in lib/schemas.ts — do not edit by hand; run `npm run generate:schema`."
+    }
+  }
 }

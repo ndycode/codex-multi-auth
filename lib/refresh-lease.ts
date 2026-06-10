@@ -6,6 +6,7 @@ import { createLogger } from "./logger.js";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
 import { safeParseTokenResult } from "./schemas.js";
 import type { TokenResult } from "./types.js";
+import { isRecord } from "./utils.js";
 
 const log = createLogger("refresh-lease");
 
@@ -64,10 +65,6 @@ function sleep(delayMs: number): Promise<void> {
 
 function hashRefreshToken(refreshToken: string): string {
 	return createHash("sha256").update(refreshToken).digest("hex");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object";
 }
 
 function parseLeasePayload(raw: unknown): LeaseFilePayload | null {

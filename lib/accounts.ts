@@ -1,5 +1,5 @@
 import type { Auth } from "@codex-ai/sdk";
-import { saveAccountsWithRetry } from "./codex-manager/forecast-report-shared.js";
+import { saveAccountsWithRetry } from "./storage/save-retry.js";
 import { createLogger } from "./logger.js";
 import {
 	getStoragePath,
@@ -13,7 +13,8 @@ import {
 	withAccountStorageTransaction,
 } from "./storage.js";
 import type { AccountIdSource, OAuthAuthDetails } from "./types.js";
-import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
+import type { Workspace } from "./storage/public-types.js";
+import { MODEL_FAMILIES, type ModelFamily } from "./request/helpers/model-map.js";
 import {
 	getHealthTracker,
 	getTokenTracker,
@@ -231,13 +232,10 @@ function isRetryableAuthPersistenceError(error: unknown): boolean {
 	return false;
 }
 
-export interface Workspace {
-	id: string;
-	name?: string;
-	enabled: boolean;
-	disabledAt?: number;
-	isDefault?: boolean;
-}
+// Workspace is persisted inside the account storage shapes, so the interface
+// lives in lib/storage/public-types.ts (the layer below this module). It is
+// re-exported here to preserve the historical import surface.
+export type { Workspace } from "./storage/public-types.js";
 
 export interface ManagedAccount {
 	index: number;

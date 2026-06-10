@@ -446,6 +446,25 @@ describe("codex-multi-auth rotation command", () => {
 		expect(infos.join("\n")).toContain("Codex app helper: not running");
 	});
 
+	it("treats an array helper status file as not running", async () => {
+		// Pins the canonical isRecord contract (lib/utils.ts): a status file
+		// whose top-level JSON value is an array must read as "no status", not
+		// as a record with all-null fields.
+		const root = await createTempRoot("codex-rotation-helper-array-");
+		process.env.CODEX_MULTI_AUTH_DIR = root;
+		await mkdir(root, { recursive: true });
+		await writeFile(
+			join(root, "runtime-rotation-app-helper.json"),
+			"[]\n",
+			"utf8",
+		);
+		const { deps, infos } = createDeps({ storage: null });
+
+		await expect(runRotationCommand(["status"], deps)).resolves.toBe(0);
+
+		expect(infos.join("\n")).toContain("Codex app helper: not running");
+	});
+
 	it("handles overlapping enable commands without dropping saves or app binds", async () => {
 		const {
 			deps,

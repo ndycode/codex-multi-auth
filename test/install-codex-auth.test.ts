@@ -18,12 +18,11 @@ import {
 	resolveAppLauncherPlan,
 } from "../scripts/codex-app-launcher.js";
 import {
-	hasCodexDesktopApp,
+	INSTALL_NOTICE,
 	isCiEnvironment,
-	resolveRotationEnabled,
-	runPostinstallSelfHeal,
-	shouldAutoBindCodexAppOnInstall,
-	shouldAutoInstallCodexAppLauncherOnInstall,
+	readOptionalBoolean,
+	runPostinstall,
+	shouldPrintInstallNotice,
 } from "../scripts/postinstall.js";
 
 const scriptPath = "scripts/install-codex-auth.js";
@@ -393,245 +392,60 @@ describe("codex app launcher installer", () => {
 	});
 });
 
-describe("codex app bind postinstall gate", () => {
-	it("detects the packaged Windows Codex app from LOCALAPPDATA packages", () => {
-		const home = mkdtempSync(path.join(tmpdir(), "codex-app-bind-detect-"));
-		tempRoots.push(home);
-		const localAppData = path.join(home, "AppData", "Local");
-		mkdirSync(path.join(localAppData, "Packages", "OpenAI.Codex_test"), {
-			recursive: true,
-		});
-
-		expect(
-			hasCodexDesktopApp({
-				platform: "win32",
-				home,
-				env: { LOCALAPPDATA: localAppData },
-			}),
-		).toBe(true);
-	});
-
-	it("only auto-binds on install when opted in or globally installed with rotation enabled", () => {
-		expect(
-			shouldAutoBindCodexAppOnInstall({
-				env: {},
-				rotationEnabled: true,
-				appDetected: true,
-			}),
-		).toBe(false);
-		expect(
-			shouldAutoBindCodexAppOnInstall({
-				env: { npm_config_global: "true" },
-				rotationEnabled: false,
-				appDetected: true,
-			}),
-		).toBe(false);
-		expect(
-			shouldAutoBindCodexAppOnInstall({
-				env: { npm_config_global: "true" },
-				rotationEnabled: true,
-				appDetected: true,
-			}),
-		).toBe(true);
-		expect(
-			shouldAutoBindCodexAppOnInstall({
-				env: { CODEX_MULTI_AUTH_APP_BIND_INSTALL: "1" },
-				rotationEnabled: false,
-				appDetected: false,
-			}),
-		).toBe(true);
-		expect(
-			shouldAutoBindCodexAppOnInstall({
-				env: {
-					npm_config_global: "true",
-					CODEX_MULTI_AUTH_APP_BIND: "0",
-				},
-				rotationEnabled: true,
-				appDetected: true,
-			}),
-		).toBe(false);
-	});
-
-	it("skips desktop app auto-bind in CI and when npm scripts are ignored", () => {
+describe("thin postinstall notice", () => {
+	// Audit roadmap §4.5.4: postinstall is a CI-aware notice only. App
+	// detection, app bind, and launcher routing run lazily on first CLI
+	// invocation (lib/runtime/first-run.ts).
+	it("detects CI environments and ignored-scripts installs", () => {
 		expect(isCiEnvironment({ CI: "true" })).toBe(true);
 		expect(isCiEnvironment({ GITHUB_ACTIONS: "true" })).toBe(true);
 		expect(isCiEnvironment({ npm_config_ignore_scripts: "true" })).toBe(true);
-		expect(
-			shouldAutoBindCodexAppOnInstall({
-				env: {
-					CI: "true",
-					CODEX_MULTI_AUTH_APP_BIND_INSTALL: "1",
-					npm_config_global: "true",
-				},
-				rotationEnabled: true,
-				appDetected: true,
-			}),
-		).toBe(false);
-		expect(
-			shouldAutoBindCodexAppOnInstall({
-				env: {
-					GITHUB_ACTIONS: "true",
-					CODEX_MULTI_AUTH_APP_BIND: "1",
-				},
-				rotationEnabled: true,
-				appDetected: true,
-			}),
-		).toBe(false);
-		expect(
-			shouldAutoBindCodexAppOnInstall({
-				env: {
-					npm_config_ignore_scripts: "true",
-					CODEX_MULTI_AUTH_APP_BIND_INSTALL: "1",
-				},
-				rotationEnabled: true,
-				appDetected: true,
-			}),
-			).toBe(false);
+		expect(isCiEnvironment({ CI: "false" })).toBe(false);
+		expect(isCiEnvironment({})).toBe(false);
 	});
 
-	it("installs app launcher routing on global install when rotation is enabled", () => {
-		expect(
-			shouldAutoInstallCodexAppLauncherOnInstall({
-				env: {},
-				rotationEnabled: true,
-			}),
-		).toBe(false);
-		expect(
-			shouldAutoInstallCodexAppLauncherOnInstall({
-				env: { npm_config_global: "true" },
-				rotationEnabled: false,
-			}),
-		).toBe(false);
-		expect(
-			shouldAutoInstallCodexAppLauncherOnInstall({
-				env: { npm_config_global: "true" },
-				rotationEnabled: true,
-			}),
-		).toBe(true);
-		expect(
-			shouldAutoInstallCodexAppLauncherOnInstall({
-				env: {
-					npm_config_global: "true",
-					CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL: "0",
-				},
-				rotationEnabled: true,
-			}),
-		).toBe(false);
-		expect(
-			shouldAutoInstallCodexAppLauncherOnInstall({
-				env: { CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL: "1" },
-				rotationEnabled: false,
-			}),
-		).toBe(true);
-		expect(
-			shouldAutoInstallCodexAppLauncherOnInstall({
-				env: {
-					CI: "true",
-					CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL: "1",
-				},
-				rotationEnabled: true,
-			}),
-		).toBe(false);
-		// CI and ignored-scripts guards win over explicit launcher opt-in so
-		// package installs stay side-effect-free in automation.
+	it("parses optional boolean env flags", () => {
+		expect(readOptionalBoolean("1")).toBe(true);
+		expect(readOptionalBoolean("no")).toBe(false);
+		expect(readOptionalBoolean("")).toBe(null);
+		expect(readOptionalBoolean(undefined)).toBe(null);
+		expect(readOptionalBoolean("maybe")).toBe(null);
 	});
 
-	it("resolves runtime rotation as default-on for install/update self-heal", () => {
-		expect(resolveRotationEnabled(null, {})).toBe(true);
-		expect(resolveRotationEnabled({}, {})).toBe(true);
-		expect(
-			resolveRotationEnabled(null, {
-				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
-			}),
-		).toBe(false);
-		expect(
-			resolveRotationEnabled(
-				{
-					loadPluginConfig: () => ({}),
-					getCodexRuntimeRotationProxy: () => true,
-				},
-				{},
-			),
-		).toBe(true);
-		expect(
-			resolveRotationEnabled(
-				{
-					loadPluginConfig: () => ({ codexRuntimeRotationProxy: true }),
-					getCodexRuntimeRotationProxy: () => true,
-				},
-				{
-					CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
-				},
-			),
-		).toBe(false);
-		expect(
-			resolveRotationEnabled(
-				{
-					loadPluginConfig: () => ({ codexRuntimeRotationProxy: false }),
-					getCodexRuntimeRotationProxy: () => false,
-				},
-				{},
-			),
-		).toBe(false);
+	it("stays silent in CI and non-TTY contexts", () => {
+		expect(shouldPrintInstallNotice({ CI: "1" }, true)).toBe(false);
+		expect(shouldPrintInstallNotice({}, false)).toBe(false);
+		expect(shouldPrintInstallNotice({}, true)).toBe(true);
 	});
 
-	it("still runs launcher repair when app bind self-heal fails", async () => {
-		const bindCodexApp = vi.fn(async () => {
-			throw new Error("bind failed");
-		});
-		const installLauncher = vi.fn(async () => undefined);
+	it("exits 0 silently in CI", () => {
 		const log = vi.fn();
-
-		await expect(
-			runPostinstallSelfHeal({
-				loadConfigModule: async () => ({
-					loadPluginConfig: () => ({ codexRuntimeRotationProxy: true }),
-					getCodexRuntimeRotationProxy: () => true,
-				}),
-				bindCodexApp,
-				installLauncher,
-				log,
-				env: {},
-			}),
-		).resolves.toBe(0);
-
-		expect(bindCodexApp).toHaveBeenCalledWith(true);
-		expect(installLauncher).toHaveBeenCalledWith(true);
-		expect(log).toHaveBeenCalledWith(
-			"app bind postinstall skipped: bind failed",
-		);
+		expect(runPostinstall({ env: { CI: "1" }, isTty: true, log })).toBe(0);
+		expect(log).not.toHaveBeenCalled();
 	});
 
-	it("keeps postinstall self-heal successful when launcher repair fails", async () => {
-		const bindCodexApp = vi.fn(async () => undefined);
-		const installLauncher = vi.fn(async () => {
-			throw new Error("launcher failed");
-		});
+	it("prints only the short install notice on interactive installs", () => {
 		const log = vi.fn();
-
-		await expect(
-			runPostinstallSelfHeal({
-				loadConfigModule: async () => null,
-				bindCodexApp,
-				installLauncher,
-				log,
-				env: {},
-			}),
-		).resolves.toBe(0);
-
-		expect(bindCodexApp).toHaveBeenCalledWith(true);
-		expect(installLauncher).toHaveBeenCalledWith(true);
-		expect(log).toHaveBeenCalledWith(
-			"app launcher postinstall skipped: launcher failed",
-		);
+		expect(runPostinstall({ env: {}, isTty: true, log })).toBe(0);
+		expect(log).toHaveBeenCalledTimes(1);
+		expect(log).toHaveBeenCalledWith(INSTALL_NOTICE);
+		expect(INSTALL_NOTICE).toContain("first run");
 	});
 
-	it("preserves explicit postinstall return codes for direct runs", () => {
+	it("returns 0 even when the notice sink throws", () => {
+		const log = vi.fn(() => {
+			throw new Error("broken stderr");
+		});
+		expect(runPostinstall({ env: {}, isTty: true, log })).toBe(0);
+	});
+
+	it("performs no detection, no dist imports, and no filesystem mutation", () => {
 		const content = readFileSync("scripts/postinstall.js", "utf8");
 
-		expect(content).toContain(".then((exitCode) => {");
-		expect(content).toContain(
-			"process.exitCode = normalizePostinstallExitCode(exitCode);",
-		);
+		expect(content).toContain("process.exitCode = runPostinstall()");
+		expect(content).not.toContain("dist/lib");
+		expect(content).not.toContain("codex-app-launcher");
+		expect(content).not.toContain("bindCodexAppRuntimeRotation");
+		expect(content).not.toContain("node:fs");
 	});
 });

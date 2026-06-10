@@ -385,7 +385,7 @@ export interface HybridSelectionConfig {
 	healthWeight: number;
 	/** Weight for token count (default: 5) */
 	tokenWeight: number;
-	/** Weight for freshness/last used (default: 0.1) */
+	/** Weight for freshness/last used (default: 2) */
 	freshnessWeight: number;
 }
 

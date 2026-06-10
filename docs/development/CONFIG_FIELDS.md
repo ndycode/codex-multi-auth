@@ -212,10 +212,10 @@ Upgrade note:
 | `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS` | Override idle timeout for the wrapper-launched Codex app runtime helper |
 | `CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID` | Internal owner PID used by the wrapper-launched app helper |
 | `CODEX_MULTI_AUTH_REAL_CODEX_HOME` | Internal original Codex home pointer used by runtime rotation helpers |
-| `CODEX_MULTI_AUTH_APP_BIND_INSTALL` | Opt out/in of packaged Codex app bind self-heal during install/update or rotation enable |
-| `CODEX_MULTI_AUTH_APP_BIND` | Legacy/manual app-bind install override consumed by postinstall |
+| `CODEX_MULTI_AUTH_APP_BIND_INSTALL` | Opt out/in of packaged Codex app bind self-heal on first CLI run or rotation enable |
+| `CODEX_MULTI_AUTH_APP_BIND` | Legacy/manual app-bind override consumed by the first-run setup hook (`lib/runtime/first-run.ts`) |
 | `CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME` | Override Codex home used by packaged app bind helpers |
-| `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL` | Opt out/in of user-level app launcher routing during install/update or rotation enable |
+| `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL` | Opt out/in of user-level app launcher routing on first CLI run or rotation enable |
 | `CODEX_MULTI_AUTH_APP_LAUNCHER_WINDOWS_DESKTOP_DIR` | Override Windows desktop shortcut search root for launcher routing |
 | `CODEX_MULTI_AUTH_APP_LAUNCHER_MACOS_DIR` | Override macOS managed wrapper app install directory |
 | `CODEX_TUI_V2` | Toggle TUI v2 |

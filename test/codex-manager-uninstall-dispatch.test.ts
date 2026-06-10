@@ -25,13 +25,11 @@ vi.mock("../lib/codex-manager/commands/uninstall.js", () => ({
 
 const clearAccountsSpy = vi.fn(async () => undefined);
 
-vi.mock("../lib/storage.js", async () => {
-	const actual = await vi.importActual("../lib/storage.js");
-	return {
-		...(actual as Record<string, unknown>),
+vi.mock("../lib/storage.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).storageModuleMock({
 		clearAccounts: clearAccountsSpy,
-	};
-});
+	}),
+);
 
 beforeEach(() => {
 	captured.length = 0;

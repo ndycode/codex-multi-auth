@@ -22,6 +22,24 @@ export type PromptModelFamily =
 	| "gpt-5.2"
 	| "gpt-5.1";
 
+/**
+ * Model family type for prompt selection
+ * Maps to different system prompts in the Codex CLI
+ */
+export type ModelFamily = PromptModelFamily;
+
+/**
+ * All supported model families
+ * Used for per-family account rotation and rate limit tracking
+ */
+export const MODEL_FAMILIES: readonly ModelFamily[] = [
+	"gpt-5-codex",
+	"codex-max",
+	"codex",
+	"gpt-5.2",
+	"gpt-5.1",
+] as const;
+
 export interface ModelCapabilities {
 	toolSearch: boolean;
 	computerUse: boolean;

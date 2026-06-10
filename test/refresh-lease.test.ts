@@ -521,6 +521,39 @@ describe("RefreshLeaseCoordinator", () => {
     expect(handle.role).toBe("bypass");
   });
 
+  it("rejects array JSON payloads in result and lock files", async () => {
+    // Pins the canonical isRecord contract (lib/utils.ts): a top-level JSON
+    // array must never be treated as a lease or result record, even though
+    // arrays satisfy `typeof value === "object"`.
+    const refreshToken = "token-array-payload";
+    const tokenHash = hashToken(refreshToken);
+    const lockPath = join(leaseDir, `${tokenHash}.lock`);
+    const resultPath = join(leaseDir, `${tokenHash}.result.json`);
+    await mkdir(leaseDir, { recursive: true });
+
+    // An array result file must not turn the caller into a follower.
+    await writeFile(resultPath, "[]\n", "utf8");
+    const coordinator = new RefreshLeaseCoordinator({
+      enabled: true,
+      leaseDir,
+      leaseTtlMs: 2_000,
+      waitTimeoutMs: 120,
+      pollIntervalMs: 20,
+      resultTtlMs: 2_000,
+    });
+    const owner = await coordinator.acquire(refreshToken);
+    expect(owner.role).toBe("owner");
+    await owner.release();
+
+    // An array lock file is an invalid payload: never owned, never stale, so
+    // the acquire times out and bypasses instead of stealing the lock.
+    await writeFile(lockPath, "[]\n", "utf8");
+    const blocked = await coordinator.acquire(refreshToken);
+    expect(blocked.role).toBe("bypass");
+    await blocked.release();
+    await expect(readFile(lockPath, "utf8")).resolves.toBe("[]\n");
+  });
+
   it("prunes stale artifacts while keeping non-file entries", async () => {
     await mkdir(leaseDir, { recursive: true });
     const staleLock = join(leaseDir, "stale.lock");

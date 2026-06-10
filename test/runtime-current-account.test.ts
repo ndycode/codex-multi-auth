@@ -1,10 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	appRuntimeHelperStatusToSignal,
+	readAppRuntimeHelperStatus,
 	resolveAccountCurrentMarkers,
 	resolveRuntimeCurrentAccount,
 } from "../lib/runtime/runtime-current-account.js";
+import { APP_RUNTIME_HELPER_STATUS_FILE } from "../lib/runtime-constants.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 function createStorage(): AccountStorageV3 {
 	return {
@@ -347,5 +353,192 @@ describe("resolveRuntimeCurrentAccount", () => {
 			"in-use",
 		]);
 		expect(resolveAccountCurrentMarkers(0, 0, null)).toEqual(["current"]);
+	});
+
+	it("falls back to the reported index when id and email are absent", () => {
+		const now = 10_000;
+		const result = resolveRuntimeCurrentAccount(
+			createStorage(),
+			{
+				appHelperStatus: {
+					source: "app-helper",
+					lastAccountIndex: 1,
+					updatedAt: now,
+				},
+			},
+			{ now },
+		);
+
+		expect(result).toEqual({
+			index: 1,
+			source: "app-helper",
+			matchedBy: "index",
+			updatedAt: now,
+		});
+	});
+
+	it("truncates fractional indices and rejects negative or out-of-range ones", () => {
+		const now = 10_000;
+		const select = (lastAccountIndex: number) =>
+			resolveRuntimeCurrentAccount(
+				createStorage(),
+				{
+					appHelperStatus: {
+						source: "app-helper",
+						lastAccountIndex,
+						updatedAt: now,
+					},
+				},
+				{ now },
+			);
+
+		expect(select(1.9)).toMatchObject({ index: 1, matchedBy: "index" });
+		expect(select(-1)).toBeNull();
+		expect(select(2)).toBeNull();
+		expect(select(Number.NaN)).toBeNull();
+	});
+
+	it("rejects an index fallback that contradicts the signal account id or email", () => {
+		const now = 10_000;
+		// Account 0 is acc_selected/selected@example.com; the signal claims an id
+		// and email that exist nowhere in storage, so the index hint must not win.
+		expect(
+			resolveRuntimeCurrentAccount(
+				createStorage(),
+				{
+					appHelperStatus: {
+						source: "app-helper",
+						lastAccountId: "acc_ghost",
+						lastAccountIndex: 0,
+						updatedAt: now,
+					},
+				},
+				{ now },
+			),
+		).toBeNull();
+		expect(
+			resolveRuntimeCurrentAccount(
+				createStorage(),
+				{
+					appHelperStatus: {
+						source: "app-helper",
+						lastAccountEmail: "ghost@example.com",
+						lastAccountIndex: 0,
+						updatedAt: now,
+					},
+				},
+				{ now },
+			),
+		).toBeNull();
+	});
+
+	it("ignores whitespace-only ids and emails when matching by index", () => {
+		const now = 10_000;
+		const result = resolveRuntimeCurrentAccount(
+			createStorage(),
+			{
+				appHelperStatus: {
+					source: "app-helper",
+					lastAccountId: "   ",
+					lastAccountEmail: " ",
+					lastAccountIndex: 0,
+					updatedAt: now,
+				},
+			},
+			{ now },
+		);
+
+		expect(result).toEqual({
+			index: 0,
+			source: "app-helper",
+			matchedBy: "index",
+			updatedAt: now,
+		});
+	});
+
+});
+
+describe("readAppRuntimeHelperStatus", () => {
+	let tempDir: string;
+	let originalDir: string | undefined;
+	const statusFileName = APP_RUNTIME_HELPER_STATUS_FILE;
+
+	beforeEach(async () => {
+		originalDir = process.env.CODEX_MULTI_AUTH_DIR;
+		tempDir = await fs.mkdtemp(join(tmpdir(), "codex-helper-status-"));
+		process.env.CODEX_MULTI_AUTH_DIR = tempDir;
+	});
+
+	afterEach(async () => {
+		if (originalDir === undefined) {
+			delete process.env.CODEX_MULTI_AUTH_DIR;
+		} else {
+			process.env.CODEX_MULTI_AUTH_DIR = originalDir;
+		}
+		await removeWithRetry(tempDir, { recursive: true, force: true });
+	});
+
+	async function writeStatusFile(contents: string): Promise<void> {
+		await fs.writeFile(join(tempDir, statusFileName), contents, "utf8");
+	}
+
+	it("returns null when the status file is missing", () => {
+		expect(readAppRuntimeHelperStatus()).toBeNull();
+	});
+
+	it("returns null for malformed JSON and non-record payloads", async () => {
+		await writeStatusFile("{nope");
+		expect(readAppRuntimeHelperStatus()).toBeNull();
+
+		await writeStatusFile('"running"');
+		expect(readAppRuntimeHelperStatus()).toBeNull();
+
+		await writeStatusFile("null");
+		expect(readAppRuntimeHelperStatus()).toBeNull();
+	});
+
+	it("refuses status files larger than the 1 MB sanity cap", async () => {
+		const status = {
+			kind: "codex-app-runtime-rotation-helper",
+			state: "running",
+			pid: process.pid,
+			padding: "x".repeat(1024 * 1024),
+		};
+		await writeStatusFile(JSON.stringify(status));
+		expect(readAppRuntimeHelperStatus()).toBeNull();
+	});
+
+	it("normalizes field types, trimming strings and dropping wrong-typed values", async () => {
+		await writeStatusFile(
+			JSON.stringify({
+				kind: "  codex-app-runtime-rotation-helper  ",
+				state: "running",
+				pid: 42,
+				lastAccountIndex: 1,
+				lastAccountLabel: "   ",
+				lastAccountEmail: " user@example.com ",
+				lastAccountId: 7,
+				lastAccountUpdatedAt: "soon",
+				updatedAt: 10_000,
+			}),
+		);
+		expect(readAppRuntimeHelperStatus()).toEqual({
+			kind: "codex-app-runtime-rotation-helper",
+			state: "running",
+			pid: 42,
+			lastAccountIndex: 1,
+			lastAccountLabel: null,
+			lastAccountEmail: "user@example.com",
+			lastAccountId: null,
+			lastAccountUpdatedAt: null,
+			updatedAt: 10_000,
+		});
+	});
+
+	it("rejects a JSON array status file as not-a-record", async () => {
+		// isRecord() excludes arrays: an `[]` helper-status file is malformed
+		// content, not an all-null status object.
+		await writeStatusFile("[]");
+		expect(readAppRuntimeHelperStatus()).toBeNull();
 	});
 });

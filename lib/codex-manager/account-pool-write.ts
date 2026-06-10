@@ -1,5 +1,5 @@
 import type { Workspace } from "../accounts.js";
-import type { AccountMetadataV3 } from "../storage/migrations.js";
+import type { AccountMetadataV3 } from "../storage/public-types.js";
 
 /**
  * Outcome of folding a single login result into the saved account pool.

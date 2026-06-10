@@ -3,20 +3,29 @@ import {
 	type DashboardDisplaySettings,
 	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
 } from "../lib/dashboard-settings.js";
-import { UI_COPY } from "../lib/ui/copy.js";
+import { UI_COPY } from "../lib/ui/ui-copy.js";
 import {
 	type DashboardDisplayPanelDeps,
 	promptDashboardDisplayPanel,
 } from "../lib/codex-manager/dashboard-display-panel.js";
 
-const { selectMock, getUiRuntimeOptionsMock } = vi.hoisted(() => ({
-	selectMock: vi.fn(),
-	getUiRuntimeOptionsMock: vi.fn(() => ({ theme: "test-theme" })),
-}));
+// Shared mock group (test/helpers/cli-test-fixtures.ts). This suite imports
+// the panel under test statically, so the mocked-module factories run while
+// the imports above evaluate — the mocks must be created inside vi.hoisted
+// (which also resolves the helper itself) rather than in module-level consts.
+// getUiRuntimeOptions stays bespoke: only this suite mocks the UI runtime
+// options provider, so it has no shared factory.
+const { uiMocks, getUiRuntimeOptionsMock } = await vi.hoisted(async () => {
+	const fixtures = await import("./helpers/cli-test-fixtures.js");
+	return {
+		uiMocks: fixtures.createUiPromptMocks(),
+		getUiRuntimeOptionsMock: vi.fn(() => ({ theme: "test-theme" })),
+	};
+});
 
-vi.mock("../lib/ui/select.js", () => ({
-	select: selectMock,
-}));
+vi.mock("../lib/ui/select.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).uiSelectModuleMock(uiMocks),
+);
 
 vi.mock("../lib/ui/runtime.js", () => ({
 	getUiRuntimeOptions: getUiRuntimeOptionsMock,
@@ -134,7 +143,7 @@ function buildDeps(): DashboardDisplayPanelDeps {
 
 describe("promptDashboardDisplayPanel", () => {
 	beforeEach(() => {
-		selectMock.mockReset();
+		uiMocks.select.mockReset();
 		getUiRuntimeOptionsMock.mockClear();
 		setInteractiveTTY(true);
 	});
@@ -149,11 +158,11 @@ describe("promptDashboardDisplayPanel", () => {
 		const result = await promptDashboardDisplayPanel(createSettings(), buildDeps());
 
 		expect(result).toBeNull();
-		expect(selectMock).not.toHaveBeenCalled();
+		expect(uiMocks.select).not.toHaveBeenCalled();
 	});
 
 	it("toggles a display flag and saves the draft", async () => {
-		selectMock
+		uiMocks.select
 			.mockResolvedValueOnce({
 				type: "toggle",
 				key: "menuShowStatusBadge",
@@ -163,11 +172,11 @@ describe("promptDashboardDisplayPanel", () => {
 		const result = await promptDashboardDisplayPanel(createSettings(), buildDeps());
 
 		expect(result?.menuShowStatusBadge).toBe(false);
-		expect(selectMock).toHaveBeenCalledTimes(2);
+		expect(uiMocks.select).toHaveBeenCalledTimes(2);
 	});
 
 	it("resets changed values back to dashboard defaults", async () => {
-		selectMock
+		uiMocks.select
 			.mockResolvedValueOnce({
 				type: "toggle",
 				key: "menuShowStatusBadge",
@@ -183,7 +192,7 @@ describe("promptDashboardDisplayPanel", () => {
 	});
 
 	it("cycles the sort mode and re-enables smart sort when switching to ready-first", async () => {
-		selectMock
+		uiMocks.select
 			.mockResolvedValueOnce({ type: "cycle-sort-mode" })
 			.mockResolvedValueOnce({ type: "save" });
 
@@ -200,7 +209,7 @@ describe("promptDashboardDisplayPanel", () => {
 	});
 
 	it("cycles the layout mode and syncs the details-pane flag", async () => {
-		selectMock
+		uiMocks.select
 			.mockResolvedValueOnce({ type: "cycle-layout-mode" })
 			.mockResolvedValueOnce({ type: "save" });
 
@@ -217,7 +226,7 @@ describe("promptDashboardDisplayPanel", () => {
 	});
 
 	it("returns null when the panel is cancelled", async () => {
-		selectMock.mockResolvedValueOnce({ type: "cancel" });
+		uiMocks.select.mockResolvedValueOnce({ type: "cancel" });
 
 		const result = await promptDashboardDisplayPanel(createSettings(), buildDeps());
 

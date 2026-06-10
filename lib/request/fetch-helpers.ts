@@ -3,9 +3,6 @@
  * These functions break down the complex fetch logic into manageable, testable units
  */
 
-import type { Auth, CodexClient } from "@codex-ai/sdk";
-import { ProxyAgent } from "undici";
-import { queuedRefresh } from "../refresh-queue.js";
 import { logRequest, logError, logWarn } from "../logger.js";
 import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
 import {
@@ -19,422 +16,67 @@ import {
 	convertSseToJson,
 	ensureContentType,
 } from "./response-handler.js";
-import type { UserConfig, RequestBody, TokenResult } from "../types.js";
-import { registerCleanup } from "../shutdown.js";
-import { CodexAuthError } from "../errors.js";
+import type { UserConfig, RequestBody } from "../types.js";
 import { isRecord } from "../utils.js";
 import {
-        CODEX_BASE_URL,
-        HTTP_STATUS,
-        OPENAI_HEADERS,
-        OPENAI_HEADER_VALUES,
-        URL_PATHS,
-        ERROR_MESSAGES,
-        LOG_STAGES,
+	HTTP_STATUS,
+	ERROR_MESSAGES,
+	LOG_STAGES,
 } from "../constants.js";
+import {
+	CHATGPT_CODEX_UNSUPPORTED_MODEL_CODE,
+	createEntitlementErrorResponse,
+	extractUnsupportedCodexModelFromText,
+	isEntitlementError,
+	isUnsupportedCodexModelForChatGpt,
+} from "./error-classification.js";
+import { logDeprecationHeaders } from "./headers.js";
 
-interface CodexAuthSetter {
-	auth: {
-		set(args: {
-			path: { id: string };
-			body: {
-				type: "oauth";
-				access: string;
-				refresh: string;
-				expires: number;
-				multiAccount: boolean;
-			};
-		}): Promise<unknown>;
-	};
-}
+export { shouldRefreshToken, refreshAndUpdateToken } from "./token-refresh.js";
+export {
+	DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN,
+	extractUnsupportedCodexModelFromText,
+	getUnsupportedCodexModelInfo,
+	resolveUnsupportedCodexFallbackModel,
+	shouldFallbackToGpt52OnUnsupportedGpt53,
+	isEntitlementError,
+	isWorkspaceDisabledError,
+	createEntitlementErrorResponse,
+} from "./error-classification.js";
+export type {
+	EntitlementError,
+	UnsupportedCodexModelInfo,
+	ResolveUnsupportedCodexFallbackOptions,
+} from "./error-classification.js";
+export {
+	extractRequestUrl,
+	rewriteUrlForCodex,
+	resolveProxyUrlForRequest,
+	closeSharedProxyDispatchers,
+	applyProxyCompatibleInit,
+} from "./url-rewriting.js";
+export type { ProxyCompatibleRequestInit } from "./url-rewriting.js";
+export { createCodexHeaders } from "./headers.js";
+export type {
+	CreateCodexHeadersOptions,
+	CreateCodexHeadersParams,
+} from "./headers.js";
+
 export interface RateLimitInfo {
         retryAfterMs: number;
         code?: string;
 }
 
-export interface EntitlementError {
-        isEntitlement: true;
-        code: string;
-        message: string;
-}
-
-const CODEX_BASE_URL_OBJECT = new URL(CODEX_BASE_URL);
-const CODEX_BASE_PATH_PREFIX = CODEX_BASE_URL_OBJECT.pathname.endsWith("/")
-	? CODEX_BASE_URL_OBJECT.pathname.slice(0, -1)
-	: CODEX_BASE_URL_OBJECT.pathname;
-
-const CHATGPT_CODEX_UNSUPPORTED_MODEL_CODE = "model_not_supported_with_chatgpt_account";
-const CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN =
-	/model is not supported when using codex with a chatgpt account/i;
-const NORMALIZED_UNSUPPORTED_MODEL_PATTERN =
-	/the model ['"]([^'"]+)['"] is not currently available for this chatgpt account/i;
-const MODEL_ACCESS_DENIED_PATTERN =
-	/the model [`'"]([^`'"]+)[`'"] does not exist or you do not have access to it/i;
 const MAX_RATE_LIMIT_DELAY_MS = 7 * 24 * 60 * 60 * 1000;
 const RETRY_AFTER_DURATION_PATTERN =
 	/\b(?:try|retry)\s+again\s+in\s+(\d+)\s*(second|minute|hour|day)s?\b/i;
 const RETRY_AFTER_CLOCK_TIME_PATTERN =
 	/\b(?:try|retry)\s+again\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i;
-const CREATE_CODEX_HEADERS_PARAM_KEYS = new Set(["init", "accountId", "accessToken", "opts"]);
-const DEFAULT_PROXY_PORTS: Record<string, number> = {
-	"http:": 80,
-	"https:": 443,
-};
-type ProxyDispatcher = NonNullable<RequestInit["dispatcher"]>;
-const sharedProxyDispatchers = new Map<string, ProxyDispatcher>();
-
-type ClosableDispatcher = ProxyDispatcher & {
-	close?: () => Promise<void> | void;
-};
-
-export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> = {
-	"gpt-5": ["gpt-5.5"],
-	"gpt-5-pro": ["gpt-5.5-pro"],
-	"gpt-5-chat-latest": ["gpt-5.5"],
-	"gpt-5.5": ["gpt-5.4"],
-	"gpt-5.5-pro": ["gpt-5.4"],
-	"gpt-5.5-2026-04-23": ["gpt-5.4"],
-	"gpt-5.5-pro-2026-04-23": ["gpt-5.4"],
-	"gpt-5.5-20260423": ["gpt-5.4"],
-	"gpt-5.5-pro-20260423": ["gpt-5.4"],
-	"gpt-5.3-codex-spark": ["gpt-5.3-codex", "gpt-5.2-codex"],
-	"gpt-5.3-codex": ["gpt-5.2-codex"],
-	"codex-max": ["gpt-5.3-codex"],
-	"gpt-5.1-codex-max": ["gpt-5.3-codex"],
-	"codex-mini-latest": ["gpt-5.3-codex"],
-	"gpt-5-codex-mini": ["gpt-5.3-codex"],
-	"gpt-5.1-codex-mini": ["gpt-5.3-codex"],
-	"gpt-5-codex": ["gpt-5.3-codex", "gpt-5.2-codex"],
-	"gpt-5.2-codex": ["gpt-5.3-codex"],
-	"gpt-5.1-codex": ["gpt-5.3-codex"],
-};
-
-export interface UnsupportedCodexModelInfo {
-	isUnsupported: boolean;
-	code?: string;
-	message?: string;
-	unsupportedModel?: string;
-}
-
-export interface ResolveUnsupportedCodexFallbackOptions {
-	requestedModel: string | undefined;
-	errorBody: unknown;
-	attemptedModels?: Iterable<string>;
-	fallbackOnUnsupportedCodexModel: boolean;
-	fallbackToGpt52OnUnsupportedGpt53: boolean;
-	customChain?: Record<string, string[]>;
-}
 
 export interface TransformRequestForCodexResult {
 	body: RequestBody;
 	updatedInit: RequestInit;
 	deferredFastSessionInputTrim?: FastSessionInputTrimPlan["trim"];
-}
-
-function canonicalizeModelName(model: string | undefined): string | undefined {
-	if (!model) return undefined;
-	const trimmed = model.trim().toLowerCase();
-	if (!trimmed) return undefined;
-	const stripped = trimmed.includes("/")
-		? (trimmed.split("/").pop() ?? trimmed)
-		: trimmed;
-	return stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
-}
-
-function normalizeFallbackChain(
-	customChain: Record<string, string[]> | undefined,
-): Record<string, string[]> {
-	const normalized: Record<string, string[]> = {};
-	for (const [key, values] of Object.entries(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN)) {
-		const normalizedKey = canonicalizeModelName(key);
-		if (!normalizedKey) continue;
-		normalized[normalizedKey] = values
-			.map((value) => canonicalizeModelName(value))
-			.filter((value): value is string => !!value);
-	}
-
-	if (!customChain) {
-		return normalized;
-	}
-
-	for (const [key, values] of Object.entries(customChain)) {
-		const normalizedKey = canonicalizeModelName(key);
-		if (!normalizedKey || !Array.isArray(values)) continue;
-		const normalizedValues = values
-			.map((value) => canonicalizeModelName(value))
-			.filter((value): value is string => !!value);
-		if (normalizedValues.length > 0) {
-			normalized[normalizedKey] = normalizedValues;
-		}
-	}
-
-	return normalized;
-}
-
-export function extractUnsupportedCodexModelFromText(bodyText: string): string | undefined {
-	const directMatch = bodyText.match(
-		/['"]([^'"]+)['"]\s+model is not supported when using codex with a chatgpt account/i,
-	);
-	if (directMatch?.[1]) {
-		return canonicalizeModelName(directMatch[1]);
-	}
-	const normalizedMatch = bodyText.match(NORMALIZED_UNSUPPORTED_MODEL_PATTERN);
-	if (normalizedMatch?.[1]) {
-		return canonicalizeModelName(normalizedMatch[1]);
-	}
-	const accessDeniedMatch = bodyText.match(MODEL_ACCESS_DENIED_PATTERN);
-	if (accessDeniedMatch?.[1]) {
-		return canonicalizeModelName(accessDeniedMatch[1]);
-	}
-	return undefined;
-}
-
-function isUnsupportedCodexModelForChatGpt(status: number, bodyText: string): boolean {
-	if (status !== HTTP_STATUS.BAD_REQUEST) return false;
-	if (!bodyText) return false;
-	return (
-		CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN.test(bodyText) ||
-		NORMALIZED_UNSUPPORTED_MODEL_PATTERN.test(bodyText) ||
-		MODEL_ACCESS_DENIED_PATTERN.test(bodyText)
-	);
-}
-
-export function getUnsupportedCodexModelInfo(
-	errorBody: unknown,
-): UnsupportedCodexModelInfo {
-	if (!isRecord(errorBody)) {
-		return { isUnsupported: false };
-	}
-
-	const maybeError = errorBody.error;
-	if (!isRecord(maybeError)) {
-		// Some upstreams (e.g. the Codex quota endpoint) return the flat
-		// `{ "detail": "...model is not supported..." }` shape instead of the
-		// nested `{ "error": { "message": "..." } }` envelope. Fall back to the
-		// top-level `detail` string so model-fallback detection still works.
-		const detail = typeof errorBody.detail === "string" ? errorBody.detail : undefined;
-		if (!detail) {
-			return { isUnsupported: false };
-		}
-		const isUnsupportedDetail =
-			CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN.test(detail) ||
-			NORMALIZED_UNSUPPORTED_MODEL_PATTERN.test(detail) ||
-			MODEL_ACCESS_DENIED_PATTERN.test(detail);
-		if (!isUnsupportedDetail) {
-			return { isUnsupported: false };
-		}
-		return {
-			isUnsupported: true,
-			message: detail,
-			unsupportedModel: extractUnsupportedCodexModelFromText(detail) ?? undefined,
-		};
-	}
-
-	const code = typeof maybeError.code === "string" ? maybeError.code : undefined;
-	const message =
-		typeof maybeError.message === "string" ? maybeError.message : undefined;
-	const unsupportedModelFromPayload =
-		typeof maybeError.unsupported_model === "string"
-			? maybeError.unsupported_model
-			: undefined;
-	const unsupportedModel = unsupportedModelFromPayload
-		? canonicalizeModelName(unsupportedModelFromPayload)
-		: extractUnsupportedCodexModelFromText(message ?? "");
-	const isUnsupported =
-		code === CHATGPT_CODEX_UNSUPPORTED_MODEL_CODE ||
-		(message
-			? CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN.test(message) ||
-				NORMALIZED_UNSUPPORTED_MODEL_PATTERN.test(message) ||
-				MODEL_ACCESS_DENIED_PATTERN.test(message)
-			: false);
-
-	return {
-		isUnsupported,
-		code,
-		message,
-		unsupportedModel: unsupportedModel ?? undefined,
-	};
-}
-
-export function resolveUnsupportedCodexFallbackModel(
-	options: ResolveUnsupportedCodexFallbackOptions,
-): string | undefined {
-	if (!options.fallbackOnUnsupportedCodexModel) return undefined;
-
-	const unsupported = getUnsupportedCodexModelInfo(options.errorBody);
-	if (!unsupported.isUnsupported) return undefined;
-
-	const requestedModel = canonicalizeModelName(options.requestedModel);
-	const currentModel = requestedModel ?? unsupported.unsupportedModel;
-	if (!currentModel) return undefined;
-
-	const attempted = new Set<string>();
-	for (const model of options.attemptedModels ?? []) {
-		const normalized = canonicalizeModelName(model);
-		if (normalized) attempted.add(normalized);
-	}
-
-	const chain = normalizeFallbackChain(options.customChain);
-	const targets = chain[currentModel] ?? [];
-	if (targets.length === 0) return undefined;
-
-	for (const target of targets) {
-		if (!options.fallbackToGpt52OnUnsupportedGpt53 &&
-			currentModel === "gpt-5.3-codex" &&
-			target === "gpt-5.2-codex") {
-			continue;
-		}
-		if (target === currentModel) continue;
-		if (attempted.has(target)) continue;
-		return target;
-	}
-
-	return undefined;
-}
-
-/**
- * Returns true when the legacy `gpt-5.3-codex -> gpt-5.2-codex` edge is available.
- */
-export function shouldFallbackToGpt52OnUnsupportedGpt53(
-	requestedModel: string | undefined,
-	errorBody: unknown,
-): boolean {
-	if (canonicalizeModelName(requestedModel) !== "gpt-5.3-codex") {
-		return false;
-	}
-
-	return (
-		resolveUnsupportedCodexFallbackModel({
-			requestedModel,
-			errorBody,
-			// Probe whether the legacy gpt-5.2 edge is still active under current
-			// policy/toggles when the current Codex model is blocked.
-			attemptedModels: [],
-			fallbackOnUnsupportedCodexModel: true,
-			fallbackToGpt52OnUnsupportedGpt53: true,
-		}) === "gpt-5.2-codex"
-	);
-}
-
-/**
- * Detects whether an error code or response body indicates an entitlement/subscription issue for Codex models.
- *
- * Entitlement errors signal that the requested feature is not included in the user's plan and should not be treated as rate limits.
- * This function is pure and safe to call concurrently; it performs no filesystem access (including on Windows) and does not read or redact tokens — callers must avoid passing sensitive credentials in `code` or `bodyText`.
- *
- * @param code - The error code string returned by the service
- * @param bodyText - The response body text to inspect for entitlement-related phrases
- * @returns `true` if the combined `code` or `bodyText` indicates an entitlement/subscription issue, `false` otherwise
- */
-export function isEntitlementError(code: string, bodyText: string): boolean {
-        const haystack = `${code} ${bodyText}`.toLowerCase();
-        // "usage_not_included" means the subscription doesn't include this feature
-        // This is different from "usage_limit_reached" which is a temporary quota limit
-        return /usage_not_included|not.included.in.your.plan|subscription.does.not.include/i.test(haystack);
-}
-
-/**
- * Detects whether an error indicates the workspace/account has been disabled or expired.
- *
- * Workspace disabled errors signal that the current workspace is no longer accessible
- * (expired, disabled, or removed) and the plugin should automatically switch to another account.
- *
- * @param status - HTTP status code
- * @param code - The error code string returned by the service
- * @param bodyText - The response body text to inspect for workspace-related phrases
- * @returns `true` if the error indicates a disabled/expired workspace
- */
-export function isWorkspaceDisabledError(
-        status: number,
-        code: unknown,
-        bodyText: string,
-): boolean {
-        const normalizedCode = typeof code === "string" ? code.trim().toLowerCase() : "";
-
-        if (status === 402) {
-                const normalizedTokens = normalizedCode
-                        .split(/[^a-z0-9_]+/i)
-                        .map((token) => token.trim())
-                        .filter((token) => token.length > 0);
-                return (
-                        normalizedTokens.includes("deactivated_workspace") ||
-                        /\bdeactivated_workspace\b/i.test(bodyText)
-                );
-        }
-
-        if (status !== 403) {
-                return false;
-        }
-
-        const haystack = `${normalizedCode} ${bodyText}`.toLowerCase();
-        const normalizedTokens = normalizedCode
-                .split(/[^a-z0-9_]+/i)
-                .map((token) => token.trim())
-                .filter((token) => token.length > 0);
-
-		const disabledPatterns = [
-				/workspace.*(?:disabled|expired|deactivated|terminated)/i,
-				/account\s+(?:has\s+been|is)\s+(?:disabled|expired|deactivated|terminated|closed)/i,
-				/(?:workspace|org(?:anization)?).*no longer.*(?:active|available|valid)/i,
-				/(?:workspace|org(?:anization)?).*has been.*(?:disabled|expired|closed)/i,
-				/workspace.*(?:access|subscription).*expired/i,
-				/org(?:anization)?.*(?:disabled|expired|inactive)/i,
-		];
-
-        for (const pattern of disabledPatterns) {
-                if (pattern.test(haystack)) {
-                        return true;
-                }
-        }
-
-        const workspaceErrorCodes = new Set([
-                "workspace_disabled",
-                "workspace_expired",
-                "workspace_terminated",
-                "account_disabled",
-                "account_expired",
-                "organization_disabled",
-        ]);
-        if (workspaceErrorCodes.has(normalizedCode)) {
-                return true;
-        }
-
-        return normalizedTokens.some((token) => workspaceErrorCodes.has(token));
-}
-
-/**
- * Constructs a standardized 403 entitlement error Response indicating the user lacks access to Codex models.
- *
- * This function returns a JSON Response with an `error` payload containing a user-facing message, a
- * `type` of `"entitlement_error"`, and a `code` of `"usage_not_included"`. The message suggests checking
- * account/workspace access and re-authenticating with `codex-multi-auth login`.
- *
- * Concurrency: stateless and safe to call concurrently from multiple threads or requests.
- * Windows filesystem behavior: none (function does not access the filesystem).
- * Token redaction: any tokens are not included in the generated payload; do not pass sensitive tokens in `_bodyText`.
- *
- * @param _bodyText - Original response body text (accepted for compatibility; ignored when building the response)
- * @returns A 403 Response with a JSON body describing the entitlement error and guidance for resolving it
- */
-export function createEntitlementErrorResponse(_bodyText: string): Response {
-        const message = 
-                "This model is not included in your ChatGPT subscription. " +
-                "Please check that your account or workspace has access to Codex models (Plus/Pro/Business/Enterprise). " +
-                "If you recently subscribed or switched workspaces, try logging out and back in with `codex-multi-auth login`.";
-        
-        const payload = {
-                error: {
-                        message,
-                        type: "entitlement_error",
-                        code: "usage_not_included",
-                },
-        };
-
-        return new Response(JSON.stringify(payload), {
-                status: 403, // Forbidden - not a rate limit
-                statusText: "Forbidden",
-                headers: { "content-type": "application/json; charset=utf-8" },
-        });
 }
 
 export interface ErrorHandlingResult {
@@ -454,319 +96,6 @@ export interface ErrorDiagnostics {
 	correlationId?: string;
 	threadId?: string;
 	httpStatus?: number;
-}
-
-export interface CreateCodexHeadersOptions {
-	model?: string;
-	promptCacheKey?: string;
-}
-
-export interface ProxyCompatibleRequestInit extends RequestInit {
-	agent?: unknown;
-}
-
-export interface CreateCodexHeadersParams {
-	init?: RequestInit;
-	accountId: string;
-	accessToken: string;
-	opts?: CreateCodexHeadersOptions;
-}
-
-function isCreateCodexHeadersNamedParams(value: unknown): value is CreateCodexHeadersParams {
-	if (!isRecord(value)) return false;
-	if (typeof value.accountId !== "string" || typeof value.accessToken !== "string") return false;
-	return Object.keys(value).every((key) => CREATE_CODEX_HEADERS_PARAM_KEYS.has(key));
-}
-
-/**
- * Determines if the current auth token needs to be refreshed
- * @param auth - Current authentication state
- * @returns True if token is expired or invalid
- */
-export function shouldRefreshToken(auth: Auth, skewMs = 0): boolean {
-	if (auth.type !== "oauth") return true;
-	if (!auth.access) return true;
-
-	const safeSkewMs = Math.max(0, Math.floor(skewMs));
-	return auth.expires <= Date.now() + safeSkewMs;
-}
-
-function isRetryableRefreshFailure(
-	result: Extract<TokenResult, { type: "failed" }>,
-): boolean {
-	switch (result.reason) {
-		case "network_error":
-		case "unknown":
-		case "invalid_response":
-			return true;
-		case "missing_refresh":
-			return false;
-		case "http_error":
-			return !(
-				result.statusCode === HTTP_STATUS.BAD_REQUEST ||
-				result.statusCode === HTTP_STATUS.UNAUTHORIZED ||
-				result.statusCode === HTTP_STATUS.FORBIDDEN
-			);
-		default:
-			return false;
-	}
-}
-
-function isRetryableAuthSetterError(error: unknown): boolean {
-	if (!error || typeof error !== "object") {
-		return false;
-	}
-
-	const candidate = error as {
-		code?: unknown;
-		status?: unknown;
-		cause?: unknown;
-	};
-	const code =
-		typeof candidate.code === "string"
-			? candidate.code.toUpperCase()
-			: undefined;
-	if (code === "EAGAIN" || code === "EBUSY" || code === "EPERM") {
-		return true;
-	}
-
-	if (candidate.status === HTTP_STATUS.TOO_MANY_REQUESTS) {
-		return true;
-	}
-
-	if (candidate.cause && candidate.cause !== error) {
-		return isRetryableAuthSetterError(candidate.cause);
-	}
-
-	return false;
-}
-
-/**
- * Refreshes the OAuth token and updates stored credentials
- * @param currentAuth - Current auth state
- * @param client - Codex client for updating stored credentials
- * @returns Updated auth (throws on failure)
- */
-export async function refreshAndUpdateToken(
-	currentAuth: Auth,
-	client: CodexClient,
-): Promise<Auth> {
-	const authSetter = (client as Partial<CodexAuthSetter>).auth;
-	if (!authSetter || typeof authSetter.set !== "function") {
-		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, {
-			retryable: false,
-		});
-	}
-
-	const refreshToken = currentAuth.type === "oauth" ? currentAuth.refresh : "";
-	const refreshResult = await queuedRefresh(refreshToken);
-
-	if (refreshResult.type === "failed") {
-		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, {
-			retryable: isRetryableRefreshFailure(refreshResult),
-			context: {
-				refreshFailureReason: refreshResult.reason,
-				statusCode: refreshResult.statusCode,
-			},
-		});
-	}
-
-	try {
-		await authSetter.set({
-			path: { id: "openai" },
-			body: {
-				type: "oauth",
-				access: refreshResult.access,
-				refresh: refreshResult.refresh,
-				expires: refreshResult.expires,
-				multiAccount: true,
-			},
-		});
-	} catch (error) {
-		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, {
-			retryable: isRetryableAuthSetterError(error),
-			cause: error,
-		});
-	}
-
-	// Update current auth reference if it's OAuth type
-	if (currentAuth.type === "oauth") {
-		currentAuth.access = refreshResult.access;
-		currentAuth.refresh = refreshResult.refresh;
-		currentAuth.expires = refreshResult.expires;
-	}
-
-	return currentAuth;
-}
-
-/**
- * Extracts URL string from various request input types
- * @param input - Request input (string, URL, or Request object)
- * @returns URL string
- */
-export function extractRequestUrl(input: Request | string | URL): string {
-	if (typeof input === "string") return input;
-	if (input instanceof URL) return input.toString();
-	return input.url;
-}
-
-/**
- * Rewrites OpenAI API URLs to Codex backend URLs
- * @param url - Original URL
- * @returns Rewritten URL for Codex backend
- */
-export function rewriteUrlForCodex(url: string): string {
-	const parsedUrl = new URL(url);
-	const rewrittenPath = parsedUrl.pathname.includes(URL_PATHS.RESPONSES)
-		? parsedUrl.pathname.replace(URL_PATHS.RESPONSES, URL_PATHS.CODEX_RESPONSES)
-		: parsedUrl.pathname;
-	const normalizedPath =
-		rewrittenPath === CODEX_BASE_PATH_PREFIX ||
-		rewrittenPath.startsWith(`${CODEX_BASE_PATH_PREFIX}/`)
-			? rewrittenPath
-			: `${CODEX_BASE_PATH_PREFIX}${rewrittenPath.startsWith("/") ? rewrittenPath : `/${rewrittenPath}`}`;
-
-	parsedUrl.protocol = CODEX_BASE_URL_OBJECT.protocol;
-	parsedUrl.username = "";
-	parsedUrl.password = "";
-	parsedUrl.host = CODEX_BASE_URL_OBJECT.host;
-	parsedUrl.pathname = normalizedPath;
-
-	return parsedUrl.toString();
-}
-
-function hasOwnEnvKey(env: NodeJS.ProcessEnv, key: string): boolean {
-	return Object.prototype.hasOwnProperty.call(env, key);
-}
-
-function resolveProxyEnvValue(
-	env: NodeJS.ProcessEnv,
-	lowerKey: string,
-	upperKey: string,
-): string | undefined {
-	if (hasOwnEnvKey(env, lowerKey)) {
-		const value = env[lowerKey]?.trim();
-		return value ? value : undefined;
-	}
-
-	const value = env[upperKey]?.trim();
-	return value ? value : undefined;
-}
-
-function parseNoProxyEntries(noProxyValue: string): Array<{ hostname: string; port: number }> {
-	return noProxyValue
-		.split(/[,\s]/)
-		.map((entry) => entry.trim())
-		.filter(Boolean)
-		.map((entry) => {
-			const parsed = entry.match(/^(.+):(\d+)$/);
-			const hostname = parsed?.[1] ?? entry;
-			const portText = parsed?.[2];
-			return {
-				hostname: hostname.toLowerCase(),
-				port: portText ? Number.parseInt(portText, 10) : 0,
-			};
-		});
-}
-
-function shouldBypassProxyForUrl(url: URL, noProxyValue: string | undefined): boolean {
-	if (!noProxyValue) return false;
-	if (noProxyValue === "*") return true;
-
-	const hostname = url.host.replace(/:\d*$/, "").toLowerCase();
-	const port = Number.parseInt(url.port, 10) || DEFAULT_PROXY_PORTS[url.protocol] || 0;
-
-	for (const entry of parseNoProxyEntries(noProxyValue)) {
-		if (entry.hostname === "*") return true;
-		if (entry.port && entry.port !== port) continue;
-
-		if (!/^[.*]/.test(entry.hostname)) {
-			if (hostname === entry.hostname) {
-				return true;
-			}
-			continue;
-		}
-
-		if (hostname.endsWith(entry.hostname.replace(/^\*/, ""))) {
-			return true;
-		}
-	}
-
-	return false;
-}
-
-export function resolveProxyUrlForRequest(
-	url: string,
-	env: NodeJS.ProcessEnv = process.env,
-): string | undefined {
-	const parsed = new URL(url);
-	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-		return undefined;
-	}
-
-	const httpProxy = resolveProxyEnvValue(env, "http_proxy", "HTTP_PROXY");
-	const httpsProxy = resolveProxyEnvValue(env, "https_proxy", "HTTPS_PROXY");
-	if (!httpProxy && !httpsProxy) {
-		return undefined;
-	}
-
-	const noProxy = resolveProxyEnvValue(env, "no_proxy", "NO_PROXY");
-	if (shouldBypassProxyForUrl(parsed, noProxy)) {
-		return undefined;
-	}
-
-	return parsed.protocol === "https:"
-		? (httpsProxy ?? httpProxy)
-		: httpProxy;
-}
-
-function getSharedProxyDispatcher(proxyUrl: string): ProxyDispatcher {
-	const existing = sharedProxyDispatchers.get(proxyUrl);
-	if (existing) {
-		return existing;
-	}
-
-	const dispatcher = new ProxyAgent(proxyUrl) as unknown as ProxyDispatcher;
-	sharedProxyDispatchers.set(proxyUrl, dispatcher);
-	return dispatcher;
-}
-
-export async function closeSharedProxyDispatchers(): Promise<void> {
-	while (sharedProxyDispatchers.size > 0) {
-		const dispatchers = [...sharedProxyDispatchers.values()] as ClosableDispatcher[];
-		sharedProxyDispatchers.clear();
-
-		await Promise.allSettled(
-			dispatchers.map(async (dispatcher) => {
-				if (typeof dispatcher.close === "function") {
-					await dispatcher.close();
-				}
-			}),
-		);
-	}
-}
-
-registerCleanup(closeSharedProxyDispatchers);
-
-export function applyProxyCompatibleInit(
-	url: string,
-	init?: ProxyCompatibleRequestInit,
-	env: NodeJS.ProcessEnv = process.env,
-): ProxyCompatibleRequestInit {
-	const resolvedInit = init ?? {};
-	if (resolvedInit.dispatcher || resolvedInit.agent) {
-		return resolvedInit;
-	}
-
-	const proxyUrl = resolveProxyUrlForRequest(url, env);
-	if (!proxyUrl) {
-		return resolvedInit;
-	}
-
-	return {
-		...resolvedInit,
-		dispatcher: getSharedProxyDispatcher(proxyUrl),
-	};
 }
 
 /**
@@ -888,80 +217,10 @@ export async function transformRequestForCodex(
 }
 
 /**
- * Creates headers for Codex API requests
- * @param init - Request init options
- * @param accountId - ChatGPT account ID
- * @param accessToken - OAuth access token
- * @returns Headers object with all required Codex headers
- */
-export function createCodexHeaders(
-	params: CreateCodexHeadersParams,
-): Headers;
-export function createCodexHeaders(
-    init: RequestInit | undefined,
-    accountId: string,
-    accessToken: string,
-    opts?: CreateCodexHeadersOptions,
-): Headers;
-export function createCodexHeaders(
-    initOrParams: RequestInit | undefined | CreateCodexHeadersParams,
-    accountId?: string,
-    accessToken?: string,
-    opts?: CreateCodexHeadersOptions,
-): Headers {
-	const useNamedParams =
-		typeof accountId === "undefined" &&
-		typeof accessToken === "undefined" &&
-		isCreateCodexHeadersNamedParams(initOrParams);
-	const namedParams = useNamedParams
-		? (initOrParams as CreateCodexHeadersParams)
-		: null;
-	const resolvedInit = useNamedParams
-		? namedParams?.init
-		: (initOrParams as RequestInit | undefined);
-	const resolvedAccountId = useNamedParams ? namedParams?.accountId : accountId;
-	const resolvedAccessToken = useNamedParams ? namedParams?.accessToken : accessToken;
-	const resolvedOpts = useNamedParams ? namedParams?.opts : opts;
-	if (!resolvedAccountId || !resolvedAccessToken) {
-		throw new TypeError("createCodexHeaders requires accountId and accessToken");
-	}
-	const headers = new Headers(resolvedInit?.headers ?? {});
-	headers.delete("x-api-key"); // Remove any existing API key
-	headers.set("Authorization", `Bearer ${resolvedAccessToken}`);
-	headers.set(OPENAI_HEADERS.ACCOUNT_ID, resolvedAccountId);
-	headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES);
-	headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
-
-    const cacheKey = resolvedOpts?.promptCacheKey;
-    if (cacheKey) {
-        headers.set(OPENAI_HEADERS.CONVERSATION_ID, cacheKey);
-        headers.set(OPENAI_HEADERS.SESSION_ID, cacheKey);
-    } else {
-        headers.delete(OPENAI_HEADERS.CONVERSATION_ID);
-        headers.delete(OPENAI_HEADERS.SESSION_ID);
-    }
-    headers.set("accept", "text/event-stream");
-    return headers;
-}
-
-/**
  * Handles error responses from the Codex API
  * @param response - Error response from API
  * @returns Original response or mapped retryable response
  */
-/**
- * Log RFC 8594 Deprecation/Sunset headers if present. Shared by the success and
- * error response handlers so a sunset notice is surfaced regardless of status
- * (request-01).
- */
-function logDeprecationHeaders(response: Response): void {
-        const deprecation = response.headers.get("Deprecation");
-        const sunset = response.headers.get("Sunset");
-        if (deprecation || sunset) {
-                logWarn(`API deprecation notice`, { deprecation, sunset });
-        }
-}
-
 export async function handleErrorResponse(
         response: Response,
         options?: ErrorHandlingOptions,

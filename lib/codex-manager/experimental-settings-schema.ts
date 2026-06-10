@@ -1,4 +1,4 @@
-import { UI_COPY } from "../ui/copy.js";
+import { UI_COPY } from "../ui/ui-copy.js";
 import type { getUiRuntimeOptions } from "../ui/runtime.js";
 import type { SelectOptions } from "../ui/select.js";
 

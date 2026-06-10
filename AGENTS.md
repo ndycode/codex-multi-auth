@@ -2,8 +2,9 @@
 
 Generated: 2026-04-25
 Commit: a87e005
+Validated: 2026-06-10 against commit 98d9819 (repo audit; claims re-checked against the tree, content not regenerated)
 Branch: main
-Package version: 2.2.0
+Package version: 2.3.0-beta.1
 
 ## OVERVIEW
 
@@ -73,7 +74,7 @@ Package version: 2.2.0
 ## CONVENTIONS
 
 - Source lives in root `index.ts`, `lib/`, and `scripts/`; `dist/` is generated output.
-- ESM only (`"type": "module"`), Node >= 18.
+- ESM only (`"type": "module"`), Node >= 18.17.
 - Canonical package name is `codex-multi-auth`.
 - Canonical command family is `codex-multi-auth ...`.
 - The package does not publish a global `codex` bin; `codex-multi-auth-codex` is the explicit wrapper: auth commands run locally, non-auth commands forward to official Codex.

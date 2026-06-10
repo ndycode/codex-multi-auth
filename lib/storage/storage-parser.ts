@@ -5,7 +5,7 @@ import {
 	safeParseJson,
 } from "../schemas.js";
 import { withFileOperationRetry } from "../fs-retry.js";
-import type { AccountStorageV3 } from "../storage.js";
+import type { AccountStorageV3 } from "./public-types.js";
 
 export function parseAndNormalizeStorage(
 	data: unknown,

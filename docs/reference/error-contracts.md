@@ -62,6 +62,14 @@ Compatibility guarantees:
 - Error responses are normalized to JSON error payloads with a stable `error.message` field.
 - Diagnostics may include request/correlation IDs when available.
 
+### Typed Errors
+
+The request layer's thrown errors are backed by the typed hierarchy in `lib/errors.ts` (base class `CodexError`, which extends `Error` and carries a stable `code` string):
+
+- `refreshAndUpdateToken` throws `CodexAuthError` (`code: "CODEX_AUTH_ERROR"`) with the message `Failed to refresh token, authentication required` on any refresh failure. The error carries a `retryable` boolean (transient network/lock failures are retryable; invalid-grant style failures are not) and, where available, `cause` and `context` (`refreshFailureReason`, `statusCode`).
+- Catch sites may rely on `instanceof CodexAuthError` (or the structural `code` property) plus `retryable` to decide whether to re-attempt or force re-authentication.
+- HTTP error responses are returned as normalized `Response` payloads (see above), not thrown, so they intentionally have no `Error` class.
+
 ---
 
 ## Runtime Rotation Proxy Error Contract
@@ -93,6 +101,8 @@ Supported dual-call forms include:
 - `createCodexHeaders(...)` and `createCodexHeaders({ ... })`
 - `getRateLimitBackoffWithReason(...)` and `getRateLimitBackoffWithReason({ ... })`
 - `transformRequestBody(...)` and `transformRequestBody({ ... })`
+
+Invalid named-parameter calls (missing or wrongly typed required fields, or unknown keys) throw a native `TypeError` with a `<helper> requires ...` message — for example, `createCodexHeaders` throws `TypeError: createCodexHeaders requires accountId and accessToken`. This is a deliberate, shared convention across the dual-call helpers and is not wrapped in a `CodexError` subclass.
 
 ---
 

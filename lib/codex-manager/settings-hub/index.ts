@@ -3,7 +3,7 @@ import {
 	type DashboardDisplaySettings,
 	loadDashboardDisplaySettings,
 } from "../../dashboard-settings.js";
-import { UI_COPY } from "../../ui/copy.js";
+import { UI_COPY } from "../../ui/ui-copy.js";
 import { getUiRuntimeOptions } from "../../ui/runtime.js";
 import { select } from "../../ui/select.js";
 import {

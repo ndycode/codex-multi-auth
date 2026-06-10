@@ -27,8 +27,8 @@ Describe the observed result.
 ## Environment
 
 - `codex --version`:
-- `codex auth status` output summary:
-- `codex auth rotation status` output summary, if runtime rotation is involved:
+- `codex-multi-auth status` output summary:
+- `codex-multi-auth rotation status` output summary, if runtime rotation is involved:
 - `npm ls -g codex-multi-auth`:
 - OS:
 - Node.js:
@@ -37,9 +37,9 @@ Describe the observed result.
 
 Include relevant outputs from:
 
-- `codex auth check`
-- `codex auth report --json`
-- `codex auth doctor --json`
+- `codex-multi-auth check`
+- `codex-multi-auth report --json`
+- `codex-multi-auth doctor --json`
 
 ## Logs (Optional)
 
