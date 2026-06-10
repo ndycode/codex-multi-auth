@@ -234,6 +234,10 @@ jobs:
     # devDependencies — only what a real `npm install -g` consumer gets.
     needs: build-package
     runs-on: ubuntu-latest
+    # CI=1 must cover the install step too: postinstall.js runs during
+    # `npm install -g`, and local runners like act do not auto-inject CI.
+    env:
+      CI: 1
 
     steps:
       - name: Setup Node.js 18.17.x
@@ -250,8 +254,6 @@ jobs:
         run: npm install -g ./codex-multi-auth-*.tgz
 
       - name: Smoke-run CLI entrypoints
-        env:
-          CI: 1
         run: |
           node --version
           codex-multi-auth --version
