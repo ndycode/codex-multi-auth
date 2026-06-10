@@ -89,6 +89,8 @@ export function createCodexHeaders(
  * Log RFC 8594 Deprecation/Sunset headers if present. Shared by the success and
  * error response handlers so a sunset notice is surfaced regardless of status
  * (request-01).
+ *
+ * @internal Exported only for sibling lib/request modules; import via fetch-helpers.ts elsewhere.
  */
 export function logDeprecationHeaders(response: Response): void {
         const deprecation = response.headers.get("Deprecation");

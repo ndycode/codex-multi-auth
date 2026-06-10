@@ -13,6 +13,7 @@ export interface EntitlementError {
         message: string;
 }
 
+/** @internal Exported only for sibling lib/request modules; import via fetch-helpers.ts elsewhere. */
 export const CHATGPT_CODEX_UNSUPPORTED_MODEL_CODE = "model_not_supported_with_chatgpt_account";
 const CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN =
 	/model is not supported when using codex with a chatgpt account/i;
@@ -117,6 +118,7 @@ export function extractUnsupportedCodexModelFromText(bodyText: string): string |
 	return undefined;
 }
 
+/** @internal Exported only for sibling lib/request modules; import via fetch-helpers.ts elsewhere. */
 export function isUnsupportedCodexModelForChatGpt(status: number, bodyText: string): boolean {
 	if (status !== HTTP_STATUS.BAD_REQUEST) return false;
 	if (!bodyText) return false;
