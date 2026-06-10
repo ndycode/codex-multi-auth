@@ -616,6 +616,55 @@ describe("cli output contracts", () => {
 		});
 	});
 
+	describe("forecast --json --explain", () => {
+		it("pins the explanation envelope that --explain adds", async () => {
+			const result = await runCli(["forecast", "--json", "--explain"]);
+
+			expect(result.exitCode).toBe(0);
+			const payload = parseSingleJsonObject(result);
+			expect(sortedKeys(payload)).toEqual([
+				"accounts",
+				"command",
+				"explanation",
+				"liveProbe",
+				"model",
+				"probeErrors",
+				"recommendation",
+				"runtimeOverlay",
+				"summary",
+			]);
+
+			const explanation = payload.explanation as Record<string, unknown>;
+			expect(sortedKeys(explanation)).toEqual([
+				"considered",
+				"recommendationReason",
+				"recommendedIndex",
+			]);
+			expect(explanation.recommendedIndex).toBe(0);
+			expect(explanation.recommendationReason).toBeTypeOf("string");
+
+			const considered = explanation.considered as Array<
+				Record<string, unknown>
+			>;
+			expect(considered).toHaveLength(2);
+			for (const row of considered) {
+				expect(sortedKeys(row)).toEqual([
+					"availability",
+					"index",
+					"isCurrent",
+					"label",
+					"reasons",
+					"riskLevel",
+					"riskScore",
+					"selected",
+					"waitMs",
+				]);
+			}
+
+			expectNoSecretOrEmailLeak(result);
+		});
+	});
+
 	describe("why-selected --json", () => {
 		it("pins the exact top-level key set for a populated pool", async () => {
 			const result = await runCli(["why-selected", "--json"]);
@@ -642,7 +691,32 @@ describe("cli output contracts", () => {
 			expect(payload.totalCount).toBe(2);
 			expect(payload.config).toBeTypeOf("object");
 
+			// email/accountId/lastSwitchReason/lastRateLimitReason/cooldownReason/
+			// reason are optional and dropped by JSON.stringify when undefined;
+			// selectionReason exists only on the selected record.
+			const candidateAllowedKeys = [
+				"accountId",
+				"available",
+				"capabilityBoost",
+				"cooldownReason",
+				"email",
+				"enabled",
+				"health",
+				"hoursSinceUsed",
+				"index",
+				"lastRateLimitReason",
+				"lastSwitchReason",
+				"oneBasedIndex",
+				"pidBonus",
+				"reason",
+				"score",
+				"tokens",
+			];
+
 			const selected = payload.selected as Record<string, unknown>;
+			for (const key of Object.keys(selected)) {
+				expect([...candidateAllowedKeys, "selectionReason"]).toContain(key);
+			}
 			expect(selected.index).toBe(0);
 			expect(selected.selectionReason).toBeTypeOf("string");
 
@@ -651,10 +725,18 @@ describe("cli output contracts", () => {
 			>;
 			expect(Array.isArray(candidates)).toBe(true);
 			for (const candidate of candidates) {
+				for (const key of Object.keys(candidate)) {
+					expect(candidateAllowedKeys).toContain(key);
+				}
 				expect(candidate.index).toBeTypeOf("number");
 				expect(candidate.oneBasedIndex).toBeTypeOf("number");
 				expect(candidate.enabled).toBeTypeOf("boolean");
 				expect(candidate.available).toBeTypeOf("boolean");
+				expect(candidate.health).toBeTypeOf("number");
+				expect(candidate.tokens).toBeTypeOf("number");
+				expect(candidate.hoursSinceUsed).toBeTypeOf("number");
+				expect(candidate.capabilityBoost).toBeTypeOf("number");
+				expect(candidate.pidBonus).toBeTypeOf("number");
 				expect(candidate.score).toBeTypeOf("number");
 			}
 
