@@ -202,7 +202,7 @@ import type { PersistedSwitchReason } from "./schemas.js";
 import type { AccountIdSource, TokenResult } from "./types.js";
 import { ANSI } from "./ui/ansi.js";
 import { confirm } from "./ui/confirm.js";
-import { UI_COPY } from "./ui/copy.js";
+import { UI_COPY } from "./ui/ui-copy.js";
 import { paintUiText, quotaToneFromLeftPercent } from "./ui/format.js";
 import { getUiRuntimeOptions } from "./ui/runtime.js";
 import { type MenuItem, select } from "./ui/select.js";

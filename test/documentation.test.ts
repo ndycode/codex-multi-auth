@@ -10,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { UI_COPY } from "../lib/ui/copy.js";
+import { UI_COPY } from "../lib/ui/ui-copy.js";
 import { DEFAULT_MODEL } from "../lib/request/helpers/model-map.js";
 
 const projectRoot = resolve(process.cwd());
