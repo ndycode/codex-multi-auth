@@ -1,0 +1,69 @@
+# Baseline test run evidence — 2026-06-10 audit (AUDIT_2026-06-10.md §7)
+# Captured on a clean checkout of main (98d9819c0286813a8868e001f6964b987b6f4d60)
+# inside the audit's Linux container (no IPv6 loopback, sandboxed fs, non-Windows).
+# Command: npx vitest run --maxWorkers=1   (Node v22.22.2)
+#
+# Every failure below is environment-only:
+#  - Windows-path simulation tests (paths/runtime-paths/codex-bin-wrapper/install shortcuts)
+#  - IPv6 loopback ::1 binding tests (IPv6 disabled in container)
+#  - EACCES from the container sandbox on chmod/rename (storage/storage-recovery-paths)
+
+ FAIL  test/codex-bin-wrapper.test.ts > codex bin wrapper > accepts Windows native codex paths without an .exe suffix
+ FAIL  test/codex-bin-wrapper.test.ts > codex bin wrapper > prefers Windows codex.exe over extensionless codex when both exist
+ FAIL  test/codex-bin-wrapper.test.ts > codex bin wrapper > skips self-referential codex wrapper entries on PATH before native binaries
+ FAIL  test/install-codex-auth.test.ts > install-codex-auth script > creates distinct backup files when installer runs concurrently
+ FAIL  test/install-codex-auth.test.ts > codex app launcher installer > resolves Windows shortcut routing that points existing Codex icons at the wrapper app command
+ FAIL  test/local-bridge.test.ts > local bridge > binds and emits a parseable baseUrl for IPv6 loopback host ::1
+ FAIL  test/local-bridge.test.ts > local bridge > binds and emits a parseable baseUrl for IPv6 loopback host [::1]
+ FAIL  test/runtime-rotation-proxy.test.ts > runtime rotation proxy > normalizes IPv6 loopback host ::1 for both bind and baseUrl
+ FAIL  test/runtime-rotation-proxy.test.ts > runtime rotation proxy > normalizes IPv6 loopback host [::1] for both bind and baseUrl
+ FAIL  test/paths.test.ts > Storage Paths Module > getConfigDir > prefers Windows fallback with accounts when primary only has non-account signals
+ FAIL  test/paths.test.ts > Storage Paths Module > resolveProjectStorageIdentityRoot > supports windows UNC gitdir pointers
+ FAIL  test/runtime-paths.test.ts > runtime-paths > deduplicates Windows-style fallback paths case-insensitively
+ FAIL  test/runtime-paths.test.ts > runtime-paths > treats default Windows CODEX_HOME with a trailing separator as the default root
+ FAIL  test/runtime-paths.test.ts > runtime-paths > prefers USERPROFILE over os.homedir on Windows when CODEX_HOME is unset
+ FAIL  test/runtime-paths.test.ts > runtime-paths > falls back to HOME when USERPROFILE is missing on Windows
+ FAIL  test/runtime-paths.test.ts > runtime-paths > falls back to HOMEDRIVE and HOMEPATH when USERPROFILE and HOME are missing on Windows
+ FAIL  test/runtime-paths.test.ts > runtime-paths > normalizes HOMEPATH without a leading slash on Windows
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > recovers from backup file when WAL is unavailable
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > recovers flagged accounts from backup file when primary storage is missing
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > recovers flagged accounts from backup file when primary storage is unreadable
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > falls back to historical backup snapshots when the latest backup is unreadable
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > falls back to .bak.2 when newer backups are unreadable
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > recovers from discovered non-standard backup artifact when primary file is missing
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > auto-promotes backup when primary storage matches synthetic fixture pattern
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > auto-promotes backup when synthetic fixture accounts are missing accountId fields
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > rejects saving synthetic fixture payload over real account storage
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > surfaces restore eligibility when account pool is missing
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > surfaces restore eligibility when account pool is empty
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > assesses restore state with latest snapshot metadata
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > ignores Codex CLI mirror files during restore assessment
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > returns restore eligibility and snapshot when storage is empty
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > cleans up stale staged backup artifacts during load
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > does not use backup recovery when backups are disabled
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > exposes snapshot metadata and ignores cache-like artifacts
+ FAIL  test/storage-recovery-paths.test.ts > storage recovery paths > prefers the newest valid discovered snapshot in backup metadata
+ FAIL  test/storage.test.ts > storage > import/export (TDD) > named backup helpers > resolves a safe backup path within the plugin backup root
+ FAIL  test/storage.test.ts > storage > import/export (TDD) > named backup helpers > normalizes explicit .json names without duplicating the extension
+ FAIL  test/storage.test.ts > storage > import/export (TDD) > named backup helpers > writes the named backup using the safe path
+ FAIL  test/storage.test.ts > storage > import/export (TDD) > named backup helpers > propagates export errors when no accounts exist for a named backup
+ FAIL  test/storage.test.ts > storage > loadAccounts > returns null when file does not exist
+ FAIL  test/storage.test.ts > storage > loadAccounts > returns null on parse error
+ FAIL  test/storage.test.ts > storage > loadAccounts > migrates v1 to v3 and attempts to save
+ FAIL  test/storage.test.ts > storage > saveAccounts > creates directory and saves file
+ FAIL  test/storage.test.ts > storage > saveAccounts > writes valid JSON
+ FAIL  test/storage.test.ts > storage > clearAccounts > deletes the file when it exists
+ FAIL  test/storage.test.ts > storage > clearAccounts error handling > throws but leaves the reset marker in place when the primary storage file cannot be removed (AUDIT-M04)
+ FAIL  test/storage.test.ts > storage > clearAccounts error handling > throws but leaves the reset marker in place when the wal file cannot be removed (AUDIT-M04)
+ FAIL  test/storage.test.ts > storage > saveAccounts EPERM/EBUSY retry logic > retries on EPERM and succeeds on second attempt
+ FAIL  test/storage.test.ts > storage > saveAccounts EPERM/EBUSY retry logic > retries on EBUSY and succeeds on third attempt
+ FAIL  test/storage.test.ts > storage > saveAccounts EPERM/EBUSY retry logic > throws after 5 failed EPERM retries
+ FAIL  test/storage.test.ts > storage > saveAccounts EPERM/EBUSY retry logic > throws immediately on non-EPERM/EBUSY errors
+ FAIL  test/storage.test.ts > storage > saveAccounts EPERM/EBUSY retry logic > retries backup copyFile on transient EBUSY and succeeds
+ FAIL  test/storage.test.ts > storage > saveAccounts EPERM/EBUSY retry logic > retries backup copyFile on transient EPERM and succeeds
+ FAIL  test/storage.test.ts > storage > saveAccounts EPERM/EBUSY retry logic > retries staged backup rename on transient EBUSY and succeeds
+ FAIL  test/storage.test.ts > storage > saveAccounts EPERM/EBUSY retry logic > rotates backups and retains historical snapshots
+ FAIL  test/storage.test.ts > storage > saveAccounts EPERM/EBUSY retry logic > preserves historical backups when creating the latest backup fails
+ FAIL  test/storage.test.ts > storage > saveAccounts EPERM/EBUSY retry logic > keeps rotating backup order deterministic across parallel saves
+ FAIL  test/storage.test.ts > storage > clearAccounts edge cases > removes primary, backup, and wal artifacts
+ Test Files  8 failed | 276 passed (284)
