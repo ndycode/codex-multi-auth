@@ -28,6 +28,7 @@ import {
 } from "./codex-manager/quota-cache-helpers.js";
 import { runAccountCommand } from "./codex-manager/commands/account.js";
 import { ACCOUNT_MANAGER_COMMANDS } from "./codex-manager/account-manager-commands.js";
+import { ensureFirstRunSetup } from "./runtime/first-run.js";
 import { runBudgetCommand } from "./codex-manager/commands/budget.js";
 import { runBridgeCommand } from "./codex-manager/commands/bridge.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
@@ -651,6 +652,13 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 ]);
 
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
+	// Lazy install setup (audit roadmap §4.5.4): app detection, Codex app bind,
+	// and launcher routing moved out of npm postinstall to the first CLI run.
+	// ensureFirstRunSetup never throws; the catch is belt-and-braces so no
+	// command can ever fail because of first-run housekeeping.
+	await ensureFirstRunSetup({
+		notify: (message) => console.error(`codex-multi-auth: ${message}`),
+	}).catch(() => undefined);
 	const startupDisplaySettings = await loadDashboardDisplaySettings();
 	applyUiThemeFromDashboardSettings(startupDisplaySettings);
 

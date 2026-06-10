@@ -740,10 +740,14 @@ describe("codex manager cli commands", () => {
 			primary: {},
 			secondary: {},
 		});
-		quotaCacheMocks.loadQuotaCache.mockResolvedValue({
+		// Fresh object per call, like the real loadQuotaCache (a fresh disk read
+		// each time): refreshQuotaCacheForMenu rebases onto and mutates the
+		// loaded cache before saving, and a shared singleton would leak that
+		// mutation into every later load in the same test.
+		quotaCacheMocks.loadQuotaCache.mockImplementation(async () => ({
 			byAccountId: {},
 			byEmail: {},
-		});
+		}));
 		storageMocks.loadFlaggedAccounts.mockResolvedValue({
 			version: 1,
 			accounts: [],
@@ -9063,7 +9067,7 @@ describe("codex manager cli commands", () => {
 
 		let promptCallCount = 0;
 		promptLoginModeMock
-			.mockImplementationOnce(async (accounts) => {
+			.mockImplementationOnce(async (accounts, options) => {
 				promptCallCount += 1;
 				expect(promptCallCount).toBe(1);
 				expect(
@@ -9075,6 +9079,14 @@ describe("codex manager cli commands", () => {
 
 				queueMicrotask(() => {
 					releaseFirstRefresh.resolve();
+				});
+				// Wait for the first refresh to fully settle (statusMessage clears in
+				// the same .finally that releases the pending slot) so the second
+				// menu pass deterministically starts its own refresh; the refresh
+				// chain gained an await (the save-time cache rebase), so returning
+				// immediately could reach the pass-2 guard while pass 1 is pending.
+				await vi.waitFor(() => {
+					expect(options?.statusMessage?.()).toBeUndefined();
 				});
 				return { mode: "manage", deleteAccountIndex: 99 };
 			})
@@ -9248,12 +9260,17 @@ describe("codex manager cli commands", () => {
 
 		let promptCallCount = 0;
 		promptLoginModeMock
-			.mockImplementationOnce(async () => {
+			.mockImplementationOnce(async (_accounts, options) => {
 				promptCallCount += 1;
 				expect(promptCallCount).toBe(1);
 
 				queueMicrotask(() => {
 					releaseFirstRefresh.resolve();
+				});
+				// See the stale-refresh test above: settle pass 1's refresh before
+				// returning so pass 2's auto-fetch guard sees a free slot.
+				await vi.waitFor(() => {
+					expect(options?.statusMessage?.()).toBeUndefined();
 				});
 				return { mode: "manage", deleteAccountIndex: 99 };
 			})

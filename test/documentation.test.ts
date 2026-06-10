@@ -697,6 +697,7 @@ describe("Documentation Integrity", () => {
 			"*.mjs -linguist-detectable",
 			"*.sh -linguist-detectable",
 			"*.html -linguist-detectable",
+			"config/schema/config.schema.json text eol=lf",
 		]);
 	});
 
