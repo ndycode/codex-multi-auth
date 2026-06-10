@@ -2,6 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RepairCommandDeps } from "../lib/codex-manager/repair-commands.js";
 import { CodexUnavailableError } from "../lib/errors.js";
+import {
+	createCodexCliStateMocks,
+	createCodexCliWriterMocks,
+	createQuotaCacheMocks,
+	createQuotaProbeMocks,
+	createRefreshQueueMocks,
+	createRuntimeObservabilityMocks,
+	createStorageMocks,
+	pickMocks,
+	silenceConsole,
+} from "./helpers/cli-test-fixtures.js";
 // Note: do not statically import from ../lib/quota-probe.js here — it is mocked
 // below via vi.mock and a top-level import would race the hoisted factory.
 const CODEX_UNAVAILABLE_PROBE_NOTE = "Codex not available for this account";
@@ -26,24 +37,28 @@ const sanitizeEmailMock = vi.fn((email: string | undefined) =>
 	typeof email === "string" ? email.toLowerCase() : undefined,
 );
 
-const loadQuotaCacheMock = vi.fn();
-const saveQuotaCacheMock = vi.fn();
-const fetchCodexQuotaSnapshotMock = vi.fn();
-const queuedRefreshMock = vi.fn();
-
-const loadAccountsMock = vi.fn();
-const loadFlaggedAccountsMock = vi.fn();
-const setStoragePathMock = vi.fn();
-const getStoragePathMock = vi.fn(() => "/mock/openai-codex-accounts.json");
-const withAccountStorageTransactionMock = vi.fn();
-const withAccountAndFlaggedStorageTransactionMock = vi.fn();
-const withFlaggedStorageTransactionMock = vi.fn();
-
-const getCodexCliAuthPathMock = vi.fn(() => "/mock/auth.json");
-const getCodexCliConfigPathMock = vi.fn(() => "/mock/config.toml");
-const loadCodexCliStateMock = vi.fn();
-const setCodexCliActiveSelectionMock = vi.fn();
-const loadPersistedRuntimeObservabilitySnapshotMock = vi.fn();
+// Shared mock groups (test/helpers/cli-test-fixtures.ts); the vi.mock
+// factories below resolve the helper lazily so hoisting stays safe. Storage is
+// narrowed to the exact set this suite used to override so every other
+// storage export stays the actual implementation.
+const quotaCacheMocks = createQuotaCacheMocks();
+const quotaProbeMocks = createQuotaProbeMocks();
+const refreshQueueMocks = createRefreshQueueMocks();
+const storageMocks = pickMocks(createStorageMocks(), [
+	"loadAccounts",
+	"loadFlaggedAccounts",
+	"setStoragePath",
+	"getStoragePath",
+	"withAccountStorageTransaction",
+	"withAccountAndFlaggedStorageTransaction",
+	"withFlaggedStorageTransaction",
+]);
+const codexCliStateMocks = createCodexCliStateMocks({
+	authPath: "/mock/auth.json",
+	configPath: "/mock/config.toml",
+});
+const codexCliWriterMocks = createCodexCliWriterMocks();
+const runtimeObservabilityMocks = createRuntimeObservabilityMocks();
 
 vi.mock("node:fs", () => ({
 	existsSync: existsSyncMock,
@@ -66,49 +81,47 @@ vi.mock("../lib/accounts.js", () => ({
 	sanitizeEmail: sanitizeEmailMock,
 }));
 
-vi.mock("../lib/quota-cache.js", () => ({
-	loadQuotaCache: loadQuotaCacheMock,
-	saveQuotaCache: saveQuotaCacheMock,
-}));
+vi.mock("../lib/quota-cache.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).quotaCacheModuleMock(
+		quotaCacheMocks,
+	),
+);
 
-vi.mock("../lib/quota-probe.js", async (importOriginal) => ({
-	...(await importOriginal<typeof import("../lib/quota-probe.js")>()),
-	fetchCodexQuotaSnapshot: fetchCodexQuotaSnapshotMock,
-}));
+vi.mock("../lib/quota-probe.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).quotaProbeModuleMock({
+		fetchCodexQuotaSnapshot: quotaProbeMocks.fetchCodexQuotaSnapshot,
+	}),
+);
 
-vi.mock("../lib/refresh-queue.js", () => ({
-	queuedRefresh: queuedRefreshMock,
-}));
+vi.mock("../lib/refresh-queue.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).refreshQueueModuleMock(
+		refreshQueueMocks,
+	),
+);
 
-vi.mock("../lib/storage.js", async () => {
-	const actual = await vi.importActual("../lib/storage.js");
-	return {
-		...(actual as Record<string, unknown>),
-		loadAccounts: loadAccountsMock,
-		loadFlaggedAccounts: loadFlaggedAccountsMock,
-		setStoragePath: setStoragePathMock,
-		getStoragePath: getStoragePathMock,
-		withAccountStorageTransaction: withAccountStorageTransactionMock,
-		withAccountAndFlaggedStorageTransaction:
-			withAccountAndFlaggedStorageTransactionMock,
-		withFlaggedStorageTransaction: withFlaggedStorageTransactionMock,
-	};
-});
+vi.mock("../lib/storage.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).storageModuleMock(
+		storageMocks,
+	),
+);
 
-vi.mock("../lib/codex-cli/state.js", () => ({
-	getCodexCliAuthPath: getCodexCliAuthPathMock,
-	getCodexCliConfigPath: getCodexCliConfigPathMock,
-	loadCodexCliState: loadCodexCliStateMock,
-}));
+vi.mock("../lib/codex-cli/state.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).codexCliStateModuleMock(
+		codexCliStateMocks,
+	),
+);
 
-vi.mock("../lib/codex-cli/writer.js", () => ({
-	setCodexCliActiveSelection: setCodexCliActiveSelectionMock,
-}));
+vi.mock("../lib/codex-cli/writer.js", async () =>
+	(await import("./helpers/cli-test-fixtures.js")).codexCliWriterModuleMock(
+		codexCliWriterMocks,
+	),
+);
 
-vi.mock("../lib/runtime/runtime-observability.js", () => ({
-	loadPersistedRuntimeObservabilitySnapshot:
-		loadPersistedRuntimeObservabilitySnapshotMock,
-}));
+vi.mock("../lib/runtime/runtime-observability.js", async () =>
+	(
+		await import("./helpers/cli-test-fixtures.js")
+	).runtimeObservabilityModuleMock(runtimeObservabilityMocks),
+);
 
 const {
 	runDoctor,
@@ -145,12 +158,18 @@ function createDeps(
 describe("repair-commands direct deps coverage", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		// clearAllMocks wipes call history but keeps mockImplementation, so the
+		// transaction mocks set inline by individual tests must be reset here or
+		// they bleed into later tests that rely on the default behavior.
+		storageMocks.withAccountStorageTransaction.mockReset();
+		storageMocks.withFlaggedStorageTransaction.mockReset();
+		storageMocks.withAccountAndFlaggedStorageTransaction.mockReset();
 		existsSyncMock.mockReturnValue(false);
-		loadQuotaCacheMock.mockResolvedValue(null);
-		loadCodexCliStateMock.mockResolvedValue(null);
+		quotaCacheMocks.loadQuotaCache.mockResolvedValue(null);
+		codexCliStateMocks.loadCodexCliState.mockResolvedValue(null);
 		extractAccountEmailMock.mockReturnValue(undefined);
 		extractAccountIdMock.mockReturnValue(undefined);
-		loadPersistedRuntimeObservabilitySnapshotMock.mockResolvedValue(null);
+		runtimeObservabilityMocks.loadPersistedRuntimeObservabilitySnapshot.mockResolvedValue(null);
 		evaluateForecastAccountsMock.mockImplementation(() => []);
 		recommendForecastAccountMock.mockReturnValue({
 			recommendedIndex: null,
@@ -204,11 +223,11 @@ describe("repair-commands direct deps coverage", () => {
 		};
 		let persistedFlaggedStorage: unknown;
 
-		loadFlaggedAccountsMock.mockResolvedValue({
+		storageMocks.loadFlaggedAccounts.mockResolvedValue({
 			version: 1,
 			accounts: [structuredClone(flaggedAccount)],
 		});
-		queuedRefreshMock.mockResolvedValue({
+		refreshQueueMocks.queuedRefresh.mockResolvedValue({
 			type: "success",
 			access: "fresh-access",
 			refresh: "fresh-refresh",
@@ -217,7 +236,7 @@ describe("repair-commands direct deps coverage", () => {
 		});
 		extractAccountEmailMock.mockReturnValue("Recovered@example.com");
 		extractAccountIdMock.mockReturnValue("token-account");
-		withFlaggedStorageTransactionMock.mockImplementation(async (handler) =>
+		storageMocks.withFlaggedStorageTransaction.mockImplementation(async (handler) =>
 			handler(
 				{ version: 1, accounts: [structuredClone(flaggedAccount)] },
 				async (nextStorage: unknown) => {
@@ -229,7 +248,7 @@ describe("repair-commands direct deps coverage", () => {
 			accountId: "resolved-account",
 			accountIdSource: "token" as const,
 		}));
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
 		const exitCode = await runVerifyFlagged(
 			["--json", "--no-restore"],
@@ -242,7 +261,7 @@ describe("repair-commands direct deps coverage", () => {
 			"manual",
 			"token-account",
 		);
-		expect(withFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(storageMocks.withFlaggedStorageTransaction).toHaveBeenCalledTimes(1);
 		expect(persistedFlaggedStorage).toMatchObject({
 			version: 1,
 			accounts: [
@@ -263,9 +282,9 @@ describe("repair-commands direct deps coverage", () => {
 	});
 
 	it("runVerifyFlagged keeps remainingFlagged in the JSON schema for empty and no-op paths", async () => {
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
-		loadFlaggedAccountsMock.mockResolvedValueOnce({
+		storageMocks.loadFlaggedAccounts.mockResolvedValueOnce({
 			version: 1,
 			accounts: [],
 		});
@@ -293,11 +312,11 @@ describe("repair-commands direct deps coverage", () => {
 			lastError: "still broken",
 			lastUsed: 1,
 		};
-		loadFlaggedAccountsMock.mockResolvedValueOnce({
+		storageMocks.loadFlaggedAccounts.mockResolvedValueOnce({
 			version: 1,
 			accounts: [structuredClone(flaggedAccount)],
 		});
-		queuedRefreshMock.mockResolvedValueOnce({
+		refreshQueueMocks.queuedRefresh.mockResolvedValueOnce({
 			type: "failed",
 			reason: "revoked",
 			message: "still broken",
@@ -309,7 +328,7 @@ describe("repair-commands direct deps coverage", () => {
 		);
 
 		expect(exitCode).toBe(0);
-		expect(withFlaggedStorageTransactionMock).not.toHaveBeenCalled();
+		expect(storageMocks.withFlaggedStorageTransaction).not.toHaveBeenCalled();
 		expect(
 			JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")),
 		).toMatchObject({
@@ -333,11 +352,11 @@ describe("repair-commands direct deps coverage", () => {
 		};
 		const persistSpy = vi.fn();
 
-		loadFlaggedAccountsMock.mockResolvedValue({
+		storageMocks.loadFlaggedAccounts.mockResolvedValue({
 			version: 1,
 			accounts: [structuredClone(flaggedAccount)],
 		});
-		queuedRefreshMock.mockResolvedValue({
+		refreshQueueMocks.queuedRefresh.mockResolvedValue({
 			type: "success",
 			access: "fresh-access",
 			refresh: "fresh-refresh",
@@ -346,7 +365,7 @@ describe("repair-commands direct deps coverage", () => {
 		});
 		extractAccountEmailMock.mockReturnValue("flagged@example.com");
 		extractAccountIdMock.mockReturnValue("token-account");
-		withAccountAndFlaggedStorageTransactionMock.mockImplementation(async (handler) =>
+		storageMocks.withAccountAndFlaggedStorageTransaction.mockImplementation(async (handler) =>
 			handler(
 				null,
 				persistSpy,
@@ -361,7 +380,7 @@ describe("repair-commands direct deps coverage", () => {
 				},
 			),
 		);
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
 		const exitCode = await runVerifyFlagged(
 			["--json"],
@@ -369,7 +388,7 @@ describe("repair-commands direct deps coverage", () => {
 		);
 
 		expect(exitCode).toBe(0);
-		expect(withAccountAndFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(storageMocks.withAccountAndFlaggedStorageTransaction).toHaveBeenCalledTimes(1);
 		expect(persistSpy).not.toHaveBeenCalled();
 		expect(
 			JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")),
@@ -400,11 +419,11 @@ describe("repair-commands direct deps coverage", () => {
 		};
 		const persistSpy = vi.fn();
 
-		loadFlaggedAccountsMock.mockResolvedValue({
+		storageMocks.loadFlaggedAccounts.mockResolvedValue({
 			version: 1,
 			accounts: [structuredClone(flaggedAccount)],
 		});
-		queuedRefreshMock.mockResolvedValue({
+		refreshQueueMocks.queuedRefresh.mockResolvedValue({
 			type: "success",
 			access: "fresh-access",
 			refresh: "fresh-refresh",
@@ -413,7 +432,7 @@ describe("repair-commands direct deps coverage", () => {
 		});
 		extractAccountEmailMock.mockReturnValue("flagged@example.com");
 		extractAccountIdMock.mockReturnValue("token-account");
-		withFlaggedStorageTransactionMock.mockImplementation(async (handler) =>
+		storageMocks.withFlaggedStorageTransaction.mockImplementation(async (handler) =>
 			handler(
 				{
 					version: 1,
@@ -427,7 +446,7 @@ describe("repair-commands direct deps coverage", () => {
 				persistSpy,
 			),
 		);
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
 		const exitCode = await runVerifyFlagged(
 			["--json", "--no-restore"],
@@ -435,7 +454,7 @@ describe("repair-commands direct deps coverage", () => {
 		);
 
 		expect(exitCode).toBe(0);
-		expect(withFlaggedStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(storageMocks.withFlaggedStorageTransaction).toHaveBeenCalledTimes(1);
 		expect(persistSpy).not.toHaveBeenCalled();
 		expect(
 			JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")),
@@ -497,8 +516,8 @@ describe("repair-commands direct deps coverage", () => {
 		};
 		let persistedAccountStorage: unknown;
 
-		loadAccountsMock.mockResolvedValue(structuredClone(prescanStorage));
-		queuedRefreshMock.mockResolvedValue({
+		storageMocks.loadAccounts.mockResolvedValue(structuredClone(prescanStorage));
+		refreshQueueMocks.queuedRefresh.mockResolvedValue({
 			type: "success",
 			access: "new-access",
 			refresh: "new-refresh",
@@ -507,7 +526,7 @@ describe("repair-commands direct deps coverage", () => {
 		});
 		extractAccountEmailMock.mockReturnValue("fresh@example.com");
 		extractAccountIdMock.mockReturnValue("token-account");
-		withAccountStorageTransactionMock.mockImplementation(async (handler) =>
+		storageMocks.withAccountStorageTransaction.mockImplementation(async (handler) =>
 			handler(structuredClone(inTransactionStorage), async (nextStorage: unknown) => {
 				persistedAccountStorage = nextStorage;
 			}),
@@ -517,7 +536,7 @@ describe("repair-commands direct deps coverage", () => {
 			account.accountIdSource = "token";
 			return true;
 		});
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
 		const exitCode = await runFix(
 			["--json"],
@@ -526,7 +545,7 @@ describe("repair-commands direct deps coverage", () => {
 
 		expect(exitCode).toBe(0);
 		expect(applyTokenAccountIdentity).toHaveBeenCalled();
-		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(storageMocks.withAccountStorageTransaction).toHaveBeenCalledTimes(1);
 		expect(persistedAccountStorage).toMatchObject({
 			accounts: [
 				expect.objectContaining({
@@ -551,9 +570,9 @@ describe("repair-commands direct deps coverage", () => {
 	});
 
 	it("runFix keeps JSON output consistent for no-account and quota-cache-only changes", async () => {
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
-		loadAccountsMock.mockResolvedValueOnce(null);
+		storageMocks.loadAccounts.mockResolvedValueOnce(null);
 		let exitCode = await runFix(["--json"], createDeps());
 
 		expect(exitCode).toBe(0);
@@ -571,11 +590,11 @@ describe("repair-commands direct deps coverage", () => {
 			reports: [],
 		});
 
-		loadQuotaCacheMock.mockResolvedValueOnce({
+		quotaCacheMocks.loadQuotaCache.mockResolvedValueOnce({
 			byAccountId: {},
 			byEmail: {},
 		});
-		loadAccountsMock.mockResolvedValueOnce({
+		storageMocks.loadAccounts.mockResolvedValueOnce({
 			version: 3,
 			accounts: [
 				{
@@ -591,7 +610,7 @@ describe("repair-commands direct deps coverage", () => {
 			activeIndex: 0,
 			activeIndexByFamily: {},
 		});
-		fetchCodexQuotaSnapshotMock.mockResolvedValueOnce({
+		quotaProbeMocks.fetchCodexQuotaSnapshot.mockResolvedValueOnce({
 			status: 200,
 			model: "gpt-5-codex",
 			primary: {},
@@ -607,8 +626,8 @@ describe("repair-commands direct deps coverage", () => {
 		);
 
 		expect(exitCode).toBe(0);
-		expect(withAccountStorageTransactionMock).not.toHaveBeenCalled();
-		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+		expect(storageMocks.withAccountStorageTransaction).not.toHaveBeenCalled();
+		expect(quotaCacheMocks.saveQuotaCache).toHaveBeenCalledTimes(1);
 		expect(
 			JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")),
 		).toMatchObject({
@@ -622,13 +641,13 @@ describe("repair-commands direct deps coverage", () => {
 	});
 
 	it("runFix reports quota-cache-only live changes distinctly in display mode", async () => {
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
-		loadQuotaCacheMock.mockResolvedValueOnce({
+		quotaCacheMocks.loadQuotaCache.mockResolvedValueOnce({
 			byAccountId: {},
 			byEmail: {},
 		});
-		loadAccountsMock.mockResolvedValueOnce({
+		storageMocks.loadAccounts.mockResolvedValueOnce({
 			version: 3,
 			accounts: [
 				{
@@ -644,7 +663,7 @@ describe("repair-commands direct deps coverage", () => {
 			activeIndex: 0,
 			activeIndexByFamily: {},
 		});
-		fetchCodexQuotaSnapshotMock.mockResolvedValueOnce({
+		quotaProbeMocks.fetchCodexQuotaSnapshot.mockResolvedValueOnce({
 			status: 200,
 			model: "gpt-5-codex",
 			primary: {},
@@ -660,8 +679,8 @@ describe("repair-commands direct deps coverage", () => {
 		);
 
 		expect(exitCode).toBe(0);
-		expect(withAccountStorageTransactionMock).not.toHaveBeenCalled();
-		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+		expect(storageMocks.withAccountStorageTransaction).not.toHaveBeenCalled();
+		expect(quotaCacheMocks.saveQuotaCache).toHaveBeenCalledTimes(1);
 		const output = consoleSpy.mock.calls
 			.map((call) => call.map((value) => String(value)).join(" "))
 			.join("\n");
@@ -671,11 +690,11 @@ describe("repair-commands direct deps coverage", () => {
 	});
 
 	it("runFix does not double-count a live probe failure followed by refresh fallback", async () => {
-		loadQuotaCacheMock.mockResolvedValueOnce({
+		quotaCacheMocks.loadQuotaCache.mockResolvedValueOnce({
 			byAccountId: {},
 			byEmail: {},
 		});
-		loadAccountsMock.mockResolvedValueOnce({
+		storageMocks.loadAccounts.mockResolvedValueOnce({
 			version: 3,
 			accounts: [
 				{
@@ -691,7 +710,7 @@ describe("repair-commands direct deps coverage", () => {
 			activeIndex: 0,
 			activeIndexByFamily: {},
 		});
-		fetchCodexQuotaSnapshotMock
+		quotaProbeMocks.fetchCodexQuotaSnapshot
 			.mockRejectedValueOnce(new Error("probe unavailable"))
 			.mockResolvedValueOnce({
 				status: 200,
@@ -699,7 +718,7 @@ describe("repair-commands direct deps coverage", () => {
 				primary: {},
 				secondary: {},
 			});
-		queuedRefreshMock.mockResolvedValueOnce({
+		refreshQueueMocks.queuedRefresh.mockResolvedValueOnce({
 			type: "success",
 			access: "access-fallback-next",
 			refresh: "refresh-fallback-next",
@@ -708,7 +727,7 @@ describe("repair-commands direct deps coverage", () => {
 		});
 		extractAccountEmailMock.mockReturnValue("fallback@example.com");
 		extractAccountIdMock.mockReturnValue("fallback-account");
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
 		const exitCode = await runFix(
 			["--json", "--live"],
@@ -726,7 +745,7 @@ describe("repair-commands direct deps coverage", () => {
 	});
 
 	it("runFix marks codex-unavailable live probe as a soft warning and keeps the account enabled", async () => {
-		loadQuotaCacheMock.mockResolvedValueOnce({ byAccountId: {}, byEmail: {} });
+		quotaCacheMocks.loadQuotaCache.mockResolvedValueOnce({ byAccountId: {}, byEmail: {} });
 		const storage = {
 			version: 3 as const,
 			accounts: [
@@ -743,22 +762,22 @@ describe("repair-commands direct deps coverage", () => {
 			activeIndex: 0,
 			activeIndexByFamily: {},
 		};
-		loadAccountsMock.mockResolvedValue(storage);
-		queuedRefreshMock.mockResolvedValueOnce({
+		storageMocks.loadAccounts.mockResolvedValue(storage);
+		refreshQueueMocks.queuedRefresh.mockResolvedValueOnce({
 			type: "success",
 			access: "access-unavailable-next",
 			refresh: "refresh-unavailable-next",
 			expires: Date.now() + 120_000,
 			idToken: "id-token-unavailable",
 		});
-		fetchCodexQuotaSnapshotMock.mockRejectedValue(
+		quotaProbeMocks.fetchCodexQuotaSnapshot.mockRejectedValue(
 			new CodexUnavailableError(
 				"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
 			),
 		);
 		extractAccountEmailMock.mockReturnValue("unavailable@example.com");
 		extractAccountIdMock.mockReturnValue("unavailable-account");
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
 		const exitCode = await runFix(
 			["--json", "--live"],
@@ -782,7 +801,7 @@ describe("repair-commands direct deps coverage", () => {
 	});
 
 	it("runDoctor uses the injected refresh-token validator in JSON diagnostics", async () => {
-		loadAccountsMock.mockResolvedValue({
+		storageMocks.loadAccounts.mockResolvedValue({
 			version: 3,
 			accounts: [
 				{
@@ -799,7 +818,7 @@ describe("repair-commands direct deps coverage", () => {
 			activeIndexByFamily: {},
 		});
 		const hasLikelyInvalidRefreshToken = vi.fn(() => true);
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
 		const exitCode = await runDoctor(
 			["--json"],
@@ -831,8 +850,8 @@ describe("repair-commands direct deps coverage", () => {
 			},
 			byEmail: {},
 		};
-		loadQuotaCacheMock.mockResolvedValueOnce(quotaCache);
-		loadAccountsMock.mockResolvedValue({
+		quotaCacheMocks.loadQuotaCache.mockResolvedValueOnce(quotaCache);
+		storageMocks.loadAccounts.mockResolvedValue({
 			version: 3,
 			accounts: [
 				{
@@ -847,7 +866,7 @@ describe("repair-commands direct deps coverage", () => {
 			activeIndex: 0,
 			activeIndexByFamily: {},
 		});
-		loadPersistedRuntimeObservabilitySnapshotMock.mockResolvedValue({
+		runtimeObservabilityMocks.loadPersistedRuntimeObservabilitySnapshot.mockResolvedValue({
 			lastPoolExhaustionSkipReasons: { "0": "circuit-open" },
 		});
 		evaluateForecastAccountsMock.mockImplementation((inputs) =>
@@ -870,12 +889,12 @@ describe("repair-commands direct deps coverage", () => {
 			recommendedIndex: 0,
 			reason: "stay",
 		});
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
 		const exitCode = await runDoctor(["--json"], createDeps());
 
 		expect(exitCode).toBe(0);
-		expect(loadQuotaCacheMock).toHaveBeenCalledTimes(1);
+		expect(quotaCacheMocks.loadQuotaCache).toHaveBeenCalledTimes(1);
 		expect(evaluateForecastAccountsMock).toHaveBeenCalledWith(
 			expect.arrayContaining([
 				expect.objectContaining({
@@ -898,7 +917,7 @@ describe("repair-commands direct deps coverage", () => {
 	});
 
 	it("runDoctor treats failed runtime snapshot loads as aligned diagnostics", async () => {
-		loadAccountsMock.mockResolvedValue({
+		storageMocks.loadAccounts.mockResolvedValue({
 			version: 3,
 			accounts: [
 				{
@@ -913,7 +932,7 @@ describe("repair-commands direct deps coverage", () => {
 			activeIndex: 0,
 			activeIndexByFamily: {},
 		});
-		loadPersistedRuntimeObservabilitySnapshotMock.mockRejectedValue(
+		runtimeObservabilityMocks.loadPersistedRuntimeObservabilitySnapshot.mockRejectedValue(
 			new Error("snapshot busy"),
 		);
 		evaluateForecastAccountsMock.mockImplementation((inputs) =>
@@ -930,7 +949,7 @@ describe("repair-commands direct deps coverage", () => {
 				disabled: false,
 			})),
 		);
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
 		const exitCode = await runDoctor(["--json"], createDeps());
 
@@ -948,7 +967,7 @@ describe("repair-commands direct deps coverage", () => {
 	});
 
 	it("runDoctor checks refresh token shape even when email is missing", async () => {
-		loadAccountsMock.mockResolvedValueOnce({
+		storageMocks.loadAccounts.mockResolvedValueOnce({
 			version: 3,
 			accounts: [
 				{
@@ -964,7 +983,7 @@ describe("repair-commands direct deps coverage", () => {
 			activeIndexByFamily: {},
 		});
 		const hasLikelyInvalidRefreshToken = vi.fn(() => true);
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
 		const exitCode = await runDoctor(
 			["--json"],
@@ -986,7 +1005,7 @@ describe("repair-commands direct deps coverage", () => {
 	it("runDoctor marks malformed codex auth payloads as invalid instead of healthy", async () => {
 		existsSyncMock.mockImplementation((path) => path === "/mock/auth.json");
 		readFileMock.mockResolvedValueOnce("[]");
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
 		const exitCode = await runDoctor(["--json"], createDeps());
 
@@ -1005,7 +1024,7 @@ describe("repair-commands direct deps coverage", () => {
 	it("runDoctor derives auto-fix state from the final action set", async () => {
 		const now = Date.now();
 		let persistedAccountStorage: unknown;
-		loadAccountsMock.mockResolvedValueOnce({
+		storageMocks.loadAccounts.mockResolvedValueOnce({
 			version: 3,
 			accounts: [
 				{
@@ -1021,7 +1040,7 @@ describe("repair-commands direct deps coverage", () => {
 			activeIndex: 0,
 			activeIndexByFamily: { codex: 0 },
 		});
-		withAccountStorageTransactionMock.mockImplementation(async (handler) =>
+		storageMocks.withAccountStorageTransaction.mockImplementation(async (handler) =>
 			handler(
 				{
 					version: 3,
@@ -1051,7 +1070,7 @@ describe("repair-commands direct deps coverage", () => {
 				},
 			),
 		);
-		queuedRefreshMock.mockResolvedValueOnce({
+		refreshQueueMocks.queuedRefresh.mockResolvedValueOnce({
 			type: "success",
 			access: "doctor-access-next",
 			refresh: "doctor-refresh-next",
@@ -1064,8 +1083,8 @@ describe("repair-commands direct deps coverage", () => {
 		extractAccountIdMock.mockImplementation((accessToken: string | undefined) =>
 			accessToken === "doctor-access-next" ? "doctor-token-account" : "doctor-account"
 		);
-		setCodexCliActiveSelectionMock.mockResolvedValueOnce(true);
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		codexCliWriterMocks.setCodexCliActiveSelection.mockResolvedValueOnce(true);
+		const consoleSpy = silenceConsole("log");
 
 		const exitCode = await runDoctor(
 			["--json", "--fix"],
@@ -1075,7 +1094,7 @@ describe("repair-commands direct deps coverage", () => {
 		);
 
 		expect(exitCode).toBe(0);
-		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(storageMocks.withAccountStorageTransaction).toHaveBeenCalledTimes(1);
 		expect(persistedAccountStorage).toMatchObject({
 			accounts: [
 				expect.objectContaining({
@@ -1111,7 +1130,7 @@ describe("repair-commands direct deps coverage", () => {
 	it("runDoctor records active-index fixes when normalization changes the snapshot", async () => {
 		const now = Date.now();
 		let persistedAccountStorage: unknown;
-		loadAccountsMock.mockResolvedValueOnce({
+		storageMocks.loadAccounts.mockResolvedValueOnce({
 			version: 3,
 			accounts: [
 				{
@@ -1131,7 +1150,7 @@ describe("repair-commands direct deps coverage", () => {
 				"gpt-5-codex": 7,
 			},
 		});
-		withAccountStorageTransactionMock.mockImplementation(async (handler) =>
+		storageMocks.withAccountStorageTransaction.mockImplementation(async (handler) =>
 			handler(
 				{
 					version: 3,
@@ -1158,7 +1177,7 @@ describe("repair-commands direct deps coverage", () => {
 				},
 			),
 		);
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
 		const exitCode = await runDoctor(
 			["--json", "--fix"],
@@ -1168,7 +1187,7 @@ describe("repair-commands direct deps coverage", () => {
 		);
 
 		expect(exitCode).toBe(0);
-		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(storageMocks.withAccountStorageTransaction).toHaveBeenCalledTimes(1);
 		expect(persistedAccountStorage).toMatchObject({
 			activeIndex: 0,
 			activeIndexByFamily: {
@@ -1217,8 +1236,8 @@ describe("repair-commands direct deps coverage", () => {
 			activeIndex: 0,
 			activeIndexByFamily: { codex: 0 },
 		};
-		loadAccountsMock.mockResolvedValueOnce(prescanStorage);
-		withAccountStorageTransactionMock.mockImplementation(async (handler) =>
+		storageMocks.loadAccounts.mockResolvedValueOnce(prescanStorage);
+		storageMocks.withAccountStorageTransaction.mockImplementation(async (handler) =>
 			handler(
 				{
 					version: 3,
@@ -1256,7 +1275,7 @@ describe("repair-commands direct deps coverage", () => {
 				},
 			),
 		);
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
 		const exitCode = await runDoctor(
 			["--json", "--fix"],
@@ -1266,7 +1285,7 @@ describe("repair-commands direct deps coverage", () => {
 		);
 
 		expect(exitCode).toBe(0);
-		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
+		expect(storageMocks.withAccountStorageTransaction).toHaveBeenCalledTimes(1);
 		expect(persistedAccountStorage).toBeUndefined();
 		expect(prescanStorage.accounts[1]?.enabled).toBe(true);
 		const payload = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")) as {
@@ -1281,7 +1300,7 @@ describe("repair-commands direct deps coverage", () => {
 
 	it("runDoctor skips Codex sync when the refreshed account disappears before persistence", async () => {
 		const now = Date.now();
-		loadAccountsMock.mockResolvedValueOnce({
+		storageMocks.loadAccounts.mockResolvedValueOnce({
 			version: 3,
 			accounts: [
 				{
@@ -1297,7 +1316,7 @@ describe("repair-commands direct deps coverage", () => {
 			activeIndex: 0,
 			activeIndexByFamily: { codex: 0 },
 		});
-		withAccountStorageTransactionMock.mockImplementation(async (handler) =>
+		storageMocks.withAccountStorageTransaction.mockImplementation(async (handler) =>
 			handler(
 				{
 					version: 3,
@@ -1324,7 +1343,7 @@ describe("repair-commands direct deps coverage", () => {
 				async () => undefined,
 			),
 		);
-		queuedRefreshMock.mockResolvedValueOnce({
+		refreshQueueMocks.queuedRefresh.mockResolvedValueOnce({
 			type: "success",
 			access: "doctor-access-next",
 			refresh: "doctor-refresh-next",
@@ -1337,7 +1356,7 @@ describe("repair-commands direct deps coverage", () => {
 		extractAccountIdMock.mockImplementation((accessToken: string | undefined) =>
 			accessToken === "doctor-access-next" ? "doctor-token-account" : "doctor-account"
 		);
-		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const consoleSpy = silenceConsole("log");
 
 		const exitCode = await runDoctor(
 			["--json", "--fix"],
@@ -1348,8 +1367,8 @@ describe("repair-commands direct deps coverage", () => {
 		);
 
 		expect(exitCode).toBe(1);
-		expect(withAccountStorageTransactionMock).toHaveBeenCalledTimes(1);
-		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+		expect(storageMocks.withAccountStorageTransaction).toHaveBeenCalledTimes(1);
+		expect(codexCliWriterMocks.setCodexCliActiveSelection).not.toHaveBeenCalled();
 		const payload = JSON.parse(String(consoleSpy.mock.calls.at(-1)?.[0] ?? "{}")) as {
 			fix: {
 				changed: boolean;
