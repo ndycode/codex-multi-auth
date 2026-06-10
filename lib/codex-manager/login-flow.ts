@@ -86,6 +86,20 @@ function clearMenuQuotaAutoRefreshSkip(state: MenuQuotaRefreshState): void {
 	state.menuQuotaRefreshGeneration += 1;
 }
 
+// The menu quota refresh runs fire-and-forget behind the dashboard. On the
+// paths that leave the loop (add-account's storage write, process exit) an
+// in-flight refresh must finish first so its cache save cannot race the
+// account-pool write (Windows EBUSY/EPERM on sibling files) or be orphaned
+// mid-write. The chain never rejects (it ends in .catch/.finally), and the
+// wait is bounded by the per-probe HTTP timeouts.
+async function drainPendingMenuQuotaRefresh(
+	state: MenuQuotaRefreshState,
+): Promise<void> {
+	if (state.pendingMenuQuotaRefresh) {
+		await state.pendingMenuQuotaRefresh;
+	}
+}
+
 const log = createLogger("codex-manager");
 
 async function clearAccountsAndReset(): Promise<void> {
@@ -126,6 +140,7 @@ async function runLoginDashboardLoop(
 	while (true) {
 		const existingStorage = await loadAccounts();
 		if (!existingStorage || existingStorage.accounts.length === 0) {
+			await drainPendingMenuQuotaRefresh(menuState);
 			return "add-account";
 		}
 		const currentStorage = existingStorage;
@@ -203,6 +218,7 @@ async function runLoginDashboardLoop(
 
 		if (menuResult.mode === "cancel") {
 			console.log("Cancelled.");
+			await drainPendingMenuQuotaRefresh(menuState);
 			return "exit";
 		}
 		if (menuResult.mode === "check") {
@@ -304,6 +320,7 @@ async function runLoginDashboardLoop(
 			continue;
 		}
 		if (menuResult.mode === "add") {
+			await drainPendingMenuQuotaRefresh(menuState);
 			return "add-account";
 		}
 	}
