@@ -1,5 +1,5 @@
 import { FlaggedAccountStorageV1Schema, safeParseJson } from "../schemas.js";
-import type { FlaggedAccountStorageV1 } from "../storage.js";
+import type { FlaggedAccountStorageV1 } from "./public-types.js";
 import { sleep } from "../utils.js";
 
 // Include EPERM: on Windows, antivirus + file-indexing briefly take an

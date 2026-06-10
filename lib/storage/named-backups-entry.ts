@@ -1,4 +1,4 @@
-import type { NamedBackupSummary } from "../storage.js";
+import type { NamedBackupSummary } from "./named-backups.js";
 
 export async function getNamedBackupsEntry(params: {
 	getStoragePath: () => string;

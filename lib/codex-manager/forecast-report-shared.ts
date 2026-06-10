@@ -5,10 +5,16 @@ import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
 } from "../storage.js";
+import {
+	isRetryableStorageWriteError,
+	saveAccountsWithRetry,
+} from "../storage/save-retry.js";
 import type { TokenFailure } from "../types.js";
-import { sleep } from "../utils.js";
 
-const RETRYABLE_STORAGE_WRITE_CODES = new Set(["EBUSY", "EPERM"]);
+// Moved to lib/storage/save-retry.ts so lib/accounts.ts can use the retry
+// helper without importing this codex-manager module; re-exported here to
+// preserve the historical import surface.
+export { isRetryableStorageWriteError, saveAccountsWithRetry };
 
 export type AccountIdentityMatch = Pick<
 	AccountMetadataV3,
@@ -23,28 +29,6 @@ export type RefreshedAccountPatch = Pick<
 	accountId?: AccountMetadataV3["accountId"];
 	accountIdSource?: AccountMetadataV3["accountIdSource"];
 };
-
-export function isRetryableStorageWriteError(error: unknown): boolean {
-	const code = (error as NodeJS.ErrnoException | undefined)?.code;
-	return typeof code === "string" && RETRYABLE_STORAGE_WRITE_CODES.has(code);
-}
-
-export async function saveAccountsWithRetry(
-	storage: AccountStorageV3,
-	saveAccounts: (storage: AccountStorageV3) => Promise<void>,
-): Promise<void> {
-	for (let attempt = 0; ; attempt += 1) {
-		try {
-			await saveAccounts(storage);
-			return;
-		} catch (error) {
-			if (!isRetryableStorageWriteError(error) || attempt >= 3) {
-				throw error;
-			}
-			await sleep(10 * 2 ** attempt);
-		}
-	}
-}
 
 export function applyRefreshedAccountPatch(
 	account: AccountMetadataV3,

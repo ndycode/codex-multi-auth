@@ -2,7 +2,7 @@ import { existsSync, promises as fs } from "node:fs";
 import { dirname } from "node:path";
 import { AnyAccountStorageSchema, safeParseJson } from "../schemas.js";
 import { shouldRetryFileOperation } from "../fs-retry.js";
-import type { AccountStorageV3 } from "../storage.js";
+import type { AccountStorageV3 } from "./public-types.js";
 
 const EXPORT_RENAME_MAX_ATTEMPTS = 4;
 const EXPORT_RENAME_BASE_DELAY_MS = 25;

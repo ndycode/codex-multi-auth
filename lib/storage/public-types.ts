@@ -4,9 +4,16 @@
  * ./migrations.ts and are intentionally not exported from the facade.
  */
 
-import type { Workspace } from "../accounts.js";
-import type { ModelFamily } from "../prompts/codex.js";
+import type { ModelFamily } from "../request/helpers/model-map.js";
 import type { AccountIdSource } from "../types.js";
+
+export interface Workspace {
+	id: string;
+	name?: string;
+	enabled: boolean;
+	disabledAt?: number;
+	isDefault?: boolean;
+}
 
 export type CooldownReason = "auth-failure" | "network-error" | "server-error" | "rate-limit";
 
@@ -62,4 +69,15 @@ export interface AccountStorageV3 {
 	 * logically zero. See issue #474.
 	 */
 	affinityGeneration?: number;
+}
+
+export interface FlaggedAccountMetadataV1 extends AccountMetadataV3 {
+	flaggedAt: number;
+	flaggedReason?: string;
+	lastError?: string;
+}
+
+export interface FlaggedAccountStorageV1 {
+	version: 1;
+	accounts: FlaggedAccountMetadataV1[];
 }

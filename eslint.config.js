@@ -1,5 +1,7 @@
 import tseslint from "@typescript-eslint/eslint-plugin";
 import tsparser from "@typescript-eslint/parser";
+import importX from "eslint-plugin-import-x";
+import { createTypeScriptImportResolver } from "eslint-import-resolver-typescript";
 
 export default [
   {
@@ -42,6 +44,28 @@ export default [
       "no-var": "error",
       "eqeqeq": ["error", "always"],
       "no-duplicate-imports": "error",
+    },
+  },
+  {
+    // audit 4.1.6: keep the lib/ module graph acyclic. The dependency direction
+    // is types/constants -> storage -> accounts -> runtime -> manager/CLI;
+    // shared types/helpers must live in (or move to) the lower layer instead of
+    // being imported back from a higher one. Scoped to lib/** and index.ts —
+    // scripts/ and test/ are intentionally out of scope for now.
+    files: ["index.ts", "lib/**/*.ts"],
+    plugins: {
+      "import-x": importX,
+    },
+    settings: {
+      // Without this, import-x treats .ts files as unparseable and silently
+      // skips cycle detection (its default ExportMap extensions are .js-only).
+      "import-x/extensions": [".ts"],
+      "import-x/resolver-next": [
+        createTypeScriptImportResolver({ project: "./tsconfig.json" }),
+      ],
+    },
+    rules: {
+      "import-x/no-cycle": ["error", { maxDepth: Infinity, ignoreExternal: true }],
     },
   },
   {
