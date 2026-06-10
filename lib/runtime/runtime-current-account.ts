@@ -6,6 +6,7 @@ import type { AppBindRouterStatus } from "./app-bind.js";
 import { APP_RUNTIME_HELPER_STATUS_FILE } from "../runtime-constants.js";
 import { getCodexMultiAuthDir } from "../runtime-paths.js";
 import type { AccountStorageV3 } from "../storage.js";
+import { isRecord } from "../utils.js";
 
 export type RuntimeCurrentAccountSource =
 	| "runtime-observability"
@@ -95,10 +96,6 @@ function normalizeTimestamp(signal: RuntimeAccountSignal): number | null {
 		normalizeTimestampValue(signal.updatedAt),
 	].filter((timestamp): timestamp is number => timestamp !== null);
 	return timestamps.length > 0 ? Math.max(...timestamps) : null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
 }
 
 function readOptionalNumber(record: Record<string, unknown>, key: string): number | null {

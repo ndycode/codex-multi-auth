@@ -534,23 +534,10 @@ describe("readAppRuntimeHelperStatus", () => {
 		});
 	});
 
-	it("treats a JSON array as a record and yields an all-null status", async () => {
-		// Pins current behavior: isRecord() accepts arrays, so `[]` produces a
-		// fully-null status object instead of null. Downstream
-		// appRuntimeHelperStatusToSignal still rejects it via the kind check.
+	it("rejects a JSON array status file as not-a-record", async () => {
+		// isRecord() excludes arrays: an `[]` helper-status file is malformed
+		// content, not an all-null status object.
 		await writeStatusFile("[]");
-		const status = readAppRuntimeHelperStatus();
-		expect(status).toEqual({
-			kind: null,
-			state: null,
-			pid: null,
-			lastAccountIndex: null,
-			lastAccountLabel: null,
-			lastAccountEmail: null,
-			lastAccountId: null,
-			lastAccountUpdatedAt: null,
-			updatedAt: null,
-		});
-		expect(appRuntimeHelperStatusToSignal(status)).toBeNull();
+		expect(readAppRuntimeHelperStatus()).toBeNull();
 	});
 });
