@@ -70,8 +70,7 @@ ESLint is wired into automation. Each tool owns a different slice:
     `eslint --max-warnings=0 --fix --no-warn-ignored` on staged `*.ts`
     and `scripts/**/*.{js,mjs}` files.
   - **CI**: `npm run lint` runs as a dedicated job in
-    `.github/workflows/ci.yml` (push to `main`) and
-    `.github/workflows/pr-ci.yml` (pull requests).
+    `.github/workflows/ci.yml` (push to `main` and pull requests).
 
 If the two tools ever disagree on a file you format manually with
 Biome, prefer ESLint's verdict for correctness and surface formatting

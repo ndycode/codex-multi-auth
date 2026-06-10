@@ -15,7 +15,7 @@
  *   §11 Case 5  (auth list empty-storage canonical message) — covered by test/codex-manager-cli.test.ts
  *   §11 Case 6  (V2 migration) — DEFERRED (V2 code path absent; out of scope for phase-1 regression)
  *   §11 Case 7  (SSE malformed-chunk warn) — behavior-level test below
- *   §11 Case 8  (pack-size CI gate) — enforced by `.github/workflows/pr-ci.yml` step "Pack budget check"
+ *   §11 Case 8  (pack-size CI gate) — enforced by `.github/workflows/ci.yml` step "Pack budget check"
  *   §11 Case 9  (PKCE S256 invariant) — covered by test/auth.test.ts:210
  *   §11 Case 10 (OAuth state 16-byte crypto random) — THIS FILE
  */
