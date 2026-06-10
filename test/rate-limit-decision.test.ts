@@ -275,11 +275,14 @@ describe("buildPinnedUnavailableErrorBody", () => {
 		expect(body.account_skip_reasons).toEqual({ "0": "rate-limited", "1": "disabled" });
 	});
 
-	it("omits the parenthetical and reason on the null-index desync path", () => {
+	it("omits the index, parenthetical, and reason on the null-index desync path", () => {
+		// Regression: the message used to render the null index as "Pinned
+		// account 1", contradicting the machine-readable pinnedAccountIndex.
 		const body = buildPinnedUnavailableErrorBody(null, new Map());
 		expect(body.pinnedAccountIndex).toBeNull();
 		expect(body.reason).toBeNull();
-		expect(body.message).toContain("Pinned account 1 is currently unavailable;");
+		expect(body.message).toContain("The pinned account is currently unavailable;");
+		expect(body.message).not.toContain("Pinned account 1");
 		expect(body.message).not.toContain("(");
 		expect(body.account_skip_reasons).toEqual({});
 	});

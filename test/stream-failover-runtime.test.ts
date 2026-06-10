@@ -96,6 +96,19 @@ describe("responseHeadersForClient", () => {
 		});
 	});
 
+	it("blocks any header under the private account prefix, not just known names", () => {
+		// Regression: the filter used to be an exact-name allowlist, so a future
+		// x-codex-multi-auth-account-* header would have leaked by default.
+		const upstream = new Headers({
+			"content-type": "application/json",
+			"x-codex-multi-auth-account-plan": "pro",
+			"X-Codex-Multi-Auth-Account-Future-Field": "secret",
+		});
+		expect(responseHeadersForClient(upstream)).toEqual({
+			"content-type": "application/json",
+		});
+	});
+
 	it("covers every hop-by-hop header in the exported set", () => {
 		const upstream = new Headers();
 		for (const name of HOP_BY_HOP_HEADERS) {
@@ -232,14 +245,12 @@ describe("forwardStreamingResponse", () => {
 		expect(res.chunks).toEqual([]);
 	});
 
-	it("currently ends a stalled stream cleanly instead of failing it", async () => {
-		// Pins a BUG (not the intended design): on a stall, withTimeout's
-		// onTimeout cancels the reader, which settles the pending read() with
-		// {done: true} BEFORE the rejection lands, so Promise.race resolves.
-		// The stall is reported as a clean end: truncated body, res.end(), no
-		// lastError, and onStreamError (the failover hook) never fires. The
-		// stall branch of the catch block is unreachable today. Fixed in the
-		// stacked follow-up PR, which flips these expectations.
+	it("records the stall error, destroys the response, and reports failure on timeout", async () => {
+		// Regression: withTimeout used to invoke onTimeout (which cancels the
+		// reader and thereby settles the pending read() with {done: true})
+		// before rejecting, so the race resolved and a stalled upstream was
+		// forwarded as a clean end-of-stream — truncated body, res.end(), no
+		// lastError, and onStreamError (the failover hook) never fired.
 		const res = new FakeServerResponse();
 		const status = createStatus();
 		const upstream = new Response(streamOf(
@@ -250,13 +261,14 @@ describe("forwardStreamingResponse", () => {
 		const onStreamError = vi.fn();
 		await expect(
 			forwardStreamingResponse(upstream, res.asServerResponse(), status, onStreamError, 25),
-		).resolves.toBe(true);
+		).resolves.toBe(false);
 
-		expect(onStreamError).not.toHaveBeenCalled();
-		expect(status.lastError).toBeNull();
-		expect(res.destroyed).toBe(false);
+		expect(onStreamError).toHaveBeenCalledTimes(1);
+		expect(status.lastError).toBe("upstream stream stalled after 25ms");
+		expect(res.destroyed).toBe(true);
+		expect(res.destroyError).toBeInstanceOf(Error);
 		expect(Buffer.concat(res.chunks).toString("utf8")).toBe("data: a\n\n");
-		expect(res.ended).toBe(true);
+		expect(res.ended).toBe(false);
 	});
 
 	it("fails the stream when the upstream read rejects mid-stream", async () => {
