@@ -73,7 +73,7 @@ Package version: 2.2.0
 ## CONVENTIONS
 
 - Source lives in root `index.ts`, `lib/`, and `scripts/`; `dist/` is generated output.
-- ESM only (`"type": "module"`), Node >= 18.
+- ESM only (`"type": "module"`), Node >= 18.17.
 - Canonical package name is `codex-multi-auth`.
 - Canonical command family is `codex-multi-auth ...`.
 - The package does not publish a global `codex` bin; `codex-multi-auth-codex` is the explicit wrapper: auth commands run locally, non-auth commands forward to official Codex.
