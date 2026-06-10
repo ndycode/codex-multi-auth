@@ -1,4 +1,4 @@
-import type { AccountMetadataV3, AccountStorageV3 } from "../storage.js";
+import type { AccountMetadataV3, AccountStorageV3 } from "./public-types.js";
 
 export function looksLikeSyntheticFixtureAccount(
 	account: AccountMetadataV3,

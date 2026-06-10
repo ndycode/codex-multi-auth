@@ -5,7 +5,7 @@
  */
 import { z } from "zod";
 import { createLogger, type ScopedLogger } from "./logger.js";
-import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
+import { MODEL_FAMILIES, type ModelFamily } from "./request/helpers/model-map.js";
 
 // Lazy-init so partial `vi.mock("../lib/logger.js", ...)` stubs in tests that
 // do not export `createLogger` (e.g. `test/auth-logging.test.ts`) continue to

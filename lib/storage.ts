@@ -30,9 +30,10 @@ import { saveAccountsToDisk } from "./storage/account-save.js";
 import { saveAccountsEntry } from "./storage/account-save-entry.js";
 import { buildBackupMetadata } from "./storage/backup-metadata-builder.js";
 import {
-	type BackupMetadataSection,
+	type BackupMetadata,
 	type BackupSnapshotKind,
 	type BackupSnapshotMetadata,
+	type RestoreAssessment,
 	buildMetadataSection,
 } from "./storage/backup-metadata.js";
 import { isCacheLikeBackupArtifactName } from "./storage/cache-artifacts.js";
@@ -94,6 +95,8 @@ import type {
 	AccountMetadataV3,
 	AccountStorageV3,
 	CooldownReason,
+	FlaggedAccountMetadataV1,
+	FlaggedAccountStorageV1,
 	RateLimitStateV3,
 } from "./storage/public-types.js";
 import { exportNamedBackupEntry } from "./storage/named-backup-entry.js";
@@ -148,6 +151,10 @@ export type {
 	RateLimitStateV3,
 	AccountMetadataV3,
 	AccountStorageV3,
+	FlaggedAccountMetadataV1,
+	FlaggedAccountStorageV1,
+	BackupMetadata,
+	RestoreAssessment,
 	NamedBackupSummary,
 };
 
@@ -160,32 +167,6 @@ const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
-
-export interface FlaggedAccountMetadataV1 extends AccountMetadataV3 {
-	flaggedAt: number;
-	flaggedReason?: string;
-	lastError?: string;
-}
-
-export interface FlaggedAccountStorageV1 {
-	version: 1;
-	accounts: FlaggedAccountMetadataV1[];
-}
-
-type RestoreReason = "empty-storage" | "intentional-reset" | "missing-storage";
-
-export type BackupMetadata = {
-	accounts: BackupMetadataSection;
-	flaggedAccounts: BackupMetadataSection;
-};
-
-export type RestoreAssessment = {
-	storagePath: string;
-	restoreEligible: boolean;
-	restoreReason?: RestoreReason;
-	latestSnapshot?: BackupSnapshotMetadata;
-	backupMetadata: BackupMetadata;
-};
 
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
 

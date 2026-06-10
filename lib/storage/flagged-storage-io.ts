@@ -1,7 +1,7 @@
 import { existsSync, promises as fs } from "node:fs";
 import { dirname } from "node:path";
 import { FlaggedAccountStorageV1Schema, safeParseJson } from "../schemas.js";
-import type { FlaggedAccountStorageV1 } from "../storage.js";
+import type { FlaggedAccountStorageV1 } from "./public-types.js";
 import { readFileWithRetry } from "./flagged-storage-file.js";
 import { FILE_RETRY_CODES } from "../fs-retry.js";
 

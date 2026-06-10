@@ -31,6 +31,21 @@ export type BackupMetadataSection = {
 	snapshots: BackupSnapshotMetadata[];
 };
 
+type RestoreReason = "empty-storage" | "intentional-reset" | "missing-storage";
+
+export type BackupMetadata = {
+	accounts: BackupMetadataSection;
+	flaggedAccounts: BackupMetadataSection;
+};
+
+export type RestoreAssessment = {
+	storagePath: string;
+	restoreEligible: boolean;
+	restoreReason?: RestoreReason;
+	latestSnapshot?: BackupSnapshotMetadata;
+	backupMetadata: BackupMetadata;
+};
+
 export function latestValidSnapshot(
 	snapshots: BackupSnapshotMetadata[],
 ): BackupSnapshotMetadata | undefined {

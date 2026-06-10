@@ -1,4 +1,4 @@
-import type { FlaggedAccountStorageV1 } from "../storage.js";
+import type { FlaggedAccountStorageV1 } from "./public-types.js";
 
 export async function saveFlaggedAccountsEntry(params: {
 	storage: FlaggedAccountStorageV1;

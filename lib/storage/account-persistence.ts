@@ -1,4 +1,4 @@
-import type { AccountStorageV3 } from "../storage.js";
+import type { AccountStorageV3 } from "./public-types.js";
 
 export function cloneAccountStorageForPersistence(
 	storage: AccountStorageV3 | null | undefined,

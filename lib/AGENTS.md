@@ -85,6 +85,10 @@ lib/
 ## CONVENTIONS
 
 - All public exports should flow through `lib/index.ts` or documented package subpaths.
+- Module dependencies must stay acyclic (enforced by `import-x/no-cycle` in lint) and follow the layering
+  `types/constants → storage → accounts → runtime → manager/CLI`: lower layers never import from higher ones.
+  Shared types/helpers belong in the lower layer (e.g. `storage/public-types.ts`), with higher layers re-exporting
+  for surface compatibility instead of lower layers importing back from facades like `lib/storage.ts`.
 - Runtime rotation code must preserve pass-through semantics except for auth/provider headers that intentionally change.
 - Node fetch returns decoded response bytes while preserving upstream `content-encoding`; do not forward stale decoded encoding metadata to local clients.
 - Runtime proxy client-facing headers must not expose account emails or tokens.

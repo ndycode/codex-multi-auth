@@ -1,4 +1,4 @@
-import type { AccountStorageV3 } from "../storage.js";
+import type { AccountStorageV3 } from "./public-types.js";
 
 export async function loadNormalizedStorageFromPath(
 	path: string,

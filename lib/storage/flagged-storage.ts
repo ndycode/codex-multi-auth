@@ -2,7 +2,7 @@ import type {
 	AccountMetadataV3,
 	FlaggedAccountMetadataV1,
 	FlaggedAccountStorageV1,
-} from "../storage.js";
+} from "./public-types.js";
 
 export function normalizeFlaggedStorage(
 	data: unknown,

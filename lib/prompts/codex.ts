@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import type { CacheMetadata, GitHubRelease } from "../types.js";
 import { logWarn, logError, logDebug } from "../logger.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
-import { DEFAULT_MODEL, getModelProfile, type PromptModelFamily } from "../request/helpers/model-map.js";
+import { DEFAULT_MODEL, getModelProfile, type ModelFamily } from "../request/helpers/model-map.js";
 import { fetchWithTimeout, readBodyTextGuarded, withBodyTimeout } from "./fetch-utils.js";
 import { withFileOperationRetry } from "../fs-retry.js";
 
@@ -99,23 +99,11 @@ function setCacheEntry(key: string, value: { content: string; timestamp: number 
 	memoryCache.set(key, value);
 }
 
-/**
- * Model family type for prompt selection
- * Maps to different system prompts in the Codex CLI
- */
-export type ModelFamily = PromptModelFamily;
-
-/**
- * All supported model families
- * Used for per-family account rotation and rate limit tracking
- */
-export const MODEL_FAMILIES: readonly ModelFamily[] = [
-	"gpt-5-codex",
-	"codex-max",
-	"codex",
-	"gpt-5.2",
-	"gpt-5.1",
-] as const;
+// ModelFamily/MODEL_FAMILIES live in the leaf model-map module so low-level
+// modules (schemas, storage types) can use them without importing this file.
+// Re-exported here to preserve the historical import surface.
+export { MODEL_FAMILIES } from "../request/helpers/model-map.js";
+export type { ModelFamily } from "../request/helpers/model-map.js";
 
 /**
  * Prompt file mapping for each model family

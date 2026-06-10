@@ -1,4 +1,4 @@
-import type { BackupMetadata } from "../storage.js";
+import type { BackupMetadata } from "./backup-metadata.js";
 
 type Snapshot = {
 	kind:

@@ -1,4 +1,4 @@
-import type { AccountStorageV3 } from "../storage.js";
+import type { AccountStorageV3 } from "./public-types.js";
 
 type RestoreReason = "empty-storage" | "intentional-reset" | "missing-storage";
 
