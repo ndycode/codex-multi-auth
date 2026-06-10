@@ -139,6 +139,43 @@ describe("chooseAccount pinned selection (issue #474)", () => {
 		expect(selected).toBeNull();
 		expect(skipReasons.get(1)).toBe("rate-limited");
 	});
+
+	it("refuses a cooling-down pinned account with the tagged reason", () => {
+		const accountManager = manager();
+		const pinned = accountManager.getAccountByIndex(1);
+		if (!pinned) throw new Error("fixture account missing");
+		accountManager.markAccountCoolingDown(pinned, 60_000, "auth-failure");
+		const skipReasons = new Map<number, string>();
+
+		const selected = chooseAccount({
+			...baseParams(accountManager),
+			pinnedIndex: 1,
+			skipReasons,
+		});
+
+		expect(selected).toBeNull();
+		expect(skipReasons.get(1)).toBe("cooling-down:auth-failure");
+	});
+
+	it("refuses a pinned account whose circuit breaker is open", () => {
+		const accountManager = manager();
+		const pinned = accountManager.getAccountByIndex(1);
+		if (!pinned) throw new Error("fixture account missing");
+		// Trip the breaker (threshold is 3 failures).
+		for (let i = 0; i < 3; i += 1) {
+			accountManager.recordFailure(pinned, FAMILY, null);
+		}
+		const skipReasons = new Map<number, string>();
+
+		const selected = chooseAccount({
+			...baseParams(accountManager),
+			pinnedIndex: 1,
+			skipReasons,
+		});
+
+		expect(selected).toBeNull();
+		expect(skipReasons.get(1)).toBe("circuit-open");
+	});
 });
 
 describe("chooseAccount session affinity tier", () => {
@@ -274,6 +311,34 @@ describe("chooseAccount sequential mode (issue #509)", () => {
 		expect(selected?.index).toBe(0);
 		expect(sequential).toHaveBeenCalledTimes(1);
 		expect(affinity).not.toHaveBeenCalled();
+	});
+
+	it("routes around a policy-blocked primary without moving it", () => {
+		const accountManager = manager();
+		const sequential = vi
+			.spyOn(accountManager, "getCurrentOrNextForFamilySequential")
+			.mockReturnValue(accountManager.getAccountByIndex(0));
+		const markSwitched = vi.spyOn(accountManager, "markSwitched");
+		const policy = policyWith([0]);
+		const skipReasons = new Map<number, string>();
+
+		const selected = chooseAccount({
+			...baseParams(accountManager),
+			policy,
+			schedulingStrategy: "sequential",
+			skipReasons,
+		});
+
+		// The blocked set is threaded into the drain-first selector, the linear
+		// fallback records the block, and the primary pointer stays put.
+		expect(sequential).toHaveBeenCalledExactlyOnceWith(
+			FAMILY,
+			null,
+			policy.blockedAccountIndexes,
+		);
+		expect(selected?.index).toBe(1);
+		expect(skipReasons.get(0)).toBe("policy-blocked");
+		expect(markSwitched).not.toHaveBeenCalled();
 	});
 
 	it("retries another account without moving the drain-first primary", () => {
