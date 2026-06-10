@@ -40,7 +40,7 @@ export function removePluginFromList(list: unknown[]): unknown[] {
 	});
 }
 
-export type UninstallCliOptions = {
+type UninstallCliOptions = {
 	dryRun: boolean;
 	json: boolean;
 	clearAccounts: boolean;

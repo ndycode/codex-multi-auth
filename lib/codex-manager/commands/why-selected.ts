@@ -13,7 +13,7 @@ type ParsedArgsResult<T> =
 	| { ok: true; options: T }
 	| { ok: false; message: string };
 
-export interface WhySelectedRuntimeSnapshot {
+interface WhySelectedRuntimeSnapshot {
 	lastSwitchReason?: string;
 	lastRateLimitReason?: string;
 	cooldownReason?: string;
@@ -37,7 +37,7 @@ export interface WhySelectedCommandDeps {
 	logError?: (message: string) => void;
 }
 
-export interface WhySelectedCandidateRecord {
+interface WhySelectedCandidateRecord {
 	index: number;
 	oneBasedIndex: number;
 	email?: string;
@@ -56,7 +56,7 @@ export interface WhySelectedCandidateRecord {
 	reason?: string;
 }
 
-export interface WhySelectedSelectedRecord extends WhySelectedCandidateRecord {
+interface WhySelectedSelectedRecord extends WhySelectedCandidateRecord {
 	selectionReason: string;
 }
 

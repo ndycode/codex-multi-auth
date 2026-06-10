@@ -109,8 +109,6 @@ const CooldownReasonSchema = z.enum([
 	"rate-limit",
 ]);
 
-export type CooldownReasonFromSchema = z.infer<typeof CooldownReasonSchema>;
-
 /**
  * Last switch reason for account rotation tracking.
  */
@@ -122,8 +120,6 @@ const SwitchReasonSchema = z.enum([
 	"restore",
 	"manual",
 ]);
-
-export type SwitchReasonFromSchema = z.infer<typeof SwitchReasonSchema>;
 
 /**
  * Switch reasons that callers may pass to `persistAndSyncSelectedAccount`.
@@ -147,8 +143,6 @@ const RateLimitStateV3Schema = z.record(
 	z.number().optional(),
 );
 
-export type RateLimitStateV3FromSchema = z.infer<typeof RateLimitStateV3Schema>;
-
 /**
  * Workspace entry within an account. Supports a single OpenAI/Google account
  * that belongs to multiple ChatGPT workspaces (e.g. personal Plus + a
@@ -162,8 +156,6 @@ const WorkspaceSchema = z.object({
 	disabledAt: z.number().optional(),
 	isDefault: z.boolean().optional(),
 });
-
-export type WorkspaceFromSchema = z.infer<typeof WorkspaceSchema>;
 
 /**
  * Account metadata V3 - current storage format.
@@ -190,10 +182,6 @@ export const AccountMetadataV3Schema = z.object({
 	currentWorkspaceIndex: z.number().optional(),
 });
 
-export type AccountMetadataV3FromSchema = z.infer<
-	typeof AccountMetadataV3Schema
->;
-
 /**
  * Build activeIndexByFamily schema dynamically from MODEL_FAMILIES.
  */
@@ -209,10 +197,6 @@ const ActiveIndexByFamilySchema = z
 		>,
 	)
 	.partial();
-
-export type ActiveIndexByFamilyFromSchema = z.infer<
-	typeof ActiveIndexByFamilySchema
->;
 
 /**
  * Account storage V3 - current storage format with per-family active indices.
@@ -248,10 +232,6 @@ const AccountMetadataV1Schema = z.object({
 	cooldownReason: CooldownReasonSchema.optional(),
 });
 
-export type AccountMetadataV1FromSchema = z.infer<
-	typeof AccountMetadataV1Schema
->;
-
 /**
  * Legacy V1 storage format for migration support.
  */
@@ -260,8 +240,6 @@ export const AccountStorageV1Schema = z.object({
 	accounts: z.array(AccountMetadataV1Schema),
 	activeIndex: z.number().min(0),
 });
-
-export type AccountStorageV1FromSchema = z.infer<typeof AccountStorageV1Schema>;
 
 /**
  * Union of V1 and V3 storage formats for migration detection.
@@ -289,10 +267,6 @@ export const FlaggedAccountMetadataV1Schema = AccountMetadataV3Schema.extend({
 	flaggedReason: z.string().optional(),
 	lastError: z.string().optional(),
 }).passthrough();
-
-export type FlaggedAccountMetadataV1FromSchema = z.infer<
-	typeof FlaggedAccountMetadataV1Schema
->;
 
 /**
  * Flagged account storage V1 format (version: 1, accounts: []).

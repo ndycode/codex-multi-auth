@@ -1,6 +1,6 @@
 import type { CodexQuotaSnapshot, CodexQuotaWindow } from "../quota-probe.js";
 
-export type { CodexQuotaSnapshot, CodexQuotaWindow } from "../quota-probe.js";
+export type { CodexQuotaSnapshot } from "../quota-probe.js";
 
 export type ParsedCodexQuotaSnapshot = Omit<CodexQuotaSnapshot, "model">;
 

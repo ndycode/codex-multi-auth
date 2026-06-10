@@ -43,14 +43,14 @@ const CI_ENV_KEYS = [
 	"BITBUCKET_BUILD_NUMBER",
 ];
 
-export type FirstRunStepStatus = "completed" | "skipped" | "failed";
+type FirstRunStepStatus = "completed" | "skipped" | "failed";
 
-export interface FirstRunSetupOutcome {
+interface FirstRunSetupOutcome {
 	appBind: FirstRunStepStatus;
 	launcher: FirstRunStepStatus;
 }
 
-export type FirstRunSkipReason =
+type FirstRunSkipReason =
 	| "ci"
 	| "not-installed"
 	| "already-done"

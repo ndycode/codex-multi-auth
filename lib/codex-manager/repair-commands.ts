@@ -70,13 +70,13 @@ export interface FixCliOptions {
 	model: string;
 }
 
-export interface VerifyFlaggedCliOptions {
+interface VerifyFlaggedCliOptions {
 	dryRun: boolean;
 	json: boolean;
 	restore: boolean;
 }
 
-export interface DoctorCliOptions {
+interface DoctorCliOptions {
 	json: boolean;
 	fix: boolean;
 	dryRun: boolean;

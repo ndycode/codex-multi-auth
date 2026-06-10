@@ -27,7 +27,7 @@ export interface DashboardDisplaySettingOption {
 	description: string;
 }
 
-export type DashboardConfigAction =
+type DashboardConfigAction =
 	| { type: "toggle"; key: DashboardDisplaySettingKey }
 	| { type: "cycle-sort-mode" }
 	| { type: "cycle-layout-mode" }

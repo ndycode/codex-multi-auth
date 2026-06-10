@@ -12,7 +12,7 @@ type ParsedArgsResult<T> =
 	| { ok: true; options: T }
 	| { ok: false; message: string };
 
-export interface VerifyPathStep {
+interface VerifyPathStep {
 	name: string;
 	input?: string;
 	output?: string;
@@ -20,7 +20,7 @@ export interface VerifyPathStep {
 	error?: string;
 }
 
-export interface VerifySandboxResult {
+interface VerifySandboxResult {
 	name: string;
 	input: string;
 	rejected: boolean;

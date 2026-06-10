@@ -15,7 +15,7 @@ import type {
 	RateLimitStateV3,
 } from "./public-types.js";
 
-export interface AccountMetadataV1 {
+interface AccountMetadataV1 {
 	accountId?: string;
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;

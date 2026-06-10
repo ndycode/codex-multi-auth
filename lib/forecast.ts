@@ -10,8 +10,8 @@ import { getRateLimitResetTimeForFamily } from "./runtime/account-status.js";
 import type { AccountMetadataV3 } from "./storage.js";
 import type { TokenFailure } from "./types.js";
 
-export type ForecastAvailability = "ready" | "delayed" | "unavailable";
-export type ForecastRiskLevel = "low" | "medium" | "high";
+type ForecastAvailability = "ready" | "delayed" | "unavailable";
+type ForecastRiskLevel = "low" | "medium" | "high";
 
 export interface ForecastAccountInput {
 	index: number;
@@ -54,7 +54,7 @@ export interface ForecastRecommendation {
 	reason: string;
 }
 
-export interface ForecastExplanationAccount {
+interface ForecastExplanationAccount {
 	index: number;
 	label: string;
 	isCurrent: boolean;

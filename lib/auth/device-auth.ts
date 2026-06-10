@@ -30,7 +30,7 @@ export interface DeviceAuthCode {
 	expiresAtMs?: number;
 }
 
-export interface DeviceAuthCompletion {
+interface DeviceAuthCompletion {
 	authorizationCode: string;
 	codeVerifier: string;
 }

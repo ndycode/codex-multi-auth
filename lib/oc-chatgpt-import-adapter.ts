@@ -18,7 +18,7 @@ export type OcChatgptPreviewPayload = {
 	accounts: OcChatgptAccountRef[];
 };
 
-export type OcChatgptAccountRef = {
+type OcChatgptAccountRef = {
 	accountId?: string;
 	email?: string;
 	refreshTokenLast4: string;

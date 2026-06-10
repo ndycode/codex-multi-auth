@@ -11,14 +11,14 @@ import {
 } from "./recovery/storage.js";
 import type {
   MessageInfo,
+  ResumeConfig,
   MessageData,
   MessagePart,
   RecoveryErrorType,
-  ResumeConfig,
   ToolResultPart,
 } from "./recovery/types.js";
 
-export type { RecoveryErrorType, MessageInfo, MessageData, ResumeConfig };
+export type { RecoveryErrorType };
 
 type PluginClient = PluginInput["client"];
 

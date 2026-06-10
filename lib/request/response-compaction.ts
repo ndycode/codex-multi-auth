@@ -4,7 +4,7 @@ import { isRecord } from "../utils.js";
 import { getModelCapabilities } from "./helpers/model-map.js";
 import { trimInputForFastSession } from "./request-transformer.js";
 
-export interface DeferredFastSessionInputTrim {
+interface DeferredFastSessionInputTrim {
 	maxItems: number;
 	preferLatestUserOnly: boolean;
 }
