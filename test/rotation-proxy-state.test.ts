@@ -88,7 +88,7 @@ describe("createRotationProxyState", () => {
 		expect([...state.knownAccountManagers]).toEqual([
 			init.activeAccountManager,
 		]);
-		expect(state.status).toMatchObject({
+		expect(state.status).toStrictEqual({
 			startedAt: NOW,
 			totalRequests: 0,
 			upstreamRequests: 0,
@@ -97,6 +97,9 @@ describe("createRotationProxyState", () => {
 			streamsStarted: 0,
 			lastError: null,
 			lastAccountIndex: null,
+			lastAccountLabel: null,
+			lastAccountId: null,
+			lastAccountUpdatedAt: null,
 		});
 		expect(state.lastGlobalAccountIndex).toBeNull();
 		expect(state.lastStaleRuntimeReloadAt).toBe(0);
