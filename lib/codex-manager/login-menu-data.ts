@@ -8,11 +8,15 @@ import {
 	DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
 } from "../dashboard-settings.js";
 import {
+	loadQuotaCache,
 	type QuotaCacheData,
 	type QuotaCacheEntry,
 	saveQuotaCache,
 } from "../quota-cache.js";
-import { fetchCodexQuotaSnapshot } from "../quota-probe.js";
+import {
+	type CodexQuotaSnapshot,
+	fetchCodexQuotaSnapshot,
+} from "../quota-probe.js";
 import {
 	buildQuotaEmailFallbackState,
 	hasSafeQuotaEmailFallback,
@@ -181,6 +185,10 @@ export async function refreshQuotaCacheForMenu(
 	let processed = 0;
 	onProgress?.(processed, total);
 	let changed = false;
+	const appliedSnapshots: {
+		account: AccountMetadataV3;
+		snapshot: CodexQuotaSnapshot;
+	}[] = [];
 	for (const target of targets) {
 		processed += 1;
 		onProgress?.(processed, total);
@@ -191,22 +199,45 @@ export async function refreshQuotaCacheForMenu(
 				accessToken: target.accessToken,
 				model: MENU_QUOTA_REFRESH_MODEL,
 			});
-			changed =
-				updateQuotaCacheForAccount(
-					nextCache,
-					target.account,
-					snapshot,
-					storage.accounts,
-					emailFallbackState,
-				) || changed;
+			const applied = updateQuotaCacheForAccount(
+				nextCache,
+				target.account,
+				snapshot,
+				storage.accounts,
+				emailFallbackState,
+			);
+			if (applied) appliedSnapshots.push({ account: target.account, snapshot });
+			changed = applied || changed;
 		} catch {
 			// Keep existing cached values if probing fails.
 		}
 	}
 
 	if (changed) {
+		// The probes above ran against a snapshot clone of the cache the menu
+		// loaded; another writer (a deep check, a second session) may have saved
+		// entries meanwhile, and writing the stale clone back whole-file would
+		// silently discard them (last write wins). Re-apply this run's results
+		// onto the freshest persisted cache instead.
+		let cacheToSave = nextCache;
 		try {
-			await saveQuotaCache(nextCache);
+			const persisted = await loadQuotaCache();
+			for (const { account, snapshot } of appliedSnapshots) {
+				updateQuotaCacheForAccount(
+					persisted,
+					account,
+					snapshot,
+					storage.accounts,
+					emailFallbackState,
+				);
+			}
+			cacheToSave = persisted;
+		} catch {
+			// Fall back to the snapshot clone; saving slightly stale data beats
+			// dropping this run's probe results.
+		}
+		try {
+			await saveQuotaCache(cacheToSave);
 		} catch (error) {
 			// Quota cache is a derived artifact; a transient Windows EBUSY/EPERM
 			// here must not fail the menu refresh, but it should not vanish into
@@ -216,6 +247,7 @@ export async function refreshQuotaCacheForMenu(
 				`Quota cache save failed: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
+		return cacheToSave;
 	}
 
 	return nextCache;
