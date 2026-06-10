@@ -246,8 +246,12 @@ function safeUnlinkWithRetry(filePath: string, maxAttempts = 4): boolean {
 			retryableCodes: RETRYABLE_FS_CODES,
 		});
 		return true;
-	} catch {
-		// ENOENT, a non-retryable code, or exhausted retries: best-effort delete.
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
+		// File was already gone: nothing removed, but nothing orphaned either.
+		if (code === "ENOENT") return false;
+		// Exhausted retries or a non-retryable code (e.g. an AV lock that never
+		// released): best-effort delete, the caller cannot do better.
 		return false;
 	}
 }
