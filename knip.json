@@ -1,0 +1,43 @@
+{
+	"$schema": "https://unpkg.com/knip@latest/schema.json",
+	"entry": [
+		"index.ts",
+		"lib/index.ts",
+		"lib/auth/index.ts",
+		"lib/request/index.ts",
+		"lib/codex-cli/index.ts",
+		"lib/ui/index.ts",
+		"scripts/*.{js,mjs}",
+		"test/**/*.test.ts",
+		"test/helpers/**/*.ts"
+	],
+	"project": [
+		"lib/**/*.ts",
+		"scripts/**/*.{js,mjs}",
+		"index.ts",
+		"test/**/*.ts"
+	],
+	"ignore": [
+		"bench/**",
+		"vendor/**",
+		"dist/**",
+		"docs/**"
+	],
+	"ignoreBinaries": [
+		"powershell.exe",
+		"pbcopy",
+		"where"
+	],
+	"ignoreDependencies": [
+		"typescript-language-server",
+		"@openai/codex"
+	],
+	"rules": {
+		"exports": "warn",
+		"types": "warn",
+		"nsExports": "warn",
+		"nsTypes": "warn",
+		"duplicates": "warn",
+		"enumMembers": "warn"
+	}
+}
