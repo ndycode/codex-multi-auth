@@ -121,6 +121,9 @@ beforeEach(() => {
 	// through the cancellation branch instead of crashing on undefined.
 	runSignInFlowMock.mockResolvedValue(CANCELLED);
 	resolveAccountSelectionMock.mockReturnValue(RESOLVED);
+	// Default persist simulates the insertion-only path: accountsOnDisk grows
+	// by one and the outcome is "inserted". Tests asserting the same-email
+	// "rebound"/"updated" semantics override this with a non-growing impl.
 	persistAccountPoolMock.mockImplementation(async () => {
 		accountsOnDisk = storageWith((accountsOnDisk?.accounts.length ?? 0) + 1);
 		return "inserted";
@@ -161,6 +164,16 @@ describe("runAuthLogin argument handling", () => {
 		expect(loadAccountsMock).not.toHaveBeenCalled();
 		expect(runSignInFlowMock).not.toHaveBeenCalled();
 	});
+
+	it("rejects combining --device-auth with a manual-mode flag", async () => {
+		expect(await runAuthLogin(["--device-auth", "--no-browser"], deps())).toBe(
+			1,
+		);
+		expect(loggedLines(errorSpy).join("\n")).toContain(
+			"Cannot combine --device-auth with --no-browser",
+		);
+		expect(runSignInFlowMock).not.toHaveBeenCalled();
+	});
 });
 
 describe("runAuthLogin explicit transports", () => {
@@ -193,6 +206,7 @@ describe("runAuthLogin explicit transports", () => {
 
 	it("threads --org into resolveAccountSelection and persists the account", async () => {
 		runSignInFlowMock.mockResolvedValue(TOKEN_SUCCESS);
+		const envOverrideBefore = process.env.CODEX_AUTH_ACCOUNT_ID;
 
 		expect(await runAuthLogin(["--manual", "--org", "org_team"], deps())).toBe(
 			0,
@@ -200,6 +214,7 @@ describe("runAuthLogin explicit transports", () => {
 
 		// Issue #491: the org binding travels as an explicit argument, not via
 		// process.env mutation.
+		expect(process.env.CODEX_AUTH_ACCOUNT_ID).toBe(envOverrideBefore);
 		expect(resolveAccountSelectionMock).toHaveBeenCalledExactlyOnceWith(
 			TOKEN_SUCCESS,
 			"org_team",
