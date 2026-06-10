@@ -23,7 +23,12 @@ describe("config.schema.json is generated from PluginConfigSchema", () => {
 		// Read inside beforeAll so a missing/locked file surfaces as a named
 		// test failure with remediation, not an ENOENT at collection time.
 		try {
-			committedRaw = readFileSync(committedPath, "utf8");
+			// Normalize CRLF as belt-and-braces for checkouts that predate the
+			// .gitattributes eol=lf pin; the renderer always emits LF.
+			committedRaw = readFileSync(committedPath, "utf8").replace(
+				/\r\n/g,
+				"\n",
+			);
 		} catch (error) {
 			throw new Error(
 				`could not read ${CONFIG_SCHEMA_RELATIVE_PATH} — run \`npm run generate:schema\` and commit the result (${String(error)})`,
