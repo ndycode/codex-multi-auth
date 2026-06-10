@@ -205,7 +205,17 @@ export async function refreshQuotaCacheForMenu(
 	}
 
 	if (changed) {
-		await saveQuotaCache(nextCache);
+		try {
+			await saveQuotaCache(nextCache);
+		} catch (error) {
+			// Quota cache is a derived artifact; a transient Windows EBUSY/EPERM
+			// here must not fail the menu refresh, but it should not vanish into
+			// the caller's background .catch either (same pattern as the health
+			// check's save).
+			console.warn(
+				`Quota cache save failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 	}
 
 	return nextCache;
