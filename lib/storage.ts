@@ -1838,24 +1838,17 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 				fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 }),
 			),
 		statTemp: (tempPath: string) => fs.stat(tempPath),
-		renameTempToPath: async (tempPath: string) => {
-			let lastError: NodeJS.ErrnoException | null = null;
-			for (let attempt = 0; attempt < 5; attempt++) {
-				try {
-					await fs.rename(tempPath, path);
-					return;
-				} catch (renameError) {
-					const code = (renameError as NodeJS.ErrnoException).code;
-					if (code === "EPERM" || code === "EBUSY") {
-						lastError = renameError as NodeJS.ErrnoException;
-						await new Promise((r) => setTimeout(r, 10 * 2 ** attempt));
-						continue;
-					}
-					throw renameError;
-				}
-			}
-			if (lastError) throw lastError;
-		},
+		renameTempToPath: (tempPath: string) =>
+			// Windows can hold the destination briefly (AV/indexer); retry only the
+			// lock codes rename actually surfaces there, on the original
+			// 10ms-doubling schedule. (The hand-rolled loop this replaces also
+			// slept once more after the final failure; withRetry rethrows
+			// immediately instead.)
+			withRetry(() => fs.rename(tempPath, path), {
+				maxAttempts: 5,
+				backoffMs: (attempt) => 10 * 2 ** (attempt - 1),
+				retryableCodes: ["EPERM", "EBUSY"],
+			}),
 		cleanupResetMarker: async () => {
 			try {
 				await fs.unlink(resetMarkerPath);
