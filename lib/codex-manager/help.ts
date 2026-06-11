@@ -37,6 +37,7 @@ export function printUsage(): void {
 			"  codex-multi-auth monitor [--json]",
 			"  codex-multi-auth rotation <enable|disable|status|bind-app|unbind-app>",
 			"  codex-multi-auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]",
+			"  codex-multi-auth rotation adopt-history [--dry-run] [--reverse] [--yes] [--json]",
 			"  codex-multi-auth why-selected [--now | --last] [--json]",
 			"",
 			"Advanced:",

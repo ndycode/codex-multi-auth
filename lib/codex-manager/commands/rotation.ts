@@ -47,6 +47,8 @@ import {
 	resolveRuntimeCurrentAccount,
 } from "../../runtime/runtime-current-account.js";
 import { isRateLimitedMarker } from "../rate-limit-markers.js";
+import { runAdoptHistory } from "./adopt-history.js";
+import { confirm } from "../../ui/index.js";
 import type { PluginConfig } from "../../types.js";
 import type { AccountMetadataV3, AccountStorageV3 } from "../../storage.js";
 import { isRecord } from "../../utils.js";
@@ -98,6 +100,7 @@ function printRotationUsage(logInfo: (message: string) => void): void {
 			"  codex-multi-auth rotation unbind-app",
 			"  codex-multi-auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]",
 			"  codex-multi-auth rotation reset-runtime [--json]",
+			"  codex-multi-auth rotation adopt-history [--dry-run] [--reverse] [--yes] [--json]",
 			"",
 			"Behavior:",
 			"  - Runtime rotation is enabled by default for request-bearing Codex sessions",
@@ -105,6 +108,7 @@ function printRotationUsage(logInfo: (message: string) => void): void {
 			"  - Use CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0 to disable the proxy for the current process without changing persistent settings",
 			"  - reset-rate-limits clears stored rateLimitResetTimes and active coolingDownUntil entries; use when `fix --live` confirms quota is available but the proxy still returns 503 pool-exhausted",
 			"  - reset-runtime clears process-local runtime trackers and re-applies the Codex app bind when available",
+			"  - adopt-history is an opt-in rewrite that makes pre-bind session history visible under the runtime rotation provider (CLI picker and Codex Desktop); --reverse restores the native provider markers",
 		].join("\n"),
 	);
 }
@@ -735,6 +739,13 @@ export async function runRotationCommand(
 	}
 	if (subcommand === "reset-runtime") {
 		return runResetRuntime(rest, deps);
+	}
+	if (subcommand === "adopt-history") {
+		return runAdoptHistory(rest, {
+			confirm: (message) => confirm(message),
+			logInfo,
+			logError,
+		});
 	}
 	if (rest.length > 0) {
 		logError(`Unknown rotation option: ${rest[0]}`);
