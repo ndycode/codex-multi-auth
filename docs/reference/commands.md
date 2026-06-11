@@ -80,7 +80,7 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | `codex-multi-auth models` | Inspect local model/account capability views |
 | `codex-multi-auth monitor` | Aggregate runtime, usage, policy, quota, model, and project state |
 | `codex-multi-auth why-selected [--now|--last]` | Explain which account the selector picks now or via the last persisted runtime snapshot |
-| `codex-multi-auth rotation enable\|disable\|status\|bind-app\|unbind-app` | Manage the default-on runtime Responses proxy for live Codex account rotation |
+| `codex-multi-auth rotation enable\|disable\|status\|bind-app\|unbind-app\|adopt-history` | Manage the default-on runtime Responses proxy for live Codex account rotation; `adopt-history` re-tags existing session history under the rotation provider (reversible) |
 
 ---
 
@@ -90,11 +90,11 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | --- | --- | --- |
 | `--device-auth` | login | Use the OpenAI Codex device-code flow for remote/headless login (mutually exclusive with `--manual` / `--no-browser`) |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow (mutually exclusive with `--device-auth`) |
-| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle | Print machine-readable output |
+| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle, rotation adopt-history | Print machine-readable output |
 | `--csv` | usage | Print or write CSV bucket output |
 | `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |
 | `--live` | best, forecast, report, fix | Use live probe before decisions/output |
-| `--dry-run` | verify-flagged, verify (with `--flagged`/`--all`), fix, doctor | Preview without writing storage |
+| `--dry-run` | verify-flagged, verify (with `--flagged`/`--all`), fix, doctor, rotation adopt-history | Preview without writing storage |
 | `--model <model>` | best, forecast, report, fix | Specify model for live probe paths |
 | `--out <path>` | report, usage | Write report output to file |
 | `--since <time>` | usage | Filter local usage rows by timestamp, ISO date, or relative duration |
@@ -306,6 +306,7 @@ codex-multi-auth rotation disable
 codex-multi-auth rotation status
 codex-multi-auth rotation bind-app
 codex-multi-auth rotation unbind-app
+codex-multi-auth rotation adopt-history [--dry-run] [--reverse] [--yes] [--json]
 ```
 
 Behavior:
@@ -315,6 +316,7 @@ Behavior:
 - `status` prints the effective setting, environment override state, automatic Codex app helper state, persistent Codex app bind state, account count, current account, disabled accounts, cooldowns, and rate-limit waits.
 - `bind-app` repairs or installs the persistent packaged-app bind without changing the stored rotation setting.
 - `unbind-app` removes the persistent packaged-app bind and restores the backed-up Codex config.
+- `adopt-history` is an opt-in, reversible rewrite that re-tags existing local session history (rollout files plus the Codex Desktop thread index when present) from the native `openai` provider to `codex-multi-auth-runtime-proxy`, so pre-bind conversations stay visible in the CLI resume picker and Codex Desktop while the bind is active. `--reverse` performs the exact inverse rewrite. The command prints the mechanism and caveats, requires interactive confirmation (or `--yes`), supports `--dry-run`, and records a manifest of changed files under the codex-multi-auth data directory.
 - `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` disables the proxy for the current process without changing settings.
 
 When enabled, the wrapper creates a temporary shadow `CODEX_HOME/config.toml` with a custom provider named `codex-multi-auth-runtime-proxy`, starts a `127.0.0.1` proxy on a random port, and forwards official Codex Responses traffic through that provider. This applies to CLI request commands plus `codex app-server` and `codex app` when they are launched through the wrapper. Existing behavior is unchanged while the setting and env override are off.
@@ -323,7 +325,7 @@ If every managed account is temporarily unavailable, the proxy returns `codex_ru
 
 Packaged desktop app support uses a reversible bind instead of patching app files. It backs up the real Codex `config.toml`, writes the same custom provider to the real Codex home, starts a localhost-only router, and installs a user login startup entry: a Startup `.cmd` on Windows or a LaunchAgent on macOS. The provider uses a local app-bind client token and `requires_openai_auth=false`, which keeps the selected multi-auth account out of the runtime composer while preserving router last-account telemetry for codex-multi-auth status and quota views. Package install/update runs the same bind by default when runtime rotation is enabled and a Codex desktop app is detected; set `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0` to skip that self-heal or `CODEX_MULTI_AUTH_APP_BIND_INSTALL=1` to force it. Global install/update also routes supported user-level app launchers by default; set `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0` to skip launcher routing. Installed wrappers may perform a best-effort daily npm version check during normal forwarded Codex startup; if a newer release exists, they only print `npm install -g codex-multi-auth@latest` and never mutate the package install.
 
-Because packaged app bind changes the real Codex `model_provider` to `codex-multi-auth-runtime-proxy`, current Codex Desktop builds can hide older local threads that were indexed under the original provider. This is a visibility/provider-filtering limitation, not expected data loss: rollout files, `session_index.jsonl`, and Codex SQLite state normally remain under `~/.codex`. If you need to browse old Desktop history, run `codex-multi-auth rotation unbind-app` or `codex-multi-auth rotation disable`, reopen Codex, and re-bind when you want app-level rotation again.
+Because packaged app bind changes the real Codex `model_provider` to `codex-multi-auth-runtime-proxy`, current Codex Desktop builds can hide older local threads that were indexed under the original provider. This is a visibility/provider-filtering limitation, not expected data loss: rollout files, `session_index.jsonl`, and Codex SQLite state normally remain under `~/.codex`. If you need to browse old Desktop history, run `codex-multi-auth rotation unbind-app` or `codex-multi-auth rotation disable`, reopen Codex, and re-bind when you want app-level rotation again. Alternatively, run the opt-in `codex-multi-auth rotation adopt-history` to re-tag existing history under the rotation provider so it stays visible without unbinding; run it again with `--reverse` before uninstalling.
 
 Model speed/reasoning controls also remain Codex-owned. For wrapper-launched CLI sessions, set `model_reasoning_effort` in `~/.codex/config.toml` or pass `-c model_reasoning_effort=<level>`; the app bind does not add a separate Desktop speed selector.
 

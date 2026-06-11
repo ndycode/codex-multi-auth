@@ -25,6 +25,7 @@ User-facing capability map for Codex CLI multi-account OAuth, ChatGPT account sw
 | Live quota probe mode | Uses live headers for stronger decisions | `codex-multi-auth forecast --live` |
 | JSON report output | Lets you inspect account state in automation or support workflows | `codex-multi-auth report --live --json` |
 | Runtime rotation proxy (default-on) | Lets forwarded official Codex CLI/app sessions rotate managed accounts between Responses requests without restarting the session. Disable per install when needed. | `codex-multi-auth rotation status` |
+| History provider adoption (opt-in) | Re-tags existing local session history under the rotation provider so pre-bind conversations stay visible in the CLI picker and Codex Desktop while the app bind is active; fully reversible. | `codex-multi-auth rotation adopt-history --dry-run` |
 
 ---
 
