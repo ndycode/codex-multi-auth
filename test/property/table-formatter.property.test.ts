@@ -79,16 +79,18 @@ describe("table formatter property invariants", () => {
 			fc.property(
 				arbCellText,
 				fc.integer({ min: 1, max: 6 }),
-				(value, width) => {
+				fc.constantFrom<"left" | "right">("left", "right"),
+				(value, width, align) => {
 					fc.pre(displayWidth(value) > width);
 					const row = buildTableRow([value], {
-						columns: [{ header: "h", width, align: "left" }],
+						columns: [{ header: "h", width, align }],
 					});
 					expect(displayWidth(row)).toBe(width);
-					// Left-aligned: visible content first, then padding. The visible
-					// part must be a prefix of the original value followed by the
-					// ellipsis — truncation never reorders or invents characters.
-					const visible = row.replace(/ +$/, "");
+					// Truncation happens before alignment padding, so stripping the
+					// padding side must reveal a prefix of the original value
+					// followed by the ellipsis — for either alignment.
+					const visible =
+						align === "left" ? row.replace(/ +$/, "") : row.replace(/^ +/, "");
 					expect(visible.endsWith("…")).toBe(true);
 					expect(value.startsWith(visible.slice(0, -1))).toBe(true);
 					expect(displayWidth(visible)).toBeLessThanOrEqual(width);
