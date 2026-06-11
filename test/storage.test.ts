@@ -53,6 +53,11 @@ describe("storage", () => {
 		if (_origCODEX_MULTI_AUTH_DIR !== undefined)
 			process.env.CODEX_MULTI_AUTH_DIR = _origCODEX_MULTI_AUTH_DIR;
 		else delete process.env.CODEX_MULTI_AUTH_DIR;
+		// A test that fails before its inline mockRestore() leaks its fs spy into
+		// every later test (a later vi.spyOn returns the SAME leaked spy, so a
+		// passthrough binding recurses into the new test's own mock). Restore all
+		// spies unconditionally so one failure cannot cascade.
+		vi.restoreAllMocks();
 	});
 
 	describe("account storage directory hardening", () => {
