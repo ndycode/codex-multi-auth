@@ -7,6 +7,26 @@ This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
+## [2.3.0-beta.3] - 2026-06-11
+
+Stream backpressure fix, deduplication fixpoint, retry-loop consolidation, typed errors, 20 new test suites, dead code pruned.
+See [docs/releases/v2.3.0-beta.3.md](docs/releases/v2.3.0-beta.3.md) for full details.
+
+### Fixed
+
+- Stream forwarding stalling for slow clients (backpressure not respected)
+- Multi-tier account deduplication requiring more than one pass
+- Storage spy cascades in test suite from leaked `fs` mocks
+
+### Improved
+
+- `CodexValidationError` on rotation-proxy startup guards (#586)
+- `StorageError` on unreadable config save aborts (#588)
+- Last two hand-rolled retry loops migrated to shared `withRetry`
+- 20 new direct test suites; property-based dedup coverage
+
+---
+
 ## [2.3.0-beta.2] - 2026-06-11
 
 Repository audit (34 PRs), 4 correctness bug fixes, security hardening, and major

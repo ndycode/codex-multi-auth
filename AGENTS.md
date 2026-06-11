@@ -4,7 +4,7 @@ Generated: 2026-04-25
 Commit: a87e005
 Validated: 2026-06-10 against commit 98d9819 (repo audit; claims re-checked against the tree, content not regenerated)
 Branch: main
-Package version: 2.3.0-beta.2
+Package version: 2.3.0-beta.3
 
 ## OVERVIEW
 
@@ -128,3 +128,4 @@ npm run vendor:verify    # vendored dependency provenance check
 - App bind state/logs: `~/.codex/multi-auth/app-bind/`.
 - Prompt templates sync from Codex CLI GitHub releases with ETag caching.
 - Historical audit evidence under `docs/audits/evidence/` is snapshot evidence, not current architecture guidance.
+
