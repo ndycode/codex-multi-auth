@@ -56,7 +56,11 @@ describe("account policy key/tag property invariants", () => {
 	it("policy keys are stable sha256 handles: identity-insensitive to email case, never leak the identity", () => {
 		fc.assert(
 			fc.property(
-				fc.option(fc.constantFrom("acc-1", "acc-2", "ACC-1 "), { nil: undefined }),
+				// "   " exercises the accountId?.trim() || fall-through: a defined
+				// but whitespace-only accountId must defer to the email identity.
+				fc.option(fc.constantFrom("acc-1", "acc-2", "ACC-1 ", "   "), {
+					nil: undefined,
+				}),
 				fc.option(fc.constantFrom("user@x.test", "other@x.test"), {
 					nil: undefined,
 				}),
