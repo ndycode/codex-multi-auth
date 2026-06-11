@@ -32,6 +32,10 @@ const arbResults: fc.Arbitrary<ForecastAccountResult[]> = fc
 	.map((rows) =>
 		rows.map((row, index) => ({
 			...row,
+			// evaluateForecastAccount only ever emits exhausted accounts as
+			// "delayed" (display/sorting keep them a timed wait); derive the
+			// pairing so the generated space stays inside the reachable domain.
+			availability: row.exhausted ? ("delayed" as const) : row.availability,
 			index,
 			label: `acct-${index}`,
 			reasons: [],
@@ -124,11 +128,28 @@ describe("forecast recommendation property invariants", () => {
 
 	it("the recommendation is invariant under input order", () => {
 		fc.assert(
-			fc.property(arbResults, (results) => {
-				const forward = recommendForecastAccount(results);
-				const reversed = recommendForecastAccount([...results].reverse());
-				expect(reversed.recommendedIndex).toBe(forward.recommendedIndex);
-			}),
+			fc.property(
+				arbResults.chain((results) =>
+					fc.record({
+						results: fc.constant(results),
+						shuffled: fc.shuffledSubarray(results, {
+							minLength: results.length,
+							maxLength: results.length,
+						}),
+					}),
+				),
+				({ results, shuffled }) => {
+					// Unique indexes make the comparator's index tie-break total, so
+					// ANY permutation must produce the same pick.
+					const forward = recommendForecastAccount(results);
+					expect(recommendForecastAccount(shuffled).recommendedIndex).toBe(
+						forward.recommendedIndex,
+					);
+					expect(
+						recommendForecastAccount([...results].reverse()).recommendedIndex,
+					).toBe(forward.recommendedIndex);
+				},
+			),
 		);
 	});
 
