@@ -11,6 +11,7 @@ import { logDebug } from "../logger.js";
 import { getCodexCacheDir } from "../runtime-paths.js";
 import { sleep } from "../utils.js";
 import { fetchWithTimeout, readBodyTextGuarded } from "./fetch-utils.js";
+import { tempFileNonce } from "../temp-path.js";
 
 const DEFAULT_HOST_CODEX_PROMPT_URLS = [
 	// Canonical upstream is sst/opencode. The previous list pointed at a rebrand
@@ -150,7 +151,7 @@ async function removeFileQuietly(path: string): Promise<void> {
 async function writeCacheFilesAtomically(content: string, meta: CacheMeta): Promise<void> {
 	await mkdir(CACHE_DIR, { recursive: true });
 
-	const nonce = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+	const nonce = tempFileNonce();
 	const contentTmp = `${CACHE_FILE}.${nonce}.tmp`;
 	const metaTmp = `${CACHE_META_FILE}.${nonce}.tmp`;
 	const metaJson = JSON.stringify(meta, null, 2);

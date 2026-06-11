@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
 import { sleep } from "./utils.js";
+import { tempPathFor } from "./temp-path.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -388,7 +389,7 @@ async function writeSettingsRecordAsync(
 	await fs.mkdir(getCodexMultiAuthDir(), { recursive: true });
 	const payload = normalizeForWrite(record);
 	const data = `${JSON.stringify(payload, null, 2)}\n`;
-	const tempPath = `${UNIFIED_SETTINGS_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+	const tempPath = tempPathFor(UNIFIED_SETTINGS_PATH);
 	await trySnapshotUnifiedSettingsBackupAsync({
 		skipBecauseBackupRead: options?.skipBackupSnapshot,
 	});

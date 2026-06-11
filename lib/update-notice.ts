@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLogger } from "./logger.js";
 import { getCodexCacheDir } from "./runtime-paths.js";
+import { tempPathFor } from "./temp-path.js";
 
 const log = createLogger("update-notice");
 
@@ -72,7 +73,7 @@ async function writeCacheContents(serialized: string): Promise<void> {
 		if (!existsSync(CACHE_DIR)) {
 			mkdirSync(CACHE_DIR, { recursive: true });
 		}
-		tempPath = `${CACHE_FILE}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+		tempPath = tempPathFor(CACHE_FILE);
 		let lastError: Error | null = null;
 		for (let attempt = 0; attempt < 4; attempt++) {
 			try {

@@ -8,6 +8,7 @@ import {
 	resolveProjectStorageIdentityRoot,
 } from "./storage/paths.js";
 import { isRecord, sleep } from "./utils.js";
+import { tempPathFor } from "./temp-path.js";
 
 export interface RoutingProfile {
 	projectKey: string;
@@ -159,7 +160,7 @@ export async function saveRoutingProfileStore(
 	const payload = normalizeStore(store);
 	const task = async (): Promise<void> => {
 		await fs.mkdir(getCodexMultiAuthDir(), { recursive: true, mode: 0o700 });
-		const tempPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+		const tempPath = tempPathFor(path);
 		let moved = false;
 		try {
 			await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {

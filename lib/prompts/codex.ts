@@ -8,6 +8,7 @@ import { getCodexCacheDir } from "../runtime-paths.js";
 import { DEFAULT_MODEL, getModelProfile, type ModelFamily } from "../request/helpers/model-map.js";
 import { fetchWithTimeout, readBodyTextGuarded, withBodyTimeout } from "./fetch-utils.js";
 import { withFileOperationRetry } from "../fs-retry.js";
+import { tempFileNonce } from "../temp-path.js";
 
 /** SHA-256 of cache content for integrity verification (prompts-03). */
 function sha256(content: string): string {
@@ -37,7 +38,7 @@ async function writeCacheAtomically(
 	meta: CacheMetadata,
 ): Promise<void> {
 	await withFileOperationRetry(() => fs.mkdir(CACHE_DIR, { recursive: true }));
-	const nonce = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+	const nonce = tempFileNonce();
 	const contentTmp = `${cacheFile}.${nonce}.tmp`;
 	const metaTmp = `${cacheMetaFile}.${nonce}.tmp`;
 	try {

@@ -39,6 +39,7 @@ import type { RuntimeObservabilitySnapshot } from "../../runtime/runtime-observa
 import type { QuotaCacheData } from "../../quota-cache.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 import { sleep } from "../../utils.js";
+import { tempPathFor } from "../../temp-path.js";
 
 interface ReportCliOptions {
 	live: boolean;
@@ -265,7 +266,7 @@ function formatModelInspection(model: ModelInspection): string {
 
 async function defaultWriteFile(path: string, contents: string): Promise<void> {
 	await fs.mkdir(dirname(path), { recursive: true });
-	const tempPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+	const tempPath = tempPathFor(path);
 	let moved = false;
 	try {
 		await fs.writeFile(tempPath, contents, "utf-8");

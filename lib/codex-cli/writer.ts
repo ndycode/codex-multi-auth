@@ -12,6 +12,7 @@ import {
 	incrementCodexCliMetric,
 	makeAccountFingerprint,
 } from "./observability.js";
+import { tempPathFor } from "../temp-path.js";
 
 const log = createLogger("codex-cli-writer");
 let lastCodexCliSelectionWriteAt = 0;
@@ -209,7 +210,7 @@ function toIsoTime(ms: number | undefined): string {
 }
 
 async function atomicWriteText(path: string, content: string): Promise<void> {
-	const tempPath = `${path}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+	const tempPath = tempPathFor(path);
 	await fs.mkdir(dirname(path), { recursive: true });
 	try {
 		await fs.writeFile(tempPath, content, {
