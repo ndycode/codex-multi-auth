@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { request } from "node:http";
 import { AccountManager } from "../lib/accounts.js";
+import { CodexValidationError } from "../lib/errors.js";
 import { HTTP_STATUS, OPENAI_HEADERS } from "../lib/constants.js";
 import {
 	startRuntimeRotationProxy,
@@ -331,6 +332,45 @@ describe("runtime rotation proxy", () => {
 				upstreamBaseUrl: "https://example.test/backend-api",
 			} as Parameters<typeof startRuntimeRotationProxy>[0]),
 		).rejects.toThrow("clientApiKey");
+	});
+
+	// §4.3 error-contract adoption: the startup guards throw typed validation
+	// errors so callers can branch on the class/field instead of message text.
+	it("throws CodexValidationError with the offending field from both startup guards", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now));
+		const { fetchImpl } = createRecordingFetch(() => textEventStream());
+
+		const missingKey = await startRuntimeRotationProxy({
+			accountManager,
+			fetchImpl,
+			upstreamBaseUrl: "https://example.test/backend-api",
+		} as Parameters<typeof startRuntimeRotationProxy>[0]).then(
+			() => null,
+			(error: unknown) => error,
+		);
+		expect(missingKey).toBeInstanceOf(CodexValidationError);
+		expect((missingKey as CodexValidationError).field).toBe("clientApiKey");
+		expect((missingKey as CodexValidationError).expected).toBe(
+			"a non-empty string",
+		);
+
+		const badHost = await startRuntimeRotationProxy({
+			accountManager,
+			fetchImpl,
+			clientApiKey: DEFAULT_CLIENT_API_KEY,
+			host: "0.0.0.0",
+			upstreamBaseUrl: "https://example.test/backend-api",
+		}).then(
+			() => null,
+			(error: unknown) => error,
+		);
+		expect(badHost).toBeInstanceOf(CodexValidationError);
+		expect((badHost as CodexValidationError).field).toBe("host");
+		expect((badHost as CodexValidationError).expected).toBe("a loopback host");
+		expect((badHost as CodexValidationError).context).toEqual({
+			host: "0.0.0.0",
+		});
 	});
 
 	// Regression (runtime-proxy-01): the proxy forwards managed OAuth tokens and must

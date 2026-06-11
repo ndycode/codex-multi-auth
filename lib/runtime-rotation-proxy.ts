@@ -46,6 +46,7 @@ import {
 } from "./policy/runtime-policy.js";
 import { isWorkspaceDisabledError } from "./request/fetch-helpers.js";
 import { createLogger, maskString, runWithCorrelationId } from "./logger.js";
+import { CodexValidationError } from "./errors.js";
 import {
 	buildPinnedUnavailableErrorBody,
 	buildTokenInvalidationBody,
@@ -620,9 +621,10 @@ export async function startRuntimeRotationProxy(
 	// binding a non-loopback host would expose every managed account to the
 	// network, so it is refused unconditionally.
 	if (!isLoopbackHost(host)) {
-		throw new Error(
+		throw new CodexValidationError(
 			`Runtime rotation proxy refuses to bind non-loopback host "${host}". ` +
 				"It forwards managed OAuth tokens and is loopback-only.",
+			{ field: "host", expected: "a loopback host", context: { host } },
 		);
 	}
 	// Normalize the validated host into its two representations exactly once so the
@@ -639,7 +641,10 @@ export async function startRuntimeRotationProxy(
 			? options.clientApiKey.trim()
 			: null;
 	if (!clientApiKey) {
-		throw new Error("Runtime rotation proxy requires a clientApiKey.");
+		throw new CodexValidationError(
+			"Runtime rotation proxy requires a clientApiKey.",
+			{ field: "clientApiKey", expected: "a non-empty string" },
+		);
 	}
 	const now = options.now ?? Date.now;
 	const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);

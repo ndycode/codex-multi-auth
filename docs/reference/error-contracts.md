@@ -106,6 +106,16 @@ Invalid named-parameter calls (missing or wrongly typed required fields, or unkn
 
 ---
 
+## Typed Error Classes
+
+`lib/errors.ts` exports a `CodexError` hierarchy (`CodexApiError`, `CodexAuthError`, `CodexNetworkError`, `CodexValidationError`, `CodexRateLimitError`, `StorageError`, `CodexUnavailableError`). Every subclass carries a stable string `code` (the `ErrorCode` constants) plus class-specific fields, so callers can branch on `instanceof` or `code` instead of message text.
+
+Startup-validation guarantees backed by these types:
+
+- `startRuntimeRotationProxy` throws `CodexValidationError` with `field: "clientApiKey"` when no client API key is supplied, and `CodexValidationError` with `field: "host"` (offending host in `context.host`) when asked to bind a non-loopback host. Messages are unchanged from earlier releases; only the class tightened.
+
+---
+
 ## Related
 
 - [public-api.md](public-api.md)
