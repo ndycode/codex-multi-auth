@@ -89,7 +89,7 @@ describe("auth rate limit property invariants", () => {
 						} else if (event.kind === "record") {
 							recordAuthAttempt(spell(event.account));
 							model.get(ids[event.account] ?? "")?.push(now);
-						} else {
+						} else if (event.kind === "reset") {
 							resetAuthRateLimit(spell(event.account));
 							model.set(ids[event.account] ?? "", []);
 						}
@@ -126,7 +126,7 @@ describe("auth rate limit property invariants", () => {
 							vi.setSystemTime(now);
 						} else if (event.kind === "record") {
 							recordAuthAttempt(id);
-						} else {
+						} else if (event.kind === "reset") {
 							resetAuthRateLimit(id);
 						}
 
@@ -161,7 +161,12 @@ describe("auth rate limit property invariants", () => {
 				// Burst beyond maxAttempts to prove over-recording cannot wedge the
 				// bucket shut past one full window of silence.
 				fc.integer({ min: MAX_ATTEMPTS, max: MAX_ATTEMPTS * 4 }),
-				fc.array(fc.integer({ min: 0, max: 50 }), { minLength: 11, maxLength: 11 }),
+				// One gap per attempt after the first, sized for the largest burst
+				// so every inter-attempt spacing stays generator-driven.
+				fc.array(fc.integer({ min: 0, max: 50 }), {
+					minLength: MAX_ATTEMPTS * 4 - 1,
+					maxLength: MAX_ATTEMPTS * 4 - 1,
+				}),
 				(burst, gaps) => {
 					vi.useFakeTimers();
 					try {
