@@ -139,12 +139,20 @@ describe("CircuitBreaker property invariants", () => {
 						expect(breaker.getTimeUntilAvailable(now)).toBe(
 							CONFIG.resetTimeoutMs - earlyMs,
 						);
+						// getTimeUntilReset() has an independent implementation reading
+						// Date.now() internally; under fake timers it must agree while
+						// the circuit is open.
+						expect(breaker.getTimeUntilReset()).toBe(
+							CONFIG.resetTimeoutMs - earlyMs,
+						);
 
 						now = openedAt + CONFIG.resetTimeoutMs;
 						vi.setSystemTime(now);
 						expect(breaker.isAvailable(now)).toBe(true);
 						expect(attemptOutcome(breaker)).toBe("allowed");
 						expect(breaker.getState()).toBe("half-open");
+						// ...and report zero for any non-open state.
+						expect(breaker.getTimeUntilReset()).toBe(0);
 					} finally {
 						vi.useRealTimers();
 					}
