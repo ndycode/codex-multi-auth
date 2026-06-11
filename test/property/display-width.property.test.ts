@@ -131,6 +131,13 @@ describe("display-width property invariants", () => {
 					const wide = truncateToWidth(text, smaller + delta);
 					expect(wide.text.startsWith(narrow.text)).toBe(true);
 					expect(wide.width).toBeGreaterThanOrEqual(narrow.width);
+					// Self-enforcing cluster granularity: one extra budget column can
+					// admit at most 2 more columns of content. This is exactly the
+					// "no cluster wider than 2" assumption the maximality bound in
+					// the truncation property relies on — if a wider cluster type is
+					// ever introduced, this step assertion fails first.
+					const step = truncateToWidth(text, smaller + 1);
+					expect(step.width - narrow.width).toBeLessThanOrEqual(2);
 				},
 			),
 		);
