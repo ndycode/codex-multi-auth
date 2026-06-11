@@ -90,6 +90,11 @@ describe("account policy key/tag property invariants", () => {
 		fc.assert(
 			fc.property(fc.string({ maxLength: 100 }), (raw) => {
 				const tag = normalizeAccountPolicyTag(raw);
+				// Forward direction of the iff: whitespace-only input must
+				// normalize away (the branch below pins the reverse).
+				if (raw.trim() === "") {
+					expect(tag).toBeNull();
+				}
 				if (tag === null) {
 					// Disallowed runs are replaced WITH a dash rather than dropped,
 					// so the only way to normalize away entirely is an input that
