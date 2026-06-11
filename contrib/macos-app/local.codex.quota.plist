@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Optional login autostart for CodexQuota.app.
+  Install:
+    cp contrib/macos-app/local.codex.quota.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/local.codex.quota.plist
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/local.codex.quota.plist
+    rm ~/Library/LaunchAgents/local.codex.quota.plist
+  Replace HOME_PLACEHOLDER below if your home is not /Users/<you>; the build
+  README shows a one-liner that fills it in automatically.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>local.codex.quota</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>HOME_PLACEHOLDER/Applications/CodexQuota.app/Contents/MacOS/CodexQuota</string>
+	</array>
+	<!--
+	  LaunchAgents do not source your shell profile, so a CODEX_MULTI_AUTH_DIR set
+	  in .zshrc/.bash_profile is invisible here. If you override the data directory,
+	  uncomment and set it explicitly so autostart uses the same path:
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>CODEX_MULTI_AUTH_DIR</key><string>/path/to/your/multi-auth</string>
+	</dict>
+	-->
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><false/>
+	<key>ProcessType</key><string>Interactive</string>
+	<key>LimitLoadToSessionType</key><string>Aqua</string>
+</dict>
+</plist>
