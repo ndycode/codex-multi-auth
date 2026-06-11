@@ -8,13 +8,21 @@
 # <swiftbar.runInBash>true</swiftbar.runInBash>
 #
 # Reads the local codex-multi-auth quota cache (zero quota cost). The cache is
-# refreshed passively by real Codex traffic through the rotation proxy; the
-# "Live refresh" menu item triggers one explicit probe per account.
+# written by quota-bearing commands (`check`, `forecast --live`, the interactive
+# dashboard); the "Live refresh" menu item runs one such check, sending a
+# minimal probe per account.
+
+if [ "$(uname -s)" != "Darwin" ]; then
+	echo "⚡"
+	echo "---"
+	echo "Codex quota plugin requires macOS (SwiftBar) | color=gray"
+	exit 0
+fi
 
 if [ "$1" = "livecheck" ]; then
 	export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.npm-global/bin:$PATH"
-	codex-multi-auth check >/dev/null 2>&1
-	exit 0
+	codex-multi-auth check
+	exit $?
 fi
 
 SELF="$0"
@@ -60,6 +68,12 @@ def fmt_reset(ms):
     if h > 0:
         return f"{h}h {m}m"
     return f"{m}m"
+
+def clamp_pct(value):
+    try:
+        return max(0, min(100, int(value)))
+    except (TypeError, ValueError):
+        return 0
 
 def bar(remaining, slots=10):
     filled = round(remaining / 100 * slots)
@@ -111,7 +125,7 @@ for aid in order:
         newest = max(newest, q.get("updatedAt", 0))
         for key, label in (("primary", "5h"), ("secondary", "7d")):
             win = q.get(key, {})
-            rem = 100 - win.get("usedPercent", 0)
+            rem = clamp_pct(100 - clamp_pct(win.get("usedPercent", 0)))
             reset = fmt_reset(win["resetAtMs"]) if win.get("resetAtMs") else "-"
             rows.append((pad(f"{label} {bar(rem)}  {rem:>3}%  → {reset}", W), quota_color(rem)))
             if key == "primary":

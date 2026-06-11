@@ -3,14 +3,14 @@
 A menu bar widget for [SwiftBar](https://github.com/swiftbar/SwiftBar) that shows
 per-account Codex quota from the local codex-multi-auth cache.
 
-```
+```text
 ⚡88·[90]          ← menu bar title: 5h-window remaining % per account,
                      brackets mark the account currently serving requests
 ```
 
 Opening the menu renders one card per managed account:
 
-```
+```text
 ╭──────────────────────────────────╮
 │ ● account-a               ACTIVE │
 │ 5h █████████░   88%  → 4h 42m    │
