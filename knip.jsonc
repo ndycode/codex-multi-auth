@@ -1,0 +1,51 @@
+{
+	"$schema": "https://unpkg.com/knip@6.16.1/schema.json",
+	"entry": [
+		"index.ts",
+		"lib/index.ts",
+		"lib/auth/index.ts",
+		"lib/request/index.ts",
+		"lib/codex-cli/index.ts",
+		"lib/ui/index.ts",
+		"scripts/*.{js,mjs}",
+		"test/**/*.test.ts",
+		"test/helpers/**/*.ts"
+	],
+	"project": [
+		"lib/**/*.ts",
+		"scripts/**/*.{js,mjs}",
+		"index.ts",
+		"test/**/*.ts"
+	],
+	"ignore": [
+		"bench/**",
+		"vendor/**",
+		"dist/**",
+		"docs/**"
+	],
+	"ignoreBinaries": [
+		"powershell.exe",
+		"pbcopy",
+		"where"
+	],
+	"ignoreDependencies": [
+		// Editor-only LSP tooling; never imported.
+		"typescript-language-server",
+		// The official Codex CLI this package wraps: resolved from the HOST
+		// install at runtime (scripts/codex-bin-resolver.js), deliberately not
+		// a package.json dependency.
+		"@openai/codex"
+	],
+	// Export/type-level findings are warn-only on purpose: the blocking signal
+	// is unused FILES and DEPENDENCIES. The export backlog was cleared
+	// incrementally (PRs #556/#557, down to two documented keepers); escalate a
+	// rule to "error" once its warning count is intentionally pinned at zero.
+	"rules": {
+		"exports": "warn",
+		"types": "warn",
+		"nsExports": "warn",
+		"nsTypes": "warn",
+		"duplicates": "warn",
+		"enumMembers": "warn"
+	}
+}
