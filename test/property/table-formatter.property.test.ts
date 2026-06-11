@@ -20,7 +20,10 @@ const arbCellText = fc
 const arbColumn: fc.Arbitrary<TableColumn> = fc.record({
 	header: arbCellText,
 	width: fc.integer({ min: 0, max: 10 }),
-	align: fc.constantFrom<"left" | "right">("left", "right"),
+	// undefined exercises formatCell's default-left branch.
+	align: fc.option(fc.constantFrom<"left" | "right">("left", "right"), {
+		nil: undefined,
+	}),
 });
 
 const arbOptions: fc.Arbitrary<TableOptions> = fc
@@ -61,13 +64,16 @@ describe("table formatter property invariants", () => {
 			fc.property(
 				arbCellText,
 				fc.integer({ min: 1, max: 14 }),
-				fc.constantFrom<"left" | "right">("left", "right"),
+				fc.option(fc.constantFrom<"left" | "right">("left", "right"), {
+					nil: undefined,
+				}),
 				(value, width, align) => {
 					fc.pre(displayWidth(value) <= width);
 					const row = buildTableRow([value], {
 						columns: [{ header: "h", width, align }],
 					});
 					const pad = " ".repeat(width - displayWidth(value));
+					// undefined align defaults to left.
 					expect(row).toBe(align === "right" ? pad + value : value + pad);
 				},
 			),
@@ -86,11 +92,18 @@ describe("table formatter property invariants", () => {
 						columns: [{ header: "h", width, align }],
 					});
 					expect(displayWidth(row)).toBe(width);
-					// Truncation happens before alignment padding, so stripping the
-					// padding side must reveal a prefix of the original value
-					// followed by the ellipsis — for either alignment.
-					const visible =
-						align === "left" ? row.replace(/ +$/, "") : row.replace(/^ +/, "");
+					// The ellipsis terminates the visible content for either
+					// alignment (content can never follow it, so trimming trailing
+					// padding cannot eat content).
+					expect(row.trimEnd().endsWith("…")).toBe(true);
+					// Prefix fidelity is validated on the LEFT-aligned rendering,
+					// where the cell starts at column 0: stripping leading spaces on
+					// a right-aligned row could eat spaces that belong to the
+					// truncated content itself, not just alignment padding.
+					const leftRow = buildTableRow([value], {
+						columns: [{ header: "h", width, align: "left" }],
+					});
+					const visible = leftRow.replace(/ +$/, "");
 					expect(visible.endsWith("…")).toBe(true);
 					expect(value.startsWith(visible.slice(0, -1))).toBe(true);
 					expect(displayWidth(visible)).toBeLessThanOrEqual(width);
