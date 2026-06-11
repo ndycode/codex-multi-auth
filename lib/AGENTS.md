@@ -97,6 +97,12 @@ lib/
 - Settings writes use queued retry for `EBUSY`/`EPERM`/`EAGAIN`.
 - Email dedup uses `normalizeEmailKey()`: trim + lowercase.
 - Worktree storage uses `resolveProjectStorageIdentityRoot`; never derive project pools from raw worktree paths.
+- State lives in a class when multiple independent instances or dependency injection are needed
+  (`AccountManager` per pool, `CircuitBreaker` per account, `SessionAffinityStore` per proxy) and for the
+  `CodexError` hierarchy. Module-level state + plain functions are reserved for genuinely process-global
+  concerns (auth rate-limit trackers, the routing mutex, UI runtime options, the storage-meta cache) and
+  must ship a test reset helper (`reset*ForTests` / `resetVolatileRuntimeState`-style) so suites can
+  isolate it. Do not add module-level state for anything a caller might want two of.
 
 ## ANTI-PATTERNS
 
