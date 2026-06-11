@@ -70,6 +70,11 @@ sed "s|HOME_PLACEHOLDER|$HOME|" contrib/macos-app/local.codex.quota.plist \
 launchctl load ~/Library/LaunchAgents/local.codex.quota.plist
 ```
 
+> If you override `CODEX_MULTI_AUTH_DIR` in your shell profile, note that
+> LaunchAgents don't source shell profiles. Uncomment the
+> `EnvironmentVariables` block in the plist and set the path explicitly,
+> otherwise autostart falls back to `~/.codex/multi-auth`.
+
 ## Notes
 
 - Data source is the same local files as the SwiftBar plugin: `quota-cache.json`,

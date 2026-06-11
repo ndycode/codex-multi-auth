@@ -18,6 +18,15 @@
 	<array>
 		<string>HOME_PLACEHOLDER/Applications/CodexQuota.app/Contents/MacOS/CodexQuota</string>
 	</array>
+	<!--
+	  LaunchAgents do not source your shell profile, so a CODEX_MULTI_AUTH_DIR set
+	  in .zshrc/.bash_profile is invisible here. If you override the data directory,
+	  uncomment and set it explicitly so autostart uses the same path:
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>CODEX_MULTI_AUTH_DIR</key><string>/path/to/your/multi-auth</string>
+	</dict>
+	-->
 	<key>RunAtLoad</key><true/>
 	<key>KeepAlive</key><false/>
 	<key>ProcessType</key><string>Interactive</string>

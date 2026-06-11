@@ -102,10 +102,21 @@ final class QuotaModel: ObservableObject {
         }
     }
 
-    /// Probe only if the cache looks stale; otherwise just repaint.
+    /// Modification time of the quota cache file. Used as the staleness signal
+    /// because it always exists and is read synchronously — unlike `lastUpdated`,
+    /// which is derived from an optional `updatedAt` field and committed
+    /// asynchronously, so it can lag a render or never advance from nil.
+    private func cacheFileMTime() -> Date? {
+        let path = dataDir + "/quota-cache.json"
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let date = attrs[.modificationDate] as? Date else { return nil }
+        return date
+    }
+
+    /// Probe only if the cache file is older than `maxAge`; otherwise just repaint.
     func refreshIfStale(maxAge: TimeInterval = 60) {
         loadCache()
-        if let last = lastUpdated, Date().timeIntervalSince(last) < maxAge { return }
+        if let mtime = cacheFileMTime(), Date().timeIntervalSince(mtime) < maxAge { return }
         refresh()
     }
 
