@@ -83,6 +83,11 @@ describe("model-map resolution property invariants", () => {
 					expect(resolveNormalizedModel(randomizeCase(modelId, flips))).toBe(
 						plain,
 					);
+					// Combined pressure: prefix AND casing mutated together, so the
+					// strip-then-fold pipeline is exercised as one path.
+					expect(
+						resolveNormalizedModel(randomizeCase(`${prefix}${modelId}`, flips)),
+					).toBe(plain);
 				},
 			),
 		);
