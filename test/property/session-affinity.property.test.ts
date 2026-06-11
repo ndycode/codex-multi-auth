@@ -81,11 +81,14 @@ describe("SessionAffinityStore property invariants", () => {
 							now += event.ms;
 						} else if (event.kind === "remember") {
 							store.remember(spell(event.key), event.accountIndex, now);
-							const previous = model.get(KEYS[event.key] ?? "");
+							// remember() preserves the continuation id only from a LIVE
+							// entry: the assertion block below reads every key after
+							// every event, and reads lazily reap expired entries, so an
+							// expired entry's id is always gone by the next remember.
+							const previous = liveModel(KEYS[event.key] ?? "");
 							model.set(KEYS[event.key] ?? "", {
 								accountIndex: event.accountIndex,
 								expiresAt: now + TTL_MS,
-								// remember() preserves any prior continuation id.
 								responseId: previous?.responseId ?? null,
 							});
 						} else if (event.kind === "updateResponse") {
@@ -222,22 +225,29 @@ describe("SessionAffinityStore property invariants", () => {
 
 	it("prune removes exactly the expired entries and reads agree before and after", () => {
 		fc.assert(
-			fc.property(arbSequence, (events) => {
+			fc.property(
+				arbSequence,
+				fc.array(arbDecoration, { minLength: 3, maxLength: 3 }),
+				(events, decorations) => {
 				const store = new SessionAffinityStore({ ttlMs: TTL_MS, maxEntries: 64 });
 				const writtenAt = new Map<string, number>();
 				let now = T0;
+				const spell = (key: number): string => {
+					const decorate = decorations[key] ?? ((value: string) => value);
+					return decorate(KEYS[key] ?? KEYS[0]);
+				};
 
 				for (const event of events) {
 					if (event.kind === "advance") {
 						now += event.ms;
 					} else if (event.kind === "remember") {
-						store.remember(KEYS[event.key], event.accountIndex, now);
+						store.remember(spell(event.key), event.accountIndex, now);
 						writtenAt.set(KEYS[event.key] ?? "", now);
 					} else if (event.kind === "forget") {
-						store.forgetSession(KEYS[event.key]);
+						store.forgetSession(spell(event.key));
 						writtenAt.delete(KEYS[event.key] ?? "");
 					} else {
-						store.updateLastResponseId(KEYS[event.key], event.responseId, now);
+						store.updateLastResponseId(spell(event.key), event.responseId, now);
 						if ((writtenAt.get(KEYS[event.key] ?? "") ?? -Infinity) + TTL_MS > now) {
 							writtenAt.set(KEYS[event.key] ?? "", now);
 						} else {
@@ -260,6 +270,37 @@ describe("SessionAffinityStore property invariants", () => {
 					const live = at + TTL_MS > now;
 					expect(store.getPreferredAccountIndex(key, now) !== null).toBe(live);
 				}
+				},
+			),
+		);
+	});
+
+	it("clearAll empties the store completely and leaves it usable (#474 invalidation)", () => {
+		fc.assert(
+			fc.property(arbSequence, (events) => {
+				const store = new SessionAffinityStore({ ttlMs: TTL_MS, maxEntries: 64 });
+				let now = T0;
+				for (const event of events) {
+					if (event.kind === "advance") {
+						now += event.ms;
+					} else if (event.kind === "remember") {
+						store.remember(KEYS[event.key], event.accountIndex, now);
+					} else if (event.kind === "updateResponse") {
+						store.updateLastResponseId(KEYS[event.key], event.responseId, now);
+					} else {
+						store.forgetSession(KEYS[event.key]);
+					}
+				}
+
+				store.clearAll();
+				expect(store.size()).toBe(0);
+				for (const key of KEYS) {
+					expect(store.getPreferredAccountIndex(key, now)).toBeNull();
+					expect(store.getLastResponseId(key, now)).toBeNull();
+				}
+				// The store stays fully usable after invalidation.
+				store.remember(KEYS[0], 3, now);
+				expect(store.getPreferredAccountIndex(KEYS[0], now)).toBe(3);
 			}),
 		);
 	});
