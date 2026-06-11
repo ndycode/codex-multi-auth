@@ -31,7 +31,7 @@ lib/
 ├── runtime/                       # Codex CLI/app integration helpers
 │   ├── app-bind.ts                # persistent packaged-app bind to localhost router
 │   ├── config-toml.ts             # provider config rewrite helpers
-│   ├── rotation-*.ts              # rotation-proxy selection/state/storage-meta/server-type helpers
+│   ├── rotation-*.ts              # rotation-proxy selection/state/storage-meta/server-type/token-refresh helpers
 │   ├── runtime-observability.ts   # persisted runtime counters
 │   ├── live-sync.ts               # runtime account sync
 │   ├── quota-probe.ts             # live quota probes
