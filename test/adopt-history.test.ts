@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
 	runAdoptHistory,
 } from "../lib/codex-manager/commands/adopt-history.js";
 import { RUNTIME_ROTATION_PROXY_PROVIDER_ID } from "../lib/runtime-constants.js";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 const PROXY = RUNTIME_ROTATION_PROXY_PROVIDER_ID;
 const NATIVE = adoptHistoryInternals.NATIVE_PROVIDER_ID;
@@ -63,8 +64,8 @@ afterEach(async () => {
 	} else {
 		process.env.CODEX_MULTI_AUTH_DIR = originalMultiAuthDir;
 	}
-	await rm(codexHome, { recursive: true, force: true });
-	await rm(multiAuthDir, { recursive: true, force: true });
+	await removeWithRetry(codexHome, { recursive: true, force: true });
+	await removeWithRetry(multiAuthDir, { recursive: true, force: true });
 });
 
 describe("rotation adopt-history", () => {
@@ -164,6 +165,18 @@ describe("rotation adopt-history", () => {
 			`"model_provider":"${PROXY}"`,
 		);
 		expect(logs.join("\n")).toContain("UPDATE threads SET model_provider");
+	});
+
+	it("emits parseable JSON with stable fields under --json", async () => {
+		await seedRollout("2026/06/11", "rollout-a.jsonl", NATIVE);
+
+		const code = await runAdoptHistory(["--yes", "--json"], deps());
+
+		expect(code).toBe(0);
+		const parsed = JSON.parse(logs.join("\n")) as Record<string, unknown>;
+		expect(parsed.direction).toBe("adopt");
+		expect(parsed.sessionFilesRewritten).toBe(1);
+		expect(parsed).toHaveProperty("dryRun", false);
 	});
 
 	it("rejects unknown options", async () => {

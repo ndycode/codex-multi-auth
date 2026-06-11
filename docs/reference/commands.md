@@ -80,7 +80,7 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | `codex-multi-auth models` | Inspect local model/account capability views |
 | `codex-multi-auth monitor` | Aggregate runtime, usage, policy, quota, model, and project state |
 | `codex-multi-auth why-selected [--now|--last]` | Explain which account the selector picks now or via the last persisted runtime snapshot |
-| `codex-multi-auth rotation enable\|disable\|status\|bind-app\|unbind-app` | Manage the default-on runtime Responses proxy for live Codex account rotation |
+| `codex-multi-auth rotation enable\|disable\|status\|bind-app\|unbind-app\|adopt-history` | Manage the default-on runtime Responses proxy for live Codex account rotation; `adopt-history` re-tags existing session history under the rotation provider (reversible) |
 
 ---
 
@@ -90,11 +90,11 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | --- | --- | --- |
 | `--device-auth` | login | Use the OpenAI Codex device-code flow for remote/headless login (mutually exclusive with `--manual` / `--no-browser`) |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow (mutually exclusive with `--device-auth`) |
-| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle | Print machine-readable output |
+| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle, rotation adopt-history | Print machine-readable output |
 | `--csv` | usage | Print or write CSV bucket output |
 | `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |
 | `--live` | best, forecast, report, fix | Use live probe before decisions/output |
-| `--dry-run` | verify-flagged, verify (with `--flagged`/`--all`), fix, doctor | Preview without writing storage |
+| `--dry-run` | verify-flagged, verify (with `--flagged`/`--all`), fix, doctor, rotation adopt-history | Preview without writing storage |
 | `--model <model>` | best, forecast, report, fix | Specify model for live probe paths |
 | `--out <path>` | report, usage | Write report output to file |
 | `--since <time>` | usage | Filter local usage rows by timestamp, ISO date, or relative duration |

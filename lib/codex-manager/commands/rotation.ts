@@ -741,11 +741,7 @@ export async function runRotationCommand(
 		return runResetRuntime(rest, deps);
 	}
 	if (subcommand === "adopt-history") {
-		return runAdoptHistory(rest, {
-			confirm: (message) => confirm(message),
-			logInfo,
-			logError,
-		});
+		return runAdoptHistory(rest, { confirm, logInfo, logError });
 	}
 	if (rest.length > 0) {
 		logError(`Unknown rotation option: ${rest[0]}`);

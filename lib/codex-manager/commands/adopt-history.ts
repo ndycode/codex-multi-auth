@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, type Dirent } from "node:fs";
 import { readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -82,7 +82,7 @@ async function collectRolloutFiles(root: string): Promise<string[]> {
 	while (pending.length > 0) {
 		const dir = pending.pop();
 		if (!dir) continue;
-		let entries;
+		let entries: Dirent[];
 		try {
 			entries = await readdir(dir, { withFileTypes: true });
 		} catch {
@@ -107,7 +107,7 @@ async function collectRolloutFiles(root: string): Promise<string[]> {
  * numeric suffix matches the database the currently-installed build reads.
  */
 async function findStateDb(codexHome: string): Promise<string | null> {
-	let entries;
+	let entries: string[];
 	try {
 		entries = await readdir(codexHome);
 	} catch {
@@ -229,11 +229,14 @@ export async function runAdoptHistory(
 	}
 
 	const files = await collectRolloutFiles(sessionsRoot);
-	const matched: string[] = [];
+	// Cache the content read during the scan so the rewrite phase reuses it
+	// instead of reading each file a second time (avoids a redundant read and
+	// the TOCTOU window between scan and rewrite).
+	const matched: Array<{ path: string; content: string }> = [];
 	for (const file of files) {
 		try {
 			const content = await readFile(file, "utf8");
-			if (content.includes(fromToken)) matched.push(file);
+			if (content.includes(fromToken)) matched.push({ path: file, content });
 		} catch {
 			// Unreadable rollouts are skipped rather than failing the migration.
 		}
@@ -326,8 +329,7 @@ export async function runAdoptHistory(
 	}
 
 	const changedFiles: string[] = [];
-	for (const file of matched) {
-		const content = await readFile(file, "utf8");
+	for (const { path: file, content } of matched) {
 		const next = content.split(fromToken).join(toToken);
 		if (next === content) continue;
 		const tmp = `${file}.adopt-tmp`;
