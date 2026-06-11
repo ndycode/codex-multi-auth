@@ -880,37 +880,32 @@ export async function savePluginConfig(
 			// writer. Mirrors the unified-settings save path (writeSettingsRecordAsync
 			// CAS).
 			await withConfigFileLock(envPath, async () => {
-				for (let attempt = 0; attempt < 3; attempt += 1) {
-					const expectedMtimeMs = await getConfigFileMtimeMs(envPath);
-					const envConfigState = await readConfigRecordForSave(envPath);
-					if (envConfigState.status === "unreadable") {
-						throw new Error(
-							`Aborting config save because ${envPath} is unreadable.`,
-						);
-					}
-					const existingConfig =
-						envConfigState.status === "ok"
-							? sanitizeStoredPluginConfigRecord(envConfigState.record)
-							: null;
-					const merged = {
-						...(existingConfig ?? {}),
-						...sanitizedPatch,
-					};
-					try {
+				// CAS retry: ESTALE means the file's mtime moved between our stat and
+				// the write, so each attempt re-stats, re-reads, and re-merges against
+				// the latest on-disk state before writing again.
+				await withRetry(
+					async () => {
+						const expectedMtimeMs = await getConfigFileMtimeMs(envPath);
+						const envConfigState = await readConfigRecordForSave(envPath);
+						if (envConfigState.status === "unreadable") {
+							throw new Error(
+								`Aborting config save because ${envPath} is unreadable.`,
+							);
+						}
+						const existingConfig =
+							envConfigState.status === "ok"
+								? sanitizeStoredPluginConfigRecord(envConfigState.record)
+								: null;
+						const merged = {
+							...(existingConfig ?? {}),
+							...sanitizedPatch,
+						};
 						await writeJsonFileAtomicWithRetry(envPath, merged, {
 							expectedMtimeMs,
 						});
-						return;
-					} catch (error) {
-						if (
-							(error as NodeJS.ErrnoException).code !== "ESTALE" ||
-							attempt >= 2
-						) {
-							throw error;
-						}
-						// Loop: re-stat, re-read, re-merge against the latest on-disk state.
-					}
-				}
+					},
+					{ maxAttempts: 3, backoffMs: 0, retryableCodes: ["ESTALE"] },
+				);
 			});
 		});
 		return;
