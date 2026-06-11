@@ -68,8 +68,8 @@ describe("context overflow property invariants", () => {
 		);
 	});
 
-	it("the synthetic response round-trips: parseable SSE carrying the notice, never re-classified", () => {
-		fc.assert(
+	it("the synthetic response round-trips: parseable SSE carrying the notice, never re-classified", async () => {
+		await fc.assert(
 			fc.asyncProperty(
 				fc.constantFrom("gpt-5.5", "gpt-5.3-codex", "unknown", "x/y"),
 				async (model) => {
