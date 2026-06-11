@@ -1,10 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fc from "fast-check";
 import { getAccountHealth, formatHealthReport } from "../../lib/health.js";
 import {
 	clearCircuitBreakers,
+	DEFAULT_CIRCUIT_BREAKER_CONFIG,
 	getCircuitBreaker,
 } from "../../lib/circuit-breaker.js";
+import { getAccountIdentityKey } from "../../lib/storage/identity.js";
 
 const NOW = new Date("2026-01-01T00:00:00.000Z").getTime();
 
@@ -27,7 +29,7 @@ const arbTimestamp = fc.option(
 const arbAccounts: fc.Arbitrary<ArbAccount[]> = fc
 	.array(
 		fc.record({
-			email: fc.option(fc.constantFrom("a@x.test", "b@x.test"), { nil: undefined }),
+			emailSeed: fc.option(fc.integer({ min: 0, max: 99 }), { nil: undefined }),
 			health: fc.integer({ min: 0, max: 100 }),
 			rateLimitedUntil: arbTimestamp,
 			cooldownUntil: arbTimestamp,
@@ -37,7 +39,15 @@ const arbAccounts: fc.Arbitrary<ArbAccount[]> = fc
 		}),
 		{ minLength: 0, maxLength: 8 },
 	)
-	.map((accounts) => accounts.map((account, index) => ({ ...account, index })));
+	.map((accounts) =>
+		accounts.map(({ emailSeed, ...account }, index) => ({
+			...account,
+			// Unique per-account emails so identity keys never alias by accident;
+			// the shared-email aliasing contract has its own dedicated property.
+			email: emailSeed === undefined ? undefined : `acct-${index}-${emailSeed}@x.test`,
+			index,
+		})),
+	);
 
 describe("plugin health property invariants", () => {
 	beforeEach(() => {
@@ -99,43 +109,99 @@ describe("plugin health property invariants", () => {
 		);
 	});
 
-	it("an open circuit disqualifies an otherwise perfect account from the healthy count", () => {
+	it("an open or half-open circuit disqualifies an otherwise perfect account from the healthy count", () => {
 		fc.assert(
 			fc.property(
 				fc.integer({ min: 1, max: 6 }),
 				fc.uniqueArray(fc.integer({ min: 0, max: 5 }), { maxLength: 6 }),
-				(count, trippedRaw) => {
-					clearCircuitBreakers();
-					const tripped = new Set(trippedRaw.filter((index) => index < count));
-					// Identity-less accounts so getAccountHealth keys circuits by the
-					// documented account:<index> fallback.
-					const accounts = Array.from({ length: count }, (_, index) => ({
-						index,
-						health: 100,
-					}));
-					for (const index of tripped) {
-						const breaker = getCircuitBreaker(`account:${index}`);
-						breaker.recordFailure();
-						breaker.recordFailure();
-						breaker.recordFailure();
-					}
+				fc.boolean(),
+				(count, trippedRaw, probeHalfOpen) => {
+					vi.useFakeTimers();
+					try {
+						vi.setSystemTime(NOW);
+						clearCircuitBreakers();
+						const tripped = new Set(trippedRaw.filter((index) => index < count));
+						// Identity-less accounts so getAccountHealth keys circuits by
+						// the documented account:<index> fallback.
+						const accounts = Array.from({ length: count }, (_, index) => ({
+							index,
+							health: 100,
+						}));
+						for (const index of tripped) {
+							const breaker = getCircuitBreaker(`account:${index}`);
+							breaker.recordFailure();
+							breaker.recordFailure();
+							breaker.recordFailure();
+						}
+						let expectedTrippedState: "open" | "half-open" = "open";
+						if (probeHalfOpen && tripped.size > 0) {
+							// Advance past the reset timeout and admit the probe so the
+							// tripped circuits sit in half-open, which must be just as
+							// disqualifying as open.
+							vi.setSystemTime(
+								NOW + DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs,
+							);
+							for (const index of tripped) {
+								getCircuitBreaker(`account:${index}`).canExecute();
+							}
+							expectedTrippedState = "half-open";
+						}
 
-					const result = getAccountHealth(accounts, NOW);
-					for (const reported of result.accounts) {
-						expect(reported.circuitState).toBe(
-							tripped.has(reported.index) ? "open" : "closed",
+						const result = getAccountHealth(accounts, NOW);
+						for (const reported of result.accounts) {
+							expect(reported.circuitState).toBe(
+								tripped.has(reported.index) ? expectedTrippedState : "closed",
+							);
+						}
+						expect(result.healthyAccountCount).toBe(count - tripped.size);
+						expect(result.status).toBe(
+							tripped.size === 0
+								? "healthy"
+								: tripped.size === count
+									? "unhealthy"
+									: "degraded",
 						);
+						// The report renders the precise circuit flag for tripped rows.
+						const report = formatHealthReport(result);
+						expect(report.includes(`circuit-${expectedTrippedState}`)).toBe(
+							tripped.size > 0,
+						);
+					} finally {
+						vi.useRealTimers();
 					}
-					expect(result.healthyAccountCount).toBe(count - tripped.size);
-					expect(result.status).toBe(
-						tripped.size === 0
-							? "healthy"
-							: tripped.size === count
-								? "unhealthy"
-								: "degraded",
-					);
 				},
 			),
+		);
+	});
+
+	it("accounts sharing an email share one circuit; distinct emails stay isolated", () => {
+		fc.assert(
+			fc.property(fc.boolean(), (shareEmail) => {
+				clearCircuitBreakers();
+				const emails = shareEmail
+					? ["shared@x.test", "shared@x.test"]
+					: ["one@x.test", "two@x.test"];
+				const accounts = emails.map((email, index) => ({
+					index,
+					email,
+					health: 100,
+				}));
+				// Trip only the FIRST account's identity-derived breaker, exactly
+				// the key getAccountHealth derives internally.
+				const key = getAccountIdentityKey({ email: emails[0] }) ?? "account:0";
+				const breaker = getCircuitBreaker(key);
+				breaker.recordFailure();
+				breaker.recordFailure();
+				breaker.recordFailure();
+
+				const result = getAccountHealth(accounts, NOW);
+				expect(result.accounts[0]?.circuitState).toBe("open");
+				// Shared identity -> shared breaker; distinct identity -> isolated.
+				expect(result.accounts[1]?.circuitState).toBe(
+					shareEmail ? "open" : "closed",
+				);
+				expect(result.healthyAccountCount).toBe(shareEmail ? 0 : 1);
+			}),
 		);
 	});
 
