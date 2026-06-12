@@ -56,7 +56,10 @@ describe("storage", () => {
 		// A test that fails before its inline mockRestore() leaks its fs spy into
 		// every later test (a later vi.spyOn returns the SAME leaked spy, so a
 		// passthrough binding recurses into the new test's own mock). Restore all
-		// spies unconditionally so one failure cannot cascade.
+		// spies unconditionally so one failure cannot cascade. The global
+		// afterEach in test/helpers/global-sandbox.ts now does this for every
+		// suite; this local call stays as defense-in-depth for the suite that
+		// actually exhibited the cascade, in case the global hook ever moves.
 		vi.restoreAllMocks();
 	});
 
