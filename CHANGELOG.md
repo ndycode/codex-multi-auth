@@ -7,6 +7,24 @@ This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
+## [2.3.0] - 2026-06-15
+
+First stable cut of the `2.3.0` line. Promotes the `2.3.0-beta` series to stable and adds three runtime-rotation durability fixes landed after `beta.3`.
+See [docs/releases/v2.3.0.md](docs/releases/v2.3.0.md) for full details.
+
+### Fixed
+
+- Stale-runtime recovery deadlock: the rotation proxy returned a permanent `503 "All managed Codex accounts are temporarily unavailable"` even with healthy accounts, because persisted per-account transient state (cooldowns, rate-limit windows) was restored on reload and the recovery guard refused to run against it (#606, #607)
+- Cooldown not persisted when an account has no resolvable `accountId` — a restart inside the window dropped the cooldown and re-selected the broken account (#608)
+- Rate-limit window not persisted in the short-retry 429 path — same durability gap as the missing-accountId branch, in the runtime fetch loop (#609)
+
+### Notes
+
+- Published under the `latest` dist-tag (`npm i -g codex-multi-auth`).
+- Includes everything from the `2.3.0-beta.1` → `2.3.0-beta.3` prereleases.
+
+---
+
 ## [2.3.0-beta.3] - 2026-06-11
 
 Stream backpressure fix, deduplication fixpoint, retry-loop consolidation, typed errors, 20 new test suites, dead code pruned.
