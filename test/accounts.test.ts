@@ -1494,6 +1494,7 @@ describe("AccountManager", () => {
 				"gpt-5.2",
 			);
 			expect(Object.keys(account.rateLimitResetTimes).length).toBeGreaterThan(0);
+			expect(account.lastRateLimitReason).toBe("tokens");
 
 			manager.clearAccountTransientState();
 
@@ -1501,7 +1502,63 @@ describe("AccountManager", () => {
 			expect(account.lastRateLimitReason).toBeUndefined();
 		});
 
-		it("persists the cleared pool so a reload does not restore stale state", () => {
+		it("clears cooldown and rate-limit state together on the same account", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "token-1", addedAt: now, lastUsed: now }],
+			};
+
+			const manager = new AccountManager(undefined, stored);
+			const account = manager.getCurrentAccount()!;
+			// A real stuck account from #606 carries both states at once; prove the
+			// method clears both in one pass rather than short-circuiting.
+			manager.markAccountCoolingDown(account, 60_000, "server-error");
+			manager.markRateLimitedWithReason(account, 60_000, "codex", "quota");
+			expect(manager.isAccountCoolingDown(account)).toBe(true);
+			expect(Object.keys(account.rateLimitResetTimes).length).toBeGreaterThan(0);
+
+			manager.clearAccountTransientState();
+
+			expect(account.coolingDownUntil).toBeUndefined();
+			expect(account.cooldownReason).toBeUndefined();
+			expect(account.rateLimitResetTimes).toEqual({});
+			expect(account.lastRateLimitReason).toBeUndefined();
+		});
+
+		it("clears mixed per-account state without throwing on clean accounts", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{ refreshToken: "token-1", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-2", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-3", addedAt: now, lastUsed: now },
+				],
+			};
+
+			const manager = new AccountManager(undefined, stored);
+			const coolingDown = manager.getAccountByIndex(0)!;
+			const rateLimited = manager.getAccountByIndex(1)!;
+			const clean = manager.getAccountByIndex(2)!;
+			manager.markAccountCoolingDown(coolingDown, 60_000, "network-error");
+			manager.markRateLimitedWithReason(rateLimited, 60_000, "codex", "quota");
+
+			expect(() => manager.clearAccountTransientState()).not.toThrow();
+
+			expect(coolingDown.coolingDownUntil).toBeUndefined();
+			expect(rateLimited.rateLimitResetTimes).toEqual({});
+			expect(clean.coolingDownUntil).toBeUndefined();
+			expect(clean.rateLimitResetTimes).toEqual({});
+		});
+
+		it("persists the cleared pool so a reload does not restore stale state", async () => {
+			const { saveAccounts } = await import("../lib/storage.js");
+			const mockSaveAccounts = vi.mocked(saveAccounts);
+			mockSaveAccounts.mockClear();
+
 			const now = Date.now();
 			const stored = {
 				version: 3 as const,
@@ -1512,11 +1569,18 @@ describe("AccountManager", () => {
 			const manager = new AccountManager(undefined, stored);
 			const account = manager.getCurrentAccount()!;
 			manager.markAccountCoolingDown(account, 60_000, "server-error");
-			const saveSpy = vi.spyOn(manager, "saveToDiskDebounced");
+			manager.markRateLimitedWithReason(account, 60_000, "codex", "quota");
 
 			manager.clearAccountTransientState();
+			// Flush so we assert against the actual persisted snapshot, not just
+			// that a save was scheduled — this is the #606 durability guarantee.
+			await manager.flushPendingSave();
 
-			expect(saveSpy).toHaveBeenCalledTimes(1);
+			expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+			const persisted = mockSaveAccounts.mock.calls[0]?.[0];
+			expect(persisted?.accounts[0]?.coolingDownUntil).toBeUndefined();
+			expect(persisted?.accounts[0]?.cooldownReason).toBeUndefined();
+			expect(persisted?.accounts[0]?.rateLimitResetTimes ?? {}).toEqual({});
 		});
 
 		it("is a no-op when no accounts are loaded", () => {
