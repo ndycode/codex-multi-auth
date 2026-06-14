@@ -1447,6 +1447,91 @@ describe("AccountManager", () => {
 		});
 	});
 
+	describe("clearAccountTransientState", () => {
+		it("clears active cooldowns on every account", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{ refreshToken: "token-1", addedAt: now, lastUsed: now },
+					{ refreshToken: "token-2", addedAt: now, lastUsed: now },
+				],
+			};
+
+			const manager = new AccountManager(undefined, stored);
+			const first = manager.getAccountByIndex(0)!;
+			const second = manager.getAccountByIndex(1)!;
+			manager.markAccountCoolingDown(first, 60_000, "network-error");
+			manager.markAccountCoolingDown(second, 60_000, "server-error");
+
+			manager.clearAccountTransientState();
+
+			expect(manager.isAccountCoolingDown(first)).toBe(false);
+			expect(manager.isAccountCoolingDown(second)).toBe(false);
+			expect(first.coolingDownUntil).toBeUndefined();
+			expect(first.cooldownReason).toBeUndefined();
+			expect(second.coolingDownUntil).toBeUndefined();
+			expect(second.cooldownReason).toBeUndefined();
+		});
+
+		it("clears all rate-limit reset windows, including ones still in the future", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "token-1", addedAt: now, lastUsed: now }],
+			};
+
+			const manager = new AccountManager(undefined, stored);
+			const account = manager.getCurrentAccount()!;
+			manager.markRateLimitedWithReason(account, 60_000, "codex", "quota");
+			manager.markRateLimitedWithReason(
+				account,
+				60_000,
+				"codex",
+				"tokens",
+				"gpt-5.2",
+			);
+			expect(Object.keys(account.rateLimitResetTimes).length).toBeGreaterThan(0);
+
+			manager.clearAccountTransientState();
+
+			expect(account.rateLimitResetTimes).toEqual({});
+			expect(account.lastRateLimitReason).toBeUndefined();
+		});
+
+		it("persists the cleared pool so a reload does not restore stale state", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "token-1", addedAt: now, lastUsed: now }],
+			};
+
+			const manager = new AccountManager(undefined, stored);
+			const account = manager.getCurrentAccount()!;
+			manager.markAccountCoolingDown(account, 60_000, "server-error");
+			const saveSpy = vi.spyOn(manager, "saveToDiskDebounced");
+
+			manager.clearAccountTransientState();
+
+			expect(saveSpy).toHaveBeenCalledTimes(1);
+		});
+
+		it("is a no-op when no accounts are loaded", () => {
+			const manager = new AccountManager(undefined, {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [],
+			});
+			const saveSpy = vi.spyOn(manager, "saveToDiskDebounced");
+
+			expect(() => manager.clearAccountTransientState()).not.toThrow();
+			expect(saveSpy).not.toHaveBeenCalled();
+		});
+	});
+
 	describe("auth failure tracking", () => {
 		it("increments consecutive auth failures", () => {
 			const now = Date.now();

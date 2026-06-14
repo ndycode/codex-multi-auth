@@ -982,10 +982,15 @@ async function handleRequestInner(
 					exhaustionReason === "no-account" &&
 					(policyDecision?.blockedAccountIndexes.size ?? 0) === 0 &&
 					![...accountSkipReasons.values()].some(
-						(reason) =>
-							reason === "rate-limited" ||
-							reason.startsWith("cooling-down") ||
-							reason === "policy-blocked",
+						// Only policy blocks still suppress stale-state recovery: a policy
+						// decision is external and won't change across a disk reload, so
+						// reloading cannot help. "rate-limited" and "cooling-down*" are
+						// transient states that recovery is *designed* to escape — they are
+						// persisted to disk (buildStorageSnapshot) and so survive a reload,
+						// which previously deadlocked the pool against the very recovery that
+						// would clear them. recoverStaleRuntimeState now wipes that transient
+						// state after reloading, so let those reasons through (issue #606).
+						(reason) => reason === "policy-blocked",
 					)
 				) {
 					reloadedAfterNoAccount = true;
