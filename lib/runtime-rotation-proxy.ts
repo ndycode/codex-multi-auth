@@ -1063,6 +1063,12 @@ async function handleRequestInner(
 					DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
 					"auth-failure",
 				);
+				// Persist the cooldown like every other cooldown branch in this loop
+				// (network-error, 429, server-error, 401). `coolingDownUntil`/
+				// `cooldownReason` are serialized in the V3 snapshot, so without this
+				// a restart inside the cooldown window loses it and immediately
+				// re-selects the still-broken account.
+				accountManager.saveToDiskDebounced();
 				exhaustionReason = "auth-failure";
 				transientAttempts += 1;
 				transientExhaustionReason = "auth-failure";

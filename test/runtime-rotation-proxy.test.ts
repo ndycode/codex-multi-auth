@@ -1662,6 +1662,45 @@ describe("runtime rotation proxy", () => {
 		expect(saveToDiskDebouncedSpy).toHaveBeenCalled();
 	});
 
+	it("persists the cooldown when an account has no resolvable accountId", async () => {
+		const now = Date.now();
+		// Account with no stored accountId and a non-JWT access token, so
+		// resolveAccountId returns null and the missing-accountId cooldown branch
+		// fires. The cooldown must be persisted like every other cooldown branch
+		// so a restart inside the window honors it (regression: this branch used
+		// to mutate cooldown state without scheduling a disk write).
+		const storage: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "no-id@example.com",
+					refreshToken: "refresh-1",
+					accessToken: "plain-access-not-a-jwt",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 60_000,
+					lastUsed: now - 60_000,
+					enabled: true,
+				},
+			],
+		};
+		const accountManager = new AccountManager(undefined, storage);
+		expect(accountManager.getAccountByIndex(0)?.accountId).toBeUndefined();
+		const saveToDiskDebouncedSpy = vi.spyOn(accountManager, "saveToDiskDebounced");
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream());
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex" });
+		await response.text();
+
+		// No upstream request is issued — the account is cooled down before send.
+		expect(calls).toHaveLength(0);
+		expect(accountManager.getAccountByIndex(0)?.cooldownReason).toBe("auth-failure");
+		expect(accountManager.getAccountByIndex(0)?.coolingDownUntil).toBeGreaterThan(now);
+		expect(saveToDiskDebouncedSpy).toHaveBeenCalled();
+	});
+
 	it("deduplicates concurrent expired-token refresh and persistence", async () => {
 		const now = Date.now();
 		const storage = createStorage(now, 1);
