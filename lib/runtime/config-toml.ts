@@ -136,15 +136,31 @@ export function restoreTopLevelModelProvider(
 	}
 
 	if (!handled && originalLine) {
-		// Splice the restored line into the root table — appending at tail
-		// would land it inside whatever section appears last in `output`.
-		const firstSectionIdx = output.findIndex(
-			(line) => readTomlTableName(line) !== null,
-		);
-		if (firstSectionIdx === -1) {
-			output.push(originalLine);
-		} else {
-			output.splice(firstSectionIdx, 0, originalLine);
+		// Only splice the original line back when the current config has no
+		// top-level model_provider at all (bind stripped it). If a non-proxy
+		// top-level model_provider already exists — e.g. a half-orphaned config
+		// where the proxy block is present but the provider line already points
+		// elsewhere — inserting another line would create a duplicate top-level
+		// key and produce invalid TOML. In that case the existing line is
+		// already correct, so leave it untouched.
+		const hasTopLevelModelProvider = (() => {
+			for (const line of output) {
+				if (readTomlTableName(line) !== null) return false;
+				if (/^\s*model_provider\s*=/.test(line)) return true;
+			}
+			return false;
+		})();
+		if (!hasTopLevelModelProvider) {
+			// Splice the restored line into the root table — appending at tail
+			// would land it inside whatever section appears last in `output`.
+			const firstSectionIdx = output.findIndex(
+				(line) => readTomlTableName(line) !== null,
+			);
+			if (firstSectionIdx === -1) {
+				output.push(originalLine);
+			} else {
+				output.splice(firstSectionIdx, 0, originalLine);
+			}
 		}
 	}
 

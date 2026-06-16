@@ -189,4 +189,55 @@ describe("restoreConfigTomlFromRuntimeRotationProviderWithoutBackup", () => {
 		expect(restored).not.toContain("codex-multi-auth-runtime-proxy");
 		expect(restored.replace(/\r\n/g, "")).not.toContain("\n");
 	});
+
+	it("does not duplicate model_provider when the top-level line is already non-proxy (half-orphan)", () => {
+		// The proxy *block* is present but the top-level model_provider already
+		// points at a real provider. Recovery must strip the block and leave the
+		// single existing line — inserting a second one is invalid TOML.
+		const halfOrphan = [
+			'model_provider = "openai"',
+			"[profiles.default]",
+			'model = "gpt-5"',
+			"",
+			"[model_providers.codex-multi-auth-runtime-proxy]",
+			'name = "codex-multi-auth"',
+			'base_url = "http://127.0.0.1:51758"',
+			'wire_api = "responses"',
+			"",
+		].join("\n");
+
+		const restored =
+			restoreConfigTomlFromRuntimeRotationProviderWithoutBackup(halfOrphan);
+
+		const providerLines = (
+			restored.match(/^\s*model_provider\s*=/gm) ?? []
+		).length;
+		expect(providerLines).toBe(1);
+		expect(restored).toContain('model_provider = "openai"');
+		expect(restored).not.toContain("codex-multi-auth-runtime-proxy");
+		expect(restored).toContain("[profiles.default]");
+	});
+
+	it("drops bind-injected disable_response_storage during no-backup recovery", () => {
+		// A full bind injects `disable_response_storage = false` at top level;
+		// recovery with no backup must remove that residue.
+		const bound = [
+			'model_provider = "codex-multi-auth-runtime-proxy"',
+			"disable_response_storage = false",
+			"[profiles.default]",
+			'model = "gpt-5"',
+			"",
+			"[model_providers.codex-multi-auth-runtime-proxy]",
+			'name = "codex-multi-auth"',
+			'wire_api = "responses"',
+			"",
+		].join("\n");
+
+		const restored =
+			restoreConfigTomlFromRuntimeRotationProviderWithoutBackup(bound);
+
+		expect(restored).toContain('model_provider = "openai"');
+		expect(restored).not.toContain("disable_response_storage");
+		expect(restored).not.toContain("codex-multi-auth-runtime-proxy");
+	});
 });
