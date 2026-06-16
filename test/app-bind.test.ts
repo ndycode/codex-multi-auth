@@ -818,6 +818,7 @@ describe("Codex app runtime rotation bind", () => {
 describe("orphaned app-bind recovery (#614)", () => {
 	const boundConfig = [
 		'model_provider = "codex-multi-auth-runtime-proxy"',
+		"disable_response_storage = false",
 		"[profiles.default]",
 		'model = "gpt-5"',
 		"",
@@ -868,6 +869,7 @@ describe("orphaned app-bind recovery (#614)", () => {
 		const restored = await readFile(join(codexHome, "config.toml"), "utf8");
 		expect(restored).toContain('model_provider = "openai"');
 		expect(restored).not.toContain("codex-multi-auth-runtime-proxy");
+		expect(restored).not.toContain("disable_response_storage");
 		expect(restored).toContain("[profiles.default]");
 		expect(unbound.message).toContain("orphaned runtime-proxy bind");
 		expect(unbound.status.bound).toBe(false);
