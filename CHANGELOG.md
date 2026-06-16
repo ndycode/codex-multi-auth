@@ -7,6 +7,16 @@ This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
+## [2.3.2] - 2026-06-16
+
+Self-healing recovery for an orphaned runtime-proxy app-bind. No runtime-rotation, storage, or auth behavior changed.
+See [docs/releases/v2.3.2.md](docs/releases/v2.3.2.md) for full details.
+
+### Fixed
+
+- Orphaned app-bind: when `config.toml` was left bound to `codex-multi-auth-runtime-proxy` but the app-bind state/backup files were gone, `rotation status` reported "not configured" and `unbind-app` was a no-op, leaving Codex routed to a dead proxy port. `unbind-app` now self-heals (restoring the provider, falling back to `openai` with no backup), `getAppBindStatus` exposes `unmanagedBind`, and status surfaces "bound but unmanaged" (#614, #615)
+- Duplicate `model_provider` key in the no-backup recovery path for half-orphaned configs (proxy block present, top-level provider already native) — produced invalid TOML; the restore now never inserts a second top-level `model_provider` (#615)
+
 ## [2.3.1] - 2026-06-16
 
 Adds the read-only `codex-multi-auth history` command. No runtime, storage, or auth behavior changed.
