@@ -92,7 +92,7 @@ lib/
 | Settings UI | `codex-manager/settings-hub/` | settings panels, Q = cancel, preview-first writes |
 | Config resolution | `config.ts`, `schemas.ts` | defaults, unified settings, env overrides, config explain |
 | Prompt/model families | `prompts/codex.ts` | GPT-5.x and Codex family handling |
-| UI components | `ui/` | ansi, auth-menu, confirm, copy, format, runtime, select, theme |
+| UI components | `ui/` | ansi, auth-menu (+ auth-menu-builder), confirm, display-width, format, runtime, select, theme, ui-copy |
 
 ## CONVENTIONS
 
