@@ -9,7 +9,9 @@ import { fileURLToPath } from "node:url";
 import { withFileOperationRetry } from "../fs-retry.js";
 import { getCodexMultiAuthDir } from "../runtime-paths.js";
 import {
+	configHasRuntimeRotationProvider,
 	restoreConfigTomlFromRuntimeRotationProvider,
+	restoreConfigTomlFromRuntimeRotationProviderWithoutBackup,
 	rewriteConfigTomlForRuntimeRotationProvider,
 } from "./config-toml.js";
 
@@ -81,6 +83,13 @@ export interface AppBindRouterStatus {
 export interface AppBindStatus {
 	bound: boolean;
 	running: boolean;
+	/**
+	 * True when config.toml is bound to the runtime proxy but the app-bind state
+	 * file is gone (orphaned bind, #614). In this case `bound` is also true and
+	 * `state` is null — the config needs `unbind-app` to recover even though the
+	 * normal state-file tracking is missing.
+	 */
+	unmanagedBind: boolean;
 	state: AppBindState | null;
 	router: AppBindRouterStatus | null;
 	paths: AppBindPaths;
@@ -612,9 +621,19 @@ export async function getAppBindStatus(options: AppBindOptions = {}): Promise<Ap
 	const paths = resolveAppBindPaths(options);
 	const state = await readAppBindState(paths.statePath);
 	const router = await readRouterStatus(paths.statusPath);
+	// When no state file is present, the bind may still be live in config.toml
+	// (orphaned bind, #614). Detect that from the config directly so status and
+	// downstream callers don't report a bound config as "not configured".
+	let unmanagedBind = false;
+	if (state === null) {
+		const current = await readConfigIfExists(paths.configPath);
+		unmanagedBind =
+			current.existed && configHasRuntimeRotationProvider(current.content);
+	}
 	return {
-		bound: state !== null,
+		bound: state !== null || unmanagedBind,
 		running: router !== null && router.state === "running" && isProcessAlive(router.pid),
+		unmanagedBind,
 		state,
 		router,
 		paths,
@@ -765,6 +784,7 @@ async function unbindCodexAppRuntimeRotationLocked(
 	}
 
 	const backup = await readAppBindBackup(paths.backupPath);
+	let selfHealed = false;
 	if (backup) {
 		const current = await readConfigIfExists(backup.configPath);
 		if (state && current.existed && sha256(current.content) !== state.boundConfigHash) {
@@ -786,6 +806,22 @@ async function unbindCodexAppRuntimeRotationLocked(
 				restoreConfigTomlFromAppBind(current.content, ""),
 			);
 		}
+	} else {
+		// Orphaned-bind recovery (#614): no backup and no state file, but the
+		// config may still be bound to the runtime proxy (e.g. the state/backup
+		// were lost while config.toml stayed rewritten). The state-file checks
+		// above can't see this, so consult the config directly and self-heal it
+		// back to a working provider when it is bound.
+		const current = await readConfigIfExists(paths.configPath);
+		if (current.existed && configHasRuntimeRotationProvider(current.content)) {
+			await atomicWriteFile(
+				paths.configPath,
+				restoreConfigTomlFromRuntimeRotationProviderWithoutBackup(
+					current.content,
+				),
+			);
+			selfHealed = true;
+		}
 	}
 
 	for (const candidate of [
@@ -801,15 +837,31 @@ async function unbindCodexAppRuntimeRotationLocked(
 	}
 
 	const status = await getAppBindStatus(options);
+	let message: string;
+	if (backup) {
+		message = `Unbound Codex app config ${backup.configPath}`;
+	} else if (selfHealed) {
+		message = `Restored Codex app config ${paths.configPath} from an orphaned runtime-proxy bind (no backup was present)`;
+	} else {
+		message = "Codex app bind was not configured";
+	}
 	return {
 		status,
-		message: backup
-			? `Unbound Codex app config ${backup.configPath}`
-			: "Codex app bind was not configured",
+		message,
 	};
 }
 
 export function formatAppBindStatus(status: AppBindStatus): string {
+	if (status.unmanagedBind && !status.state) {
+		return [
+			`Codex app bind: bound but unmanaged (config=${status.paths.configPath} points at the runtime proxy, but no app-bind state/backup is present)`,
+			[
+				"Run `codex-multi-auth rotation unbind-app` to restore the original",
+				"Codex provider/config. This recovers the orphaned bind even though no",
+				"backup was saved (#614).",
+			].join(" "),
+		].join("\n");
+	}
 	if (!status.bound || !status.state) return "Codex app bind: not configured";
 	const parts = [
 		status.running ? "running" : "configured but router not running",
