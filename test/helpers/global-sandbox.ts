@@ -28,3 +28,14 @@ process.env.CODEX_MULTI_AUTH_DIR = join(SANDBOX_ROOT, ".codex", "multi-auth");
 // Expose for assertions / debugging.
 (globalThis as { __CMA_TEST_SANDBOX_ROOT__?: string }).__CMA_TEST_SANDBOX_ROOT__ =
 	SANDBOX_ROOT;
+
+// Suite-wide spy hygiene (see PR #590): a test that fails before its inline
+// mockRestore() leaks its spy, and a later vi.spyOn on the same method returns
+// the SAME leaked spy — so passthrough bindings captured from it recurse into
+// the new test's own mock. Restoring after every test contains the cascade.
+// No suite creates spies in beforeAll, so an after-each restore is safe.
+import { afterEach, vi } from "vitest";
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
