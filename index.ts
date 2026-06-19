@@ -2282,6 +2282,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 															modelFamily,
 															model,
 														);
+														// Persist the rate-limit window like the full-rotation
+														// branch below (line ~2327). markRateLimitedWithReason
+														// mutates `rateLimitResetTimes`, which is serialized to
+														// disk; without this a crash during the retry sleep loses
+														// the cooldown and the account is re-selected on restart.
+														accountManager.saveToDiskDebounced();
 
 														if (
 															accountManager.shouldShowAccountToast(
