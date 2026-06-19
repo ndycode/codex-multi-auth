@@ -113,6 +113,7 @@ Invalid named-parameter calls (missing or wrongly typed required fields, or unkn
 Startup-validation guarantees backed by these types:
 
 - `startRuntimeRotationProxy` throws `CodexValidationError` with `field: "clientApiKey"` when no client API key is supplied, and `CodexValidationError` with `field: "host"` (offending host in `context.host`) when asked to bind a non-loopback host. Messages are unchanged from earlier releases; only the class tightened.
+- `savePluginConfig` aborts with `StorageError` (`code: "UNREADABLE"`, `path` = the config file, actionable `hint`, read-classifier message as `cause`) when the existing config file cannot be read. Messages are unchanged from earlier releases; only the class tightened.
 
 ---
 

@@ -455,6 +455,47 @@ describe("plugin config save paths", () => {
     expect(parsed).toEqual({ codexMode: true, preserved: 1 });
   });
 
+  // §4.3 error-contract adoption: the unreadable-abort is a typed StorageError
+  // carrying the config path, so callers can branch on the class/path instead
+  // of the message text (which is unchanged).
+  it("aborts with a typed StorageError naming the unreadable config path", async () => {
+    const configPath = join(tempDir, "plugin-config.json");
+    process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
+    await fs.writeFile(configPath, JSON.stringify({ codexMode: true }), "utf8");
+
+    const originalReadFile = fs.readFile.bind(fs);
+    const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+      const [targetPath] = args;
+      if (targetPath === configPath) {
+        const error = new Error("busy") as NodeJS.ErrnoException;
+        error.code = "EBUSY";
+        throw error;
+      }
+      return originalReadFile(...args);
+    });
+
+    try {
+      const { savePluginConfig } = await import("../lib/config.js");
+      const { StorageError } = await import("../lib/errors.js");
+      const thrown = await savePluginConfig({ codexMode: false }).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(thrown).toBeInstanceOf(StorageError);
+      expect((thrown as InstanceType<typeof StorageError>).path).toBe(
+        configPath,
+      );
+      expect((thrown as InstanceType<typeof StorageError>).code).toBe(
+        "UNREADABLE",
+      );
+      expect((thrown as Error).message).toBe(
+        `Aborting config save because ${configPath} is unreadable.`,
+      );
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
   it("treats non-retryable env-path read failures as unreadable", async () => {
     const configPath = join(tempDir, "plugin-config.json");
     process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;

@@ -5,7 +5,7 @@ Commit: b0ef65d
 
 ## OVERVIEW
 Vitest suites for OAuth flow, request transforms, response handling, rotation logic, storage, CLI management, repo hygiene, and more.
-**3847 tests** across **257 test files** with 80%+ coverage threshold.
+**4909 tests** across **317 test files** with 80%+ coverage threshold.
 
 ## STRUCTURE
 ```
@@ -13,6 +13,7 @@ test/
 ├── accounts.test.ts                # multi-account storage/rotation
 ├── ansi.test.ts                    # ANSI escape helpers
 ├── audit.test.ts                   # rotating file audit log
+├── auth-menu-builder.test.ts       # auth dashboard view-model formatters
 ├── auth-menu-hotkeys.test.ts       # auth menu hotkey behavior
 ├── auth-rate-limit.test.ts         # token bucket for auth
 ├── auth.test.ts                    # OAuth PKCE + JWT decoding
@@ -54,7 +55,13 @@ test/
 ├── input-utils.test.ts             # input filtering
 ├── install-codex-auth.test.ts      # installer tests
 ├── live-account-sync.test.ts       # live account sync
+├── health-check.test.ts            # runHealthCheck quick + live probe paths
 ├── logger.test.ts                  # logging functionality
+├── login-flow.test.ts              # runAuthLogin transports and cap handling
+├── login-menu-accounts.test.ts     # account-row assembly for the login menu
+├── login-menu-actions.test.ts      # manage actions, identity re-resolution
+├── login-menu-data.test.ts         # dashboard row view model, drift sync
+├── login-oauth-selection.test.ts   # login-oauth account selection
 ├── model-map.test.ts               # model name normalization
 ├── oauth-server.integration.test.ts # OAuth server (port 1455)
 ├── package-bin.test.ts             # package.json bin field
@@ -64,14 +71,18 @@ test/
 ├── preemptive-quota-scheduler.test.ts # quota deferral
 ├── proactive-refresh.test.ts       # token refresh before expiry
 ├── property/
+│   ├── account-identity.property.test.ts # identity matching/dedup invariants
 │   ├── helpers.ts                  # property test utilities
+│   ├── model-fallback.property.test.ts # unsupported-model fallback invariants
 │   ├── rotation.property.test.ts   # rotation property tests
 │   ├── setup.test.ts               # property test setup
 │   ├── setup.ts                    # property test config
+│   ├── settings-write-queue.property.test.ts # write-queue ordering/clamp invariants
 │   └── transformer.property.test.ts # transformer property tests
 ├── quota-cache.test.ts             # quota cache
 ├── quota-probe.test.ts             # quota probe
 ├── rate-limit-backoff.test.ts      # exponential backoff
+├── rate-limit-decision.test.ts     # rate-limit/invalidation decision tree
 ├── recovery-constants.test.ts      # recovery constants
 ├── recovery-storage.test.ts        # recovery storage
 ├── recovery.test.ts                # session recovery
@@ -82,13 +93,18 @@ test/
 ├── request-transformer.test.ts     # request body transforms
 ├── response-handler-logging.test.ts # SSE handler logging branches
 ├── response-handler.test.ts        # SSE to JSON conversion
+├── rotation-account-selection.test.ts # chooseAccount tiers, pin discipline
 ├── rotation-integration.test.ts    # rotation integration, Windows cleanup
+├── rotation-proxy-state.test.ts    # proxy state init, stale-state recovery
+├── rotation-token-refresh.test.ts  # ensureFreshAccessToken refresh/cooldown
 ├── rotation.test.ts                # account selection
 ├── runtime-paths.test.ts           # runtime path resolution
 ├── schemas.test.ts                 # Zod schema validation
 ├── select.test.ts                  # select prompt tests
 ├── server.unit.test.ts             # OAuth server unit tests
 ├── session-affinity.test.ts        # session affinity
+├── settings-hub-shared.test.ts     # settings merge/persist transaction
+├── settings-write-queue.test.ts    # queued settings write retry policy
 ├── shutdown.test.ts                # graceful shutdown
 ├── storage-async.test.ts           # async storage operations
 ├── storage-recovery-paths.test.ts  # storage recovery paths

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { parseBooleanEnv } from "./env-parsing.js";
 import { withRetry, withRetrySync } from "./fs-retry.js";
 import { logWarn } from "./logger.js";
+import { StorageError } from "./errors.js";
 import {
 	getCodexHomeDir,
 	getCodexMultiAuthDir,
@@ -859,6 +860,24 @@ function sanitizePluginConfigForSave(config: Partial<PluginConfig>): {
  * @param configPatch - Partial PluginConfig containing changes to persist; undefined fields are ignored.
  * @returns void
  */
+/**
+ * Typed abort for a config save that found the existing file unreadable
+ * (audit §4.3): same message as the historical bare Error, but callers can
+ * now branch on `instanceof StorageError` / the path field instead of text.
+ */
+function unreadableConfigSaveError(
+	configPath: string,
+	errorMessage: string,
+): StorageError {
+	return new StorageError(
+		`Aborting config save because ${configPath} is unreadable.`,
+		"UNREADABLE",
+		configPath,
+		"Fix or remove the unreadable config file, then retry the save.",
+		new Error(errorMessage),
+	);
+}
+
 export async function savePluginConfig(
 	configPatch: Partial<PluginConfig>,
 ): Promise<void> {
@@ -888,8 +907,9 @@ export async function savePluginConfig(
 						const expectedMtimeMs = await getConfigFileMtimeMs(envPath);
 						const envConfigState = await readConfigRecordForSave(envPath);
 						if (envConfigState.status === "unreadable") {
-							throw new Error(
-								`Aborting config save because ${envPath} is unreadable.`,
+							throw unreadableConfigSaveError(
+								envPath,
+								envConfigState.errorMessage,
 							);
 						}
 						const existingConfig =
@@ -915,8 +935,9 @@ export async function savePluginConfig(
 	await withConfigSaveLock(unifiedPath, async () => {
 		const unifiedConfigState = await readConfigRecordForSave(unifiedPath);
 		if (unifiedConfigState.status === "unreadable") {
-			throw new Error(
-				`Aborting config save because ${unifiedPath} is unreadable.`,
+			throw unreadableConfigSaveError(
+				unifiedPath,
+				unifiedConfigState.errorMessage,
 			);
 		}
 		const unifiedConfigRecord =
@@ -930,8 +951,9 @@ export async function savePluginConfig(
 			? await readConfigRecordForSave(legacyPath)
 			: null;
 		if (legacyConfigState?.status === "unreadable") {
-			throw new Error(
-				`Aborting config save because ${legacyPath} is unreadable.`,
+			throw unreadableConfigSaveError(
+				legacyPath as string,
+				legacyConfigState.errorMessage,
 			);
 		}
 		const legacyConfig =

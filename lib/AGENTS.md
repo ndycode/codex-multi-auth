@@ -19,12 +19,19 @@ lib/
 ├── codex-manager.ts               # codex-multi-auth command dispatcher
 ├── codex-manager/
 │   ├── commands/                  # focused command implementations
+│   ├── formatters/                # shared CLI text/account/model/quota formatters
 │   ├── settings-hub.ts            # back-compat re-export stub
 │   └── settings-hub/              # shared/dashboard/backend/experimental/index panels
+├── policy/                        # runtime policy evaluation
 ├── request/                       # request transform, headers, response handling, retry/failover
+│   ├── helpers/                   # model map, input/tool utilities
+│   ├── rate-limit-decision.ts     # rate-limit/invalidation decision tree
+│   ├── stream-failover-runtime.ts # SSE failover orchestration for the runtime proxy
+│   └── ...                        # fetch helpers facade, transformer, response handler
 ├── runtime/                       # Codex CLI/app integration helpers
 │   ├── app-bind.ts                # persistent packaged-app bind to localhost router
 │   ├── config-toml.ts             # provider config rewrite helpers
+│   ├── rotation-*.ts              # rotation-proxy selection/state/storage-meta/server-type/token-refresh helpers
 │   ├── runtime-observability.ts   # persisted runtime counters
 │   ├── live-sync.ts               # runtime account sync
 │   ├── quota-probe.ts             # live quota probes
@@ -48,7 +55,11 @@ lib/
 ├── refresh-guardian.ts            # proactive refresh guard
 ├── preemptive-quota-scheduler.ts  # quota deferral scheduling
 ├── runtime-paths.ts               # multi-auth and Codex path resolution
-├── errors.ts                      # custom errors
+├── fs-retry.ts                    # shared withRetry/withRetrySync policies
+├── temp-path.ts                   # crypto-random temp/staging path helper
+├── budget-guard.ts                # request budget guard
+├── local-bridge.ts                # local bridge entrypoints
+├── errors.ts                      # CodexError hierarchy (typed error contracts)
 ├── logger.ts                      # diagnostics and request logging
 ├── shutdown.ts                    # graceful shutdown helpers
 ├── table-formatter.ts             # CLI table formatting
@@ -73,6 +84,8 @@ lib/
 | Failure policy | `request/failure-policy.ts` | retry/failover decisions |
 | Account selection | `rotation.ts`, `accounts.ts` | hybrid health + token bucket selection |
 | Account rate limits | `accounts/rate-limits.ts` | per-account tracking |
+| Retry policies | `fs-retry.ts` | shared `withRetry`/`withRetrySync`; every retry loop declares its policy here |
+| Temp/staging paths | `temp-path.ts` | crypto-random suffixes (audit H1); never derive temp names from `Math.random()` |
 | Storage format | `storage.ts`, `storage/` | V3 storage, backup/WAL, migration, restore, import/export |
 | Storage paths | `storage/paths.ts`, `runtime-paths.ts` | project root detection and runtime root resolution |
 | CLI commands | `codex-manager.ts`, `codex-manager/commands/` | `codex-multi-auth login/list/check/fix/doctor/...` |
