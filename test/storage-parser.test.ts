@@ -146,4 +146,31 @@ describe("storage parser helpers", () => {
 			await fs.rm(filePath, { force: true });
 		}
 	});
+	it("M3: preserves a V1 account's rate-limit reset across V1->V3 migration", () => {
+		const future = Date.now() + 60 * 60 * 1000;
+		const v1 = {
+			version: 1,
+			activeIndex: 0,
+			accounts: [
+				{
+					accountId: "acc-rl",
+					email: "rl@example.com",
+					refreshToken: "rt-rl",
+					addedAt: 1,
+					lastUsed: 1,
+					// V1 scalar field that migrateV1ToV3 converts into the V3 map.
+					rateLimitResetTime: future,
+				},
+			],
+		};
+		const normalized = normalizeAccountStorage(v1);
+		expect(normalized?.version).toBe(3);
+		const account = normalized?.accounts[0];
+		// Before the fix, validAccounts was rebuilt from the raw V1 objects, so the
+		// migrated rateLimitResetTimes map was discarded and the account looked
+		// immediately available on upgrade (burst of 429s).
+		expect(account?.rateLimitResetTimes).toBeDefined();
+		expect(account?.rateLimitResetTimes?.codex).toBe(future);
+	});
+
 });

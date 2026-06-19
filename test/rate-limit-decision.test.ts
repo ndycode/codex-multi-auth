@@ -204,6 +204,16 @@ describe("getQuotaNearExhaustionWaitMs", () => {
 		expect(getQuotaNearExhaustionWaitMs(headers, 5, now)).toBe(300_000);
 	});
 
+	it("H1: clamps an absurd reset-after to MAX_RATE_LIMIT_DELAY_MS (7d)", () => {
+		const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+		const headers = new Headers({
+			"x-codex-primary-used-percent": "100",
+			// ~31 years in seconds — a bogus/buggy upstream value.
+			"x-codex-primary-reset-after-seconds": "999999999",
+		});
+		expect(getQuotaNearExhaustionWaitMs(headers, 5, now)).toBe(sevenDaysMs);
+	});
+
 	it("supports reset-at in epoch seconds, epoch milliseconds, and date strings", () => {
 		const epochSeconds = Math.floor(now / 1000) + 60;
 		expect(

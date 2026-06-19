@@ -1,4 +1,4 @@
-import { HTTP_STATUS } from "../constants.js";
+import { HTTP_STATUS, MAX_RATE_LIMIT_DELAY_MS } from "../constants.js";
 import type { ExhaustionReason } from "../runtime/rotation-server-types.js";
 import type { TokenResult } from "../types.js";
 import { isRecord } from "../utils.js";
@@ -162,7 +162,11 @@ export function getQuotaNearExhaustionWaitMs(
 		const waitMs = getQuotaWindowWaitMs(headers, prefix, now);
 		if (waitMs > 0) candidates.push(waitMs);
 	}
-	return candidates.length > 0 ? Math.max(...candidates) : 0;
+	// Clamp at source: a bogus upstream reset header must never yield an
+	// unbounded near-exhaustion wait, even for a future caller that forgets to
+	// clamp downstream (defense in depth for stress audit H1).
+	if (candidates.length === 0) return 0;
+	return Math.min(Math.max(...candidates), MAX_RATE_LIMIT_DELAY_MS);
 }
 
 export function normalizeExhaustionStatus(reason: ExhaustionReason): number {

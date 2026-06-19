@@ -512,6 +512,24 @@ describe("OAuthTokenResponseSchema", () => {
 		const result = OAuthTokenResponseSchema.safeParse({ access_token: "at" });
 		expect(result.success).toBe(false);
 	});
+
+	it("I1: rejects zero or negative expires_in (would mint an already-expired token)", () => {
+		for (const bad of [0, -1, -3600]) {
+			const result = OAuthTokenResponseSchema.safeParse({
+				access_token: "at_123",
+				expires_in: bad,
+			});
+			expect(result.success).toBe(false);
+		}
+	});
+
+	it("I1: rejects non-integer expires_in", () => {
+		const result = OAuthTokenResponseSchema.safeParse({
+			access_token: "at_123",
+			expires_in: 12.5,
+		});
+		expect(result.success).toBe(false);
+	});
 });
 
 describe("safeParsePluginConfig", () => {
