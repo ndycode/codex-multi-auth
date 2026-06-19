@@ -8,7 +8,7 @@ import {
 } from "../lib/codex-manager/settings-preview.js";
 import { resolveMenuLayoutMode } from "../lib/codex-manager/settings-hub/shared.js";
 import { getUiRuntimeOptions } from "../lib/ui/runtime.js";
-import type { DashboardDisplaySettings } from "../lib/codex-manager/dashboard-settings.js";
+import type { DashboardDisplaySettings } from "../lib/dashboard-settings.js";
 
 const UI = getUiRuntimeOptions();
 
