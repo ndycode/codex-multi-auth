@@ -29,7 +29,7 @@ import {
 	type SelectionRecord,
 } from "./routing-mutex.js";
 import { nowMs } from "./utils.js";
-import { ERROR_MESSAGES, HTTP_STATUS } from "./constants.js";
+import { ERROR_MESSAGES, HTTP_STATUS, MAX_RATE_LIMIT_DELAY_MS } from "./constants.js";
 import { CodexAuthError } from "./errors.js";
 import {
 	loadCodexCliState,
@@ -1162,7 +1162,12 @@ export class AccountManager {
 		reason: RateLimitReason,
 		model?: string | null,
 	): void {
-		const retryMs = Math.max(0, Math.floor(retryAfterMs));
+		// Clamp to MAX_RATE_LIMIT_DELAY_MS so a bogus upstream retry-after value
+		// cannot wedge this account unavailable for years (see stress audit H1).
+		const retryMs = Math.min(
+			Math.max(0, Math.floor(retryAfterMs)),
+			MAX_RATE_LIMIT_DELAY_MS,
+		);
 		const resetAt = nowMs() + retryMs;
 
 		const baseKey = getQuotaKey(family);
@@ -1262,6 +1267,56 @@ export class AccountManager {
 		}
 		account.email =
 			sanitizeEmail(extractAccountEmail(auth.access)) ?? account.email;
+	}
+
+	/**
+	 * Reconcile token material from the on-disk store into a freshly-built
+	 * snapshot before persisting. A long-lived proxy serializes its whole
+	 * in-memory pool on every routine save (rate-limit, cooldown, refund). If a
+	 * SECOND process refreshed an account and wrote a rotated (single-use)
+	 * refresh token to disk in the meantime, a blind write would revert it,
+	 * permanently breaking that account's next refresh (stress audit H3).
+	 *
+	 * For each account, if the on-disk copy of the same identity carries a
+	 * strictly newer token (later expiresAt), adopt the disk's token material.
+	 * Our own freshly-refreshed tokens always have the newest expiry, so this
+	 * never undoes a refresh we just performed.
+	 */
+	private reconcileTokensFromDisk(
+		snapshot: AccountStorageV3,
+		current: AccountStorageV3 | null,
+	): AccountStorageV3 {
+		if (!current || !Array.isArray(current.accounts)) return snapshot;
+		const diskByIdentity = new Map<string, (typeof current.accounts)[number]>();
+		for (const diskAccount of current.accounts) {
+			const key = getAccountIdentityKey({
+				accountId: diskAccount.accountId,
+				email: diskAccount.email,
+				refreshToken: diskAccount.refreshToken,
+			});
+			if (key) diskByIdentity.set(key, diskAccount);
+		}
+		for (const account of snapshot.accounts) {
+			const key = getAccountIdentityKey({
+				accountId: account.accountId,
+				email: account.email,
+				refreshToken: account.refreshToken,
+			});
+			if (!key) continue;
+			const disk = diskByIdentity.get(key);
+			if (!disk) continue;
+			const diskExpires = disk.expiresAt ?? 0;
+			const memExpires = account.expiresAt ?? 0;
+			// Disk holds a strictly-newer token than our in-memory copy: adopt it
+			// so we don't clobber another process's rotation. Equal expiries keep
+			// our copy (no-op); newer in-memory copy wins (our own refresh).
+			if (diskExpires > memExpires && disk.refreshToken) {
+				account.refreshToken = disk.refreshToken;
+				account.accessToken = disk.accessToken;
+				account.expiresAt = disk.expiresAt;
+			}
+		}
+		return snapshot;
 	}
 
 	private buildStorageSnapshot(): AccountStorageV3 {
@@ -1747,8 +1802,13 @@ export class AccountManager {
 
 	async saveToDisk(): Promise<void> {
 		await runWithStoragePathState(this.storagePathState, async () => {
-			await withAccountStorageTransaction(async (_current, persist) => {
-				await persist(this.buildStorageSnapshot());
+			await withAccountStorageTransaction(async (current, persist) => {
+				// Reconcile against the disk state loaded under the storage lock so a
+				// routine save does not clobber a token another process just rotated
+				// (stress audit H3).
+				await persist(
+					this.reconcileTokensFromDisk(this.buildStorageSnapshot(), current),
+				);
 			});
 		});
 	}

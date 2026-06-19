@@ -22,6 +22,7 @@ import {
 	HTTP_STATUS,
 	ERROR_MESSAGES,
 	LOG_STAGES,
+	MAX_RATE_LIMIT_DELAY_MS,
 } from "../constants.js";
 import {
 	CHATGPT_CODEX_UNSUPPORTED_MODEL_CODE,
@@ -67,7 +68,8 @@ export interface RateLimitInfo {
         code?: string;
 }
 
-const MAX_RATE_LIMIT_DELAY_MS = 7 * 24 * 60 * 60 * 1000;
+// MAX_RATE_LIMIT_DELAY_MS is centralized in constants.ts (shared with the
+// runtime proxy rate-limit setter so both paths clamp identically).
 const RETRY_AFTER_DURATION_PATTERN =
 	/\b(?:try|retry)\s+again\s+in\s+(\d+)\s*(second|minute|hour|day)s?\b/i;
 const RETRY_AFTER_CLOCK_TIME_PATTERN =

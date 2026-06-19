@@ -270,4 +270,29 @@ describe("preemptive quota scheduler", () => {
 		expect(removed).toBe(1);
 		expect(scheduler.prune(8_000)).toBe(1);
 	});
+	it("H4: a transient 429 does not bench the account on a benign weekly window", () => {
+		const scheduler = new PreemptiveQuotaScheduler();
+		const now = 1_000_000;
+		const weekMs = 7 * 24 * 60 * 60 * 1000;
+		// Healthy 200 snapshot: primary fine, weekly secondary resets ~7d out.
+		scheduler.update("acc:model", {
+			status: 200,
+			primary: { usedPercent: 20, resetAtMs: now + 5 * 60_000 },
+			secondary: { usedPercent: 30, resetAtMs: now + weekMs },
+			updatedAt: now,
+		});
+		// Transient 60s 429.
+		scheduler.markRateLimited("acc:model", 60_000, now);
+		const decision = scheduler.getDeferral("acc:model", now + 1_000);
+		expect(decision.defer).toBe(true);
+		expect(decision.reason).toBe("rate-limit");
+		// Must reflect the ~60s retry window, NOT the 7d weekly reset (which would
+		// clamp to the 2h deferral cap). Allow the remaining ~59s.
+		expect(decision.waitMs).toBeLessThanOrEqual(60_000);
+		expect(decision.waitMs).toBeGreaterThan(50_000);
+		// After the 429 window passes, the account is no longer rate-limit-deferred.
+		const after = scheduler.getDeferral("acc:model", now + 61_000);
+		expect(after.reason).not.toBe("rate-limit");
+	});
+
 });

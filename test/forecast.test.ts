@@ -1017,4 +1017,72 @@ describe("forecast helpers", () => {
 		expect(recommendation.recommendedIndex).toBeNull();
 		expect(recommendation.reason).toContain("blocked or exhausted");
 	});
+	it("H5: live-quota wait reflects only the exhausted window, not a healthy 7d secondary", () => {
+		const now = 1_700_000_000_000;
+		const account = {
+			refreshToken: "refresh-1",
+			addedAt: now - 10_000,
+			lastUsed: now - 10_000,
+		};
+		// Binding 5h primary is fully exhausted but frees in 90s; the weekly
+		// secondary is healthy (55% used) with its normal ~7d reset. The reported
+		// wait must track the 90s window, not the 7d one.
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account,
+			allAccounts: [account],
+			liveQuota: {
+				status: 200,
+				model: "gpt-5.3-codex",
+				primary: { usedPercent: 100, windowMinutes: 300, resetAtMs: now + 90_000 },
+				secondary: {
+					usedPercent: 55,
+					windowMinutes: 10_080,
+					resetAtMs: now + 7 * 24 * 60 * 60 * 1000,
+				},
+			},
+		});
+		// Before the fix this returned the 7d secondary reset (~604_800_000ms).
+		expect(result.waitMs).toBe(90_000);
+	});
+
+	it("H5: recommends the account that actually frees first under live-quota pressure", () => {
+		const now = 1_700_000_000_000;
+		const mk = (id: string) => ({
+			accountId: id,
+			email: id + "@example.com",
+			refreshToken: "rt-" + id,
+			addedAt: now - 10_000,
+			lastUsed: now - 10_000,
+		});
+		const a = mk("a");
+		const b = mk("b");
+		const all = [a, b];
+		// a: binding window frees in 90s, healthy secondary 7d out.
+		// b: binding window frees in 10min, healthy secondary 7d out.
+		// a should be recommended (frees first); the 7d secondary must not invert it.
+		const results = evaluateForecastAccounts([
+			{
+				index: 0, now, isCurrent: false, account: a, allAccounts: all,
+				liveQuota: {
+					status: 200, model: "gpt-5.3-codex",
+					primary: { usedPercent: 100, windowMinutes: 300, resetAtMs: now + 90_000 },
+					secondary: { usedPercent: 50, windowMinutes: 10_080, resetAtMs: now + 7 * 24 * 60 * 60 * 1000 },
+				},
+			},
+			{
+				index: 1, now, isCurrent: false, account: b, allAccounts: all,
+				liveQuota: {
+					status: 200, model: "gpt-5.3-codex",
+					primary: { usedPercent: 100, windowMinutes: 300, resetAtMs: now + 600_000 },
+					secondary: { usedPercent: 50, windowMinutes: 10_080, resetAtMs: now + 7 * 24 * 60 * 60 * 1000 },
+				},
+			},
+		]);
+		expect(results[0].waitMs).toBe(90_000);
+		expect(results[1].waitMs).toBe(600_000);
+	});
+
 });

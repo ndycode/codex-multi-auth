@@ -698,4 +698,38 @@ describe("RefreshLeaseCoordinator", () => {
       ),
     ).toBe(true);
   });
+  it("H2: a slow owner's release does not delete a lock stolen after its lease expired", async () => {
+    // Owner A acquires with a very short TTL. Its lease expires; owner B steals
+    // the lock and becomes the new owner. When A finally releases, it must NOT
+    // unlink B's lock (stress audit H2): cross-process mutual exclusion must not
+    // silently degrade to none.
+    const coordinator = new RefreshLeaseCoordinator({
+      enabled: true,
+      leaseDir,
+      leaseTtlMs: 30,
+      waitTimeoutMs: 2_000,
+      pollIntervalMs: 10,
+      resultTtlMs: 2_000,
+    });
+
+    const ownerA = await coordinator.acquire("token-steal");
+    expect(ownerA.role).toBe("owner");
+
+    // Let A's lease go stale (TTL 30ms), then B steals it.
+    await new Promise((r) => setTimeout(r, 120));
+    const ownerB = await coordinator.acquire("token-steal");
+    expect(ownerB.role).toBe("owner");
+
+    const tokenHash = createHash("sha256").update("token-steal").digest("hex");
+    const lockPath = join(leaseDir, `${tokenHash}.lock`);
+    const bPayload = JSON.parse(await readFile(lockPath, "utf8"));
+
+    // A releases late — must leave B's lock intact.
+    await ownerA.release(sampleSuccessResult);
+
+    const afterPayload = JSON.parse(await readFile(lockPath, "utf8"));
+    // Same lock B holds, with B's nonce — A did not delete it.
+    expect(afterPayload.nonce).toBe(bPayload.nonce);
+  });
+
 });
