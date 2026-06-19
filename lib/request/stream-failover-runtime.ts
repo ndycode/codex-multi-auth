@@ -175,6 +175,12 @@ export async function forwardStreamingResponse(
 			);
 			if (done) break;
 			if (value && value.byteLength > 0) {
+				// If the response is already finished (clean end by a concurrent
+				// close-then-reader-cancel path), stop writing. Do NOT guard on
+				// res.destroyed here: a socket-error-during-backpressure scenario sets
+				// destroyed=true and then lets the next res.write() throw so the catch
+				// block can record the error and fire onStreamError correctly.
+				if (res.writableEnded) break;
 				// Respect backpressure: when the client's socket buffer is full,
 				// pause upstream reads until it drains instead of buffering the
 				// whole stream in memory for a slow consumer.
