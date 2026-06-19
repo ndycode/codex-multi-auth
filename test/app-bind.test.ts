@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	bindCodexAppRuntimeRotation,
 	formatAppBindStatus,
+	getAppBindStatus,
 	resolveAppBindPaths,
 	restoreConfigTomlFromAppBind,
 	rewriteConfigTomlForAppBind,
@@ -811,5 +812,137 @@ describe("Codex app runtime rotation bind", () => {
 
 		expect(statSync(logPath).size).toBeLessThan(2048);
 		expect(await readFile(logPath, "utf8")).toContain("log truncated");
+	});
+});
+
+describe("orphaned app-bind recovery (#614)", () => {
+	const boundConfig = [
+		'model_provider = "codex-multi-auth-runtime-proxy"',
+		"disable_response_storage = false",
+		"[profiles.default]",
+		'model = "gpt-5"',
+		"",
+		"[model_providers.codex-multi-auth-runtime-proxy]",
+		'name = "codex-multi-auth"',
+		'base_url = "http://127.0.0.1:51758"',
+		"requires_openai_auth = false",
+		'wire_api = "responses"',
+		"",
+	].join("\n");
+
+	async function seedOrphanedBind(): Promise<{
+		root: string;
+		codexHome: string;
+		env: NodeJS.ProcessEnv;
+	}> {
+		const root = await createTempRoot("codex-app-bind-orphan-");
+		const codexHome = join(root, "codex-home");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: join(root, "multi-auth"),
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		await mkdir(codexHome, { recursive: true });
+		// Bound config on disk, but NO state file and NO backup (the orphan case).
+		await writeFile(join(codexHome, "config.toml"), boundConfig, "utf8");
+		return { root, codexHome, env };
+	}
+
+	it("reports unmanagedBind when config is bound but no state file exists", async () => {
+		const { root, env } = await seedOrphanedBind();
+		const status = await getAppBindStatus({ platform: "linux", home: root, env });
+		expect(status.bound).toBe(true);
+		expect(status.unmanagedBind).toBe(true);
+		expect(status.state).toBeNull();
+		expect(formatAppBindStatus(status)).toContain("bound but unmanaged");
+	});
+
+	it("self-heals a bound config with no backup/state on unbind", async () => {
+		const { root, codexHome, env } = await seedOrphanedBind();
+
+		const unbound = await unbindCodexAppRuntimeRotation({
+			platform: "linux",
+			home: root,
+			env,
+			spawnDetached: false,
+		});
+
+		const restored = await readFile(join(codexHome, "config.toml"), "utf8");
+		expect(restored).toContain('model_provider = "openai"');
+		expect(restored).not.toContain("codex-multi-auth-runtime-proxy");
+		expect(restored).not.toContain("disable_response_storage");
+		expect(restored).toContain("[profiles.default]");
+		expect(unbound.message).toContain("orphaned runtime-proxy bind");
+		expect(unbound.status.bound).toBe(false);
+		expect(unbound.status.unmanagedBind).toBe(false);
+	});
+
+	it("self-heals a half-orphan (proxy block present, model_provider already native) without duplicating keys", async () => {
+		const root = await createTempRoot("codex-app-bind-half-orphan-");
+		const codexHome = join(root, "codex-home");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: join(root, "multi-auth"),
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		await mkdir(codexHome, { recursive: true });
+		// Top-level provider is already native, but the proxy block lingers — the
+		// partial-orphan case that previously produced a duplicate model_provider.
+		await writeFile(
+			join(codexHome, "config.toml"),
+			[
+				'model_provider = "openai"',
+				"[profiles.default]",
+				'model = "gpt-5"',
+				"",
+				"[model_providers.codex-multi-auth-runtime-proxy]",
+				'name = "codex-multi-auth"',
+				'wire_api = "responses"',
+				"",
+			].join("\n"),
+			"utf8",
+		);
+
+		const unbound = await unbindCodexAppRuntimeRotation({
+			platform: "linux",
+			home: root,
+			env,
+			spawnDetached: false,
+		});
+
+		const restored = await readFile(join(codexHome, "config.toml"), "utf8");
+		const providerLines = (
+			restored.match(/^\s*model_provider\s*=/gm) ?? []
+		).length;
+		expect(providerLines).toBe(1);
+		expect(restored).toContain('model_provider = "openai"');
+		expect(restored).not.toContain("codex-multi-auth-runtime-proxy");
+		expect(restored).toContain("[profiles.default]");
+		expect(unbound.status.bound).toBe(false);
+	});
+
+	it("is a no-op for an already-clean config", async () => {
+		const root = await createTempRoot("codex-app-bind-clean-");
+		const codexHome = join(root, "codex-home");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: join(root, "multi-auth"),
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: codexHome,
+		};
+		await mkdir(codexHome, { recursive: true });
+		await writeFile(
+			join(codexHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const unbound = await unbindCodexAppRuntimeRotation({
+			platform: "linux",
+			home: root,
+			env,
+			spawnDetached: false,
+		});
+
+		expect(unbound.message).toBe("Codex app bind was not configured");
+		expect(await readFile(join(codexHome, "config.toml"), "utf8")).toBe(
+			'model_provider = "openai"\n',
+		);
 	});
 });

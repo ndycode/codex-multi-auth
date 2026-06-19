@@ -65,6 +65,7 @@ export {
 	getQuotaKey,
 	clampNonNegativeInt,
 	clearExpiredRateLimits,
+	clearAllRateLimits,
 	isRateLimitedForQuotaKey,
 	isRateLimitedForFamily,
 	formatWaitTime,
@@ -91,6 +92,7 @@ import {
 	clampNonNegativeInt,
 	getQuotaKey,
 	clearExpiredRateLimits,
+	clearAllRateLimits,
 	isRateLimitedForFamily,
 	formatWaitTime,
 	type RateLimitReason,
@@ -666,6 +668,35 @@ export class AccountManager {
 	static resetVolatileRuntimeState(): void {
 		resetTrackers();
 		resetAllCircuitBreakers();
+	}
+
+	/**
+	 * Wipe per-account transient state — active cooldowns and all rate-limit
+	 * reset windows — across every managed account, then schedule a debounced
+	 * persist of the cleared pool.
+	 *
+	 * `resetVolatileRuntimeState` only clears process-global singletons (rotation
+	 * trackers, circuit breakers); the cooldown timestamps and `rateLimitResetTimes`
+	 * maps live on the `ManagedAccount` objects and are serialized to disk by
+	 * `buildStorageSnapshot`. The stale-runtime recovery path reloads accounts
+	 * from that snapshot, so without this the same transient state that wedged the
+	 * pool is restored verbatim and recovery never escapes it (issue #606).
+	 *
+	 * The in-memory clear is immediate (it is what unblocks the live pool). The
+	 * disk write is debounced via `saveToDiskDebounced`, so a caller that needs
+	 * the cleared state to survive a restart should `await flushPendingSave()`
+	 * afterwards rather than rely on the debounce window completing.
+	 */
+	clearAccountTransientState(): void {
+		if (this.accounts.length === 0) return;
+		// Snapshot the reference list so a concurrent mutation of `this.accounts`
+		// (e.g. removeAccount) cannot reshape the array mid-iteration.
+		for (const account of [...this.accounts]) {
+			this.clearAccountCooldown(account);
+			clearAllRateLimits(account);
+			account.lastRateLimitReason = undefined;
+		}
+		this.saveToDiskDebounced();
 	}
 
 	setActiveIndex(index: number): ManagedAccount | null {
