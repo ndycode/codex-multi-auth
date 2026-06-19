@@ -78,6 +78,7 @@ import {
 } from "./codex-manager/commands/status.js";
 import { loadPersistedRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import { runSwitchCommand } from "./codex-manager/commands/switch.js";
+import { runHistoryCommand } from "./codex-manager/commands/history.js";
 import { runUnpinCommand } from "./codex-manager/commands/unpin.js";
 import { runWorkspaceCommand } from "./codex-manager/commands/workspace.js";
 import { runUsageCommand } from "./codex-manager/commands/usage.js";
@@ -591,6 +592,7 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 				sanitizeEmail,
 			}),
 	],
+	["history", (rest) => runHistoryCommand(rest)],
 	[
 		"verify",
 		(rest) =>
