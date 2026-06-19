@@ -7,6 +7,29 @@ This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
+## [2.3.3] - 2026-06-19
+
+Security and durability hardening from a deep stress audit of the rotation, persistence, and SSE-handling paths. No feature changes; routing, account-selection, and the normal auth flow are unchanged.
+See [docs/releases/v2.3.3.md](docs/releases/v2.3.3.md) for full details.
+
+### Fixed
+
+- Unbounded rate-limit window: a hostile or buggy upstream `retry-after`/quota-reset value could wedge an account unavailable for years. Retry/quota windows are now clamped to `MAX_RATE_LIMIT_DELAY_MS` (7 days), centrally in the account rate-limit setter and at source in `getQuotaNearExhaustionWaitMs` (H1)
+- Refresh-lease ownership: a slow owner whose lease expired and was stolen would unlink the new owner's lock on release, collapsing cross-process mutual exclusion. The lock now carries a per-owner nonce and `release()` only unlinks when it still matches (H2)
+- Cross-process token clobber: a routine `saveToDisk` rewrote the whole in-memory pool and could revert a single-use refresh token another process had just rotated. The save now reconciles token material from disk, adopting a strictly-newer on-disk token (H3)
+- Transient 429 over-deferral: a 30–60s 429 benched an account for the full 2h cap by folding the benign weekly window into the wait. Only genuinely-exhausted windows now count toward a 429 deferral (H4)
+- Forecast wait/recommendation: `getLiveQuotaWaitMs` took a blind max of both quota windows, overstating the wait and inverting the recommended account. It now filters to exhausted windows under usage pressure (a 429 still honors all windows) (H5)
+- SSE failures misreported as success: a mid-stream `error`, or a `response.failed` event, returned the raw SSE body at HTTP 200 — recorded as an account success and skipping rotation/retry. These now route to a synthesized non-2xx (H6/H7)
+- SSE `data:` parsing required a trailing space after the colon; spec-valid `data:value` lines were dropped (M1)
+- V1→V3 storage migration discarded the migrated account bodies, losing the scalar `rateLimitResetTime` → map `rateLimitResetTimes` conversion, so a rate-limited account looked immediately available on upgrade (M3)
+- Local-client-token store: temp-file write + rename without an `fsync` could truncate the store on crash/power-loss. The temp file is now fsynced before rename (L3)
+- OAuth `expires_in`/`expires` accepted any number; a zero/negative value minted an already-expired token and triggered a tight refresh loop. Both now require a positive integer (I1)
+- Log scrubber now masks the project's own `cma_local_…` bearer tokens in free text, alongside the existing JWT/hex/`sk-`/`Bearer` patterns (I2)
+
+### Correctness note
+
+- `response.incomplete` (e.g. hitting `max_output_tokens` or a content filter) is treated as a normal early stop: its partial response is delivered at HTTP 200 and counts as a healthy account, distinct from the `response.failed` failure path.
+
 ## [2.3.2] - 2026-06-16
 
 Self-healing recovery for an orphaned runtime-proxy app-bind. No runtime-rotation, storage, or auth behavior changed.
