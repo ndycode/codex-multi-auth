@@ -1662,6 +1662,47 @@ describe("runtime rotation proxy", () => {
 		expect(saveToDiskDebouncedSpy).toHaveBeenCalled();
 	});
 
+	it("persists the cooldown when an account has no resolvable accountId", async () => {
+		const now = Date.now();
+		// Account with no stored accountId and a non-JWT access token, so
+		// resolveAccountId returns null and the missing-accountId cooldown branch
+		// fires. The cooldown must be persisted like every other cooldown branch
+		// so a restart inside the window honors it (regression: this branch used
+		// to mutate cooldown state without scheduling a disk write).
+		const storage: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					email: "no-id@example.com",
+					refreshToken: "refresh-1",
+					accessToken: "plain-access-not-a-jwt",
+					expiresAt: now + 3_600_000,
+					addedAt: now - 60_000,
+					lastUsed: now - 60_000,
+					enabled: true,
+				},
+			],
+		};
+		const accountManager = new AccountManager(undefined, storage);
+		expect(accountManager.getAccountByIndex(0)?.accountId).toBeUndefined();
+		const saveToDiskDebouncedSpy = vi.spyOn(accountManager, "saveToDiskDebounced");
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream());
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, { model: "gpt-5-codex" });
+		await response.text();
+
+		// No upstream request is issued — the account is cooled down before send,
+		// exhausting the single-account pool.
+		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+		expect(calls).toHaveLength(0);
+		expect(accountManager.getAccountByIndex(0)?.cooldownReason).toBe("auth-failure");
+		expect(accountManager.getAccountByIndex(0)?.coolingDownUntil).toBeGreaterThan(now);
+		expect(saveToDiskDebouncedSpy).toHaveBeenCalled();
+	});
+
 	it("deduplicates concurrent expired-token refresh and persistence", async () => {
 		const now = Date.now();
 		const storage = createStorage(now, 1);
@@ -1840,30 +1881,146 @@ describe("runtime rotation proxy", () => {
 				"server-error",
 			);
 		}
+		// With every account cooling down, the proxy now *attempts* stale-runtime
+		// recovery (issue #606): cooling-down is transient and no longer suppresses
+		// the reload. Force that reload to fail so this test still exercises the
+		// final-exhaustion path and its skip-reason reporting deterministically.
+		const loadSpy = vi
+			.spyOn(AccountManager, "loadFromDisk")
+			.mockRejectedValue(new Error("reload unavailable"));
 		const { calls, fetchImpl } = createRecordingFetch(() =>
 			new Response("should not be called", { status: HTTP_STATUS.OK }),
 		);
 		const proxy = await startProxy({ accountManager, fetchImpl });
 
-		const response = await postResponses(proxy, { model: "gpt-5-codex" });
-		const payload = (await response.json()) as {
-			error: {
-				code: string;
-				reason: string;
-				account_skip_reasons: Record<string, string>;
-				hint: string;
+		try {
+			const response = await postResponses(proxy, { model: "gpt-5-codex" });
+			const payload = (await response.json()) as {
+				error: {
+					code: string;
+					reason: string;
+					account_skip_reasons: Record<string, string>;
+					hint: string;
+				};
 			};
-		};
 
-		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
-		expect(payload.error.code).toBe("codex_runtime_rotation_pool_exhausted");
-		expect(payload.error.reason).toBe("no-account");
-		expect(payload.error.account_skip_reasons).toMatchObject({
-			"0": "cooling-down:network-error",
-			"1": "cooling-down:server-error",
-		});
-		expect(payload.error.hint).toContain("rotation reset-runtime");
-		expect(calls).toHaveLength(0);
+			expect(loadSpy).toHaveBeenCalledTimes(1);
+			expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+			expect(payload.error.code).toBe("codex_runtime_rotation_pool_exhausted");
+			expect(payload.error.reason).toBe("no-account");
+			expect(payload.error.account_skip_reasons).toMatchObject({
+				"0": "cooling-down:network-error",
+				"1": "cooling-down:server-error",
+			});
+			expect(payload.error.hint).toContain("rotation reset-runtime");
+			expect(calls).toHaveLength(0);
+		} finally {
+			loadSpy.mockRestore();
+		}
+	});
+
+	it("recovers from an all-cooling-down pool by reloading and clearing transient state (issue #606)", async () => {
+		const now = Date.now();
+		// Persisted cooldown/rate-limit state survives a reload, so the reloaded
+		// pool carries the same wedged transient state. recoverStaleRuntimeState
+		// must clear it before the manager is used, otherwise selection deadlocks
+		// against the very recovery meant to escape it.
+		const staleStorage = createStorage(now, 2);
+		for (const account of staleStorage.accounts) {
+			account.coolingDownUntil = now + 60_000;
+			account.cooldownReason = "server-error";
+			account.rateLimitResetTimes = { codex: now + 60_000 };
+		}
+		const staleManager = new AccountManager(undefined, staleStorage);
+		const reloadedStorage = createStorage(now, 2);
+		for (const account of reloadedStorage.accounts) {
+			account.coolingDownUntil = now + 60_000;
+			account.cooldownReason = "server-error";
+			account.rateLimitResetTimes = { codex: now + 60_000 };
+		}
+		const reloadedManager = new AccountManager(undefined, reloadedStorage);
+		const clearSpy = vi.spyOn(reloadedManager, "clearAccountTransientState");
+		const flushSpy = vi
+			.spyOn(reloadedManager, "flushPendingSave")
+			.mockResolvedValue();
+		const loadSpy = vi
+			.spyOn(AccountManager, "loadFromDisk")
+			.mockResolvedValueOnce(reloadedManager);
+		const resetSpy = vi.spyOn(AccountManager, "resetVolatileRuntimeState");
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream());
+		try {
+			const proxy = await startProxy({
+				accountManager: staleManager,
+				fetchImpl,
+			});
+
+			const response = await postResponses(proxy, { model: "gpt-5-codex" });
+			await response.text();
+
+			expect(response.status).toBe(HTTP_STATUS.OK);
+			expect(loadSpy).toHaveBeenCalledTimes(1);
+			expect(resetSpy).toHaveBeenCalledTimes(1);
+			expect(clearSpy).toHaveBeenCalledTimes(1);
+			// The cleared snapshot is flushed to disk synchronously so a restart
+			// inside the debounce window cannot reload the wedged state.
+			expect(flushSpy).toHaveBeenCalledTimes(1);
+			// After clearing, the reloaded accounts are selectable again.
+			expect(reloadedManager.getAccountByIndex(0)?.coolingDownUntil).toBeUndefined();
+			expect(reloadedManager.getAccountByIndex(0)?.rateLimitResetTimes).toEqual({});
+			expect(calls).toHaveLength(1);
+		} finally {
+			loadSpy.mockRestore();
+			resetSpy.mockRestore();
+			clearSpy.mockRestore();
+			flushSpy.mockRestore();
+		}
+	});
+
+	it("does not attempt stale-runtime recovery when accounts are policy-blocked (issue #606)", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		// A policy decision is external and will not change across a disk reload,
+		// so a policy-blocked pool must continue to suppress stale-runtime
+		// recovery. `allowed` stays true so the request proceeds into account
+		// selection, where every account is rejected as policy-blocked and
+		// selection returns null. Recovery is then gated off by the guard's
+		// `blockedAccountIndexes.size === 0` precondition — the path that keeps a
+		// policy block from being papered over by a reload.
+		const policySpy = vi
+			.spyOn(runtimePolicy, "evaluateRuntimePolicy")
+			.mockResolvedValue({
+				allowed: true,
+				statusCode: 200,
+				errorCode: null,
+				reasons: [],
+				projectKey: null,
+				blockedAccountIndexes: new Set<number>([0, 1]),
+				scoreBoostByAccount: {},
+				budgetEvaluations: [],
+			});
+		const loadSpy = vi.spyOn(AccountManager, "loadFromDisk");
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream());
+		try {
+			const proxy = await startProxy({ accountManager, fetchImpl });
+
+			const response = await postResponses(proxy, { model: "gpt-5-codex" });
+			const payload = (await response.json()) as {
+				error: { code: string; account_skip_reasons: Record<string, string> };
+			};
+
+			expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+			expect(payload.error.code).toBe("codex_runtime_rotation_pool_exhausted");
+			expect(payload.error.account_skip_reasons).toMatchObject({
+				"0": "policy-blocked",
+				"1": "policy-blocked",
+			});
+			// Recovery must be suppressed: loadFromDisk is never called.
+			expect(loadSpy).not.toHaveBeenCalled();
+			expect(calls).toHaveLength(0);
+		} finally {
+			policySpy.mockRestore();
+			loadSpy.mockRestore();
+		}
 	});
 
 	it("deduplicates concurrent stale-runtime reload recovery", async () => {

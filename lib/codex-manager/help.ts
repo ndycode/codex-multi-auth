@@ -38,6 +38,7 @@ export function printUsage(): void {
 			"  codex-multi-auth rotation <enable|disable|status|bind-app|unbind-app>",
 			"  codex-multi-auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]",
 			"  codex-multi-auth why-selected [--now | --last] [--json]",
+			"  codex-multi-auth history [list|show <id>] [--json]   (all local sessions, ignores /resume provider filtering)",
 			"",
 			"Advanced:",
 			"  codex-multi-auth report [--live] [--json] [--explain] [--model <model>] [--out <path>]",
