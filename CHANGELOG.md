@@ -7,6 +7,43 @@ This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
+## [2.3.2] - 2026-06-16
+
+Self-healing recovery for an orphaned runtime-proxy app-bind. No runtime-rotation, storage, or auth behavior changed.
+See [docs/releases/v2.3.2.md](docs/releases/v2.3.2.md) for full details.
+
+### Fixed
+
+- Orphaned app-bind: when `config.toml` was left bound to `codex-multi-auth-runtime-proxy` but the app-bind state/backup files were gone, `rotation status` reported "not configured" and `unbind-app` was a no-op, leaving Codex routed to a dead proxy port. `unbind-app` now self-heals (restoring the provider, falling back to `openai` with no backup), `getAppBindStatus` exposes `unmanagedBind`, and status surfaces "bound but unmanaged" (#614, #615)
+- Duplicate `model_provider` key in the no-backup recovery path for half-orphaned configs (proxy block present, top-level provider already native) — produced invalid TOML; the restore now never inserts a second top-level `model_provider` (#615)
+
+## [2.3.1] - 2026-06-16
+
+Adds the read-only `codex-multi-auth history` command. No runtime, storage, or auth behavior changed.
+See [docs/releases/v2.3.1.md](docs/releases/v2.3.1.md) for full details.
+
+### Added
+
+- `codex-multi-auth history` (`list` / `show <id>`, both with `--json`) lists local Codex sessions across all providers by reading `<codex-home>/sessions` rollout files directly, bypassing the `model_provider` filtering that hides threads in `codex resume` while runtime rotation or app bind is active. Fixes the "history not shared across accounts" report — the split is by provider name, not account (#612, #613)
+
+## [2.3.0] - 2026-06-15
+
+First stable cut of the `2.3.0` line. Promotes the `2.3.0-beta` series to stable and adds three runtime-rotation durability fixes landed after `beta.3`.
+See [docs/releases/v2.3.0.md](docs/releases/v2.3.0.md) for full details.
+
+### Fixed
+
+- Stale-runtime recovery deadlock: the rotation proxy returned a permanent `503 "All managed Codex accounts are temporarily unavailable"` even with healthy accounts, because persisted per-account transient state (cooldowns, rate-limit windows) was restored on reload and the recovery guard refused to run against it (#606, #607)
+- Cooldown not persisted when an account has no resolvable `accountId` — a restart inside the window dropped the cooldown and re-selected the broken account (#608)
+- Rate-limit window not persisted in the short-retry 429 path — same durability gap as the missing-accountId branch, in the runtime fetch loop (#609)
+
+### Notes
+
+- Published under the `latest` dist-tag (`npm i -g codex-multi-auth`).
+- Includes everything from the `2.3.0-beta.1` → `2.3.0-beta.3` prereleases.
+
+---
+
 ## [2.3.0-beta.3] - 2026-06-11
 
 Stream backpressure fix, deduplication fixpoint, retry-loop consolidation, typed errors, 20 new test suites, dead code pruned.
