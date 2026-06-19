@@ -80,6 +80,7 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | `codex-multi-auth models` | Inspect local model/account capability views |
 | `codex-multi-auth monitor` | Aggregate runtime, usage, policy, quota, model, and project state |
 | `codex-multi-auth why-selected [--now|--last]` | Explain which account the selector picks now or via the last persisted runtime snapshot |
+| `codex-multi-auth history [list\|show <id>]` | List every local Codex session across all providers, bypassing the `model_provider` filtering that hides threads in `codex resume` while runtime rotation / app bind is active |
 | `codex-multi-auth rotation enable\|disable\|status\|bind-app\|unbind-app` | Manage the default-on runtime Responses proxy for live Codex account rotation |
 
 ---
@@ -90,7 +91,7 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | --- | --- | --- |
 | `--device-auth` | login | Use the OpenAI Codex device-code flow for remote/headless login (mutually exclusive with `--manual` / `--no-browser`) |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow (mutually exclusive with `--device-auth`) |
-| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle | Print machine-readable output |
+| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle, history | Print machine-readable output |
 | `--csv` | usage | Print or write CSV bucket output |
 | `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |
 | `--live` | best, forecast, report, fix | Use live probe before decisions/output |
@@ -224,6 +225,35 @@ store persists SHA-256 hashes plus prefixes and labels.
 
 Generated snippets use `CODEX_MULTI_AUTH_LOCAL_KEY`. The Python snippet uses
 `client.responses.create`.
+
+---
+
+## `codex-multi-auth history`
+
+Lists local Codex sessions by reading the rollout files under
+`<codex-home>/sessions` (default `~/.codex/sessions`, honoring `CODEX_HOME`)
+directly. Codex's own `codex resume` view filters threads by the `model_provider`
+recorded in each session; while runtime rotation or app bind is active that
+provider is `codex-multi-auth-runtime-proxy`, so sessions created under the
+native `openai` provider (or vice versa) are hidden from `resume` even though
+the files are still present. This command shows every session regardless of
+provider, which is the fix for "history not shared across accounts" reports —
+the split is by provider name, not by account.
+
+Usage:
+
+```bash
+codex-multi-auth history [list] [--json]
+codex-multi-auth history show <session-id> [--json]
+```
+
+`list` (the default when no subcommand is given) prints each session's
+`updated_at`, `model_provider`, id, thread name, and cwd, most-recent first.
+`show <id>` prints the provider/originator metadata and the first few user
+messages for a single session. Reopen any session with `codex resume <id>`.
+
+This command is read-only, performs no network calls, and never mutates Codex or
+multi-auth state.
 
 ---
 
