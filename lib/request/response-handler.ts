@@ -596,18 +596,26 @@ function maybeCaptureResponseEvent(
 		return;
 	}
 
-	// response.failed / response.incomplete are terminal failure events in the
-	// Responses streaming protocol: HTTP is still 200 but the turn did not
-	// succeed. Treat them as errors so the stream is not misclassified as a
-	// successful response and misattributed as an account success (stress audit
-	// H7). response.incomplete (e.g. hit max_output_tokens) is routine.
-	if (data.type === "response.failed" || data.type === "response.incomplete") {
+	// response.failed is a genuine terminal failure: the turn did not produce a
+	// usable result even though HTTP opened 200. Treat it as an error so the
+	// stream is not misclassified as a successful response and misattributed as
+	// an account success (stress audit H7).
+	if (data.type === "response.failed") {
 		log.warn("SSE terminal failure event received", { type: data.type });
 		state.encounteredError = true;
 		return;
 	}
 
-	if (data.type === "response.done" || data.type === "response.completed") {
+	// response.completed / response.done / response.incomplete are all terminal
+	// envelopes that carry a final response object. response.incomplete (e.g.
+	// hitting max_output_tokens or a content filter) is a NORMAL early stop whose
+	// partial output is the answer — it must be delivered to the client and
+	// counts as a healthy account, not a failure (re-audit correction to H7).
+	if (
+		data.type === "response.done" ||
+		data.type === "response.completed" ||
+		data.type === "response.incomplete"
+	) {
 		if (isRecord(data.response)) {
 			state.finalResponse = { ...data.response };
 		}

@@ -880,14 +880,18 @@ data: {"type":"response.failed","response":{"id":"r1","status":"failed"}}
 			expect(result.status).toBeGreaterThanOrEqual(400);
 		});
 
-		it('H7: response.incomplete terminal event yields a non-2xx response', async () => {
+		it('H7: response.incomplete delivers the partial response as a 200 success', async () => {
+			// Hitting max_output_tokens / a content filter is a NORMAL early stop.
+			// The partial response object is the answer and the account is healthy,
+			// so it must be delivered as 200 (re-audit correction to H7).
 			const sseContent = `data: {"type":"response.created","response":{"id":"r2"}}
-data: {"type":"response.incomplete","response":{"id":"r2","status":"incomplete"}}
+data: {"type":"response.incomplete","response":{"id":"r2","status":"incomplete","output":"partial"}}
 `;
 			const response = new Response(sseContent, { status: 200, statusText: 'OK' });
 			const result = await convertSseToJson(response, new Headers());
-			expect(result.ok).toBe(false);
-			expect(result.status).toBeGreaterThanOrEqual(400);
+			expect(result.ok).toBe(true);
+			const body = await result.json();
+			expect(body).toMatchObject({ id: 'r2', status: 'incomplete' });
 		});
 
 		it('control: a clean response.completed stream is still a 200 success', async () => {
