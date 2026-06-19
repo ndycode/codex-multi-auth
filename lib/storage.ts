@@ -1176,7 +1176,12 @@ export function normalizeAccountStorage(
 			? migrateV1ToV3(data as unknown as AccountStorageV1)
 			: (data as unknown as AccountStorageV3);
 
-	const validAccounts = rawAccounts.filter(
+	// Build from baseStorage.accounts (the migrated V3 shape), NOT the raw V1
+	// objects. Otherwise a V1->V3 upgrade discards migrateV1ToV3's per-account
+	// transforms — most importantly the scalar `rateLimitResetTime` -> map
+	// `rateLimitResetTimes` conversion — so a rate-limited V1 account would be
+	// treated as immediately available on upgrade and burst 429s (stress audit M3).
+	const validAccounts = baseStorage.accounts.filter(
 		(account): account is AccountMetadataV3 =>
 			isRecord(account) &&
 			typeof account.refreshToken === "string" &&

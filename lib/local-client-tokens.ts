@@ -181,10 +181,16 @@ async function writeStoreToDisk(store: LocalClientTokenStore): Promise<void> {
 	const tempPath = tempPathFor(path);
 	let moved = false;
 	try {
-		await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
-		});
+		// fsync the temp file before rename so a crash/power-loss after the rename
+		// cannot leave a truncated token store (stress audit L3). Mirrors the
+		// durable-write pattern already used in runtime/app-bind.ts.
+		const handle = await fs.open(tempPath, "w", 0o600);
+		try {
+			await handle.writeFile(`${JSON.stringify(payload, null, 2)}\n`, "utf8");
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
 		for (let attempt = 0; attempt < 5; attempt += 1) {
 			try {
 				await fs.rename(tempPath, path);

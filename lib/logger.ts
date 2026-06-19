@@ -32,6 +32,11 @@ const TOKEN_PATTERNS = [
 	/[a-f0-9]{40,}/gi,
 	/sk-[A-Za-z0-9]{20,}/g,
 	/Bearer\s+\S+/gi,
+	// This app's own local bearer tokens: `cma_local_<base64url>` (see
+	// lib/local-client-tokens.ts). The structured-log key masker and the OAuth
+	// scrubber cover the normal paths, but the free-text scrubber is the last
+	// line of defense and must recognize the project's own token shape too.
+	/cma_local_[A-Za-z0-9_-]{16,}/g,
 ];
 
 const EMAIL_PATTERN = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;

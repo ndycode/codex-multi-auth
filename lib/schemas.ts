@@ -328,7 +328,7 @@ export const TokenSuccessSchema = z.object({
 	type: z.literal("success"),
 	access: z.string().min(1),
 	refresh: z.string().min(1),
-	expires: z.number(),
+	expires: z.number().int().positive(),
 	idToken: z.string().optional(),
 	multiAccount: z.boolean().optional(),
 });
@@ -367,7 +367,7 @@ export type TokenResultFromSchema = z.infer<typeof TokenResultSchema>;
 export const OAuthTokenResponseSchema = z.object({
 	access_token: z.string().min(1),
 	refresh_token: z.string().optional(),
-	expires_in: z.number(),
+	expires_in: z.number().int().positive(),
 	id_token: z.string().optional(),
 	token_type: z.string().optional(),
 	scope: z.string().optional(),

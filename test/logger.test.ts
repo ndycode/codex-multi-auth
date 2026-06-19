@@ -5,6 +5,7 @@ import {
 	LOG_LEVEL,
 	logRequest, 
 	maskEmail,
+	maskString,
 	setCorrelationId,
 	getCorrelationId,
 	clearCorrelationId,
@@ -108,6 +109,12 @@ describe('Logger Module', () => {
 					},
 				});
 			}).not.toThrow();
+		});
+
+		it('I2: masks the app local cma_local bearer tokens in free text', () => {
+			const token = 'cma_local_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6';
+			const masked = maskString('authorization failed for ' + token + ' end');
+			expect(masked).not.toContain(token);
 		});
 	});
 
