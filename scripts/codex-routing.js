@@ -24,6 +24,7 @@ const AUTH_SUBCOMMANDS = new Set([
 	"monitor",
 	"rotation",
 	"why-selected",
+	"history",
 	"config",
 	"init-config",
 	"debug",
