@@ -1,3 +1,5 @@
+import { quotaLeftPercentFromUsed } from "./quota-readiness.js";
+
 export interface QuotaSchedulerWindow {
 	usedPercent?: number;
 	resetAtMs?: number;
@@ -213,11 +215,21 @@ export class PreemptiveQuotaScheduler {
 		if (!key) return;
 		const waitMs = Number.isFinite(retryAfterMs) ? Math.max(0, Math.floor(retryAfterMs)) : 0;
 		const existing = this.snapshots.get(key);
-		const existingResetAtMs = Math.max(
-			existing?.primary.resetAtMs ?? 0,
-			existing?.secondary.resetAtMs ?? 0,
-		);
-		const nextResetAtMs = Math.max(existingResetAtMs, now + waitMs);
+		// A 429 retry-after defines the PRIMARY rate-limit window only. Do NOT
+		// fold in a benign quota reset — neither the weekly secondary (~7d out)
+		// nor a healthy primary quota window from a prior 200 snapshot — because
+		// that would bench the account for the full deferral cap on a transient
+		// 30-60s 429 (stress audit H4). Only preserve a prior primary window that
+		// was itself a rate-limit / exhausted window (usedPercent absent or 100).
+		const existingPrimary = existing?.primary;
+		const existingPrimaryIsRateLimit =
+			existingPrimary !== undefined &&
+			(typeof existingPrimary.usedPercent !== "number" ||
+				!Number.isFinite(existingPrimary.usedPercent) ||
+				quotaLeftPercentFromUsed(existingPrimary.usedPercent) === 0);
+		const existingPrimaryResetAtMs =
+			existingPrimaryIsRateLimit ? (existingPrimary?.resetAtMs ?? 0) : 0;
+		const nextResetAtMs = Math.max(existingPrimaryResetAtMs, now + waitMs);
 		this.snapshots.set(key, {
 			status: 429,
 			primary: {
@@ -251,7 +263,24 @@ export class PreemptiveQuotaScheduler {
 				? snapshot.secondary.resetAtMs - now
 				: 0;
 
-		const waitCandidates = [snapshot.primary.resetAtMs, snapshot.secondary.resetAtMs]
+		// For a 429 deferral, only count a window whose reset is genuinely a
+		// rate-limit / exhaustion window. A window carrying a healthy usedPercent
+		// (e.g. a weekly secondary at 30% from a prior 200 snapshot) is NOT the
+		// thing the 429 is about; folding its ~7d reset in would bench the account
+		// for the full deferral cap on a transient 429 (stress audit H4). A window
+		// with no usedPercent, or one that is exhausted, still counts.
+		const isRateLimitWindow = (window: {
+			usedPercent?: number;
+			resetAtMs?: number;
+		}): boolean => {
+			if (typeof window.usedPercent !== "number" || !Number.isFinite(window.usedPercent)) {
+				return true;
+			}
+			return quotaLeftPercentFromUsed(window.usedPercent) === 0;
+		};
+		const waitCandidates = [snapshot.primary, snapshot.secondary]
+			.filter(isRateLimitWindow)
+			.map((window) => window.resetAtMs)
 			.filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > now)
 			.map((value) => value - now)
 			.filter((value) => value > 0);

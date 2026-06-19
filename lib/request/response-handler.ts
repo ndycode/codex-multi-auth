@@ -1,5 +1,5 @@
 import { createLogger, logRequest, LOGGING_ENABLED } from "../logger.js";
-import { PLUGIN_NAME } from "../constants.js";
+import { HTTP_STATUS, PLUGIN_NAME } from "../constants.js";
 import { isRecord } from "../utils.js";
 
 import type { SSEEventData } from "../types.js";
@@ -596,6 +596,17 @@ function maybeCaptureResponseEvent(
 		return;
 	}
 
+	// response.failed / response.incomplete are terminal failure events in the
+	// Responses streaming protocol: HTTP is still 200 but the turn did not
+	// succeed. Treat them as errors so the stream is not misclassified as a
+	// successful response and misattributed as an account success (stress audit
+	// H7). response.incomplete (e.g. hit max_output_tokens) is routine.
+	if (data.type === "response.failed" || data.type === "response.incomplete") {
+		log.warn("SSE terminal failure event received", { type: data.type });
+		state.encounteredError = true;
+		return;
+	}
+
 	if (data.type === "response.done" || data.type === "response.completed") {
 		if (isRecord(data.response)) {
 			state.finalResponse = { ...data.response };
@@ -702,7 +713,7 @@ function maybeCaptureResponseEvent(
 function parseSseStream(
 	sseText: string,
 	onResponseId?: (responseId: string) => void,
-): unknown | null {
+): { finalResponse: unknown | null; encounteredError: boolean } {
 	const lines = sseText.split(/\r?\n/);
 	const state = createParsedResponseState();
 
@@ -710,13 +721,18 @@ function parseSseStream(
 	let firstMalformedSample: string | null = null;
 	for (const line of lines) {
 		const trimmedLine = line.trim();
-		if (trimmedLine.startsWith("data: ")) {
-			const payload = trimmedLine.substring(6).trim();
+		// Accept "data:" with or without the optional trailing space. The SSE
+		// spec allows "data:value"; requiring the space silently dropped every
+		// event on an upstream/proxy formatting change (stress audit M1).
+		if (trimmedLine.startsWith("data:")) {
+			const payload = trimmedLine.substring(5).trim();
 			if (!payload || payload === "[DONE]") continue;
 			try {
 				const data = JSON.parse(payload) as SSEEventData;
 				maybeCaptureResponseEvent(state, data, onResponseId);
-				if (state.encounteredError) return null;
+				if (state.encounteredError) {
+					return { finalResponse: null, encounteredError: true };
+				}
 			} catch (error) {
 				// AUDIT-H9 / H-03: previously these malformed chunks were
 				// silently discarded, masking upstream protocol drift + the
@@ -744,7 +760,10 @@ function parseSseStream(
 		});
 	}
 
-	return finalizeParsedResponse(state);
+	return {
+		finalResponse: finalizeParsedResponse(state),
+		encounteredError: state.encounteredError,
+	};
 }
 
 /**
@@ -807,7 +826,43 @@ export async function convertSseToJson(
 		}
 
 		// Parse SSE events to extract the final response
-		const finalResponse = parseSseStream(fullText, options?.onResponseId);
+		const { finalResponse, encounteredError } = parseSseStream(
+			fullText,
+			options?.onResponseId,
+		);
+
+		// A terminal failure event (mid-stream `error`, `response.failed`, or
+		// `response.incomplete`) means the upstream turn failed even though HTTP
+		// opened 200. Returning the raw SSE at 200 here makes the proxy record an
+		// account success and skip rotation/retry (stress audit H6+H7). Synthesize
+		// a non-2xx so the caller routes to failure. (A stream that simply yields
+		// no final response WITHOUT an error — empty/truncated — is left as the
+		// original passthrough below so the empty-response retry path still runs.)
+		if (encounteredError) {
+			log.warn("SSE stream ended with a terminal failure event");
+			logRequest("stream-error", {
+				error: "SSE stream terminated with an error/failed/incomplete event",
+			});
+			const upstreamFailed =
+				typeof response.status === "number" && response.status >= 400;
+			const status = upstreamFailed ? response.status : HTTP_STATUS.BAD_GATEWAY;
+			const errorHeaders = new Headers(headers);
+			errorHeaders.set("content-type", "application/json; charset=utf-8");
+			return new Response(
+				JSON.stringify({
+					error: {
+						message: "Upstream SSE stream terminated with a failure event",
+						type: "upstream_stream_error",
+						code: "sse_terminal_error",
+					},
+				}),
+				{
+					status,
+					statusText: upstreamFailed ? response.statusText : "Bad Gateway",
+					headers: errorHeaders,
+				},
+			);
+		}
 
 		if (!finalResponse) {
 			log.warn("Could not find final response in SSE stream");
@@ -816,7 +871,8 @@ export async function convertSseToJson(
 				error: "No terminal response event found in SSE stream",
 			});
 
-			// Return original stream if we can't parse
+			// Return original stream if we can't parse (no error event, just no
+			// terminal response). Preserves the empty-response retry path.
 			return new Response(fullText, {
 				status: response.status,
 				statusText: response.statusText,
@@ -868,8 +924,8 @@ function createResponseIdCapturingStream(
 
 		for (const rawLine of lines) {
 			const trimmedLine = rawLine.trim();
-			if (!trimmedLine.startsWith("data: ")) continue;
-			const payload = trimmedLine.slice(6).trim();
+			if (!trimmedLine.startsWith("data:")) continue;
+			const payload = trimmedLine.slice(5).trim();
 			if (!payload || payload === "[DONE]") continue;
 			try {
 				const data = JSON.parse(payload) as SSEEventData;

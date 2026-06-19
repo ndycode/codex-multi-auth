@@ -354,12 +354,13 @@ describe("SSE Parsing Edge Cases", () => {
 			expect(body.id).toBe("resp_456");
 		});
 
-		it("handles error event type", async () => {
+		it("handles error event type (non-2xx failure, H6)", async () => {
 			const sseText =
 				'data: {"type":"error","error":{"message":"Something went wrong"}}\n\n';
 			const response = new Response(sseText, { status: 200 });
 			const result = await convertSseToJson(response, new Headers());
-			expect(result.status).toBe(200);
+			expect(result.status).toBeGreaterThanOrEqual(400);
+			expect(result.ok).toBe(false);
 		});
 
 		it("handles multiple events, extracts last response.done", async () => {

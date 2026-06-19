@@ -128,12 +128,23 @@ function getRiskLevel(score: number): ForecastRiskLevel {
 	return "low";
 }
 
-function getLiveQuotaWaitMs(snapshot: CodexQuotaSnapshot, now: number): number {
+function getLiveQuotaWaitMs(
+	snapshot: CodexQuotaSnapshot,
+	now: number,
+	onlyExhausted: boolean,
+): number {
 	const waits: number[] = [];
-	for (const resetAt of [
-		snapshot.primary.resetAtMs,
-		snapshot.secondary.resetAtMs,
-	]) {
+	for (const window of [snapshot.primary, snapshot.secondary]) {
+		// Under pure usage pressure (not a 429), only an actually-exhausted window
+		// (100% used) should impose a wait. A healthy weekly secondary normally
+		// resets ~7d out; folding that in would overstate the wait by orders of
+		// magnitude and invert the account recommendation (stress audit H5). On a
+		// 429 we honor every future window, since the upstream said "slow down now"
+		// regardless of the usage gauge.
+		if (onlyExhausted && quotaLeftPercentFromUsed(window?.usedPercent) !== 0) {
+			continue;
+		}
+		const resetAt = window?.resetAtMs;
 		if (typeof resetAt !== "number") continue;
 		if (!Number.isFinite(resetAt)) continue;
 		const remaining = resetAt - now;
@@ -310,7 +321,9 @@ export function evaluateForecastAccount(
 			riskScore += 35;
 			reasons.push("live probe returned 429");
 		}
-		const liveWait = quotaPressure ? getLiveQuotaWaitMs(quota, now) : 0;
+		const liveWait = quotaPressure
+			? getLiveQuotaWaitMs(quota, now, quota.status !== 429)
+			: 0;
 		waitMs = Math.max(waitMs, liveWait);
 		if (liveWait > 0 && availability === "ready") {
 			availability = "delayed";

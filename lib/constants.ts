@@ -15,6 +15,13 @@ export const DUMMY_API_KEY = "chatgpt-oauth";
 /** Provider ID for UI display - shows under "OpenAI" in auth dropdown */
 export const PROVIDER_ID = "openai";
 
+/**
+ * Upper bound for any rate-limit / retry-after window we will honor. A single
+ * hostile or buggy upstream value (seconds-vs-ms confusion, anti-abuse misfire)
+ * must never be able to wedge an account unavailable for longer than this.
+ */
+export const MAX_RATE_LIMIT_DELAY_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** HTTP Status Codes */
 export const HTTP_STATUS = {
 	BAD_REQUEST: 400,
@@ -24,6 +31,7 @@ export const HTTP_STATUS = {
 	UNAUTHORIZED: 401,
 	NOT_FOUND: 404,
 	TOO_MANY_REQUESTS: 429,
+	BAD_GATEWAY: 502,
 	SERVICE_UNAVAILABLE: 503,
 } as const;
 

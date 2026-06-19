@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { join } from "node:path";
 import { parseBooleanEnv } from "./env-parsing.js";
@@ -21,6 +21,10 @@ interface LeaseFilePayload {
 	pid: number;
 	acquiredAt: number;
 	expiresAt: number;
+	// Per-owner identity. release() only unlinks a lock whose on-disk nonce still
+	// matches this handle, so a slow owner whose lease expired and was stolen
+	// cannot delete the new owner's lock (stress audit H2).
+	nonce: string;
 }
 
 interface ResultFilePayload {
@@ -73,6 +77,9 @@ function parseLeasePayload(raw: unknown): LeaseFilePayload | null {
 	const pid = typeof raw.pid === "number" ? raw.pid : Number.NaN;
 	const acquiredAt = typeof raw.acquiredAt === "number" ? raw.acquiredAt : Number.NaN;
 	const expiresAt = typeof raw.expiresAt === "number" ? raw.expiresAt : Number.NaN;
+	// nonce is optional for backward-compat with locks written before H2; an
+	// absent nonce simply means release() falls back to a best-effort unlink.
+	const nonce = typeof raw.nonce === "string" ? raw.nonce : "";
 	if (
 		tokenHash.length === 0 ||
 		!Number.isFinite(pid) ||
@@ -86,6 +93,7 @@ function parseLeasePayload(raw: unknown): LeaseFilePayload | null {
 		pid: Math.floor(pid),
 		acquiredAt: Math.floor(acquiredAt),
 		expiresAt: Math.floor(expiresAt),
+		nonce,
 	};
 }
 
@@ -230,6 +238,7 @@ export class RefreshLeaseCoordinator {
 
 			try {
 				const handle = await this.fsOps.open(lockPath, "wx", 0o600);
+				const nonce = randomUUID();
 				try {
 					const now = Date.now();
 					const payload: LeaseFilePayload = {
@@ -237,13 +246,14 @@ export class RefreshLeaseCoordinator {
 						pid: process.pid,
 						acquiredAt: now,
 						expiresAt: now + this.leaseTtlMs,
+						nonce,
 					};
 					await handle.writeFile(`${JSON.stringify(payload)}\n`, "utf8");
 				} finally {
 					await handle.close();
 				}
 
-				return this.createOwnerHandle(tokenHash, lockPath, resultPath);
+				return this.createOwnerHandle(tokenHash, lockPath, resultPath, nonce);
 			} catch (error) {
 				const code = (error as NodeJS.ErrnoException).code;
 				if (code !== "EEXIST") {
@@ -292,6 +302,7 @@ export class RefreshLeaseCoordinator {
 		tokenHash: string,
 		lockPath: string,
 		resultPath: string,
+		nonce: string,
 	): RefreshLeaseHandle {
 		let released = false;
 		return {
@@ -304,10 +315,40 @@ export class RefreshLeaseCoordinator {
 						await this.writeResult(resultPath, tokenHash, result);
 					}
 				} finally {
-					await safeUnlink(lockPath, undefined, this.fsOps);
+					// Only unlink the lock if it is still OURS. If our lease expired
+					// and another process stole the lock, the on-disk nonce no longer
+					// matches and unlinking would delete the new owner's lock mid
+					// refresh (stress audit H2). A lock written before nonces existed
+					// (empty on-disk nonce) falls back to a best-effort unlink.
+					if (await this.ownsLock(lockPath, tokenHash, nonce)) {
+						await safeUnlink(lockPath, undefined, this.fsOps);
+					} else {
+						log.warn(
+							"Refresh lease no longer owned at release; leaving lock for current owner",
+							{ lockPath },
+						);
+					}
 				}
 			},
 		};
+	}
+
+	private async ownsLock(
+		lockPath: string,
+		tokenHash: string,
+		nonce: string,
+	): Promise<boolean> {
+		const raw = await readJson(lockPath, this.fsOps);
+		const parsed = raw === null ? null : parseLeasePayload(raw);
+		if (!parsed) {
+			// Unreadable/absent lock: nothing of ours to protect, allow cleanup.
+			return true;
+		}
+		if (parsed.tokenHash !== tokenHash) return false;
+		// Backward-compat: a lock written before H2 has no nonce. Fall back to the
+		// previous (best-effort) behavior so we still clean up our own old locks.
+		if (parsed.nonce === "") return true;
+		return parsed.nonce === nonce;
 	}
 
 	private async writeResult(

@@ -603,7 +603,7 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 			expect(onResponseId).toHaveBeenCalledTimes(1);
 		});
 
-		it('should return the raw SSE text when an error event arrives before response.done', async () => {
+		it('returns a non-2xx error (not raw 200) when an error event arrives before response.done (H6)', async () => {
 			const onResponseId = vi.fn();
 			const sseContent = [
 				'data: {"type":"response.created","response":{"id":"resp_bad_123","object":"response"}}',
@@ -613,13 +613,14 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 				'data: {"type":"response.done","response":{"id":"resp_bad_123","output":"bad"}}',
 				'',
 			].join('\n');
-			const response = new Response(sseContent);
+			const response = new Response(sseContent, { status: 200, statusText: 'OK' });
 			const headers = new Headers();
 
 			const result = await convertSseToJson(response, headers, { onResponseId });
-			const text = await result.text();
 
-			expect(text).toBe(sseContent);
+
+			expect(result.ok).toBe(false);
+			expect(result.status).toBeGreaterThanOrEqual(400);
 			expect(onResponseId).not.toHaveBeenCalled();
 		});
 
@@ -857,4 +858,57 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 			expect(isEmptyResponse({ data: [1, 2, 3] })).toBe(false);
 		});
 	});
+	describe('SSE failure classification (stress audit H6/H7/M1)', () => {
+		it('H6: mid-stream error event yields a non-2xx response, not a 200 success', async () => {
+			const sseContent = `data: {"type":"response.output_text.delta","delta":"partial"}
+data: {"type":"error","error":{"message":"upstream blew up"}}
+`;
+			const response = new Response(sseContent, { status: 200, statusText: 'OK' });
+			const result = await convertSseToJson(response, new Headers());
+			// Must NOT be a 200 — otherwise index.ts records an account success.
+			expect(result.ok).toBe(false);
+			expect(result.status).toBeGreaterThanOrEqual(400);
+		});
+
+		it('H7: response.failed terminal event yields a non-2xx response', async () => {
+			const sseContent = `data: {"type":"response.created","response":{"id":"r1"}}
+data: {"type":"response.failed","response":{"id":"r1","status":"failed"}}
+`;
+			const response = new Response(sseContent, { status: 200, statusText: 'OK' });
+			const result = await convertSseToJson(response, new Headers());
+			expect(result.ok).toBe(false);
+			expect(result.status).toBeGreaterThanOrEqual(400);
+		});
+
+		it('H7: response.incomplete terminal event yields a non-2xx response', async () => {
+			const sseContent = `data: {"type":"response.created","response":{"id":"r2"}}
+data: {"type":"response.incomplete","response":{"id":"r2","status":"incomplete"}}
+`;
+			const response = new Response(sseContent, { status: 200, statusText: 'OK' });
+			const result = await convertSseToJson(response, new Headers());
+			expect(result.ok).toBe(false);
+			expect(result.status).toBeGreaterThanOrEqual(400);
+		});
+
+		it('control: a clean response.completed stream is still a 200 success', async () => {
+			const sseContent = `data: {"type":"response.completed","response":{"id":"ok1","output":"done"}}
+`;
+			const response = new Response(sseContent, { status: 200, statusText: 'OK' });
+			const result = await convertSseToJson(response, new Headers());
+			expect(result.ok).toBe(true);
+			const body = await result.json();
+			expect(body).toEqual({ id: 'ok1', output: 'done' });
+		});
+
+		it('M1: parses "data:" events with no space after the colon', async () => {
+			const sseContent =
+				'data:{"type":"response.completed","response":{"id":"nospace","output":"ok"}}\n';
+			const response = new Response(sseContent, { status: 200, statusText: 'OK' });
+			const result = await convertSseToJson(response, new Headers());
+			expect(result.ok).toBe(true);
+			const body = await result.json();
+			expect(body).toEqual({ id: 'nospace', output: 'ok' });
+		});
+	});
+
 });
