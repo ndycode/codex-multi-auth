@@ -46,6 +46,7 @@ import {
 } from "./policy/runtime-policy.js";
 import { isWorkspaceDisabledError } from "./request/fetch-helpers.js";
 import { createLogger, maskString, runWithCorrelationId } from "./logger.js";
+import { CodexValidationError } from "./errors.js";
 import {
 	buildPinnedUnavailableErrorBody,
 	buildTokenInvalidationBody,
@@ -620,9 +621,10 @@ export async function startRuntimeRotationProxy(
 	// binding a non-loopback host would expose every managed account to the
 	// network, so it is refused unconditionally.
 	if (!isLoopbackHost(host)) {
-		throw new Error(
+		throw new CodexValidationError(
 			`Runtime rotation proxy refuses to bind non-loopback host "${host}". ` +
 				"It forwards managed OAuth tokens and is loopback-only.",
+			{ field: "host", expected: "a loopback host", context: { host } },
 		);
 	}
 	// Normalize the validated host into its two representations exactly once so the
@@ -639,7 +641,10 @@ export async function startRuntimeRotationProxy(
 			? options.clientApiKey.trim()
 			: null;
 	if (!clientApiKey) {
-		throw new Error("Runtime rotation proxy requires a clientApiKey.");
+		throw new CodexValidationError(
+			"Runtime rotation proxy requires a clientApiKey.",
+			{ field: "clientApiKey", expected: "a non-empty string" },
+		);
 	}
 	const now = options.now ?? Date.now;
 	const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
@@ -977,10 +982,15 @@ async function handleRequestInner(
 					exhaustionReason === "no-account" &&
 					(policyDecision?.blockedAccountIndexes.size ?? 0) === 0 &&
 					![...accountSkipReasons.values()].some(
-						(reason) =>
-							reason === "rate-limited" ||
-							reason.startsWith("cooling-down") ||
-							reason === "policy-blocked",
+						// Only policy blocks still suppress stale-state recovery: a policy
+						// decision is external and won't change across a disk reload, so
+						// reloading cannot help. "rate-limited" and "cooling-down*" are
+						// transient states that recovery is *designed* to escape — they are
+						// persisted to disk (buildStorageSnapshot) and so survive a reload,
+						// which previously deadlocked the pool against the very recovery that
+						// would clear them. recoverStaleRuntimeState now wipes that transient
+						// state after reloading, so let those reasons through (issue #606).
+						(reason) => reason === "policy-blocked",
 					)
 				) {
 					reloadedAfterNoAccount = true;
@@ -1053,6 +1063,12 @@ async function handleRequestInner(
 					DEFAULT_AUTH_FAILURE_COOLDOWN_MS,
 					"auth-failure",
 				);
+				// Persist the cooldown like every other cooldown branch in this loop
+				// (network-error, 429, server-error, 401). `coolingDownUntil`/
+				// `cooldownReason` are serialized in the V3 snapshot, so without this
+				// a restart inside the cooldown window loses it and immediately
+				// re-selects the still-broken account.
+				accountManager.saveToDiskDebounced();
 				exhaustionReason = "auth-failure";
 				transientAttempts += 1;
 				transientExhaustionReason = "auth-failure";

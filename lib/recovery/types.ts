@@ -8,9 +8,6 @@
 // Storage Types (for reading from host runtime filesystem)
 // =============================================================================
 
-export type ThinkingPartType = "thinking" | "redacted_thinking" | "reasoning";
-export type MetaPartType = "step-start" | "step-finish";
-export type ContentPartType = "text" | "tool" | "tool_use" | "tool_result";
 
 export interface StoredMessageMeta {
   id: string;
@@ -34,7 +31,7 @@ export interface StoredTextPart {
   ignored?: boolean;
 }
 
-export interface StoredToolPart {
+interface StoredToolPart {
   id: string;
   sessionID: string;
   messageID: string;
@@ -49,7 +46,7 @@ export interface StoredToolPart {
   };
 }
 
-export interface StoredReasoningPart {
+interface StoredReasoningPart {
   id: string;
   sessionID: string;
   messageID: string;
@@ -57,7 +54,7 @@ export interface StoredReasoningPart {
   text: string;
 }
 
-export interface StoredStepPart {
+interface StoredStepPart {
   id: string;
   sessionID: string;
   messageID: string;
@@ -135,13 +132,6 @@ export type RecoveryErrorType =
   | "thinking_block_order"
   | "thinking_disabled_violation"
   | null;
-
-export interface ToolUsePart {
-  type: "tool_use";
-  id: string;
-  name: string;
-  input: Record<string, unknown>;
-}
 
 export interface ToolResultPart {
   type: "tool_result";

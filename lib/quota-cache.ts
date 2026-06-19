@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 import { withRetry } from "./fs-retry.js";
 import { logWarn } from "./logger.js";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
+import { tempPathFor } from "./temp-path.js";
 import { isRecord } from "./utils.js";
 
 export interface QuotaCacheWindow {
@@ -230,7 +231,7 @@ export async function saveQuotaCache(data: QuotaCacheData): Promise<void> {
 					// Best-effort hardening only.
 				}
 			}
-			const tempPath = `${QUOTA_CACHE_PATH}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+			const tempPath = tempPathFor(QUOTA_CACHE_PATH);
 			await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
 				encoding: "utf8",
 				mode: 0o600,

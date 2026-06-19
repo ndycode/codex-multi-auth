@@ -23,12 +23,12 @@ export function tomlStringLiteral(value: string): string {
 	})}"`;
 }
 
-export function readTomlTableName(line: string): string | null {
+function readTomlTableName(line: string): string | null {
 	const match = /^\s*\[{1,2}\s*([^\]]+?)\s*\]{1,2}\s*$/.exec(line);
 	return match?.[1]?.trim() ?? null;
 }
 
-export function removeRuntimeRotationProviderBlock(rawConfig: string): string {
+function removeRuntimeRotationProviderBlock(rawConfig: string): string {
 	const lines = rawConfig.split(/\r?\n/);
 	const output: string[] = [];
 	let skipping = false;
@@ -50,7 +50,7 @@ export function removeRuntimeRotationProviderBlock(rawConfig: string): string {
 	return output.join(rawConfig.includes("\r\n") ? "\r\n" : "\n");
 }
 
-export function rewriteTopLevelModelProvider(rawConfig: string): string {
+function rewriteTopLevelModelProvider(rawConfig: string): string {
 	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
 	const lines = rawConfig.length > 0 ? rawConfig.split(/\r?\n/) : [];
 	const rewrittenLine = `model_provider = ${tomlStringLiteral(RUNTIME_ROTATION_PROXY_PROVIDER_ID)}`;
@@ -75,7 +75,7 @@ export function rewriteTopLevelModelProvider(rawConfig: string): string {
 	return output.join(lineEnding);
 }
 
-export function enableTopLevelResponseStorage(rawConfig: string): string {
+function enableTopLevelResponseStorage(rawConfig: string): string {
 	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
 	const lines = rawConfig.length > 0 ? rawConfig.split(/\r?\n/) : [];
 	const output: string[] = [];
@@ -136,15 +136,31 @@ export function restoreTopLevelModelProvider(
 	}
 
 	if (!handled && originalLine) {
-		// Splice the restored line into the root table — appending at tail
-		// would land it inside whatever section appears last in `output`.
-		const firstSectionIdx = output.findIndex(
-			(line) => readTomlTableName(line) !== null,
-		);
-		if (firstSectionIdx === -1) {
-			output.push(originalLine);
-		} else {
-			output.splice(firstSectionIdx, 0, originalLine);
+		// Only splice the original line back when the current config has no
+		// top-level model_provider at all (bind stripped it). If a non-proxy
+		// top-level model_provider already exists — e.g. a half-orphaned config
+		// where the proxy block is present but the provider line already points
+		// elsewhere — inserting another line would create a duplicate top-level
+		// key and produce invalid TOML. In that case the existing line is
+		// already correct, so leave it untouched.
+		const hasTopLevelModelProvider = (() => {
+			for (const line of output) {
+				if (readTomlTableName(line) !== null) return false;
+				if (/^\s*model_provider\s*=/.test(line)) return true;
+			}
+			return false;
+		})();
+		if (!hasTopLevelModelProvider) {
+			// Splice the restored line into the root table — appending at tail
+			// would land it inside whatever section appears last in `output`.
+			const firstSectionIdx = output.findIndex(
+				(line) => readTomlTableName(line) !== null,
+			);
+			if (firstSectionIdx === -1) {
+				output.push(originalLine);
+			} else {
+				output.splice(firstSectionIdx, 0, originalLine);
+			}
 		}
 	}
 
@@ -206,11 +222,11 @@ export function restoreTopLevelResponseStorage(
 	return output.join(lineEnding);
 }
 
-export function ensureTomlTrailingNewline(value: string): string {
+function ensureTomlTrailingNewline(value: string): string {
 	return value.replace(/[\r\n]*$/, "\n");
 }
 
-export function createRuntimeRotationProviderBlock(
+function createRuntimeRotationProviderBlock(
 	baseUrl: string,
 	clientApiKey = "",
 ): string[] {
@@ -271,3 +287,65 @@ export function restoreConfigTomlFromRuntimeRotationProvider(
 		),
 	);
 }
+
+/**
+ * Detects whether a config.toml is currently bound to the runtime rotation
+ * proxy — either the top-level `model_provider` points at the proxy id, or the
+ * proxy `[model_providers.<id>]` block is present. Used to recover an orphaned
+ * bind whose app-bind state/backup files were lost: in that situation the
+ * state-file-based status check reports "not configured" even though the config
+ * is still bound, so unbind/status must consult the config itself.
+ */
+export function configHasRuntimeRotationProvider(rawConfig: string): boolean {
+	if (rawConfig.length === 0) return false;
+	const providerTable = `model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}`;
+	let inTopLevel = true;
+	for (const line of rawConfig.split(/\r?\n/)) {
+		const tableName = readTomlTableName(line);
+		if (tableName !== null) {
+			if (tableName === providerTable) return true;
+			inTopLevel = false;
+			continue;
+		}
+		if (
+			inTopLevel &&
+			/^\s*model_provider\s*=/.test(line) &&
+			line.includes(RUNTIME_ROTATION_PROXY_PROVIDER_ID)
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Restores a bound config when no backup of the user's original config exists
+ * (the orphaned-bind recovery path). Strips the proxy provider block and any
+ * bind-written top-level lines, and — because there is no original
+ * `model_provider` line to bring back — falls back to `defaultProvider`
+ * (Codex's native `"openai"`) so the config is left on a working provider
+ * rather than the dangling proxy id.
+ */
+export function restoreConfigTomlFromRuntimeRotationProviderWithoutBackup(
+	currentConfig: string,
+	defaultProvider = "openai",
+): string {
+	const lineEnding = currentConfig.includes("\r\n") ? "\r\n" : "\n";
+	// Synthesize a minimal "original" config carrying only the default
+	// top-level model_provider, so the shared restore path rewrites the proxy
+	// line back to a usable provider instead of leaving it dangling.
+	const syntheticOriginal = `model_provider = ${tomlStringLiteral(defaultProvider)}${lineEnding}`;
+	const restored = restoreConfigTomlFromRuntimeRotationProvider(
+		currentConfig,
+		syntheticOriginal,
+	);
+	// Normalize line endings to match the input config. The shared restore path
+	// derives its EOL from intermediate state, which can collapse to "\n" when
+	// the bound config was almost entirely proxy content; pin it back to the
+	// original style so a CRLF (Windows-authored) config stays CRLF.
+	if (lineEnding === "\r\n") {
+		return restored.replace(/\r?\n/g, "\r\n");
+	}
+	return restored.replace(/\r\n/g, "\n");
+}
+

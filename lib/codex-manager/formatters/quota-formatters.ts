@@ -76,7 +76,7 @@ export function quotaCacheEntryToSnapshot(
 	};
 }
 
-export function formatCompactQuotaWindowLabel(
+function formatCompactQuotaWindowLabel(
 	windowMinutes: number | undefined,
 ): string {
 	if (!windowMinutes || !Number.isFinite(windowMinutes) || windowMinutes <= 0) {
@@ -87,7 +87,7 @@ export function formatCompactQuotaWindowLabel(
 	return `${windowMinutes}m`;
 }
 
-export function formatCompactQuotaPart(
+function formatCompactQuotaPart(
 	windowMinutes: number | undefined,
 	usedPercent: number | undefined,
 ): string | null {

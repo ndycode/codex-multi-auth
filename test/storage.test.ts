@@ -53,6 +53,11 @@ describe("storage", () => {
 		if (_origCODEX_MULTI_AUTH_DIR !== undefined)
 			process.env.CODEX_MULTI_AUTH_DIR = _origCODEX_MULTI_AUTH_DIR;
 		else delete process.env.CODEX_MULTI_AUTH_DIR;
+		// A test that fails before its inline mockRestore() leaks its fs spy into
+		// every later test (a later vi.spyOn returns the SAME leaked spy, so a
+		// passthrough binding recurses into the new test's own mock). Restore all
+		// spies unconditionally so one failure cannot cascade.
+		vi.restoreAllMocks();
 	});
 
 	describe("account storage directory hardening", () => {
@@ -3971,6 +3976,87 @@ describe("storage", () => {
 					accounts?: Array<{ refreshToken?: string }>;
 				};
 				expect(latestBackup.accounts?.[0]?.refreshToken).toBe("token");
+			} finally {
+				renameSpy.mockRestore();
+			}
+		});
+
+		it("retries the temp-to-final rename on transient EPERM and succeeds", async () => {
+			const now = Date.now();
+			const storagePath = getStoragePath();
+
+			// A predecessor that failed mid-test can leak its own fs.rename spy;
+			// restore first so the passthrough binding captures the real rename
+			// instead of recursing into this test's mock.
+			vi.restoreAllMocks();
+			const originalRename = fs.rename.bind(fs);
+			let tempRenameAttempts = 0;
+			const renameSpy = vi
+				.spyOn(fs, "rename")
+				.mockImplementation(async (oldPath, newPath) => {
+					const sourcePath = String(oldPath);
+					if (sourcePath.endsWith(".tmp") && String(newPath) === storagePath) {
+						tempRenameAttempts += 1;
+						if (tempRenameAttempts <= 2) {
+							const err = new Error(
+								"EPERM temp rename",
+							) as NodeJS.ErrnoException;
+							err.code = "EPERM";
+							throw err;
+						}
+					}
+					return originalRename(oldPath as string, newPath as string);
+				});
+			try {
+				await saveAccounts({
+					version: 3 as const,
+					activeIndex: 0,
+					accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+				});
+
+				expect(tempRenameAttempts).toBe(3);
+				const saved = JSON.parse(
+					await fs.readFile(storagePath, "utf-8"),
+				) as {
+					accounts?: Array<{ refreshToken?: string }>;
+				};
+				expect(saved.accounts?.[0]?.refreshToken).toBe("token");
+			} finally {
+				renameSpy.mockRestore();
+			}
+		});
+
+		it("does not retry the temp-to-final rename on non-lock errors", async () => {
+			const now = Date.now();
+			const storagePath = getStoragePath();
+
+			// Same leaked-spy guard as the EPERM retry case above.
+			vi.restoreAllMocks();
+			const originalRename = fs.rename.bind(fs);
+			let tempRenameAttempts = 0;
+			const renameSpy = vi
+				.spyOn(fs, "rename")
+				.mockImplementation(async (oldPath, newPath) => {
+					const sourcePath = String(oldPath);
+					if (sourcePath.endsWith(".tmp") && String(newPath) === storagePath) {
+						tempRenameAttempts += 1;
+						const err = new Error(
+							"ENOSPC temp rename",
+						) as NodeJS.ErrnoException;
+						err.code = "ENOSPC";
+						throw err;
+					}
+					return originalRename(oldPath as string, newPath as string);
+				});
+			try {
+				await expect(
+					saveAccounts({
+						version: 3 as const,
+						activeIndex: 0,
+						accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+					}),
+				).rejects.toThrow(/ENOSPC temp rename|Failed to save accounts/);
+				expect(tempRenameAttempts).toBe(1);
 			} finally {
 				renameSpy.mockRestore();
 			}

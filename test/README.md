@@ -2,7 +2,7 @@
 
 This directory contains the test suite for the OpenAI Codex OAuth plugin.
 
-**Stats**: 2071 tests across 87 test files with 80%+ coverage threshold.
+**Stats**: 4909 tests across 317 test files with 80%+ coverage threshold.
 
 ## Test Structure
 
@@ -12,6 +12,7 @@ test/
 ├── accounts.test.ts                   # Multi-account storage/rotation tests
 ├── ansi.test.ts                       # ANSI escape helpers
 ├── audit.test.ts                      # Rotating file audit log tests
+├── auth-menu-builder.test.ts          # Auth dashboard view-model formatters
 ├── auth-menu-hotkeys.test.ts          # Auth menu hotkey behavior
 ├── auth-rate-limit.test.ts            # Token bucket rate limiting
 ├── auth.test.ts                       # OAuth authentication tests (PKCE + JWT)
@@ -53,7 +54,13 @@ test/
 ├── input-utils.test.ts               # Input filtering tests
 ├── install-codex-auth.test.ts         # Installer tests
 ├── live-account-sync.test.ts          # Live account sync
+├── health-check.test.ts               # runHealthCheck quick + live probe paths
 ├── logger.test.ts                     # Logging functionality tests
+├── login-flow.test.ts                 # runAuthLogin transports and cap handling
+├── login-menu-accounts.test.ts        # Account-row assembly for the login menu
+├── login-menu-actions.test.ts         # Manage actions, identity re-resolution
+├── login-menu-data.test.ts            # Dashboard row view model, drift sync
+├── login-oauth-selection.test.ts      # Login-oauth account selection
 ├── model-map.test.ts                  # Model name normalization tests
 ├── oauth-server.integration.test.ts   # OAuth server integration (port 1455)
 ├── package-bin.test.ts                # package.json bin field
@@ -63,14 +70,18 @@ test/
 ├── preemptive-quota-scheduler.test.ts # Quota deferral
 ├── proactive-refresh.test.ts          # Token refresh before expiry
 ├── property/
+│   ├── account-identity.property.test.ts # Identity matching/dedup invariants
 │   ├── helpers.ts                     # Property test utilities
+│   ├── model-fallback.property.test.ts # Unsupported-model fallback invariants
 │   ├── rotation.property.test.ts      # Rotation property-based tests
 │   ├── setup.test.ts                  # Property test setup
 │   ├── setup.ts                       # Property test config
+│   ├── settings-write-queue.property.test.ts # Write-queue ordering/clamp invariants
 │   └── transformer.property.test.ts   # Transformer property tests
 ├── quota-cache.test.ts                # Quota cache
 ├── quota-probe.test.ts                # Quota probe
 ├── rate-limit-backoff.test.ts         # Exponential backoff tests
+├── rate-limit-decision.test.ts        # Rate-limit/invalidation decision tree
 ├── recovery-constants.test.ts         # Recovery constants tests
 ├── recovery-storage.test.ts           # Recovery storage tests
 ├── recovery.test.ts                   # Session recovery tests
@@ -81,13 +92,18 @@ test/
 ├── request-transformer.test.ts        # Request transformation tests
 ├── response-handler-logging.test.ts   # SSE handler logging branches
 ├── response-handler.test.ts           # Response handling tests (SSE to JSON)
+├── rotation-account-selection.test.ts # chooseAccount tiers, pin discipline
 ├── rotation-integration.test.ts       # Rotation integration, Windows cleanup
+├── rotation-proxy-state.test.ts       # Proxy state init, stale-state recovery
+├── rotation-token-refresh.test.ts     # ensureFreshAccessToken refresh/cooldown
 ├── rotation.test.ts                   # Account selection tests
 ├── runtime-paths.test.ts              # Runtime path resolution
 ├── schemas.test.ts                    # Zod schema validation tests
 ├── select.test.ts                     # Select prompt tests
 ├── server.unit.test.ts                # OAuth server unit tests
 ├── session-affinity.test.ts           # Session affinity
+├── settings-hub-shared.test.ts        # Settings merge/persist transaction
+├── settings-write-queue.test.ts       # Queued settings write retry policy
 ├── shutdown.test.ts                   # Graceful shutdown tests
 ├── storage-async.test.ts              # Async storage operation tests
 ├── storage-recovery-paths.test.ts     # Storage recovery paths

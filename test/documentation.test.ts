@@ -205,6 +205,13 @@ describe("Documentation Integrity", () => {
 		expect(beta).toContain("superseded by [v0.1.0]");
 	});
 
+	it("keeps the AGENTS.md package-version claim in sync with package.json", () => {
+		// This header drifted on two version bumps (2.2.0 in the audit's M6,
+		// then 2.3.0-beta.1 after the beta.2 bump); pin it to the manifest.
+		const agents = read("AGENTS.md");
+		expect(agents).toContain(`Package version: ${packageVersion}`);
+	});
+
 	it("uses codex-multi-auth as canonical package name", () => {
 		const canonicalPackageDocs = [
 			"README.md",
@@ -350,7 +357,7 @@ describe("Documentation Integrity", () => {
 			`codex-multi-auth fix --live --model ${DEFAULT_MODEL}`,
 		);
 		expect(commandRef).toContain(
-			"| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle |",
+			"| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle, history |",
 		);
 		expect(commandRef).toContain(
 			"| `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |",

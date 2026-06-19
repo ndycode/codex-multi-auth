@@ -61,7 +61,7 @@ export function formatBackendNumberValue(
 	return `${Math.round(value)}ms`;
 }
 
-export function clampBackendNumber(
+function clampBackendNumber(
 	option: BackendNumberSettingOption,
 	value: number,
 ): number {

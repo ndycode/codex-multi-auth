@@ -5,9 +5,9 @@ export const FILE_RETRY_CODES = new Set([
 	"ENOTEMPTY",
 	"EACCES",
 ]);
-export const FILE_RETRY_MAX_ATTEMPTS = 6;
-export const FILE_RETRY_BASE_DELAY_MS = 25;
-export const FILE_RETRY_JITTER_MS = 20;
+const FILE_RETRY_MAX_ATTEMPTS = 6;
+const FILE_RETRY_BASE_DELAY_MS = 25;
+const FILE_RETRY_JITTER_MS = 20;
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));

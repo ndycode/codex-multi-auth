@@ -7,7 +7,7 @@ export type UiGlyphMode = "ascii" | "unicode" | "auto";
 export type UiPalette = "green" | "blue";
 export type UiAccent = "green" | "cyan" | "blue" | "yellow";
 
-export interface UiGlyphSet {
+interface UiGlyphSet {
 	selected: string;
 	unselected: string;
 	bullet: string;
@@ -15,7 +15,7 @@ export interface UiGlyphSet {
 	cross: string;
 }
 
-export interface UiThemeColors {
+interface UiThemeColors {
 	reset: string;
 	dim: string;
 	muted: string;

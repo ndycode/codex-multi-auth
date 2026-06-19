@@ -2,7 +2,7 @@ import { existsSync, readFileSync, promises as fs } from "node:fs";
 import { join } from "node:path";
 import { getCodexMultiAuthDir } from "../runtime-paths.js";
 
-export interface RuntimeMetricsSnapshot {
+interface RuntimeMetricsSnapshot {
 	startedAt: number;
 	totalRequests: number;
 	successfulRequests: number;
@@ -344,7 +344,3 @@ export async function loadPersistedRuntimeObservabilitySnapshot(): Promise<Runti
 	}
 }
 
-export function resetRuntimeObservabilitySnapshotForTests(): void {
-	snapshotState = createDefaultSnapshot();
-	pendingWrite = null;
-}

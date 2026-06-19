@@ -2,6 +2,7 @@ import { existsSync, promises as fs } from "node:fs";
 import { dirname } from "node:path";
 import { AnyAccountStorageSchema, safeParseJson } from "../schemas.js";
 import { shouldRetryFileOperation } from "../fs-retry.js";
+import { tempPathFor } from "../temp-path.js";
 import type { AccountStorageV3 } from "./public-types.js";
 
 const EXPORT_RENAME_MAX_ATTEMPTS = 4;
@@ -86,8 +87,7 @@ export async function exportAccountsToFile(params: {
 		null,
 		2,
 	);
-	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
-	const tempPath = `${params.resolvedPath}.${uniqueSuffix}.tmp`;
+	const tempPath = tempPathFor(params.resolvedPath);
 	try {
 		await fs.writeFile(tempPath, content, {
 			encoding: "utf-8",

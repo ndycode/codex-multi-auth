@@ -70,6 +70,7 @@ import {
 	readImportFile,
 } from "./storage/import-export.js";
 import { formatStorageErrorHint } from "./storage/error-hints.js";
+import { tempFileNonce, tempPathFor } from "./temp-path.js";
 export { StorageError } from "./errors.js";
 export {
 	formatStorageErrorHint,
@@ -275,7 +276,7 @@ async function createRotatingAccountsBackup(path: string): Promise<void> {
 		path,
 		ACCOUNTS_BACKUP_HISTORY_DEPTH,
 	);
-	const rotationNonce = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+	const rotationNonce = tempFileNonce();
 	const stagedWrites: Array<{ targetPath: string; stagedPath: string }> = [];
 	const buildStagedPath = (targetPath: string, label: string): string =>
 		`${targetPath}.rotate.${rotationNonce}.${label}.tmp`;
@@ -1052,8 +1053,8 @@ export function resolveAccountSelectionIndex<
 	return clampIndex(fallbackIndex, accounts.length);
 }
 
-function deduplicateAccountsByIdentity<T extends AccountLike>(
-	accounts: T[],
+function deduplicateAccountsByIdentityPass<T extends AccountLike>(
+	accounts: readonly T[],
 ): T[] {
 	const deduplicated: T[] = [];
 	for (const account of accounts) {
@@ -1069,6 +1070,23 @@ function deduplicateAccountsByIdentity<T extends AccountLike>(
 		);
 	}
 	return deduplicated;
+}
+
+function deduplicateAccountsByIdentity<T extends AccountLike>(
+	accounts: T[],
+): T[] {
+	// A single pass is not a fixpoint: a newest-wins merge can replace a kept
+	// entry with an account that itself duplicates an earlier survivor through
+	// a different matching tier (e.g. an email-tier merge installs an account
+	// whose accountId + refresh token already match a record that carried no
+	// email). Re-run until stable; every merge strictly shrinks the array, so
+	// this terminates after at most accounts.length passes.
+	let current = deduplicateAccountsByIdentityPass(accounts);
+	for (;;) {
+		const next = deduplicateAccountsByIdentityPass(current);
+		if (next.length === current.length) return next;
+		current = next;
+	}
 }
 
 /**
@@ -1820,24 +1838,17 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 				fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 }),
 			),
 		statTemp: (tempPath: string) => fs.stat(tempPath),
-		renameTempToPath: async (tempPath: string) => {
-			let lastError: NodeJS.ErrnoException | null = null;
-			for (let attempt = 0; attempt < 5; attempt++) {
-				try {
-					await fs.rename(tempPath, path);
-					return;
-				} catch (renameError) {
-					const code = (renameError as NodeJS.ErrnoException).code;
-					if (code === "EPERM" || code === "EBUSY") {
-						lastError = renameError as NodeJS.ErrnoException;
-						await new Promise((r) => setTimeout(r, 10 * 2 ** attempt));
-						continue;
-					}
-					throw renameError;
-				}
-			}
-			if (lastError) throw lastError;
-		},
+		renameTempToPath: (tempPath: string) =>
+			// Windows can hold the destination briefly (AV/indexer); retry only the
+			// lock codes rename actually surfaces there, on the original
+			// 10ms-doubling schedule. (The hand-rolled loop this replaces also
+			// slept once more after the final failure; withRetry rethrows
+			// immediately instead.)
+			withRetry(() => fs.rename(tempPath, path), {
+				maxAttempts: 5,
+				backoffMs: (attempt) => 10 * 2 ** (attempt - 1),
+				retryableCodes: ["EPERM", "EBUSY"],
+			}),
 		cleanupResetMarker: async () => {
 			try {
 				await fs.unlink(resetMarkerPath);
@@ -1884,8 +1895,7 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 			);
 		},
 		backupPath: getAccountsBackupPath(path),
-		createTempPath: () =>
-			`${path}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`,
+		createTempPath: () => tempPathFor(path),
 	});
 }
 

@@ -8,7 +8,7 @@ import type { UI_COPY } from "../ui/ui-copy.js";
 import { getUiRuntimeOptions } from "../ui/runtime.js";
 import { type MenuItem, select } from "../ui/select.js";
 
-export type ThemeConfigAction =
+type ThemeConfigAction =
 	| { type: "set-palette"; palette: DashboardThemePreset }
 	| { type: "set-accent"; accent: DashboardAccentColor }
 	| { type: "reset" }

@@ -5,16 +5,13 @@ import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
 } from "../storage.js";
-import {
-	isRetryableStorageWriteError,
-	saveAccountsWithRetry,
-} from "../storage/save-retry.js";
+import { saveAccountsWithRetry } from "../storage/save-retry.js";
 import type { TokenFailure } from "../types.js";
 
 // Moved to lib/storage/save-retry.ts so lib/accounts.ts can use the retry
 // helper without importing this codex-manager module; re-exported here to
 // preserve the historical import surface.
-export { isRetryableStorageWriteError, saveAccountsWithRetry };
+export { saveAccountsWithRetry };
 
 export type AccountIdentityMatch = Pick<
 	AccountMetadataV3,

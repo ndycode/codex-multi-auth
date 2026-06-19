@@ -8,21 +8,6 @@
 
 import { createLogger } from "./logger.js";
 
-// PR-N / R4: re-export SelectionRecord + RoutingMutexMode so rotation.ts
-// remains the canonical entry point for "selection decision" types even
-// though the concrete mutex lives in ./routing-mutex.ts. Callers wiring
-// the fetch loop only need to import from `lib/rotation`.
-export type {
-	SelectionRecord,
-	RoutingMutexMode,
-	AsyncMutex,
-} from "./routing-mutex.js";
-export {
-	createAsyncMutex,
-	getRoutingMutex,
-	withRoutingMutex,
-} from "./routing-mutex.js";
-
 const log = createLogger("rotation");
 
 // ============================================================================
@@ -389,7 +374,7 @@ export interface HybridSelectionConfig {
 	freshnessWeight: number;
 }
 
-export const DEFAULT_HYBRID_SELECTION_CONFIG: HybridSelectionConfig = {
+const DEFAULT_HYBRID_SELECTION_CONFIG: HybridSelectionConfig = {
 	healthWeight: 2,
 	tokenWeight: 5,
 	freshnessWeight: 2.0,

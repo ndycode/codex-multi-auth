@@ -11,7 +11,7 @@ function normalizeLineForHash(line) {
   return value.replace(/\s+/g, "");
 }
 
-export function computeHashlineV2Hash(line) {
+function computeHashlineV2Hash(line) {
   const normalized = normalizeLineForHash(line);
   const digest = createHash("sha1").update(normalized, "utf8").digest();
   const raw = (digest.readUInt32BE(0) % 46656).toString(36);

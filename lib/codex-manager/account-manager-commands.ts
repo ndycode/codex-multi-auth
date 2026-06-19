@@ -36,6 +36,7 @@ export const ACCOUNT_MANAGER_COMMANDS = new Set([
 	"monitor",
 	"rotation",
 	"why-selected",
+	"history",
 	"config",
 	"init-config",
 	"debug",

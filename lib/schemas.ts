@@ -90,7 +90,7 @@ export type PluginConfigFromSchema = z.infer<typeof PluginConfigSchema>;
 /**
  * Source of the accountId used for ChatGPT requests.
  */
-export const AccountIdSourceSchema = z.enum([
+const AccountIdSourceSchema = z.enum([
 	"token",
 	"id_token",
 	"org",
@@ -102,19 +102,17 @@ export type AccountIdSourceFromSchema = z.infer<typeof AccountIdSourceSchema>;
 /**
  * Cooldown reason for temporary account suspension.
  */
-export const CooldownReasonSchema = z.enum([
+const CooldownReasonSchema = z.enum([
 	"auth-failure",
 	"network-error",
 	"server-error",
 	"rate-limit",
 ]);
 
-export type CooldownReasonFromSchema = z.infer<typeof CooldownReasonSchema>;
-
 /**
  * Last switch reason for account rotation tracking.
  */
-export const SwitchReasonSchema = z.enum([
+const SwitchReasonSchema = z.enum([
 	"rate-limit",
 	"initial",
 	"rotation",
@@ -122,8 +120,6 @@ export const SwitchReasonSchema = z.enum([
 	"restore",
 	"manual",
 ]);
-
-export type SwitchReasonFromSchema = z.infer<typeof SwitchReasonSchema>;
 
 /**
  * Switch reasons that callers may pass to `persistAndSyncSelectedAccount`.
@@ -142,12 +138,10 @@ export type PersistedSwitchReason = z.infer<typeof PersistedSwitchReasonSchema>;
 /**
  * Rate limit state - maps model family to reset timestamp.
  */
-export const RateLimitStateV3Schema = z.record(
+const RateLimitStateV3Schema = z.record(
 	z.string(),
 	z.number().optional(),
 );
-
-export type RateLimitStateV3FromSchema = z.infer<typeof RateLimitStateV3Schema>;
 
 /**
  * Workspace entry within an account. Supports a single OpenAI/Google account
@@ -155,15 +149,13 @@ export type RateLimitStateV3FromSchema = z.infer<typeof RateLimitStateV3Schema>;
  * business/team workspace), each a distinct quota pool keyed by its org_id
  * (`id`). Mirrors the `Workspace` TS interface in `lib/accounts.ts`. See #491.
  */
-export const WorkspaceSchema = z.object({
+const WorkspaceSchema = z.object({
 	id: z.string(),
 	name: z.string().optional(),
 	enabled: z.boolean(),
 	disabledAt: z.number().optional(),
 	isDefault: z.boolean().optional(),
 });
-
-export type WorkspaceFromSchema = z.infer<typeof WorkspaceSchema>;
 
 /**
  * Account metadata V3 - current storage format.
@@ -190,10 +182,6 @@ export const AccountMetadataV3Schema = z.object({
 	currentWorkspaceIndex: z.number().optional(),
 });
 
-export type AccountMetadataV3FromSchema = z.infer<
-	typeof AccountMetadataV3Schema
->;
-
 /**
  * Build activeIndexByFamily schema dynamically from MODEL_FAMILIES.
  */
@@ -201,7 +189,7 @@ const modelFamilyEntries = MODEL_FAMILIES.map((family) => [
 	family,
 	z.number().optional(),
 ]);
-export const ActiveIndexByFamilySchema = z
+const ActiveIndexByFamilySchema = z
 	.object(
 		Object.fromEntries(modelFamilyEntries) as Record<
 			ModelFamily,
@@ -209,10 +197,6 @@ export const ActiveIndexByFamilySchema = z
 		>,
 	)
 	.partial();
-
-export type ActiveIndexByFamilyFromSchema = z.infer<
-	typeof ActiveIndexByFamilySchema
->;
 
 /**
  * Account storage V3 - current storage format with per-family active indices.
@@ -231,7 +215,7 @@ export type AccountStorageV3FromSchema = z.infer<typeof AccountStorageV3Schema>;
 /**
  * Legacy V1 account metadata for migration support.
  */
-export const AccountMetadataV1Schema = z.object({
+const AccountMetadataV1Schema = z.object({
 	accountId: z.string().optional(),
 	accountIdSource: AccountIdSourceSchema.optional(),
 	accountLabel: z.string().optional(),
@@ -248,10 +232,6 @@ export const AccountMetadataV1Schema = z.object({
 	cooldownReason: CooldownReasonSchema.optional(),
 });
 
-export type AccountMetadataV1FromSchema = z.infer<
-	typeof AccountMetadataV1Schema
->;
-
 /**
  * Legacy V1 storage format for migration support.
  */
@@ -260,8 +240,6 @@ export const AccountStorageV1Schema = z.object({
 	accounts: z.array(AccountMetadataV1Schema),
 	activeIndex: z.number().min(0),
 });
-
-export type AccountStorageV1FromSchema = z.infer<typeof AccountStorageV1Schema>;
 
 /**
  * Union of V1 and V3 storage formats for migration detection.
@@ -289,10 +267,6 @@ export const FlaggedAccountMetadataV1Schema = AccountMetadataV3Schema.extend({
 	flaggedReason: z.string().optional(),
 	lastError: z.string().optional(),
 }).passthrough();
-
-export type FlaggedAccountMetadataV1FromSchema = z.infer<
-	typeof FlaggedAccountMetadataV1Schema
->;
 
 /**
  * Flagged account storage V1 format (version: 1, accounts: []).
@@ -334,7 +308,7 @@ export type AccountsJournalEntryFromSchema = z.infer<
 /**
  * Token failure reason codes.
  */
-export const TokenFailureReasonSchema = z.enum([
+const TokenFailureReasonSchema = z.enum([
 	"http_error",
 	"invalid_response",
 	"network_error",

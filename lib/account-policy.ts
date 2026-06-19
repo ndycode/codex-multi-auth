@@ -5,6 +5,7 @@ import { logWarn } from "./logger.js";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
 import type { AccountMetadataV3 } from "./storage.js";
 import { isRecord, sleep } from "./utils.js";
+import { tempPathFor } from "./temp-path.js";
 
 export interface AccountPolicy {
 	accountKey: string;
@@ -138,7 +139,7 @@ export async function saveAccountPolicyStore(
 	const payload = normalizeStore(store);
 	const task = async (): Promise<void> => {
 		await fs.mkdir(getCodexMultiAuthDir(), { recursive: true, mode: 0o700 });
-		const tempPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+		const tempPath = tempPathFor(path);
 		let moved = false;
 		try {
 			await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {

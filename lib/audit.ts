@@ -29,7 +29,7 @@ export enum AuditOutcome {
 	PARTIAL = "partial",
 }
 
-export interface AuditEntry {
+interface AuditEntry {
 	timestamp: string;
 	correlationId: string | null;
 	action: AuditAction;

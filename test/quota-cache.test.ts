@@ -63,6 +63,42 @@ describe("quota cache", () => {
     expect(fileContent).toContain('"version": 1');
   });
 
+  it("stages atomic writes through tempPathFor and leaves no .tmp behind", async () => {
+    // End-to-end check of the staging contract this PR centralizes: the save
+    // must write a sibling named by tempPathFor (<target>.<pid>.<ms>.<hex8>.tmp,
+    // crypto-backed nonce), rename it onto the target, and leave the directory
+    // free of staging leftovers.
+    const renameSpy = vi.spyOn(fs, "rename");
+    try {
+      const { saveQuotaCache, getQuotaCachePath } = await import(
+        "../lib/quota-cache.js"
+      );
+
+      await saveQuotaCache({ byAccountId: {}, byEmail: {} });
+
+      const cachePath = getQuotaCachePath();
+      const renameCall = renameSpy.mock.calls.find(
+        ([, dest]) => String(dest) === cachePath,
+      );
+      expect(renameCall).toBeDefined();
+      const stagedPath = String(renameCall?.[0]);
+      expect(stagedPath.startsWith(`${cachePath}.`)).toBe(true);
+      expect(stagedPath).toMatch(
+        new RegExp(`\\.${process.pid}\\.\\d+\\.[0-9a-f]{8}\\.tmp$`),
+      );
+
+      const leftovers = (await fs.readdir(tempDir)).filter((name) =>
+        name.endsWith(".tmp"),
+      );
+      expect(leftovers).toEqual([]);
+      await expect(fs.readFile(cachePath, "utf8")).resolves.toContain(
+        '"version": 1',
+      );
+    } finally {
+      renameSpy.mockRestore();
+    }
+  });
+
   it("keeps the cache directory owner-only (0o700) on POSIX", async () => {
     // The quota cache sits alongside at-rest secrets; the dir must not be
     // world-listable. mode is a no-op on win32 (ACL-based), so skip there.

@@ -43,14 +43,14 @@ const CI_ENV_KEYS = [
 	"BITBUCKET_BUILD_NUMBER",
 ];
 
-export type FirstRunStepStatus = "completed" | "skipped" | "failed";
+type FirstRunStepStatus = "completed" | "skipped" | "failed";
 
-export interface FirstRunSetupOutcome {
+interface FirstRunSetupOutcome {
 	appBind: FirstRunStepStatus;
 	launcher: FirstRunStepStatus;
 }
 
-export type FirstRunSkipReason =
+type FirstRunSkipReason =
 	| "ci"
 	| "not-installed"
 	| "already-done"
@@ -73,7 +73,7 @@ export interface FirstRunSetupDeps {
 	now?: () => number;
 }
 
-export function readOptionalBoolean(value: string | undefined): boolean | null {
+function readOptionalBoolean(value: string | undefined): boolean | null {
 	if (value === undefined || value.trim().length === 0) return null;
 	const normalized = value.trim().toLowerCase();
 	if (TRUE_VALUES.has(normalized)) return true;
@@ -233,7 +233,7 @@ export function isInstalledPackageContext(
 	return true;
 }
 
-export function getFirstRunMarkerPath(): string {
+function getFirstRunMarkerPath(): string {
 	return join(getCodexMultiAuthDir(), FIRST_RUN_MARKER_FILE);
 }
 

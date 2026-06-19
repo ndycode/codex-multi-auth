@@ -53,6 +53,20 @@ export function clearExpiredRateLimits(entity: RateLimitedEntity): void {
 	}
 }
 
+/**
+ * Remove every rate-limit reset entry from `entity`, regardless of whether the
+ * window has expired. Unlike {@link clearExpiredRateLimits}, this drops
+ * still-future entries too. Used by the stale-runtime recovery path to give a
+ * reloaded account pool a clean slate so transient state persisted to disk
+ * cannot keep the pool wedged (issue #606).
+ */
+export function clearAllRateLimits(entity: RateLimitedEntity): void {
+	const keys = Object.keys(entity.rateLimitResetTimes);
+	for (const key of keys) {
+		delete entity.rateLimitResetTimes[key];
+	}
+}
+
 export function isRateLimitedForQuotaKey(entity: RateLimitedEntity, key: QuotaKey): boolean {
 	const resetTime = entity.rateLimitResetTimes[key];
 	return resetTime !== undefined && nowMs() < resetTime;

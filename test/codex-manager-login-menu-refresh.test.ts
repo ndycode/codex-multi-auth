@@ -96,6 +96,7 @@ describe("refreshQuotaCacheForMenu", () => {
 			60_000,
 		);
 
+		expect(loadQuotaCacheMock).toHaveBeenCalledTimes(1);
 		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
 		const saved = saveQuotaCacheMock.mock.calls[0][0] as QuotaCacheData;
 		expect(saved.byAccountId.acc_concurrent).toMatchObject({ status: 429 });
@@ -113,11 +114,63 @@ describe("refreshQuotaCacheForMenu", () => {
 			60_000,
 		);
 
+		expect(loadQuotaCacheMock).toHaveBeenCalledTimes(1);
 		expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
 		const saved = saveQuotaCacheMock.mock.calls[0][0] as QuotaCacheData;
 		expect(saved.byAccountId.acc_a).toMatchObject({ status: 200 });
 		expect(saved.byAccountId.acc_b).toMatchObject({ status: 200 });
 		expect(result).toBe(saved);
+	});
+
+	it("resolves and surfaces a warning when the save itself fails", async () => {
+		// The save is best-effort (Windows EBUSY/EPERM must not fail the menu
+		// refresh), but the failure must reach console.warn, not vanish into the
+		// caller's background .catch.
+		loadQuotaCacheMock.mockResolvedValue(emptyCache());
+		saveQuotaCacheMock.mockRejectedValue(new Error("EBUSY: locked"));
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		try {
+			const result = await refreshQuotaCacheForMenu(
+				createStorage(Date.now()),
+				emptyCache(),
+				60_000,
+			);
+
+			expect(result.byAccountId.acc_a).toMatchObject({ status: 200 });
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining("Quota cache save failed: EBUSY: locked"),
+			);
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
+
+	it("still resolves and warns when both the reload and the save fail", async () => {
+		// Windows can hold the cache file locked across the whole refresh cycle:
+		// the reload falls back to the snapshot clone AND the save then rejects.
+		// The refresh must resolve with the clone and surface the same warning.
+		loadQuotaCacheMock.mockRejectedValue(new Error("EBUSY"));
+		saveQuotaCacheMock.mockRejectedValue(new Error("EBUSY: locked"));
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		try {
+			const result = await refreshQuotaCacheForMenu(
+				createStorage(Date.now()),
+				emptyCache(),
+				60_000,
+			);
+
+			expect(loadQuotaCacheMock).toHaveBeenCalledTimes(1);
+			expect(saveQuotaCacheMock).toHaveBeenCalledTimes(1);
+			expect(result.byAccountId.acc_a).toMatchObject({ status: 200 });
+			expect(result.byAccountId.acc_b).toMatchObject({ status: 200 });
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining("Quota cache save failed: EBUSY: locked"),
+			);
+		} finally {
+			warnSpy.mockRestore();
+		}
 	});
 
 	it("does not reload or save when every probe fails", async () => {
@@ -133,6 +186,8 @@ describe("refreshQuotaCacheForMenu", () => {
 		expect(loadQuotaCacheMock).not.toHaveBeenCalled();
 		expect(saveQuotaCacheMock).not.toHaveBeenCalled();
 		expect(result).toEqual(cache);
+		// The function works on a clone; the caller's snapshot is never mutated.
+		expect(result).not.toBe(cache);
 	});
 
 	it("returns the input cache untouched when there are no accounts", async () => {

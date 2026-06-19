@@ -1,4 +1,4 @@
-export function percentile(values, p) {
+function percentile(values, p) {
   if (!Array.isArray(values) || values.length === 0) {
     return null;
   }

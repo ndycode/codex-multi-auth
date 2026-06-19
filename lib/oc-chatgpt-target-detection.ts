@@ -63,7 +63,7 @@ export type OcChatgptTargetNone = {
 	>;
 };
 
-export type OcChatgptTargetFound = {
+type OcChatgptTargetFound = {
 	kind: "target";
 	descriptor: OcChatgptTargetDescriptor;
 };
