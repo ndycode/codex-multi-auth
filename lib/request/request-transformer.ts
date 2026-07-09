@@ -7,6 +7,7 @@ import {
 	getModelProfile,
 	resolveNormalizedModel,
 	type ModelReasoningEffort,
+	type WireReasoningEffort,
 } from "./helpers/model-map.js";
 import {
 	filterHostSystemPromptsWithCachedPrompt,
@@ -63,6 +64,28 @@ export function normalizeModel(model: string | undefined): string {
 	return resolveNormalizedModel(model);
 }
 
+const REASONING_EFFORTS = [
+	"none",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+	"ultra",
+] as const satisfies readonly ModelReasoningEffort[];
+
+/**
+ * Matches a trailing reasoning-effort suffix on a model id.
+ *
+ * The lookbehind guards the `max` alternative only: `gpt-5.1-codex-max` is a
+ * model id that ends in `-max`, not Codex at `max` effort, and stripping it
+ * would reroute the request. `gpt-5-codex-low` must still parse `low`, so the
+ * guard cannot wrap the whole group.
+ */
+const VARIANT_SUFFIX_PATTERN =
+	/(?:-(none|minimal|low|medium|high|xhigh|ultra)|(?<!codex)-(max))$/i;
+
 /**
  * Extract configuration for a specific model
  * Merges global options with model-specific options (model-specific takes precedence)
@@ -84,24 +107,14 @@ export function getModelConfig(
 		name: string,
 	): ConfigOptions["reasoningEffort"] | undefined => {
 		const stripped = stripProviderPrefix(name).toLowerCase();
-		const match = stripped.match(/-(none|minimal|low|medium|high|xhigh)$/);
+		const match = stripped.match(VARIANT_SUFFIX_PATTERN);
 		if (!match) return undefined;
-		const variant = match[1];
-		if (
-			variant === "none" ||
-			variant === "minimal" ||
-			variant === "low" ||
-			variant === "medium" ||
-			variant === "high" ||
-			variant === "xhigh"
-		) {
-			return variant;
-		}
-		return undefined;
+		const variant = match[1] ?? match[2];
+		return REASONING_EFFORTS.find((effort) => effort === variant);
 	};
 
 	const removeVariantSuffix = (name: string): string =>
-		stripProviderPrefix(name).replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
+		stripProviderPrefix(name).replace(VARIANT_SUFFIX_PATTERN, "");
 
 	const findModelEntry = (
 		candidates: string[],
@@ -457,12 +470,18 @@ export function getReasoningConfig(
 	const profile = getModelProfile(modelName);
 	const defaultEffort = profile.defaultReasoningEffort;
 	const requestedEffort = userConfig.reasoningEffort ?? defaultEffort;
-	const effort = coerceReasoningEffort(
+	const coercedEffort = coerceReasoningEffort(
 		profile.normalizedModel,
 		requestedEffort,
 		profile.supportedReasoningEfforts,
 		defaultEffort,
 	);
+
+	// `ultra` is a client-side tier: upstream Codex rewrites Ultra -> Max in
+	// `reasoning_effort_for_request` before the request leaves the client, so the
+	// API never sees it. Mirror that here rather than sending a value it rejects.
+	const effort: WireReasoningEffort =
+		coercedEffort === "ultra" ? "max" : coercedEffort;
 
 	const summary = sanitizeReasoningSummary(userConfig.reasoningSummary);
 
@@ -482,6 +501,10 @@ const REASONING_FALLBACKS: Record<
 	medium: ["medium", "low", "high", "minimal", "none", "xhigh"],
 	high: ["high", "medium", "xhigh", "low", "minimal", "none"],
 	xhigh: ["xhigh", "high", "medium", "low", "minimal", "none"],
+	// `max` and `ultra` only exist on GPT-5.6. Step down one rung at a time so a
+	// request against a pre-5.6 model lands on that model's strongest tier.
+	max: ["max", "xhigh", "high", "medium", "low", "minimal", "none"],
+	ultra: ["ultra", "max", "xhigh", "high", "medium", "low", "minimal", "none"],
 } as const;
 
 function coerceReasoningEffort(
@@ -489,7 +512,7 @@ function coerceReasoningEffort(
 	effort: ModelReasoningEffort,
 	supportedEfforts: readonly ModelReasoningEffort[],
 	defaultEffort: ModelReasoningEffort,
-): ReasoningConfig["effort"] {
+): ModelReasoningEffort {
 	if (supportedEfforts.includes(effort)) {
 		return effort;
 	}

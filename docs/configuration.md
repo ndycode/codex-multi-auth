@@ -151,7 +151,10 @@ Some Windows installs expose Codex only as a packaged `shell:AppsFolder` app ent
 
 The shipped config templates expose first-class current OpenAI model aliases:
 
-- `config/codex-modern.json` includes `gpt-5.5` and `gpt-5.5-pro`
+- `config/codex-modern.json` includes the GPT-5.6 tiers (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`), plus `gpt-5.5` and `gpt-5.5-pro`
+- GPT-5.6 adds two reasoning tiers above `xhigh`: `max`, and `ultra` on Sol/Terra only. `ultra` selects Codex's automatic subagent delegation and is sent to the API as `max`, mirroring upstream Codex
+- no GPT-5.6 tier accepts `none` or `minimal` reasoning effort; requests using them are coerced up to `low`
+- `gpt-5.6` on its own resolves to Sol, the flagship tier; the legacy `gpt-5` alias still resolves to `gpt-5.5`
 - `config/codex-modern.json` and `config/codex-legacy.json` expose current documented GPT-5.5, GPT-5.4, and GPT-5.3 Codex model IDs
 - deprecated Codex selectors such as `gpt-5-codex` and `gpt-5.1-codex*` are treated as compatibility aliases and retried on the current documented Codex model when the ChatGPT Codex surface rejects them
 - the wrapper and optional plugin-host runtime try those models directly and only fall back to `gpt-5.4` after a real ChatGPT Codex unsupported-model response

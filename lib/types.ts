@@ -1,4 +1,8 @@
 import type { Auth, Provider, Model } from "@codex-ai/sdk";
+import type {
+	ModelReasoningEffort,
+	WireReasoningEffort,
+} from "./request/helpers/model-map.js";
 
 export type {
 	PluginConfigFromSchema as PluginConfig,
@@ -21,7 +25,8 @@ export interface UserConfig {
 }
 
 export interface ConfigOptions {
-	reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	/** `ultra` is accepted here but always resolves to `max` before the request. */
+	reasoningEffort?: ModelReasoningEffort;
 	reasoningSummary?: "auto" | "concise" | "detailed" | "off" | "on";
 	textVerbosity?: "low" | "medium" | "high";
 	promptCacheRetention?: PromptCacheRetention;
@@ -36,7 +41,11 @@ export type PromptCacheRetention =
 	| (string & {});
 
 export interface ReasoningConfig {
-	effort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	/**
+	 * Effort as sent to the API. `ultra` is absent by construction: it is a
+	 * client-side tier that always resolves to `max` before the request is built.
+	 */
+	effort: WireReasoningEffort;
 	summary: "auto" | "concise" | "detailed";
 }
 

@@ -17,7 +17,7 @@ These files are optional model/provider templates for host/plugin configurations
 
 ## Defaults Included
 
-- Current documented OpenAI/Codex model families (`gpt-5.5`, `gpt-5.4`, and `gpt-5.3-codex`)
+- Current documented OpenAI/Codex model families (`gpt-5.6-sol`/`terra`/`luna`, `gpt-5.5`, `gpt-5.4`, and `gpt-5.3-codex`)
 - `store: false`
 - `include: ["reasoning.encrypted_content"]`
 - Sensible fallback behavior for unsupported model entitlements

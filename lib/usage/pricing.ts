@@ -44,6 +44,24 @@ const MODEL_PRICING: Record<string, UsageModelPricing> = {
 		cachedInputUsdPerMillion: 0.2,
 		reasoningUsdPerMillion: 12,
 	},
+	"gpt-5.6-sol": {
+		inputUsdPerMillion: 5,
+		outputUsdPerMillion: 30,
+		cachedInputUsdPerMillion: 0.5,
+		reasoningUsdPerMillion: 30,
+	},
+	"gpt-5.6-terra": {
+		inputUsdPerMillion: 2.5,
+		outputUsdPerMillion: 15,
+		cachedInputUsdPerMillion: 0.25,
+		reasoningUsdPerMillion: 15,
+	},
+	"gpt-5.6-luna": {
+		inputUsdPerMillion: 1,
+		outputUsdPerMillion: 6,
+		cachedInputUsdPerMillion: 0.1,
+		reasoningUsdPerMillion: 6,
+	},
 };
 
 function normalizeModelName(model: string | null | undefined): string | null {

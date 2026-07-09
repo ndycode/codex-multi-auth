@@ -7,13 +7,26 @@
  * transformer, prompt selection, and CLI diagnostics.
  */
 
+/**
+ * `max` and `ultra` arrived with GPT-5.6.
+ *
+ * `ultra` is selectable but never reaches the wire: Codex rewrites it to `max`
+ * before the request is sent (see `reasoning_effort_for_request` in
+ * codex-rs/core/src/client.rs). It denotes automatic subagent delegation on the
+ * client, not a distinct backend effort level.
+ */
 export type ModelReasoningEffort =
 	| "none"
 	| "minimal"
 	| "low"
 	| "medium"
 	| "high"
-	| "xhigh";
+	| "xhigh"
+	| "max"
+	| "ultra";
+
+/** Effort levels the Responses API actually accepts. */
+export type WireReasoningEffort = Exclude<ModelReasoningEffort, "ultra">;
 
 export type PromptModelFamily =
 	| "gpt-5-codex"
@@ -112,6 +125,38 @@ export const QUOTA_PROBE_MODEL_CHAIN = [
 ] as const;
 
 const LEGACY_CODEX_MODEL = "gpt-5-codex";
+
+/**
+ * GPT-5.6 tiers, per the upstream Codex catalog
+ * (openai/codex `codex-rs/models-manager/models.json`).
+ *
+ * Sol and Terra expose `ultra`; Luna stops at `max`. No tier accepts `none` or
+ * `minimal`, so those aliases are deliberately never generated for them.
+ */
+const GPT_5_6_SOL_MODEL = "gpt-5.6-sol";
+const GPT_5_6_TERRA_MODEL = "gpt-5.6-terra";
+const GPT_5_6_LUNA_MODEL = "gpt-5.6-luna";
+
+/** Bare `gpt-5.6` is OpenAI's documented alias for the flagship (Sol) tier. */
+const GPT_5_6_FLAGSHIP_ALIAS = "gpt-5.6";
+
+const GPT_5_6_SOL_TERRA_EFFORTS = [
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+	"ultra",
+] as const satisfies readonly ModelReasoningEffort[];
+
+const GPT_5_6_LUNA_EFFORTS = [
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const satisfies readonly ModelReasoningEffort[];
+
 const GPT_5_5_CANONICAL_MODEL = "gpt-5.5";
 const GPT_5_5_PRO_CANONICAL_MODEL = "gpt-5.5-pro";
 const GPT_5_5_RELEASE_MODEL = "gpt-5.5-2026-04-23";
@@ -197,6 +242,30 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
 		supportedReasoningEfforts: ["medium"],
 		capabilities: TOOL_CAPABILITIES.compactOnly,
 	},
+	// GPT-5.6 ships its base instructions inline in the upstream model catalog
+	// rather than as a `gpt_5_6_prompt.md`, so these stay on the GPT-5.2 prompt
+	// family alongside the other post-5.2 general models.
+	[GPT_5_6_SOL_MODEL]: {
+		normalizedModel: GPT_5_6_SOL_MODEL,
+		promptFamily: "gpt-5.2",
+		defaultReasoningEffort: "low",
+		supportedReasoningEfforts: GPT_5_6_SOL_TERRA_EFFORTS,
+		capabilities: TOOL_CAPABILITIES.full,
+	},
+	[GPT_5_6_TERRA_MODEL]: {
+		normalizedModel: GPT_5_6_TERRA_MODEL,
+		promptFamily: "gpt-5.2",
+		defaultReasoningEffort: "medium",
+		supportedReasoningEfforts: GPT_5_6_SOL_TERRA_EFFORTS,
+		capabilities: TOOL_CAPABILITIES.full,
+	},
+	[GPT_5_6_LUNA_MODEL]: {
+		normalizedModel: GPT_5_6_LUNA_MODEL,
+		promptFamily: "gpt-5.2",
+		defaultReasoningEffort: "medium",
+		supportedReasoningEfforts: GPT_5_6_LUNA_EFFORTS,
+		capabilities: TOOL_CAPABILITIES.full,
+	},
 	[GPT_5_5_CANONICAL_MODEL]: {
 		normalizedModel: GPT_5_5_CANONICAL_MODEL,
 		promptFamily: "gpt-5.2",
@@ -261,6 +330,38 @@ function addReasoningAliases(alias: string, normalizedModel: string): void {
 	}
 }
 
+/**
+ * Register a model plus one alias per effort it actually supports.
+ *
+ * Unlike `addReasoningAliases`, this does not assume the global variant list:
+ * GPT-5.6 rejects `none`/`minimal` and only Sol/Terra accept `ultra`.
+ */
+function addEffortAliases(
+	alias: string,
+	normalizedModel: string,
+	efforts: readonly ModelReasoningEffort[],
+): void {
+	addAlias(alias, normalizedModel);
+	for (const effort of efforts) {
+		addAlias(`${alias}-${effort}`, normalizedModel);
+	}
+}
+
+function addGpt56Aliases(): void {
+	addEffortAliases(GPT_5_6_SOL_MODEL, GPT_5_6_SOL_MODEL, GPT_5_6_SOL_TERRA_EFFORTS);
+	addEffortAliases(
+		GPT_5_6_TERRA_MODEL,
+		GPT_5_6_TERRA_MODEL,
+		GPT_5_6_SOL_TERRA_EFFORTS,
+	);
+	addEffortAliases(GPT_5_6_LUNA_MODEL, GPT_5_6_LUNA_MODEL, GPT_5_6_LUNA_EFFORTS);
+	addEffortAliases(
+		GPT_5_6_FLAGSHIP_ALIAS,
+		GPT_5_6_SOL_MODEL,
+		GPT_5_6_SOL_TERRA_EFFORTS,
+	);
+}
+
 function addGeneralAliases(): void {
 	addReasoningAliases(GPT_5_5_CANONICAL_MODEL, GPT_5_5_CANONICAL_MODEL);
 	addReasoningAliases(GPT_5_5_RELEASE_MODEL, GPT_5_5_CANONICAL_MODEL);
@@ -315,6 +416,7 @@ function addCodexAliases(): void {
 
 addCodexAliases();
 addGeneralAliases();
+addGpt56Aliases();
 
 export { MODEL_MAP };
 
@@ -412,6 +514,29 @@ function resolveCodexCatalogModel(modelId: string): string | undefined {
 	return undefined;
 }
 
+/**
+ * Resolve GPT-5.6 identifiers that are not exact aliases (for example a future
+ * `gpt-5.6-terra-fast`).
+ *
+ * Without this, the general GPT-5 resolver sees minor `6`, finds no catalog
+ * entry, and silently falls back to the stable 5.5 model — running a different
+ * model than the caller asked for. Unrecognised tiers resolve to Sol, matching
+ * OpenAI's bare `gpt-5.6` alias.
+ */
+function resolveGpt56CatalogModel(modelId: string): string | undefined {
+	const tokens = tokenizeModelId(modelId);
+	const gptIndex = tokens.indexOf("gpt");
+	const isGpt56 =
+		gptIndex !== -1 && tokens[gptIndex + 1] === "5" && tokens[gptIndex + 2] === "6";
+	if (!isGpt56 || tokens.includes("codex")) {
+		return undefined;
+	}
+
+	if (tokens.includes("terra")) return GPT_5_6_TERRA_MODEL;
+	if (tokens.includes("luna")) return GPT_5_6_LUNA_MODEL;
+	return GPT_5_6_SOL_MODEL;
+}
+
 function resolveGeneralGpt5CatalogModel(modelId: string): string | undefined {
 	const tokens = tokenizeModelId(modelId);
 	const gptIndex = tokens.indexOf("gpt");
@@ -494,6 +619,11 @@ export function resolveNormalizedModel(model: string | undefined): string {
 	const codexCatalogModel = resolveCodexCatalogModel(modelId);
 	if (codexCatalogModel) {
 		return codexCatalogModel;
+	}
+
+	const gpt56CatalogModel = resolveGpt56CatalogModel(modelId);
+	if (gpt56CatalogModel) {
+		return gpt56CatalogModel;
 	}
 
 	const generalGpt5CatalogModel = resolveGeneralGpt5CatalogModel(modelId);

@@ -53,7 +53,7 @@ describe("model map", () => {
 		it("returns undefined for unknown exact identifiers", () => {
 			expect(getNormalizedModel("unknown-model")).toBeUndefined();
 			expect(getNormalizedModel("gpt-6")).toBeUndefined();
-			expect(getNormalizedModel("gpt-5.6")).toBeUndefined();
+			expect(getNormalizedModel("gpt-5.7")).toBeUndefined();
 			expect(getNormalizedModel("")).toBeUndefined();
 		});
 	});
