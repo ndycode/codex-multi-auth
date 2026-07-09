@@ -36,6 +36,7 @@ Runtime rotation is part of the current architecture. It is default-on and local
 | --- | --- | --- |
 | Local Responses proxy | Routes forwarded official Codex Responses/model traffic through a loopback provider named `codex-multi-auth-runtime-proxy` | `codex-multi-auth rotation status` |
 | Per-request account rotation | Moves to another managed account on quota, auth refresh, network, or server failure before streaming response bytes | runtime proxy |
+| Per-invocation account pin | Forces one account for a single wrapper session (ephemeral, fail-hard, never touches the persisted `switch` pin) | `codex-multi-auth-codex --account <index\|email\|id>` |
 | Shadow `CODEX_HOME` launch | Keeps temporary provider config isolated from normal official Codex state for wrapper-launched CLI sessions | `codex-multi-auth-codex` wrapper |
 | Runtime status telemetry | Shows setting state, app helper state, app bind state, account waits, cooldowns, and last-account proxy metadata | `codex-multi-auth rotation status` |
 | Reversible desktop app bind | Lets packaged Codex app launches use the same local router without patching official app files | `codex-multi-auth rotation bind-app` |

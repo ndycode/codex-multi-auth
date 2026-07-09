@@ -179,6 +179,7 @@ For remote or headless shells, prefer `codex-multi-auth login --device-auth`.
 | --- | --- |
 | `codex-multi-auth list` | Which accounts are saved and which one is active? |
 | `codex-multi-auth switch <index>` | How do I move to a different saved account? |
+| `codex-multi-auth-codex --account <index\|email\|id>` | How do I force one account for a single wrapper session without changing my default? |
 | `codex-multi-auth forecast --live` | Which account looks best for the next session? |
 
 ### Repair
