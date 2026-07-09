@@ -10,6 +10,45 @@ import {
 	getReasoningConfig,
 } from "../lib/request/request-transformer.js";
 import { estimateUsageCostUsd } from "../lib/usage/pricing.js";
+import { REASONING_EFFORTS } from "../lib/constants.js";
+
+describe("reasoning-effort suffix pattern", () => {
+	// The suffix pattern is derived from REASONING_EFFORTS. Driving this test
+	// from the same list means a new tier added to the union but missed by the
+	// pattern fails here, rather than silently breaking suffix parsing. A
+	// snapshot of the regex source would not catch that: a re-hardcoded list
+	// matching today's tiers would still pass.
+	const config = {
+		global: {},
+		models: {
+			"gpt-5.6-sol": {
+				variants: Object.fromEntries(
+					REASONING_EFFORTS.map((effort) => [effort, { reasoningEffort: effort }]),
+				),
+			},
+			// Keyed on the base id: selecting `-max` here would prove the suffix
+			// was stripped off a model whose name merely ends in `-max`.
+			"gpt-5.1-codex": {
+				variants: { max: { reasoningEffort: "max" } },
+			},
+		},
+	} as unknown as Parameters<typeof getModelConfig>[1];
+
+	it.each(REASONING_EFFORTS)("parses the `%s` suffix off a model id", (effort) => {
+		expect(getModelConfig(`gpt-5.6-sol-${effort}`, config).reasoningEffort).toBe(
+			effort,
+		);
+	});
+
+	it("never treats Codex Max's trailing `-max` as an effort suffix", () => {
+		expect(getModelConfig("gpt-5.1-codex-max", config).reasoningEffort).not.toBe(
+			"max",
+		);
+		expect(
+			getModelConfig("gpt-5.1-codex-max", config).reasoningEffort,
+		).toBeUndefined();
+	});
+});
 
 describe("GPT-5.6 (Sol / Terra / Luna)", () => {
 	describe("model resolution", () => {
