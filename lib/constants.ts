@@ -102,3 +102,34 @@ export const ACCOUNT_LIMITS = {
 	/** Number of consecutive auth failures before auto-removing account */
 	MAX_AUTH_FAILURES_BEFORE_REMOVAL: 3,
 } as const;
+
+/**
+ * Every reasoning-effort level, weakest first.
+ *
+ * Single source of truth: the effort union and the model-id suffix pattern in
+ * `lib/request/request-transformer.ts` are both derived from this, so a new
+ * tier cannot be added to one and forgotten in the other.
+ *
+ * `max` and `ultra` arrived with GPT-5.6.
+ */
+export const REASONING_EFFORTS = [
+	"none",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+	"ultra",
+] as const;
+
+/**
+ * `ultra` is selectable but never reaches the wire: Codex rewrites it to `max`
+ * before the request is sent (see `reasoning_effort_for_request` in
+ * codex-rs/core/src/client.rs). It denotes automatic subagent delegation on the
+ * client, not a distinct backend effort level.
+ */
+export type ModelReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+/** Effort levels the Responses API actually accepts. */
+export type WireReasoningEffort = Exclude<ModelReasoningEffort, "ultra">;

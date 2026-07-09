@@ -1,8 +1,5 @@
 import type { Auth, Provider, Model } from "@codex-ai/sdk";
-import type {
-	ModelReasoningEffort,
-	WireReasoningEffort,
-} from "./request/helpers/model-map.js";
+import type { ModelReasoningEffort, WireReasoningEffort } from "./constants.js";
 
 export type {
 	PluginConfigFromSchema as PluginConfig,

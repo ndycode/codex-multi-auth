@@ -7,26 +7,15 @@
  * transformer, prompt selection, and CLI diagnostics.
  */
 
-/**
- * `max` and `ultra` arrived with GPT-5.6.
- *
- * `ultra` is selectable but never reaches the wire: Codex rewrites it to `max`
- * before the request is sent (see `reasoning_effort_for_request` in
- * codex-rs/core/src/client.rs). It denotes automatic subagent delegation on the
- * client, not a distinct backend effort level.
- */
-export type ModelReasoningEffort =
-	| "none"
-	| "minimal"
-	| "low"
-	| "medium"
-	| "high"
-	| "xhigh"
-	| "max"
-	| "ultra";
+// The effort union lives in the leaf constants module so the base types layer
+// (`lib/types.ts`) can depend on it without importing this file, which would
+// close a cycle through `lib/schemas.ts`. Re-exported here for existing callers.
+import type {
+	ModelReasoningEffort,
+	WireReasoningEffort,
+} from "../../constants.js";
 
-/** Effort levels the Responses API actually accepts. */
-export type WireReasoningEffort = Exclude<ModelReasoningEffort, "ultra">;
+export type { ModelReasoningEffort, WireReasoningEffort };
 
 export type PromptModelFamily =
 	| "gpt-5-codex"

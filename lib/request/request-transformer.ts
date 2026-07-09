@@ -3,11 +3,14 @@ import { TOOL_REMAP_MESSAGE } from "../prompts/codex.js";
 import { CODEX_HOST_BRIDGE } from "../prompts/codex-host-bridge.js";
 import { getHostCodexPrompt } from "../prompts/host-codex-prompt.js";
 import {
+	REASONING_EFFORTS,
+	type ModelReasoningEffort,
+	type WireReasoningEffort,
+} from "../constants.js";
+import {
 	getModelCapabilities,
 	getModelProfile,
 	resolveNormalizedModel,
-	type ModelReasoningEffort,
-	type WireReasoningEffort,
 } from "./helpers/model-map.js";
 import {
 	filterHostSystemPromptsWithCachedPrompt,
@@ -64,27 +67,21 @@ export function normalizeModel(model: string | undefined): string {
 	return resolveNormalizedModel(model);
 }
 
-const REASONING_EFFORTS = [
-	"none",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-	"ultra",
-] as const satisfies readonly ModelReasoningEffort[];
-
 /**
  * Matches a trailing reasoning-effort suffix on a model id.
  *
- * The lookbehind guards the `max` alternative only: `gpt-5.1-codex-max` is a
- * model id that ends in `-max`, not Codex at `max` effort, and stripping it
- * would reroute the request. `gpt-5-codex-low` must still parse `low`, so the
- * guard cannot wrap the whole group.
+ * The alternation is derived from `REASONING_EFFORTS` so a new tier cannot be
+ * added to the union and silently forgotten here.
+ *
+ * `max` is split into its own alternative because it needs a lookbehind:
+ * `gpt-5.1-codex-max` is a model id that ends in `-max`, not Codex at `max`
+ * effort, and stripping it would reroute the request. The guard cannot wrap the
+ * whole group -- `gpt-5-codex-low` must still parse `low`.
  */
-const VARIANT_SUFFIX_PATTERN =
-	/(?:-(none|minimal|low|medium|high|xhigh|ultra)|(?<!codex)-(max))$/i;
+const VARIANT_SUFFIX_PATTERN = new RegExp(
+	`(?:-(${REASONING_EFFORTS.filter((effort) => effort !== "max").join("|")})|(?<!codex)-(max))$`,
+	"i",
+);
 
 /**
  * Extract configuration for a specific model
