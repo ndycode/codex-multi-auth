@@ -102,10 +102,21 @@ const TOOL_CAPABILITIES = {
 export const CURRENT_CODEX_MODEL = "gpt-5.3-codex";
 export const DEFAULT_MODEL = "gpt-5.5";
 
+// Model used for diagnostic live/quota probes (`check`, `report`, `best`).
+// Deliberately distinct from DEFAULT_MODEL: GPT-5.6 is the latest general family
+// (issue #627), so the probe leads with it, while DEFAULT_MODEL stays on 5.5 so
+// actual request routing and the legacy `gpt-5` alias remain opt-in per 2.5.0.
+// Bare `gpt-5.6` aliases to Sol; we pin the canonical id so the probe display
+// and report `modelSelection` read `gpt-5.6-sol` without a remap arrow.
+export const DEFAULT_PROBE_MODEL = "gpt-5.6-sol";
+
 // Single source of truth for the live/quota probe fallback chain. Both the
 // manager probe (lib/quota-probe.ts) and the runtime probe (lib/runtime/quota-probe.ts)
-// import this so the ordered candidate list cannot drift between them.
+// import this so the ordered candidate list cannot drift between them. It leads
+// with GPT-5.6 and steps down so accounts without 5.6 entitlement still resolve
+// a working probe model.
 export const QUOTA_PROBE_MODEL_CHAIN = [
+	DEFAULT_PROBE_MODEL,
 	DEFAULT_MODEL,
 	"gpt-5.4",
 	"gpt-5.3-codex",
@@ -646,6 +657,42 @@ export function getModelProfile(model: string | undefined): ModelProfile {
  */
 export function getModelCapabilities(model: string | undefined): ModelCapabilities {
 	return getModelProfile(model).capabilities;
+}
+
+// Cheapest-first ordering used to pick a quota-probe reasoning effort. `ultra`
+// is intentionally absent: it never reaches the wire (upstream rewrites it to
+// `max`) and would only ever be a more expensive choice than `max` anyway.
+const PROBE_REASONING_EFFORT_PREFERENCE = [
+	"none",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const satisfies readonly WireReasoningEffort[];
+
+/**
+ * Resolve the cheapest reasoning effort a probe model actually supports.
+ *
+ * A quota probe only needs the response's quota headers, so it wants the
+ * lowest-cost effort. The probe body cannot simply hardcode `none`: no GPT-5.6
+ * tier accepts `none`/`minimal`, so probing GPT-5.6 with `none` is rejected
+ * upstream (issue #627). This returns `none` for the pre-5.6 general models,
+ * `low` for GPT-5.6, and each model's cheapest supported effort otherwise.
+ * Never returns `ultra`.
+ */
+export function resolveProbeReasoningEffort(
+	model: string | undefined,
+): WireReasoningEffort {
+	const profile = getModelProfile(model);
+	for (const effort of PROBE_REASONING_EFFORT_PREFERENCE) {
+		if (profile.supportedReasoningEfforts.includes(effort)) {
+			return effort;
+		}
+	}
+	const fallback = profile.defaultReasoningEffort;
+	return fallback === "ultra" ? "max" : fallback;
 }
 
 /**

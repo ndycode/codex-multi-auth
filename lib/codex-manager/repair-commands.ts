@@ -40,7 +40,7 @@ import {
 } from "../codex-cli/state.js";
 import { setCodexCliActiveSelection } from "../codex-cli/writer.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
-import { DEFAULT_MODEL, resolveNormalizedModel } from "../request/helpers/model-map.js";
+import { DEFAULT_PROBE_MODEL, resolveNormalizedModel } from "../request/helpers/model-map.js";
 import { loadPersistedRuntimeObservabilitySnapshot } from "../runtime/runtime-observability.js";
 import type { AccountIdSource, TokenFailure, TokenResult } from "../types.js";
 
@@ -142,7 +142,7 @@ function printFixUsage(): void {
 			"  --dry-run, -n      Preview changes without writing storage",
 			"  --json, -j         Print machine-readable JSON output",
 			"  --live, -l         Run live session probe before deciding health",
-			`  --model, -m        Probe model for live mode (default: ${DEFAULT_MODEL})`,
+			`  --model, -m        Probe model for live mode (default: ${DEFAULT_PROBE_MODEL})`,
 			"",
 			"Behavior:",
 			"  - Refreshes tokens for enabled accounts",
@@ -194,7 +194,7 @@ export function parseFixArgs(args: string[]): ParsedArgsResult<FixCliOptions> {
 		dryRun: false,
 		json: false,
 		live: false,
-		model: DEFAULT_MODEL,
+		model: DEFAULT_PROBE_MODEL,
 	};
 
 	for (let i = 0; i < args.length; i += 1) {
@@ -1197,7 +1197,7 @@ export async function runFix(
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const probeModel = resolveNormalizedModel(options.model.trim() || DEFAULT_MODEL);
+	const probeModel = resolveNormalizedModel(options.model.trim() || DEFAULT_PROBE_MODEL);
 	const display = DEFAULT_DASHBOARD_DISPLAY_SETTINGS;
 	const quotaCache = options.live ? await loadQuotaCache() : null;
 	const workingQuotaCache = quotaCache ? deps.cloneQuotaCacheData(quotaCache) : null;

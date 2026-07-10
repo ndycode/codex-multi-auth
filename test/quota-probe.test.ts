@@ -30,7 +30,10 @@ import {
 	CODEX_UNAVAILABLE_PROBE_NOTE,
 } from "../lib/quota-probe.js";
 import { CodexUnavailableError } from "../lib/errors.js";
-import { DEFAULT_MODEL } from "../lib/request/helpers/model-map.js";
+import {
+	DEFAULT_MODEL,
+	DEFAULT_PROBE_MODEL,
+} from "../lib/request/helpers/model-map.js";
 
 function makeQuotaHeaders(overrides: Record<string, string> = {}): Headers {
 	const headers = new Headers({
@@ -85,7 +88,7 @@ describe("quota-probe", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("uses gpt-5.5 as the default quota probe model", async () => {
+	it("uses gpt-5.6-sol as the default quota probe model", async () => {
 		const fetchMock = vi.fn(async () =>
 			new Response("", { status: 200, headers: makeQuotaHeaders() }),
 		);
@@ -96,18 +99,19 @@ describe("quota-probe", () => {
 			accessToken: "token-1",
 		});
 
-		expect(snapshot.model).toBe(DEFAULT_MODEL);
-		expect(getCodexInstructionsMock).toHaveBeenCalledWith(DEFAULT_MODEL);
+		expect(snapshot.model).toBe(DEFAULT_PROBE_MODEL);
+		expect(getCodexInstructionsMock).toHaveBeenCalledWith(DEFAULT_PROBE_MODEL);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("falls back from the default model to gpt-5.4 when the default is unsupported", async () => {
-		// The default probe chain leads with DEFAULT_MODEL; if the account cannot
-		// use it, the next candidate (gpt-5.4) must be tried before any codex model.
+	it("falls back from the GPT-5.6 probe model to gpt-5.5 when it is unsupported", async () => {
+		// The default probe chain leads with DEFAULT_PROBE_MODEL (GPT-5.6); if the
+		// account cannot use it, the next candidate (DEFAULT_MODEL / gpt-5.5) must
+		// be tried before any codex model.
 		const unsupported = new Response(
 			JSON.stringify({
 				error: {
-					message: `Model ${DEFAULT_MODEL} unsupported`,
+					message: `Model ${DEFAULT_PROBE_MODEL} unsupported`,
 					type: "invalid_request_error",
 				},
 			}),
@@ -123,7 +127,7 @@ describe("quota-probe", () => {
 		getUnsupportedCodexModelInfoMock
 			.mockReturnValueOnce({
 				isUnsupported: true,
-				unsupportedModel: DEFAULT_MODEL,
+				unsupportedModel: DEFAULT_PROBE_MODEL,
 				message: "unsupported",
 			})
 			.mockReturnValue({
@@ -137,10 +141,10 @@ describe("quota-probe", () => {
 			accessToken: "token-1",
 		});
 
-		expect(snapshot.model).toBe("gpt-5.4");
+		expect(snapshot.model).toBe(DEFAULT_MODEL);
 		expect(fetchMock).toHaveBeenCalledTimes(2);
-		expect(getCodexInstructionsMock).toHaveBeenNthCalledWith(1, DEFAULT_MODEL);
-		expect(getCodexInstructionsMock).toHaveBeenNthCalledWith(2, "gpt-5.4");
+		expect(getCodexInstructionsMock).toHaveBeenNthCalledWith(1, DEFAULT_PROBE_MODEL);
+		expect(getCodexInstructionsMock).toHaveBeenNthCalledWith(2, DEFAULT_MODEL);
 	});
 
 	it("falls back to next model when first model is unsupported", async () => {

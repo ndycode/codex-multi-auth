@@ -4,7 +4,7 @@ import {
 	parseBestArgs,
 	printBestUsage,
 } from "../lib/codex-manager/help.js";
-import { DEFAULT_MODEL } from "../lib/request/helpers/model-map.js";
+import { DEFAULT_PROBE_MODEL } from "../lib/request/helpers/model-map.js";
 
 describe("codex-manager help parsers", () => {
 	it("parses login flags without printing usage", () => {
@@ -96,7 +96,7 @@ describe("codex-manager help parsers", () => {
 			options: {
 				live: false,
 				json: false,
-				model: DEFAULT_MODEL,
+				model: DEFAULT_PROBE_MODEL,
 				modelProvided: false,
 			},
 		});
@@ -115,14 +115,14 @@ describe("codex-manager help parsers", () => {
 		});
 	});
 
-	it("renders the default probe model from DEFAULT_MODEL in best usage", () => {
+	it("renders the default probe model from DEFAULT_PROBE_MODEL in best usage", () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
 		printBestUsage();
 
 		expect(logSpy).toHaveBeenCalledTimes(1);
 		const usage = String(logSpy.mock.calls[0]?.[0]);
-		expect(usage).toContain(`(default: ${DEFAULT_MODEL})`);
+		expect(usage).toContain(`(default: ${DEFAULT_PROBE_MODEL})`);
 		logSpy.mockRestore();
 	});
 

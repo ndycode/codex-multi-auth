@@ -10,7 +10,10 @@ import {
 	type QuotaCacheEntry,
 } from "../quota-cache.js";
 import type { CodexQuotaSnapshot } from "../quota-probe.js";
-import { DEFAULT_MODEL } from "../request/helpers/model-map.js";
+import {
+	DEFAULT_MODEL,
+	DEFAULT_PROBE_MODEL,
+} from "../request/helpers/model-map.js";
 import { getRateLimitResetTimeForFamily } from "../runtime/account-status.js";
 import type { AccountMetadataV3 } from "../storage.js";
 
@@ -24,7 +27,7 @@ import type { AccountMetadataV3 } from "../storage.js";
  */
 
 /** Default model used for live quota probes across manager commands. */
-export const DEFAULT_LIVE_PROBE_MODEL = DEFAULT_MODEL;
+export const DEFAULT_LIVE_PROBE_MODEL = DEFAULT_PROBE_MODEL;
 
 function getQuotaCacheEntryForAccount(
 	cache: QuotaCacheData,

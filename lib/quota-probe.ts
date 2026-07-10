@@ -1,6 +1,9 @@
 import { CODEX_BASE_URL } from "./constants.js";
 import { createCodexHeaders, getUnsupportedCodexModelInfo } from "./request/fetch-helpers.js";
-import { QUOTA_PROBE_MODEL_CHAIN } from "./request/helpers/model-map.js";
+import {
+	QUOTA_PROBE_MODEL_CHAIN,
+	resolveProbeReasoningEffort,
+} from "./request/helpers/model-map.js";
 import { CodexUnavailableError, isCodexUnavailableError } from "./errors.js";
 import { getCodexInstructions } from "./prompts/codex.js";
 import { mutateRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
@@ -385,7 +388,9 @@ export async function fetchCodexQuotaSnapshot(
 						content: [{ type: "input_text", text: "quota ping" }],
 					},
 				],
-				reasoning: { effort: "none", summary: "auto" },
+				// GPT-5.6 rejects `none`/`minimal`, so resolve the cheapest effort
+				// the probe model actually supports (issue #627).
+				reasoning: { effort: resolveProbeReasoningEffort(model), summary: "auto" },
 				text: { verbosity: "low" },
 			};
 

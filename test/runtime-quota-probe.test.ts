@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { fetchRuntimeCodexQuotaSnapshot } from "../lib/runtime/quota-probe.js";
-import { DEFAULT_MODEL } from "../lib/request/helpers/model-map.js";
+import {
+	DEFAULT_MODEL,
+	DEFAULT_PROBE_MODEL,
+} from "../lib/request/helpers/model-map.js";
 
 function makeQuotaHeaders(overrides: Record<string, string> = {}): Headers {
 	return new Headers({
@@ -43,7 +46,7 @@ describe("fetchRuntimeCodexQuotaSnapshot", () => {
 			getUnsupportedCodexModelInfo: () => ({ isUnsupported: false }),
 		});
 
-		expect(snapshot.model).toBe(DEFAULT_MODEL);
+		expect(snapshot.model).toBe(DEFAULT_PROBE_MODEL);
 		expect(snapshot.planType).toBe("plus");
 		expect(parseCodexQuotaSnapshot).toHaveBeenCalledOnce();
 	});
@@ -91,7 +94,7 @@ describe("fetchRuntimeCodexQuotaSnapshot", () => {
 			}),
 		});
 
-		expect(snapshot.model).toBe("gpt-5.4");
+		expect(snapshot.model).toBe(DEFAULT_MODEL);
 		expect(fetchImpl).toHaveBeenCalledTimes(2);
 	});
 });
