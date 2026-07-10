@@ -1,6 +1,6 @@
 import type { ForecastAccountResult } from "../../forecast.js";
 import { type CodexQuotaSnapshot, describeCodexProbeFailure } from "../../quota-probe.js";
-import { DEFAULT_MODEL, resolveNormalizedModel } from "../../request/helpers/model-map.js";
+import { resolveNormalizedModel } from "../../request/helpers/model-map.js";
 import type { AccountStorageV3 } from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 import { DEFAULT_LIVE_PROBE_MODEL } from "../quota-cache-helpers.js";
@@ -172,7 +172,7 @@ export async function runBestCommand(
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const probeModel = resolveNormalizedModel(options.model?.trim() || DEFAULT_MODEL);
+	const probeModel = resolveNormalizedModel(options.model?.trim() || DEFAULT_LIVE_PROBE_MODEL);
 	if (options.modelProvided && !options.live) {
 		logError("--model requires --live for codex-multi-auth best");
 		deps.printBestUsage();
