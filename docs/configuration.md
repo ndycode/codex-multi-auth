@@ -135,7 +135,7 @@ In `sequential` mode a manual pin (`codex-multi-auth switch <index>`) still take
 
 When you drive many agents in parallel (for example a swarm of deep agents), each is usually a separate `codex-multi-auth-codex` process with its own in-process rotation state. Concentrated load on a small pool causes cascading `429`s. The relevant knobs:
 
-- `pidOffsetEnabled` (default `false`, env `CODEX_AUTH_PID_OFFSET_ENABLED`): gives each process a small deterministic account-selection bias so separate processes prefer different accounts instead of all selecting the same one. This is the primary lever for the multi-process swarm case.
+- `pidOffsetEnabled` (default `true`, env `CODEX_AUTH_PID_OFFSET_ENABLED`): gives each process a small deterministic account-selection bias so separate processes prefer different accounts instead of all selecting the same one. This is the primary lever for the multi-process swarm case and is on by default; it is a no-op for single-account pools, and a manual pin plus health/quota scoring still take precedence over the small offset. Set `false` (or `CODEX_AUTH_PID_OFFSET_ENABLED=0`) to force every process to score accounts identically.
 - `retryAllAccountsRateLimited` (default `false`), with `retryAllAccountsMaxRetries` (default `0`) and `retryAllAccountsMaxWaitMs` (default `0`): when every account is momentarily rate-limited, wait for the soonest quota window and retry instead of returning pool-exhaustion immediately. Keep the retry/wait budgets bounded so a blocking wait does not exceed the host client's own request timeout.
 - `routingMutex` (default `legacy`, env `CODEX_AUTH_ROUTING_MUTEX`): set to `enabled` to serialize account selection *within a single process*. It has no effect across separate agent processes.
 

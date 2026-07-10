@@ -216,7 +216,11 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	rateLimitStateResetMs: 120_000,
 	rateLimitMaxBackoffMs: 60_000,
 	rateLimitShortRetryThresholdMs: 5_000,
-	pidOffsetEnabled: false,
+	// Default-on so parallel `codex-multi-auth-codex` processes (e.g. many agents
+	// run concurrently) each bias toward a different account, reducing cascading
+	// 429s under high parallelism (#628). No-op for single-account pools; a manual
+	// pin and health/quota scoring still take precedence over the small offset.
+	pidOffsetEnabled: true,
 	fetchTimeoutMs: 60_000,
 	streamStallTimeoutMs: 45_000,
 	liveAccountSync: true,
