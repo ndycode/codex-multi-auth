@@ -131,6 +131,16 @@ The proxy preserves request bodies and streaming responses, replaces outbound au
 
 In `sequential` mode a manual pin (`codex-multi-auth switch <index>`) still takes precedence and is never overridden. Sequential mode intentionally ignores per-session affinity: once the active account changes, all subsequent requests follow the new active account regardless of which account originally handled a conversation. Enable it with `schedulingStrategy: "sequential"` in settings or `CODEX_AUTH_SCHEDULING_STRATEGY=sequential` for a per-process trial.
 
+### Many parallel agents / high concurrency
+
+When you drive many agents in parallel (for example a swarm of deep agents), each is usually a separate `codex-multi-auth-codex` process with its own in-process rotation state. Concentrated load on a small pool causes cascading `429`s. The relevant knobs:
+
+- `pidOffsetEnabled` (default `true`, env `CODEX_AUTH_PID_OFFSET_ENABLED`): gives each process a small deterministic account-selection bias so separate processes prefer different accounts instead of all selecting the same one. This is the primary lever for the multi-process swarm case and is on by default; it is a no-op for single-account pools, and a manual pin plus health/quota scoring still take precedence over the small offset. Set `false` (or `CODEX_AUTH_PID_OFFSET_ENABLED=0`) to force every process to score accounts identically.
+- `retryAllAccountsRateLimited` (default `false`), with `retryAllAccountsMaxRetries` (default `0`) and `retryAllAccountsMaxWaitMs` (default `0`): when every account is momentarily rate-limited, wait for the soonest quota window and retry instead of returning pool-exhaustion immediately. Keep the retry/wait budgets bounded so a blocking wait does not exceed the host client's own request timeout.
+- `routingMutex` (default `legacy`, env `CODEX_AUTH_ROUTING_MUTEX`): set to `enabled` to serialize account selection *within a single process*. It has no effect across separate agent processes.
+
+The structural fix is more accounts: with N accounts and M ≫ N concurrent agents, roughly `M/N` agents share each account, so rate-limit pressure only drops as N grows. See [High parallelism / swarms of agents](troubleshooting.md#high-parallelism--swarms-of-agents) for the full playbook, including the host-client-side `Provider response headers timed out after 10000ms` timeout (which this plugin cannot change).
+
 Microsoft/Outlook SSO accounts may be more sensitive to proxy-mediated token use. If an Outlook-linked account is invalidated on every first request through the proxy but works normally on ChatGPT web, the root cause is likely IP or device binding on the Microsoft side. Raising `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS` and re-logging in the affected account typically resolves the cascade. If the problem persists, consider excluding the Microsoft account from the rotation pool via `codex-multi-auth switch`.
 
 For `codex app` launches that go through the wrapper, the wrapper automatically starts a small internal helper so rotation can keep working if the desktop app launcher detaches. The helper stores only local runtime status, uses the same per-session proxy client key as the CLI path, and exits after an idle timeout.
@@ -151,7 +161,7 @@ Some Windows installs expose Codex only as a packaged `shell:AppsFolder` app ent
 
 The shipped config templates expose first-class current OpenAI model aliases:
 
-- `config/codex-modern.json` includes the GPT-5.6 tiers (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`), plus `gpt-5.5` and `gpt-5.5-pro`
+- both `config/codex-modern.json` and `config/codex-legacy.json` include the GPT-5.6 tiers (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`), plus `gpt-5.5` and `gpt-5.5-pro`. The modern template collapses each tier's efforts into `variants`; the legacy template lists one entry per effort (for example `gpt-5.6-sol-high`) for Codex builds that predate the `variants` picker
 - GPT-5.6 adds two reasoning tiers above `xhigh`: `max`, and `ultra` on Sol/Terra only. `ultra` selects Codex's automatic subagent delegation and is sent to the API as `max`, mirroring upstream Codex
 - no GPT-5.6 tier accepts `none` or `minimal` reasoning effort; requests using them are coerced up to `low`
 - `gpt-5.6` on its own resolves to Sol, the flagship tier; the legacy `gpt-5` alias still resolves to `gpt-5.5`

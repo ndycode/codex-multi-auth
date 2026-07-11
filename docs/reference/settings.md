@@ -148,9 +148,9 @@ Named backup behavior:
 | `preemptiveQuotaRemainingPercent5h` | `5` | 5-hour quota threshold |
 | `preemptiveQuotaRemainingPercent7d` | `5` | 7-day quota threshold |
 | `preemptiveQuotaMaxDeferralMs` | `7200000` | Maximum quota-based deferral window |
-| `retryAllAccountsRateLimited` | `true` | Retry across the whole pool when all accounts are rate-limited |
-| `retryAllAccountsMaxWaitMs` | `0` | Maximum wait budget for all-accounts-rate-limited retries |
-| `retryAllAccountsMaxRetries` | `Infinity` | Maximum retry attempts for all-accounts-rate-limited loops |
+| `retryAllAccountsRateLimited` | `false` | When every account is rate-limited, wait for the soonest quota window and retry instead of failing immediately. Off by default; enable it (with a bounded `retryAllAccountsMaxRetries`/`retryAllAccountsMaxWaitMs`) for high-parallelism workloads — see [High parallelism / swarms of agents](../troubleshooting.md#high-parallelism--swarms-of-agents) |
+| `retryAllAccountsMaxWaitMs` | `0` | Maximum wait budget for all-accounts-rate-limited retries (`0` = no wait) |
+| `retryAllAccountsMaxRetries` | `0` | Maximum retry attempts for all-accounts-rate-limited loops (`0` = no retry) |
 
 ### Refresh & Recovery
 

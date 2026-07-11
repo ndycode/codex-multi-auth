@@ -1,6 +1,6 @@
-import { DEFAULT_MODEL } from "../request/helpers/model-map.js";
+import { DEFAULT_PROBE_MODEL } from "../request/helpers/model-map.js";
 
-const DEFAULT_LIVE_PROBE_MODEL = DEFAULT_MODEL;
+const DEFAULT_LIVE_PROBE_MODEL = DEFAULT_PROBE_MODEL;
 
 export function printUsage(): void {
 	console.log(

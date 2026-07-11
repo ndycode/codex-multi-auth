@@ -208,7 +208,25 @@ async function main() {
 				typeof template.provider.openai === "object"
 					? template.provider.openai
 					: {};
+			// Existing top-level openai settings (e.g. `options`) win so user
+			// customizations survive an upgrade. The `models` maps, however, are
+			// merged at the model-id level: newly shipped template models (e.g. the
+			// GPT-5.6 tiers) appear on upgrade instead of being shadowed wholesale by
+			// the user's saved model list (issue #626). Per id the user's existing
+			// entry still wins, so custom tweaks to a known model are preserved.
 			provider.openai = { ...templateOpenAi, ...existingOpenAi };
+			const templateModels =
+				templateOpenAi.models && typeof templateOpenAi.models === "object"
+					? templateOpenAi.models
+					: {};
+			const existingModels =
+				existingOpenAi.models && typeof existingOpenAi.models === "object"
+					? existingOpenAi.models
+					: {};
+			const mergedModels = { ...templateModels, ...existingModels };
+			if (Object.keys(mergedModels).length > 0) {
+				provider.openai.models = mergedModels;
+			}
 			merged.provider = provider;
 			nextConfig = merged;
 		} catch (error) {

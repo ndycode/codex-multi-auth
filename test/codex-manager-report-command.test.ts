@@ -4,7 +4,7 @@ import {
 	runReportCommand,
 } from "../lib/codex-manager/commands/report.js";
 import { CodexUnavailableError } from "../lib/errors.js";
-import { DEFAULT_MODEL } from "../lib/request/helpers/model-map.js";
+import { DEFAULT_PROBE_MODEL } from "../lib/request/helpers/model-map.js";
 import { CODEX_UNAVAILABLE_PROBE_NOTE } from "../lib/quota-probe.js";
 import type { AccountStorageV3, StorageHealthSummary } from "../lib/storage.js";
 
@@ -532,7 +532,7 @@ describe("runReportCommand", () => {
 		expect(deps.fetchCodexQuotaSnapshot).toHaveBeenCalledWith({
 			accountId: "acct-live",
 			accessToken: "access-token-1",
-			model: DEFAULT_MODEL,
+			model: DEFAULT_PROBE_MODEL,
 		});
 	});
 

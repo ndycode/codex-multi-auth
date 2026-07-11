@@ -25,6 +25,14 @@ process.env.USERPROFILE = SANDBOX_ROOT;
 process.env.CODEX_HOME = join(SANDBOX_ROOT, ".codex");
 process.env.CODEX_MULTI_AUTH_DIR = join(SANDBOX_ROOT, ".codex", "multi-auth");
 
+// Pin the per-process PID account-selection offset OFF for tests. Its production
+// default is `true` (verified in plugin-config.test.ts, and it spreads parallel
+// agents across accounts — #628), but it biases selection by `process.pid`,
+// which is inherently non-deterministic in a single test process. Pinning it off
+// keeps account-selection assertions deterministic; the offset's own behaviour is
+// covered by rotation.test.ts, which passes the flag to the selector directly.
+process.env.CODEX_AUTH_PID_OFFSET_ENABLED = "0";
+
 // Expose for assertions / debugging.
 (globalThis as { __CMA_TEST_SANDBOX_ROOT__?: string }).__CMA_TEST_SANDBOX_ROOT__ =
 	SANDBOX_ROOT;

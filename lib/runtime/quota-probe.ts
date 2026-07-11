@@ -1,7 +1,10 @@
 import type { RequestBody } from "../types.js";
 import type { CodexQuotaSnapshot } from "../quota-probe.js";
 import type { ParsedCodexQuotaSnapshot } from "./quota-headers.js";
-import { QUOTA_PROBE_MODEL_CHAIN } from "../request/helpers/model-map.js";
+import {
+	QUOTA_PROBE_MODEL_CHAIN,
+	resolveProbeReasoningEffort,
+} from "../request/helpers/model-map.js";
 
 const QUOTA_PROBE_MODELS = QUOTA_PROBE_MODEL_CHAIN;
 
@@ -44,7 +47,10 @@ export async function fetchRuntimeCodexQuotaSnapshot(params: {
 						content: [{ type: "input_text", text: "quota ping" }],
 					},
 				],
-				reasoning: { effort: "none", summary: "auto" },
+				// Send the cheapest effort each probe model actually declares (the
+				// GPT-5.6 tiers and codex models do not list `none`), keeping the
+				// probe consistent with normal request routing (issue #627).
+				reasoning: { effort: resolveProbeReasoningEffort(model), summary: "auto" },
 				text: { verbosity: "low" },
 			};
 

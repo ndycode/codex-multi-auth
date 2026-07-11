@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexUnavailableError } from "../lib/errors.js";
-import { DEFAULT_MODEL } from "../lib/request/helpers/model-map.js";
+import {
+	DEFAULT_MODEL,
+	DEFAULT_PROBE_MODEL,
+} from "../lib/request/helpers/model-map.js";
 import {
 	createAppBindMocks,
 	createCodexCliStateMocks,
@@ -3261,7 +3264,7 @@ describe("codex manager cli commands", () => {
 		expect(storageMocks.saveAccounts).not.toHaveBeenCalled();
 		expect(quotaProbeMocks.fetchCodexQuotaSnapshot).toHaveBeenCalledTimes(1);
 		expect(quotaProbeMocks.fetchCodexQuotaSnapshot).toHaveBeenCalledWith(
-			expect.objectContaining({ model: DEFAULT_MODEL }),
+			expect.objectContaining({ model: DEFAULT_PROBE_MODEL }),
 		);
 		expect(codexCliWriterMocks.setCodexCliActiveSelection).toHaveBeenCalledTimes(1);
 		expect(
@@ -7552,12 +7555,12 @@ describe("codex manager cli commands", () => {
 		expect(quotaProbeMocks.fetchCodexQuotaSnapshot).toHaveBeenNthCalledWith(1, {
 			accountId: "workspace-alpha",
 			accessToken: "access-alpha",
-			model: DEFAULT_MODEL,
+			model: DEFAULT_PROBE_MODEL,
 		});
 		expect(quotaProbeMocks.fetchCodexQuotaSnapshot).toHaveBeenNthCalledWith(2, {
 			accountId: "workspace-beta",
 			accessToken: "access-beta",
-			model: DEFAULT_MODEL,
+			model: DEFAULT_PROBE_MODEL,
 		});
 		expect(quotaCacheMocks.saveQuotaCache).toHaveBeenCalledTimes(1);
 		expect(quotaCacheMocks.saveQuotaCache).toHaveBeenCalledWith({
@@ -10132,8 +10135,8 @@ describe("codex manager cli commands", () => {
 		expect(payload.accounts.enabled).toBe(1);
 		expect(payload.accounts.disabled).toBe(1);
 		expect(payload.modelSelection).toEqual({
-			requested: "gpt-5.5",
-			normalized: "gpt-5.5",
+			requested: "gpt-5.6-sol",
+			normalized: "gpt-5.6-sol",
 			remapped: false,
 			promptFamily: "gpt-5.2",
 			capabilities: {

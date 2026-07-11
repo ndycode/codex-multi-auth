@@ -5,7 +5,13 @@ import { describe, expect, it } from "vitest";
 const projectRoot = resolve(process.cwd());
 
 function readWorkflow(name: string): string {
-	return readFileSync(join(projectRoot, ".github", "workflows", name), "utf-8");
+	// Normalize CRLF -> LF so the job-boundary matching in extractJobBlock works
+	// on Windows checkouts (autocrlf), where the raw file uses `\r\n` and the
+	// `:\n` boundary regex would otherwise never match, over-capturing to EOF.
+	return readFileSync(join(projectRoot, ".github", "workflows", name), "utf-8").replace(
+		/\r\n/g,
+		"\n",
+	);
 }
 
 function extractJobBlock(workflow: string, jobName: string): string {

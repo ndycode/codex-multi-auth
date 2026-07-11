@@ -66,9 +66,9 @@ Used only for host plugin mode through the host runtime config file.
 | Key | Default |
 | --- | --- |
 | `schedulingStrategy` | `hybrid` |
-| `retryAllAccountsRateLimited` | `true` |
+| `retryAllAccountsRateLimited` | `false` |
 | `retryAllAccountsMaxWaitMs` | `0` |
-| `retryAllAccountsMaxRetries` | `Infinity` |
+| `retryAllAccountsMaxRetries` | `0` |
 | `unsupportedCodexPolicy` | `strict` |
 | `fallbackOnUnsupportedCodexModel` | `false` |
 | `fallbackToGpt52OnUnsupportedGpt53` | `true` |
@@ -122,7 +122,7 @@ Upgrade note:
 | `parallelProbingMaxConcurrency` | `2` |
 | `emptyResponseMaxRetries` | `2` |
 | `emptyResponseRetryDelayMs` | `1000` |
-| `pidOffsetEnabled` | `false` |
+| `pidOffsetEnabled` | `true` |
 | `fetchTimeoutMs` | `60000` |
 | `streamStallTimeoutMs` | `45000` |
 | `networkErrorCooldownMs` | `6000` |

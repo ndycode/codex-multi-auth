@@ -475,6 +475,10 @@ async function applyForcedAccountSelection(rawArgs, env = process.env) {
 
 function resolveModelFamilyForStatus(model) {
 	const normalized = typeof model === "string" ? model.trim().toLowerCase() : "";
+	// GPT-5.6 general tiers share the gpt-5.2 prompt family (see
+	// lib/request/helpers/model-map.ts MODEL_PROFILES). Check before the generic
+	// gpt-5 catch-all, which would otherwise mis-bucket them as codex.
+	if (normalized.startsWith("gpt-5.6")) return "gpt-5.2";
 	if (normalized.startsWith("gpt-5.2")) return "gpt-5.2";
 	if (normalized.startsWith("gpt-5.1")) return "gpt-5.1";
 	if (normalized.includes("codex-max")) return "codex-max";
@@ -1160,7 +1164,7 @@ function canonicalizeRequestedModelName(model) {
 		return "";
 	}
 
-	return stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
+	return stripped.replace(/-(none|minimal|low|medium|high|xhigh|max|ultra)$/i, "");
 }
 
 function canonicalizeUnsupportedModelKey(model) {
@@ -1169,7 +1173,7 @@ function canonicalizeUnsupportedModelKey(model) {
 	if (!stripped) {
 		return "";
 	}
-	return stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
+	return stripped.replace(/-(none|minimal|low|medium|high|xhigh|max|ultra)$/i, "");
 }
 
 function extractUnsupportedModelFromOutput(output) {
@@ -1757,6 +1761,9 @@ function hasCliAuthCredentialsStoreOverride(args) {
 // This wrapper runs before the TypeScript build, so it cannot import that source.
 const SUPPORTED_REASONING_EFFORTS_BY_MODEL = {
 	[CURRENT_CODEX_MODEL]: ["low", "medium", "high", "xhigh"],
+	"gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
+	"gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
+	"gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
 	"gpt-5.5": ["none", "low", "medium", "high", "xhigh"],
 	"gpt-5.5-pro": ["medium", "high", "xhigh"],
 	"gpt-5.4": ["none", "low", "medium", "high", "xhigh"],
@@ -1777,9 +1784,26 @@ const REASONING_FALLBACKS = {
 	medium: ["medium", "low", "high", "minimal", "none", "xhigh"],
 	high: ["high", "medium", "xhigh", "low", "minimal", "none"],
 	xhigh: ["xhigh", "high", "medium", "low", "minimal", "none"],
+	// `max` and `ultra` arrived with GPT-5.6. Step down one rung at a time so a
+	// request against a pre-5.6 model lands on that model's strongest tier.
+	max: ["max", "xhigh", "high", "medium", "low", "minimal", "none"],
+	ultra: ["ultra", "max", "xhigh", "high", "medium", "low", "minimal", "none"],
 };
 
 const KNOWN_REASONING_EFFORTS = new Set(Object.keys(REASONING_FALLBACKS));
+
+// Effort suffixes generated as model aliases (e.g. `gpt-5.5-high`). This is the
+// pre-5.6 set only: `max`/`ultra` are NOT auto-aliased onto general models,
+// matching lib/request/helpers/model-map.ts `REASONING_VARIANTS`. GPT-5.6 tiers
+// register their own effort aliases explicitly via `addRequestedModelEffortAliases`.
+const REASONING_ALIAS_VARIANTS = [
+	"none",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+];
 const REQUESTED_MODEL_ALIASES = new Map();
 const DEFAULT_GENERAL_GPT5_MODEL = "gpt-5.5";
 const GPT_5_5_CANONICAL_MODEL = "gpt-5.5";
@@ -1788,6 +1812,14 @@ const GPT_5_5_RELEASE_MODEL = "gpt-5.5-2026-04-23";
 const GPT_5_5_PRO_RELEASE_MODEL = "gpt-5.5-pro-2026-04-23";
 const GPT_5_5_RELEASE_COMPAT_MODEL = "gpt-5.5-20260423";
 const GPT_5_5_PRO_RELEASE_COMPAT_MODEL = "gpt-5.5-pro-20260423";
+// GPT-5.6 tiers. Sol and Terra expose `ultra`; Luna stops at `max`. No tier
+// accepts `none`/`minimal`. Bare `gpt-5.6` aliases to the flagship (Sol).
+const GPT_5_6_SOL_MODEL = "gpt-5.6-sol";
+const GPT_5_6_TERRA_MODEL = "gpt-5.6-terra";
+const GPT_5_6_LUNA_MODEL = "gpt-5.6-luna";
+const GPT_5_6_FLAGSHIP_ALIAS = "gpt-5.6";
+const GPT_5_6_SOL_TERRA_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
+const GPT_5_6_LUNA_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const GENERAL_GPT5_VERSION_CATALOG = {
 	1: {
 		base: "gpt-5.1",
@@ -1823,7 +1855,17 @@ function addRequestedModelAlias(alias, normalizedModel) {
 
 function addRequestedModelReasoningAliases(alias, normalizedModel) {
 	addRequestedModelAlias(alias, normalizedModel);
-	for (const effort of KNOWN_REASONING_EFFORTS) {
+	for (const effort of REASONING_ALIAS_VARIANTS) {
+		addRequestedModelAlias(`${alias}-${effort}`, normalizedModel);
+	}
+}
+
+// Register a model plus one alias per effort it actually supports. Unlike
+// `addRequestedModelReasoningAliases`, this does not assume the pre-5.6 variant
+// list: GPT-5.6 rejects `none`/`minimal` and only Sol/Terra accept `ultra`.
+function addRequestedModelEffortAliases(alias, normalizedModel, efforts) {
+	addRequestedModelAlias(alias, normalizedModel);
+	for (const effort of efforts) {
 		addRequestedModelAlias(`${alias}-${effort}`, normalizedModel);
 	}
 }
@@ -1961,6 +2003,26 @@ function seedRequestedModelAliases() {
 	addRequestedModelReasoningAliases("gpt-5-nano", "gpt-5-nano");
 	addRequestedModelReasoningAliases("gpt-5.1-chat-latest", "gpt-5.1");
 	addRequestedModelReasoningAliases("gpt-5-chat-latest", DEFAULT_GENERAL_GPT5_MODEL);
+	addRequestedModelEffortAliases(
+		GPT_5_6_SOL_MODEL,
+		GPT_5_6_SOL_MODEL,
+		GPT_5_6_SOL_TERRA_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		GPT_5_6_TERRA_MODEL,
+		GPT_5_6_TERRA_MODEL,
+		GPT_5_6_SOL_TERRA_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		GPT_5_6_LUNA_MODEL,
+		GPT_5_6_LUNA_MODEL,
+		GPT_5_6_LUNA_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		GPT_5_6_FLAGSHIP_ALIAS,
+		GPT_5_6_SOL_MODEL,
+		GPT_5_6_SOL_TERRA_EFFORTS,
+	);
 	addRequestedModelReasoningAliases(CURRENT_CODEX_MODEL, CURRENT_CODEX_MODEL);
 	addRequestedModelReasoningAliases("gpt-5.3-codex-spark", CURRENT_CODEX_MODEL);
 	addRequestedModelReasoningAliases(LEGACY_CODEX_MODEL, CURRENT_CODEX_MODEL);
@@ -2052,6 +2114,25 @@ function resolveCodexRequestedModel(normalized) {
 	return "";
 }
 
+// Resolve GPT-5.6 identifiers, including ones that are not exact aliases (e.g. a
+// future `gpt-5.6-terra-fast`). Without this the general GPT-5 resolver sees
+// minor `6`, finds no catalog entry, and silently falls back to 5.5. Unknown
+// tiers resolve to Sol, matching OpenAI's bare `gpt-5.6` alias.
+function resolveGpt56RequestedModel(stripped) {
+	const tokens = tokenizeRequestedModel(stripped);
+	const gptIndex = tokens.indexOf("gpt");
+	const isGpt56 =
+		gptIndex !== -1 &&
+		tokens[gptIndex + 1] === "5" &&
+		tokens[gptIndex + 2] === "6";
+	if (!isGpt56 || tokens.includes("codex")) {
+		return "";
+	}
+	if (tokens.includes("terra")) return GPT_5_6_TERRA_MODEL;
+	if (tokens.includes("luna")) return GPT_5_6_LUNA_MODEL;
+	return GPT_5_6_SOL_MODEL;
+}
+
 function resolveGeneralGpt5RequestedModel(stripped) {
 	const tokens = tokenizeRequestedModel(stripped);
 	const gptIndex = tokens.indexOf("gpt");
@@ -2100,6 +2181,11 @@ function normalizeRequestedModel(model) {
 		return codexModel;
 	}
 
+	const gpt56Model = resolveGpt56RequestedModel(stripped);
+	if (gpt56Model) {
+		return gpt56Model;
+	}
+
 	const generalModel = resolveGeneralGpt5RequestedModel(stripped);
 	if (generalModel) {
 		return generalModel;
@@ -2108,16 +2194,7 @@ function normalizeRequestedModel(model) {
 	return "";
 }
 
-function coerceReasoningEffortForModel(model, effort) {
-	if (typeof effort !== "string") return effort;
-	const normalizedEffort = effort.trim().toLowerCase();
-	if (!KNOWN_REASONING_EFFORTS.has(normalizedEffort)) {
-		return effort;
-	}
-
-	const normalizedModel = normalizeRequestedModel(model);
-	const supportedEfforts =
-		SUPPORTED_REASONING_EFFORTS_BY_MODEL[normalizedModel] ?? null;
+function resolveSupportedReasoningEffort(normalizedEffort, supportedEfforts) {
 	if (!supportedEfforts || supportedEfforts.includes(normalizedEffort)) {
 		return normalizedEffort;
 	}
@@ -2130,6 +2207,27 @@ function coerceReasoningEffortForModel(model, effort) {
 	}
 
 	return normalizedEffort;
+}
+
+function coerceReasoningEffortForModel(model, effort) {
+	if (typeof effort !== "string") return effort;
+	const normalizedEffort = effort.trim().toLowerCase();
+	if (!KNOWN_REASONING_EFFORTS.has(normalizedEffort)) {
+		return effort;
+	}
+
+	const normalizedModel = normalizeRequestedModel(model);
+	const supportedEfforts =
+		SUPPORTED_REASONING_EFFORTS_BY_MODEL[normalizedModel] ?? null;
+	const resolved = resolveSupportedReasoningEffort(
+		normalizedEffort,
+		supportedEfforts,
+	);
+
+	// `ultra` is a client-side tier: Codex rewrites it to `max` before the
+	// request leaves the client, so it must never reach the wire. Mirror
+	// lib/request/helpers/model-map.ts / request-transformer's getReasoningConfig.
+	return resolved === "ultra" ? "max" : resolved;
 }
 
 function extractRequestedModel(args) {
@@ -4959,5 +5057,21 @@ async function main() {
 	}
 }
 
-const exitCode = await main();
-process.exitCode = normalizeExitCode(exitCode);
+// Model-resolution internals, exported for unit tests. Kept in sync with
+// lib/request/helpers/model-map.ts (see test/codex-model-resolution.test.ts,
+// which asserts wrapper<->lib parity).
+export {
+	normalizeRequestedModel,
+	coerceReasoningEffortForModel,
+	resolveModelFamilyForStatus,
+	canonicalizeRequestedModelName,
+};
+
+// Run the wrapper only when actually launched (as the `codex-multi-auth-codex`
+// bin). Tests set CODEX_MULTI_AUTH_WRAPPER_IMPORT_ONLY to import the module for
+// its exported helpers without forwarding to the real Codex CLI. The flag is
+// never set in production, so bin launches are unaffected.
+if (!process.env.CODEX_MULTI_AUTH_WRAPPER_IMPORT_ONLY) {
+	const exitCode = await main();
+	process.exitCode = normalizeExitCode(exitCode);
+}

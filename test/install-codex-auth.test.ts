@@ -150,6 +150,56 @@ describe("install-codex-auth script", () => {
 		expect(backups.length).toBeGreaterThanOrEqual(2);
 	});
 
+	it("adds newly shipped template models on upgrade while preserving user model customizations", async () => {
+		const home = mkdtempSync(path.join(tmpdir(), "codex-install-merge-"));
+		tempRoots.push(home);
+		const appData = path.join(home, "AppData", "Roaming");
+		const localAppData = path.join(home, "AppData", "Local");
+		const env = {
+			...process.env,
+			HOME: home,
+			USERPROFILE: home,
+			APPDATA: appData,
+			LOCALAPPDATA: localAppData,
+		};
+		const configDir = path.join(appData, "Codex");
+		const configPath = path.join(configDir, "Codex.json");
+		// An already-initialized config from before the GPT-5.6 tiers shipped: it
+		// has a user-customized known model and a bespoke custom model, but no 5.6.
+		const initialConfig = {
+			plugin: ["codex-multi-auth"],
+			provider: {
+				openai: {
+					options: { reasoningEffort: "high" },
+					models: {
+						"gpt-5.5": { name: "My customized 5.5" },
+						"my-custom-model": { name: "Bespoke" },
+					},
+				},
+			},
+		};
+
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(configPath, `${JSON.stringify(initialConfig, null, 2)}\n`, "utf8");
+
+		await execFileAsync(process.execPath, [scriptPath, "--modern", "--no-cache-clear"], {
+			env,
+			windowsHide: true,
+		});
+
+		const written = JSON.parse(readFileSync(configPath, "utf8")) as {
+			provider: { openai: { options?: Record<string, unknown>; models: Record<string, { name?: string }> } };
+		};
+		const models = written.provider.openai.models;
+		// Newly shipped template model now appears after the upgrade.
+		expect(models["gpt-5.6-sol"]).toBeDefined();
+		// The user's bespoke model and their override of a known model are preserved.
+		expect(models["my-custom-model"]?.name).toBe("Bespoke");
+		expect(models["gpt-5.5"]?.name).toBe("My customized 5.5");
+		// Existing top-level openai settings still win.
+		expect(written.provider.openai.options?.reasoningEffort).toBe("high");
+	});
+
 	it("dry-run does not create global config on disk", () => {
 		const home = mkdtempSync(path.join(tmpdir(), "codex-install-dryrun-"));
 		tempRoots.push(home);

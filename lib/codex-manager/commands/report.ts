@@ -25,7 +25,7 @@ import {
 } from "../../quota-probe.js";
 import { type ModelFamily } from "../../prompts/codex.js";
 import {
-	DEFAULT_MODEL,
+	DEFAULT_PROBE_MODEL,
 	getModelCapabilities,
 	getModelProfile,
 	resolveNormalizedModel,
@@ -129,7 +129,7 @@ function printReportUsage(logInfo: (message: string) => void): void {
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
 			"  --explain          Print per-account reasoning in text mode",
-			`  --model, -m        Probe model for live mode (default: ${DEFAULT_MODEL})`,
+			`  --model, -m        Probe model for live mode (default: ${DEFAULT_PROBE_MODEL})`,
 			"  --max-accounts N   Limit how many enabled accounts live mode can consider",
 			"  --max-probes N     Limit how many live quota probes can run",
 			"  --cached-only      Skip refreshes and only use already-usable access tokens",
@@ -143,7 +143,7 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 		live: false,
 		json: false,
 		explain: false,
-		model: DEFAULT_MODEL,
+		model: DEFAULT_PROBE_MODEL,
 		cachedOnly: false,
 	};
 
@@ -311,7 +311,7 @@ export async function runReportCommand(
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const requestedModel = options.model?.trim() || DEFAULT_MODEL;
+	const requestedModel = options.model?.trim() || DEFAULT_PROBE_MODEL;
 	const modelInspection = inspectRequestedModel(requestedModel);
 
 	deps.setStoragePath(null);

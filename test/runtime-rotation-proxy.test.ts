@@ -1198,7 +1198,9 @@ describe("runtime rotation proxy", () => {
 
 		expect(await evicted.json()).toEqual({ goal: null });
 		expect(await retained.json()).toEqual({ goal: "goal-512" });
-	});
+		// 513 sequential loopback round-trips are inherently slow; the default 5s
+		// timeout is too tight on slower machines (e.g. Windows dev checkouts).
+	}, 30_000);
 
 	it("rejects unauthenticated model discovery requests", async () => {
 		const now = Date.now();

@@ -14,7 +14,7 @@ import {
 } from "../forecast-report-shared.js";
 import type { QuotaCacheData } from "../../quota-cache.js";
 import { type CodexQuotaSnapshot, describeCodexProbeFailure } from "../../quota-probe.js";
-import { DEFAULT_MODEL, resolveNormalizedModel } from "../../request/helpers/model-map.js";
+import { DEFAULT_PROBE_MODEL, resolveNormalizedModel } from "../../request/helpers/model-map.js";
 import { type AccountMetadataV3, type AccountStorageV3 } from "../../storage.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 
@@ -136,7 +136,7 @@ function printForecastUsage(logInfo: (message: string) => void): void {
 			"  --live, -l         Probe live quota headers via Codex backend",
 			"  --json, -j         Print machine-readable JSON output",
 			"  --explain          Include structured recommendation reasoning",
-			`  --model, -m        Probe model for live mode (default: ${DEFAULT_MODEL})`,
+			`  --model, -m        Probe model for live mode (default: ${DEFAULT_PROBE_MODEL})`,
 			"  --no-runtime-overlay  Ignore persisted runtime skip diagnostics",
 		].join("\n"),
 	);
@@ -149,7 +149,7 @@ function parseForecastArgs(
 		live: false,
 		json: false,
 		explain: false,
-		model: DEFAULT_MODEL,
+		model: DEFAULT_PROBE_MODEL,
 		runtimeOverlay: true,
 	};
 
@@ -215,7 +215,7 @@ export async function runForecastCommand(
 		return 1;
 	}
 	const options = parsedArgs.options;
-	const requestedModel = options.model?.trim() || DEFAULT_MODEL;
+	const requestedModel = options.model?.trim() || DEFAULT_PROBE_MODEL;
 	const probeModel = resolveNormalizedModel(requestedModel);
 	const display = deps.loadDashboardDisplaySettings
 		? (await deps.loadDashboardDisplaySettings().catch(() => null)) ??
