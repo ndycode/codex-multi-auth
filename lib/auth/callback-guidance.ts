@@ -3,7 +3,7 @@
  *
  * The redirect URI is registered with the provider, so the port cannot be
  * negotiated away when it is contended. The best the CLI can do is name the
- * conflict and point at a flow that does not need the port at all.
+ * likely conflict and point at a flow that does not need the port at all.
  *
  * Windows and WSL contend for that port as far as a browser running on the
  * Windows host is concerned, so a listener on either side can swallow a callback
@@ -29,16 +29,55 @@ export type CallbackFailureContext = {
 };
 
 const INSPECT_WINDOWS = `  Windows (PowerShell):  Get-NetTCPConnection -LocalPort ${AUTH_REDIRECT.port}`;
-const INSPECT_LINUX = `  WSL / Linux:           ss -lptn 'sport = :${AUTH_REDIRECT.port}'`;
+const INSPECT_LINUX = `  Linux / WSL:           ss -lptn 'sport = :${AUTH_REDIRECT.port}'`;
+const INSPECT_DARWIN = `  macOS:                 lsof -nP -iTCP:${AUTH_REDIRECT.port} -sTCP:LISTEN`;
 const USE_DEVICE_AUTH =
 	"  Or sign in without the callback port: codex-multi-auth login --device-auth";
 
 /**
+ * The commands that would reveal a listener on the callback port here.
+ *
+ * Inside WSL both sides of the boundary are worth checking, because the
+ * offending listener is usually the one on the Windows host.
+ */
+function inspectCommands(): string[] {
+	if (isWsl()) return [INSPECT_WINDOWS, INSPECT_LINUX];
+	if (process.platform === "win32") return [INSPECT_WINDOWS];
+	if (process.platform === "darwin") return [INSPECT_DARWIN];
+	return [INSPECT_LINUX];
+}
+
+/**
+ * Why a listener on the other side of the Windows/WSL boundary may be at fault.
+ *
+ * @returns Explanatory lines, or an empty array when no WSL boundary is in play.
+ */
+function crossBoundaryNote(): string[] {
+	if (isWsl()) {
+		const distro = getWslDistroName();
+		const where = distro ? `WSL (${distro})` : "WSL";
+		return [
+			`You are running inside ${where}, but the browser opens on the Windows host.`,
+			`Windows and ${where} contend for localhost:${AUTH_REDIRECT.port}, so a codex-multi-auth`,
+			"or Codex login or proxy on the Windows side can take the callback meant for this one.",
+		];
+	}
+	if (process.platform === "win32") {
+		return [
+			`A codex-multi-auth login or proxy running inside WSL can also hold port ${AUTH_REDIRECT.port}.`,
+		];
+	}
+	return [];
+}
+
+/**
  * Build the lines shown to the user when a browser OAuth callback fails.
  *
- * Port contention is only asserted when it is actually observed (`EADDRINUSE`)
- * or when the callback never arrived despite a clean bind — the shape of a
- * cross-boundary Windows/WSL hijack.
+ * Contention is only *asserted* when it was actually observed — that is, the
+ * listen failed with `EADDRINUSE`. A callback that never arrives is far more
+ * often a cancelled or abandoned sign-in than a stolen redirect, so that case
+ * is phrased as a conditional ("if you completed sign-in and still landed
+ * here") rather than a diagnosis.
  *
  * @param reason - Which half of the callback flow broke.
  * @param context - Extra detail from the failed bind, when available.
@@ -49,60 +88,44 @@ export function describeCallbackFailure(
 	context: CallbackFailureContext = {},
 ): string[] {
 	const port = AUTH_REDIRECT.port;
-	const portIsContended =
-		reason === "callback-timeout" || context.bindErrorCode === "EADDRINUSE";
-	const lines: string[] = [];
 
 	if (reason === "bind-failed") {
-		lines.push(
-			portIsContended
-				? `Could not listen on port ${port} for the OAuth callback — something else already holds it.`
-				: `Could not listen on port ${port} for the OAuth callback${
-						context.bindErrorCode ? ` (${context.bindErrorCode})` : ""
-					}.`,
-		);
-	} else {
-		lines.push(
-			`No OAuth callback arrived on port ${port} before the sign-in window closed.`,
-		);
-	}
+		// A failed listen is hard evidence: something is on the port right now.
+		if (context.bindErrorCode === "EADDRINUSE") {
+			return [
+				`Could not listen on port ${port} for the OAuth callback — another process already holds it.`,
+				...crossBoundaryNote(),
+				"",
+				`Find the listener:`,
+				...inspectCommands(),
+				"",
+				"Close it, then retry.",
+				USE_DEVICE_AUTH,
+			];
+		}
 
-	if (!portIsContended) {
-		lines.push(
+		return [
+			`Could not listen on port ${port} for the OAuth callback${
+				context.bindErrorCode ? ` (${context.bindErrorCode})` : ""
+			}.`,
 			"",
-			`The callback port is fixed by the provider and cannot be changed.`,
+			"The callback port is fixed by the provider and cannot be changed.",
 			USE_DEVICE_AUTH,
-		);
-		return lines;
+		];
 	}
 
-	if (isWsl()) {
-		const distro = getWslDistroName();
-		const where = distro ? `WSL (${distro})` : "WSL";
-		lines.push(
-			`You are running inside ${where}, but the browser opens on the Windows host.`,
-			`Windows and ${where} contend for localhost:${port}, so a codex-multi-auth or Codex`,
-			"login or proxy running on the Windows side can take the callback meant for this one.",
-			"From in here that is indistinguishable from a broken login.",
-			"",
-			`Check both sides for a listener on port ${port}:`,
-			INSPECT_WINDOWS,
-			INSPECT_LINUX,
-			"",
-			"Close the Windows-side login or proxy, then retry.",
-			USE_DEVICE_AUTH,
-		);
-		return lines;
-	}
-
-	lines.push(
+	// The listener bound cleanly and nothing arrived. Usually the sign-in was
+	// simply cancelled or abandoned — say so first, and do not misdiagnose it.
+	return [
+		`No OAuth callback arrived on port ${port} before the sign-in window closed.`,
 		"",
-		`Check for another process holding port ${port}:`,
-		process.platform === "win32" ? INSPECT_WINDOWS : INSPECT_LINUX,
+		"If you closed or cancelled the browser sign-in, just run login again.",
 		"",
-		"On a Windows host, a codex-multi-auth login or proxy running inside WSL can also hold it.",
-		"Close the other listener, then retry.",
+		"If you completed sign-in in the browser and still landed here, something else",
+		`may have taken the callback on port ${port}:`,
+		...crossBoundaryNote(),
+		...inspectCommands(),
+		"",
 		USE_DEVICE_AUTH,
-	);
-	return lines;
+	];
 }

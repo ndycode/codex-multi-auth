@@ -22,6 +22,7 @@ describe("describeCallbackFailure", () => {
 		vi.clearAllMocks();
 		mockedIsWsl.mockReturnValue(false);
 		mockedDistro.mockReturnValue(undefined);
+		Object.defineProperty(process, "platform", { value: "linux" });
 	});
 
 	afterEach(() => {
@@ -36,64 +37,98 @@ describe("describeCallbackFailure", () => {
 		}
 	});
 
-	it("names port contention when the bind actually failed with EADDRINUSE", () => {
-		const text = asText(
-			describeCallbackFailure("bind-failed", { bindErrorCode: "EADDRINUSE" }),
-		);
+	describe("contention is only asserted when it was actually observed", () => {
+		it("asserts contention on EADDRINUSE, which is hard evidence", () => {
+			const text = asText(
+				describeCallbackFailure("bind-failed", { bindErrorCode: "EADDRINUSE" }),
+			);
 
-		expect(text).toContain(`port ${AUTH_REDIRECT.port}`);
-		expect(text).toContain("already holds it");
+			expect(text).toContain("another process already holds it");
+			expect(text).toContain(`port ${AUTH_REDIRECT.port}`);
+		});
+
+		it("does not claim contention for unrelated bind errors", () => {
+			const text = asText(
+				describeCallbackFailure("bind-failed", { bindErrorCode: "EACCES" }),
+			);
+
+			expect(text).toContain("EACCES");
+			expect(text).not.toContain("already holds it");
+			expect(text).not.toContain("ss -lptn");
+		});
+
+		it("does not diagnose a cancelled or abandoned sign-in as port contention", () => {
+			// A clean bind with no redirect is far more often a closed browser tab
+			// than a stolen callback. Leading with a confident contention story
+			// would misdiagnose the common case.
+			const text = asText(describeCallbackFailure("callback-timeout"));
+
+			expect(text).toContain("If you closed or cancelled the browser sign-in");
+			expect(text).not.toContain("another process already holds it");
+			// The contention explanation is offered conditionally, not asserted.
+			expect(text).toContain("If you completed sign-in in the browser");
+		});
 	});
 
-	it("does not claim contention for unrelated bind errors", () => {
-		const text = asText(
-			describeCallbackFailure("bind-failed", { bindErrorCode: "EACCES" }),
-		);
+	describe("platform-appropriate inspection commands", () => {
+		it("gives macOS lsof, never the Linux-only ss", () => {
+			Object.defineProperty(process, "platform", { value: "darwin" });
 
-		expect(text).toContain("EACCES");
-		expect(text).not.toContain("already holds it");
-		expect(text).not.toContain("Get-NetTCPConnection");
+			const text = asText(describeCallbackFailure("callback-timeout"));
+
+			expect(text).toContain("lsof -nP -iTCP:1455");
+			expect(text).not.toContain("ss -lptn");
+			expect(text).not.toContain("Get-NetTCPConnection");
+		});
+
+		it("gives native Linux ss, and no WSL narrative", () => {
+			const text = asText(describeCallbackFailure("callback-timeout"));
+
+			expect(text).toContain("ss -lptn");
+			expect(text).not.toContain("Get-NetTCPConnection");
+			// The `ss` line is labelled "Linux / WSL", so assert the absence of the
+			// explanatory narrative rather than of the substring "WSL".
+			expect(text).not.toContain("the browser opens on the Windows host");
+			expect(text).not.toContain("can also hold port");
+		});
+
+		it("tells a Windows host that a WSL-side listener can also hold the port", () => {
+			Object.defineProperty(process, "platform", { value: "win32" });
+
+			const text = asText(
+				describeCallbackFailure("bind-failed", { bindErrorCode: "EADDRINUSE" }),
+			);
+
+			expect(text).toContain("Get-NetTCPConnection");
+			expect(text).toContain("inside WSL can also hold port");
+			expect(text).not.toContain("lsof");
+		});
 	});
 
-	it("treats a silent callback timeout as contention", () => {
-		// A clean bind that never receives a redirect is the exact signature of a
-		// listener on the other side of the Windows/WSL boundary taking the callback.
-		const text = asText(describeCallbackFailure("callback-timeout"));
+	describe("inside WSL", () => {
+		beforeEach(() => {
+			mockedIsWsl.mockReturnValue(true);
+			mockedDistro.mockReturnValue("Debian");
+		});
 
-		expect(text).toContain("No OAuth callback arrived");
-		expect(text).toContain(`port ${AUTH_REDIRECT.port}`);
-	});
+		it("explains the Windows/WSL split and offers both inspection commands", () => {
+			const text = asText(describeCallbackFailure("callback-timeout"));
 
-	it("explains the Windows/WSL split and names the distro when inside WSL", () => {
-		mockedIsWsl.mockReturnValue(true);
-		mockedDistro.mockReturnValue("Debian");
+			expect(text).toContain("WSL (Debian)");
+			expect(text).toContain("the browser opens on the Windows host");
+			// The offending listener is usually on the other side of the boundary,
+			// so both sides are worth checking.
+			expect(text).toContain("Get-NetTCPConnection");
+			expect(text).toContain("ss -lptn");
+		});
 
-		const text = asText(describeCallbackFailure("callback-timeout"));
+		it("still explains the split when the distro name is unknown", () => {
+			mockedDistro.mockReturnValue(undefined);
 
-		expect(text).toContain("WSL (Debian)");
-		expect(text).toContain("the browser opens on the Windows host");
-		// Both sides are worth inspecting, so both commands are offered.
-		expect(text).toContain("Get-NetTCPConnection");
-		expect(text).toContain("ss -lptn");
-	});
+			const text = asText(describeCallbackFailure("callback-timeout"));
 
-	it("still explains the split inside WSL when the distro name is unknown", () => {
-		mockedIsWsl.mockReturnValue(true);
-
-		const text = asText(describeCallbackFailure("callback-timeout"));
-
-		expect(text).toContain("WSL");
-		expect(text).not.toContain("WSL ()");
-	});
-
-	it("points a Windows host at the reciprocal WSL conflict", () => {
-		Object.defineProperty(process, "platform", { value: "win32" });
-
-		const text = asText(
-			describeCallbackFailure("bind-failed", { bindErrorCode: "EADDRINUSE" }),
-		);
-
-		expect(text).toContain("Get-NetTCPConnection");
-		expect(text).toContain("inside WSL can also hold it");
+			expect(text).toContain("WSL");
+			expect(text).not.toContain("WSL ()");
+		});
 	});
 });

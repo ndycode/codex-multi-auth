@@ -71,8 +71,10 @@ side is holding that port — an in-progress login, a leftover callback server, 
 running proxy — it will receive the redirect that the WSL listener is waiting for.
 
 The failure is silent from inside the distro: the WSL listener binds cleanly and
-simply never sees the callback, so login appears to hang. `codex-multi-auth` now
-detects this and prints the conflict instead of stalling.
+simply never sees the callback, so login appears to hang. It is waiting — the
+callback poll runs for five minutes before giving up, and `codex-multi-auth` then
+explains the likely conflict and drops you into the manual-paste fallback. If you
+would rather not wait it out, press Ctrl+C and use `--device-auth` below.
 
 To find the listener, check **both** sides:
 

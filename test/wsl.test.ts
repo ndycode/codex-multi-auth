@@ -3,7 +3,7 @@ import fs from "node:fs";
 import {
 	getWslDistroName,
 	isWsl,
-	resetWslDetectionCache,
+	resetWslDetectionCacheForTests,
 } from "../lib/wsl.js";
 
 vi.mock("node:fs", () => ({
@@ -20,7 +20,7 @@ describe("wsl detection", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
-		resetWslDetectionCache();
+		resetWslDetectionCacheForTests();
 		delete process.env.WSL_DISTRO_NAME;
 		delete process.env.WSL_INTEROP;
 		mockedReadFileSync.mockImplementation(() => {
@@ -29,7 +29,7 @@ describe("wsl detection", () => {
 	});
 
 	afterEach(() => {
-		resetWslDetectionCache();
+		resetWslDetectionCacheForTests();
 		Object.defineProperty(process, "platform", { value: originalPlatform });
 		if (originalDistro === undefined) delete process.env.WSL_DISTRO_NAME;
 		else process.env.WSL_DISTRO_NAME = originalDistro;

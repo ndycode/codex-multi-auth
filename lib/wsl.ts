@@ -59,6 +59,6 @@ export function getWslDistroName(): string | undefined {
  *
  * @internal Test seam — production code must not call this.
  */
-export function resetWslDetectionCache(): void {
+export function resetWslDetectionCacheForTests(): void {
 	cachedIsWsl = undefined;
 }

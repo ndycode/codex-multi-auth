@@ -124,6 +124,9 @@ function spawnPowerShell(command: string, stdinText?: string): boolean {
 	);
 	child.on("error", () => {});
 	if (stdinText !== undefined) {
+		// A child that dies before draining stdin emits EPIPE on the stream, not
+		// on the child. Unhandled, that is an async throw no try/catch can catch.
+		child.stdin?.on("error", () => {});
 		child.stdin?.end(stdinText);
 	}
 	return true;
@@ -216,6 +219,7 @@ export function copyTextToClipboard(text: string): boolean {
 					shell: false,
 				});
 				child.on("error", () => {});
+				child.stdin?.on("error", () => {});
 				child.stdin?.end(text);
 				return true;
 			}
@@ -234,6 +238,7 @@ export function copyTextToClipboard(text: string): boolean {
 				shell: false,
 			});
 			child.on("error", () => {});
+			child.stdin?.on("error", () => {});
 			child.stdin?.end(text);
 			return true;
 		}
@@ -250,6 +255,7 @@ export function copyTextToClipboard(text: string): boolean {
 				shell: false,
 			});
 			child.on("error", () => {});
+			child.stdin?.on("error", () => {});
 			child.stdin?.end(text);
 			return true;
 		}

@@ -8,23 +8,35 @@ import {
 	copyTextToClipboard,
 } from "../lib/auth/browser.js";
 import { PLATFORM_OPENERS } from "../lib/constants.js";
-import { resetWslDetectionCache } from "../lib/wsl.js";
+import { resetWslDetectionCacheForTests } from "../lib/wsl.js";
 
 vi.mock("node:child_process", () => ({
 	spawn: vi.fn(() => ({
 		on: vi.fn(),
-		stdin: { end: vi.fn() },
+		stdin: { end: vi.fn(), on: vi.fn() },
 	})),
 }));
 
-vi.mock("node:fs", () => ({
-	default: {
+// readFileSync is stubbed to throw so that isWsl()'s /proc/version fallback
+// resolves to false explicitly. Without it, these native-host assertions would
+// depend on readFileSync being absent from the mock and the resulting TypeError
+// being swallowed — which would silently break for anyone running the suite
+// from inside WSL.
+vi.mock("node:fs", () => {
+	const readFileSync = vi.fn(() => {
+		throw new Error("ENOENT");
+	});
+	return {
+		default: {
+			existsSync: vi.fn(),
+			statSync: vi.fn(),
+			readFileSync,
+		},
 		existsSync: vi.fn(),
 		statSync: vi.fn(),
-	},
-	existsSync: vi.fn(),
-	statSync: vi.fn(),
-}));
+		readFileSync,
+	};
+});
 
 const mockedSpawn = vi.mocked(spawn);
 const mockedExistsSync = vi.mocked(fs.existsSync);
@@ -50,7 +62,7 @@ describe("auth browser utilities", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
-		resetWslDetectionCache();
+		resetWslDetectionCacheForTests();
 		// These assertions describe a native host. Running the suite from inside
 		// WSL must not silently reroute them through the Windows interop paths.
 		delete process.env.WSL_DISTRO_NAME;
@@ -63,7 +75,7 @@ describe("auth browser utilities", () => {
 	});
 
 	afterEach(() => {
-		resetWslDetectionCache();
+		resetWslDetectionCacheForTests();
 		Object.defineProperty(process, "platform", { value: originalPlatform });
 		if (originalDistro === undefined) delete process.env.WSL_DISTRO_NAME;
 		else process.env.WSL_DISTRO_NAME = originalDistro;
@@ -394,7 +406,7 @@ describe("auth browser utilities under WSL", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
-		resetWslDetectionCache();
+		resetWslDetectionCacheForTests();
 		// WSL reports itself as linux; the distro env var is what gives it away.
 		Object.defineProperty(process, "platform", { value: "linux" });
 		process.env.PATH = "/usr/bin";
@@ -404,7 +416,7 @@ describe("auth browser utilities under WSL", () => {
 	});
 
 	afterEach(() => {
-		resetWslDetectionCache();
+		resetWslDetectionCacheForTests();
 		Object.defineProperty(process, "platform", { value: originalPlatform });
 		if (originalPath === undefined) delete process.env.PATH;
 		else process.env.PATH = originalPath;
