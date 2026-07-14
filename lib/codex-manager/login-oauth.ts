@@ -22,6 +22,7 @@ import {
 import { runDeviceAuthFlow } from "../auth/device-auth.js";
 import { resolveOrgOverride } from "../auth/org-override.js";
 import { startLocalOAuthServer } from "../auth/server.js";
+import { describeCallbackFailure } from "../auth/callback-guidance.js";
 import { setCodexCliActiveSelection } from "../codex-cli/writer.js";
 import { createLogger } from "../logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
@@ -344,6 +345,20 @@ export async function runOAuthFlow(
 					"warning",
 				),
 			);
+
+			// Explain *why* the callback failed before dropping the user into the
+			// manual-paste prompt. A contended port 1455 — most often a Windows
+			// listener shadowing a WSL one, or vice versa — otherwise presents as
+			// an unexplained broken login.
+			if (signInMode === "browser") {
+				const failureLines = describeCallbackFailure(
+					waitingForCallback ? "callback-timeout" : "bind-failed",
+					{ bindErrorCode: oauthServer?.bindErrorCode },
+				);
+				for (const line of failureLines) {
+					console.log(line.length > 0 ? stylePromptText(line, "muted") : "");
+				}
+			}
 			const manualResult = await promptManualCallback(state, {
 				allowNonTty: signInMode === "manual",
 			});

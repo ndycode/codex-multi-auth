@@ -26,7 +26,11 @@
 	"ignoreBinaries": [
 		"powershell.exe",
 		"pbcopy",
-		"where"
+		"where",
+		// WSL host bridges: spawned only when running inside WSL, where the
+		// browser and clipboard belong to the Windows host.
+		"wslview",
+		"clip.exe"
 	],
 	"ignoreDependencies": [
 		// Editor-only LSP tooling; never imported.

@@ -8,6 +8,7 @@ import {
 	copyTextToClipboard,
 } from "../lib/auth/browser.js";
 import { PLATFORM_OPENERS } from "../lib/constants.js";
+import { resetWslDetectionCache } from "../lib/wsl.js";
 
 vi.mock("node:child_process", () => ({
 	spawn: vi.fn(() => ({
@@ -44,9 +45,16 @@ describe("auth browser utilities", () => {
 	const originalPathExt = process.env.PATHEXT;
 	const originalNoBrowser = process.env.CODEX_AUTH_NO_BROWSER;
 	const originalBrowser = process.env.BROWSER;
+	const originalDistro = process.env.WSL_DISTRO_NAME;
+	const originalInterop = process.env.WSL_INTEROP;
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		resetWslDetectionCache();
+		// These assertions describe a native host. Running the suite from inside
+		// WSL must not silently reroute them through the Windows interop paths.
+		delete process.env.WSL_DISTRO_NAME;
+		delete process.env.WSL_INTEROP;
 		mockedExistsSync.mockReturnValue(false);
 		mockedStatSync.mockReturnValue({
 			isFile: () => true,
@@ -55,7 +63,12 @@ describe("auth browser utilities", () => {
 	});
 
 	afterEach(() => {
+		resetWslDetectionCache();
 		Object.defineProperty(process, "platform", { value: originalPlatform });
+		if (originalDistro === undefined) delete process.env.WSL_DISTRO_NAME;
+		else process.env.WSL_DISTRO_NAME = originalDistro;
+		if (originalInterop === undefined) delete process.env.WSL_INTEROP;
+		else process.env.WSL_INTEROP = originalInterop;
 		if (originalPath === undefined) delete process.env.PATH;
 		else process.env.PATH = originalPath;
 		if (originalPathExt === undefined) delete process.env.PATHEXT;
@@ -357,5 +370,130 @@ describe("auth browser utilities", () => {
 
 			expect(copyTextToClipboard("hello")).toBe(false);
 		});
+	});
+});
+
+describe("auth browser utilities under WSL", () => {
+	const url = "https://auth.openai.com/oauth/authorize";
+	const originalPlatform = process.platform;
+	const originalPath = process.env.PATH;
+	const originalDistro = process.env.WSL_DISTRO_NAME;
+	const originalNoBrowser = process.env.CODEX_AUTH_NO_BROWSER;
+	const originalBrowser = process.env.BROWSER;
+
+	/** Make only the named executables resolvable on PATH. */
+	function onlyOnPath(...names: string[]): void {
+		mockedStatSync.mockImplementation(((candidate: unknown) => {
+			const resolved = String(candidate);
+			if (names.some((name) => resolved.endsWith(name))) {
+				return { isFile: () => true, mode: 0o755 };
+			}
+			throw new Error("ENOENT");
+		}) as unknown as typeof fs.statSync);
+	}
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		resetWslDetectionCache();
+		// WSL reports itself as linux; the distro env var is what gives it away.
+		Object.defineProperty(process, "platform", { value: "linux" });
+		process.env.PATH = "/usr/bin";
+		process.env.WSL_DISTRO_NAME = "Debian";
+		delete process.env.CODEX_AUTH_NO_BROWSER;
+		delete process.env.BROWSER;
+	});
+
+	afterEach(() => {
+		resetWslDetectionCache();
+		Object.defineProperty(process, "platform", { value: originalPlatform });
+		if (originalPath === undefined) delete process.env.PATH;
+		else process.env.PATH = originalPath;
+		if (originalDistro === undefined) delete process.env.WSL_DISTRO_NAME;
+		else process.env.WSL_DISTRO_NAME = originalDistro;
+		if (originalNoBrowser === undefined)
+			delete process.env.CODEX_AUTH_NO_BROWSER;
+		else process.env.CODEX_AUTH_NO_BROWSER = originalNoBrowser;
+		if (originalBrowser === undefined) delete process.env.BROWSER;
+		else process.env.BROWSER = originalBrowser;
+	});
+
+	it("opens the Windows browser through wslview when it is available", () => {
+		onlyOnPath("wslview");
+
+		expect(openBrowserUrl(url)).toBe(true);
+		expect(mockedSpawn).toHaveBeenCalledWith("wslview", [url], {
+			stdio: "ignore",
+			shell: false,
+		});
+	});
+
+	it("falls back to Windows PowerShell interop when wslview is missing", () => {
+		onlyOnPath("powershell.exe");
+
+		expect(openBrowserUrl(url)).toBe(true);
+		expect(mockedSpawn).toHaveBeenCalledWith(
+			"powershell.exe",
+			["-NoLogo", "-NoProfile", "-Command", `Start-Process "${url}"`],
+			{ stdio: "ignore" },
+		);
+	});
+
+	it("falls back to the linux opener when no Windows bridge is present", () => {
+		onlyOnPath(PLATFORM_OPENERS.linux);
+
+		expect(openBrowserUrl(url)).toBe(true);
+		expect(mockedSpawn).toHaveBeenCalledWith(PLATFORM_OPENERS.linux, [url], {
+			stdio: "ignore",
+			shell: false,
+		});
+	});
+
+	it("reports failure when neither a Windows bridge nor xdg-open exists", () => {
+		// The pre-fix behaviour on a stock WSL Debian: xdg-open is not installed,
+		// so no browser ever opened and login appeared to hang.
+		onlyOnPath("nothing-resolvable");
+
+		expect(openBrowserUrl(url)).toBe(false);
+		expect(mockedSpawn).not.toHaveBeenCalled();
+	});
+
+	it("still honours browser suppression inside WSL", () => {
+		process.env.CODEX_AUTH_NO_BROWSER = "1";
+		onlyOnPath("wslview");
+
+		expect(openBrowserUrl(url)).toBe(false);
+		expect(mockedSpawn).not.toHaveBeenCalled();
+	});
+
+	it("copies to the Windows clipboard through clip.exe", () => {
+		onlyOnPath("clip.exe");
+
+		expect(copyTextToClipboard(url)).toBe(true);
+		expect(mockedSpawn).toHaveBeenCalledWith("clip.exe", [], {
+			stdio: ["pipe", "ignore", "ignore"],
+			shell: false,
+		});
+		expectLastSpawnStdinEndWith(url);
+	});
+
+	it("falls back to PowerShell Set-Clipboard when clip.exe is missing", () => {
+		onlyOnPath("powershell.exe");
+
+		expect(copyTextToClipboard(url)).toBe(true);
+		expect(mockedSpawn).toHaveBeenCalledWith(
+			"powershell.exe",
+			["-NoLogo", "-NoProfile", "-Command", `Set-Clipboard -Value "${url}"`],
+			{ stdio: "ignore" },
+		);
+	});
+
+	it("escapes PowerShell metacharacters in the interop command", () => {
+		onlyOnPath("powershell.exe");
+
+		expect(openBrowserUrl('https://example.com/?a=$x&b=`y"z')).toBe(true);
+		const command = mockedSpawn.mock.calls.at(-1)?.[1] as string[];
+		expect(command[3]).toBe(
+			'Start-Process "https://example.com/?a=`$x&b=``y""z"',
+		);
 	});
 });

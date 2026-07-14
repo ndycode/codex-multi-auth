@@ -139,6 +139,12 @@ export type TextFormatConfig =
 export interface OAuthServerInfo {
 	port: number;
 	ready: boolean;
+	/**
+	 * The `errno` code from a failed listen (for example `EADDRINUSE`) when
+	 * `ready` is `false`. Lets callers distinguish a contended callback port
+	 * from other bind failures. Absent when `ready` is `true`.
+	 */
+	bindErrorCode?: string;
 	close: () => void;
 	waitForCode: (state: string) => Promise<{ code: string } | null>;
 }

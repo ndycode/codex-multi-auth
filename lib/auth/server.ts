@@ -134,6 +134,7 @@ export function startLocalOAuthServer({
 				resolve({
 					port: AUTH_REDIRECT.port,
 					ready: false,
+					bindErrorCode: err?.code,
 					close: () => {
 						pollAborted = true;
 						try {

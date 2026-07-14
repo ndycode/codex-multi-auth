@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { PLATFORM_OPENERS } from "../constants.js";
+import { isWsl } from "../wsl.js";
 
 const BROWSER_DISABLED_VALUES = new Set(["0", "false", "no", "off", "none"]);
 const NO_BROWSER_TRUTHY_VALUES = new Set(["1", "true", "yes", "on"]);
@@ -92,6 +93,43 @@ function commandExists(command: string): boolean {
 }
 
 /**
+ * Escape a value for safe interpolation into a double-quoted PowerShell string.
+ *
+ * Neutralizes backticks, `$` sub-expression injection, and embedded double quotes.
+ */
+function escapeForPowerShell(value: string): string {
+	return value.replace(/`/g, "``").replace(/\$/g, "`$").replace(/"/g, '""');
+}
+
+/**
+ * Run a PowerShell command, fire-and-forget.
+ *
+ * Reachable from Windows and from WSL, where `powershell.exe` resolves through
+ * Windows/Linux PATH interop.
+ *
+ * @param command - A PowerShell command string; interpolated values must already be escaped.
+ * @param stdinText - Optional text piped to the command's stdin.
+ * @returns `true` if the spawn was attempted, `false` if PowerShell is unavailable.
+ */
+function spawnPowerShell(command: string, stdinText?: string): boolean {
+	if (!commandExists("powershell.exe")) {
+		return false;
+	}
+	const child = spawn(
+		"powershell.exe",
+		["-NoLogo", "-NoProfile", "-Command", command],
+		{
+			stdio: stdinText === undefined ? "ignore" : ["pipe", "ignore", "ignore"],
+		},
+	);
+	child.on("error", () => {});
+	if (stdinText !== undefined) {
+		child.stdin?.end(stdinText);
+	}
+	return true;
+}
+
+/**
  * Launches the user's default browser to open the provided URL using a platform-appropriate command.
  *
  * This is a best-effort, fire-and-forget launcher: it attempts a platform-specific spawn and ignores
@@ -99,6 +137,10 @@ function commandExists(command: string): boolean {
  * escaping to reduce shell/filesystem quirks. Callers must redact any sensitive tokens (for example,
  * OAuth codes) from `url` before calling. Invocations are not atomic—concurrent calls may race but are
  * safe to perform.
+ *
+ * Under WSL the browser lives on the Windows host, so `xdg-open` is the wrong tool and is usually not
+ * even installed. Prefer `wslview` (wslu), then Windows PowerShell via interop, before falling back to
+ * the Linux opener.
  *
  * @param url - The URL to open; redact sensitive tokens (e.g., OAuth codes) before passing.
  * @returns `true` if a browser launch was attempted, `false` if no suitable opener was available or an exception occurred.
@@ -111,23 +153,24 @@ export function openBrowserUrl(url: string): boolean {
 
 		// Windows: use PowerShell Start-Process to avoid cmd/start quirks with URLs containing '&' or ':'
 		if (process.platform === "win32") {
-			if (!commandExists("powershell.exe")) {
-				return false;
-			}
-			// Escape PowerShell special characters: backticks, double quotes, and $ (sub-expression injection)
-			const psUrl = url
-				.replace(/`/g, "``")
-				.replace(/\$/g, "`$")
-				.replace(/"/g, '""');
-			const child = spawn(
-				"powershell.exe",
-				["-NoLogo", "-NoProfile", "-Command", `Start-Process "${psUrl}"`],
-				{ stdio: "ignore" },
-			);
-			child.on("error", () => {});
-			return true;
+			return spawnPowerShell(`Start-Process "${escapeForPowerShell(url)}"`);
 		}
 
+		if (isWsl()) {
+			// wslu's browser shim: hands the URL to the Windows default browser.
+			if (commandExists("wslview")) {
+				const child = spawn("wslview", [url], {
+					stdio: "ignore",
+					shell: false,
+				});
+				child.on("error", () => {});
+				return true;
+			}
+			if (spawnPowerShell(`Start-Process "${escapeForPowerShell(url)}"`)) {
+				return true;
+			}
+			// Fall through: an X/Wayland browser inside the distro is still possible.
+		}
 
 		const opener = getBrowserOpener();
 		if (!commandExists(opener)) {
@@ -160,20 +203,28 @@ export function copyTextToClipboard(text: string): boolean {
 		if (!text) return false;
 
 		if (process.platform === "win32") {
-			if (!commandExists("powershell.exe")) {
-				return false;
-			}
-			const psText = text
-				.replace(/`/g, "``")
-				.replace(/\$/g, "`$")
-				.replace(/"/g, '""');
-			const child = spawn(
-				"powershell.exe",
-				["-NoLogo", "-NoProfile", "-Command", `Set-Clipboard -Value "${psText}"`],
-				{ stdio: "ignore" },
+			return spawnPowerShell(
+				`Set-Clipboard -Value "${escapeForPowerShell(text)}"`,
 			);
-			child.on("error", () => {});
-			return true;
+		}
+
+		if (isWsl()) {
+			// The clipboard the user pastes from is the Windows one, not the distro's.
+			if (commandExists("clip.exe")) {
+				const child = spawn("clip.exe", [], {
+					stdio: ["pipe", "ignore", "ignore"],
+					shell: false,
+				});
+				child.on("error", () => {});
+				child.stdin?.end(text);
+				return true;
+			}
+			if (
+				spawnPowerShell(`Set-Clipboard -Value "${escapeForPowerShell(text)}"`)
+			) {
+				return true;
+			}
+			// Fall through to the Linux clipboard tools.
 		}
 
 		if (process.platform === "darwin") {

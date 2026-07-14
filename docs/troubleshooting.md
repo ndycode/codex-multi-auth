@@ -56,6 +56,46 @@ The package does not publish a global `codex` binary. `codex-multi-auth ...` is 
 | `missing field id_token` | Stale or malformed auth payload | Re-login the affected account |
 | `refresh_token_reused` | The token pair rotated in another context | Re-login the affected account |
 | `token_expired` | The refresh token is no longer valid | Re-login the affected account |
+| Login hangs in WSL, or breaks after installing on both Windows and WSL | Windows and WSL contend for callback port `1455` | See [Windows And WSL Side By Side](#windows-and-wsl-side-by-side) |
+
+### Windows And WSL Side By Side
+
+Installing `codex-multi-auth` on a Windows host **and** inside WSL is supported, but
+only one of them can run a browser login at a time.
+
+The OAuth redirect URI is registered with the provider as
+`http://localhost:1455/auth/callback`, so the callback port is fixed and cannot be
+changed. A browser launched from WSL still runs on the Windows host, and Windows
+resolves `localhost:1455` against its own loopback first. If anything on the Windows
+side is holding that port — an in-progress login, a leftover callback server, a
+running proxy — it will receive the redirect that the WSL listener is waiting for.
+
+The failure is silent from inside the distro: the WSL listener binds cleanly and
+simply never sees the callback, so login appears to hang. `codex-multi-auth` now
+detects this and prints the conflict instead of stalling.
+
+To find the listener, check **both** sides:
+
+```powershell
+# Windows (PowerShell)
+Get-NetTCPConnection -LocalPort 1455
+```
+
+```bash
+# WSL
+ss -lptn 'sport = :1455'
+```
+
+Close the login or proxy on the other side, then retry. If you need both environments
+signed in without coordinating the port, use the device-code flow, which never binds
+a callback port:
+
+```bash
+codex-multi-auth login --device-auth
+```
+
+Accounts are stored per environment: the Windows and WSL installs keep separate state
+directories and do not share saved accounts. Sign in to each one independently.
 
 ---
 
