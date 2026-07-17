@@ -63,6 +63,12 @@ codex-multi-auth status
 codex-multi-auth login
 ```
 
+Optional: bind a login to a specific ChatGPT workspace/org when the same email has multiple seats:
+
+```bash
+codex-multi-auth login --org <org_id>
+```
+
 Expected flow:
 
 1. If no accounts are saved yet, the terminal opens directly to the sign-in menu.

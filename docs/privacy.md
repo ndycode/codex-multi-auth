@@ -22,6 +22,7 @@
 | Quota cache | `~/.codex/multi-auth/quota-cache.json` | Cached quota snapshots |
 | Runtime observability | `~/.codex/multi-auth/runtime-observability.json` | Local request counters and last-account metadata for status/report output |
 | First-run setup marker | `~/.codex/multi-auth/first-run-setup.json` | One-time durable-install app bind / launcher setup claim; not secrets |
+| Cross-process refresh leases | `~/.codex/multi-auth/refresh-leases/` | Short-lived lease files that dedupe concurrent token refresh |
 | Usage ledger | `~/.codex/multi-auth/usage/usage-ledger.jsonl` | Local request metadata summaries; email stored hashed; no prompts, auth headers, or raw sensitive account ids |
 | Account policies | `~/.codex/multi-auth/account-policies.json` | Local tags, weights, pause/drain state, and notes keyed by hashed account identity |
 | Routing profiles | `~/.codex/multi-auth/routing-profiles.json` | Project-aware local routing preferences keyed by project identity |
@@ -78,10 +79,12 @@ rm -f ~/.codex/multi-auth/openai-codex-flagged-accounts.json
 rm -f ~/.codex/multi-auth/quota-cache.json
 rm -f ~/.codex/multi-auth/runtime-observability.json
 rm -f ~/.codex/multi-auth/first-run-setup.json
+rm -f ~/.codex/multi-auth/config.json
 rm -f ~/.codex/multi-auth/account-policies.json
 rm -f ~/.codex/multi-auth/routing-profiles.json
 rm -f ~/.codex/multi-auth/budget-guards.json
 rm -f ~/.codex/multi-auth/local-client-tokens.json
+rm -rf ~/.codex/multi-auth/refresh-leases
 rm -rf ~/.codex/multi-auth/usage
 rm -rf ~/.codex/multi-auth/backups
 rm -rf ~/.codex/multi-auth/projects
@@ -103,10 +106,12 @@ Remove-Item "$HOME\.codex\multi-auth\openai-codex-flagged-accounts.json" -Force 
 Remove-Item "$HOME\.codex\multi-auth\quota-cache.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\runtime-observability.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\first-run-setup.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\config.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\account-policies.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\routing-profiles.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\budget-guards.json" -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\local-client-tokens.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$HOME\.codex\multi-auth\refresh-leases" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\usage" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\backups" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "$HOME\.codex\multi-auth\projects" -Recurse -Force -ErrorAction SilentlyContinue

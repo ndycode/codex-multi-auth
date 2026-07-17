@@ -90,8 +90,10 @@ lib/
 | Packaged app bind | `runtime/app-bind.ts` | reversible user `config.toml` bind, startup entry, router status/log paths |
 | Runtime observability | `runtime/runtime-observability.ts` | persisted request counters consumed by status/report |
 | Token exchange/refresh | `auth/auth.ts` | PKCE flow, JWT decode, skew window, callback URL |
+| Device-code login | `auth/device-auth.ts` | headless/remote `login --device-auth` |
 | OAuth callback server | `auth/server.ts` | HTTP callback on port 1455 |
 | Browser/manual auth | `auth/browser.ts`, `runtime/manual-oauth-flow.ts`, `runtime/browser-oauth-flow.ts` | platform and non-TTY login paths |
+| WSL detection | `wsl.ts` | Windows-host / WSL callback and browser guidance |
 | Request transform | `request/request-transformer.ts` | model map, stateless Responses defaults, prompt injection |
 | Headers + errors | `request/fetch-helpers.ts` | Codex headers, deprecation/sunset warnings, rate limit handling |
 | SSE parsing | `request/response-handler.ts` | stream parsing and compatibility fields |

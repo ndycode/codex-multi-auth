@@ -124,9 +124,10 @@ For the full command/behavior reference, see [reference/commands.md](reference/c
 
 During upgrades, runtime config source precedence is:
 
-1. Unified settings `pluginConfig` from `settings.json` (when valid).
-2. Fallback file config from `CODEX_MULTI_AUTH_CONFIG_PATH` (or legacy compatibility path) when unified settings are absent/invalid.
-3. Runtime defaults.
+1. Fallback file from `CODEX_MULTI_AUTH_CONFIG_PATH` when set and the file exists.
+2. Unified settings `pluginConfig` from `settings.json` (when valid).
+3. Legacy compatibility path when unified settings are absent/invalid.
+4. Runtime defaults.
 
 After source selection, environment variables still override individual setting values.
 

@@ -59,7 +59,9 @@ Package version: 2.6.1
 | User app launcher routing | `scripts/codex-app-launcher.js` | Windows shortcut/taskbar routing and macOS wrapper app helper |
 | First-run setup | `lib/runtime/first-run.ts` | one-time durable-install app bind / launcher self-heal; `first-run-setup.json` marker |
 | OAuth flow + PKCE | `lib/auth/auth.ts` | token exchange/refresh, JWT decode, callback URL |
+| Device-code login | `lib/auth/device-auth.ts` | headless/remote login (`login --device-auth`) |
 | OAuth callback server | `lib/auth/server.ts` | binds port 1455 |
+| WSL / Windows host detection | `lib/wsl.ts` | callback port contention + browser host guidance for WSL installs |
 | Account pool and selection | `lib/accounts.ts`, `lib/rotation.ts`, `lib/runtime/rotation-account-selection.ts` | health scoring, cooldowns, pin → sequential\|affinity → hybrid → scan |
 | Local governance | `lib/usage/`, `lib/budget-guard.ts`, `lib/account-policy.ts`, `lib/routing-profiles.ts`, `lib/policy/runtime-policy.ts` | usage ledger, budgets, tags/weights, project routing, composed runtime decisions |
 | Capability / model matrix | `lib/capability-policy.ts`, `lib/model-capability-matrix.ts` | unsupported-model suppression and per-account model matrix |

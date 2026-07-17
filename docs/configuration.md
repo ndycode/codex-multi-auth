@@ -44,14 +44,20 @@ Runtime configuration is resolved from unified settings, optional override files
 
 ## Resolution Precedence
 
-Runtime config source selection is resolved in this order. The persisted object is still named `pluginConfig` for compatibility with earlier releases.
+Runtime config **source selection** is resolved in this order. The persisted object is still named `pluginConfig` for compatibility with earlier releases.
 
-1. Unified settings `pluginConfig` from `settings.json` (when present and valid).
-2. Fallback file config from `CODEX_MULTI_AUTH_CONFIG_PATH` (or legacy compatibility path) when unified settings are absent/invalid.
-3. Hardcoded defaults.
+1. File from `CODEX_MULTI_AUTH_CONFIG_PATH` when that env var is set **and the file already exists** (preferred load path; also the save target when set).
+2. Unified settings `pluginConfig` from `settings.json` under the multi-auth root (when present and valid).
+3. Legacy compatibility config files when unified settings are absent/invalid.
+4. Hardcoded defaults in `DEFAULT_PLUGIN_CONFIG`.
 
 After a config source is selected, environment variables override individual runtime settings.
 Dashboard display values are resolved from persisted `dashboardDisplaySettings` and then normalized defaults.
+
+Notes:
+
+- A set-but-missing `CODEX_MULTI_AUTH_CONFIG_PATH` is ignored for load until the file is created; the next save still writes to that path when the env var is set.
+- `CODEX_MULTI_AUTH_DIR` re-homes multi-auth-owned files. If `CODEX_HOME` is set to a non-default directory, multi-auth resolves strictly to `$CODEX_HOME/multi-auth` without scanning other roots for existing pools.
 
 ---
 

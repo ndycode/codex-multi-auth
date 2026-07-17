@@ -12,7 +12,7 @@ The package ships four `bin` entrypoints:
 | --- | --- |
 | `codex-multi-auth` | Primary account-manager CLI (`status`, `login`, `switch`, `rotation`, diagnostics, repair, …) |
 | `codex-multi-auth-codex` | Forwarding wrapper: handles `auth ...` locally; forwards every other command to the official `@openai/codex` CLI, with optional runtime rotation and `--account` pinning |
-| `codex-multi-auth-app-launcher` | User-level packaged Codex app launcher routing helper (Windows shortcuts / macOS wrapper app) |
+| `codex-multi-auth-app-launcher` | User-level packaged Codex app launcher routing helper (Windows shortcuts, macOS wrapper app, Linux `.desktop`) |
 | `mcodex` | Convenience launcher over `codex-multi-auth-codex` with optional `--monitor` and `--tmux` modes |
 
 See also [public-api.md](public-api.md) for Tier A surface and stability.
@@ -38,9 +38,9 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 
 | Command | Description |
 | --- | --- |
-| `codex-multi-auth login` | Open interactive auth dashboard |
-| `codex-multi-auth status` | Print short runtime/account summary |
-| `codex-multi-auth check` | Run quick account health check |
+| `codex-multi-auth login` | Open interactive auth dashboard (optional `--device-auth`, `--manual`/`--no-browser`, `--org <org_id>`) |
+| `codex-multi-auth status` | Print account pool, pin, runtime metrics, and storage summary (`list` is the same command) |
+| `codex-multi-auth check` | Live-probe account health against the Codex backend |
 
 ---
 
@@ -48,7 +48,7 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 
 | Command | Description |
 | --- | --- |
-| `codex-multi-auth list` | List saved accounts and active account |
+| `codex-multi-auth list` | Alias of `status` — same full account/runtime dump |
 | `codex-multi-auth switch <index>` | Set active account by index and pin it for runtime routing |
 | `codex-multi-auth unpin` | Clear the manual pin set by `switch` and resume hybrid rotation |
 | `codex-multi-auth forecast` | Forecast best account by readiness/risk |
@@ -109,13 +109,18 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | `--account <index\|email\|id>` | `codex-multi-auth-codex` (forwarded Codex runs) | Force one account for this invocation only; the session never rotates and persisted `switch` state is untouched. Requires the runtime rotation proxy. See [Force an account for one invocation](#force-an-account-for-one-invocation) |
 | `--device-auth` | login | Use the OpenAI Codex device-code flow for remote/headless login (mutually exclusive with `--manual` / `--no-browser`) |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow (mutually exclusive with `--device-auth`) |
+| `--org <org_id>` | login | Bind this login to a specific ChatGPT workspace/org id (same seat can be registered as personal vs team/business) |
 | `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle, history | Print machine-readable output |
 | `--csv` | usage | Print or write CSV bucket output |
 | `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |
 | `--live` | best, forecast, report, fix | Use live probe before decisions/output |
-| `--dry-run` | verify-flagged, verify (with `--flagged`/`--all`), fix, doctor, uninstall | Preview without writing storage |
+| `--no-runtime-overlay` | forecast | Score from stored account state only; skip runtime observability overlay |
+| `--max-accounts <n>` | report | Cap how many accounts a live report walk inspects |
+| `--max-probes <n>` | report | Cap live probes during report |
+| `--cached-only` | report | Prefer cached quota/health data over live probes |
+| `--dry-run` | verify-flagged, verify (with `--flagged`/`--all`), fix, doctor, uninstall | Preview without writing storage (`-n` also accepted on fix/doctor/verify-flagged) |
 | `--model <model>` | best, forecast, report, fix | Specify model for live probe paths |
-| `--out <path>` | report, usage | Write report output to file |
+| `--out <path>` | report, usage | Write output to file (`report --out` always writes JSON) |
 | `--since <time>` | usage | Filter local usage rows by timestamp, ISO date, or relative duration |
 | `--by <group>` | usage | Group usage by model, account, project, outcome, or day |
 | `--kind <name>` | integrations | Select one snippet kind: opencode, openclaw, python, curl, or env |
@@ -125,11 +130,13 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | `--paths` | verify | Run storage-path resolution chain and sandbox-probe self-test |
 | `--flagged` | verify | Delegate to flagged-account verification (alias of `verify-flagged`) |
 | `--all` | verify | Run both `--paths` and `--flagged` together |
-| `--now`, `-n` | why-selected | Recompute the current selection from live state (default) |
+| `--now`, `-n` | why-selected | Recompute the current selection from live state (default). Note: on fix/doctor/verify-flagged, `-n` means `--dry-run` instead |
 | `--last`, `-l` | why-selected | Recompute selection from current state and attach the last persisted runtime snapshot |
 | `--clear-accounts` | uninstall | Also remove stored account credentials (irreversible) |
+| `--stdout` | init-config | Force template output to stdout even when other write modes are considered |
+| `--remove` / `--dry-run` | `codex-multi-auth-app-launcher` | Remove managed launcher routing, or preview install/remove without writing |
 
-Additional `--json` surfaces not listed in the compact Common Flags row above include `uninstall` and `rotation reset-rate-limits` / `rotation reset-runtime`. Treat the Common Flags `--json` row as the authoritative list for documentation tests; the extra surfaces are additive diagnostics/cleanup helpers.
+Additional `--json` surfaces not listed in the compact Common Flags row above include `list`/`status`, `bridge token *`, `uninstall`, and `rotation reset-rate-limits` / `rotation reset-runtime`. Treat the Common Flags `--json` row as the documentation-test anchor list; the extra surfaces are additive.
 
 Default live-probe model when `--model` is omitted is `gpt-5.6-sol` (`DEFAULT_PROBE_MODEL`). Request routing defaults remain on `gpt-5.5` (`DEFAULT_MODEL`).
 
@@ -301,11 +308,18 @@ write failures.
 These commands are local-only and operate on files under `~/.codex/multi-auth`.
 
 ```bash
-codex-multi-auth budget limit <key> --window <hour|day|week|month> [--max-requests <n>] [--max-tokens <n>] [--max-cost-usd <n>]
+codex-multi-auth budget limit <key> --window <hour|day|week|month> [--requests N] [--tokens N] [--cost USD]
 codex-multi-auth budget check <key> [--json]
 codex-multi-auth budget list [--json]
 codex-multi-auth models [--json] [--model <model>]
 codex-multi-auth monitor [--json]
+```
+
+`budget limit` requires at least one of `--requests`, `--tokens`, or `--cost`.
+Windows are `hour|day|week|month` (UTC). Example:
+
+```bash
+codex-multi-auth budget limit personal --window day --requests 100 --tokens 500000 --cost 10
 ```
 
 `monitor` aggregates runtime observability, usage, policy, routing profile,
@@ -318,13 +332,15 @@ reports neutral account labels and does not expose raw account emails.
 
 The optional local bridge exposes only `/health`, `/v1/models`, and
 `/v1/responses` on loopback. Forwarded bridge requests require a bearer token
-by default.
+by default. When a runtime client API key is configured for the bridge, inbound
+auth must remain enabled (`requireAuth=true`); the bridge rewrites outbound
+auth for the rotation proxy and strips inbound cookies / proxy-auth headers.
 
 ```bash
-codex-multi-auth bridge token create [--label <label>]
-codex-multi-auth bridge token list
-codex-multi-auth bridge token rotate <id>
-codex-multi-auth bridge token revoke <id>
+codex-multi-auth bridge token create [--label <label>] [--json]
+codex-multi-auth bridge token list [--json]
+codex-multi-auth bridge token rotate <id> [--json]
+codex-multi-auth bridge token revoke <id> [--json]
 codex-multi-auth integrations [--kind <opencode|openclaw|python|curl|env>] [--base-url <url>] [--model <model>] [--json]
 ```
 
@@ -469,7 +485,7 @@ Because packaged app bind changes the real Codex `model_provider` to `codex-mult
 
 Model speed/reasoning controls also remain Codex-owned. For wrapper-launched CLI sessions, set `model_reasoning_effort` in `~/.codex/config.toml` or pass `-c model_reasoning_effort=<level>`; the app bind does not add a separate Desktop speed selector.
 
-The app launcher routing helper is also available directly as `codex-multi-auth-app-launcher`. On Windows, it retargets existing user-level `Codex` shortcuts and taskbar pins to the wrapper while backing up their original target for restore. On macOS, it creates or removes a user-level `Codex Multi Auth.app` wrapper because Dock entries cannot safely launch a shell command directly. It does not patch the official app files. Use `codex-multi-auth-app-launcher --remove` to restore backed-up Windows shortcuts or remove the managed macOS wrapper.
+The app launcher routing helper is also available directly as `codex-multi-auth-app-launcher [--remove] [--dry-run]`. On Windows, it retargets existing user-level `Codex` shortcuts and taskbar pins to the wrapper while backing up their original target for restore. On macOS, it creates or removes a user-level `Codex Multi Auth.app` wrapper because Dock entries cannot safely launch a shell command directly. On Linux, it installs a managed `codex-multi-auth.desktop` under the user applications directory. It does not patch the official app files. Use `codex-multi-auth-app-launcher --remove` to restore backed-up Windows shortcuts or remove the managed macOS/Linux launcher.
 
 If Windows exposes Codex only as a packaged `shell:AppsFolder` entry, shortcut routing may still report that there is no retargetable `.lnk`. The persistent app bind is the path that makes those packaged entries use rotation when the official app is opened directly.
 

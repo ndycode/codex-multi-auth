@@ -106,6 +106,8 @@ directories and do not share saved accounts. Sign in to each one independently.
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
 | Switch succeeds but the wrong account stays active | Stale Codex CLI sync state | Re-run `codex-multi-auth switch <index>` and restart the session |
+| Account never selected after `account pause` / `drain` | Runtime policy blocks paused/drained accounts | Run `codex-multi-auth account unpause <index>` or `account undrain <index>`, then `codex-multi-auth why-selected --json` |
+| Requests fail with budget / `budget_blocked` | Local budget guard limit hit | Inspect `codex-multi-auth budget list --json` / `budget check <key>`; raise or clear the limit |
 | All accounts look unhealthy | The entire pool is stale or damaged | Run `codex-multi-auth doctor --fix`, then add at least one fresh account |
 | The dashboard shows old account state | Local files were updated outside the current session | Run `codex-multi-auth list`, then `codex-multi-auth check` |
 
@@ -169,6 +171,11 @@ codex-multi-auth doctor --json
 ---
 
 ## Soft Reset
+
+Soft reset clears the **account pool + settings only**. It does **not** remove
+usage ledger, budgets, account policies, routing profiles, bridge tokens, quota
+cache, or observability files. For a full local wipe, use the cleanup recipe in
+[privacy.md](privacy.md#data-cleanup).
 
 PowerShell:
 

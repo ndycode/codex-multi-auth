@@ -135,11 +135,19 @@ Upgrade note:
 | `streamStallTimeoutMs` | `45000` |
 | `networkErrorCooldownMs` | `6000` |
 | `serverErrorCooldownMs` | `4000` |
+| `tokenInvalidationCooldownMs` | `300000` |
+| `minRotationIntervalMs` | `60000` |
 | `routingMutex` | `legacy` |
+| `rateLimitDedupWindowMs` | `2000` |
+| `rateLimitStateResetMs` | `120000` |
+| `rateLimitMaxBackoffMs` | `60000` |
+| `rateLimitShortRetryThresholdMs` | `5000` |
 
 `pidOffsetEnabled` adds a small deterministic PID-based score offset so parallel wrapper processes bias toward different accounts under high concurrency. Manual pins and health/quota scoring still take precedence. Overridable via `CODEX_AUTH_PID_OFFSET_ENABLED`.
 
 `routingMutex` controls whether account selection + cursor advance on the runtime proxy hot path is serialized. `"legacy"` (default) runs selection inline for historical performance. `"enabled"` acquires a process-local reentrant async mutex around selection commits. Overridable via `CODEX_AUTH_ROUTING_MUTEX` (`legacy` or `enabled`).
+
+`tokenInvalidationCooldownMs` / `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS` and `minRotationIntervalMs` / `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS` are the anti-abuse knobs used by the runtime rotation proxy (see configuration guide).
 
 ### Quota Deferral
 
@@ -156,6 +164,38 @@ Upgrade note:
 | --- | --- |
 | `rateLimitToastDebounceMs` | `60000` |
 | `toastDurationMs` | `5000` |
+
+### Full env override matrix (pluginConfig accessors)
+
+Every `pluginConfig` field above has a corresponding `get*` accessor in `lib/config.ts`. Common operator env names:
+
+| Env | Field |
+| --- | --- |
+| `CODEX_MODE` | `codexMode` |
+| `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY` | `codexRuntimeRotationProxy` |
+| `CODEX_TUI_V2` / `CODEX_TUI_COLOR_PROFILE` / `CODEX_TUI_GLYPHS` | TUI fields |
+| `CODEX_AUTH_FAST_SESSION*` | fast-session fields |
+| `CODEX_AUTH_RETRY_ALL_*` | all-accounts rate-limit retry fields |
+| `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY` / `CODEX_AUTH_FALLBACK_*` | unsupported-model policy |
+| `CODEX_AUTH_TOKEN_REFRESH_SKEW_MS` | `tokenRefreshSkewMs` |
+| `CODEX_AUTH_SESSION_RECOVERY` / `CODEX_AUTH_AUTO_RESUME` | recovery |
+| `CODEX_AUTH_PER_PROJECT_ACCOUNTS` | `perProjectAccounts` |
+| `CODEX_AUTH_PARALLEL_PROBING*` | parallel probing |
+| `CODEX_AUTH_EMPTY_RESPONSE_*` | empty-response retries |
+| `CODEX_AUTH_RATE_LIMIT_*` | rate-limit windows / backoff / toast debounce |
+| `CODEX_AUTH_LIVE_ACCOUNT_SYNC*` | live sync |
+| `CODEX_AUTH_SESSION_AFFINITY*` | session affinity |
+| `CODEX_AUTH_RESPONSE_CONTINUATION` / `CODEX_AUTH_BACKGROUND_RESPONSES` | response modes |
+| `CODEX_AUTH_PROACTIVE_GUARDIAN*` | refresh guardian |
+| `CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS` / `CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS` | failure cooldowns |
+| `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS` / `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS` | anti-abuse |
+| `CODEX_AUTH_STORAGE_BACKUP_ENABLED` | storage backups |
+| `CODEX_AUTH_PREEMPTIVE_QUOTA_*` | preemptive quota |
+| `CODEX_AUTH_PID_OFFSET_ENABLED` / `CODEX_AUTH_ROUTING_MUTEX` / `CODEX_AUTH_SCHEDULING_STRATEGY` | selection strategy |
+| `CODEX_AUTH_FETCH_TIMEOUT_MS` / `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` | timeouts |
+| `CODEX_AUTH_TOAST_DURATION_MS` | toast duration |
+
+Cross-process refresh lease knobs: `CODEX_AUTH_REFRESH_LEASE`, `CODEX_AUTH_REFRESH_LEASE_DIR`, `CODEX_AUTH_REFRESH_LEASE_TTL_MS`, `CODEX_AUTH_REFRESH_LEASE_WAIT_MS`, `CODEX_AUTH_REFRESH_LEASE_POLL_MS`, `CODEX_AUTH_REFRESH_LEASE_RESULT_TTL_MS`.
 
 * * *
 

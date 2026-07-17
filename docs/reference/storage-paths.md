@@ -30,6 +30,7 @@ Override root:
 | Quota cache | `~/.codex/multi-auth/quota-cache.json` |
 | Runtime observability | `~/.codex/multi-auth/runtime-observability.json` |
 | First-run setup marker | `~/.codex/multi-auth/first-run-setup.json` |
+| Alternate / legacy plugin config | `~/.codex/multi-auth/config.json` |
 | Usage directory | `~/.codex/multi-auth/usage/` |
 | Usage ledger | `~/.codex/multi-auth/usage/usage-ledger.jsonl` |
 | Usage ledger archives | `~/.codex/multi-auth/usage/usage-ledger.<timestamp>.jsonl` |
@@ -37,11 +38,15 @@ Override root:
 | Routing profiles | `~/.codex/multi-auth/routing-profiles.json` |
 | Budget guards | `~/.codex/multi-auth/budget-guards.json` |
 | Local bridge client tokens | `~/.codex/multi-auth/local-client-tokens.json` |
+| Cross-process refresh leases | `~/.codex/multi-auth/refresh-leases/` |
 | Runtime app helper status | `~/.codex/multi-auth/runtime-rotation-app-helper.json` |
 | Persistent app bind directory | `~/.codex/multi-auth/app-bind/` |
 | Named pool backups | `~/.codex/multi-auth/backups/` |
+| Per-project account pools | `~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json` |
 | Logs | `~/.codex/multi-auth/logs/codex-plugin/` |
 | Cache | `~/.codex/multi-auth/cache/` |
+| Settings / config save locks | `~/.codex/multi-auth/*.lock` (transient) |
+| Reset-intent markers | `~/.codex/multi-auth/*.reset-intent` (excluded from recovery candidates) |
 | Codex CLI accounts | `~/.codex/accounts.json` |
 | Codex CLI auth | `~/.codex/auth.json` |
 | Codex CLI config | `~/.codex/config.toml` |
@@ -64,6 +69,8 @@ Ownership note:
 - The `codex-multi-auth-codex` wrapper preserves that official CLI file-backed auth layout by forwarding non-auth commands with `-c cli_auth_credentials_store="file"`, unless the caller already set `cli_auth_credentials_store` explicitly.
 - Set `CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE=0` to opt out of that wrapper-injected file-store override and leave the downstream CLI auth store untouched.
 - Runtime rotation may create a temporary shadow `CODEX_HOME` under the operating-system temp directory while a forwarded Codex command is running. The wrapper syncs refreshed official state files back to the original Codex home before cleanup.
+- When `CODEX_HOME` is set to a non-default directory, multi-auth resolves strictly to `$CODEX_HOME/multi-auth` and does not scan `~/.codex/multi-auth` for existing pools.
+- V3 account storage may also carry `pinnedAccountIndex` and `affinityGeneration` for CLI pin / session-affinity invalidation.
 
 Compatibility note:
 

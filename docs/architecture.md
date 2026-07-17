@@ -74,8 +74,10 @@ When `codexRuntimeRotationProxy` is enabled (default), the wrapper starts a loop
 The proxy:
 
 - accepts only local authenticated client requests (per-process client token)
-- forwards Responses API and model discovery requests
-- replaces upstream auth headers with the selected managed account
+- forwards Responses API, model discovery, and thread-goal routes (`/responses`, `/models`, `/thread/goal/*`, and `/codex/...` variants)
+- authenticates local clients with a per-process token via `Authorization: Bearer` or `x-api-key` (timing-safe compare); refuses non-loopback binds
+- caps request bodies at 64 MiB
+- replaces upstream auth headers with the selected managed account (no account emails in client-facing headers)
 - runs `evaluateRuntimePolicy` before account selection (pause/drain, budgets, routing profiles, capability matrix)
 - rotates accounts on rate limits, auth refresh failures, network errors, and server errors before response bytes are streamed
 - strips hop-by-hop and stale decoded response headers before returning data to the local Codex client
