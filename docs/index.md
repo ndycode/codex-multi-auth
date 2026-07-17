@@ -24,7 +24,7 @@ codex-multi-auth forecast --live
 
 - first setup and verification: [getting-started.md](getting-started.md)
 - quick answers before install: [faq.md](faq.md)
-- understanding the account manager, optional forwarding wrapper, runtime rotation proxy, app bind, and optional plugin-host path: [architecture.md](architecture.md)
+- understanding the account manager, optional forwarding wrapper (`codex-multi-auth-codex` / `mcodex`), runtime rotation proxy, local governance/bridge, app bind, and optional plugin-host path: [architecture.md](architecture.md)
 - recovering from login, routing, account switching, quota, or stale state problems: [troubleshooting.md](troubleshooting.md)
 
 ---

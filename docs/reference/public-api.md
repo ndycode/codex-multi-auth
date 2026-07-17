@@ -1,6 +1,6 @@
 # Public API Contract
 
-Public API contract for `codex-multi-auth`.
+Public API contract for `codex-multi-auth` (package `2.6.1`).
 
 ---
 
@@ -16,10 +16,11 @@ Stable APIs are covered by semver compatibility guarantees and must remain backw
   - `OpenAIOAuthPlugin`
   - `OpenAIAuthPlugin`
   - default export (alias of `OpenAIOAuthPlugin`)
-- Installed binaries:
-  - `codex-multi-auth`
-  - `codex-multi-auth-codex`
-  - `codex-multi-auth-app-launcher`
+- Installed binaries (published Tier A CLI surface):
+  - `codex-multi-auth` — primary account-manager CLI
+  - `codex-multi-auth-codex` — official Codex forwarding wrapper
+  - `codex-multi-auth-app-launcher` — packaged-app launcher routing helper
+  - `mcodex` — convenience launcher over the codex wrapper (`--monitor`, `--tmux`, or default forward)
 - Supported package subpath entrypoints:
   - `codex-multi-auth/auth`
   - `codex-multi-auth/storage`
@@ -30,6 +31,7 @@ Stable APIs are covered by semver compatibility guarantees and must remain backw
   - `codex-multi-auth ...` command family
   - documented flags and aliases in `reference/commands.md`
   - default-on `codex-multi-auth rotation ...` command family for runtime Responses proxy and app bind management
+  - `mcodex` convenience modes documented in `reference/commands.md`
 - Persistent user-facing config and storage contracts documented in:
   - `reference/settings.md`
   - `reference/storage-paths.md`
@@ -111,6 +113,7 @@ Runtime rotation is a CLI/runtime feature, not a library transport API.
 - `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` disables the proxy for the current process without changing settings.
 - The local provider id is `codex-multi-auth-runtime-proxy`.
 - The proxy accepts only authenticated loopback requests for Responses API and model discovery paths.
+- Account policy `pause` / `drain` (via `codex-multi-auth account ...`) is enforced by `evaluateRuntimePolicy` and blocks those accounts from hybrid selection.
 - The packaged app bind is reversible and must not patch official app binaries.
 - Client responses must not expose account emails, tokens, private account headers, hop-by-hop headers, or stale decoded `content-encoding`.
 

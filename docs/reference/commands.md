@@ -1,6 +1,21 @@
 # Command Reference
 
-Complete command, flag, and hotkey reference for `codex-multi-auth`.
+Complete command, flag, and hotkey reference for `codex-multi-auth` (package `2.6.1`).
+
+---
+
+## Published binaries
+
+The package ships four `bin` entrypoints:
+
+| Binary | Role |
+| --- | --- |
+| `codex-multi-auth` | Primary account-manager CLI (`status`, `login`, `switch`, `rotation`, diagnostics, repair, …) |
+| `codex-multi-auth-codex` | Forwarding wrapper: handles `auth ...` locally; forwards every other command to the official `@openai/codex` CLI, with optional runtime rotation and `--account` pinning |
+| `codex-multi-auth-app-launcher` | User-level packaged Codex app launcher routing helper (Windows shortcuts / macOS wrapper app) |
+| `mcodex` | Convenience launcher over `codex-multi-auth-codex` with optional `--monitor` and `--tmux` modes |
+
+See also [public-api.md](public-api.md) for Tier A surface and stability.
 
 ---
 
@@ -61,6 +76,7 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | `codex-multi-auth verify [--paths|--flagged|--all]` | Self-test storage path chain and sandbox probes; optionally delegate flagged verification |
 | `codex-multi-auth fix` | Apply safe account storage fixes |
 | `codex-multi-auth doctor` | Run diagnostics and optional repairs |
+| `codex-multi-auth uninstall` | Reverse first-run setup and residual artifacts (run before `npm uninstall`) |
 | `codex-multi-auth config explain` | Print effective config values and their sources |
 | `codex-multi-auth init-config [modern|legacy|minimal]` | Print a starter config template |
 | `codex-multi-auth debug bundle` | Print a bundled runtime/debug snapshot |
@@ -82,6 +98,7 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | `codex-multi-auth why-selected [--now|--last]` | Explain which account the selector picks now or via the last persisted runtime snapshot |
 | `codex-multi-auth history [list\|show <id>]` | List every local Codex session across all providers, bypassing the `model_provider` filtering that hides threads in `codex resume` while runtime rotation / app bind is active |
 | `codex-multi-auth rotation enable\|disable\|status\|bind-app\|unbind-app` | Manage the default-on runtime Responses proxy for live Codex account rotation |
+| `codex-multi-auth rotation reset-rate-limits [--all \| --account <idx>]` | Clear local rate-limit cooldowns for all accounts or one account |
 
 ---
 
@@ -96,7 +113,7 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | `--csv` | usage | Print or write CSV bucket output |
 | `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |
 | `--live` | best, forecast, report, fix | Use live probe before decisions/output |
-| `--dry-run` | verify-flagged, verify (with `--flagged`/`--all`), fix, doctor | Preview without writing storage |
+| `--dry-run` | verify-flagged, verify (with `--flagged`/`--all`), fix, doctor, uninstall | Preview without writing storage |
 | `--model <model>` | best, forecast, report, fix | Specify model for live probe paths |
 | `--out <path>` | report, usage | Write report output to file |
 | `--since <time>` | usage | Filter local usage rows by timestamp, ISO date, or relative duration |
@@ -110,6 +127,11 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | `--all` | verify | Run both `--paths` and `--flagged` together |
 | `--now`, `-n` | why-selected | Recompute the current selection from live state (default) |
 | `--last`, `-l` | why-selected | Recompute selection from current state and attach the last persisted runtime snapshot |
+| `--clear-accounts` | uninstall | Also remove stored account credentials (irreversible) |
+
+Additional `--json` surfaces not listed in the compact Common Flags row above include `uninstall` and `rotation reset-rate-limits` / `rotation reset-runtime`. Treat the Common Flags `--json` row as the authoritative list for documentation tests; the extra surfaces are additive diagnostics/cleanup helpers.
+
+Default live-probe model when `--model` is omitted is `gpt-5.6-sol` (`DEFAULT_PROBE_MODEL`). Request routing defaults remain on `gpt-5.5` (`DEFAULT_MODEL`).
 
 ---
 
@@ -144,11 +166,30 @@ The pin is **ephemeral and fail-hard**:
 
 ---
 
+## `mcodex`
+
+Convenience launcher published as the `mcodex` bin. It spawns the sibling
+`codex-multi-auth-codex` wrapper (`scripts/codex.js`) with no bash dependency.
+
+```bash
+mcodex [codex-args...]                 # default: forward to codex-multi-auth-codex
+mcodex --monitor                       # live-refresh account list via `watch`
+mcodex --tmux [-t] [--live-accounts] [codex-args...]
+```
+
+Modes:
+
+- **Default**: forward all remaining args to `scripts/codex.js` (same stack as `codex-multi-auth-codex`).
+- **`--monitor`**: run `watch -n <interval> codex-multi-auth list`. Interval defaults to `5` seconds; override with `MCODEX_MONITOR_INTERVAL` (positive number only). If `watch` is missing, `mcodex` exits `1` with an install hint.
+- **`--tmux` / `-t`**: open or attach a tmux session (default name `mcodex`, override with `MCODEX_TMUX_SESSION`) that runs the codex wrapper. Optional `--live-accounts` (only after `--tmux`/`-t`) opens a split that refreshes the account list when `watch` is available. History limit defaults to `50000` (`MCODEX_TMUX_HISTORY_LIMIT`). If `tmux` is missing, `mcodex` warns and forwards without tmux.
+
+---
+
 ## `codex-multi-auth account`
 
-Stores local account policy metadata for future routing and budget enforcement.
-Policy keys are hashed from account identity; raw account ids and raw emails are
-not stored in the policy file.
+Stores local account policy metadata used by runtime selection and budget
+governance. Policy keys are hashed from account identity; raw account ids and
+raw emails are not stored in the policy file.
 
 Usage:
 
@@ -166,10 +207,15 @@ codex-multi-auth account policy list [--json]
 
 Notes:
 
-- `pause` and `drain` are stored only. Runtime enforcement is added by the
-  runtime policy integration PR.
-- `weight` accepts values from `0` to `10`; default is `1`.
-- `tag` values are normalized to lowercase filesystem-safe labels.
+- `pause` and `drain` are enforced by runtime policy (`evaluateRuntimePolicy`):
+  paused or drained accounts are blocked from hybrid selection and rotation.
+  Unpause / undrain clear those blocks. A manual pin can still target a specific
+  account; policy-blocked accounts surface as unavailable when selection would
+  otherwise choose them.
+- `weight` accepts values from `0` to `10`; default is `1`. Higher weight adds a
+  small score boost during hybrid selection.
+- `tag` values are normalized to lowercase filesystem-safe labels and can
+  interact with routing-profile preferred/avoid tags.
 
 ---
 
@@ -186,6 +232,36 @@ With only an account index, prints the workspaces that account can rotate
 between (for example a personal Plus seat and a business/team seat under the
 same email, issue #491). With a workspace index too, persists that workspace
 as the account's active selection.
+
+---
+
+## `codex-multi-auth uninstall`
+
+Reverses first-run setup and residual host artifacts. Run this **before**
+`npm uninstall -g codex-multi-auth` — npm@7+ no longer fires `preuninstall`
+lifecycle scripts reliably, so cleanup is operator-driven.
+
+```bash
+codex-multi-auth uninstall [--dry-run] [--json] [--clear-accounts]
+```
+
+Behavior:
+
+- Unbinds the persistent packaged Codex app runtime rotation bind when present
+- Removes managed OS launcher routing (`codex-multi-auth-app-launcher --remove` path)
+- Strips this package from Codex plugin config (`Codex.json`) when present
+- Clears the package cache under the Codex cache tree when safe
+- With `--clear-accounts`, also removes stored multi-auth account credentials
+  (irreversible)
+- `--dry-run` previews actions without writing
+- `--json` prints a machine-readable summary of removed / would-remove paths
+
+Recommended order:
+
+```bash
+codex-multi-auth uninstall
+npm uninstall -g codex-multi-auth
+```
 
 ---
 
@@ -368,6 +444,8 @@ codex-multi-auth rotation disable
 codex-multi-auth rotation status
 codex-multi-auth rotation bind-app
 codex-multi-auth rotation unbind-app
+codex-multi-auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]
+codex-multi-auth rotation reset-runtime [--json]
 ```
 
 Behavior:
@@ -377,6 +455,8 @@ Behavior:
 - `status` prints the effective setting, environment override state, automatic Codex app helper state, persistent Codex app bind state, account count, current account, disabled accounts, cooldowns, and rate-limit waits.
 - `bind-app` repairs or installs the persistent packaged-app bind without changing the stored rotation setting.
 - `unbind-app` removes the persistent packaged-app bind and restores the backed-up Codex config.
+- `reset-rate-limits` clears local rate-limit cooldowns for every account (`--all`) or one 1-based account index (`--account`).
+- `reset-runtime` clears transient runtime observability counters used by status/report.
 - `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` disables the proxy for the current process without changing settings.
 
 When enabled, the wrapper creates a temporary shadow `CODEX_HOME/config.toml` with a custom provider named `codex-multi-auth-runtime-proxy`, starts a `127.0.0.1` proxy on a random port, and forwards official Codex Responses traffic through that provider. This applies to CLI request commands plus `codex app-server` and `codex app` when they are launched through the wrapper. Existing behavior is unchanged while the setting and env override are off.
@@ -475,6 +555,8 @@ failure.
 - In non-TTY/manual shells, pass the full redirect URL on stdin, for example: `echo "http://127.0.0.1:1455/auth/callback?code=..." | codex-multi-auth login --manual`.
 - `codex-multi-auth forecast --explain` now keeps the explain breakdown visible in text mode even when dashboard settings hide recommendation summary lines. Pair it with `--json` for machine-readable reasoning snapshots.
 - `codex-multi-auth switch <index>` now also pins the chosen account for runtime routing. The desktop-app rotation proxy honors the pin on every request and hard-fails with HTTP 503 `codex_pinned_account_unavailable` when the pinned account is rate-limited or otherwise unavailable. Run `codex-multi-auth unpin` (or `codex-multi-auth best`) to clear the pin and resume hybrid rotation. See issue #474.
+- Account `pause` / `drain` policy is enforced by `evaluateRuntimePolicy` during selection (blocked accounts are skipped).
+- Live diagnostic probes default to `gpt-5.6-sol`; pass `--model gpt-5.5` (or another supported id) to override.
 - No new npm scripts or storage migration steps were introduced for this auth-flow update.
 
 ---
@@ -483,6 +565,7 @@ failure.
 
 - `codex-multi-auth` is the primary account-manager entrypoint and accepts bare subcommands such as `status`, `login`, and `rotation status`.
 - `codex-multi-auth-codex` is the optional forwarding wrapper. It handles `auth ...` locally and forwards every other command to the official `@openai/codex` CLI.
+- `mcodex` is a convenience alias that forwards to `codex-multi-auth-codex` by default, with optional `--monitor` / `--tmux` modes.
 - `codex --version` reports the official `@openai/codex` CLI version when the official CLI owns the `codex` name.
 - `codex-multi-auth --version` and `codex-multi-auth -v` report the installed manager package version.
 - In non-TTY or host-managed sessions, including `CODEX_TUI=1`, `CODEX_DESKTOP=1`, `TERM_PROGRAM=codex`, or `ELECTRON_RUN_AS_NODE=1`, auth flows degrade to deterministic text behavior.
@@ -534,7 +617,7 @@ Health and planning:
 
 ```bash
 codex-multi-auth check
-codex-multi-auth forecast --live --explain --model gpt-5.3-codex
+codex-multi-auth forecast --live --explain --model gpt-5.6-sol
 codex-multi-auth report --live --json
 ```
 
@@ -542,7 +625,7 @@ Repair and recovery:
 
 ```bash
 codex-multi-auth fix --dry-run
-codex-multi-auth fix --live --model gpt-5.3-codex
+codex-multi-auth fix --live --model gpt-5.5
 codex-multi-auth doctor --fix
 ```
 

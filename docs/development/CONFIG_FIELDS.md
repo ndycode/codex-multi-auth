@@ -88,8 +88,16 @@ Used only for host plugin mode through the host runtime config file.
 | `proactiveRefreshGuardian` | `true` |
 | `proactiveRefreshIntervalMs` | `60000` |
 | `proactiveRefreshBufferMs` | `300000` |
+| `tokenInvalidationCooldownMs` | `300000` |
+| `minRotationIntervalMs` | `60000` |
 
-`backgroundResponses` is an opt-in compatibility switch for Responses API `background: true` requests. When enabled, those requests become stateful (`store=true`) instead of following the default stateless Codex routing.
+`tokenRefreshSkewMs` refreshes access tokens this many milliseconds before expiry so cross-process refresh coordination has headroom. Cross-process refresh uses lease/state files (`lib/refresh-lease.ts`, `lib/refresh-queue.ts`) so concurrent processes do not stampede the same refresh token.
+
+`tokenInvalidationCooldownMs` is the cooldown applied when an OAuth token is explicitly invalidated by upstream (distinct from a generic 401). The longer default (5 minutes) reduces cascades where rapid rotation invalidates successive tokens. Overridable via `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS`.
+
+`minRotationIntervalMs` is the minimum time that must elapse between global account switches. When the last served account is still within this window and available, it receives a large selection-score boost so the proxy stays on it rather than rotating to a fresher idle account. `0` disables the throttle. Overridable via `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS`.
+
+`backgroundResponses` is an opt-in compatibility switch for Responses API `background: true` requests. When enabled, those requests become stateful (`store=true`) instead of following the default stateless Codex routing. Overridable via `CODEX_AUTH_BACKGROUND_RESPONSES`.
 
 Upgrade note:
 - Leave this disabled for existing stateless pipelines that do not intentionally send `background: true`.
@@ -127,6 +135,11 @@ Upgrade note:
 | `streamStallTimeoutMs` | `45000` |
 | `networkErrorCooldownMs` | `6000` |
 | `serverErrorCooldownMs` | `4000` |
+| `routingMutex` | `legacy` |
+
+`pidOffsetEnabled` adds a small deterministic PID-based score offset so parallel wrapper processes bias toward different accounts under high concurrency. Manual pins and health/quota scoring still take precedence. Overridable via `CODEX_AUTH_PID_OFFSET_ENABLED`.
+
+`routingMutex` controls whether account selection + cursor advance on the runtime proxy hot path is serialized. `"legacy"` (default) runs selection inline for historical performance. `"enabled"` acquires a process-local reentrant async mutex around selection commits. Overridable via `CODEX_AUTH_ROUTING_MUTEX` (`legacy` or `enabled`).
 
 ### Quota Deferral
 
@@ -224,6 +237,13 @@ Upgrade note:
 | `CODEX_AUTH_FETCH_TIMEOUT_MS` | Request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` | Stream stall timeout override |
 | `CODEX_AUTH_SCHEDULING_STRATEGY` | Account scheduling strategy override (`hybrid` or `sequential`/drain-first) |
+| `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS` | Cooldown after explicit upstream token invalidation (`tokenInvalidationCooldownMs`) |
+| `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS` | Minimum interval between global account rotations (`minRotationIntervalMs`) |
+| `CODEX_AUTH_ROUTING_MUTEX` | Routing mutex mode (`legacy` or `enabled`) |
+| `CODEX_AUTH_PID_OFFSET_ENABLED` | Toggle PID-based hybrid selection offset (`pidOffsetEnabled`) |
+| `CODEX_AUTH_BACKGROUND_RESPONSES` | Toggle background Responses compatibility (`backgroundResponses`) |
+| `CODEX_MULTI_AUTH_FORCE_ACCOUNT` | Force one account for a single forwarded `codex-multi-auth-codex` run (`index`, email, or id). Ephemeral and fail-hard; equivalent to `--account` (flag wins when both are set). Requires the runtime rotation proxy |
+| `CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX` | Internal: wrapper publishes a resolved 0-based index after `--account` / `CODEX_MULTI_AUTH_FORCE_ACCOUNT`. Runtime proxy consumes it as an ephemeral pin. Prefer `CODEX_MULTI_AUTH_FORCE_ACCOUNT` rather than setting this by hand |
 | `CODEX_MULTI_AUTH_SYNC_CODEX_CLI` | Toggle Codex CLI state sync |
 | `CODEX_MULTI_AUTH_REAL_CODEX_BIN` | Force official Codex binary path |
 | `CODEX_MULTI_AUTH_BYPASS` | Bypass local auth handling |

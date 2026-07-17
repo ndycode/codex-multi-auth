@@ -9,6 +9,8 @@ Migrate legacy installs to the canonical `codex-multi-auth` workflow on the curr
 - Package: `codex-multi-auth`
 - Command family: `codex-multi-auth ...`
 - Runtime root: `~/.codex/multi-auth`
+- Optional wrapper: `codex-multi-auth-codex` / `mcodex`
+- Official CLI binary name: `codex` (owned by `@openai/codex` or another official install path)
 
 ---
 
@@ -25,20 +27,20 @@ codex --version
 codex-multi-auth --version
 codex-multi-auth-codex --version
 codex-multi-auth status
-codex-multi-auth-codex --version
 ```
 
 If you previously ran this package through `codex`, switch account-management
 commands to `codex-multi-auth ...`. If you intentionally need the forwarding
-wrapper from this package, use `codex-multi-auth-codex ...`.
+wrapper from this package, use `codex-multi-auth-codex ...` or `mcodex ...`.
 
 ---
 
-## First-Run Setup Note (Unreleased)
+## First-Run Setup Note (Shipped)
 
 Installing the package no longer performs desktop-app detection, app bind, or
-launcher-shortcut setup during `npm install`. That work now runs once on your
-first `codex-multi-auth` invocation from a durable global install:
+launcher-shortcut setup during `npm install`. Postinstall is notice-only.
+That work now runs once on your first `codex-multi-auth` invocation from a
+durable global install:
 
 ```bash
 npm i -g codex-multi-auth
@@ -49,8 +51,20 @@ Expected outcome: the first command claims a one-time marker at
 `~/.codex/multi-auth/first-run-setup.json` and performs the app bind and
 launcher setup (best-effort — a failure never blocks the command). `npx` runs
 and project-local installs deliberately skip this setup and do not consume the
-marker. The existing opt-outs are unchanged: `CODEX_MULTI_AUTH_APP_BIND=0`,
-`CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0`, and CI environments always skip.
+marker.
+
+Opt-outs:
+
+| Variable | Effect |
+| --- | --- |
+| `CODEX_MULTI_AUTH_APP_BIND=0` | Skip packaged Codex app bind on first run |
+| `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0` | Same bind skip (install-oriented alias used by rotation enable / self-heal paths) |
+| `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0` | Skip user-level launcher routing install |
+| CI environments | Always skip first-run setup |
+
+Either `CODEX_MULTI_AUTH_APP_BIND` or `CODEX_MULTI_AUTH_APP_BIND_INSTALL` can
+gate the app-bind step; when both are unset, bind runs when runtime rotation is
+enabled and a Codex desktop app is detected.
 
 ---
 
@@ -62,32 +76,33 @@ marker. The existing opt-outs are unchanged: `CODEX_MULTI_AUTH_APP_BIND=0`,
 npm i -g @openai/codex
 ```
 
-1. Remove legacy scoped package if present:
+2. Remove legacy scoped package if present:
 
 ```bash
 npm uninstall -g @ndycode/codex-multi-auth
 ```
 
-1. Install canonical package:
+3. Install canonical package:
 
 ```bash
 npm i -g codex-multi-auth
 ```
 
-1. Verify routing and wrapper status:
+4. Verify routing and wrapper status:
 
 ```bash
 codex --version
 codex-multi-auth --version
+codex-multi-auth-codex --version
 codex-multi-auth status
 ```
 
-1. Rebuild account health baseline:
+5. Rebuild account health baseline:
 
 ```bash
 codex-multi-auth login
 codex-multi-auth check
-codex-multi-auth forecast --live --model gpt-5.3-codex
+codex-multi-auth forecast --live --model gpt-5.6-sol
 ```
 
 ---
@@ -122,21 +137,38 @@ For maintainer/debug flows, see advanced/internal controls in [development/CONFI
 
 ## Runtime Rotation Upgrade Note
 
-The 2.0.1 line makes runtime rotation the default for request-bearing wrapper-launched Codex sessions and keeps the packaged app bind reversible.
+The 2.0.1 line makes runtime rotation the default for request-bearing wrapper-launched Codex sessions and keeps the packaged app bind reversible. That policy remains on the current `2.x` release line.
 
-- Current installs route request-bearing commands launched through `codex-multi-auth-codex ...` through the localhost rotation proxy unless `codexRuntimeRotationProxy=false` or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` is set.
+- Current installs route request-bearing commands launched through `codex-multi-auth-codex ...` or `mcodex ...` through the localhost rotation proxy unless `codexRuntimeRotationProxy=false` or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` is set.
 - `codex-multi-auth rotation enable` persists the setting and repairs supported packaged Codex app binds through a reversible localhost router.
 - `codex-multi-auth rotation disable` turns the setting off and removes the persistent app bind.
-- Set `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0` before install/update if you only want wrapper-launched CLI/app sessions routed and do not want the packaged app bind installed.
-- Set `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0` before install/update if you do not want supported user-level app launchers routed through the wrapper.
+- Set `CODEX_MULTI_AUTH_APP_BIND=0` or `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0` before first run or update if you only want wrapper-launched CLI/app sessions routed and do not want the packaged app bind installed.
+- Set `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0` before first run or update if you do not want supported user-level app launchers routed through the wrapper.
 - Installed wrappers may perform a best-effort daily npm version check during normal forwarded startup. If a newer package is detected, update manually with `npm install -g codex-multi-auth@latest`.
 - Official Codex app binaries are not patched.
+- Pause/drain account policies and budget/profile checks are enforced on the rotation path via `evaluateRuntimePolicy`.
 
 Validate after enabling:
 
 ```bash
 codex-multi-auth rotation status
 codex-multi-auth forecast --live
+```
+
+---
+
+## Model Defaults Upgrade Note
+
+On the current `2.x` line:
+
+- `DEFAULT_MODEL` (general routing default and `gpt-5` alias target) is `gpt-5.5`.
+- Diagnostic live/quota probes (`check`, `report`, `forecast`, `best`, `fix`) lead with `DEFAULT_PROBE_MODEL` = `gpt-5.6-sol`, then fall through the probe chain for accounts without entitlement.
+
+When validating live repair or forecast after an upgrade, prefer:
+
+```bash
+codex-multi-auth forecast --live --model gpt-5.6-sol
+codex-multi-auth fix --live --model gpt-5.5
 ```
 
 ---
@@ -162,6 +194,22 @@ codex-multi-auth forecast --live
 
 ---
 
+## Local Governance Upgrade Note
+
+Local governance commands shipped on the `2.x` line and remain available after upgrade:
+
+- `codex-multi-auth usage` — local usage ledger summaries
+- `codex-multi-auth budget` — local budget limits and checks
+- `codex-multi-auth account pause|drain|…` — account policy controls enforced at runtime
+- `codex-multi-auth models` / `codex-multi-auth monitor` — capability and operator views
+- `codex-multi-auth bridge token …` — hashed `cma_local_*` client tokens for the optional loopback bridge
+- `codex-multi-auth history` — provider-agnostic local session list
+- `mcodex` — convenience wrapper launcher
+
+No remote dashboard or hosted multi-user service is introduced. Data stays under `~/.codex/multi-auth`.
+
+---
+
 ## Legacy Compatibility
 
 Legacy files may still be discovered during migration-only compatibility checks.
@@ -184,9 +232,11 @@ If you used `perProjectAccounts=true` before worktree identity sharing was added
 | Problem | Action |
 | --- | --- |
 | `codex-multi-auth` not found | Run `where codex-multi-auth` (Windows) or `which codex-multi-auth` (macOS/Linux) |
-| Old package still active | Uninstall scoped package and reinstall unscoped package |
+| Old package still active | Uninstall scoped package `@ndycode/codex-multi-auth` and reinstall unscoped `codex-multi-auth` |
 | Account pool appears stale | Run `codex-multi-auth doctor --fix`, then re-login impacted accounts |
 | Mixed path confusion | Check [reference/storage-paths.md](reference/storage-paths.md) |
+| Wrapper still expected as `codex` | Use `codex-multi-auth-codex` or `mcodex`; keep official `codex` for stock CLI |
+| Newest models missing after upgrade | Re-run config install paths for model pickers; see [troubleshooting.md](troubleshooting.md) |
 
 ---
 
@@ -194,5 +244,7 @@ If you used `perProjectAccounts=true` before worktree identity sharing was added
 
 - [getting-started.md](getting-started.md)
 - [troubleshooting.md](troubleshooting.md)
+- [architecture.md](architecture.md)
+- [features.md](features.md)
 - [reference/storage-paths.md](reference/storage-paths.md)
 - [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md)

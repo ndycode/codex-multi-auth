@@ -38,15 +38,17 @@ Canonical governance for repository documentation quality and consistency.
 | Docs style contract | `docs/STYLE_GUIDE.md` |
 | Docs governance (this file) | `docs/DOCUMENTATION.md` |
 | Architecture internals | `docs/development/ARCHITECTURE.md` |
-| Runtime rotation implementation guide | `docs/development/ARCHITECTURE.md` |
-| GitHub metadata guidance | `docs/development/GITHUB_DISCOVERABILITY.md` |
-| IA/findability audit (2026-03-01) | `docs/development/IA_FINDABILITY_AUDIT_2026-03-01.md` |
+| Runtime rotation, selection order, security boundaries | `docs/development/ARCHITECTURE.md` |
 | Config fields internals | `docs/development/CONFIG_FIELDS.md` |
 | Config flow internals | `docs/development/CONFIG_FLOW.md` |
 | Repository ownership map | `docs/development/REPOSITORY_SCOPE.md` |
+| Agent/project knowledge | `AGENTS.md`, `lib/AGENTS.md`, `test/AGENTS.md` |
 | Testing and release gates | `docs/development/TESTING.md` |
 | TUI parity checklist | `docs/development/TUI_PARITY_CHECKLIST.md` |
+| GitHub metadata guidance | `docs/development/GITHUB_DISCOVERABILITY.md` |
+| IA/findability audit (2026-03-01) | `docs/development/IA_FINDABILITY_AUDIT_2026-03-01.md` |
 | Benchmark methodology | `docs/benchmarks/code-edit-format-benchmark.md` |
+| Historical implementation plans | `docs/development/implementation-plans/` (archive; not current architecture guidance) |
 | Historical audit snapshots | `docs/audits/` |
 
 ---
@@ -61,6 +63,7 @@ Canonical governance for repository documentation quality and consistency.
 6. Current stable release line is `2.x`; foundational `0.x` and pre-`0.1.0` entries stay archived separately.
 7. Runtime rotation is documented as default-on unless a future release intentionally changes that policy.
 8. Audit evidence under `docs/audits/` is historical snapshot material. Do not rewrite captured evidence to look current; add snapshot notes or new audit artifacts instead.
+9. Material under `docs/development/implementation-plans/` is historical planning archive, not current architecture guidance.
 
 ---
 

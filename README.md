@@ -45,15 +45,16 @@ Use it when you need a local Codex CLI multi-account workflow with visible accou
 
 ## Current Architecture At A Glance
 
-`codex-multi-auth` now ships three distinct global binaries:
+`codex-multi-auth` ships four global binaries:
 
 | Binary | Purpose |
 | --- | --- |
 | `codex-multi-auth` | Primary account manager; accepts bare auth subcommands such as `login`, `status`, `switch`, `forecast`, and `rotation status` |
 | `codex-multi-auth-codex` | Optional wrapper that handles `auth ...` locally and forwards every other command to the official Codex CLI |
+| `mcodex` | Convenience launcher over `codex-multi-auth-codex` with optional `--monitor` and `--tmux` modes |
 | `codex-multi-auth-app-launcher` | Optional desktop launcher helper for supported user-level shortcuts and wrapper apps |
 
-The package does not publish a global `codex` binary. Keep `codex` owned by the official OpenAI install path and use `codex-multi-auth-codex ...` only when you intentionally want this package's forwarding wrapper.
+The package does not publish a global `codex` binary. Keep `codex` owned by the official OpenAI install path. Use `codex-multi-auth-codex ...` or `mcodex ...` only when you intentionally want this package's forwarding wrapper.
 
 ---
 

@@ -7,8 +7,21 @@ Install the Codex CLI multi-account OAuth manager, add your first ChatGPT-authen
 ## Prerequisites
 
 - Node.js `18.17+`
-- The official `@openai/codex` CLI
+- The official `@openai/codex` CLI (or another install that puts `codex` on `PATH`)
 - A ChatGPT plan with access to the models you want to use
+
+---
+
+## Which Binary Should I Use?
+
+| Goal | Command |
+| --- | --- |
+| Manage accounts (login, switch, check, rotation, usage, doctor) | `codex-multi-auth ...` |
+| Run official Codex through this package's wrapper with optional runtime rotation | `codex-multi-auth-codex ...` |
+| Short convenience launcher over the wrapper (`--monitor`, `--tmux` / `-t`) | `mcodex ...` |
+| Stock Codex without this package's wrapper | Official `codex ...` |
+
+The package does **not** publish a global `codex` binary. Keep `codex` owned by the official install path.
 
 ---
 
@@ -26,16 +39,21 @@ npm uninstall -g @ndycode/codex-multi-auth
 npm i -g codex-multi-auth
 ```
 
-Verify both installed surfaces:
+Verify install:
 
-- `codex --version` checks the official `@openai/codex` CLI that the manager can pair with.
-- `codex-multi-auth --version` checks the installed manager package version.
+- `codex --version` checks the official `@openai/codex` CLI.
+- `codex-multi-auth --version` checks the manager package version.
+- `codex-multi-auth-codex --version` checks the optional forwarding wrapper (when you use it).
 
 ```bash
 codex --version
 codex-multi-auth --version
 codex-multi-auth status
 ```
+
+### First-run setup note (shipped)
+
+`npm` postinstall is notice-only. On the first `codex-multi-auth` invocation from a durable global install, the package may best-effort bind a detected Codex desktop app and install launcher routing, then write `~/.codex/multi-auth/first-run-setup.json`. `npx` and project-local installs skip that setup. Opt out with `CODEX_MULTI_AUTH_APP_BIND=0` or `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0`, and `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0`. See [upgrade.md](upgrade.md#first-run-setup-note-shipped).
 
 ---
 
@@ -65,6 +83,8 @@ Choose the next account for your next session:
 ```bash
 codex-multi-auth forecast --live
 ```
+
+Live diagnostic probes lead with `gpt-5.6-sol` (falling back through the probe chain when an account lacks entitlement). General routing defaults remain on `gpt-5.5`.
 
 ## Alternate Login Paths
 
@@ -136,21 +156,46 @@ codex-multi-auth forecast --live
 codex-multi-auth status
 codex-multi-auth list
 codex-multi-auth switch 2
+codex-multi-auth unpin
 codex-multi-auth check
 codex-multi-auth forecast --live
+codex-multi-auth rotation status
+```
+
+Useful follow-ups once you have a working pool:
+
+```bash
+codex-multi-auth report --live --json
+codex-multi-auth monitor
+codex-multi-auth usage --since 1d
+codex-multi-auth history
 ```
 
 ---
 
 ## Runtime Rotation
 
-Runtime rotation is enabled by default for request-bearing sessions launched through `codex-multi-auth-codex ...` or a configured app bind. The local Responses proxy can rotate managed accounts between forwarded official Codex CLI/app requests. Inspect it before relying on rotation for live sessions:
+Runtime rotation is enabled by default for request-bearing sessions launched through `codex-multi-auth-codex ...`, `mcodex ...`, or a configured app bind. The local Responses proxy can rotate managed accounts between forwarded official Codex CLI/app requests. Inspect it before relying on rotation for live sessions:
 
 ```bash
 codex-multi-auth rotation status
 ```
 
-To turn it off and restore the packaged app bind if one was installed:
+Launch a session through the wrapper when you want rotation:
+
+```bash
+codex-multi-auth-codex
+# or
+mcodex
+```
+
+Force one account for a single invocation (ephemeral; does not change `switch`):
+
+```bash
+codex-multi-auth-codex --account 1
+```
+
+To turn rotation off and restore the packaged app bind if one was installed:
 
 ```bash
 codex-multi-auth rotation disable
@@ -160,7 +205,7 @@ codex-multi-auth rotation disable
 
 ## Project-Scoped Accounts
 
-By default, account data lives under `~/.codex/multi-auth`.
+By default, account data lives under `~/.codex/multi-auth` in Storage V3 format.
 
 If project-level account pools are enabled, `codex-multi-auth` stores them under:
 
@@ -186,6 +231,7 @@ If the OAuth callback on port `1455` fails:
 - rerun `codex-multi-auth login`
 - if browser launch is unavailable, prefer `codex-multi-auth login --device-auth`
 - if device auth is unavailable, rerun `codex-multi-auth login --manual`
+- on Windows + WSL side-by-side installs, see [troubleshooting.md](troubleshooting.md#windows-and-wsl-side-by-side)
 
 If account state looks stale:
 

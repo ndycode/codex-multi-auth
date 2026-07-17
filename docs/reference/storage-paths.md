@@ -29,6 +29,8 @@ Override root:
 | Flagged accounts backup | `~/.codex/multi-auth/openai-codex-flagged-accounts.json.bak` |
 | Quota cache | `~/.codex/multi-auth/quota-cache.json` |
 | Runtime observability | `~/.codex/multi-auth/runtime-observability.json` |
+| First-run setup marker | `~/.codex/multi-auth/first-run-setup.json` |
+| Usage directory | `~/.codex/multi-auth/usage/` |
 | Usage ledger | `~/.codex/multi-auth/usage/usage-ledger.jsonl` |
 | Usage ledger archives | `~/.codex/multi-auth/usage/usage-ledger.<timestamp>.jsonl` |
 | Account policies | `~/.codex/multi-auth/account-policies.json` |
@@ -37,11 +39,23 @@ Override root:
 | Local bridge client tokens | `~/.codex/multi-auth/local-client-tokens.json` |
 | Runtime app helper status | `~/.codex/multi-auth/runtime-rotation-app-helper.json` |
 | Persistent app bind directory | `~/.codex/multi-auth/app-bind/` |
+| Named pool backups | `~/.codex/multi-auth/backups/` |
 | Logs | `~/.codex/multi-auth/logs/codex-plugin/` |
 | Cache | `~/.codex/multi-auth/cache/` |
 | Codex CLI accounts | `~/.codex/accounts.json` |
 | Codex CLI auth | `~/.codex/auth.json` |
 | Codex CLI config | `~/.codex/config.toml` |
+
+### First-run setup marker
+
+`first-run-setup.json` lives under the multi-auth root
+(`getCodexMultiAuthDir()` / `~/.codex/multi-auth` by default). On the first
+manager CLI invocation after install, the package records a one-shot marker and
+best-effort self-heals packaged app bind + launcher routing when runtime
+rotation is enabled. Concurrent first invocations claim the marker with an
+exclusive create so setup runs at most once. Failures are debug-logged and never
+block the user command. Deleting the marker can re-trigger first-run setup on
+the next CLI run.
 
 Ownership note:
 
@@ -117,6 +131,7 @@ Runtime rotation adds local state only when enabled or when a helper has recentl
 | `~/.codex/multi-auth/app-bind/codex-config-backup.json` | backup metadata for restoring the real Codex `config.toml` |
 | `~/.codex/multi-auth/app-bind/runtime-rotation-app-bind-status.json` | persistent app router status |
 | `~/.codex/multi-auth/app-bind/runtime-rotation-app-router.log` | persistent app router log |
+| `~/.codex/multi-auth/first-run-setup.json` | one-shot first CLI run marker for app bind / launcher self-heal |
 
 The app bind writes a provider entry to the real `~/.codex/config.toml` only after taking a backup. `codex-multi-auth rotation disable` and `codex-multi-auth rotation unbind-app` restore the backup and remove the router startup entry.
 
@@ -126,15 +141,21 @@ The app bind writes a provider entry to the real `~/.codex/config.toml` only aft
 
 | Path | Purpose |
 | --- | --- |
+| `~/.codex/multi-auth/usage/` | Directory for the local usage ledger and rotated archives |
 | `~/.codex/multi-auth/usage/usage-ledger.jsonl` | Append-only local usage metadata ledger |
-| `~/.codex/multi-auth/account-policies.json` | Hashed-account policy metadata for tags, weights, pause, drain, and notes |
+| `~/.codex/multi-auth/usage/usage-ledger.<timestamp>.jsonl` | Archived ledgers produced by `codex-multi-auth usage rotate` |
+| `~/.codex/multi-auth/account-policies.json` | Hashed-account policy metadata for tags, weights, pause, drain, and notes (`codex-multi-auth account ...`) |
 | `~/.codex/multi-auth/routing-profiles.json` | Project-aware profile preferences keyed with `getProjectStorageKey` |
-| `~/.codex/multi-auth/budget-guards.json` | Local budget limits evaluated from usage summaries |
-| `~/.codex/multi-auth/local-client-tokens.json` | Local bridge token hashes and prefixes only |
+| `~/.codex/multi-auth/budget-guards.json` | Local budget limits evaluated from usage summaries (`codex-multi-auth budget ...`) |
+| `~/.codex/multi-auth/local-client-tokens.json` | Local bridge token hashes and prefixes only (`codex-multi-auth bridge token ...`) |
 
 The local bridge is loopback-only and exposes `/health`, `/v1/models`, and
 `/v1/responses`. Plain client tokens are shown only by `codex-multi-auth bridge token
 create` or `codex-multi-auth bridge token rotate`; the token store persists hashes.
+
+Policy pause/drain entries in `account-policies.json` are enforced at selection
+time by `evaluateRuntimePolicy` (blocked accounts are excluded from hybrid
+rotation).
 
 ---
 
@@ -170,6 +191,7 @@ Experimental sync targets the companion `oc-chatgpt-multi-auth` storage layout:
 ```bash
 codex-multi-auth status
 codex-multi-auth list
+codex-multi-auth verify --paths
 ```
 
 ---
@@ -179,3 +201,5 @@ codex-multi-auth list
 - [../configuration.md](../configuration.md)
 - [../upgrade.md](../upgrade.md)
 - [../privacy.md](../privacy.md)
+- [commands.md](commands.md)
+- [settings.md](settings.md)

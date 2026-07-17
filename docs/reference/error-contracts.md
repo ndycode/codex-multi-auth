@@ -11,6 +11,13 @@ Error contract reference for user-facing CLI and exported helper behavior.
 - `0`: successful execution
 - `1`: usage error, invalid arguments, sync/persistence failure, or command failure
 
+Command-specific notes:
+
+- `why-selected`: `0` when an account is selected, `1` when the pool is empty or every candidate is cooled down / blocked
+- `verify` / `verify-flagged`: `0` when all selected modes pass, `1` otherwise
+- `usage`: `0` for successful summary or rotation, `1` for invalid options or write failures
+- Forced `--account` / `CODEX_MULTI_AUTH_FORCE_ACCOUNT` failures exit non-zero without launching Codex when the proxy is disabled or the selector does not match
+
 ### Streams
 
 - Human-readable command output is written to `stdout`.
@@ -29,18 +36,49 @@ Examples:
 
 ## JSON Mode Contract
 
-The following commands support `--json` and produce pretty-printed JSON objects:
+The authoritative list of common `--json` command surfaces is the Common Flags
+`--json` row in [commands.md](commands.md):
+
+`verify-flagged`, `verify`, `why-selected`, `best`, `forecast`, `report`,
+`usage`, `budget`, `models`, `monitor`, `integrations`, `fix`, `doctor`,
+`config explain`, `debug bundle`, `history`.
+
+Those commands support `--json` / `-j` and produce pretty-printed JSON objects
+(or, for nested families such as `budget`, JSON payloads for the subcommands
+that accept the flag).
+
+Documented examples:
 
 - `codex-multi-auth forecast --json`
 - `codex-multi-auth report --json`
 - `codex-multi-auth fix --json`
 - `codex-multi-auth doctor --json`
 - `codex-multi-auth verify-flagged --json`
+- `codex-multi-auth verify --paths --json`
+- `codex-multi-auth why-selected --json`
+- `codex-multi-auth best --json`
+- `codex-multi-auth usage --json`
+- `codex-multi-auth budget list --json`
+- `codex-multi-auth models --json`
+- `codex-multi-auth monitor --json`
+- `codex-multi-auth integrations --json`
+- `codex-multi-auth config explain --json`
+- `codex-multi-auth debug bundle --json`
+- `codex-multi-auth history --json`
+- `codex-multi-auth history show <id> --json`
+
+Additive JSON helpers also documented in the command reference (outside the
+compact Common Flags row):
+
+- `codex-multi-auth uninstall --json`
+- `codex-multi-auth rotation reset-rate-limits --json`
+- `codex-multi-auth rotation reset-runtime --json`
+- `codex-multi-auth account policy list --json`
 
 Compatibility guarantees:
 
 - Output is valid JSON.
-- `command` field identifies the command family.
+- `command` field identifies the command family when the payload is a command result object.
 - Documented top-level sections remain stable unless a migration note is provided.
 
 ---
@@ -86,6 +124,8 @@ The default-on localhost Responses proxy returns JSON error payloads with a stab
 | `codex_runtime_rotation_proxy_error` | `500` | Proxy failed before forwarding the request |
 
 Pool exhaustion includes a `reason`, `retry_after_ms`, and a hint to run `codex-multi-auth rotation status`. Pinned-account-unavailable responses include a `pinnedAccountIndex` field identifying the pinned account, a structured `reason` field carrying the runtime skip reason (for example `rate-limited`, `cooling-down:auth-failure`, `circuit-open`, `disabled`, `workspace-disabled`, `policy-blocked`, `missing`, `already-attempted`) or `null` when no reason was recorded, and an `account_skip_reasons` map keyed by account index that mirrors the pool-exhausted response shape. The human-readable `message` appends the same reason in parentheses when present (see issue #486).
+
+Account policy pause/drain is enforced through runtime policy evaluation and contributes to selection skip reasons such as `policy-blocked`.
 
 ---
 

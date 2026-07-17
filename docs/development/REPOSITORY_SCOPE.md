@@ -8,9 +8,9 @@ Ownership map for source paths and documentation paths.
 
 | Path | Purpose |
 | --- | --- |
-| `scripts/` | Installed wrapper, official Codex forwarder, runtime app/router helpers, repo hygiene |
+| `scripts/` | Installed wrapper, `mcodex` launcher, official Codex forwarder, runtime app/router helpers, repo hygiene |
 | `index.ts` | Optional plugin-host runtime entry |
-| `lib/` | Core auth, storage, account manager, runtime proxy, app bind, UI, policies |
+| `lib/` | Core auth, storage, account manager, runtime proxy, app bind, governance, UI, policies |
 | `docs/` | User docs + references + maintainer docs |
 | `test/` | Unit/integration/property tests |
 | `config/` | Plugin-host config examples |
@@ -25,12 +25,22 @@ Ownership map for source paths and documentation paths.
 | Area | Primary files |
 | --- | --- |
 | CLI wrapper and forwarding | `scripts/codex.js`, `scripts/codex-routing.js`, `scripts/codex-bin-resolver.js` |
+| Convenience launcher | `scripts/mcodex.js` |
 | CLI auth manager | `lib/codex-manager.ts` |
+| Manager command modules | `lib/codex-manager/commands/*` |
 | Settings hub | `lib/codex-manager/settings-hub.ts`, `lib/codex-manager/settings-hub/` |
 | OAuth flow/server | `lib/auth/*` |
-| Runtime rotation proxy | `lib/runtime-rotation-proxy.ts`, `lib/runtime/config-toml.ts`, `lib/runtime-constants.ts` |
+| Runtime rotation proxy | `lib/runtime-rotation-proxy.ts`, `lib/runtime/config-toml.ts`, `lib/runtime-constants.ts`, `lib/runtime/rotation-account-selection.ts` |
 | Runtime app bind/router | `lib/runtime/app-bind.ts`, `scripts/codex-app-router.js`, `scripts/codex-app-launcher.js` |
+| First-run setup | `lib/runtime/first-run.ts` |
 | Runtime observability | `lib/runtime/runtime-observability.ts`, `lib/codex-manager/commands/status.ts`, `lib/codex-manager/commands/report.ts`, `lib/codex-manager/commands/rotation.ts` |
+| Local bridge | `lib/local-bridge.ts`, `lib/local-client-tokens.ts`, `lib/codex-manager/commands/bridge.ts` |
+| Usage ledger | `lib/usage/`, `lib/codex-manager/commands/usage.ts` |
+| Budget guard | `lib/budget-guard.ts`, `lib/codex-manager/commands/budget.ts` |
+| Account policy | `lib/account-policy.ts`, `lib/codex-manager/commands/account.ts` |
+| Routing profiles | `lib/routing-profiles.ts` |
+| Capability policy / model matrix | `lib/capability-policy.ts`, `lib/model-capability-matrix.ts`, `lib/entitlement-cache.ts`, `lib/codex-manager/commands/models.ts` |
+| Runtime policy composition | `lib/policy/runtime-policy.ts` |
 | Storage and paths | `lib/storage.ts`, `lib/storage/paths.ts`, `lib/runtime-paths.ts` |
 | Worktree resolution | `lib/storage/paths.ts` (`resolveProjectStorageIdentityRoot`) |
 | Unified settings | `lib/unified-settings.ts`, `lib/dashboard-settings.ts`, `lib/config.ts` |
