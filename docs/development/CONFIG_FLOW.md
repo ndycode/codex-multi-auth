@@ -6,12 +6,13 @@ How configuration is resolved at runtime from files, env, and defaults.
 
 ## 1) Root Directory Resolution
 
-Runtime root priority:
+Runtime root priority (`getCodexMultiAuthDir`):
 
-1. `CODEX_MULTI_AUTH_DIR`
-2. `CODEX_HOME/multi-auth`
-3. Detected fallback roots with existing storage signals
-4. Legacy path fallback only when signals exist
+1. `CODEX_MULTI_AUTH_DIR` when set
+2. If `CODEX_HOME` is an explicit non-default path: **only** `$CODEX_HOME/multi-auth` (no cross-root scan)
+3. Otherwise prefer candidate roots under `CODEX_HOME` / `~/.codex` that already hold account storage
+4. Fall back to `~/.codex/multi-auth` (canonical default) or other roots that already show multi-auth signals
+5. Legacy path fallback only when storage signals exist
 
 Canonical target is `~/.codex/multi-auth` when no override is set.
 
@@ -30,13 +31,16 @@ If legacy config exists, compatibility load and migration path still apply.
 
 ## 3) Runtime Value Precedence
 
-For runtime values stored in `pluginConfig`:
+For runtime values stored in `pluginConfig`, source selection is:
 
-1. Unified settings `pluginConfig` (if present and valid)
-2. Fallback file from `CODEX_MULTI_AUTH_CONFIG_PATH` or legacy compatibility path (only when unified config is missing/invalid)
-3. Hardcoded default in `DEFAULT_PLUGIN_CONFIG`
+1. Fallback file from `CODEX_MULTI_AUTH_CONFIG_PATH` when set **and the file exists** (also the preferred save target when set)
+2. Unified settings `pluginConfig` from `settings.json` (if present and valid)
+3. Legacy compatibility path when unified config is missing/invalid
+4. Hardcoded default in `DEFAULT_PLUGIN_CONFIG`
 
 After source selection, environment variables apply per-setting overrides.
+
+A `CODEX_MULTI_AUTH_CONFIG_PATH` that is set but not yet created is ignored for load; the first save still creates/writes that path when the env var remains set.
 
 For dashboard display values:
 

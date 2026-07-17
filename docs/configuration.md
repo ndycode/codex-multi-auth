@@ -44,14 +44,20 @@ Runtime configuration is resolved from unified settings, optional override files
 
 ## Resolution Precedence
 
-Runtime config source selection is resolved in this order. The persisted object is still named `pluginConfig` for compatibility with earlier releases.
+Runtime config **source selection** is resolved in this order. The persisted object is still named `pluginConfig` for compatibility with earlier releases.
 
-1. Unified settings `pluginConfig` from `settings.json` (when present and valid).
-2. Fallback file config from `CODEX_MULTI_AUTH_CONFIG_PATH` (or legacy compatibility path) when unified settings are absent/invalid.
-3. Hardcoded defaults.
+1. File from `CODEX_MULTI_AUTH_CONFIG_PATH` when that env var is set **and the file already exists** (preferred load path; also the save target when set).
+2. Unified settings `pluginConfig` from `settings.json` under the multi-auth root (when present and valid).
+3. Legacy compatibility config files when unified settings are absent/invalid.
+4. Hardcoded defaults in `DEFAULT_PLUGIN_CONFIG`.
 
 After a config source is selected, environment variables override individual runtime settings.
 Dashboard display values are resolved from persisted `dashboardDisplaySettings` and then normalized defaults.
+
+Notes:
+
+- A set-but-missing `CODEX_MULTI_AUTH_CONFIG_PATH` is ignored for load until the file is created; the next save still writes to that path when the env var is set.
+- `CODEX_MULTI_AUTH_DIR` re-homes multi-auth-owned files. If `CODEX_HOME` is set to a non-default directory, multi-auth resolves strictly to `$CODEX_HOME/multi-auth` without scanning other roots for existing pools.
 
 ---
 
@@ -67,8 +73,9 @@ These are safe for most operators and frequently used in day-to-day workflows.
 | `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0/1` | Opt out/in of live Codex Responses routing through the localhost account-rotation proxy |
 | `CODEX_MULTI_AUTH_FORCE_ACCOUNT=<index\|email\|id>` | Force one account for a single forwarded `codex-multi-auth-codex` run (equivalent to the `--account` flag, which wins when both are set). Ephemeral and fail-hard; requires the runtime rotation proxy. See [Force an account for one invocation](reference/commands.md#force-an-account-for-one-invocation) |
 | `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS=<ms>` | Override idle shutdown for the wrapper-launched Codex app helper |
-| `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0/1` | Opt out/in of packaged Codex app bind self-heal during install/update or rotation enable |
-| `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0/1` | Opt out/in of supported user-level launcher routing during install/update or rotation enable |
+| `CODEX_MULTI_AUTH_APP_BIND=0/1` | Alias-style opt-out for first-run packaged Codex app bind (see also `CODEX_MULTI_AUTH_APP_BIND_INSTALL`) |
+| `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0/1` | Opt out/in of packaged Codex app bind self-heal on first durable CLI run or rotation enable |
+| `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0/1` | Opt out/in of supported user-level launcher routing on first durable CLI run or rotation enable |
 | `CODEX_TUI_V2=0/1` | Disable or enable TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | Color profile selection |
 | `CODEX_TUI_GLYPHS=ascii|unicode|auto` | Glyph mode selection |
@@ -83,14 +90,35 @@ These are safe for most operators and frequently used in day-to-day workflows.
 ## Advanced and Internal Overrides
 
 Use these only when debugging, controlled benchmarking, or maintainer workflows.
+The complete `pluginConfig` ↔ env accessor matrix is in [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md).
 
-- `CODEX_MULTI_AUTH_SYNC_CODEX_CLI`
-- `CODEX_MULTI_AUTH_REAL_CODEX_BIN`
-- `CODEX_MULTI_AUTH_BYPASS`
-- `CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX` — internal, set by the wrapper after it resolves `--account` / `CODEX_MULTI_AUTH_FORCE_ACCOUNT` to a 0-based index; the runtime rotation proxy consumes it as an ephemeral pin. Not intended to be set by hand — use `CODEX_MULTI_AUTH_FORCE_ACCOUNT` instead.
-- `CODEX_CLI_ACCOUNTS_PATH`
-- `CODEX_CLI_AUTH_PATH`
-- refresh lease tuning variables (`CODEX_AUTH_REFRESH_LEASE*`)
+| Variable | Effect |
+| --- | --- |
+| `CODEX_MULTI_AUTH_SYNC_CODEX_CLI` | Force/disable active-account sync into official Codex CLI files |
+| `CODEX_MULTI_AUTH_REAL_CODEX_BIN` | Override official Codex binary discovery path |
+| `CODEX_MULTI_AUTH_BYPASS=1` | Skip multi-auth intercept; forward everything to official Codex |
+| `CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX` | Internal 0-based pin published by the wrapper after `--account` / `CODEX_MULTI_AUTH_FORCE_ACCOUNT` resolution |
+| `CODEX_MULTI_AUTH_STATUSLINE=0/1` | Disable/enable forwarded-session status line |
+| `CODEX_MULTI_AUTH_AUTO_SYNC_ON_STARTUP=0/1` | Control startup account sync |
+| `CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE=0/1` | Opt out of wrapper-injected file auth store |
+| `CODEX_MULTI_AUTH_DEBUG=1` | Verbose wrapper/debug notices |
+| `CODEX_AUTH_FAST_SESSION*` | Fast-session trimming knobs |
+| `CODEX_AUTH_RETRY_ALL_*` | All-accounts rate-limit wait/retry budgets |
+| `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY` / `CODEX_AUTH_FALLBACK_*` | Unsupported Codex model policy |
+| `CODEX_AUTH_TOKEN_REFRESH_SKEW_MS` | Refresh-before-expiry skew |
+| `CODEX_AUTH_SESSION_RECOVERY` / `CODEX_AUTH_AUTO_RESUME` | Session recovery toggles |
+| `CODEX_AUTH_PER_PROJECT_ACCOUNTS` | Project-scoped pools |
+| `CODEX_AUTH_PARALLEL_PROBING*` / `CODEX_AUTH_EMPTY_RESPONSE_*` | Probe concurrency and empty-response retries |
+| `CODEX_AUTH_RATE_LIMIT_*` | Rate-limit windows, backoff, toast debounce |
+| `CODEX_AUTH_LIVE_ACCOUNT_SYNC*` / `CODEX_AUTH_SESSION_AFFINITY*` | Live sync and sticky sessions |
+| `CODEX_AUTH_RESPONSE_CONTINUATION` / `CODEX_AUTH_PROACTIVE_GUARDIAN*` / `CODEX_AUTH_PREEMPTIVE_QUOTA_*` | Continuation, guardian, quota deferral |
+| `CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS` / `CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS` | Failure cooldowns |
+| `CODEX_AUTH_STORAGE_BACKUP_ENABLED` / `CODEX_AUTH_TOAST_DURATION_MS` | Storage backups and toast duration |
+| `CODEX_AUTH_PID_OFFSET_ENABLED` / `CODEX_AUTH_ROUTING_MUTEX` / `CODEX_AUTH_BACKGROUND_RESPONSES` | Swarm bias, selection mutex, background Responses |
+| `CODEX_CLI_ACCOUNTS_PATH` / `CODEX_CLI_AUTH_PATH` | Override official Codex account/auth file paths |
+| `CODEX_AUTH_REFRESH_LEASE*` | Cross-process refresh lease directory/TTL/wait/poll knobs |
+| `MCODEX_MONITOR_INTERVAL` / `MCODEX_TMUX_SESSION` / `MCODEX_TMUX_HISTORY_LIMIT` | `mcodex` convenience launcher knobs |
+| `CODEX_AUTH_NO_BROWSER` | Suppress browser launch for automation/headless login |
 
 Full inventory: [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md)
 
@@ -147,10 +175,11 @@ For `codex app` launches that go through the wrapper, the wrapper automatically 
 
 `codex-multi-auth rotation enable` also binds the packaged desktop app to a persistent localhost router. This backs up the real Codex `config.toml`, writes the `codex-multi-auth-runtime-proxy` provider into the real Codex home, starts the router immediately, and installs a user login startup entry: a Startup `.cmd` on Windows or a LaunchAgent on macOS. The persistent provider is marked as not requiring OpenAI auth and uses a local app-bind client token, so the desktop runtime does not display the selected multi-auth account while codex-multi-auth status and quota views still read the router's last-account telemetry. `codex-multi-auth rotation disable` and `codex-multi-auth rotation unbind-app` stop that router, remove the startup entry, and restore the backed-up Codex config. The official app files are not patched.
 
-Package install/update self-heals these defaults when runtime rotation is enabled:
+Package install scripts stay side-effect-free (postinstall prints a short notice only). First-run self-heal of desktop defaults runs once on a durable global install when you invoke `codex-multi-auth ...`, and again as needed from `codex-multi-auth rotation enable`:
 
-- Packaged Codex app bind is repaired when a Codex desktop app is detected. Set `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0` to skip install/update self-heal, or `CODEX_MULTI_AUTH_APP_BIND_INSTALL=1` to force it.
+- Packaged Codex app bind is repaired when a Codex desktop app is detected. Set `CODEX_MULTI_AUTH_APP_BIND=0` or `CODEX_MULTI_AUTH_APP_BIND_INSTALL=0` to skip, or `CODEX_MULTI_AUTH_APP_BIND_INSTALL=1` to force it.
 - Supported user-level launcher routing is installed for global installs. Set `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0` to skip shortcut routing, or run `codex-multi-auth-app-launcher --remove` to restore backed-up Windows shortcuts or remove the managed macOS wrapper later.
+- The one-time claim is recorded at `~/.codex/multi-auth/first-run-setup.json`. `npx` and project-local installs skip first-run setup so they do not consume the marker.
 - Installed wrappers may perform a best-effort daily npm version check during normal forwarded Codex startup. When npm has a newer release, the wrapper only prints a manual notice: `npm install -g codex-multi-auth@latest`. It never runs npm install or update commands for you. Notices are shown only on a TTY or when `CODEX_MULTI_AUTH_DEBUG=1`.
 
 Some Windows installs expose Codex only as a packaged `shell:AppsFolder` app entry. Those entries cannot be retargeted like `.lnk` files, so the persistent app bind is the supported path for making the pinned packaged app use rotation automatically.

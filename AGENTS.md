@@ -8,7 +8,7 @@ Package version: 2.6.1
 
 ## OVERVIEW
 
-`codex-multi-auth` is a Codex CLI-first OAuth account manager and optional forwarding wrapper for the official Codex CLI. The installed `codex-multi-auth` entrypoint handles account-management commands locally, `codex-multi-auth-codex` forwards official Codex commands through this package's wrapper when explicitly used, and runtime rotation can route live Responses traffic through a localhost account-rotation proxy by default. The plugin-host entrypoint remains exported for compatibility, but the primary product surface is the account manager, optional wrapper, storage, runtime proxy, and repair tooling.
+`codex-multi-auth` is a Codex CLI-first OAuth account manager and optional forwarding wrapper for the official Codex CLI. The installed `codex-multi-auth` entrypoint handles account-management commands locally, `codex-multi-auth-codex` forwards official Codex commands through this package's wrapper when explicitly used, `mcodex` is a convenience launcher over that wrapper, and runtime rotation can route live Responses traffic through a localhost account-rotation proxy by default. Local governance modules (usage ledger, budgets, account policies, routing profiles, local bridge) stay file-backed under the multi-auth root. The plugin-host entrypoint remains exported for compatibility, but the primary product surface is the account manager, optional wrapper, storage, runtime proxy, governance commands, and repair tooling.
 
 ## STRUCTURE
 
@@ -17,6 +17,7 @@ Package version: 2.6.1
 ├── scripts/
 │   ├── codex.js              # codex-multi-auth-codex wrapper, official CLI forwarder, shadow CODEX_HOME/runtime proxy setup
 │   ├── codex-multi-auth.js   # standalone package CLI entrypoint
+│   ├── mcodex.js             # convenience launcher: forwards to codex.js; optional --monitor / --tmux
 │   ├── codex-routing.js      # auth command and compatibility alias routing
 │   ├── codex-bin-resolver.js # official Codex binary discovery
 │   ├── codex-app-router.js   # persistent localhost router for packaged Codex app bind
@@ -24,9 +25,11 @@ Package version: 2.6.1
 ├── index.ts                  # optional plugin-host runtime entry
 ├── lib/                      # core runtime logic (see lib/AGENTS.md)
 │   ├── auth/                 # OAuth flow, PKCE, callback server
-│   ├── runtime/              # Codex CLI/app integration helpers, app bind, live sync, runtime observability
+│   ├── runtime/              # Codex CLI/app integration helpers, app bind, first-run, live sync, runtime observability
 │   ├── request/              # request transform, SSE, failover, backoff
 │   ├── storage/              # path resolution, migrations, backups, restore, import/export
+│   ├── policy/               # runtime policy composition (budgets, tags, routing profiles)
+│   ├── usage/                # local usage ledger, pricing, redaction
 │   ├── codex-cli/            # Codex CLI state sync and writer helpers
 │   ├── codex-manager/        # command modules and settings panels
 │   ├── prompts/              # model-family prompts, GitHub ETag cache
@@ -47,15 +50,22 @@ Package version: 2.6.1
 | Task | Location | Notes |
 | --- | --- | --- |
 | Wrapper command routing | `scripts/codex.js`, `scripts/codex-routing.js` | `codex-multi-auth-codex auth ...` local handling, compatibility aliases, official CLI forwarding |
+| Convenience launcher | `scripts/mcodex.js` | `mcodex` bin: forwards to `codex.js`; optional `--monitor` / `--tmux` helpers |
 | Official Codex binary discovery | `scripts/codex-bin-resolver.js` | npm, native, PATH, and override resolution |
 | Runtime rotation proxy | `lib/runtime-rotation-proxy.ts` | loopback Responses/model proxy, account selection, token refresh, retries, streaming response forwarding |
 | Runtime proxy provider constants | `lib/runtime-constants.ts` | `codex-multi-auth-runtime-proxy`, app-helper status file |
 | Shadow CODEX_HOME handling | `scripts/codex.js` | temporary provider config, state sync-back, lock cleanup, official state preservation |
 | Packaged Codex app bind | `lib/runtime/app-bind.ts`, `scripts/codex-app-router.js` | reversible `config.toml` bind to persistent localhost router |
 | User app launcher routing | `scripts/codex-app-launcher.js` | Windows shortcut/taskbar routing and macOS wrapper app helper |
+| First-run setup | `lib/runtime/first-run.ts` | one-time durable-install app bind / launcher self-heal; `first-run-setup.json` marker |
 | OAuth flow + PKCE | `lib/auth/auth.ts` | token exchange/refresh, JWT decode, callback URL |
+| Device-code login | `lib/auth/device-auth.ts` | headless/remote login (`login --device-auth`) |
 | OAuth callback server | `lib/auth/server.ts` | binds port 1455 |
-| Account pool and selection | `lib/accounts.ts`, `lib/rotation.ts` | health scoring, cooldowns, hybrid selection |
+| WSL / Windows host detection | `lib/wsl.ts` | callback port contention + browser host guidance for WSL installs |
+| Account pool and selection | `lib/accounts.ts`, `lib/rotation.ts`, `lib/runtime/rotation-account-selection.ts` | health scoring, cooldowns, pin → sequential\|affinity → hybrid → scan |
+| Local governance | `lib/usage/`, `lib/budget-guard.ts`, `lib/account-policy.ts`, `lib/routing-profiles.ts`, `lib/policy/runtime-policy.ts` | usage ledger, budgets, tags/weights, project routing, composed runtime decisions |
+| Capability / model matrix | `lib/capability-policy.ts`, `lib/model-capability-matrix.ts` | unsupported-model suppression and per-account model matrix |
+| Local bridge | `lib/local-bridge.ts`, `lib/local-client-tokens.ts` | loopback OpenAI-compatible forwarder + hashed bearer tokens |
 | Account storage | `lib/storage.ts`, `lib/storage/` | V3 format, per-project/global paths, worktree migration, backup/restore |
 | Worktree resolution | `lib/storage/paths.ts` | repo identity root, linked-worktree detection, commondir/gitdir validation |
 | Config parsing | `lib/config.ts`, `lib/schemas.ts` | `pluginConfig`, environment overrides, config explain report |
@@ -78,8 +88,10 @@ Package version: 2.6.1
 - Canonical package name is `codex-multi-auth`.
 - Canonical command family is `codex-multi-auth ...`.
 - The package does not publish a global `codex` bin; `codex-multi-auth-codex` is the explicit wrapper: auth commands run locally, non-auth commands forward to official Codex.
+- `mcodex` is a convenience launcher only (`scripts/mcodex.js`); it forwards to `codex.js` and must not reimplement account-manager logic.
 - Runtime rotation is default-on through `codexRuntimeRotationProxy`; users can opt out with `codex-multi-auth rotation disable` or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`.
 - The runtime proxy is loopback-only and uses a per-process client token. It forwards only Responses API and model discovery requests.
+- Local governance modules (usage ledger, budget guards, account policies, routing profiles, runtime policy, local bridge) stay file-backed under `~/.codex/multi-auth` and compose in `lib/policy/runtime-policy.ts`.
 - The persistent desktop app bind is reversible and edits user config/startup metadata, not official app binaries.
 - OAuth callback port remains 1455.
 - Local project-owned state defaults to `~/.codex/multi-auth`; official Codex state remains under `~/.codex`.

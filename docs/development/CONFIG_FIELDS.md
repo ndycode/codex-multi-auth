@@ -88,8 +88,16 @@ Used only for host plugin mode through the host runtime config file.
 | `proactiveRefreshGuardian` | `true` |
 | `proactiveRefreshIntervalMs` | `60000` |
 | `proactiveRefreshBufferMs` | `300000` |
+| `tokenInvalidationCooldownMs` | `300000` |
+| `minRotationIntervalMs` | `60000` |
 
-`backgroundResponses` is an opt-in compatibility switch for Responses API `background: true` requests. When enabled, those requests become stateful (`store=true`) instead of following the default stateless Codex routing.
+`tokenRefreshSkewMs` refreshes access tokens this many milliseconds before expiry so cross-process refresh coordination has headroom. Cross-process refresh uses lease/state files (`lib/refresh-lease.ts`, `lib/refresh-queue.ts`) so concurrent processes do not stampede the same refresh token.
+
+`tokenInvalidationCooldownMs` is the cooldown applied when an OAuth token is explicitly invalidated by upstream (distinct from a generic 401). The longer default (5 minutes) reduces cascades where rapid rotation invalidates successive tokens. Overridable via `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS`.
+
+`minRotationIntervalMs` is the minimum time that must elapse between global account switches. When the last served account is still within this window and available, it receives a large selection-score boost so the proxy stays on it rather than rotating to a fresher idle account. `0` disables the throttle. Overridable via `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS`.
+
+`backgroundResponses` is an opt-in compatibility switch for Responses API `background: true` requests. When enabled, those requests become stateful (`store=true`) instead of following the default stateless Codex routing. Overridable via `CODEX_AUTH_BACKGROUND_RESPONSES`.
 
 Upgrade note:
 - Leave this disabled for existing stateless pipelines that do not intentionally send `background: true`.
@@ -127,6 +135,19 @@ Upgrade note:
 | `streamStallTimeoutMs` | `45000` |
 | `networkErrorCooldownMs` | `6000` |
 | `serverErrorCooldownMs` | `4000` |
+| `tokenInvalidationCooldownMs` | `300000` |
+| `minRotationIntervalMs` | `60000` |
+| `routingMutex` | `legacy` |
+| `rateLimitDedupWindowMs` | `2000` |
+| `rateLimitStateResetMs` | `120000` |
+| `rateLimitMaxBackoffMs` | `60000` |
+| `rateLimitShortRetryThresholdMs` | `5000` |
+
+`pidOffsetEnabled` adds a small deterministic PID-based score offset so parallel wrapper processes bias toward different accounts under high concurrency. Manual pins and health/quota scoring still take precedence. Overridable via `CODEX_AUTH_PID_OFFSET_ENABLED`.
+
+`routingMutex` controls whether account selection + cursor advance on the runtime proxy hot path is serialized. `"legacy"` (default) runs selection inline for historical performance. `"enabled"` acquires a process-local reentrant async mutex around selection commits. Overridable via `CODEX_AUTH_ROUTING_MUTEX` (`legacy` or `enabled`).
+
+`tokenInvalidationCooldownMs` / `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS` and `minRotationIntervalMs` / `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS` are the anti-abuse knobs used by the runtime rotation proxy (see configuration guide).
 
 ### Quota Deferral
 
@@ -143,6 +164,38 @@ Upgrade note:
 | --- | --- |
 | `rateLimitToastDebounceMs` | `60000` |
 | `toastDurationMs` | `5000` |
+
+### Full env override matrix (pluginConfig accessors)
+
+Every `pluginConfig` field above has a corresponding `get*` accessor in `lib/config.ts`. Common operator env names:
+
+| Env | Field |
+| --- | --- |
+| `CODEX_MODE` | `codexMode` |
+| `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY` | `codexRuntimeRotationProxy` |
+| `CODEX_TUI_V2` / `CODEX_TUI_COLOR_PROFILE` / `CODEX_TUI_GLYPHS` | TUI fields |
+| `CODEX_AUTH_FAST_SESSION*` | fast-session fields |
+| `CODEX_AUTH_RETRY_ALL_*` | all-accounts rate-limit retry fields |
+| `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY` / `CODEX_AUTH_FALLBACK_*` | unsupported-model policy |
+| `CODEX_AUTH_TOKEN_REFRESH_SKEW_MS` | `tokenRefreshSkewMs` |
+| `CODEX_AUTH_SESSION_RECOVERY` / `CODEX_AUTH_AUTO_RESUME` | recovery |
+| `CODEX_AUTH_PER_PROJECT_ACCOUNTS` | `perProjectAccounts` |
+| `CODEX_AUTH_PARALLEL_PROBING*` | parallel probing |
+| `CODEX_AUTH_EMPTY_RESPONSE_*` | empty-response retries |
+| `CODEX_AUTH_RATE_LIMIT_*` | rate-limit windows / backoff / toast debounce |
+| `CODEX_AUTH_LIVE_ACCOUNT_SYNC*` | live sync |
+| `CODEX_AUTH_SESSION_AFFINITY*` | session affinity |
+| `CODEX_AUTH_RESPONSE_CONTINUATION` / `CODEX_AUTH_BACKGROUND_RESPONSES` | response modes |
+| `CODEX_AUTH_PROACTIVE_GUARDIAN*` | refresh guardian |
+| `CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS` / `CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS` | failure cooldowns |
+| `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS` / `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS` | anti-abuse |
+| `CODEX_AUTH_STORAGE_BACKUP_ENABLED` | storage backups |
+| `CODEX_AUTH_PREEMPTIVE_QUOTA_*` | preemptive quota |
+| `CODEX_AUTH_PID_OFFSET_ENABLED` / `CODEX_AUTH_ROUTING_MUTEX` / `CODEX_AUTH_SCHEDULING_STRATEGY` | selection strategy |
+| `CODEX_AUTH_FETCH_TIMEOUT_MS` / `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` | timeouts |
+| `CODEX_AUTH_TOAST_DURATION_MS` | toast duration |
+
+Cross-process refresh lease knobs: `CODEX_AUTH_REFRESH_LEASE`, `CODEX_AUTH_REFRESH_LEASE_DIR`, `CODEX_AUTH_REFRESH_LEASE_TTL_MS`, `CODEX_AUTH_REFRESH_LEASE_WAIT_MS`, `CODEX_AUTH_REFRESH_LEASE_POLL_MS`, `CODEX_AUTH_REFRESH_LEASE_RESULT_TTL_MS`.
 
 * * *
 
@@ -224,6 +277,13 @@ Upgrade note:
 | `CODEX_AUTH_FETCH_TIMEOUT_MS` | Request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` | Stream stall timeout override |
 | `CODEX_AUTH_SCHEDULING_STRATEGY` | Account scheduling strategy override (`hybrid` or `sequential`/drain-first) |
+| `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS` | Cooldown after explicit upstream token invalidation (`tokenInvalidationCooldownMs`) |
+| `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS` | Minimum interval between global account rotations (`minRotationIntervalMs`) |
+| `CODEX_AUTH_ROUTING_MUTEX` | Routing mutex mode (`legacy` or `enabled`) |
+| `CODEX_AUTH_PID_OFFSET_ENABLED` | Toggle PID-based hybrid selection offset (`pidOffsetEnabled`) |
+| `CODEX_AUTH_BACKGROUND_RESPONSES` | Toggle background Responses compatibility (`backgroundResponses`) |
+| `CODEX_MULTI_AUTH_FORCE_ACCOUNT` | Force one account for a single forwarded `codex-multi-auth-codex` run (`index`, email, or id). Ephemeral and fail-hard; equivalent to `--account` (flag wins when both are set). Requires the runtime rotation proxy |
+| `CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX` | Internal: wrapper publishes a resolved 0-based index after `--account` / `CODEX_MULTI_AUTH_FORCE_ACCOUNT`. Runtime proxy consumes it as an ephemeral pin. Prefer `CODEX_MULTI_AUTH_FORCE_ACCOUNT` rather than setting this by hand |
 | `CODEX_MULTI_AUTH_SYNC_CODEX_CLI` | Toggle Codex CLI state sync |
 | `CODEX_MULTI_AUTH_REAL_CODEX_BIN` | Force official Codex binary path |
 | `CODEX_MULTI_AUTH_BYPASS` | Bypass local auth handling |

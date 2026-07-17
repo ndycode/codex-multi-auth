@@ -211,6 +211,19 @@ const IMPLEMENTED_FEATURES: ImplementedFeature[] = [
 	{ id: 39, name: "Unified color/theme runtime (v2 UI)" },
 	{ id: 40, name: "OAuth browser-first flow with manual callback fallback" },
 	{ id: 41, name: "Auto-switch to best account command" },
+	{ id: 42, name: "Device-code OAuth login (--device-auth)" },
+	{ id: 43, name: "Workspace/org-bound login (--org)" },
+	{ id: 44, name: "Manual pin, unpin, and affinity-generation invalidation" },
+	{ id: 45, name: "Per-account workspace selection command" },
+	{ id: 46, name: "Default-on runtime Responses rotation proxy" },
+	{ id: 47, name: "Reversible packaged Codex app bind and launcher routing" },
+	{ id: 48, name: "Local usage ledger, budgets, and account policies" },
+	{ id: 49, name: "Routing profiles and model capability matrix" },
+	{ id: 50, name: "Local bridge tokens and integration snippets" },
+	{ id: 51, name: "Provider-agnostic local history listing" },
+	{ id: 52, name: "Why-selected and monitor diagnostics" },
+	{ id: 53, name: "Config explain, init-config templates, and debug bundle" },
+	{ id: 54, name: "mcodex convenience launcher (monitor/tmux/forward)" },
 ];
 
 async function runForecast(args: string[]): Promise<number> {

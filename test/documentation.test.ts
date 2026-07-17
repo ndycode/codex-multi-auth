@@ -37,10 +37,14 @@ function readPackageVersion(): string {
 
 let packageVersion = "";
 let currentStableReleaseDoc = "";
-// These stay manual so the docs portal keeps an intentional short stable-history window.
-const previousStableReleaseDoc = "docs/releases/v2.1.2.md";
-const earlierStableReleaseDoc = "docs/releases/v2.1.1.md";
+// Keep previous/earlier pins on recent stables so README + portal narrative stay current.
+const previousStableReleaseDoc = "docs/releases/v2.6.0.md";
+const earlierStableReleaseDoc = "docs/releases/v2.5.0.md";
 const stableArchiveReleaseDocs = [
+	"docs/releases/v2.4.0.md",
+	"docs/releases/v2.3.3.md",
+	"docs/releases/v2.1.2.md",
+	"docs/releases/v2.1.1.md",
 	"docs/releases/v2.1.0.md",
 	"docs/releases/v2.0.2.md",
 	"docs/releases/v2.0.1.md",
@@ -203,6 +207,33 @@ describe("Documentation Integrity", () => {
 		const beta = read("docs/releases/v0.1.0-beta.0.md");
 		expect(beta).toContain("Archived");
 		expect(beta).toContain("superseded by [v0.1.0]");
+	});
+
+	it("docs portal links every release note under docs/releases", () => {
+		const portal = read("docs/README.md");
+		const releaseDir = join(projectRoot, "docs/releases");
+		const releaseFiles = readdirSync(releaseDir)
+			.filter((name) => name.toLowerCase().endsWith(".md"))
+			.sort((left, right) => left.localeCompare(right));
+		expect(releaseFiles.length).toBeGreaterThan(0);
+		for (const name of releaseFiles) {
+			expect(
+				portal,
+				`docs/README.md should link releases/${name}`,
+			).toContain(`releases/${name}`);
+		}
+	});
+
+	it("documents mcodex, login --org, and budget flag names that match the CLI", () => {
+		const commands = read("docs/reference/commands.md");
+		const help = read("lib/codex-manager/help.ts");
+		expect(commands).toContain("## `mcodex`");
+		expect(commands).toContain("login --org");
+		expect(commands).toContain("[--requests N] [--tokens N] [--cost USD]");
+		expect(commands).not.toContain("--max-requests");
+		expect(help).toContain("--no-runtime-overlay");
+		expect(help).toContain("--max-accounts");
+		expect(help).toContain("init-config");
 	});
 
 	it("keeps the AGENTS.md package-version claim in sync with package.json", () => {
@@ -368,13 +399,15 @@ describe("Documentation Integrity", () => {
 		);
 		expect(help).toContain("codex-multi-auth login");
 		expect(help).toContain(
-			"codex-multi-auth fix [--dry-run] [--json] [--live] [--model <model>]",
+			"codex-multi-auth fix [--dry-run|-n] [--json] [--live] [--model <model>]",
 		);
 		expect(help).toContain(
-			"codex-multi-auth report [--live] [--json] [--explain] [--model <model>] [--out <path>]",
+			"codex-multi-auth report [--live] [--json] [--explain] [--model <model>] [--max-accounts <n>] [--max-probes <n>] [--cached-only] [--out <path>]",
 		);
 		expect(help).toContain("codex-multi-auth config explain [--json]");
 		expect(help).toContain("codex-multi-auth debug bundle [--json]");
+		expect(help).toContain("--no-runtime-overlay");
+		expect(help).toContain("init-config");
 		expect(switchCommand).toContain(
 			"Missing index. Usage: codex-multi-auth switch <index>",
 		);

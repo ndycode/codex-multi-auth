@@ -1,6 +1,6 @@
 # Public API Contract
 
-Public API contract for `codex-multi-auth`.
+Public API contract for `codex-multi-auth` (package `2.6.1`).
 
 ---
 
@@ -16,10 +16,11 @@ Stable APIs are covered by semver compatibility guarantees and must remain backw
   - `OpenAIOAuthPlugin`
   - `OpenAIAuthPlugin`
   - default export (alias of `OpenAIOAuthPlugin`)
-- Installed binaries:
-  - `codex-multi-auth`
-  - `codex-multi-auth-codex`
-  - `codex-multi-auth-app-launcher`
+- Installed binaries (published Tier A CLI surface):
+  - `codex-multi-auth` — primary account-manager CLI
+  - `codex-multi-auth-codex` — official Codex forwarding wrapper
+  - `codex-multi-auth-app-launcher` — packaged-app launcher routing helper
+  - `mcodex` — convenience launcher over the codex wrapper (`--monitor`, `--tmux`, or default forward)
 - Supported package subpath entrypoints:
   - `codex-multi-auth/auth`
   - `codex-multi-auth/storage`
@@ -30,6 +31,7 @@ Stable APIs are covered by semver compatibility guarantees and must remain backw
   - `codex-multi-auth ...` command family
   - documented flags and aliases in `reference/commands.md`
   - default-on `codex-multi-auth rotation ...` command family for runtime Responses proxy and app bind management
+  - `mcodex` convenience modes documented in `reference/commands.md`
 - Persistent user-facing config and storage contracts documented in:
   - `reference/settings.md`
   - `reference/storage-paths.md`
@@ -110,11 +112,27 @@ Runtime rotation is a CLI/runtime feature, not a library transport API.
 - `codex-multi-auth rotation disable` persists `pluginConfig.codexRuntimeRotationProxy=false`.
 - `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` disables the proxy for the current process without changing settings.
 - The local provider id is `codex-multi-auth-runtime-proxy`.
-- The proxy accepts only authenticated loopback requests for Responses API and model discovery paths.
+- The proxy accepts only authenticated loopback requests for Responses API, model discovery, and thread-goal paths.
+- Account policy `pause` / `drain` (via `codex-multi-auth account ...`) is enforced by `evaluateRuntimePolicy` and blocks those accounts from hybrid selection.
 - The packaged app bind is reversible and must not patch official app binaries.
 - Client responses must not expose account emails, tokens, private account headers, hop-by-hop headers, or stale decoded `content-encoding`.
 
 These details are documented for operator expectations. Internal helper process arguments, shadow-home lock filenames, router status file shape, and retry timing are implementation details unless they are explicitly documented in `reference/commands.md` or `reference/storage-paths.md`.
+
+---
+
+## Local Bridge Contract Notes
+
+`startLocalBridge` (package root / public barrel) is the host API that opens the
+optional loopback bridge. There is no `bridge start` CLI daemon.
+
+- Bind host must be loopback; `runtimeBaseUrl` must also be loopback (the runtime rotation proxy).
+- Default `requireAuth=true`. Configuring `runtimeClientApiKey` **requires** `requireAuth=true`.
+- Surfaces: `/health`, `/v1/models`, `/v1/responses` only.
+- Client tokens are managed with `codex-multi-auth bridge token ...` (hashes on disk).
+- Client snippets: `codex-multi-auth integrations ...`.
+
+See [commands.md](commands.md#starting-the-local-bridge-hostapi) for the operator checklist.
 
 ---
 

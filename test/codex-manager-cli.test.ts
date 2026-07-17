@@ -1945,7 +1945,7 @@ describe("codex manager cli commands", () => {
 		).toBe(true);
 	});
 
-	it("prints implemented 41-feature matrix", async () => {
+	it("prints implemented 54-feature matrix", async () => {
 		const logSpy = silenceConsole("log");
 		const errorSpy = silenceConsole("error");
 		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
@@ -1953,10 +1953,15 @@ describe("codex manager cli commands", () => {
 		const exitCode = await runCodexMultiAuthCli(["auth", "features"]);
 		expect(exitCode).toBe(0);
 		expect(errorSpy).not.toHaveBeenCalled();
-		expect(logSpy.mock.calls[0]?.[0]).toBe("Implemented features (41)");
+		expect(logSpy.mock.calls[0]?.[0]).toBe("Implemented features (54)");
 		expect(
 			logSpy.mock.calls.some((call) =>
 				String(call[0]).includes("41. Auto-switch to best account command"),
+			),
+		).toBe(true);
+		expect(
+			logSpy.mock.calls.some((call) =>
+				String(call[0]).includes("54. mcodex convenience launcher (monitor/tmux/forward)"),
 			),
 		).toBe(true);
 	});
