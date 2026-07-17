@@ -112,12 +112,27 @@ Runtime rotation is a CLI/runtime feature, not a library transport API.
 - `codex-multi-auth rotation disable` persists `pluginConfig.codexRuntimeRotationProxy=false`.
 - `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` disables the proxy for the current process without changing settings.
 - The local provider id is `codex-multi-auth-runtime-proxy`.
-- The proxy accepts only authenticated loopback requests for Responses API and model discovery paths.
+- The proxy accepts only authenticated loopback requests for Responses API, model discovery, and thread-goal paths.
 - Account policy `pause` / `drain` (via `codex-multi-auth account ...`) is enforced by `evaluateRuntimePolicy` and blocks those accounts from hybrid selection.
 - The packaged app bind is reversible and must not patch official app binaries.
 - Client responses must not expose account emails, tokens, private account headers, hop-by-hop headers, or stale decoded `content-encoding`.
 
 These details are documented for operator expectations. Internal helper process arguments, shadow-home lock filenames, router status file shape, and retry timing are implementation details unless they are explicitly documented in `reference/commands.md` or `reference/storage-paths.md`.
+
+---
+
+## Local Bridge Contract Notes
+
+`startLocalBridge` (package root / public barrel) is the host API that opens the
+optional loopback bridge. There is no `bridge start` CLI daemon.
+
+- Bind host must be loopback; `runtimeBaseUrl` must also be loopback (the runtime rotation proxy).
+- Default `requireAuth=true`. Configuring `runtimeClientApiKey` **requires** `requireAuth=true`.
+- Surfaces: `/health`, `/v1/models`, `/v1/responses` only.
+- Client tokens are managed with `codex-multi-auth bridge token ...` (hashes on disk).
+- Client snippets: `codex-multi-auth integrations ...`.
+
+See [commands.md](commands.md#starting-the-local-bridge-hostapi) for the operator checklist.
 
 ---
 

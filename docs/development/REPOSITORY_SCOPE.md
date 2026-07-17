@@ -29,7 +29,8 @@ Ownership map for source paths and documentation paths.
 | CLI auth manager | `lib/codex-manager.ts` |
 | Manager command modules | `lib/codex-manager/commands/*` |
 | Settings hub | `lib/codex-manager/settings-hub.ts`, `lib/codex-manager/settings-hub/` |
-| OAuth flow/server | `lib/auth/*` |
+| OAuth flow/server | `lib/auth/*` (`auth.ts`, `server.ts`, `browser.ts`, `device-auth.ts`) |
+| WSL / Windows host detection | `lib/wsl.ts` |
 | Runtime rotation proxy | `lib/runtime-rotation-proxy.ts`, `lib/runtime/config-toml.ts`, `lib/runtime-constants.ts`, `lib/runtime/rotation-account-selection.ts` |
 | Runtime app bind/router | `lib/runtime/app-bind.ts`, `scripts/codex-app-router.js`, `scripts/codex-app-launcher.js` |
 | First-run setup | `lib/runtime/first-run.ts` |
@@ -45,8 +46,11 @@ Ownership map for source paths and documentation paths.
 | Worktree resolution | `lib/storage/paths.ts` (`resolveProjectStorageIdentityRoot`) |
 | Unified settings | `lib/unified-settings.ts`, `lib/dashboard-settings.ts`, `lib/config.ts` |
 | Account runtime | `lib/accounts.ts`, `lib/rotation.ts`, `lib/forecast.ts` |
-| Quota runtime | `lib/quota-probe.ts`, `lib/quota-cache.ts`, `lib/preemptive-quota-scheduler.ts` |
-| Resilience | `lib/live-account-sync.ts`, `lib/session-affinity.ts`, `lib/refresh-guardian.ts`, `lib/refresh-lease.ts` |
+| Quota runtime | `lib/quota-probe.ts`, `lib/quota-cache.ts`, `lib/quota-readiness.ts`, `lib/preemptive-quota-scheduler.ts`, `lib/parallel-probe.ts` |
+| Resilience | `lib/live-account-sync.ts`, `lib/session-affinity.ts`, `lib/refresh-guardian.ts`, `lib/refresh-lease.ts`, `lib/proactive-refresh.ts`, `lib/circuit-breaker.ts`, `lib/auth-rate-limit.ts`, `lib/context-overflow.ts` |
+| Integration snippets | `lib/integration-generators.ts`, `lib/codex-manager/commands/integrations.ts` |
+| Experimental oc-chatgpt sync | `lib/oc-chatgpt-import-adapter.ts`, `lib/oc-chatgpt-orchestrator.ts`, `lib/oc-chatgpt-target-detection.ts` |
+| Named backups / update notice | `lib/named-backup-export.ts`, `lib/update-notice.ts` |
 | Request pipeline | `lib/request/*`, `index.ts` |
 | Optional plugin-host entry | `index.ts` |
 | UI system | `lib/ui/*` |

@@ -38,7 +38,7 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 
 | Command | Description |
 | --- | --- |
-| `codex-multi-auth login` | Open interactive auth dashboard (optional `--device-auth`, `--manual`/`--no-browser`, `--org <org_id>`) |
+| `codex-multi-auth login` | Open interactive auth dashboard. Flags: `--device-auth`, `--manual`/`--no-browser`, `login --org <org_id>` |
 | `codex-multi-auth status` | Print account pool, pin, runtime metrics, and storage summary (`list` is the same command) |
 | `codex-multi-auth check` | Live-probe account health against the Codex backend |
 
@@ -87,7 +87,7 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 
 | Command | Description |
 | --- | --- |
-| `codex-multi-auth features` | Print implemented feature summary |
+| `codex-multi-auth features` | Print the built-in feature checklist (partial; see docs/features.md for the full product map) |
 | `codex-multi-auth report` | Generate full health report |
 | `codex-multi-auth usage` | Summarize local usage ledger rows |
 | `codex-multi-auth budget ...` | Manage local budget guard limits |
@@ -349,6 +349,41 @@ store persists SHA-256 hashes plus prefixes and labels.
 
 Generated snippets use `CODEX_MULTI_AUTH_LOCAL_KEY`. The Python snippet uses
 `client.responses.create`.
+
+### Starting the local bridge (host/API)
+
+There is **no** `codex-multi-auth bridge start` CLI daemon. The bridge is a
+library server started by a host process (or your own small Node script) via the
+public `startLocalBridge` export:
+
+```ts
+import { startLocalBridge } from "codex-multi-auth";
+
+const bridge = await startLocalBridge({
+  // Must be loopback and must point at a running runtime rotation proxy.
+  runtimeBaseUrl: "http://127.0.0.1:<proxy-port>",
+  // Optional: inject the proxy's per-process client API key for upstream auth.
+  runtimeClientApiKey: process.env.CODEX_MULTI_AUTH_RUNTIME_CLIENT_API_KEY,
+  // Default true. Required true when runtimeClientApiKey is set.
+  requireAuth: true,
+  host: "127.0.0.1",
+  port: 0, // ephemeral; read bridge.baseUrl after start
+});
+
+console.log(bridge.baseUrl); // e.g. http://127.0.0.1:43123
+// Clients: Authorization: Bearer <cma_local_...> from `bridge token create`
+```
+
+Operator checklist:
+
+1. Ensure runtime rotation is available (`codex-multi-auth rotation status` / a wrapper session that owns a proxy).
+2. `codex-multi-auth bridge token create --label my-client` and store the plaintext once.
+3. Start `startLocalBridge` against the **loopback** proxy `baseUrl`.
+4. Point clients at the bridge `/v1/models` and `/v1/responses` with the bearer token.
+5. Generate glue with `codex-multi-auth integrations --kind python|curl|env|...`.
+
+Security invariants match the library: loopback-only bind, loopback-only
+`runtimeBaseUrl`, and `requireAuth=true` whenever a runtime client key is injected.
 
 ---
 

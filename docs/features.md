@@ -109,10 +109,21 @@ Device auth prints `https://auth.openai.com/codex/device` plus a one-time code a
 
 | Capability | What it gives you | Primary entry |
 | --- | --- | --- |
-| Loopback bridge | Optional local HTTP surface for `/health`, `/v1/models`, and `/v1/responses` | optional local bridge (host/API start) |
+| Loopback bridge | Optional local HTTP surface for `/health`, `/v1/models`, and `/v1/responses` | `startLocalBridge` API + `bridge token` / `integrations` (see [commands.md](reference/commands.md#starting-the-local-bridge-hostapi)) |
 | Hashed client tokens | Plain tokens are `cma_local_*`; only hashes/prefixes are stored | `codex-multi-auth bridge token create` |
 | Token lifecycle | List, rotate, revoke without re-exposing old secrets | `codex-multi-auth bridge token …` |
 | Integration snippets | Deterministic local client snippets (env, curl, Python, and other local tools) | `codex-multi-auth integrations` |
+
+---
+
+## `codex-multi-auth features` checklist
+
+`codex-multi-auth features` prints a numbered **built-in checklist** of core
+capabilities used by automation and smoke tests. It is **not** the full product
+map: prefer this page and [reference/commands.md](reference/commands.md) for the
+complete surface (rotation, governance, bridge, history, mcodex, app bind, and
+newer diagnostics). The checklist was extended through feature id 54 to cover
+device auth, runtime rotation, governance, bridge, history, and mcodex.
 
 ---
 

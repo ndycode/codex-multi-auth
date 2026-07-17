@@ -42,9 +42,14 @@ Public documentation for the `codex-multi-auth` Codex CLI multi-account OAuth ma
 | [releases/v2.3.0.md](releases/v2.3.0.md) | Prior stable release notes |
 | [releases/v2.3.0-beta.3.md](releases/v2.3.0-beta.3.md) | Prior prerelease notes |
 | [releases/v2.3.0-beta.2.md](releases/v2.3.0-beta.2.md) | Prior prerelease notes |
+| [releases/v2.3.0-beta.1.md](releases/v2.3.0-beta.1.md) | Prior prerelease notes |
+| [releases/v2.3.0-beta.0.md](releases/v2.3.0-beta.0.md) | Prior prerelease notes |
 | [releases/v2.2.2.md](releases/v2.2.2.md) | Prior stable release notes |
 | [releases/v2.2.1.md](releases/v2.2.1.md) | Prior stable release notes |
 | [releases/v2.2.0.md](releases/v2.2.0.md) | Prior stable release notes |
+| [releases/v2.1.13-beta.2.md](releases/v2.1.13-beta.2.md) | Prior prerelease notes |
+| [releases/v2.1.13-beta.1.md](releases/v2.1.13-beta.1.md) | Prior prerelease notes |
+| [releases/v2.1.13-beta.0.md](releases/v2.1.13-beta.0.md) | Prior prerelease notes |
 | [releases/v2.1.12.md](releases/v2.1.12.md) | Prior stable release notes |
 | [releases/v2.1.11.md](releases/v2.1.11.md) | Prior stable release notes |
 | [releases/v2.1.10.md](releases/v2.1.10.md) | Earlier stable release notes |
@@ -72,6 +77,7 @@ Public documentation for the `codex-multi-auth` Codex CLI multi-account OAuth ma
 | [releases/v1.2.2.md](releases/v1.2.2.md) | Stable archive |
 | [releases/v1.2.1.md](releases/v1.2.1.md) | Stable archive |
 | [releases/v1.2.0.md](releases/v1.2.0.md) | Stable archive |
+| [releases/v1.1.11.md](releases/v1.1.11.md) | Stable archive |
 | [releases/v1.1.10.md](releases/v1.1.10.md) | Stable archive |
 | [releases/v0.1.9.md](releases/v0.1.9.md) | Pre-1.0 stable archive |
 | [releases/v0.1.8.md](releases/v0.1.8.md) | Pre-1.0 stable archive |
@@ -115,6 +121,7 @@ Public documentation for the `codex-multi-auth` Codex CLI multi-account OAuth ma
 | Document | Focus |
 | --- | --- |
 | [DOCUMENTATION.md](DOCUMENTATION.md) | Documentation governance contract |
+| [STYLE_GUIDE.md](STYLE_GUIDE.md) | Docs voice, naming, and alias-scoping rules |
 | [development/ARCHITECTURE.md](development/ARCHITECTURE.md) | Runtime architecture, selection order, security boundaries, and invariants |
 | [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md) | Complete field and environment inventory |
 | [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md) | Configuration resolution flow |

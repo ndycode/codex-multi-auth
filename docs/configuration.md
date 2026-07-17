@@ -90,14 +90,35 @@ These are safe for most operators and frequently used in day-to-day workflows.
 ## Advanced and Internal Overrides
 
 Use these only when debugging, controlled benchmarking, or maintainer workflows.
+The complete `pluginConfig` ↔ env accessor matrix is in [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md).
 
-- `CODEX_MULTI_AUTH_SYNC_CODEX_CLI`
-- `CODEX_MULTI_AUTH_REAL_CODEX_BIN`
-- `CODEX_MULTI_AUTH_BYPASS`
-- `CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX` — internal, set by the wrapper after it resolves `--account` / `CODEX_MULTI_AUTH_FORCE_ACCOUNT` to a 0-based index; the runtime rotation proxy consumes it as an ephemeral pin. Not intended to be set by hand — use `CODEX_MULTI_AUTH_FORCE_ACCOUNT` instead.
-- `CODEX_CLI_ACCOUNTS_PATH`
-- `CODEX_CLI_AUTH_PATH`
-- refresh lease tuning variables (`CODEX_AUTH_REFRESH_LEASE*`)
+| Variable | Effect |
+| --- | --- |
+| `CODEX_MULTI_AUTH_SYNC_CODEX_CLI` | Force/disable active-account sync into official Codex CLI files |
+| `CODEX_MULTI_AUTH_REAL_CODEX_BIN` | Override official Codex binary discovery path |
+| `CODEX_MULTI_AUTH_BYPASS=1` | Skip multi-auth intercept; forward everything to official Codex |
+| `CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX` | Internal 0-based pin published by the wrapper after `--account` / `CODEX_MULTI_AUTH_FORCE_ACCOUNT` resolution |
+| `CODEX_MULTI_AUTH_STATUSLINE=0/1` | Disable/enable forwarded-session status line |
+| `CODEX_MULTI_AUTH_AUTO_SYNC_ON_STARTUP=0/1` | Control startup account sync |
+| `CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE=0/1` | Opt out of wrapper-injected file auth store |
+| `CODEX_MULTI_AUTH_DEBUG=1` | Verbose wrapper/debug notices |
+| `CODEX_AUTH_FAST_SESSION*` | Fast-session trimming knobs |
+| `CODEX_AUTH_RETRY_ALL_*` | All-accounts rate-limit wait/retry budgets |
+| `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY` / `CODEX_AUTH_FALLBACK_*` | Unsupported Codex model policy |
+| `CODEX_AUTH_TOKEN_REFRESH_SKEW_MS` | Refresh-before-expiry skew |
+| `CODEX_AUTH_SESSION_RECOVERY` / `CODEX_AUTH_AUTO_RESUME` | Session recovery toggles |
+| `CODEX_AUTH_PER_PROJECT_ACCOUNTS` | Project-scoped pools |
+| `CODEX_AUTH_PARALLEL_PROBING*` / `CODEX_AUTH_EMPTY_RESPONSE_*` | Probe concurrency and empty-response retries |
+| `CODEX_AUTH_RATE_LIMIT_*` | Rate-limit windows, backoff, toast debounce |
+| `CODEX_AUTH_LIVE_ACCOUNT_SYNC*` / `CODEX_AUTH_SESSION_AFFINITY*` | Live sync and sticky sessions |
+| `CODEX_AUTH_RESPONSE_CONTINUATION` / `CODEX_AUTH_PROACTIVE_GUARDIAN*` / `CODEX_AUTH_PREEMPTIVE_QUOTA_*` | Continuation, guardian, quota deferral |
+| `CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS` / `CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS` | Failure cooldowns |
+| `CODEX_AUTH_STORAGE_BACKUP_ENABLED` / `CODEX_AUTH_TOAST_DURATION_MS` | Storage backups and toast duration |
+| `CODEX_AUTH_PID_OFFSET_ENABLED` / `CODEX_AUTH_ROUTING_MUTEX` / `CODEX_AUTH_BACKGROUND_RESPONSES` | Swarm bias, selection mutex, background Responses |
+| `CODEX_CLI_ACCOUNTS_PATH` / `CODEX_CLI_AUTH_PATH` | Override official Codex account/auth file paths |
+| `CODEX_AUTH_REFRESH_LEASE*` | Cross-process refresh lease directory/TTL/wait/poll knobs |
+| `MCODEX_MONITOR_INTERVAL` / `MCODEX_TMUX_SESSION` / `MCODEX_TMUX_HISTORY_LIMIT` | `mcodex` convenience launcher knobs |
+| `CODEX_AUTH_NO_BROWSER` | Suppress browser launch for automation/headless login |
 
 Full inventory: [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md)
 
