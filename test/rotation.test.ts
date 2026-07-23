@@ -245,8 +245,9 @@ describe("TokenBucketTracker", () => {
 
 		// The refund window (90s) must cover the full request lifetime so a token
 		// consumed at request start is still refundable when a request that ran up
-		// to the 60s default fetch timeout fails at the very end. A consumption aged
-		// past the 30s default fetch timeout but within the window is refundable.
+		// to the 60s default fetch timeout (config.ts fetchTimeoutMs) fails at the
+		// very end. 55s is inside that fetch timeout and well inside the window, so
+		// it must still refund.
 		// Uses tokensPerMinute:0 so refill can't mask the refund's restored token.
 		it("refunds a token consumed ~55s ago (within the request lifetime window)", () => {
 			const noRefill = new TokenBucketTracker({ tokensPerMinute: 0 });
@@ -257,6 +258,20 @@ describe("TokenBucketTracker", () => {
 
 			const result = noRefill.refundToken(0);
 			expect(result).toBe(true);
+			expect(noRefill.getTokens(0)).toBe(beforeRefund + 1);
+		});
+
+		// The window cutoff is INCLUSIVE (`timestamp >= now - TOKEN_REFUND_WINDOW_MS`).
+		// Pin the exact boundary so an accidental flip to exclusive can't slip past
+		// the 55s / 90_001ms cases on either side of it.
+		it("refunds a consumption sitting exactly on the 90s window boundary", () => {
+			const noRefill = new TokenBucketTracker({ tokensPerMinute: 0 });
+			noRefill.tryConsume(0);
+			const beforeRefund = noRefill.getTokens(0);
+
+			vi.advanceTimersByTime(90_000);
+
+			expect(noRefill.refundToken(0)).toBe(true);
 			expect(noRefill.getTokens(0)).toBe(beforeRefund + 1);
 		});
 

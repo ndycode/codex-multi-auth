@@ -60,6 +60,10 @@ export async function importAccountsSnapshot(params: {
 		deduplicateAccounts: (
 			accounts: AccountStorageV3["accounts"],
 		) => AccountStorageV3["accounts"];
+		findMatchingAccountIndex: (
+			accounts: AccountStorageV3["accounts"],
+			candidate: AccountStorageV3["accounts"][number],
+		) => number | undefined;
 	}) => {
 		newStorage: AccountStorageV3;
 		imported: number;
@@ -70,6 +74,12 @@ export async function importAccountsSnapshot(params: {
 	deduplicateAccounts: (
 		accounts: AccountStorageV3["accounts"],
 	) => AccountStorageV3["accounts"];
+	// Forwarded to `mergeImportedAccounts` so it can re-resolve the manual pin by
+	// identity after dedupe reorders the merged account list.
+	findMatchingAccountIndex: (
+		accounts: AccountStorageV3["accounts"],
+		candidate: AccountStorageV3["accounts"][number],
+	) => number | undefined;
 	logInfo: (message: string, details: Record<string, unknown>) => void;
 }): Promise<{ imported: number; total: number; skipped: number }> {
 	const normalized = await params.readImportFile({
@@ -84,6 +94,7 @@ export async function importAccountsSnapshot(params: {
 				imported: normalized,
 				maxAccounts: params.maxAccounts,
 				deduplicateAccounts: params.deduplicateAccounts,
+				findMatchingAccountIndex: params.findMatchingAccountIndex,
 			});
 			await persist(merged.newStorage);
 			return {

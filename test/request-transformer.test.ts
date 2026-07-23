@@ -2829,9 +2829,47 @@ describe('Request Transformer Module', () => {
 				role: 'user',
 				content: 'msg-49',
 			});
-			// The total stays within the item budget.
-			expect(result.length).toBeLessThanOrEqual(maxItems);
-			expect(result.length).toBeGreaterThan(1);
+			// The total fills the item budget exactly — a degenerate implementation
+			// that returned a short slice would still satisfy `<= maxItems`.
+			expect(result.length).toBe(maxItems);
+		});
+
+		it('keeps every preserved head instruction when input only just exceeds the budget', () => {
+			// maxItems 10 => safeMax 10 and tailStart 1, so the SECOND head instruction
+			// also sits inside the tail window. Recounting reserved head slots as
+			// "kept indexes below tailStart" misses it, and the tail slice then drops
+			// a head instruction the head pass deliberately preserved.
+			const maxItems = 10;
+			const input: InputItem[] = [
+				{ type: 'message', role: 'developer', content: 'HEAD_ONE' },
+				{ type: 'message', role: 'system', content: 'HEAD_TWO' },
+			];
+			for (let i = 2; i <= maxItems; i++) {
+				input.push({ type: 'message', role: 'user', content: `msg-${i}` });
+			}
+			expect(input).toHaveLength(maxItems + 1);
+
+			const result = trimInputForFastSession(input, maxItems) as InputItem[];
+
+			// Both head instructions survive, in order, at the front.
+			expect(result[0]).toEqual({
+				type: 'message',
+				role: 'developer',
+				content: 'HEAD_ONE',
+			});
+			expect(result[1]).toEqual({
+				type: 'message',
+				role: 'system',
+				content: 'HEAD_TWO',
+			});
+			// The most recent item is still present.
+			expect(result[result.length - 1]).toEqual({
+				type: 'message',
+				role: 'user',
+				content: `msg-${maxItems}`,
+			});
+			// Exactly the budget: no dropped head, no duplicated head.
+			expect(result).toHaveLength(maxItems);
 		});
 	});
 });

@@ -597,6 +597,42 @@ describe("forecast helpers", () => {
 		expect(result.waitMs).toBe(0);
 	});
 
+	it("does not delay a 99.6%-used live window whose reset is still in the future", () => {
+		const now = 1_700_000_000_000;
+		const result = evaluateForecastAccount({
+			index: 2,
+			now,
+			isCurrent: false,
+			account: {
+				refreshToken: "refresh-99",
+				addedAt: now - 10_000,
+				lastUsed: now - 10_000,
+			},
+			liveQuota: {
+				status: 200,
+				model: "gpt-5-codex",
+				// 100 - 99.6 ROUNDS to 0% left, but the window is not exhausted: it
+				// still has quota. The live-wait filter must test the raw usedPercent,
+				// otherwise this future reset is folded in as a wait and a usable
+				// account is pushed to "delayed".
+				primary: {
+					usedPercent: 99.6,
+					windowMinutes: 300,
+					resetAtMs: now + 600_000,
+				},
+				secondary: {
+					usedPercent: 10,
+					windowMinutes: 10080,
+					resetAtMs: now + 1_800_000,
+				},
+			},
+		});
+
+		expect(result.availability).toBe("ready");
+		expect(result.waitMs).toBe(0);
+		expect(result.exhausted).toBe(false);
+	});
+
 	it("prefers refresh failure reason code over raw message text", () => {
 		const now = 1_700_000_000_000;
 		const result = evaluateForecastAccount({

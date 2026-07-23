@@ -36,10 +36,26 @@ export function mergeStorageForMigration(
 	current: AccountStorageV3 | null,
 	incoming: AccountStorageV3,
 	normalizeAccountStorage: (value: unknown) => AccountStorageV3 | null,
+	// Injected like `normalizeAccountStorage` rather than imported from
+	// ../storage.js, which would put this leaf module in a dependency cycle with
+	// the storage barrel.
+	findMatchingAccountIndex: (
+		accounts: AccountStorageV3["accounts"],
+		candidate: AccountStorageV3["accounts"][number],
+	) => number | undefined,
 ): AccountStorageV3 {
 	if (!current) {
 		return incoming;
 	}
+
+	// Resolve the pinned account by IDENTITY before merging. normalizeAccountStorage
+	// deduplicates the merged list but only RANGE-validates the pin, so a raw
+	// positional pin that survives the range check can still end up pointing at a
+	// different account once dedupe shifts positions.
+	const pinnedAccount =
+		typeof current.pinnedAccountIndex === "number"
+			? current.accounts[current.pinnedAccountIndex]
+			: undefined;
 
 	const merged = normalizeAccountStorage({
 		version: 3,
@@ -57,5 +73,13 @@ export function mergeStorageForMigration(
 	if (!merged) {
 		return current;
 	}
-	return merged;
+	if (!pinnedAccount) {
+		return merged;
+	}
+	// Re-point the pin at the account the user actually pinned; clear it when that
+	// account no longer resolves in the normalized list.
+	return {
+		...merged,
+		pinnedAccountIndex: findMatchingAccountIndex(merged.accounts, pinnedAccount),
+	};
 }

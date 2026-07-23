@@ -332,6 +332,66 @@ describe("RefreshQueue", () => {
       }
     });
 
+    it("sizes acquire eviction off the CONFIGURED lease wait budget, not the default", async () => {
+      vi.useFakeTimers();
+      try {
+        // The coordinator's wait budget is configurable (constructor option /
+        // CODEX_AUTH_REFRESH_LEASE_WAIT_MS). Sizing eviction off the static
+        // DEFAULT_WAIT_TIMEOUT_MS would evict an acquire that is still legitimately
+        // blocked under a larger budget, spawning the duplicate refresh (against an
+        // already-rotated token -> invalid_grant) the lease exists to prevent.
+        const configuredWaitMs = DEFAULT_WAIT_TIMEOUT_MS * 3;
+        const leaseCoordinator = new RefreshLeaseCoordinator({
+          enabled: true,
+          leaseDir: join(tmpdir(), "codex-refresh-lease-configured-wait"),
+          waitTimeoutMs: configuredWaitMs,
+        });
+        expect(leaseCoordinator.configuredWaitTimeoutMs).toBe(configuredWaitMs);
+
+        const leaseAcquire = vi
+          .spyOn(leaseCoordinator, "acquire")
+          .mockReturnValue(
+            new Promise<Awaited<ReturnType<RefreshLeaseCoordinator["acquire"]>>>(
+              () => {},
+            ),
+          );
+        vi.mocked(authModule.refreshAccessToken).mockResolvedValue({
+          type: "success",
+          access: "a",
+          refresh: "r",
+          expires: Date.now() + 3600_000,
+        });
+
+        const queue = new RefreshQueue(30_000, leaseCoordinator);
+        void queue.refresh("configured-wait-token");
+        await Promise.resolve();
+        expect(queue.pendingCount).toBe(1);
+        expect(leaseAcquire).toHaveBeenCalledTimes(1);
+
+        // 45s: past the DEFAULT budget + slack (40s) but well inside the CONFIGURED
+        // budget, so the acquire-stage entry must survive and a concurrent refresh
+        // must dedupe onto it.
+        await vi.advanceTimersByTimeAsync(DEFAULT_WAIT_TIMEOUT_MS + 10_000);
+        void queue.refresh("configured-wait-token");
+        await Promise.resolve();
+        expect(queue.pendingCount).toBe(1);
+        expect(leaseAcquire).toHaveBeenCalledTimes(1);
+
+        // 111s: past the CONFIGURED budget (105s) + slack (5s), so this acquire is
+        // genuinely stuck and cleanup evicts it.
+        await vi.advanceTimersByTimeAsync(
+          configuredWaitMs + 6_000 - (DEFAULT_WAIT_TIMEOUT_MS + 10_000),
+        );
+        void queue.refresh("configured-wait-token");
+        await Promise.resolve();
+        expect(leaseAcquire).toHaveBeenCalledTimes(2);
+
+        queue.clear();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("joins a superseding generation after stale acquire eviction", async () => {
       vi.useFakeTimers();
       try {

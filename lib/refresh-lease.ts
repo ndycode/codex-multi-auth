@@ -179,6 +179,20 @@ export class RefreshLeaseCoordinator {
 		this.fsOps = options.fsOps ?? fs;
 	}
 
+	/**
+	 * Resolved maximum time `acquire()` may block waiting for a lease.
+	 *
+	 * Exposed so the refresh queue can size its acquire-stage eviction threshold
+	 * against the budget this coordinator ACTUALLY uses. The budget is
+	 * configurable (constructor option / `CODEX_AUTH_REFRESH_LEASE_WAIT_MS`), so
+	 * sizing eviction off the static `DEFAULT_WAIT_TIMEOUT_MS` would evict an
+	 * acquire that is still legitimately waiting under a larger budget, spawning
+	 * the duplicate refresh (→ `invalid_grant`) the lease exists to prevent.
+	 */
+	get configuredWaitTimeoutMs(): number {
+		return this.waitTimeoutMs;
+	}
+
 	static fromEnvironment(): RefreshLeaseCoordinator {
 		const testMode = process.env.VITEST === "true" || process.env.NODE_ENV === "test";
 		const enabled =

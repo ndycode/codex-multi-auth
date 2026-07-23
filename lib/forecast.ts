@@ -141,8 +141,10 @@ function getLiveQuotaWaitMs(
 		// resets ~7d out; folding that in would overstate the wait by orders of
 		// magnitude and invert the account recommendation (stress audit H5). On a
 		// 429 we honor every future window, since the upstream said "slow down now"
-		// regardless of the usage gauge.
-		if (onlyExhausted && quotaLeftPercentFromUsed(window?.usedPercent) !== 0) {
+		// regardless of the usage gauge. The test is the RAW usedPercent, never the
+		// rounded left-percent: 100 - 99.6 rounds to 0 left, which would bench a
+		// window that still has quota and falsely mark the account "delayed".
+		if (onlyExhausted && !quotaUsedPercentIsExhausted(window?.usedPercent)) {
 			continue;
 		}
 		const resetAt = window?.resetAtMs;

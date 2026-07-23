@@ -811,6 +811,7 @@ async function migrateLegacyProjectStorageIfNeeded(options?: {
 			targetStorage,
 			legacyStorage,
 			normalizeAccountStorage,
+			findMatchingAccountIndex,
 		);
 		const fallbackStorage = targetStorage ?? legacyStorage;
 
@@ -2203,6 +2204,7 @@ export async function importAccounts(
 		mergeImportedAccounts,
 		maxAccounts: ACCOUNT_LIMITS.MAX_ACCOUNTS,
 		deduplicateAccounts,
+		findMatchingAccountIndex,
 		logInfo: (message, details) => {
 			log.info(message, details);
 		},

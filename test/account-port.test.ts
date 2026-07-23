@@ -137,6 +137,7 @@ describe("account port helpers", () => {
 			}),
 			maxAccounts: 10,
 			deduplicateAccounts: (accounts) => accounts,
+			findMatchingAccountIndex: () => undefined,
 			logInfo: vi.fn(),
 		});
 		expect(result).toEqual({ imported: 1, total: 1, skipped: 0 });

@@ -669,15 +669,15 @@ export function trimInputForFastSession(
 	if (input.length <= maxItems && excludedHeadIndexes.size === 0) return input;
 	if (trimmed.length <= safeMax) return trimmed;
 
-	// Kept head items sit before the tail window at the front of `trimmed`.
-	// Reserve budget for them so slicing the tail does not drop them.
-	let headKept = 0;
-	for (const index of keepIndexes) {
-		if (index < tailStart) headKept++;
-	}
-	const tailBudget = Math.max(1, safeMax - headKept);
+	// Kept head items are always the LOWEST kept indexes, so they occupy the first
+	// `keptHead` entries of `trimmed`. Reserve budget for exactly that many.
+	// Recounting the kept indexes below `tailStart` instead would miss a head
+	// instruction that ALSO falls inside the tail window (input.length only just
+	// over safeMax), and the tail slice would then drop it. The two slices cannot
+	// overlap here: keptHead + tailBudget === safeMax < trimmed.length.
+	const tailBudget = Math.max(1, safeMax - keptHead);
 	return [
-		...trimmed.slice(0, headKept),
+		...trimmed.slice(0, keptHead),
 		...trimmed.slice(trimmed.length - tailBudget),
 	];
 }

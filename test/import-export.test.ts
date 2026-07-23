@@ -7,6 +7,7 @@ import {
 	mergeImportedAccounts,
 	readImportFile,
 } from "../lib/storage/import-export.js";
+import { findMatchingAccountIndex } from "../lib/storage.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
 describe("import export helpers", () => {
@@ -31,6 +32,7 @@ describe("import export helpers", () => {
 			},
 			maxAccounts: 10,
 			deduplicateAccounts: (accounts) => accounts,
+			findMatchingAccountIndex,
 		});
 
 		expect(result.total).toBe(2);
@@ -56,6 +58,7 @@ describe("import export helpers", () => {
 				Array.from(
 					new Map(accounts.map((account) => [account.refreshToken, account])).values(),
 				),
+			findMatchingAccountIndex,
 		});
 
 		expect(result.total).toBe(2);
@@ -81,10 +84,82 @@ describe("import export helpers", () => {
 			},
 			maxAccounts: 10,
 			deduplicateAccounts: (accounts) => accounts,
+			findMatchingAccountIndex,
 		});
 
 		expect(result.newStorage.pinnedAccountIndex).toBe(1);
 		expect(result.newStorage.affinityGeneration).toBe(7);
+	});
+
+	it("remaps the pin by identity when dedupe shifts account positions", () => {
+		// Existing [a, a, b] pinned on `b` (index 2). Dedupe collapses the duplicate
+		// `a`, so raw index 2 now points at the IMPORTED account `c` — in range, but
+		// the wrong account. The pin must follow the identity it was set on.
+		const result = mergeImportedAccounts({
+			existing: {
+				version: 3,
+				accounts: [
+					{ refreshToken: "a" },
+					{ refreshToken: "a" },
+					{ refreshToken: "b" },
+				],
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				pinnedAccountIndex: 2,
+				affinityGeneration: 7,
+			},
+			imported: {
+				version: 3,
+				accounts: [{ refreshToken: "c" }],
+				activeIndex: 0,
+				activeIndexByFamily: {},
+			},
+			maxAccounts: 10,
+			deduplicateAccounts: (accounts) =>
+				Array.from(
+					new Map(accounts.map((account) => [account.refreshToken, account])).values(),
+				),
+			findMatchingAccountIndex,
+		});
+
+		expect(result.newStorage.accounts.map((a) => a.refreshToken)).toEqual([
+			"a",
+			"b",
+			"c",
+		]);
+		expect(result.newStorage.pinnedAccountIndex).toBe(1);
+		expect(
+			result.newStorage.accounts[result.newStorage.pinnedAccountIndex ?? -1]
+				?.refreshToken,
+		).toBe("b");
+		expect(result.newStorage.affinityGeneration).toBe(7);
+	});
+
+	it("drops the pin when the pinned account no longer resolves after merge", () => {
+		const result = mergeImportedAccounts({
+			existing: {
+				version: 3,
+				accounts: [{ refreshToken: "a" }, { refreshToken: "b" }],
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				pinnedAccountIndex: 1,
+				affinityGeneration: 3,
+			},
+			imported: {
+				version: 3,
+				accounts: [{ refreshToken: "c" }],
+				activeIndex: 0,
+				activeIndexByFamily: {},
+			},
+			maxAccounts: 10,
+			// Drops the pinned account entirely, so no identity match remains.
+			deduplicateAccounts: (accounts) =>
+				accounts.filter((account) => account.refreshToken !== "b"),
+			findMatchingAccountIndex,
+		});
+
+		expect(result.newStorage.pinnedAccountIndex).toBeUndefined();
+		expect(result.newStorage.affinityGeneration).toBe(3);
 	});
 
 	it("leaves pin and affinity generation unset when existing storage lacks them", () => {
@@ -103,6 +178,7 @@ describe("import export helpers", () => {
 			},
 			maxAccounts: 10,
 			deduplicateAccounts: (accounts) => accounts,
+			findMatchingAccountIndex,
 		});
 
 		expect(result.newStorage.pinnedAccountIndex).toBeUndefined();
