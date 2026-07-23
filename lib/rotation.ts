@@ -198,7 +198,14 @@ export const DEFAULT_TOKEN_BUCKET_CONFIG: TokenBucketConfig = {
 	tokensPerMinute: 6,
 };
 
-const TOKEN_REFUND_WINDOW_MS = 30_000;
+// Must cover the full request lifetime so a token consumed at request start can
+// still be refunded when the request fails at the very end. The runtime proxy
+// refunds on network error / upstream timeout, and the default fetch timeout is
+// 60_000ms (config.ts fetchTimeoutMs) — measured AFTER token consumption and a
+// token refresh. 90_000ms = that 60s timeout plus slack for the refresh and
+// processing, so a genuinely timed-out request's token is reversed instead of
+// leaking (gradual token-bucket starvation -> spurious token-exhausted skips).
+const TOKEN_REFUND_WINDOW_MS = 90_000;
 
 interface TokenBucketEntry {
 	tokens: number;

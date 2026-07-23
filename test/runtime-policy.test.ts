@@ -138,6 +138,91 @@ describe("runtime policy", () => {
 		expect(decision.errorCode).toBe("budget_blocked");
 	});
 
+	// budget-guard stores limits ONLY under normalizeBudgetKey (lowercased, spaces
+	// -> "-"), so a project key that carries uppercase/spaces at runtime must be
+	// normalized before lookup or the budget is silently unenforced. The limit here
+	// is stored under `project:myapp`, while the runtime state carries the raw
+	// `MyApp`; enforcement proves the lookup normalizes to match the stored key.
+	it("enforces a project budget stored under a normalized key when the runtime projectKey is un-normalized", async () => {
+		const policyState = state();
+		policyState.project.projectKey = "MyApp";
+		policyState.budgets.limits["project:myapp"] = {
+			key: "project:myapp",
+			window: "day",
+			maxRequests: 1,
+			updatedAt: 1,
+		};
+		await appendUsageLedgerRow({
+			createdAt: Date.UTC(2026, 3, 29, 1),
+			source: "runtime-proxy",
+			operation: "responses",
+			outcome: "success",
+			model: "gpt-5.3-codex",
+		});
+
+		const decision = await evaluateRuntimePolicy({
+			state: policyState,
+			accounts: [],
+			model: "gpt-5.3-codex",
+			now: Date.UTC(2026, 3, 29, 2),
+		});
+
+		expect(decision.allowed).toBe(false);
+		expect(decision.statusCode).toBe(429);
+		expect(decision.errorCode).toBe("budget_blocked");
+		expect(
+			decision.budgetEvaluations.some(
+				(evaluation) => evaluation.key === "project:myapp" && !evaluation.allowed,
+			),
+		).toBe(true);
+	});
+
+	// Same normalization gap on the routing profile's budgetKey: stored as
+	// `team-alpha`, carried at runtime as `Team Alpha`.
+	it("enforces a profile budget stored under a normalized key when the runtime budgetKey is un-normalized", async () => {
+		const policyState = state();
+		policyState.project.profile = {
+			projectKey: "project-a",
+			projectName: "Project A",
+			identityRoot: "/repo",
+			preferredTags: [],
+			avoidTags: [],
+			modelAllowlist: [],
+			modelDenylist: [],
+			accountWeightByKey: {},
+			budgetKey: "Team Alpha",
+			updatedAt: 1,
+		};
+		policyState.budgets.limits["team-alpha"] = {
+			key: "team-alpha",
+			window: "day",
+			maxRequests: 1,
+			updatedAt: 1,
+		};
+		await appendUsageLedgerRow({
+			createdAt: Date.UTC(2026, 3, 29, 1),
+			source: "runtime-proxy",
+			operation: "responses",
+			outcome: "success",
+			model: "gpt-5.3-codex",
+		});
+
+		const decision = await evaluateRuntimePolicy({
+			state: policyState,
+			accounts: [],
+			model: "gpt-5.3-codex",
+			now: Date.UTC(2026, 3, 29, 2),
+		});
+
+		expect(decision.allowed).toBe(false);
+		expect(decision.errorCode).toBe("budget_blocked");
+		expect(
+			decision.budgetEvaluations.some(
+				(evaluation) => evaluation.key === "team-alpha" && !evaluation.allowed,
+			),
+		).toBe(true);
+	});
+
 	it("records usage at most once", async () => {
 		const append = vi.fn<typeof appendUsageLedgerRow>().mockResolvedValue({
 			version: 1,

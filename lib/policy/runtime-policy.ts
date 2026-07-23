@@ -9,6 +9,7 @@ import {
 	evaluateBudgetGuard,
 	getBudgetWindowStart,
 	loadBudgetGuardStore,
+	normalizeBudgetKey,
 	type BudgetGuardEvaluation,
 	type BudgetGuardStore,
 } from "../budget-guard.js";
@@ -105,12 +106,19 @@ async function evaluateBudgets(input: {
 	now: number;
 }): Promise<BudgetGuardEvaluation[]> {
 	const keys = new Set<string>();
+	// `global` is already normalize-clean. Project/profile keys can carry uppercase
+	// or spaces, but budget-guard STORES limits only under normalizeBudgetKey (see
+	// upsertBudgetLimit and load-time normalizeStore). Look them up the same way, or
+	// a key like `project:MyApp` never matches its stored `project:myapp` and the
+	// budget is silently unenforced.
 	keys.add("global");
 	if (input.state.project.projectKey) {
-		keys.add(`project:${input.state.project.projectKey}`);
+		const projectKey = normalizeBudgetKey(`project:${input.state.project.projectKey}`);
+		if (projectKey) keys.add(projectKey);
 	}
 	if (input.state.project.profile?.budgetKey) {
-		keys.add(input.state.project.profile.budgetKey);
+		const budgetKey = normalizeBudgetKey(input.state.project.profile.budgetKey);
+		if (budgetKey) keys.add(budgetKey);
 	}
 	const evaluations: BudgetGuardEvaluation[] = [];
 	for (const key of keys) {

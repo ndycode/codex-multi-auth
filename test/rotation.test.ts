@@ -236,17 +236,34 @@ describe("TokenBucketTracker", () => {
 	});
 
 	describe("refundToken", () => {
-		it("refunds token consumed within 30s window", () => {
+		it("refunds token consumed within the refund window", () => {
 			tracker.tryConsume(0);
 			const result = tracker.refundToken(0);
 			expect(result).toBe(true);
 			expect(tracker.getTokens(0)).toBe(DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens);
 		});
 
-		it("rejects refund for token consumed over 30s ago", () => {
+		// The refund window (90s) must cover the full request lifetime so a token
+		// consumed at request start is still refundable when a request that ran up
+		// to the 60s default fetch timeout fails at the very end. A consumption aged
+		// past the 30s default fetch timeout but within the window is refundable.
+		// Uses tokensPerMinute:0 so refill can't mask the refund's restored token.
+		it("refunds a token consumed ~55s ago (within the request lifetime window)", () => {
+			const noRefill = new TokenBucketTracker({ tokensPerMinute: 0 });
+			noRefill.tryConsume(0);
+			const beforeRefund = noRefill.getTokens(0);
+
+			vi.advanceTimersByTime(55_000);
+
+			const result = noRefill.refundToken(0);
+			expect(result).toBe(true);
+			expect(noRefill.getTokens(0)).toBe(beforeRefund + 1);
+		});
+
+		it("rejects refund for a truly ancient consumption (over 90s ago)", () => {
 			tracker.tryConsume(0);
 
-			vi.advanceTimersByTime(30_001);
+			vi.advanceTimersByTime(90_001);
 
 			const result = tracker.refundToken(0);
 			expect(result).toBe(false);
