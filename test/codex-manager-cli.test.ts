@@ -3279,6 +3279,98 @@ describe("codex manager cli commands", () => {
 		).toBe(true);
 	});
 
+	// Issue #633: `check` prints when each quota window resets. Asserted on the
+	// real printed line so the health-check -> formatter wiring is covered, not
+	// just the formatter in isolation. The reset clock is local-timezone, and a
+	// run started just before midnight pushes it to the next day, so the day
+	// suffix is optional here rather than pinned.
+	it("check prints the reset time for each quota window", async () => {
+		const now = Date.now();
+		storageMocks.loadAccounts.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc_reset",
+					email: "reset@example.com",
+					refreshToken: "refresh-reset",
+					accessToken: "access-reset",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		quotaProbeMocks.fetchCodexQuotaSnapshot.mockResolvedValueOnce({
+			status: 200,
+			model: DEFAULT_MODEL,
+			primary: {
+				usedPercent: 70,
+				windowMinutes: 300,
+				resetAtMs: now + 3 * 60 * 60 * 1000,
+			},
+			secondary: {
+				usedPercent: 10,
+				windowMinutes: 10080,
+				resetAtMs: now + 5 * 24 * 60 * 60 * 1000,
+			},
+		});
+		const logSpy = silenceConsole("log");
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "check"]);
+		expect(exitCode).toBe(0);
+
+		const line = logSpy.mock.calls
+			.map((call) => String(call[0]))
+			.find((text) => text.includes("live session OK"));
+		expect(line).toBeDefined();
+		// The date half of the suffix is produced by toLocaleDateString with an
+		// undefined locale, so its month text and field order follow the host.
+		// Assert the structure, not an en-US shape, or this fails off en-US.
+		expect(line).toMatch(/5h 30%, resets \d{2}:\d{2}/);
+		expect(line).toMatch(/7d 90%, resets \d{2}:\d{2} on \S/);
+	});
+
+	it("check keeps the percentage when a window has no reset timestamp", async () => {
+		const now = Date.now();
+		storageMocks.loadAccounts.mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acc_no_reset",
+					email: "no-reset@example.com",
+					refreshToken: "refresh-no-reset",
+					accessToken: "access-no-reset",
+					expiresAt: now + 60 * 60 * 1000,
+					addedAt: now - 1_000,
+					lastUsed: now - 1_000,
+					enabled: true,
+				},
+			],
+		});
+		quotaProbeMocks.fetchCodexQuotaSnapshot.mockResolvedValueOnce({
+			status: 200,
+			model: DEFAULT_MODEL,
+			primary: { usedPercent: 70, windowMinutes: 300 },
+			secondary: { usedPercent: 10, windowMinutes: 10080, resetAtMs: 0 },
+		});
+		const logSpy = silenceConsole("log");
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["auth", "check"]);
+		expect(exitCode).toBe(0);
+
+		const line = logSpy.mock.calls
+			.map((call) => String(call[0]))
+			.find((text) => text.includes("live session OK"));
+		expect(line).toContain("live session OK (5h 30% | 7d 90%)");
+	});
+
 	it("does not label Codex-unavailable live checks as working now", async () => {
 		const now = Date.now();
 		storageMocks.loadAccounts.mockResolvedValueOnce({

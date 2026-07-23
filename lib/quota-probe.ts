@@ -266,15 +266,20 @@ function formatQuotaWindowLabel(windowMinutes: number | undefined): string {
  * and produces no sensitive token data.
  *
  * @param resetAtMs - Timestamp in milliseconds since epoch; if `undefined`, non-finite, or <= 0, the function returns `undefined`.
+ * @param nowMs - Reference timestamp used for the "is today" comparison; defaults to the current time.
  * @returns The formatted reset time string, or `undefined` if `resetAtMs` is invalid or not provided.
  */
-function formatResetAt(resetAtMs: number | undefined): string | undefined {
+export function formatQuotaResetAt(
+	resetAtMs: number | undefined,
+	nowMs = Date.now(),
+): string | undefined {
 	if (!resetAtMs || !Number.isFinite(resetAtMs) || resetAtMs <= 0) return undefined;
 	const date = new Date(resetAtMs);
 	if (!Number.isFinite(date.getTime())) return undefined;
 
-	const now = new Date();
+	const now = new Date(nowMs);
 	const sameDay =
+		Number.isFinite(now.getTime()) &&
 		now.getFullYear() === date.getFullYear() &&
 		now.getMonth() === date.getMonth() &&
 		now.getDate() === date.getDate();
@@ -305,7 +310,7 @@ function formatWindowSummary(label: string, window: CodexQuotaWindow): string {
 		typeof used === "number" && Number.isFinite(used)
 			? Math.max(0, Math.min(100, Math.round(100 - used)))
 			: undefined;
-	const reset = formatResetAt(window.resetAtMs);
+	const reset = formatQuotaResetAt(window.resetAtMs);
 	let summary = label;
 	if (left !== undefined) summary = `${summary} ${left}% left`;
 	if (reset) summary = `${summary} (resets ${reset})`;

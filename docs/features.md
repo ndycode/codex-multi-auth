@@ -14,7 +14,7 @@ User-facing capability map for Codex CLI multi-account OAuth, account switching,
 | Explicit active-account switching | Persist a manual pin by index instead of relying on hidden state | `codex-multi-auth switch <index>` |
 | Clear manual pin | Drop the persisted pin so hybrid rotation resumes | `codex-multi-auth unpin` |
 | Workspace selection | List or set personal vs business/team workspaces under one account | `codex-multi-auth workspace <account> [workspace]` |
-| Fast and deep health checks | See whether the current pool is usable before a coding session | `codex-multi-auth check` |
+| Fast and deep health checks | See whether the current pool is usable before a coding session, including when each quota window resets | `codex-multi-auth check` |
 | Flagged-account verification and restore | Recover accounts sidelined during prior failures | `codex-multi-auth verify-flagged` |
 
 ---
