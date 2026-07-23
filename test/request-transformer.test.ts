@@ -9,6 +9,7 @@ import {
     filterHostSystemPromptsWithCachedPrompt,
     addCodexBridgeMessage,
     transformRequestBody,
+    trimInputForFastSession,
 } from '../lib/request/request-transformer.js';
 import * as loggerModule from '../lib/logger.js';
 import { TOOL_REMAP_MESSAGE } from '../lib/prompts/codex.js';
@@ -2801,6 +2802,74 @@ describe('Request Transformer Module', () => {
 					).rejects.toThrowError('transformRequestBody requires body');
 				});
 			});
+		});
+	});
+
+	describe('trimInputForFastSession', () => {
+		it('preserves a leading developer instruction that falls outside the tail window', () => {
+			const input: InputItem[] = [
+				{ type: 'message', role: 'developer', content: 'HEAD_INSTRUCTION' },
+			];
+			for (let i = 1; i < 50; i++) {
+				input.push({ type: 'message', role: 'user', content: `msg-${i}` });
+			}
+
+			const maxItems = 30;
+			const result = trimInputForFastSession(input, maxItems) as InputItem[];
+
+			// The kept head instruction survives even though it sits before the tail window.
+			expect(result[0]).toEqual({
+				type: 'message',
+				role: 'developer',
+				content: 'HEAD_INSTRUCTION',
+			});
+			// The most recent item is still present.
+			expect(result[result.length - 1]).toEqual({
+				type: 'message',
+				role: 'user',
+				content: 'msg-49',
+			});
+			// The total fills the item budget exactly — a degenerate implementation
+			// that returned a short slice would still satisfy `<= maxItems`.
+			expect(result.length).toBe(maxItems);
+		});
+
+		it('keeps every preserved head instruction when input only just exceeds the budget', () => {
+			// maxItems 10 => safeMax 10 and tailStart 1, so the SECOND head instruction
+			// also sits inside the tail window. Recounting reserved head slots as
+			// "kept indexes below tailStart" misses it, and the tail slice then drops
+			// a head instruction the head pass deliberately preserved.
+			const maxItems = 10;
+			const input: InputItem[] = [
+				{ type: 'message', role: 'developer', content: 'HEAD_ONE' },
+				{ type: 'message', role: 'system', content: 'HEAD_TWO' },
+			];
+			for (let i = 2; i <= maxItems; i++) {
+				input.push({ type: 'message', role: 'user', content: `msg-${i}` });
+			}
+			expect(input).toHaveLength(maxItems + 1);
+
+			const result = trimInputForFastSession(input, maxItems) as InputItem[];
+
+			// Both head instructions survive, in order, at the front.
+			expect(result[0]).toEqual({
+				type: 'message',
+				role: 'developer',
+				content: 'HEAD_ONE',
+			});
+			expect(result[1]).toEqual({
+				type: 'message',
+				role: 'system',
+				content: 'HEAD_TWO',
+			});
+			// The most recent item is still present.
+			expect(result[result.length - 1]).toEqual({
+				type: 'message',
+				role: 'user',
+				content: `msg-${maxItems}`,
+			});
+			// Exactly the budget: no dropped head, no duplicated head.
+			expect(result).toHaveLength(maxItems);
 		});
 	});
 });

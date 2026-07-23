@@ -12,10 +12,18 @@ import { createHash } from "node:crypto";
 import { refreshAccessToken } from "./auth/auth.js";
 import type { TokenResult } from "./types.js";
 import { createLogger } from "./logger.js";
-import { RefreshLeaseCoordinator } from "./refresh-lease.js";
+import { RefreshLeaseCoordinator, DEFAULT_WAIT_TIMEOUT_MS } from "./refresh-lease.js";
 import { isAbortError } from "./utils.js";
 
 const log = createLogger("refresh-queue");
+
+/**
+ * Extra headroom beyond the lease wait budget before an acquire-stage entry is
+ * treated as genuinely stuck. A lease acquire() polls on an interval and does
+ * filesystem work, so it can overshoot its wait deadline slightly; this slack
+ * keeps cleanup from evicting an acquire that is still legitimately waiting.
+ */
+const ACQUIRE_EVICTION_SLACK_MS = 5_000;
 
 /**
  * Non-reversible correlation fingerprint for a token, for logs.
@@ -340,10 +348,31 @@ export class RefreshQueue {
    */
   private cleanup(): void {
     const now = Date.now();
+    // A lease acquire() can legitimately block up to the coordinator's wait
+    // budget. Evicting an acquire-stage entry before that budget elapses would
+    // spawn a duplicate refresh whose refresh token OpenAI has already rotated on
+    // first use (invalid_grant). So an acquire-stage entry is only evicted once it
+    // exceeds BOTH the configured max age AND the lease wait budget plus slack —
+    // never merely maxEntryAgeMs, which can be shorter than the wait budget.
+    //
+    // Read the budget the coordinator was actually CONFIGURED with (constructor
+    // option / CODEX_AUTH_REFRESH_LEASE_WAIT_MS) rather than the static default:
+    // under a larger configured budget the default would evict too early. An
+    // injected test double may not expose the getter, so fall back to the default.
+    const configuredWaitTimeoutMs = this.leaseCoordinator.configuredWaitTimeoutMs;
+    const leaseWaitTimeoutMs =
+      typeof configuredWaitTimeoutMs === "number" &&
+      Number.isFinite(configuredWaitTimeoutMs)
+        ? configuredWaitTimeoutMs
+        : DEFAULT_WAIT_TIMEOUT_MS;
+    const acquireEvictionAgeMs = Math.max(
+      this.maxEntryAgeMs,
+      leaseWaitTimeoutMs + ACQUIRE_EVICTION_SLACK_MS,
+    );
     for (const [token, entry] of this.pending.entries()) {
       const ageMs = now - entry.startedAt;
-      if (ageMs <= this.maxEntryAgeMs) continue;
       if (entry.stage === "acquire") {
+        if (ageMs <= acquireEvictionAgeMs) continue;
         log.warn("Evicting stale refresh entry during lease acquire stage", {
           tokenSuffix: tokenFingerprint(token),
           ageMs,
@@ -352,6 +381,7 @@ export class RefreshQueue {
         this.cleanupRotationMapping(token);
         continue;
       }
+      if (ageMs <= this.maxEntryAgeMs) continue;
       if (!entry.staleWarningLogged) {
         log.warn("Refresh entry exceeded stale warning threshold", {
           tokenSuffix: tokenFingerprint(token),

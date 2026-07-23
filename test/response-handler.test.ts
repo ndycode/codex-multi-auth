@@ -818,6 +818,27 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 			expect(isEmptyResponse({ id: 'resp_123', output: undefined })).toBe(true);
 		});
 
+		it('should return true for response with empty output array', () => {
+			expect(
+				isEmptyResponse({
+					id: 'resp_123',
+					object: 'response',
+					model: 'gpt-5.2',
+					output: [],
+				}),
+			).toBe(true);
+		});
+
+		it('should return true for response whose output entries are all empty', () => {
+			expect(isEmptyResponse({ id: 'resp_123', output: [{}] })).toBe(true);
+			expect(isEmptyResponse({ id: 'resp_123', output: [{}, null] })).toBe(true);
+		});
+
+		it('should return true for response with empty or whitespace-only string output', () => {
+			expect(isEmptyResponse({ id: 'resp_123', output: '' })).toBe(true);
+			expect(isEmptyResponse({ id: 'resp_123', output: '   ' })).toBe(true);
+		});
+
 		it('should return true for response with empty choices array', () => {
 			expect(isEmptyResponse({ id: 'resp_123', choices: [] })).toBe(true);
 		});

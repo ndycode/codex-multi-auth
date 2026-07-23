@@ -154,6 +154,50 @@ describe("forecast helpers", () => {
 		);
 	});
 
+	it("ignores a 99.6%-used sibling window when computing the exhausted wait", () => {
+		const now = 1_700_000_000_000;
+		const account = {
+			email: "quota@example.com",
+			accountId: "acc_quota",
+			refreshToken: "refresh-1",
+			addedAt: now - 10_000,
+			lastUsed: now - 10_000,
+		};
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account,
+			allAccounts: [account],
+			quotaCache: {
+				version: 1,
+				updatedAt: now,
+				byAccountId: {
+					acc_quota: {
+						accountId: "acc_quota",
+						status: 200,
+						model: "gpt-5.3-codex",
+						updatedAt: now,
+						// Genuinely exhausted, and it recovers in a minute.
+						primary: { usedPercent: 100, resetAtMs: now + 60_000 },
+						// 100 - 99.6 ROUNDS to 0 left, but this window still has quota
+						// and its monthly reset is 28 days out. Selecting contributing
+						// windows by the rounded left-percent would fold that in and
+						// report a 28-day wait for an account that recovers in 60s.
+						secondary: {
+							usedPercent: 99.6,
+							resetAtMs: now + 28 * 86_400_000,
+						},
+					},
+				},
+				byEmail: {},
+			},
+		});
+
+		expect(result.availability).toBe("delayed");
+		expect(result.waitMs).toBe(60_000);
+	});
+
 	it("applies runtime overlay skip reasons to forecast availability", () => {
 		const now = 1_700_000_000_000;
 		const account = {
@@ -595,6 +639,42 @@ describe("forecast helpers", () => {
 
 		expect(result.availability).toBe("ready");
 		expect(result.waitMs).toBe(0);
+	});
+
+	it("does not delay a 99.6%-used live window whose reset is still in the future", () => {
+		const now = 1_700_000_000_000;
+		const result = evaluateForecastAccount({
+			index: 2,
+			now,
+			isCurrent: false,
+			account: {
+				refreshToken: "refresh-99",
+				addedAt: now - 10_000,
+				lastUsed: now - 10_000,
+			},
+			liveQuota: {
+				status: 200,
+				model: "gpt-5-codex",
+				// 100 - 99.6 ROUNDS to 0% left, but the window is not exhausted: it
+				// still has quota. The live-wait filter must test the raw usedPercent,
+				// otherwise this future reset is folded in as a wait and a usable
+				// account is pushed to "delayed".
+				primary: {
+					usedPercent: 99.6,
+					windowMinutes: 300,
+					resetAtMs: now + 600_000,
+				},
+				secondary: {
+					usedPercent: 10,
+					windowMinutes: 10080,
+					resetAtMs: now + 1_800_000,
+				},
+			},
+		});
+
+		expect(result.availability).toBe("ready");
+		expect(result.waitMs).toBe(0);
+		expect(result.exhausted).toBe(false);
 	});
 
 	it("prefers refresh failure reason code over raw message text", () => {
@@ -1083,6 +1163,45 @@ describe("forecast helpers", () => {
 		]);
 		expect(results[0].waitMs).toBe(90_000);
 		expect(results[1].waitMs).toBe(600_000);
+	});
+
+	it("flags a live 200 probe at 100% used with no resetAtMs as exhausted, not ready", () => {
+		const now = 1_700_000_000_000;
+		const account = {
+			refreshToken: "refresh-1",
+			addedAt: now - 10_000,
+			lastUsed: now - 10_000,
+		};
+		// The upstream reported the primary window 100% used but omitted resetAtMs.
+		// getLiveQuotaWaitMs yields 0 (nothing to wait on) and the 429 branch never
+		// fires on a 200, so before the fix this stayed "ready" and could be
+		// recommended as the best account despite being fully exhausted.
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account,
+			allAccounts: [account],
+			liveQuota: {
+				status: 200,
+				model: "gpt-5.3-codex",
+				primary: { usedPercent: 100, windowMinutes: 300 },
+				secondary: {
+					usedPercent: 20,
+					windowMinutes: 10080,
+					resetAtMs: now + 300_000,
+				},
+			},
+		});
+
+		expect(result.availability).not.toBe("ready");
+		expect(result.exhausted).toBe(true);
+
+		// The HIGH-severity concern: such an account must not be recommended as a
+		// healthy pick. As the only account it yields a null recommendation.
+		const recommendation = recommendForecastAccount([result]);
+		expect(recommendation.recommendedIndex).toBeNull();
+		expect(recommendation.reason).toContain("blocked or exhausted");
 	});
 
 });

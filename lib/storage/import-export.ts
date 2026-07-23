@@ -162,6 +162,12 @@ export function mergeImportedAccounts(params: {
 	deduplicateAccounts: (
 		accounts: AccountStorageV3["accounts"],
 	) => AccountStorageV3["accounts"];
+	// Injected like `deduplicateAccounts` rather than imported from ../storage.js,
+	// which would put this leaf module in a dependency cycle with the storage barrel.
+	findMatchingAccountIndex: (
+		accounts: AccountStorageV3["accounts"],
+		candidate: AccountStorageV3["accounts"][number],
+	) => number | undefined;
 }): {
 	newStorage: AccountStorageV3;
 	imported: number;
@@ -170,6 +176,15 @@ export function mergeImportedAccounts(params: {
 } {
 	const existingAccounts = params.existing?.accounts ?? [];
 	const existingActiveIndex = params.existing?.activeIndex ?? 0;
+	// Resolve the pinned account by IDENTITY before merging. The merged list is
+	// deduplicated below, which can move accounts to different positions, so a raw
+	// positional pin can end up selecting a DIFFERENT account (in range, wrong
+	// account) instead of the one the user pinned.
+	const existingPinnedIndex = params.existing?.pinnedAccountIndex;
+	const pinnedAccount =
+		typeof existingPinnedIndex === "number"
+			? existingAccounts[existingPinnedIndex]
+			: undefined;
 	const merged = [...existingAccounts, ...params.imported.accounts];
 
 	if (merged.length > params.maxAccounts) {
@@ -190,6 +205,26 @@ export function mergeImportedAccounts(params: {
 		activeIndex: existingActiveIndex,
 		activeIndexByFamily: params.existing?.activeIndexByFamily,
 	};
+	// Preserve the user's manual pin (#474) and affinity generation across import.
+	// Rebuilding storage from scratch here previously dropped a `switch <n>` pin
+	// and reset affinityGeneration to 0, which lets a running proxy holding a
+	// higher in-memory generation clobber a newer CLI pin. The pin is re-resolved
+	// against the deduplicated list by identity — a range check alone would happily
+	// keep an in-range index that dedupe has repointed at another account. When the
+	// pinned account no longer resolves (removed or ambiguous) the pin is dropped
+	// rather than left pointing somewhere arbitrary.
+	if (pinnedAccount) {
+		const remappedPinnedIndex = params.findMatchingAccountIndex(
+			deduplicatedAccounts,
+			pinnedAccount,
+		);
+		if (remappedPinnedIndex !== undefined) {
+			newStorage.pinnedAccountIndex = remappedPinnedIndex;
+		}
+	}
+	if (typeof params.existing?.affinityGeneration === "number") {
+		newStorage.affinityGeneration = params.existing.affinityGeneration;
+	}
 	const importedCount =
 		deduplicatedAccounts.length - deduplicatedExistingAccounts.length;
 	const skippedCount = params.imported.accounts.length - importedCount;

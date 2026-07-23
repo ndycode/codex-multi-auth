@@ -48,6 +48,44 @@ describe("RefreshLeaseCoordinator", () => {
     expect(follower.result).toEqual(sampleSuccessResult);
   });
 
+  it("does not cache a failed refresh result; only success is served to followers", async () => {
+    // Regression: a `failed` result carries no token material. If the owner cached
+    // it, readFreshResult would serve the failure to every follower for the whole
+    // result TTL, blocking a real refresh (and escalating to cooldowns). A failed
+    // release must leave NO result cache — the next caller becomes owner and
+    // retries — while a success is still shared with followers.
+    const coordinator = new RefreshLeaseCoordinator({
+      enabled: true,
+      leaseDir,
+      leaseTtlMs: 5_000,
+      waitTimeoutMs: 500,
+      pollIntervalMs: 25,
+      resultTtlMs: 5_000,
+    });
+
+    const failedResult = {
+      type: "failed" as const,
+      reason: "network_error" as const,
+      message: "boom",
+    };
+
+    const owner = await coordinator.acquire("token-fail");
+    expect(owner.role).toBe("owner");
+    await owner.release(failedResult);
+
+    // A failure was NOT cached: the next caller acquires as owner, not a follower
+    // holding the stale failure.
+    const afterFailure = await coordinator.acquire("token-fail");
+    expect(afterFailure.role).toBe("owner");
+    expect(afterFailure.result).toBeUndefined();
+    await afterFailure.release(sampleSuccessResult);
+
+    // Happy path intact: a success IS served to a subsequent follower.
+    const follower = await coordinator.acquire("token-fail");
+    expect(follower.role).toBe("follower");
+    expect(follower.result).toEqual(sampleSuccessResult);
+  });
+
   it("tightens an already-existing lease dir to 0o700 on POSIX (chmod after mkdir)", async () => {
     // Regression: mkdir(recursive, mode) does NOT re-apply mode to a dir that
     // already exists, so an upgrade over a looser (umask) dir kept its perms.

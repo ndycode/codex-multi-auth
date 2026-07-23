@@ -11,7 +11,9 @@ import { isRecord } from "./utils.js";
 const log = createLogger("refresh-lease");
 
 const DEFAULT_LEASE_TTL_MS = 30_000;
-const DEFAULT_WAIT_TIMEOUT_MS = 35_000;
+// Exported so the refresh queue can size its acquire-stage eviction threshold
+// above the maximum time a lease acquire() may legitimately block waiting.
+export const DEFAULT_WAIT_TIMEOUT_MS = 35_000;
 const DEFAULT_POLL_INTERVAL_MS = 150;
 const DEFAULT_RESULT_TTL_MS = 20_000;
 const RETRYABLE_IO_ERRORS = new Set(["EBUSY", "EPERM", "EMFILE", "ENFILE"]);
@@ -177,6 +179,20 @@ export class RefreshLeaseCoordinator {
 		this.fsOps = options.fsOps ?? fs;
 	}
 
+	/**
+	 * Resolved maximum time `acquire()` may block waiting for a lease.
+	 *
+	 * Exposed so the refresh queue can size its acquire-stage eviction threshold
+	 * against the budget this coordinator ACTUALLY uses. The budget is
+	 * configurable (constructor option / `CODEX_AUTH_REFRESH_LEASE_WAIT_MS`), so
+	 * sizing eviction off the static `DEFAULT_WAIT_TIMEOUT_MS` would evict an
+	 * acquire that is still legitimately waiting under a larger budget, spawning
+	 * the duplicate refresh (→ `invalid_grant`) the lease exists to prevent.
+	 */
+	get configuredWaitTimeoutMs(): number {
+		return this.waitTimeoutMs;
+	}
+
 	static fromEnvironment(): RefreshLeaseCoordinator {
 		const testMode = process.env.VITEST === "true" || process.env.NODE_ENV === "test";
 		const enabled =
@@ -311,7 +327,14 @@ export class RefreshLeaseCoordinator {
 				if (released) return;
 				released = true;
 				try {
-					if (result) {
+					// Only ever cache a SUCCESSFUL refresh in the cross-process lease.
+					// A `failed` result carries no token material to share; caching it
+					// would make readFreshResult serve the failure verbatim to every
+					// follower for the whole result TTL (DEFAULT_RESULT_TTL_MS), blocking
+					// a real refresh and even escalating to cooldowns. On failure we skip
+					// the cache and still unlink the lock in `finally`, so the next caller
+					// becomes owner and retries immediately.
+					if (result?.type === "success") {
 						await this.writeResult(resultPath, tokenHash, result);
 					}
 				} finally {

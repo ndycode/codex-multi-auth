@@ -1027,7 +1027,19 @@ export function isEmptyResponse(body: unknown): boolean {
 	if (Object.keys(obj).length === 0) return true;
 
 	const hasOutput =
-		"output" in obj && obj.output !== null && obj.output !== undefined;
+		"output" in obj &&
+		obj.output !== null &&
+		obj.output !== undefined &&
+		(Array.isArray(obj.output)
+			? obj.output.some(
+					(o) =>
+						o !== null &&
+						o !== undefined &&
+						(typeof o !== "object" || Object.keys(o as object).length > 0),
+				)
+			: typeof obj.output === "string"
+				? obj.output.trim() !== ""
+				: true);
 	const hasChoices =
 		"choices" in obj &&
 		Array.isArray(obj.choices) &&
