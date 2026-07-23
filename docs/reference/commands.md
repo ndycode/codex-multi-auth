@@ -46,10 +46,12 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 
 ## `codex-multi-auth check`
 
-Live-probes each enabled account and prints one line per account. When
-`showQuotaDetails` is on (the default, see [settings.md](settings.md)) the
-healthy lines carry a compact quota summary with the percentage **left** in
-each window and the absolute time that window resets:
+Live-probes every stored account and prints one line per account. Unlike
+`fix`, `check` does not skip disabled accounts: an account whose token is
+still usable is re-enabled as part of the run. When `showQuotaDetails` is on
+(the default, see [settings.md](settings.md)) the healthy lines carry a
+compact quota summary with the percentage **left** in each window and the
+absolute time that window resets:
 
 ```console
 $ codex-multi-auth check
