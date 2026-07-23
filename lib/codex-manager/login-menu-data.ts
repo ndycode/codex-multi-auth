@@ -465,6 +465,8 @@ export function toExistingAccountInfo(
 				entry?.secondary.usedPercent,
 			),
 			quota7dResetAtMs: entry?.secondary.resetAtMs,
+			quotaPrimaryWindowMinutes: entry?.primary.windowMinutes,
+			quotaSecondaryWindowMinutes: entry?.secondary.windowMinutes,
 			quotaRateLimited: entry?.status === 429,
 			quotaExhausted,
 			isCurrentAccount,

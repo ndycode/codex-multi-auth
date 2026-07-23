@@ -265,6 +265,48 @@ describe("formatAccountHint", () => {
 			formatAccountHint(account({ showLastUsed: false }), ui),
 		).toBe("");
 	});
+
+	// Regression for issue #635: Codex Business accounts carry a 30d monthly
+	// primary window, but the account row hardcoded the positional "5h"/"7d"
+	// labels, so the monthly window rendered as "5h ... reset 28d 11h". The label
+	// must be derived from the window's real duration.
+	it("labels the primary window from its duration instead of the positional 5h default", () => {
+		const hint = stripAnsi(
+			formatAccountHint(
+				account({
+					lastUsed: NOW - 2 * DAY_MS,
+					// primary window is a 30d monthly quota (Codex Business), not 5h
+					quota5hLeftPercent: 18,
+					quota5hResetAtMs: NOW + 28 * DAY_MS,
+					quotaPrimaryWindowMinutes: 30 * 24 * 60,
+					// secondary window is the 7d weekly quota, fully available
+					quota7dLeftPercent: 100,
+					quotaSecondaryWindowMinutes: 7 * 24 * 60,
+				}),
+				ui,
+			),
+		);
+
+		expect(hint).toContain("30d ");
+		expect(hint).toContain("7d ");
+		expect(hint).not.toMatch(/\b5h\b/);
+	});
+
+	it("falls back to the positional 5h/7d labels when window durations are unknown", () => {
+		const hint = stripAnsi(
+			formatAccountHint(
+				account({
+					lastUsed: NOW,
+					quota5hLeftPercent: 50,
+					quota7dLeftPercent: 80,
+				}),
+				ui,
+			),
+		);
+
+		expect(hint).toContain("5h ");
+		expect(hint).toContain("7d ");
+	});
 });
 
 describe("legacy (v1) palette rendering", () => {

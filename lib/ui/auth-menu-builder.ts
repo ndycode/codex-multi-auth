@@ -27,10 +27,16 @@ export interface AccountInfo {
 	lastUsed?: number;
 	status?: AccountStatus;
 	quotaSummary?: string;
+	// `quota5h*`/`quota7d*` hold the primary/secondary quota windows by position;
+	// the names are retained for compatibility. The window's real duration lives in
+	// `quotaPrimaryWindowMinutes`/`quotaSecondaryWindowMinutes` so the label can be
+	// derived from data (e.g. a Codex Business monthly window renders "30d", not "5h").
 	quota5hLeftPercent?: number;
 	quota5hResetAtMs?: number;
 	quota7dLeftPercent?: number;
 	quota7dResetAtMs?: number;
+	quotaPrimaryWindowMinutes?: number;
+	quotaSecondaryWindowMinutes?: number;
 	quotaRateLimited?: boolean;
 	quotaExhausted?: boolean;
 	isCurrentAccount?: boolean;
@@ -320,8 +326,31 @@ function formatQuotaPercent(
 	return paintUiText(ui, percentText, tone);
 }
 
+/**
+ * Resolve a quota-window label from its duration in minutes, matching the
+ * data-driven labels used by the compact quota summary (`Nd`/`Nh`/`Nm`). Falls
+ * back to the positional label when the duration is unknown (e.g. quota entries
+ * cached before window durations were persisted), so Plus/Pro rows keep their
+ * familiar "5h"/"7d" labels while a Codex Business monthly window renders "30d".
+ */
+function resolveQuotaWindowLabel(
+	windowMinutes: number | undefined,
+	fallbackLabel: string,
+): string {
+	if (
+		typeof windowMinutes !== "number" ||
+		!Number.isFinite(windowMinutes) ||
+		windowMinutes <= 0
+	) {
+		return fallbackLabel;
+	}
+	if (windowMinutes % 1440 === 0) return `${windowMinutes / 1440}d`;
+	if (windowMinutes % 60 === 0) return `${windowMinutes / 60}h`;
+	return `${windowMinutes}m`;
+}
+
 function formatQuotaWindow(
-	label: "5h" | "7d",
+	label: string,
 	leftPercent: number | null,
 	resetAtMs: number | undefined,
 	showCooldown: boolean,
@@ -349,13 +378,15 @@ function formatQuotaSummary(account: AccountInfo, ui: ReturnType<typeof getUiRun
 	const showCooldown = account.showQuotaCooldown !== false;
 	const left5h = normalizeQuotaPercent(account.quota5hLeftPercent) ?? parseLeftPercentFromSummary(summary, "5h");
 	const left7d = normalizeQuotaPercent(account.quota7dLeftPercent) ?? parseLeftPercentFromSummary(summary, "7d");
+	const primaryLabel = resolveQuotaWindowLabel(account.quotaPrimaryWindowMinutes, "5h");
+	const secondaryLabel = resolveQuotaWindowLabel(account.quotaSecondaryWindowMinutes, "7d");
 	const segments: string[] = [];
 
 	if (left5h !== null || typeof account.quota5hResetAtMs === "number") {
-		segments.push(formatQuotaWindow("5h", left5h, account.quota5hResetAtMs, showCooldown, ui));
+		segments.push(formatQuotaWindow(primaryLabel, left5h, account.quota5hResetAtMs, showCooldown, ui));
 	}
 	if (left7d !== null || typeof account.quota7dResetAtMs === "number") {
-		segments.push(formatQuotaWindow("7d", left7d, account.quota7dResetAtMs, showCooldown, ui));
+		segments.push(formatQuotaWindow(secondaryLabel, left7d, account.quota7dResetAtMs, showCooldown, ui));
 	}
 	if (account.quotaRateLimited || summary.toLowerCase().includes("rate-limited")) {
 		segments.push(ui.v2Enabled ? paintUiText(ui, "rate-limited", "danger") : `${ANSI.red}rate-limited${ANSI.reset}`);
