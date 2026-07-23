@@ -307,6 +307,82 @@ describe("formatAccountHint", () => {
 		expect(hint).toContain("5h ");
 		expect(hint).toContain("7d ");
 	});
+
+	// Render a row carrying only the given quota window and read back the label the
+	// menu printed for it, so every branch of the duration->label rule is observed
+	// through the public formatter rather than the private helper.
+	function windowLabelFor(
+		windowMinutes: number | undefined,
+		position: "primary" | "secondary",
+	): string {
+		const hint = stripAnsi(
+			formatAccountHint(
+				account(
+					position === "primary"
+						? {
+							showLastUsed: false,
+							quota5hLeftPercent: 50,
+							quotaPrimaryWindowMinutes: windowMinutes,
+						}
+						: {
+							showLastUsed: false,
+							quota7dLeftPercent: 50,
+							quotaSecondaryWindowMinutes: windowMinutes,
+						},
+				),
+				ui,
+			),
+		);
+		return hint.replace(/^Limits: /, "").split(" ")[0] ?? "";
+	}
+
+	it.each([
+		[1_440, "1d"],
+		[43_200, "30d"],
+		[300, "5h"],
+		[720, "12h"],
+		[100, "100m"],
+		[90, "90m"],
+	] as const)("labels a %i-minute window as %s", (windowMinutes, expected) => {
+		expect(windowLabelFor(windowMinutes, "primary")).toBe(expected);
+	});
+
+	// An undefined duration is covered above; these are the durations a corrupt or
+	// hostile cache entry could carry, which must not produce labels like "0m" or
+	// "Infinityd".
+	it.each([
+		["zero", 0],
+		["negative", -1],
+		["NaN", Number.NaN],
+		["infinite", Number.POSITIVE_INFINITY],
+	] as const)(
+		"keeps the positional labels for a %s duration",
+		(_name, windowMinutes) => {
+			expect(windowLabelFor(windowMinutes, "primary")).toBe("5h");
+			expect(windowLabelFor(windowMinutes, "secondary")).toBe("7d");
+		},
+	);
+
+	// The percentage can also be recovered from the summary string when the typed
+	// field is absent. That string is labelled by duration too, so the lookup has to
+	// use the resolved label -- searching for a literal "5h" drops the whole segment.
+	it("recovers a percent from the summary using the resolved window label", () => {
+		const hint = stripAnsi(
+			formatAccountHint(
+				account({
+					showLastUsed: false,
+					quotaSummary: "30d 42%, resets in 12d | 7d 80%",
+					quotaPrimaryWindowMinutes: 30 * 24 * 60,
+					quotaSecondaryWindowMinutes: 7 * 24 * 60,
+				}),
+				ui,
+			),
+		);
+
+		expect(hint).toContain("30d ");
+		expect(hint).toContain("42%");
+		expect(hint).toContain("80%");
+	});
 });
 
 describe("legacy (v1) palette rendering", () => {

@@ -246,7 +246,7 @@ function normalizeQuotaPercent(value: number | undefined): number | null {
 	return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function parseLeftPercentFromSummary(summary: string, windowLabel: "5h" | "7d"): number | null {
+function parseLeftPercentFromSummary(summary: string, windowLabel: string): number | null {
 	const segments = summary.split("|");
 	for (const segment of segments) {
 		const trimmed = segment.trim().toLowerCase();
@@ -376,10 +376,14 @@ function formatQuotaWindow(
 function formatQuotaSummary(account: AccountInfo, ui: ReturnType<typeof getUiRuntimeOptions>): string {
 	const summary = account.quotaSummary ?? "";
 	const showCooldown = account.showQuotaCooldown !== false;
-	const left5h = normalizeQuotaPercent(account.quota5hLeftPercent) ?? parseLeftPercentFromSummary(summary, "5h");
-	const left7d = normalizeQuotaPercent(account.quota7dLeftPercent) ?? parseLeftPercentFromSummary(summary, "7d");
+	// Resolve the window labels before parsing the summary: the summary string is
+	// produced by `formatAccountQuotaSummary`, which already labels its segments by
+	// duration, so a Business row reads "30d 18%, ..." and never "5h ...". Searching
+	// it for a literal "5h"/"7d" would find nothing and silently drop the bar.
 	const primaryLabel = resolveQuotaWindowLabel(account.quotaPrimaryWindowMinutes, "5h");
 	const secondaryLabel = resolveQuotaWindowLabel(account.quotaSecondaryWindowMinutes, "7d");
+	const left5h = normalizeQuotaPercent(account.quota5hLeftPercent) ?? parseLeftPercentFromSummary(summary, primaryLabel);
+	const left7d = normalizeQuotaPercent(account.quota7dLeftPercent) ?? parseLeftPercentFromSummary(summary, secondaryLabel);
 	const segments: string[] = [];
 
 	if (left5h !== null || typeof account.quota5hResetAtMs === "number") {
