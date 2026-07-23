@@ -506,4 +506,56 @@ describe("runRuntimeAccountCheck", () => {
 		]);
 		expect(saved.pinnedAccountIndex).toBe(1);
 	});
+
+	it("clears a manual pin when the pinned account itself is auto-removed on deep probe", async () => {
+		const now = 10_000;
+		const saveAccounts = vi.fn(async () => {});
+		// The pinned account (index 2) is the one with no cached access whose
+		// refresh fails flaggably, so the deep-probe auto-removal drops it. The pin
+		// has nothing left to follow and must be cleared instead of dangling at a
+		// stale slot that now belongs to a different account (#474). This also pins
+		// the ordering in account-check.ts: the pinned account has to be captured
+		// BEFORE the filter runs, or it could never be resolved at all.
+		await runRuntimeAccountCheck(true, {
+			hydrateEmails: async (storage) => storage,
+			loadAccounts: async () => ({
+				version: 3,
+				pinnedAccountIndex: 2,
+				accounts: [
+					{ email: "a@example.com", accountId: "acc_a", refreshToken: "r0", accessToken: "a0", expiresAt: now + 3_600_000, addedAt: 1, lastUsed: 1 },
+					{ email: "b@example.com", accountId: "acc_b", refreshToken: "r1", accessToken: "a1", expiresAt: now + 3_600_000, addedAt: 1, lastUsed: 1 },
+					{ email: "c@example.com", accountId: "acc_c", refreshToken: "r2", accessToken: undefined, addedAt: 1, lastUsed: 1 },
+				],
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+			}),
+			createEmptyStorage: () => ({ version: 3, accounts: [], activeIndex: 0, activeIndexByFamily: {} }),
+			loadFlaggedAccounts: async () => ({ version: 1, accounts: [] }),
+			createAccountCheckWorkingState: (flaggedStorage) => ({ flaggedStorage, removeFromActive: new Set(), storageChanged: false, flaggedChanged: false, ok: 0, errors: 0, disabled: 0 }),
+			lookupCodexCliTokensByEmail: async () => null,
+			extractAccountId: () => undefined,
+			shouldUpdateAccountIdFromToken: () => false,
+			sanitizeEmail: (email) => email,
+			extractAccountEmail: () => undefined,
+			queuedRefresh: async () => ({ type: "failed" as const, reason: "invalid_grant", message: "token has been revoked" }),
+			isRuntimeFlaggableFailure: () => true,
+			fetchCodexQuotaSnapshot: async () => ({ remaining5h: 1, remaining7d: 2 } as never),
+			resolveRequestAccountId: () => "acct",
+			formatCodexQuotaLine: () => "quota ok",
+			clampRuntimeActiveIndices: vi.fn(),
+			MODEL_FAMILIES: ["codex"],
+			saveAccounts,
+			invalidateAccountManagerCache: vi.fn(),
+			saveFlaggedAccounts: vi.fn(async () => {}),
+			now: () => now,
+			showLine: vi.fn(),
+		});
+
+		const saved = saveAccounts.mock.calls[0]?.[0];
+		expect(saved.accounts.map((entry) => entry.refreshToken)).toEqual([
+			"r0",
+			"r1",
+		]);
+		expect(saved.pinnedAccountIndex).toBeUndefined();
+	});
 });
