@@ -15,6 +15,7 @@ import {
 import { runStatusCommand } from "../lib/codex-manager/commands/status.js";
 import {
 	readPinAndGenFromDisk,
+	reconcilePinnedAccountIndex,
 	setStoragePathDirect,
 	type AccountStorageV3,
 } from "../lib/storage.js";
@@ -494,6 +495,67 @@ describe("issue #474 — pin-honored review feedback", () => {
 			const meta = readPinAndGenFromDisk(path);
 			expect(meta.pinnedAccountIndex).toBeUndefined();
 			expect(meta.affinityGeneration).toBe(0);
+		});
+	});
+
+	describe("readStorageMetaFromDisk pin validation", () => {
+		it("rejects a negative or non-integer pin, matching the other pin readers", () => {
+			// The hot-path reader governs routing, so a malformed pin must not slip
+			// past it into chooseAccount (a negative index wedges the pool).
+			const negativePath = makeTmpStoragePath();
+			writeFileSync(
+				negativePath,
+				JSON.stringify({ pinnedAccountIndex: -1, affinityGeneration: 3 }),
+				"utf8",
+			);
+			expect(readStorageMetaFromDisk(negativePath).pinnedAccountIndex).toBeNull();
+
+			const fractionalPath = makeTmpStoragePath();
+			writeFileSync(
+				fractionalPath,
+				JSON.stringify({ pinnedAccountIndex: 2.5, affinityGeneration: 3 }),
+				"utf8",
+			);
+			expect(
+				readStorageMetaFromDisk(fractionalPath).pinnedAccountIndex,
+			).toBeNull();
+
+			const validPath = makeTmpStoragePath();
+			writeFileSync(
+				validPath,
+				JSON.stringify({ pinnedAccountIndex: 2, affinityGeneration: 3 }),
+				"utf8",
+			);
+			expect(readStorageMetaFromDisk(validPath).pinnedAccountIndex).toBe(2);
+		});
+	});
+
+	describe("reconcilePinnedAccountIndex follows a pin across removal", () => {
+		const acc = (id: string) => ({
+			accountId: `acc_${id}`,
+			email: `${id}@example.com`,
+			refreshToken: `refresh-${id}`,
+		});
+
+		it("re-resolves the pinned account's new index after lower accounts are removed", () => {
+			const pinned = acc("d");
+			// one lower account removed → shifts down by one
+			expect(
+				reconcilePinnedAccountIndex(pinned, [acc("b"), acc("c"), pinned]),
+			).toBe(2);
+			// multiple lower accounts removed (the account-check filter path) → still
+			// lands on the same account by identity
+			expect(reconcilePinnedAccountIndex(pinned, [acc("c"), pinned])).toBe(1);
+		});
+
+		it("clears the pin when the pinned account is gone, and is undefined with no pin", () => {
+			const pinned = acc("b");
+			expect(
+				reconcilePinnedAccountIndex(pinned, [acc("a"), acc("c")]),
+			).toBeUndefined();
+			expect(
+				reconcilePinnedAccountIndex(undefined, [acc("a"), acc("b")]),
+			).toBeUndefined();
 		});
 	});
 });

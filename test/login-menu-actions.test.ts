@@ -265,6 +265,48 @@ describe("handleManageAction delete", () => {
 		expect(saved.activeIndexByFamily["gpt-5-codex"]).toBe(0);
 		expect(saved.activeIndexByFamily.codex).toBe(0);
 	});
+
+	it("shifts the manual pin to follow its account when a lower-indexed account is deleted", async () => {
+		const storage = storageWith([account("a"), account("b"), account("c")]);
+		storage.pinnedAccountIndex = 2; // pinned to account c
+		loadedStorage = structuredClone(storage);
+
+		await handleManageAction(storage, {
+			mode: "manage",
+			deleteAccountIndex: 0,
+		} satisfies MenuResult);
+
+		const saved = persisted[0];
+		expect(saved.accounts.map((entry) => entry.accountId)).toEqual([
+			"acc_b",
+			"acc_c",
+		]);
+		// The pin must keep pointing at account c (now index 1), not whatever slot 2
+		// now holds — otherwise the pin silently routes to the wrong account (#474).
+		expect(saved.pinnedAccountIndex).toBe(1);
+		expect(storage.pinnedAccountIndex).toBe(1);
+	});
+
+	it("clears the manual pin when the pinned account itself is deleted", async () => {
+		const storage = storageWith([account("a"), account("b"), account("c")]);
+		storage.pinnedAccountIndex = 1; // pinned to account b
+		loadedStorage = structuredClone(storage);
+
+		await handleManageAction(storage, {
+			mode: "manage",
+			deleteAccountIndex: 1,
+		} satisfies MenuResult);
+
+		const saved = persisted[0];
+		expect(saved.accounts.map((entry) => entry.accountId)).toEqual([
+			"acc_a",
+			"acc_c",
+		]);
+		// The pinned account is gone; the pin must be cleared, never left dangling
+		// at a stale slot (which would wedge or mis-route the pool).
+		expect(saved.pinnedAccountIndex).toBeUndefined();
+		expect(storage.pinnedAccountIndex).toBeUndefined();
+	});
 });
 
 describe("handleManageAction toggle", () => {

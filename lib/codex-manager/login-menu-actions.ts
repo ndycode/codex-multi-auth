@@ -7,6 +7,7 @@ import {
 	type AccountStorageV3,
 	findMatchingAccountIndex,
 	loadAccounts,
+	reconcilePinnedAccountIndex,
 	type NamedBackupSummary,
 	setStoragePath,
 	withAccountStorageTransaction,
@@ -252,6 +253,9 @@ function replaceManageActionStorage(
 	target.activeIndexByFamily = {
 		...source.activeIndexByFamily,
 	};
+	// Keep the in-memory view's manual pin in sync with what was just persisted;
+	// the pin was re-resolved (or cleared) against the post-deletion account list.
+	target.pinnedAccountIndex = source.pinnedAccountIndex;
 }
 
 function resolveManageActionAccountIndex(
@@ -332,8 +336,20 @@ export async function handleManageAction(
 				if (!matchesManageActionAccount(selectedAccount, nextAccount)) {
 					return;
 				}
+				// Capture the pinned account BEFORE the splice so the manual pin can be
+				// followed by identity afterwards. resetManageActionSelection only remaps
+				// activeIndex; without this the pin keeps its raw slot and silently points
+				// at a different account (or wedges the pool). See #474.
+				const pinnedAccount =
+					typeof nextStorage.pinnedAccountIndex === "number"
+						? nextStorage.accounts[nextStorage.pinnedAccountIndex]
+						: undefined;
 				nextStorage.accounts.splice(nextIndex, 1);
 				resetManageActionSelection(nextStorage, nextIndex);
+				nextStorage.pinnedAccountIndex = reconcilePinnedAccountIndex(
+					pinnedAccount,
+					nextStorage.accounts,
+				);
 				await persist(nextStorage);
 				replaceManageActionStorage(storage, nextStorage);
 				deleted = true;
