@@ -10,10 +10,16 @@ import {
 	stringifyLogArgs,
 } from "../lib/codex-manager/formatters/text-style.js";
 import {
+	formatAccountQuotaSummary,
+	formatCompactQuotaSnapshot,
+	formatQuotaSnapshotForDashboard,
 	quotaCacheEntryToSnapshot,
 	styleQuotaSummary,
 } from "../lib/codex-manager/formatters/quota-formatters.js";
+import type { DashboardDisplaySettings } from "../lib/dashboard-settings.js";
 import type { QuotaCacheEntry } from "../lib/quota-cache.js";
+import { formatQuotaResetAt } from "../lib/quota-probe.js";
+import type { CodexQuotaSnapshot } from "../lib/quota-probe.js";
 import {
 	formatModelInspection,
 	inspectRequestedModel,
@@ -148,6 +154,139 @@ describe("quota formatters", () => {
 			primary: { usedPercent: 20, windowMinutes: 300, resetAtMs: 1000 },
 			secondary: { usedPercent: 5, windowMinutes: 10080, resetAtMs: 2000 },
 		});
+	});
+});
+
+// Reset-timestamp rendering for `codex-multi-auth check` (issue #633).
+// The reset clock is local-timezone by design, so expectations are derived
+// from the same Intl calls the formatter uses instead of hardcoding a zone.
+describe("compact quota reset timestamps", () => {
+	// 2026-07-22T09:00 local; +2h stays on the same local day, +8d does not.
+	const NOW = new Date(2026, 6, 22, 9, 0, 0).getTime();
+	const SAME_DAY = NOW + 2 * 60 * 60 * 1000;
+	const NEXT_WEEK = NOW + 8 * 24 * 60 * 60 * 1000;
+
+	const localTime = (ms: number): string =>
+		new Date(ms).toLocaleTimeString(undefined, {
+			hour: "2-digit",
+			minute: "2-digit",
+			hour12: false,
+		});
+
+	const snapshot = (
+		primaryReset: number | undefined,
+		secondaryReset: number | undefined,
+	): CodexQuotaSnapshot =>
+		({
+			status: "ok",
+			planType: "plus",
+			model: "gpt-5.3-codex",
+			primary: {
+				usedPercent: 0,
+				windowMinutes: 300,
+				resetAtMs: primaryReset,
+			},
+			secondary: {
+				usedPercent: 7,
+				windowMinutes: 10080,
+				resetAtMs: secondaryReset,
+			},
+		}) as unknown as CodexQuotaSnapshot;
+
+	it("formatQuotaResetAt uses local 24h time, adds the day when not today", () => {
+		expect(formatQuotaResetAt(SAME_DAY, NOW)).toBe(localTime(SAME_DAY));
+		expect(formatQuotaResetAt(NEXT_WEEK, NOW)).toBe(
+			`${localTime(NEXT_WEEK)} on ${new Date(NEXT_WEEK).toLocaleDateString(
+				undefined,
+				{ month: "short", day: "2-digit" },
+			)}`,
+		);
+	});
+
+	it("formatQuotaResetAt rejects missing and malformed timestamps", () => {
+		expect(formatQuotaResetAt(undefined, NOW)).toBeUndefined();
+		expect(formatQuotaResetAt(0, NOW)).toBeUndefined();
+		expect(formatQuotaResetAt(-1, NOW)).toBeUndefined();
+		expect(formatQuotaResetAt(Number.NaN, NOW)).toBeUndefined();
+		expect(formatQuotaResetAt(Number.POSITIVE_INFINITY, NOW)).toBeUndefined();
+	});
+
+	it("omits reset times unless the caller opts in", () => {
+		expect(formatCompactQuotaSnapshot(snapshot(SAME_DAY, NEXT_WEEK), NOW)).toBe(
+			"5h 100% | 7d 93%",
+		);
+	});
+
+	it("appends a per-window reset time when showReset is set", () => {
+		expect(
+			formatCompactQuotaSnapshot(snapshot(SAME_DAY, NEXT_WEEK), NOW, {
+				showReset: true,
+			}),
+		).toBe(
+			`5h 100%, resets ${formatQuotaResetAt(SAME_DAY, NOW)} | 7d 93%, resets ${formatQuotaResetAt(NEXT_WEEK, NOW)}`,
+		);
+	});
+
+	it("keeps the percentage when a reset timestamp is missing or malformed", () => {
+		expect(
+			formatCompactQuotaSnapshot(snapshot(undefined, Number.NaN), NOW, {
+				showReset: true,
+			}),
+		).toBe("5h 100% | 7d 93%");
+	});
+
+	it("formatAccountQuotaSummary honors showReset the same way", () => {
+		const entry = {
+			status: "ok",
+			planType: "plus",
+			model: "gpt-5.3-codex",
+			fetchedAt: NOW,
+			primary: { usedPercent: 0, windowMinutes: 300, resetAtMs: SAME_DAY },
+			secondary: { usedPercent: 7, windowMinutes: 10080, resetAtMs: undefined },
+		} as unknown as QuotaCacheEntry;
+		expect(formatAccountQuotaSummary(entry, NOW)).toBe("5h 100% | 7d 93%");
+		expect(formatAccountQuotaSummary(entry, NOW, { showReset: true })).toBe(
+			`5h 100%, resets ${formatQuotaResetAt(SAME_DAY, NOW)} | 7d 93%`,
+		);
+	});
+
+	it("formatQuotaSnapshotForDashboard is the check line and shows resets", () => {
+		const display = {
+			showQuotaDetails: true,
+		} as unknown as DashboardDisplaySettings;
+		expect(
+			formatQuotaSnapshotForDashboard(
+				snapshot(SAME_DAY, NEXT_WEEK),
+				display,
+				NOW,
+			),
+		).toBe(
+			`live session OK (5h 100%, resets ${formatQuotaResetAt(SAME_DAY, NOW)} | 7d 93%, resets ${formatQuotaResetAt(NEXT_WEEK, NOW)})`,
+		);
+	});
+
+	it("formatQuotaSnapshotForDashboard stays bare when quota details are off", () => {
+		const display = {
+			showQuotaDetails: false,
+		} as unknown as DashboardDisplaySettings;
+		expect(
+			formatQuotaSnapshotForDashboard(
+				snapshot(SAME_DAY, NEXT_WEEK),
+				display,
+				NOW,
+			),
+		).toBe("live session OK");
+	});
+
+	it("styleQuotaSummary still tones segments that carry a reset suffix", () => {
+		expect(styleQuotaSummary("5h 80%, resets 14:05 | 7d 15%")).toBe(
+			"5h 80%, resets 14:05 | 7d 15%",
+		);
+		expect(styleQuotaSummary("7d 150%, resets 14:05 on Jul 29")).toBe(
+			"7d 100%, resets 14:05 on Jul 29",
+		);
+		// A trailing "resets" with no value is not a reset suffix.
+		expect(styleQuotaSummary("5h 80%, resets")).toBe("5h 80%, resets");
 	});
 });
 

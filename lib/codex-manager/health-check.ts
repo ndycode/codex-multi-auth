@@ -144,7 +144,11 @@ export async function runHealthCheck(
 									quotaEmailFallbackState ?? undefined,
 								) || quotaCacheChanged;
 						}
-						healthDetail = formatQuotaSnapshotForDashboard(snapshot, display);
+						healthDetail = formatQuotaSnapshotForDashboard(
+							snapshot,
+							display,
+							now,
+						);
 						codexAvailable += 1;
 					} catch (error) {
 						warnings += 1;
@@ -252,7 +256,11 @@ export async function runHealthCheck(
 									quotaEmailFallbackState ?? undefined,
 								) || quotaCacheChanged;
 						}
-						healthyMessage = formatQuotaSnapshotForDashboard(snapshot, display);
+						healthyMessage = formatQuotaSnapshotForDashboard(
+							snapshot,
+							display,
+							now,
+						);
 						codexAvailable += 1;
 					} catch (error) {
 						warnings += 1;

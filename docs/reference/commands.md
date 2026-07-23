@@ -44,6 +44,39 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 
 ---
 
+## `codex-multi-auth check`
+
+Live-probes each enabled account and prints one line per account. When
+`showQuotaDetails` is on (the default, see [settings.md](settings.md)) the
+healthy lines carry a compact quota summary with the percentage **left** in
+each window and the absolute time that window resets:
+
+```console
+$ codex-multi-auth check
+Checking 2 account(s) with quick check + live check...
+Model probe: gpt-5.6-sol | prompt family gpt-5.2 | tool search yes | computer use yes
+  ✓ Account 1 (Personal, 1@example.com) | live session OK (5h 100%, resets 18:10 | 7d 93%, resets 13:50 on Jul 29)
+  ✓ Account 2 (Personal, 2@example.com) | live session OK (5h 100%, resets 18:35 | 7d 98%, resets 14:15 on Jul 29)
+```
+
+Reset-time details:
+
+- Times are rendered in the **local system timezone** on a 24-hour clock.
+- A reset later today prints as `HH:MM`; anything past midnight adds the day
+  (`HH:MM on Mon DD`). The year is omitted because both windows are at most
+  seven days long.
+- Window labels come from the backend (`5h`, `7d`, …), and fall back to
+  `quota` when the backend omits the window length.
+- When the backend does not return a reset timestamp for a window, that
+  window keeps its percentage and simply omits the reset clause. A missing or
+  malformed timestamp never fails the account check.
+- Reset times are shown only by `check`. The dashboard, account menu, and
+  `forecast` keep their narrower percentage-only summaries.
+
+Turning `showQuotaDetails` off reduces the line to a bare `live session OK`.
+
+---
+
 ## Daily Use
 
 | Command | Description |
