@@ -4,7 +4,6 @@ import type { QuotaCacheData } from "./quota-cache.js";
 import {
 	findQuotaCacheEntryForAccount,
 	isQuotaCacheEntryExhausted,
-	quotaLeftPercentFromUsed,
 	quotaUsedPercentIsExhausted,
 } from "./quota-readiness.js";
 import { getRateLimitResetTimeForFamily } from "./runtime/account-status.js";
@@ -249,10 +248,15 @@ export function evaluateForecastAccount(
 		input.allAccounts ?? [account],
 	);
 	if (isQuotaCacheEntryExhausted(quotaEntry, now)) {
+		// Only a window that is genuinely at/over 100% used should contribute its
+		// reset time. Testing the ROUNDED left-percent instead would treat a
+		// 99.6%-used sibling as at-limit and fold its (possibly far-future) reset
+		// into the Math.max below, overstating the wait for an account whose
+		// actually-exhausted window recovers much sooner.
 		const resetAts = [quotaEntry?.primary, quotaEntry?.secondary]
 			.filter(
 				(window) =>
-					quotaLeftPercentFromUsed(window?.usedPercent) === 0 &&
+					quotaUsedPercentIsExhausted(window?.usedPercent) &&
 					typeof window?.resetAtMs === "number" &&
 					Number.isFinite(window.resetAtMs) &&
 					window.resetAtMs > now,

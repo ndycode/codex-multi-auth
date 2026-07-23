@@ -154,6 +154,50 @@ describe("forecast helpers", () => {
 		);
 	});
 
+	it("ignores a 99.6%-used sibling window when computing the exhausted wait", () => {
+		const now = 1_700_000_000_000;
+		const account = {
+			email: "quota@example.com",
+			accountId: "acc_quota",
+			refreshToken: "refresh-1",
+			addedAt: now - 10_000,
+			lastUsed: now - 10_000,
+		};
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account,
+			allAccounts: [account],
+			quotaCache: {
+				version: 1,
+				updatedAt: now,
+				byAccountId: {
+					acc_quota: {
+						accountId: "acc_quota",
+						status: 200,
+						model: "gpt-5.3-codex",
+						updatedAt: now,
+						// Genuinely exhausted, and it recovers in a minute.
+						primary: { usedPercent: 100, resetAtMs: now + 60_000 },
+						// 100 - 99.6 ROUNDS to 0 left, but this window still has quota
+						// and its monthly reset is 28 days out. Selecting contributing
+						// windows by the rounded left-percent would fold that in and
+						// report a 28-day wait for an account that recovers in 60s.
+						secondary: {
+							usedPercent: 99.6,
+							resetAtMs: now + 28 * 86_400_000,
+						},
+					},
+				},
+				byEmail: {},
+			},
+		});
+
+		expect(result.availability).toBe("delayed");
+		expect(result.waitMs).toBe(60_000);
+	});
+
 	it("applies runtime overlay skip reasons to forecast availability", () => {
 		const now = 1_700_000_000_000;
 		const account = {
