@@ -658,7 +658,8 @@ export function trimInputForFastSession(
 		break;
 	}
 
-	for (let i = Math.max(0, input.length - safeMax); i < input.length; i++) {
+	const tailStart = Math.max(0, input.length - safeMax);
+	for (let i = tailStart; i < input.length; i++) {
 		if (excludedHeadIndexes.has(i)) continue;
 		keepIndexes.add(i);
 	}
@@ -667,7 +668,18 @@ export function trimInputForFastSession(
 	if (trimmed.length === 0) return input;
 	if (input.length <= maxItems && excludedHeadIndexes.size === 0) return input;
 	if (trimmed.length <= safeMax) return trimmed;
-	return trimmed.slice(trimmed.length - safeMax);
+
+	// Kept head items sit before the tail window at the front of `trimmed`.
+	// Reserve budget for them so slicing the tail does not drop them.
+	let headKept = 0;
+	for (const index of keepIndexes) {
+		if (index < tailStart) headKept++;
+	}
+	const tailBudget = Math.max(1, safeMax - headKept);
+	return [
+		...trimmed.slice(0, headKept),
+		...trimmed.slice(trimmed.length - tailBudget),
+	];
 }
 
 export interface FastSessionInputTrimPlan {

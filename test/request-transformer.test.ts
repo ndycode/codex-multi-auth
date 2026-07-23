@@ -9,6 +9,7 @@ import {
     filterHostSystemPromptsWithCachedPrompt,
     addCodexBridgeMessage,
     transformRequestBody,
+    trimInputForFastSession,
 } from '../lib/request/request-transformer.js';
 import * as loggerModule from '../lib/logger.js';
 import { TOOL_REMAP_MESSAGE } from '../lib/prompts/codex.js';
@@ -2801,6 +2802,36 @@ describe('Request Transformer Module', () => {
 					).rejects.toThrowError('transformRequestBody requires body');
 				});
 			});
+		});
+	});
+
+	describe('trimInputForFastSession', () => {
+		it('preserves a leading developer instruction that falls outside the tail window', () => {
+			const input: InputItem[] = [
+				{ type: 'message', role: 'developer', content: 'HEAD_INSTRUCTION' },
+			];
+			for (let i = 1; i < 50; i++) {
+				input.push({ type: 'message', role: 'user', content: `msg-${i}` });
+			}
+
+			const maxItems = 30;
+			const result = trimInputForFastSession(input, maxItems) as InputItem[];
+
+			// The kept head instruction survives even though it sits before the tail window.
+			expect(result[0]).toEqual({
+				type: 'message',
+				role: 'developer',
+				content: 'HEAD_INSTRUCTION',
+			});
+			// The most recent item is still present.
+			expect(result[result.length - 1]).toEqual({
+				type: 'message',
+				role: 'user',
+				content: 'msg-49',
+			});
+			// The total stays within the item budget.
+			expect(result.length).toBeLessThanOrEqual(maxItems);
+			expect(result.length).toBeGreaterThan(1);
 		});
 	});
 });
