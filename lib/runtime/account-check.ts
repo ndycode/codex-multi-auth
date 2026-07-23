@@ -2,7 +2,11 @@ import { maskEmail } from "../logger.js";
 import { CODEX_UNAVAILABLE_PROBE_NOTE } from "../quota-probe.js";
 import { isCodexUnavailableError } from "../errors.js";
 import type { ModelFamily } from "../prompts/codex.js";
-import type { AccountStorageV3, FlaggedAccountMetadataV1 } from "../storage.js";
+import {
+	type AccountStorageV3,
+	type FlaggedAccountMetadataV1,
+	reconcilePinnedAccountIndex,
+} from "../storage.js";
 import type { AccountIdSource, TokenResult } from "../types.js";
 import type { AccountCheckWorkingState } from "./account-check-types.js";
 import type { CodexQuotaSnapshot } from "./quota-headers.js";
@@ -320,10 +324,21 @@ export async function runRuntimeAccountCheck(
 	}
 
 	if (state.removeFromActive.size > 0) {
+		// Follow the manual pin by identity across the removal: the filter can drop
+		// several accounts at once, so a raw index would point at the wrong account
+		// (or out of range, wedging the pool). See #474.
+		const pinnedAccount =
+			typeof workingStorage.pinnedAccountIndex === "number"
+				? workingStorage.accounts[workingStorage.pinnedAccountIndex]
+				: undefined;
 		workingStorage.accounts = workingStorage.accounts.filter(
 			(account) => !state.removeFromActive.has(account.refreshToken),
 		);
 		deps.clampRuntimeActiveIndices(workingStorage, deps.MODEL_FAMILIES);
+		workingStorage.pinnedAccountIndex = reconcilePinnedAccountIndex(
+			pinnedAccount,
+			workingStorage.accounts,
+		);
 		state.storageChanged = true;
 	}
 

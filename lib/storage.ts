@@ -1038,6 +1038,28 @@ export function findMatchingAccountIndex<
 	return findUniqueAccountIdMatchIndex(accounts, candidateRef, options);
 }
 
+/**
+ * Re-resolve a manual pin after the account list changes (deletion / auto-removal).
+ * `pinnedAccountIndex` is a POSITION, so once accounts are removed or reordered the
+ * raw index silently points at a DIFFERENT account — or out of range, which wedges
+ * the pool. Capture the pinned account BEFORE the change and pass it here to follow
+ * it by identity: returns its new index, or `undefined` when it is no longer present
+ * (the pin is cleared, never left dangling at a stale slot). See #474 — a manual pin
+ * must keep pointing at the account the user chose, or be dropped.
+ */
+export function reconcilePinnedAccountIndex(
+	pinnedAccount:
+		| Pick<AccountLike, "accountId" | "email" | "refreshToken">
+		| undefined,
+	nextAccounts: readonly Pick<
+		AccountLike,
+		"accountId" | "email" | "refreshToken"
+	>[],
+): number | undefined {
+	if (!pinnedAccount) return undefined;
+	return findMatchingAccountIndex(nextAccounts, pinnedAccount);
+}
+
 export function resolveAccountSelectionIndex<
 	T extends Pick<AccountLike, "accountId" | "email" | "refreshToken">,
 >(

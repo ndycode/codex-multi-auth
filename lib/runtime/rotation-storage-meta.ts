@@ -131,10 +131,16 @@ export function readStorageMetaFromDisk(
 			pinnedAccountIndex?: unknown;
 			affinityGeneration?: unknown;
 		};
+		// Validate exactly like readPinAndGenFromDisk / the loader / the zod schema:
+		// a non-integer or negative pin is rejected (null), never truncated. This is
+		// the value the proxy actually routes on, so a malformed disk pin must not
+		// slip past here and reach chooseAccount (a negative index wedges the pool).
 		const pinnedAccountIndex =
 			typeof parsed.pinnedAccountIndex === "number" &&
-			Number.isFinite(parsed.pinnedAccountIndex)
-				? Math.trunc(parsed.pinnedAccountIndex)
+			Number.isFinite(parsed.pinnedAccountIndex) &&
+			Number.isInteger(parsed.pinnedAccountIndex) &&
+			parsed.pinnedAccountIndex >= 0
+				? parsed.pinnedAccountIndex
 				: null;
 		const affinityGeneration =
 			typeof parsed.affinityGeneration === "number" &&

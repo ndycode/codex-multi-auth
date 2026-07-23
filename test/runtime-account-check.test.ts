@@ -456,4 +456,54 @@ describe("runRuntimeAccountCheck", () => {
 		// summary reflects the warning bucket
 		expect(lines.some((l) => /Results:.*1 warning/.test(l))).toBe(true);
 	});
+
+	it("re-resolves a manual pin when a lower account is auto-removed on deep probe", async () => {
+		const now = 10_000;
+		const saveAccounts = vi.fn(async () => {});
+		// Account 0 has no cached access and its refresh fails flaggably, so the
+		// deep-probe auto-removal drops it. The pin points at account 2 and must
+		// follow that account by identity (now index 1) rather than keep its stale
+		// slot — otherwise the pin silently routes to the wrong account (#474).
+		await runRuntimeAccountCheck(true, {
+			hydrateEmails: async (storage) => storage,
+			loadAccounts: async () => ({
+				version: 3,
+				pinnedAccountIndex: 2,
+				accounts: [
+					{ email: "a@example.com", accountId: "acc_a", refreshToken: "r0", accessToken: undefined, addedAt: 1, lastUsed: 1 },
+					{ email: "b@example.com", accountId: "acc_b", refreshToken: "r1", accessToken: "a1", expiresAt: now + 3_600_000, addedAt: 1, lastUsed: 1 },
+					{ email: "c@example.com", accountId: "acc_c", refreshToken: "r2", accessToken: "a2", expiresAt: now + 3_600_000, addedAt: 1, lastUsed: 1 },
+				],
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 0 },
+			}),
+			createEmptyStorage: () => ({ version: 3, accounts: [], activeIndex: 0, activeIndexByFamily: {} }),
+			loadFlaggedAccounts: async () => ({ version: 1, accounts: [] }),
+			createAccountCheckWorkingState: (flaggedStorage) => ({ flaggedStorage, removeFromActive: new Set(), storageChanged: false, flaggedChanged: false, ok: 0, errors: 0, disabled: 0 }),
+			lookupCodexCliTokensByEmail: async () => null,
+			extractAccountId: () => undefined,
+			shouldUpdateAccountIdFromToken: () => false,
+			sanitizeEmail: (email) => email,
+			extractAccountEmail: () => undefined,
+			queuedRefresh: async () => ({ type: "failed" as const, reason: "invalid_grant", message: "token has been revoked" }),
+			isRuntimeFlaggableFailure: () => true,
+			fetchCodexQuotaSnapshot: async () => ({ remaining5h: 1, remaining7d: 2 } as never),
+			resolveRequestAccountId: () => "acct",
+			formatCodexQuotaLine: () => "quota ok",
+			clampRuntimeActiveIndices: vi.fn(),
+			MODEL_FAMILIES: ["codex"],
+			saveAccounts,
+			invalidateAccountManagerCache: vi.fn(),
+			saveFlaggedAccounts: vi.fn(async () => {}),
+			now: () => now,
+			showLine: vi.fn(),
+		});
+
+		const saved = saveAccounts.mock.calls[0]?.[0];
+		expect(saved.accounts.map((entry) => entry.refreshToken)).toEqual([
+			"r1",
+			"r2",
+		]);
+		expect(saved.pinnedAccountIndex).toBe(1);
+	});
 });
