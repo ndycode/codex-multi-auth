@@ -7,6 +7,26 @@ This repository's current stable release line is `2.x`.
 Current stable release notes live in `docs/releases/`.
 This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
 
+## [2.7.0] - 2026-07-23
+
+Adds reset timestamps to `codex-multi-auth check`, so a single command answers both how much quota is left in each window and when that window comes back. The reset data was already fetched and cached; this release only renders it. Routing, rotation, storage, quota math, and the token flow are unchanged, and every surface other than `check` is byte-identical to 2.6.1.
+Closes [#633](https://github.com/ndycode/codex-multi-auth/issues/633). Also carries the product-documentation rewrite that landed after 2.6.1 was cut ([#632](https://github.com/ndycode/codex-multi-auth/pull/632)). See [docs/releases/v2.7.0.md](docs/releases/v2.7.0.md) for full details.
+
+### Added
+
+- **`check` prints when each quota window resets**, alongside the percentage left — `live session OK (5h 100%, resets 18:10 | 7d 93%, resets 13:50 on Jul 29)`. Local system timezone, 24-hour clock; a reset later today prints as `HH:MM`, past midnight it appends the date ([#633](https://github.com/ndycode/codex-multi-auth/issues/633))
+- Reset display is opt-in at the formatter level and scoped to `check`; the dashboard rows, account menu, and `forecast` keep their existing compact summaries ([#633](https://github.com/ndycode/codex-multi-auth/issues/633))
+- A `codex-multi-auth check` reference section documenting the output shape, timezone, label fallback, and missing-timestamp behaviour — including that `check`, unlike `fix`, iterates every stored account and re-enables one whose token is still usable ([#633](https://github.com/ndycode/codex-multi-auth/issues/633))
+
+### Fixed
+
+- **Quota percentages keep their severity colour when a reset time is shown.** `styleQuotaSummary` matched an anchored `label NN%` pattern, so appending `, resets ...` would have dropped every quota segment to the muted tone and silently lost the red / yellow / green colouring. The pattern now captures the reset clause and mutes only that part ([#633](https://github.com/ndycode/codex-multi-auth/issues/633))
+- A window with a missing, zero, negative, non-finite, or unparseable reset timestamp keeps its percentage and omits only the reset clause; the account check never fails on reset data ([#633](https://github.com/ndycode/codex-multi-auth/issues/633))
+
+### Changed
+
+- Product documentation rewritten against the current architecture, closing the audit's P0/P1 gaps between the docs and the live CLI and config ([#632](https://github.com/ndycode/codex-multi-auth/pull/632))
+
 ## [2.6.1] - 2026-07-14
 
 Fixes OAuth login on WSL. Installing `codex-multi-auth` on a Windows host and inside WSL at the same time broke sign-in in both environments, and removing the Windows install was the only thing that made WSL work. WSL logins now open the Windows browser, and a contended callback port is explained instead of presenting as a silent hang. Routing, rotation, storage, and the token flow are unchanged; every behavior change is gated behind a new WSL check that is `false` on all other hosts.
