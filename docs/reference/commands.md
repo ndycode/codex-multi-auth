@@ -64,9 +64,11 @@ Model probe: gpt-5.6-sol | prompt family gpt-5.2 | tool search yes | computer us
 Reset-time details:
 
 - Times are rendered in the **local system timezone** on a 24-hour clock.
-- A reset later today prints as `HH:MM`; anything past midnight adds the day
-  (`HH:MM on Mon DD`). The year is omitted because both windows are at most
-  seven days long.
+- A reset later today prints as `HH:MM`; anything past midnight appends the
+  date (`HH:MM on Jul 29` under an `en-US` locale). The date text and its
+  field order follow the host locale, so a non-English locale renders the
+  month differently — the shape is not a stable output contract. The year is
+  omitted because both windows are at most seven days long.
 - Window labels come from the backend (`5h`, `7d`, …), and fall back to
   `quota` when the backend omits the window length.
 - When the backend does not return a reset timestamp for a window, that

@@ -3327,9 +3327,11 @@ describe("codex manager cli commands", () => {
 			.map((call) => String(call[0]))
 			.find((text) => text.includes("live session OK"));
 		expect(line).toBeDefined();
-		expect(line).toMatch(
-			/live session OK \(5h 30%, resets \d{2}:\d{2}( on \w{3} \d{2})? \| 7d 90%, resets \d{2}:\d{2} on \w{3} \d{2}\)/,
-		);
+		// The date half of the suffix is produced by toLocaleDateString with an
+		// undefined locale, so its month text and field order follow the host.
+		// Assert the structure, not an en-US shape, or this fails off en-US.
+		expect(line).toMatch(/5h 30%, resets \d{2}:\d{2}/);
+		expect(line).toMatch(/7d 90%, resets \d{2}:\d{2} on \S/);
 	});
 
 	it("check keeps the percentage when a window has no reset timestamp", async () => {
