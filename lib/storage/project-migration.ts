@@ -46,6 +46,13 @@ export function mergeStorageForMigration(
 		activeIndex: current.activeIndex,
 		activeIndexByFamily: current.activeIndexByFamily,
 		accounts: [...current.accounts, ...incoming.accounts],
+		// Carry the manual pin (#474) and affinity generation from the current
+		// storage through legacy-project migration; normalizeAccountStorage
+		// validates/clamps them against the merged account list. Omitting them
+		// dropped the pin and reset affinityGeneration to 0, which let a running
+		// proxy clobber a newer CLI pin.
+		pinnedAccountIndex: current.pinnedAccountIndex,
+		affinityGeneration: current.affinityGeneration,
 	});
 	if (!merged) {
 		return current;

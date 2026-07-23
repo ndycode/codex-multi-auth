@@ -190,6 +190,18 @@ export function mergeImportedAccounts(params: {
 		activeIndex: existingActiveIndex,
 		activeIndexByFamily: params.existing?.activeIndexByFamily,
 	};
+	// Preserve the user's manual pin (#474) and affinity generation across import.
+	// Rebuilding storage from scratch here previously dropped a `switch <n>` pin
+	// and reset affinityGeneration to 0, which lets a running proxy holding a
+	// higher in-memory generation clobber a newer CLI pin. normalizeAccountStorage
+	// re-validates/clamps an out-of-range pin against the merged account list on
+	// the next load, so carrying the raw value forward is safe.
+	if (typeof params.existing?.pinnedAccountIndex === "number") {
+		newStorage.pinnedAccountIndex = params.existing.pinnedAccountIndex;
+	}
+	if (typeof params.existing?.affinityGeneration === "number") {
+		newStorage.affinityGeneration = params.existing.affinityGeneration;
+	}
 	const importedCount =
 		deduplicatedAccounts.length - deduplicatedExistingAccounts.length;
 	const skippedCount = params.imported.accounts.length - importedCount;

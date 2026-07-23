@@ -63,6 +63,52 @@ describe("import export helpers", () => {
 		expect(result.skipped).toBe(0);
 	});
 
+	it("preserves the manual pin and affinity generation across import (#474)", () => {
+		const result = mergeImportedAccounts({
+			existing: {
+				version: 3,
+				accounts: [{ refreshToken: "a" }, { refreshToken: "b" }],
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				pinnedAccountIndex: 1,
+				affinityGeneration: 7,
+			},
+			imported: {
+				version: 3,
+				accounts: [{ refreshToken: "c" }],
+				activeIndex: 0,
+				activeIndexByFamily: {},
+			},
+			maxAccounts: 10,
+			deduplicateAccounts: (accounts) => accounts,
+		});
+
+		expect(result.newStorage.pinnedAccountIndex).toBe(1);
+		expect(result.newStorage.affinityGeneration).toBe(7);
+	});
+
+	it("leaves pin and affinity generation unset when existing storage lacks them", () => {
+		const result = mergeImportedAccounts({
+			existing: {
+				version: 3,
+				accounts: [{ refreshToken: "a" }],
+				activeIndex: 0,
+				activeIndexByFamily: {},
+			},
+			imported: {
+				version: 3,
+				accounts: [{ refreshToken: "b" }],
+				activeIndex: 0,
+				activeIndexByFamily: {},
+			},
+			maxAccounts: 10,
+			deduplicateAccounts: (accounts) => accounts,
+		});
+
+		expect(result.newStorage.pinnedAccountIndex).toBeUndefined();
+		expect(result.newStorage.affinityGeneration).toBeUndefined();
+	});
+
 	it("throws for invalid import payloads and empty exports", async () => {
 		await expect(
 			readImportFile({

@@ -74,4 +74,32 @@ describe("project migration helpers", () => {
 		const fallback = mergeStorageForMigration(current, incoming, () => null);
 		expect(fallback).toBe(current);
 	});
+
+	it("carries the manual pin and affinity generation through migration (#474)", () => {
+		const current: AccountStorageV3 = {
+			version: 3,
+			accounts: [{ refreshToken: "a" }] as AccountStorageV3["accounts"],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+			pinnedAccountIndex: 0,
+			affinityGeneration: 5,
+		};
+		const incoming: AccountStorageV3 = {
+			version: 3,
+			accounts: [{ refreshToken: "b" }] as AccountStorageV3["accounts"],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		};
+
+		const normalize = vi.fn((value: unknown) => value as AccountStorageV3);
+		const merged = mergeStorageForMigration(current, incoming, normalize);
+
+		// The pin/gen must be forwarded into normalizeAccountStorage, which is where
+		// clamping/validation against the merged account list happens.
+		expect(normalize).toHaveBeenCalledWith(
+			expect.objectContaining({ pinnedAccountIndex: 0, affinityGeneration: 5 }),
+		);
+		expect(merged.pinnedAccountIndex).toBe(0);
+		expect(merged.affinityGeneration).toBe(5);
+	});
 });
