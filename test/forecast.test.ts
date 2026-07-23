@@ -1085,4 +1085,43 @@ describe("forecast helpers", () => {
 		expect(results[1].waitMs).toBe(600_000);
 	});
 
+	it("flags a live 200 probe at 100% used with no resetAtMs as exhausted, not ready", () => {
+		const now = 1_700_000_000_000;
+		const account = {
+			refreshToken: "refresh-1",
+			addedAt: now - 10_000,
+			lastUsed: now - 10_000,
+		};
+		// The upstream reported the primary window 100% used but omitted resetAtMs.
+		// getLiveQuotaWaitMs yields 0 (nothing to wait on) and the 429 branch never
+		// fires on a 200, so before the fix this stayed "ready" and could be
+		// recommended as the best account despite being fully exhausted.
+		const result = evaluateForecastAccount({
+			index: 0,
+			now,
+			isCurrent: false,
+			account,
+			allAccounts: [account],
+			liveQuota: {
+				status: 200,
+				model: "gpt-5.3-codex",
+				primary: { usedPercent: 100, windowMinutes: 300 },
+				secondary: {
+					usedPercent: 20,
+					windowMinutes: 10080,
+					resetAtMs: now + 300_000,
+				},
+			},
+		});
+
+		expect(result.availability).not.toBe("ready");
+		expect(result.exhausted).toBe(true);
+
+		// The HIGH-severity concern: such an account must not be recommended as a
+		// healthy pick. As the only account it yields a null recommendation.
+		const recommendation = recommendForecastAccount([result]);
+		expect(recommendation.recommendedIndex).toBeNull();
+		expect(recommendation.reason).toContain("blocked or exhausted");
+	});
+
 });

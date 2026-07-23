@@ -5,6 +5,7 @@ import {
 	findQuotaCacheEntryForAccount,
 	isQuotaCacheEntryExhausted,
 	quotaLeftPercentFromUsed,
+	quotaUsedPercentIsExhausted,
 } from "./quota-readiness.js";
 import { getRateLimitResetTimeForFamily } from "./runtime/account-status.js";
 import type { AccountMetadataV3 } from "./storage.js";
@@ -327,6 +328,26 @@ export function evaluateForecastAccount(
 		waitMs = Math.max(waitMs, liveWait);
 		if (liveWait > 0 && availability === "ready") {
 			availability = "delayed";
+		}
+
+		// A live window at 100% used with NO resetAtMs has no known recovery time —
+		// the probe reports it fully consumed and cannot say when it refills. On a
+		// 200 probe getLiveQuotaWaitMs then yields 0 (no reset to wait on) and the
+		// 429 branch never fires, so without this the account would stay "ready" and
+		// be recommended as a healthy pick. Treat that case as exhausted and downgrade
+		// a "ready" account to "delayed". A window WITH a resetAtMs is only *delayed*,
+		// not exhausted: getLiveQuotaWaitMs already contributes its wait above, so a
+		// 429 with known reset times stays a recoverable "delayed" account rather than
+		// a blocked one. The raw-usedPercent test (not rounded left-percent) keeps
+		// 99.6% from being falsely benched.
+		const liveExhausted =
+			(quotaUsedPercentIsExhausted(quota.primary.usedPercent) &&
+				typeof quota.primary.resetAtMs !== "number") ||
+			(quotaUsedPercentIsExhausted(quota.secondary.usedPercent) &&
+				typeof quota.secondary.resetAtMs !== "number");
+		if (liveExhausted) {
+			exhausted = true;
+			if (availability === "ready") availability = "delayed";
 		}
 
 		const primaryUsage = describeQuotaUsage(

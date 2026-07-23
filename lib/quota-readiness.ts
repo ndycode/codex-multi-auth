@@ -74,6 +74,22 @@ export function quotaLeftPercentFromUsed(
 	return Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
 }
 
+// A window is exhausted only when it is genuinely at/over 100% used. Base this on
+// the RAW usedPercent, never the rounded quotaLeftPercentFromUsed: rounding
+// 100 - 99.6 = 0.4 down to 0 left-percent would falsely bench a window that still
+// has ~0.4% quota (any usedPercent in (99.5, 100) rounds to 0 left). The header
+// parser preserves fractional used-percent, so this input is expected;
+// quotaLeftPercentFromUsed stays for DISPLAY only.
+export function quotaUsedPercentIsExhausted(
+	usedPercent: number | undefined,
+): boolean {
+	return (
+		typeof usedPercent === "number" &&
+		Number.isFinite(usedPercent) &&
+		usedPercent >= 100
+	);
+}
+
 function quotaWindowIsExhausted(
 	window: QuotaWindowLike | undefined,
 	now = Date.now(),
@@ -96,8 +112,7 @@ function quotaWindowIsExhausted(
 	) {
 		return false;
 	}
-	const leftPercent = quotaLeftPercentFromUsed(window?.usedPercent);
-	return typeof leftPercent === "number" && leftPercent <= 0;
+	return quotaUsedPercentIsExhausted(window?.usedPercent);
 }
 
 export function isQuotaCacheEntryExhausted(

@@ -26,6 +26,25 @@ describe("quota readiness", () => {
 		).toBe(false);
 	});
 
+	// Exhaustion is decided on RAW usedPercent (>= 100), not the rounded
+	// left-percent: 100 - 99.6 = 0.4 rounds to 0 left-percent but 0.4% quota
+	// genuinely remains, so a fractional usedPercent in (99.5, 100) must NOT read
+	// as exhausted. usedPercent === 100 still exhausts.
+	it("does not bench a window with fractional quota just above 99.5% used", () => {
+		expect(
+			isQuotaCacheEntryExhausted({
+				primary: { usedPercent: 99.6, windowMinutes: 300 },
+				secondary: { usedPercent: 30, windowMinutes: 10080 },
+			}),
+		).toBe(false);
+		expect(
+			isQuotaCacheEntryExhausted({
+				primary: { usedPercent: 100, windowMinutes: 300 },
+				secondary: { usedPercent: 30, windowMinutes: 10080 },
+			}),
+		).toBe(true);
+	});
+
 	it("does not treat expired quota windows as exhausted", () => {
 		const now = 10_000;
 		expect(
