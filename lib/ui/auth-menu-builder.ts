@@ -333,7 +333,7 @@ function formatQuotaPercent(
  * cached before window durations were persisted), so Plus/Pro rows keep their
  * familiar "5h"/"7d" labels while a Codex Business monthly window renders "30d".
  */
-function resolveQuotaWindowLabel(
+export function resolveQuotaWindowLabel(
 	windowMinutes: number | undefined,
 	fallbackLabel: string,
 ): string {

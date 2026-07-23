@@ -36,6 +36,7 @@ import {
 } from "../runtime/runtime-current-account.js";
 import { loadPersistedRuntimeObservabilitySnapshot } from "../runtime/runtime-observability.js";
 import type { AccountMetadataV3, AccountStorageV3 } from "../storage.js";
+import { resolveQuotaWindowLabel } from "../ui/auth-menu-builder.js";
 import { hasUsableAccessToken } from "./account-credentials.js";
 import {
 	formatAccountQuotaSummary,
@@ -290,7 +291,7 @@ function mapAccountStatus(
 
 function parseLeftPercentFromQuotaSummary(
 	summary: string | undefined,
-	windowLabel: "5h" | "7d",
+	windowLabel: string,
 ): number {
 	if (!summary) return -1;
 	const match = summary.match(
@@ -303,22 +304,32 @@ function parseLeftPercentFromQuotaSummary(
 
 function readQuotaLeftPercent(
 	account: ExistingAccountInfo,
-	windowLabel: "5h" | "7d",
+	window: "primary" | "secondary",
 ): number {
-	const direct =
-		windowLabel === "5h"
-			? account.quota5hLeftPercent
-			: account.quota7dLeftPercent;
+	const isPrimary = window === "primary";
+	const direct = isPrimary
+		? account.quota5hLeftPercent
+		: account.quota7dLeftPercent;
 	if (typeof direct === "number" && Number.isFinite(direct)) {
 		return Math.max(0, Math.min(100, Math.round(direct)));
 	}
-	return parseLeftPercentFromQuotaSummary(account.quotaSummary, windowLabel);
+	// The summary string is labelled by DURATION (formatAccountQuotaSummary), so a
+	// Codex Business row reads "30d 18%, ...". Searching it for the positional
+	// "5h"/"7d" finds nothing, scores the account -1, and sinks it to the bottom of
+	// a ready-first sort. Resolve the label from the window's real duration.
+	const label = resolveQuotaWindowLabel(
+		isPrimary
+			? account.quotaPrimaryWindowMinutes
+			: account.quotaSecondaryWindowMinutes,
+		isPrimary ? "5h" : "7d",
+	);
+	return parseLeftPercentFromQuotaSummary(account.quotaSummary, label);
 }
 
 function readQuotaFloorPercent(account: ExistingAccountInfo): number {
 	return Math.min(
-		readQuotaLeftPercent(account, "5h"),
-		readQuotaLeftPercent(account, "7d"),
+		readQuotaLeftPercent(account, "primary"),
+		readQuotaLeftPercent(account, "secondary"),
 	);
 }
 
@@ -362,12 +373,12 @@ function compareReadyFirstAccounts(
 	const rightFloor = readQuotaFloorPercent(right);
 	if (leftFloor !== rightFloor) return rightFloor - leftFloor;
 
-	const left5h = readQuotaLeftPercent(left, "5h");
-	const right5h = readQuotaLeftPercent(right, "5h");
+	const left5h = readQuotaLeftPercent(left, "primary");
+	const right5h = readQuotaLeftPercent(right, "primary");
 	if (left5h !== right5h) return right5h - left5h;
 
-	const left7d = readQuotaLeftPercent(left, "7d");
-	const right7d = readQuotaLeftPercent(right, "7d");
+	const left7d = readQuotaLeftPercent(left, "secondary");
+	const right7d = readQuotaLeftPercent(right, "secondary");
 	if (left7d !== right7d) return right7d - left7d;
 
 	const leftLastUsed = left.lastUsed ?? 0;

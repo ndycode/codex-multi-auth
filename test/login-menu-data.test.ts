@@ -347,6 +347,50 @@ describe("toExistingAccountInfo", () => {
 		expect(hint).not.toMatch(/\b5h\b/);
 	});
 
+	it("orders a monthly-window account by its real headroom", () => {
+		// The ready-first sort reads the primary/secondary windows positionally; a
+		// Codex Business row's primary window is 30d rather than 5h, and it must
+		// still be read as the primary window (regression guard for the sort helpers
+		// switching from positional "5h"/"7d" labels to primary/secondary).
+		const now = Date.now();
+		const storage = storageWith([account("plus"), account("business")]);
+		const cache: QuotaCacheData = {
+			byAccountId: {
+				acc_plus: cacheEntry(
+					{
+						primary: { usedPercent: 80, windowMinutes: 300, resetAtMs: now + 3_600_000 },
+						secondary: { usedPercent: 80, windowMinutes: 10_080, resetAtMs: now + 86_400_000 },
+					},
+					now,
+				),
+				acc_business: cacheEntry(
+					{
+						primary: { usedPercent: 10, windowMinutes: 43_200, resetAtMs: now + 28 * 86_400_000 },
+						secondary: { usedPercent: 10, windowMinutes: 10_080, resetAtMs: now + 86_400_000 },
+					},
+					now,
+				),
+			},
+			byEmail: {},
+		};
+
+		const rows = toExistingAccountInfo(
+			storage,
+			cache,
+			settings({
+				menuSortEnabled: true,
+				menuSortMode: "ready-first",
+				menuSortPinCurrent: false,
+			}),
+		);
+
+		// The monthly account has far more headroom, so it sorts first.
+		expect(rows.map((row) => row.accountId)).toEqual([
+			"acc_business",
+			"acc_plus",
+		]);
+	});
+
 	it("preserves storage order when sorting is disabled", () => {
 		const storage = storageWith([account("b"), account("a")]);
 
