@@ -5,6 +5,8 @@ import {
 } from "../lib/dashboard-settings.js";
 import type { QuotaCacheData, QuotaCacheEntry } from "../lib/quota-cache.js";
 import type { AccountMetadataV3, AccountStorageV3 } from "../lib/storage.js";
+import { formatAccountHint } from "../lib/ui/auth-menu-builder.js";
+import { getUiRuntimeOptions } from "../lib/ui/runtime.js";
 
 const {
 	loadCodexCliStateMock,
@@ -111,6 +113,11 @@ function cacheEntry(
 
 function emptyCache(): QuotaCacheData {
 	return { byAccountId: {}, byEmail: {} };
+}
+
+// The menu row is painted with ANSI in either UI mode; only the text is contract.
+function stripAnsi(value: string): string {
+	return value.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
 function settings(
@@ -300,6 +307,88 @@ describe("toExistingAccountInfo", () => {
 
 		expect(rows.map((row) => row.accountId)).toEqual(["acc_high", "acc_low"]);
 		expect(rows.map((row) => row.quickSwitchNumber)).toEqual([2, 1]);
+	});
+
+	// Regression for issue #635: the row label is derived from the cached window
+	// duration, so the mapping has to carry `windowMinutes` through to the row. A
+	// field-name drift here would silently restore the positional "5h" label with
+	// every auth-menu-builder test still green.
+	it("carries cached window durations onto rows so a monthly window renders 30d", () => {
+		const now = Date.now();
+		const storage = storageWith([account("business")]);
+		const cache: QuotaCacheData = {
+			byAccountId: {
+				acc_business: cacheEntry(
+					{
+						primary: {
+							usedPercent: 82,
+							windowMinutes: 43_200,
+							resetAtMs: now + 28 * 86_400_000,
+						},
+					},
+					now,
+				),
+			},
+			byEmail: {},
+		};
+
+		const rows = toExistingAccountInfo(
+			storage,
+			cache,
+			settings({ menuSortEnabled: false }),
+		);
+
+		expect(rows[0].quotaPrimaryWindowMinutes).toBe(43_200);
+		expect(rows[0].quotaSecondaryWindowMinutes).toBe(10_080);
+
+		const hint = stripAnsi(formatAccountHint(rows[0], getUiRuntimeOptions()));
+		expect(hint).toContain("30d ");
+		expect(hint).toContain("7d ");
+		expect(hint).not.toMatch(/\b5h\b/);
+	});
+
+	it("orders a monthly-window account by its real headroom", () => {
+		// The ready-first sort reads the primary/secondary windows positionally; a
+		// Codex Business row's primary window is 30d rather than 5h, and it must
+		// still be read as the primary window (regression guard for the sort helpers
+		// switching from positional "5h"/"7d" labels to primary/secondary).
+		const now = Date.now();
+		const storage = storageWith([account("plus"), account("business")]);
+		const cache: QuotaCacheData = {
+			byAccountId: {
+				acc_plus: cacheEntry(
+					{
+						primary: { usedPercent: 80, windowMinutes: 300, resetAtMs: now + 3_600_000 },
+						secondary: { usedPercent: 80, windowMinutes: 10_080, resetAtMs: now + 86_400_000 },
+					},
+					now,
+				),
+				acc_business: cacheEntry(
+					{
+						primary: { usedPercent: 10, windowMinutes: 43_200, resetAtMs: now + 28 * 86_400_000 },
+						secondary: { usedPercent: 10, windowMinutes: 10_080, resetAtMs: now + 86_400_000 },
+					},
+					now,
+				),
+			},
+			byEmail: {},
+		};
+
+		const rows = toExistingAccountInfo(
+			storage,
+			cache,
+			settings({
+				menuSortEnabled: true,
+				menuSortMode: "ready-first",
+				menuSortPinCurrent: false,
+			}),
+		);
+
+		// The monthly account has far more headroom, so it sorts first.
+		expect(rows.map((row) => row.accountId)).toEqual([
+			"acc_business",
+			"acc_plus",
+		]);
 	});
 
 	it("preserves storage order when sorting is disabled", () => {
