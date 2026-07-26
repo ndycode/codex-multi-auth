@@ -1,5 +1,7 @@
-//! PORT-PENDING: scripts/codex-app-launcher.js
+//! `codex-multi-auth-app-launcher` — Codex app shortcut routing (TS
+//! `scripts/codex-app-launcher.js`): Windows `.lnk` retarget / macOS app /
+//! Linux `.desktop`, with `--remove` and `--dry-run`.
+
 fn main() {
-    eprintln!("codex-multi-auth (rust): PORT-PENDING binary stub");
-    std::process::exit(2);
+    cma_bin::run_main(|args| async move { cma_runtime::app_launcher::run(&args).await });
 }

@@ -1,5 +1,7 @@
-//! PORT-PENDING: scripts/mcodex.js
+//! `mcodex` — convenience launcher over the codex wrapper (TS
+//! `scripts/mcodex.js`): default forward; `--monitor` (watch); `--tmux`/`-t`
+//! (+ `--live-accounts`). Missing-tool fallbacks per spec 14 §2.1 / R8.
+
 fn main() {
-    eprintln!("codex-multi-auth (rust): PORT-PENDING binary stub");
-    std::process::exit(2);
+    cma_bin::run_main(|args| async move { cma_wrapper::mcodex::run_mcodex(&args).await });
 }
