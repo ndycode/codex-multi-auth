@@ -1,0 +1,34 @@
+[package]
+name = "cma-wrapper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cma-core = { path = "../core" }
+cma-config = { path = "../config" }
+cma-storage = { path = "../storage" }
+cma-accounts = { path = "../accounts" }
+cma-cli-mirror = { path = "../climirror" }
+cma-runtime = { path = "../runtime" }
+cma-proxy = { path = "../proxy" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+rand.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_System_Threading"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+serial_test.workspace = true
+proptest.workspace = true
+insta.workspace = true
+cma-testkit = { path = "../testkit" }
+
+[lints.rust]
+unsafe_code = "deny"

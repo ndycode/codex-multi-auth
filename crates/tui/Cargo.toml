@@ -1,0 +1,24 @@
+[package]
+name = "cma-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cma-core = { path = "../core" }
+crossterm.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+unicode-segmentation.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serial_test.workspace = true
+proptest.workspace = true
+insta.workspace = true
+cma-testkit = { path = "../testkit" }
+
+[lints.rust]
+unsafe_code = "deny"
