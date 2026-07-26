@@ -1,0 +1,13 @@
+{
+  "auth_mode": "chatgpt",
+  "OPENAI_API_KEY": null,
+  "email": "user.one@example.com",
+  "tokens": {
+    "access_token": "at-fixture-account-one-0000000001",
+    "refresh_token": "rt-fixture-account-one-0000000001",
+    "account_id": "acct-user-one",
+    "id_token": "idt-fixture-account-one-0000000001"
+  },
+  "last_refresh": "2025-06-15T16:06:40.000Z",
+  "codexMultiAuthSyncVersion": 1750000000000
+}
