@@ -56,6 +56,37 @@ fn resolves_selectors_against_the_scoped_pool_on_disk() {
     drop(sandbox);
 }
 
+/// TS `String.prototype.toLowerCase` parity: `--account` selectors match
+/// ids/emails with FULL Unicode lowercasing, not ASCII-only — `--account`
+/// never falls back, so an ASCII-only mismatch would fail the run hard.
+#[test]
+#[serial(env)]
+fn unicode_selectors_match_case_insensitively_in_both_directions() {
+    let sandbox = EnvSandbox::new();
+    let dir = sandbox.codex_multi_auth_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let storage = serde_json::json!({
+        "version": 3,
+        "activeIndex": 0,
+        "accounts": [
+            { "accountId": "acc_1", "email": "ä@example.com",
+              "refreshToken": "r1", "addedAt": 1, "lastUsed": 1 },
+            { "accountId": "acc_2", "email": "Ö@EXAMPLE.COM",
+              "refreshToken": "r2", "addedAt": 2, "lastUsed": 2 }
+        ]
+    });
+    std::fs::write(
+        dir.join("openai-codex-accounts.json"),
+        serde_json::to_string_pretty(&storage).unwrap(),
+    )
+    .unwrap();
+    // Upper-case selector vs lower-case stored email…
+    assert_eq!(resolve_forced_account_index("Ä@EXAMPLE.COM").unwrap(), 0);
+    // …and the reverse (lower-case selector vs upper-case stored email).
+    assert_eq!(resolve_forced_account_index("ö@example.com").unwrap(), 1);
+    drop(sandbox);
+}
+
 #[test]
 #[serial(env)]
 fn empty_pool_fails_with_login_hint() {

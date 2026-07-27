@@ -406,6 +406,46 @@ struct FailoverSuccess {
     cross_account: bool,
 }
 
+/// How the caller must finish the usage-ledger row for a `/responses` run.
+enum RunCompletion {
+    /// Record the row immediately (TS `finally` semantics).
+    Record(RuntimeUsageRecordInput),
+    /// STREAMING upstream success: the record is deferred to the
+    /// client-forward stage (`forwarded ? success : stream_forward_failed`),
+    /// which also owns the network-failure account cleanup on a forward
+    /// stall (TS runtime-rotation-proxy.ts:1424-1450 onStreamError).
+    DeferStream {
+        success_completion: RuntimeUsageRecordInput,
+        account_index: i64,
+        family: ModelFamily,
+        model: Option<String>,
+        session_key: Option<String>,
+    },
+}
+
+/// Deferred bookkeeping for a STREAMING `/responses` success handed to the
+/// server's client-forward stage: on a mid-stream stall / upstream read
+/// error / client write error the serving account gets recordFailure + a
+/// network-error cooldown, session affinity is forgotten, and the ledger row
+/// becomes failure/`stream_forward_failed`; on a clean forward the row is
+/// the success completion (TS runtime-rotation-proxy.ts:1424-1450).
+pub struct ResponsesStreamBookkeeping {
+    pub recorder: RuntimeUsageRecorder,
+    pub success_completion: RuntimeUsageRecordInput,
+    pub account_index: i64,
+    pub family: ModelFamily,
+    pub model: Option<String>,
+    pub session_key: Option<String>,
+}
+
+/// Result of [`ProxyPipeline::handle_responses_for_server`].
+pub struct ResponsesOutcome {
+    pub response: StreamResponse,
+    /// `Some` only for a streaming upstream success — everything else was
+    /// already recorded by the pipeline.
+    pub deferred: Option<ResponsesStreamBookkeeping>,
+}
+
 impl ProxyPipeline {
     pub fn new(state: RotationProxyState, config: PipelineConfig) -> Self {
         let started_at = now_ms();
@@ -473,14 +513,36 @@ impl ProxyPipeline {
         }
     }
 
-    /// Entry point for `/responses` requests. Records the usage-ledger row
-    /// (source `runtime-proxy`, operation `responses`) exactly once and
-    /// mirrors metrics into observability on exit (the TS `finally`).
+    /// Entry point for `/responses` requests from callers that consume the
+    /// response themselves (tests, in-process clients). Records the
+    /// usage-ledger row (source `runtime-proxy`, operation `responses`)
+    /// exactly once — a deferred streaming-success row is recorded here
+    /// because no separate forward stage exists for these callers.
     pub async fn handle_responses(
         &self,
         ctx: RequestContext,
         trace_id: Option<String>,
     ) -> StreamResponse {
+        let outcome = self.handle_responses_for_server(ctx, trace_id).await;
+        if let Some(deferred) = outcome.deferred {
+            deferred.recorder.record(deferred.success_completion).await;
+        }
+        outcome.response
+    }
+
+    /// `/responses` entry point for the HTTP server: like
+    /// [`Self::handle_responses`], but for a STREAMING upstream success the
+    /// usage-ledger record and the network-failure account cleanup are
+    /// DEFERRED to the caller's client-forward stage — the row is
+    /// `forwarded ? success : failure/stream_forward_failed` and a
+    /// mid-stream stall cools the serving account down and forgets session
+    /// affinity (TS runtime-rotation-proxy.ts:1424-1450). Mirrors metrics
+    /// into observability on exit (the TS `finally`).
+    pub async fn handle_responses_for_server(
+        &self,
+        ctx: RequestContext,
+        trace_id: Option<String>,
+    ) -> ResponsesOutcome {
         let started_at = now_ms();
         {
             let mut metrics = self.lock_metrics();
@@ -491,9 +553,28 @@ impl ProxyPipeline {
         // Policy gate runs inside `run`; the recorder needs the decision's
         // project key, so `run` creates it and returns the completion.
         let (response, recorder, completion) = self.run(ctx, trace_id.as_deref()).await;
-        recorder.record(completion).await;
+        let deferred = match completion {
+            RunCompletion::Record(completion) => {
+                recorder.record(completion).await;
+                None
+            }
+            RunCompletion::DeferStream {
+                success_completion,
+                account_index,
+                family,
+                model,
+                session_key,
+            } => Some(ResponsesStreamBookkeeping {
+                recorder,
+                success_completion,
+                account_index,
+                family,
+                model,
+                session_key,
+            }),
+        };
         self.sync_runtime_observability(None);
-        response
+        ResponsesOutcome { response, deferred }
     }
 
     /// The merged request state machine. Returns the response plus the
@@ -502,7 +583,7 @@ impl ProxyPipeline {
         &self,
         mut ctx: RequestContext,
         trace_id: Option<&str>,
-    ) -> (StreamResponse, RuntimeUsageRecorder, RuntimeUsageRecordInput) {
+    ) -> (StreamResponse, RuntimeUsageRecorder, RunCompletion) {
         let config = &self.inner.config;
 
         // ------------------------------------------------------------------
@@ -665,11 +746,13 @@ impl ProxyPipeline {
             append: None,
         });
         // Default completion (spec 13 §5.2).
-        let failure_completion = |status: Option<i64>, code: &str| RuntimeUsageRecordInput {
-            outcome: Some(UsageLedgerOutcome::Failure),
-            status_code: status,
-            error_code: Some(code.to_string()),
-            ..Default::default()
+        let failure_completion = |status: Option<i64>, code: &str| {
+            RunCompletion::Record(RuntimeUsageRecordInput {
+                outcome: Some(UsageLedgerOutcome::Failure),
+                status_code: status,
+                error_code: Some(code.to_string()),
+                ..Default::default()
+            })
         };
 
         if let Some(decision) = policy_decision.as_ref().filter(|decision| !decision.allowed) {
@@ -690,12 +773,12 @@ impl ProxyPipeline {
                 }
             }))
             .unwrap_or_default();
-            let completion = RuntimeUsageRecordInput {
+            let completion = RunCompletion::Record(RuntimeUsageRecordInput {
                 outcome: Some(UsageLedgerOutcome::Blocked),
                 status_code: Some(decision.status_code as i64),
                 error_code: Some(code),
                 ..Default::default()
-            };
+            });
             return (
                 StreamResponse::from_text(
                     decision.status_code,
@@ -811,8 +894,15 @@ impl ProxyPipeline {
             let mut transient_exhaustion_reason: Option<ExhaustionReason> = None;
             let mut reloaded_after_no_account = false;
 
-            // Capability + policy + sticky score boosts (merged additively).
-            let mut score_boost_by_account: HashMap<i64, f64> = {
+            // Capability + policy score boosts (merged additively). The
+            // sticky min-rotation boost is NOT folded in here: TS recomputes
+            // it on EVERY iteration of the account-attempt while-loop
+            // (runtime-rotation-proxy.ts:956-961), re-reading
+            // lastGlobalAccountIndex/lastGlobalSwitchAt, so attempts that
+            // span the min-rotation window (429 short-retry sleeps,
+            // stream-failover waits) or race a concurrent request drop or
+            // retarget the boost mid-request.
+            let base_score_boost_by_account: HashMap<i64, f64> = {
                 let mut manager = shared_manager.lock().await;
                 let snapshot = manager.get_accounts_snapshot();
                 let capability = self
@@ -821,7 +911,7 @@ impl ProxyPipeline {
                     .lock()
                     .unwrap_or_else(|poison| poison.into_inner());
                 let now = now_ms();
-                snapshot
+                let mut boosts: HashMap<i64, f64> = snapshot
                     .iter()
                     .map(|account| {
                         let key = entitlement_key_for(account);
@@ -833,23 +923,14 @@ impl ProxyPipeline {
                             capability.get_boost(&key, &boost_model, now),
                         )
                     })
-                    .collect()
+                    .collect();
+                if let Some(decision) = policy_decision.as_ref() {
+                    for (index, boost) in &decision.score_boost_by_account {
+                        *boosts.entry(*index).or_insert(0.0) += *boost;
+                    }
+                }
+                boosts
             };
-            if let Some(decision) = policy_decision.as_ref() {
-                for (index, boost) in &decision.score_boost_by_account {
-                    *score_boost_by_account.entry(*index).or_insert(0.0) += *boost;
-                }
-            }
-            // Sticky min-rotation boost (spec 04 rotation loop step 1).
-            {
-                let state = self.inner.state.lock().await;
-                if env.min_rotation_interval_ms > 0
-                    && let Some(last_index) = state.last_global_account_index
-                    && now_ms() - state.last_global_switch_at < env.min_rotation_interval_ms
-                {
-                    *score_boost_by_account.entry(last_index).or_insert(0.0) += 1_000.0;
-                }
-            }
 
             // --------------------------------------------------------------
             // §5.5.1 account attempt loop
@@ -857,6 +938,21 @@ impl ProxyPipeline {
             'account: while attempted.len() < account_count.max(1)
                 && transient_attempts < transient_attempt_limit
             {
+                // Sticky min-rotation boost (spec 04 rotation loop step 1) —
+                // recomputed PER ATTEMPT into a fresh clone of the base map
+                // (never += into a persistent map: that would stack +1000 per
+                // attempt).
+                let score_boost_by_account: HashMap<i64, f64> = {
+                    let state = self.inner.state.lock().await;
+                    merge_sticky_min_rotation_boost(
+                        &base_score_boost_by_account,
+                        env.min_rotation_interval_ms,
+                        state.last_global_account_index,
+                        state.last_global_switch_at,
+                        now_ms(),
+                    )
+                };
+
                 // Selection (pin > sequential > affinity > hybrid).
                 let selected: Option<ManagedAccount> = {
                     let mut manager = shared_manager.lock().await;
@@ -976,7 +1072,7 @@ impl ProxyPipeline {
                     token_invalidation_cooldown_ms: env.token_invalidation_cooldown_ms,
                 })
                 .await;
-                let (access_token, account) = match fresh {
+                let (access_token, mut account) = match fresh {
                     EnsureFreshAccessTokenResult::Ok {
                         access_token,
                         account,
@@ -1188,6 +1284,33 @@ impl ProxyPipeline {
                         if let Some(email) = identity.email.clone() {
                             live.meta.email = Some(email);
                         }
+                    }
+                }
+                // Mirror the write-back onto the local clone: TS mutates the
+                // LIVE account object (`account.accountId = accountId`,
+                // index.ts:1467-1478), so later reads through `account` —
+                // e.g. the 429 backoff stable key
+                // (`account.accountId ?? account.email ?? null`) — always
+                // see the resolved id even when the stored metadata had none.
+                {
+                    let had_account_id = account
+                        .meta
+                        .account_id
+                        .as_deref()
+                        .is_some_and(|id| !id.trim().is_empty());
+                    account.meta.account_id = Some(resolved_account_id.clone());
+                    if !had_account_id
+                        && identity
+                            .token_account_id
+                            .as_deref()
+                            .is_some_and(|token_id| token_id == resolved_account_id)
+                    {
+                        account.meta.account_id_source = stored_source.or(Some(
+                            cma_core::schemas::account_storage::AccountIdSource::Token,
+                        ));
+                    }
+                    if let Some(email) = identity.email.clone() {
+                        account.meta.email = Some(email);
                     }
                 }
 
@@ -1461,13 +1584,21 @@ impl ProxyPipeline {
                             cma_request::context_overflow::ContextOverflowOutcome::Handled {
                                 response,
                             } => {
-                                let completion = RuntimeUsageRecordInput {
-                                    outcome: Some(UsageLedgerOutcome::Success),
-                                    status_code: Some(response.status as i64),
-                                    error_code: None,
-                                    ..Default::default()
-                                };
-                                return (response, recorder, completion);
+                                // TS returns early WITHOUT updating
+                                // usageCompletion, so the finally block
+                                // records the initialized default row:
+                                // failure / plugin_host_request_failed /
+                                // statusCode null (looks like a TS oversight,
+                                // but the ledger shape must match — change
+                                // both sides together if this is ever fixed).
+                                return (
+                                    response,
+                                    recorder,
+                                    failure_completion(
+                                        None,
+                                        "plugin_host_request_failed",
+                                    ),
+                                );
                             }
                             cma_request::context_overflow::ContextOverflowOutcome::NotHandled {
                                 response,
@@ -1505,6 +1636,17 @@ impl ProxyPipeline {
                             .error_body
                             .clone()
                             .unwrap_or(Value::Null);
+                        // The ladder keys off the REMAPPED status
+                        // (mapUsageLimit404WithBody rewrites structured 404
+                        // usage-limit bodies to 429 and 404 entitlement
+                        // bodies to 403): TS reads `errorResponse.status` in
+                        // the workspace-disabled, 403-entitlement, 429 and
+                        // step-10 catch-all predicates. The RAW `status`
+                        // stays in place everywhere TS also reads
+                        // `response.status` (quota-scheduler snapshot, 5xx
+                        // check, lastError, failure completion) and for the
+                        // 401 vector (the remap never produces 401).
+                        let mapped_status = error_result.response.status;
 
                         // 3. Unsupported model traversal + fallback chains.
                         let info = get_unsupported_codex_model_info(&error_body_value);
@@ -1659,7 +1801,7 @@ impl ProxyPipeline {
                             .to_string();
                         if !info.is_unsupported
                             && is_workspace_disabled_error(
-                                status,
+                                mapped_status,
                                 &error_code_value,
                                 &error_message_text,
                             )
@@ -1750,8 +1892,10 @@ impl ProxyPipeline {
                         }
 
                         // 5. 403 (not unsupported, not workspace):
-                        // plan-entitlement block.
-                        if status == 403 && !info.is_unsupported {
+                        // plan-entitlement block. Mapped status: a
+                        // 404-entitlement body remapped to 403 must cache the
+                        // block exactly like a raw 403 (TS index.ts:2114).
+                        if mapped_status == 403 && !info.is_unsupported {
                             {
                                 let mut cache = self
                                     .inner
@@ -1890,7 +2034,12 @@ impl ProxyPipeline {
                         }
 
                         // 8. 429 with rate-limit metadata (MARK-BEFORE-SLEEP).
-                        if status == 429 && let Some(rate_limit) = error_result.rate_limit.as_ref() {
+                        // Mapped status: upstream reports quota exhaustion as
+                        // a structured 404 on this endpoint, which
+                        // handle_error_response remaps to 429 — that response
+                        // MUST take the rate-limit path (mark + rotate), not
+                        // the generic return (TS index.ts:2241).
+                        if mapped_status == 429 && let Some(rate_limit) = error_result.rate_limit.as_ref() {
                             self.lock_metrics().rate_limited_responses += 1;
                             let retry_after_ms = if rate_limit.retry_after_ms > 0 {
                                 rate_limit.retry_after_ms
@@ -1952,13 +2101,27 @@ impl ProxyPipeline {
                                     }
                                     shared_manager
                                         .save_to_disk_debounced(SAVE_DEBOUNCE_DEFAULT_MS);
-                                    show_runtime_toast(
-                                        &retry_loop::short_retry_toast(
-                                            &format_wait_time(cooldown_ms),
-                                            short_rate_limit_retry_count,
-                                        ),
-                                        ToastVariant::Warning,
-                                    );
+                                    // Per-account 30s debounce gate (TS
+                                    // index.ts:2292-2305): at most one
+                                    // rate-limit toast per account per
+                                    // debounce window.
+                                    {
+                                        let mut manager = shared_manager.lock().await;
+                                        if manager.should_show_account_toast(
+                                            account_index,
+                                            Some(config.rate_limit_toast_debounce_ms),
+                                        ) {
+                                            manager.mark_toast_shown(account_index);
+                                            drop(manager);
+                                            show_runtime_toast(
+                                                &retry_loop::short_retry_toast(
+                                                    &format_wait_time(cooldown_ms),
+                                                    short_rate_limit_retry_count,
+                                                ),
+                                                ToastVariant::Warning,
+                                            );
+                                        }
+                                    }
                                     let _ = abortable_sleep(
                                         add_jitter(
                                             cooldown_ms.max(MIN_BACKOFF_MS) as f64,
@@ -1999,13 +2162,23 @@ impl ProxyPipeline {
                                     shared_manager
                                         .save_to_disk_debounced(SAVE_DEBOUNCE_DEFAULT_MS);
                                     log_warn("Rate limited. Rotating account.", None);
+                                    // Count check ANDs with the per-account
+                                    // debounce gate (TS index.ts:2338-2352).
                                     if account_count > 1 {
-                                        show_runtime_toast(
-                                            &retry_loop::rate_limit_rotation_toast(
-                                                &format_wait_time(cooldown_ms),
-                                            ),
-                                            ToastVariant::Warning,
-                                        );
+                                        let mut manager = shared_manager.lock().await;
+                                        if manager.should_show_account_toast(
+                                            account_index,
+                                            Some(config.rate_limit_toast_debounce_ms),
+                                        ) {
+                                            manager.mark_toast_shown(account_index);
+                                            drop(manager);
+                                            show_runtime_toast(
+                                                &retry_loop::rate_limit_rotation_toast(
+                                                    &format_wait_time(cooldown_ms),
+                                                ),
+                                                ToastVariant::Warning,
+                                            );
+                                        }
                                     }
                                     // 429 does NOT refund the token (spec 04
                                     // gotcha 17).
@@ -2053,11 +2226,39 @@ impl ProxyPipeline {
                                     .save_to_disk_debounced(SAVE_DEBOUNCE_DEFAULT_MS);
                                 self.lock_metrics().failed_requests += 1;
                                 let body = build_token_invalidation_body(&raw_error_body_text);
+                                // TS builds the reply from
+                                // responseHeadersForClient(upstream.headers)
+                                // (scrubbed diagnostics like x-request-id
+                                // survive) and sets content-type to exactly
+                                // "application/json" (no charset) — mirror
+                                // server.rs's upstream-401 path.
+                                let mut client_headers = HeaderMap::new();
+                                for (name, value) in
+                                    cma_request::stream_failover_runtime::response_headers_for_client(
+                                        &response_headers,
+                                    )
+                                {
+                                    if name == "content-type" {
+                                        continue;
+                                    }
+                                    if let (Ok(header_name), Ok(header_value)) = (
+                                        name.parse::<http::header::HeaderName>(),
+                                        http::header::HeaderValue::from_str(&value),
+                                    ) {
+                                        client_headers.append(header_name, header_value);
+                                    }
+                                }
+                                client_headers.insert(
+                                    http::header::CONTENT_TYPE,
+                                    http::header::HeaderValue::from_static(
+                                        "application/json",
+                                    ),
+                                );
                                 return (
                                     StreamResponse::from_text(
                                         401,
                                         "",
-                                        synthetic_json_headers(),
+                                        client_headers,
                                         body,
                                     ),
                                     recorder,
@@ -2087,10 +2288,13 @@ impl ProxyPipeline {
                         }
 
                         // 10. Everything else → return the sanitized error
-                        // response.
+                        // response. `mapped_status != 403` — TS keys the
+                        // catch-all guard off errorResponse.status
+                        // (index.ts:2358), so a mapped 403 never records a
+                        // capability failure here.
                         if error_result.rate_limit.is_none()
                             && !info.is_unsupported
-                            && status != 403
+                            && mapped_status != 403
                         {
                             self.record_capability_failure(
                                 &entitlement_key,
@@ -2586,7 +2790,26 @@ impl ProxyPipeline {
                         }),
                         ..Default::default()
                     };
-                    return (success_response, recorder, completion);
+                    // Streaming: the ledger row is decided by the client
+                    // forward (`forwarded ? success : stream_forward_failed`)
+                    // and the forward stage owns the network-error cleanup —
+                    // recording Success here would permanently say success
+                    // for a mid-stream stall (TS records after
+                    // forwardStreamingResponse resolves).
+                    if is_streaming {
+                        return (
+                            success_response,
+                            recorder,
+                            RunCompletion::DeferStream {
+                                success_completion: completion,
+                                account_index: success_index,
+                                family: model_family,
+                                model: model.clone(),
+                                session_key: session_key.clone(),
+                            },
+                        );
+                    }
+                    return (success_response, recorder, RunCompletion::Record(completion));
                 } // 'inner
 
                 if retry_next_account_before_fallback {
@@ -3233,4 +3456,76 @@ async fn failover_attempt(
         return Ok(Some(response));
     }
     Ok(None)
+}
+
+/// Sticky min-rotation boost (spec 04 rotation loop step 1), merged into a
+/// FRESH clone of the base capability+policy boost map. TS recomputes this on
+/// EVERY iteration of the account-attempt while-loop
+/// (runtime-rotation-proxy.ts:956-961), re-reading `lastGlobalAccountIndex` /
+/// `lastGlobalSwitchAt` — so attempts that span the min-rotation window (429
+/// short-retry sleeps, stream-failover waits) or race a concurrent request
+/// drop or retarget the boost mid-request instead of applying a frozen one.
+/// Cloning per call (instead of `+=` into a persistent map) also guarantees
+/// the boost can never stack across attempts.
+fn merge_sticky_min_rotation_boost(
+    base: &HashMap<i64, f64>,
+    min_rotation_interval_ms: i64,
+    last_global_account_index: Option<i64>,
+    last_global_switch_at: i64,
+    now_ms: i64,
+) -> HashMap<i64, f64> {
+    let mut boosts = base.clone();
+    if min_rotation_interval_ms > 0
+        && let Some(last_index) = last_global_account_index
+        && now_ms - last_global_switch_at < min_rotation_interval_ms
+    {
+        *boosts.entry(last_index).or_insert(0.0) += 1_000.0;
+    }
+    boosts
+}
+
+#[cfg(test)]
+mod sticky_boost_tests {
+    use super::*;
+
+    /// Finding: the sticky boost must be recomputed per attempt from the
+    /// CURRENT rotation state, not frozen per traversal — and re-merging
+    /// must never stack +1000 across attempts.
+    #[test]
+    fn sticky_boost_is_recomputed_per_attempt_and_never_stacks() {
+        let mut base = HashMap::new();
+        base.insert(0_i64, 5.0_f64);
+
+        // Within the min-rotation window: +1000 on the sticky account.
+        let attempt1 = merge_sticky_min_rotation_boost(&base, 60_000, Some(0), 1_000, 2_000);
+        assert_eq!(attempt1.get(&0), Some(&1_005.0));
+
+        // A later attempt re-reads state: window expired -> boost dropped
+        // (a frozen per-traversal map would still carry +1000 here).
+        let attempt2 = merge_sticky_min_rotation_boost(&base, 60_000, Some(0), 1_000, 61_001);
+        assert_eq!(attempt2.get(&0), Some(&5.0));
+
+        // Concurrent request moved the sticky index: boost retargets.
+        let attempt3 = merge_sticky_min_rotation_boost(&base, 60_000, Some(1), 2_500, 3_000);
+        assert_eq!(attempt3.get(&0), Some(&5.0));
+        assert_eq!(attempt3.get(&1), Some(&1_000.0));
+
+        // Re-merging from the same base never stacks (fresh clone per call).
+        for _ in 0..3 {
+            let again = merge_sticky_min_rotation_boost(&base, 60_000, Some(0), 1_000, 2_000);
+            assert_eq!(again.get(&0), Some(&1_005.0));
+        }
+        // Base map untouched.
+        assert_eq!(base.get(&0), Some(&5.0));
+
+        // Disabled interval or no sticky index: base passes through.
+        assert_eq!(
+            merge_sticky_min_rotation_boost(&base, 0, Some(0), 1_000, 1_500),
+            base
+        );
+        assert_eq!(
+            merge_sticky_min_rotation_boost(&base, 60_000, None, 1_000, 1_500),
+            base
+        );
+    }
 }

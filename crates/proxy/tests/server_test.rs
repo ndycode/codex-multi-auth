@@ -504,6 +504,74 @@ async fn routes_every_request_to_the_ephemeral_forced_account(
     proxy.close().await.expect("close");
 }
 
+/// A stray/inherited `CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX` must NOT pin the
+/// proxy when the launcher explicitly resolved "no pin" (a run without
+/// `--account`): TS deletes the var from process.env in that case, so a
+/// nested wrapper run inside a forced session (or a leftover export) returns
+/// to normal rotation. Callers that never resolved the pin keep the env
+/// fallback.
+#[tokio::test]
+#[serial(env)]
+async fn suppresses_a_stray_env_pin_when_the_launcher_resolved_no_pin() {
+    let mut sandbox = EnvSandbox::new();
+    sandbox.set_var("CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX", "1");
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+        .mount(&upstream)
+        .await;
+    let client = reqwest::Client::new();
+
+    // Launcher resolved "no pin": the ambient var is ignored — the request
+    // is served by normal selection (account 1), not the stray pin.
+    let mut options = proxy_options(shared_manager(2), &upstream.uri());
+    options.forced_account_index = None;
+    options.suppress_env_forced_account_index = true;
+    let proxy = start_runtime_rotation_proxy(options)
+        .await
+        .expect("proxy starts");
+    let response = client
+        .post(format!("{}/responses", proxy.base_url))
+        .header("authorization", format!("Bearer {CLIENT_KEY}"))
+        .json(&json!({ "model": "gpt-5-codex" }))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(response.status().as_u16(), 200);
+    let requests = upstream.received_requests().await.expect("recorded");
+    assert_eq!(
+        requests.last().unwrap().headers.get("chatgpt-account-id").unwrap(),
+        "acc_1",
+        "ambient pin ignored when the launcher resolved no pin"
+    );
+    proxy.close().await.expect("close");
+
+    // Without suppression (caller never resolved the pin), the env fallback
+    // still pins — preserving the pre-existing contract.
+    let mut options = proxy_options(shared_manager(2), &upstream.uri());
+    options.forced_account_index = None;
+    options.suppress_env_forced_account_index = false;
+    let proxy = start_runtime_rotation_proxy(options)
+        .await
+        .expect("proxy starts");
+    let response = client
+        .post(format!("{}/responses", proxy.base_url))
+        .header("authorization", format!("Bearer {CLIENT_KEY}"))
+        .json(&json!({ "model": "gpt-5-codex" }))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(response.status().as_u16(), 200);
+    let requests = upstream.received_requests().await.expect("recorded");
+    assert_eq!(
+        requests.last().unwrap().headers.get("chatgpt-account-id").unwrap(),
+        "acc_2",
+        "env fallback preserved when not suppressed"
+    );
+    proxy.close().await.expect("close");
+}
+
 #[tokio::test]
 #[serial(env)]
 async fn fails_hard_with_503_when_the_forced_account_is_missing() {

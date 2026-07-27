@@ -127,7 +127,13 @@ pub fn policy_list_line(entry: &Value) -> String {
 /// Deviation note: policy-store save failures (which would crash the TS
 /// process) print the error on stderr and exit 1.
 pub async fn run_account_command(args: &[String], out: &mut CliOut) -> i32 {
-    let command = args.first().map(String::as_str);
+    // JS falsiness: TS gates the help path on `!command`, so an EMPTY-STRING
+    // first argv token (`account ""`, e.g. a scripted empty expansion) prints
+    // usage and exits 0 exactly like a missing subcommand.
+    let command = args
+        .first()
+        .map(String::as_str)
+        .filter(|command| !command.is_empty());
     let rest: Vec<String> = if args.len() > 1 {
         args[1..].to_vec()
     } else {
@@ -365,6 +371,14 @@ mod tests {
         let code = run_account_command(&[], &mut out).await;
         assert_eq!(code, 0);
         assert!(out.info_text().starts_with("Usage:"));
+
+        // JS falsiness parity: `account ""` (empty argv expansion) is the
+        // help path too — usage on stdout, exit 0, never the index error.
+        let mut out = CliOut::capture();
+        let code = run_account_command(&args(&[""]), &mut out).await;
+        assert_eq!(code, 0);
+        assert!(out.info_text().starts_with("Usage:"));
+        assert!(out.error_text().is_empty());
     }
 
     #[tokio::test]

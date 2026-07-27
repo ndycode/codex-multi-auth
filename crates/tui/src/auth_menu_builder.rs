@@ -298,10 +298,19 @@ fn civil_from_ms(timestamp_ms: i64) -> (i64, u32, u32) {
 
 /// Locale-date analogue of `new Date(ts).toLocaleDateString()`.
 ///
-/// DIVERGENCE (documented per spec 12 gotcha 30): the TS output is locale/OS
-/// dependent; this port renders the en-US `M/D/YYYY` form from the UTC civil
-/// date.
+/// DIVERGENCE (documented per spec 12 gotcha 30, scoped to the FORMAT only):
+/// the TS output is locale/OS dependent; this port pins the en-US `M/D/YYYY`
+/// form. The calendar day itself is computed in the LOCAL timezone exactly
+/// like `toLocaleDateString()` — using the UTC day would render `Added:` /
+/// `Last used:` one calendar day off for any user east/west of UTC when the
+/// timestamp falls near local midnight. The UTC civil algorithm remains only
+/// as the (practically unreachable) fallback when the local conversion is
+/// not representable.
 fn format_locale_date(timestamp_ms: i64) -> String {
+    use chrono::{Datelike, TimeZone};
+    if let Some(local) = chrono::Local.timestamp_millis_opt(timestamp_ms).single() {
+        return format!("{}/{}/{}", local.month(), local.day(), local.year());
+    }
     let (year, month, day) = civil_from_ms(timestamp_ms);
     format!("{month}/{day}/{year}")
 }
@@ -955,10 +964,29 @@ mod tests {
 
     #[test]
     fn civil_date_conversion_is_correct() {
+        // The UTC civil fallback algorithm itself.
         // 1784937600000 ms = day 20659 since the epoch = 2026-07-25 UTC.
-        assert_eq!(format_locale_date(1_784_937_600_000), "7/25/2026");
-        // Unix epoch.
-        assert_eq!(format_locale_date(0), "1/1/1970");
+        assert_eq!(civil_from_ms(1_784_937_600_000), (2026, 7, 25));
+        assert_eq!(civil_from_ms(0), (1970, 1, 1));
+    }
+
+    /// `toLocaleDateString()` parity: the rendered day is the LOCAL calendar
+    /// day (timezone-aware expectation so this passes in any TZ), pinned to
+    /// the en-US M/D/YYYY shape.
+    #[test]
+    fn locale_date_uses_the_local_calendar_day() {
+        use chrono::{Datelike, TimeZone};
+        for ts in [1_784_937_600_000_i64, 0_i64] {
+            let local = chrono::Local
+                .timestamp_millis_opt(ts)
+                .single()
+                .expect("local conversion");
+            assert_eq!(
+                format_locale_date(ts),
+                format!("{}/{}/{}", local.month(), local.day(), local.year()),
+                "ts {ts}"
+            );
+        }
     }
 
     // ---- accountTitle ----

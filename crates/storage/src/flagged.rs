@@ -415,13 +415,18 @@ async fn rename_file_with_retry(source_path: &str, destination_path: &str) -> io
     .await
 }
 
+/// Node `fs.writeFile(..., { mode: 0o600 })` parity: mode applied atomically
+/// at open(2) on unix so the flagged temp file (refresh-token material) never
+/// exists with broader permissions — no write-then-chmod window.
 async fn write_file_mode_600(path: &str, content: &str) -> io::Result<()> {
-    tokio::fs::write(path, content).await?;
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
-    }
+    options.mode(0o600);
+    let mut file = options.open(path).await?;
+    use tokio::io::AsyncWriteExt;
+    file.write_all(content.as_bytes()).await?;
+    file.flush().await?;
     Ok(())
 }
 

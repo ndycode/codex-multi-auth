@@ -659,6 +659,7 @@ dependencies = [
 name = "cma-tui"
 version = "3.0.0-alpha.0"
 dependencies = [
+ "chrono",
  "cma-core",
  "cma-testkit",
  "crossterm",
@@ -666,6 +667,7 @@ dependencies = [
  "proptest",
  "serde_json",
  "serial_test",
+ "signal-hook",
  "tempfile",
  "tokio",
  "unicode-segmentation",
@@ -693,6 +695,7 @@ dependencies = [
 name = "cma-wrapper"
 version = "3.0.0-alpha.0"
 dependencies = [
+ "chrono",
  "cma-accounts",
  "cma-cli-mirror",
  "cma-config",
@@ -702,6 +705,7 @@ dependencies = [
  "cma-storage",
  "cma-testkit",
  "insta",
+ "junction",
  "proptest",
  "rand 0.9.5",
  "serde",
@@ -1460,6 +1464,16 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "junction"
+version = "1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cfc352a66ba903c23239ef51e809508b6fc2b0f90e3476ac7a9ff47e863ae95"
+dependencies = [
+ "scopeguard",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

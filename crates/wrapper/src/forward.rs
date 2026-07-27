@@ -1101,6 +1101,11 @@ async fn create_runtime_rotation_proxy_context_if_enabled(
     let options = cma_runtime::rotation::server_types::RuntimeRotationProxyOptions {
         client_api_key: client_api_key.clone(),
         forced_account_index: forced_account_index.map(|i| i as i64),
+        // No `--account` on this run: the wrapper resolved "no pin", so the
+        // proxy must ignore any ambient CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX
+        // (TS deletes the env var; a request without --account can never
+        // inherit an unintended pin).
+        suppress_env_forced_account_index: forced_account_index.is_none(),
         ..Default::default()
     };
     let server = match cma_proxy::server::start_runtime_rotation_proxy(options).await {
@@ -1537,7 +1542,16 @@ async fn create_runtime_rotation_app_helper_context(
         .env(
             "CODEX_MULTI_AUTH_DIR",
             resolve_runtime_rotation_original_multi_auth_dir(&real_codex_home, &env_map),
-        )
+        );
+    // Apply the launcher's env scrubs to the detached helper too: without
+    // this the helper inherits a stray CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX
+    // (published by a parent forced run) and its proxy silently pins to one
+    // account via the env fallback, defeating rotation. TS deletes the var
+    // from process.env, which covers every child.
+    for key in &base.env_removals {
+        command.env_remove(key);
+    }
+    command
         .env(APP_RUNTIME_HELPER_OWNER_PID_ENV, std::process::id().to_string())
         .env(
             APP_RUNTIME_HELPER_REAL_CODEX_HOME_ENV,
@@ -2281,15 +2295,19 @@ fn parse_rollout_index_entry(rollout_path: &Path) -> Option<Value> {
         }
     }
     let updated_at = updated_at.unwrap_or_else(|| {
+        // TS double fallback: `statSync(path).mtime.toISOString()`, then
+        // `new Date().toISOString()` when stat fails — ALWAYS an ISO-8601
+        // UTC string ("YYYY-MM-DDTHH:MM:SS.mmmZ"), never raw epoch millis or
+        // "". This entry is appended to the REAL ~/.codex/session_index.jsonl
+        // that the official Codex resume list sorts and renders; a non-ISO
+        // value mis-sorts that shared file. `to_rfc3339_opts(Millis, true)`
+        // matches Date.prototype.toISOString byte-for-byte.
         fs::metadata(rollout_path)
             .ok()
             .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| {
-                // ISO-8601-ish from epoch (rare fallback path).
-                format!("{}", d.as_millis())
-            })
-            .unwrap_or_default()
+            .map(chrono::DateTime::<chrono::Utc>::from)
+            .unwrap_or_else(chrono::Utc::now)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
     });
     if !has_session_meta {
         return None;
@@ -2675,6 +2693,39 @@ mod tests {
 
     fn v(args: &[&str]) -> Vec<String> {
         args.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// TS parity: when a rollout carries session_meta but no string
+    /// `timestamp`, the session-index `updated_at` falls back to the file
+    /// mtime as an ISO-8601 UTC string (`mtime.toISOString()`), never raw
+    /// epoch millis or "" — the entry lands in the REAL
+    /// ~/.codex/session_index.jsonl consumed by the official resume list.
+    #[test]
+    fn rollout_index_updated_at_fallback_is_iso8601_utc() {
+        let dir = tempfile::tempdir().unwrap();
+        let rollout = dir
+            .path()
+            .join("rollout-2026-07-27T10-00-00-11111111-2222-3333-4444-555555555555.jsonl");
+        std::fs::write(
+            &rollout,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"sess-1\"}}\n",
+        )
+        .unwrap();
+
+        let entry = parse_rollout_index_entry(&rollout).expect("entry");
+        let updated_at = entry["updated_at"].as_str().expect("string updated_at");
+        assert!(updated_at.ends_with('Z'), "UTC Z suffix: {updated_at}");
+        let parsed = chrono::DateTime::parse_from_rfc3339(updated_at)
+            .unwrap_or_else(|e| panic!("RFC3339 expected, got {updated_at}: {e}"));
+        // toISOString shape: exactly milliseconds precision.
+        assert_eq!(
+            updated_at,
+            parsed
+                .with_timezone(&chrono::Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        );
+        // And it tracks the file mtime, not the epoch-millis digits.
+        assert!(!updated_at.chars().all(|c| c.is_ascii_digit()));
     }
 
     #[test]

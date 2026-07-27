@@ -32,9 +32,11 @@ use crate::public_types::{AccountStorageV3, AnyAccountStorage};
 pub struct ParsedStorage {
     /// `normalizeAccountStorage(data)` — `None` for unrecognized shapes.
     pub normalized: Option<AccountStorageV3>,
-    /// The raw `version` value when `data` is a record AND the value is an
-    /// integer number (TS carried the raw `unknown`; non-numeric versions
-    /// surface as `None`, which the strict `!==` comparison treats the same).
+    /// The raw `version` value when `data` is a record AND the value is a
+    /// JSON number with an integral value (TS carried the raw `unknown` and
+    /// compared with JS number equality, so a float-formatted `3.0` equals 3;
+    /// non-numeric and fractional versions surface as `None`, which the
+    /// strict `!==` comparison treats the same — `3.5` still migrates).
     pub stored_version: Option<i64>,
     /// `getValidationErrors(AnyAccountStorageSchema, data)` — empty on the
     /// schema-valid path. (serde reports the first failing field, so the
@@ -65,8 +67,18 @@ fn any_account_storage_schema_errors(data: &Value) -> Vec<String> {
 pub fn parse_and_normalize_storage(data: &Value) -> ParsedStorage {
     let schema_errors = any_account_storage_schema_errors(data);
     let normalized = normalize_account_storage(data);
+    // JS number-equality semantics: JSON.parse('3.0') === 3, so a
+    // float-formatted integral version must NOT read as "different from 3"
+    // (that would trigger a spurious migration rewrite TS never performs).
     let stored_version = if cma_core::utils::is_record(data) {
-        data.get("version").and_then(Value::as_i64)
+        data.get("version").and_then(|value| {
+            value.as_i64().or_else(|| {
+                value
+                    .as_f64()
+                    .filter(|f| f.fract() == 0.0)
+                    .map(|f| f as i64)
+            })
+        })
     } else {
         None
     };
@@ -202,6 +214,34 @@ mod tests {
         assert!(parsed.schema_errors.is_empty());
         assert_eq!(parsed.stored_version, Some(1));
         assert!(parsed.needs_version_migration());
+    }
+
+    #[test]
+    fn float_formatted_version_3_does_not_trigger_a_spurious_migration() {
+        // Schema-invalid file (activeIndex out of range fails the zod/serde
+        // schema) whose hand-edited version is float-formatted. TS compares
+        // `storedVersion !== 3` with JS number equality (3.0 === 3), so no
+        // migration persist happens; the file must be left untouched.
+        let parsed = parse_and_normalize_storage(&json!({
+            "version": 3.0,
+            "accounts": [{ "refreshToken": "rt", "addedAt": 1, "lastUsed": 2 }],
+            "activeIndex": -1,
+        }));
+        assert!(!parsed.schema_errors.is_empty(), "schema-invalid input");
+        assert!(parsed.normalized.is_some(), "still normalizes");
+        assert_eq!(parsed.stored_version, Some(3));
+        assert!(!parsed.needs_version_migration(), "3.0 === 3 in JS");
+
+        // Fractional versions still migrate (3.5 !== 3).
+        let parsed = parse_and_normalize_storage(&json!({
+            "version": 3.5,
+            "accounts": [{ "refreshToken": "rt", "addedAt": 1, "lastUsed": 2 }],
+            "activeIndex": 0,
+        }));
+        assert_eq!(parsed.stored_version, None);
+        if parsed.normalized.is_some() {
+            assert!(parsed.needs_version_migration());
+        }
     }
 
     #[test]

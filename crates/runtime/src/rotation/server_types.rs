@@ -101,6 +101,14 @@ pub struct RuntimeRotationProxyOptions {
     pub stream_stall_timeout_ms: Option<i64>,
     /// See the struct docs — `None` defers to the environment.
     pub forced_account_index: Option<i64>,
+    /// When the launcher explicitly resolved "no pin" (no `--account`), set
+    /// this so the proxy NEVER falls back to a stray/inherited
+    /// `CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX` (TS deletes the var from
+    /// `process.env` in that case: a request without `--account` can never
+    /// inherit an unintended pin from a parent forced run or a leftover
+    /// export). Default `false` preserves the env fallback for callers that
+    /// never resolved the pin themselves.
+    pub suppress_env_forced_account_index: bool,
 }
 
 impl std::fmt::Debug for RuntimeRotationProxyOptions {
@@ -121,6 +129,10 @@ impl std::fmt::Debug for RuntimeRotationProxyOptions {
             .field("fetch_timeout_ms", &self.fetch_timeout_ms)
             .field("stream_stall_timeout_ms", &self.stream_stall_timeout_ms)
             .field("forced_account_index", &self.forced_account_index)
+            .field(
+                "suppress_env_forced_account_index",
+                &self.suppress_env_forced_account_index,
+            )
             .finish()
     }
 }

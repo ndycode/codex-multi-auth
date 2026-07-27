@@ -147,11 +147,12 @@ pub async fn inspect_storage_health() -> StorageHealthSummary {
 
     match crate::parser::load_accounts_from_path(&path).await {
         Ok(parsed) => {
-            let schema_errors = if parsed.schema_errors.is_empty() {
-                None
-            } else {
-                Some(parsed.schema_errors.clone())
-            };
+            // TS passes the raw (possibly empty) array on EVERY
+            // parse-succeeded branch, so `report --json` always contains
+            // `"schemaErrors": []` in the healthy case. Only the
+            // intentional-reset / missing-file / parse-Err branches leave the
+            // key undefined (None).
+            let schema_errors = Some(parsed.schema_errors.clone());
             if let Some(normalized) = &parsed.normalized {
                 if !normalized.accounts.is_empty() {
                     return create_storage_health_summary(
@@ -270,6 +271,24 @@ mod tests {
         assert_eq!(value["hasWal"], false);
         assert_eq!(value["recoverySource"], "wal");
         assert!(value.get("schemaErrors").is_none());
+    }
+
+    #[test]
+    fn empty_schema_errors_serialize_as_an_empty_array_when_present() {
+        // TS emits `"schemaErrors": []` on every parse-succeeded branch;
+        // Some(vec![]) must serialize as [] (None still omits the key).
+        let summary = create_storage_health_summary(
+            StorageHealthState::Healthy,
+            Path::new("/x/a.json"),
+            "/x/a.json.reset-intent",
+            "/x/a.json.wal",
+            StorageHealthParams {
+                schema_errors: Some(Vec::new()),
+                ..Default::default()
+            },
+        );
+        let value = serde_json::to_value(&summary).unwrap();
+        assert_eq!(value["schemaErrors"], serde_json::json!([]));
     }
 
     #[test]

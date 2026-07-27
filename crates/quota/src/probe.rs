@@ -233,7 +233,10 @@ fn parse_reset_at_ms(headers: &HeaderMap, prefix: &str) -> Option<i64> {
     if let Some(seconds) = reset_after_seconds
         && seconds > 0
     {
-        return Some(now_ms() + seconds * 1000);
+        // f64 multiply mirrors JS semantics; the `as i64` cast saturates on
+        // overflow, so a hostile huge header yields a far-future resetAtMs
+        // (blocked window) exactly like TS — never a wrapped negative value.
+        return Some(now_ms().saturating_add((seconds as f64 * 1000.0) as i64));
     }
 
     let reset_at_raw = header_str(headers, &format!("{prefix}-reset-at"))?;
@@ -1094,6 +1097,31 @@ mod tests {
             describe_codex_probe_failure(&unavailable, Some(&normalizer)),
             CODEX_UNAVAILABLE_PROBE_NOTE
         );
+    }
+
+    #[test]
+    fn hostile_huge_reset_after_seconds_saturates_to_a_far_future_reset() {
+        // TS float math yields a huge finite resetAtMs (blocked window); the
+        // i64 port must saturate positive instead of wrapping negative
+        // (which would read as already-reset → account looks healthy) or
+        // panicking under overflow checks.
+        let before = now_ms();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-codex-primary-reset-after-seconds",
+            HeaderValue::from_static("9300000000000000"),
+        );
+        let parsed = parse_reset_at_ms(&headers, "x-codex-primary").expect("resetAtMs");
+        assert!(parsed > before, "far-future, never wrapped: {parsed}");
+
+        // 20-digit runs saturate the parse itself, then the ms conversion.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-codex-primary-reset-after-seconds",
+            HeaderValue::from_static("99999999999999999999"),
+        );
+        let parsed = parse_reset_at_ms(&headers, "x-codex-primary").expect("resetAtMs");
+        assert!(parsed > before, "saturated parse stays far-future: {parsed}");
     }
 
     #[test]

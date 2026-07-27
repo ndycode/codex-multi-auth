@@ -12,6 +12,12 @@ crossterm.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 unicode-segmentation.workspace = true
+chrono.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# Menu-lifetime SIGINT/SIGTERM protection (TS process.once(signal, finish))
+# — already in-tree transitively via crossterm's unix event source.
+signal-hook = "0.3"
 
 [dev-dependencies]
 tempfile.workspace = true

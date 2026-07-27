@@ -625,6 +625,9 @@ pub fn evaluate_forecast_account(input: &ForecastAccountInput<'_>) -> ForecastAc
         risk_score += 95;
         reasons.push("runtime policy blocked account".to_string());
     } else if let Some(reason) = overlay_reason
+        // JS truthiness gate (`overlayReason && ...`): an empty-string reason
+        // is falsy in TS and must leave the account Ready.
+        && !reason.is_empty()
         && reason != "already-attempted"
         && !is_stale_overlay_reason
     {
@@ -1112,6 +1115,23 @@ mod tests {
                     .any(|r| r == &format!("runtime skip: {reason}"))
             );
         }
+    }
+
+    #[test]
+    fn ignores_an_empty_string_overlay_reason_like_js_truthiness() {
+        // TS gates on `overlayReason && ...`; "" is falsy, so a hand-edited
+        // (or buggy-writer) empty reason must leave the account Ready and
+        // never emit a bare "runtime skip: " reason.
+        let meta = account(NOW);
+        let mut overlay = RuntimeForecastOverlay::default();
+        overlay
+            .account_skip_reasons
+            .insert("0".to_string(), String::new());
+        let mut input = ForecastAccountInput::new(0, &meta, false, NOW);
+        input.runtime_overlay = Some(&overlay);
+        let result = evaluate_forecast_account(&input);
+        assert_eq!(result.availability, ForecastAvailability::Ready);
+        assert!(result.reasons.iter().all(|r| !r.starts_with("runtime skip:")));
     }
 
     #[test]

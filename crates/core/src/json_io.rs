@@ -15,7 +15,8 @@
 //! - [`write_json_atomic`]/[`write_json_atomic_sync`] implement the shared
 //!   write protocol: optional `.bak` snapshot (retry EBUSY/EPERM ×5, async
 //!   delays 10/20/40/80 ms, silent give-up), staging via
-//!   [`crate::temp_path::temp_path_for`], optional mode 0600 (unix), optional
+//!   [`crate::temp_path::temp_path_for`], optional mode 0600 applied
+//!   atomically at open(2) on unix (Node parity: no chmod window), optional
 //!   mtime CAS (mismatch → `"ESTALE"`-coded error), atomic rename with
 //!   per-site retry (EBUSY/EPERM ×5), best-effort temp unlink on failure.
 //! - Trailing-newline matrix is expressed via [`TrailingNewline`] (accounts /
@@ -484,23 +485,35 @@ fn ensure_parent_dir(path: &Path, mode: Option<u32>) -> io::Result<()> {
     }
 }
 
-fn stage_temp_file(path: &Path, payload: &str, mode: Option<u32>, fsync: bool) -> io::Result<PathBuf> {
-    let temp = temp_path_for(path);
-    if let Err(error) = fs::write(&temp, payload) {
-        let _ = fs::remove_file(&temp);
-        return Err(error);
-    }
+/// Node `fs.writeFile(path, content, { mode })` parity: create/truncate and
+/// write with `mode` applied atomically at open(2) (`O_CREAT`) on unix, so a
+/// secret-bearing file NEVER exists with broader permissions — there is no
+/// write-then-chmod window and no world-readable crash residue. Like Node,
+/// the mode only takes effect when the open actually CREATES the file; a
+/// pre-existing file keeps its permissions. Mode is a no-op on Windows.
+pub fn write_text_file_with_mode_sync(
+    path: &Path,
+    content: &str,
+    mode: Option<u32>,
+) -> io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     if let Some(mode) = mode {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(error) = fs::set_permissions(&temp, fs::Permissions::from_mode(mode)) {
-            let _ = fs::remove_file(&temp);
-            return Err(error);
-        }
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode);
     }
     #[cfg(not(unix))]
-    {
-        let _ = mode; // no-op on Windows (Node parity)
+    let _ = mode; // no-op on Windows (Node parity)
+    let mut file = options.open(path)?;
+    io::Write::write_all(&mut file, content.as_bytes())
+}
+
+fn stage_temp_file(path: &Path, payload: &str, mode: Option<u32>, fsync: bool) -> io::Result<PathBuf> {
+    let temp = temp_path_for(path);
+    if let Err(error) = write_text_file_with_mode_sync(&temp, payload, mode) {
+        let _ = fs::remove_file(&temp);
+        return Err(error);
     }
     if fsync {
         let sync_result = fs::OpenOptions::new()
@@ -983,6 +996,32 @@ mod tests {
             .unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mode_is_applied_at_open_not_via_a_post_write_chmod() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+
+        // Fresh file: created with the mode at open(2) — it can never exist
+        // with bits outside 0600 (the pre-fix write-then-chmod pattern left a
+        // 0644 window and 0644 crash residue).
+        let fresh = dir.path().join("fresh-secret.json");
+        write_text_file_with_mode_sync(&fresh, "{}", Some(0o600)).unwrap();
+        let mode = fs::metadata(&fresh).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode & !0o600, 0, "no bits outside 0600: {mode:o}");
+
+        // Pre-existing file: Node's fs.writeFile only uses `mode` when O_CREAT
+        // actually creates the file, so existing permissions are preserved —
+        // proving there is no chmod-after-write in the implementation.
+        let existing = dir.path().join("existing.json");
+        fs::write(&existing, "old").unwrap();
+        fs::set_permissions(&existing, fs::Permissions::from_mode(0o644)).unwrap();
+        write_text_file_with_mode_sync(&existing, "new", Some(0o600)).unwrap();
+        assert_eq!(fs::read_to_string(&existing).unwrap(), "new");
+        let mode = fs::metadata(&existing).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "pre-existing perms preserved (Node parity)");
     }
 
     #[test]

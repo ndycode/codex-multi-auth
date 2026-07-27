@@ -5,7 +5,14 @@
 //! Prevents race conditions when multiple concurrent requests try to refresh
 //! the same account's token simultaneously: subsequent callers await the
 //! existing in-flight refresh (a [`futures::future::Shared`] here, standing in
-//! for the shared TS promise).
+//! for the shared TS promise). The body is `tokio::spawn`ed — the Rust
+//! equivalent of the TS eagerly-executing async IIFE: it ALWAYS runs to
+//! completion even when every awaiter is dropped (e.g. a client disconnect
+//! drops the request future mid-refresh), so an in-flight OAuth exchange is
+//! never suspended after the POST was sent (which would burn the rotated
+//! refresh token) and the pending-entry cleanup always runs (a lazily polled
+//! future would wedge the token's refresh lane forever — refresh-stage
+//! entries are deliberately never evicted).
 //!
 //! Token-rotation handling: when OpenAI rotates the refresh token during a
 //! refresh, a mapping `oldToken → newToken` lets requests arriving with either
@@ -205,11 +212,7 @@ impl RefreshQueue {
     /// refresh token; all concurrent callers get the same result.
     pub async fn refresh(&self, refresh_token: &str) -> TokenResult {
         let token = refresh_token.to_string();
-        enum Plan {
-            Join(SharedRefresh),
-            Created { future: SharedRefresh, generation: u64 },
-        }
-        let plan = {
+        let future: SharedRefresh = {
             let mut state = self.inner.lock();
             cleanup(&self.inner, &mut state);
 
@@ -222,7 +225,7 @@ impl RefreshQueue {
                         "waitingMs": now_ms() - existing.started_at,
                     })),
                 );
-                Plan::Join(existing.future.clone())
+                existing.future.clone()
             } else if let Some(rotated_from) = find_original_token(&state, &token)
                 && let Some(original_entry) = state.pending.get(&rotated_from)
             {
@@ -237,17 +240,58 @@ impl RefreshQueue {
                         "waitingMs": now_ms() - original_entry.started_at,
                     })),
                 );
-                Plan::Join(original_entry.future.clone())
+                original_entry.future.clone()
             } else {
                 // Start a new refresh immediately so local state reflects
                 // "in-flight" without waiting on cross-process lease checks.
                 state.next_generation += 1;
                 let generation = state.next_generation;
                 let started_at = now_ms();
-                let future: SharedRefresh =
-                    run_refresh_body(Arc::clone(&self.inner), token.clone(), generation)
-                        .boxed()
-                        .shared();
+                // Eager execution (TS async-IIFE parity, refresh-queue.ts:172):
+                // the body is `tokio::spawn`ed so it ALWAYS runs to completion
+                // even when every awaiter is dropped (e.g. a client disconnect
+                // drops the creating request mid-refresh). A lazily polled
+                // Shared future would (1) suspend an already-sent OAuth POST —
+                // OpenAI rotates the refresh token server-side, so the stored
+                // token is burned and the next refresh gets invalid_grant —
+                // and (2) never run the `finally` cleanup below, wedging this
+                // token's refresh lane on a stale cached failure forever
+                // (refresh-stage entries are deliberately never evicted).
+                let body = {
+                    let inner = Arc::clone(&self.inner);
+                    let token = token.clone();
+                    async move {
+                        let result =
+                            run_refresh_body(Arc::clone(&inner), token.clone(), generation).await;
+                        // TS `finally` (refresh-queue.ts:229-237), moved into
+                        // the spawned wrapper so it runs even when the
+                        // creating caller died: delete the pending entry only
+                        // if it is still our generation (or absent), and
+                        // clean the rotation mapping.
+                        let mut state = inner.lock();
+                        let still_ours = state
+                            .pending
+                            .get(&token)
+                            .is_none_or(|entry| entry.generation == generation);
+                        if still_ours {
+                            state.pending.remove(&token);
+                            cleanup_rotation_mapping(&mut state, &token);
+                        }
+                        result
+                    }
+                };
+                let future: SharedRefresh = tokio::spawn(body)
+                    .map(|joined| {
+                        joined.unwrap_or_else(|join_error| {
+                            TokenResult::Failed(TokenFailure {
+                                reason: Some(TokenFailureReason::Unknown),
+                                status_code: None,
+                                message: Some(format!("Refresh task failed: {join_error}")),
+                            })
+                        })
+                    })
+                    .boxed()
+                    .shared();
                 state.pending.insert(
                     token.clone(),
                     RefreshEntry {
@@ -258,28 +302,10 @@ impl RefreshQueue {
                         stale_warning_logged: false,
                     },
                 );
-                Plan::Created { future, generation }
+                future
             }
         };
-
-        match plan {
-            Plan::Join(future) => future.await,
-            Plan::Created { future, generation } => {
-                let result = future.await;
-                // finally: delete the pending entry only if it is still our
-                // generation (or absent), and clean the rotation mapping.
-                let mut state = self.inner.lock();
-                let still_ours = state
-                    .pending
-                    .get(&token)
-                    .is_none_or(|entry| entry.generation == generation);
-                if still_ours {
-                    state.pending.remove(&token);
-                    cleanup_rotation_mapping(&mut state, &token);
-                }
-                result
-            }
-        }
+        future.await
     }
 
     /// `isRefreshing(token)` — true while a refresh is in flight.
@@ -382,35 +408,49 @@ async fn run_refresh_body(inner: Arc<QueueInner>, token: String, generation: u64
     }
 
     // try
-    let outcome = if let Some(superseding) = superseding_future(&inner, &token, generation) {
-        superseding.await
-    } else {
-        mark_stage(&inner, &token, generation, Stage::Refresh);
-        let result = execute_refresh_with_rotation_tracking(&inner, &token).await;
-        // Publish the success to cross-process followers; publish errors are
-        // warn-only.
-        if let Err(error) = lease.release(Some(&result)).await {
-            log().warn(
-                "Failed to publish lease refresh result",
-                Some(&json!({
-                    "tokenSuffix": token_fingerprint(&token),
-                    "error": error.to_string(),
-                })),
-            );
-        }
-        result
-    };
-    // finally: idempotent unlock; errors warn-only.
-    if let Err(error) = lease.release(None).await {
+    if let Some(superseding) = superseding_future(&inner, &token, generation) {
+        // TS `return supersedingPromise;` triggers the
+        // `finally { await lease.release(); }` BEFORE the async function's
+        // promise adopts the returned promise (finally-before-adoption), so
+        // the on-disk lock is unlinked BEFORE the newer generation's refresh
+        // runs. Releasing only after `superseding.await` would hold the
+        // freshly-acquired Active lock for the whole superseding refresh —
+        // the successor's `acquire` would poll it until its wait budget
+        // (default 35 s) expires and then BYPASS, refreshing without
+        // cross-process single-flight protection.
+        release_lease_quietly(&lease, &token).await;
+        return superseding.await;
+    }
+    mark_stage(&inner, &token, generation, Stage::Refresh);
+    let outcome = execute_refresh_with_rotation_tracking(&inner, &token).await;
+    // Publish the success to cross-process followers; publish errors are
+    // warn-only.
+    if let Err(error) = lease.release(Some(&outcome)).await {
         log().warn(
-            "Failed to release refresh lease",
+            "Failed to publish lease refresh result",
             Some(&json!({
                 "tokenSuffix": token_fingerprint(&token),
                 "error": error.to_string(),
             })),
         );
     }
+    // finally: idempotent unlock; errors warn-only.
+    release_lease_quietly(&lease, &token).await;
     outcome
+}
+
+/// The TS `finally { await lease.release(); }` — idempotent unlock with
+/// warn-only error handling.
+async fn release_lease_quietly(lease: &RefreshLeaseHandle, token: &str) {
+    if let Err(error) = lease.release(None).await {
+        log().warn(
+            "Failed to release refresh lease",
+            Some(&json!({
+                "tokenSuffix": token_fingerprint(token),
+                "error": error.to_string(),
+            })),
+        );
+    }
 }
 
 /// `executeRefreshWithRotationTracking` — record `old → new` after a rotating
@@ -1213,6 +1253,211 @@ mod tests {
         assert_eq!(second_result, superseded);
         assert_eq!(script.calls(), 1);
         assert_eq!(queue.pending_count(), 0);
+    }
+
+    /// LeaseFs double that records every unlink (lock release). Reads report
+    /// NotFound so `owns_lock` treats the lock as still ours and unlinks it.
+    struct RecordingLeaseFs {
+        unlinks: StdMutex<Vec<std::path::PathBuf>>,
+    }
+
+    impl RecordingLeaseFs {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                unlinks: StdMutex::new(Vec::new()),
+            })
+        }
+
+        fn unlinked(&self, suffix: &str) -> bool {
+            self.unlinks
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|path| path.to_string_lossy().ends_with(suffix))
+        }
+    }
+
+    impl LeaseFs for RecordingLeaseFs {
+        fn mkdir_recursive(&self, _dir: &Path, _mode: u32) -> io::Result<()> {
+            Ok(())
+        }
+        fn chmod(&self, _path: &Path, _mode: u32) -> io::Result<()> {
+            Ok(())
+        }
+        fn open_excl_write(&self, _path: &Path, _contents: &str, _mode: u32) -> io::Result<()> {
+            Ok(())
+        }
+        fn write_file(&self, _path: &Path, _contents: &str, _mode: u32) -> io::Result<()> {
+            Ok(())
+        }
+        fn rename(&self, _from: &Path, _to: &Path) -> io::Result<()> {
+            Ok(())
+        }
+        fn unlink(&self, path: &Path) -> io::Result<()> {
+            self.unlinks.lock().unwrap().push(path.to_path_buf());
+            Ok(())
+        }
+        fn read_to_string(&self, _path: &Path) -> io::Result<String> {
+            Err(io::Error::from(io::ErrorKind::NotFound))
+        }
+        fn mtime_ms(&self, _path: &Path) -> io::Result<f64> {
+            Err(io::Error::from(io::ErrorKind::NotFound))
+        }
+        fn read_dir_files(&self, _dir: &Path) -> io::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Like [`GatedFirstAcquireCoordinator`] but resolves to OWNER handles
+    /// over a [`RecordingLeaseFs`], so lock release timing is observable
+    /// (`lock-0` for the first acquire, `lock-1` for the second, …).
+    struct GatedOwnerCoordinator {
+        calls: AtomicU32,
+        gate: Arc<Semaphore>,
+        fs: Arc<RecordingLeaseFs>,
+    }
+
+    impl LeaseCoordinatorApi for GatedOwnerCoordinator {
+        fn acquire<'a>(
+            &'a self,
+            _refresh_token: &'a str,
+        ) -> BoxFuture<'a, io::Result<RefreshLeaseHandle>> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let gate = Arc::clone(&self.gate);
+            let fs: Arc<dyn LeaseFs> = Arc::clone(&self.fs) as Arc<dyn LeaseFs>;
+            async move {
+                if call == 0 {
+                    let permit = gate.acquire().await.expect("gate closed");
+                    permit.forget();
+                }
+                Ok(RefreshLeaseHandle::owner(
+                    format!("hash-{call}"),
+                    std::path::PathBuf::from(format!("/lease/lock-{call}")),
+                    std::path::PathBuf::from(format!("/lease/result-{call}")),
+                    format!("nonce-{call}"),
+                    fs,
+                ))
+            }
+            .boxed()
+        }
+        fn configured_wait_timeout_ms(&self) -> Option<i64> {
+            Some(DEFAULT_WAIT_TIMEOUT_MS)
+        }
+    }
+
+    /// Finding: superseded lease owner must release the on-disk lock BEFORE
+    /// awaiting the newer generation's refresh (TS finally-before-adoption),
+    /// not after — otherwise the successor polls a live lock for its whole
+    /// wait budget and falls back to an unprotected bypass refresh.
+    #[tokio::test]
+    async fn superseded_owner_releases_the_lease_before_awaiting_the_newer_generation() {
+        let acquire_gate = Arc::new(Semaphore::new(0));
+        let fs = RecordingLeaseFs::new();
+        let coordinator = Arc::new(GatedOwnerCoordinator {
+            calls: AtomicU32::new(0),
+            gate: Arc::clone(&acquire_gate),
+            fs: Arc::clone(&fs),
+        });
+        let exec_gate = Arc::new(Semaphore::new(0));
+        let superseded = success("access-after-supersede", "refresh-after-supersede");
+        let script = ExecScript::new(vec![ExecStep::Gated(
+            Arc::clone(&exec_gate),
+            superseded.clone(),
+        )]);
+        let queue = RefreshQueue::with_parts(1_000, coordinator.clone(), script.executor());
+
+        // First (stale) generation: acquire blocks on the gate.
+        let first = tokio::spawn({
+            let queue = queue.clone();
+            async move { queue.refresh("release-order-token").await }
+        });
+        yield_a_few_times().await;
+        assert_eq!(queue.pending_count(), 1);
+
+        // Evict the acquire-stage entry, then start the superseding
+        // generation, whose refresh parks on the exec gate as lock-1 OWNER.
+        rewind_entry(&queue, "release-order-token", 41_000);
+        let second = tokio::spawn({
+            let queue = queue.clone();
+            async move { queue.refresh("release-order-token").await }
+        });
+        yield_a_few_times().await;
+        assert_eq!(coordinator.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(script.calls(), 1, "superseding refresh in flight");
+
+        // Unblock the stale acquire: it resolves as lock-0 OWNER, discovers
+        // it was superseded, and must unlink lock-0 IMMEDIATELY — while the
+        // superseding refresh is still gated (not yet completed).
+        acquire_gate.add_permits(1);
+        yield_a_few_times().await;
+        assert!(
+            fs.unlinked("lock-0"),
+            "stale owner must release its lock BEFORE the superseding refresh completes; unlinks: {:?}",
+            fs.unlinks.lock().unwrap()
+        );
+        assert!(
+            !fs.unlinked("lock-1"),
+            "superseding owner still holds its lock while refreshing"
+        );
+
+        exec_gate.add_permits(1);
+        assert_eq!(first.await.unwrap(), superseded);
+        assert_eq!(second.await.unwrap(), superseded);
+        assert_eq!(script.calls(), 1);
+        assert!(fs.unlinked("lock-1"), "superseding owner releases at the end");
+        assert_eq!(queue.pending_count(), 0);
+    }
+
+    /// Finding: the refresh body must run EAGERLY to completion (TS async
+    /// IIFE) even when the creating caller is dropped mid-refresh (client
+    /// disconnect). A lazily polled Shared future would suspend the OAuth
+    /// exchange, leave the pending entry wedged at stage=Refresh forever
+    /// (cleanup never evicts refresh-stage entries), and serve every later
+    /// caller a stale cached "Refresh timeout" failure.
+    #[tokio::test]
+    async fn refresh_body_completes_and_cleans_up_when_the_creating_caller_is_dropped() {
+        let exec_gate = Arc::new(Semaphore::new(0));
+        let rotated = success("access-after-drop", "rotated-refresh-token");
+        let fresh = success("access-fresh", "fresh-refresh-token");
+        let script = ExecScript::new(vec![
+            ExecStep::Gated(Arc::clone(&exec_gate), rotated.clone()),
+            ExecStep::Ok(fresh.clone()),
+        ]);
+        let queue =
+            RefreshQueue::with_parts(1_000, Arc::new(BypassCoordinator), script.executor());
+
+        let creator = tokio::spawn({
+            let queue = queue.clone();
+            async move { queue.refresh("dropped-caller-token").await }
+        });
+        yield_a_few_times().await;
+        assert_eq!(queue.pending_count(), 1);
+        assert_eq!(script.calls(), 1, "refresh POST already sent");
+
+        // Client disconnect: the sole awaiter is dropped mid-refresh.
+        creator.abort();
+        let _ = creator.await;
+
+        // The detached body still processes the upstream response and the
+        // spawned wrapper runs the TS-`finally` cleanup.
+        exec_gate.add_permits(1);
+        for _ in 0..200 {
+            if queue.pending_count() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            queue.pending_count(),
+            0,
+            "pending entry removed even though the creator died"
+        );
+
+        // A later caller performs a FRESH refresh (executor called again)
+        // instead of joining a wedged future / stale cached failure.
+        let second = queue.refresh("dropped-caller-token").await;
+        assert_eq!(second, fresh);
+        assert_eq!(script.calls(), 2);
     }
 
     #[tokio::test]

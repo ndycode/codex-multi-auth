@@ -881,14 +881,45 @@ pub async fn run_report_command_with(
     0
 }
 
-/// Node `path.resolve(cwd, value)` (absolute value wins).
+/// Node `path.resolve(cwd, value)` (absolute value wins), including Node's
+/// lexical normalization: `.`/`..` segments collapse and separators become
+/// the platform's, so the `Report written:` echo matches TS byte-for-byte
+/// (`--out C:/x/./report.json` echoes `C:\x\report.json` on Windows). No
+/// filesystem access. Mirrors `cma_storage`'s `node_resolve` component walk.
 fn resolve_against(cwd: &Path, value: &str) -> PathBuf {
+    use std::path::Component;
     let candidate = Path::new(value);
-    if candidate.is_absolute() {
+    let joined: PathBuf = if candidate.is_absolute() {
         candidate.to_path_buf()
+    } else if cfg!(windows) && candidate.has_root() {
+        // win32 `\foo` resolves onto the cwd's drive.
+        let mut prefixed = PathBuf::new();
+        if let Some(Component::Prefix(prefix)) = cwd.components().next() {
+            prefixed.push(prefix.as_os_str());
+        }
+        prefixed.push(candidate);
+        prefixed
     } else {
         cwd.join(candidate)
+    };
+    let mut normalized = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(std::path::MAIN_SEPARATOR_STR),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !matches!(
+                    normalized.components().next_back(),
+                    None | Some(Component::Prefix(_)) | Some(Component::RootDir)
+                ) {
+                    normalized.pop();
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
     }
+    normalized
 }
 
 // ============================================================================
@@ -906,6 +937,45 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Node `path.resolve` parity for the `Report written:` echo: separators
+    /// normalize to the platform's and `.`/`..` segments collapse.
+    #[cfg(windows)]
+    #[test]
+    fn resolve_against_normalizes_like_node_path_resolve_on_windows() {
+        let cwd = Path::new(r"C:\work");
+        assert_eq!(
+            resolve_against(cwd, "C:/x/./report.json"),
+            PathBuf::from(r"C:\x\report.json")
+        );
+        assert_eq!(
+            resolve_against(cwd, "C:/x/sub/../report.json"),
+            PathBuf::from(r"C:\x\report.json")
+        );
+        assert_eq!(
+            resolve_against(cwd, "out/report.json"),
+            PathBuf::from(r"C:\work\out\report.json")
+        );
+        // Drive-relative `\foo` resolves onto the cwd's drive.
+        assert_eq!(
+            resolve_against(cwd, r"\x\report.json"),
+            PathBuf::from(r"C:\x\report.json")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn resolve_against_collapses_dot_segments_like_node_path_resolve() {
+        let cwd = Path::new("/work");
+        assert_eq!(
+            resolve_against(cwd, "/x/./report.json"),
+            PathBuf::from("/x/report.json")
+        );
+        assert_eq!(
+            resolve_against(cwd, "out/../report.json"),
+            PathBuf::from("/work/report.json")
+        );
     }
 
     fn account(refresh: &str, email: Option<&str>, usable: bool) -> AccountMetadataV3 {

@@ -90,10 +90,12 @@ pub fn resolve_status_accounts_dir() -> PathBuf {
     cma_storage::paths::get_project_global_config_dir(&identity_root)
 }
 
-/// TS `normalizeAccountIdentifier(value)`.
+/// TS `normalizeAccountIdentifier(value)` — full Unicode lowercasing
+/// (String.prototype.toLowerCase), so non-ASCII ids/emails match across
+/// case (same commit as the account_force normalize fix).
 pub fn normalize_account_identifier(value: Option<&str>) -> String {
     match value {
-        Some(v) if !v.trim().is_empty() => v.trim().to_ascii_lowercase(),
+        Some(v) if !v.trim().is_empty() => v.trim().to_lowercase(),
         _ => String::new(),
     }
 }

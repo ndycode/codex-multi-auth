@@ -1,6 +1,20 @@
 //! `codex-multi-auth-codex` — the codex wrapper bin (TS `scripts/codex.js`
 //! `main()`): auth-family args run the local manager; everything else
 //! forwards to the official `@openai/codex` via `cma_wrapper::forward`.
+//!
+//! R-deviation (deliberate, not a silent drop): TS `main()` calls
+//! `ensureWindowsShellShimGuards()` on every invocation — an OPT-IN win32
+//! self-heal that, under `CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD` /
+//! `CODEX_MULTI_AUTH_PWSH_PROFILE_GUARD` (both default OFF), rewrites
+//! `codex.bat/.cmd/.ps1` shims in the npm global bin dir and upserts a
+//! PowerShell-profile `codex` function so `codex` keeps resolving to the
+//! wrapper after an official-codex npm install clobbers the shims. The Rust
+//! bin does NOT port it: the TS shim contents are npm/node_modules-specific
+//! (they exec `node scripts/codex.js`), and what a repaired shim should
+//! invoke under the native-binary distribution model is an open product
+//! decision. Until that decision lands, the two env vars are silent no-ops
+//! here; revisit `scripts/codex.js ensureWindowsShellShimGuards` +
+//! `test/codex-bin-wrapper.test.ts` when porting.
 
 use cma_wrapper::forward::{self, WrapperDispatch};
 

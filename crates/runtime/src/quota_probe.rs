@@ -143,7 +143,9 @@ pub fn parse_reset_at_ms(
         && reset_after_seconds > 0
     {
         let now = now_override.unwrap_or_else(now_ms);
-        return Some(now + reset_after_seconds * 1000);
+        // f64 multiply mirrors JS semantics; the `as i64` cast saturates on
+        // overflow (hostile huge header → far-future resetAtMs, like TS).
+        return Some(now.saturating_add((reset_after_seconds as f64 * 1000.0) as i64));
     }
 
     let reset_at_raw = headers.get_header(&format!("{prefix}-reset-at"))?;
@@ -386,6 +388,17 @@ mod tests {
         .with_model("gpt-5.5");
         let line = format_codex_quota_line(&snapshot);
         assert_eq!(line, "5h 60% left, 7d 90% left, plan:plus, active:3, rate-limited");
+    }
+
+    #[test]
+    fn hostile_huge_reset_after_seconds_saturates_to_far_future() {
+        // Mirrors the quota-probe fix: i64 multiply must not wrap negative
+        // (release) or panic (overflow checks) — TS float math keeps a huge
+        // finite blocked-window resetAtMs.
+        let now = 1_753_500_000_000_i64;
+        let h = headers(&[("x-codex-primary-reset-after-seconds", "9300000000000000")]);
+        let parsed = parse_reset_at_ms(&h, "x-codex-primary", Some(now)).expect("resetAtMs");
+        assert!(parsed > now, "far-future, never wrapped: {parsed}");
     }
 
     #[test]

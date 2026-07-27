@@ -385,6 +385,12 @@ pub async fn start_runtime_rotation_proxy(
     // None instead of throwing (chooseAccount reports per-request).
     let forced_account_index = match options.forced_account_index {
         Some(value) => normalize_forced_account_index_number(Some(value as f64)),
+        // The launcher explicitly resolved "no pin" (no `--account`): a
+        // stray/inherited CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX (nested
+        // wrapper inside a forced run, leftover export) must NOT silently
+        // pin the proxy — TS scrubs the var from process.env in this case,
+        // so rotation stays normal.
+        None if options.suppress_env_forced_account_index => None,
         None => normalize_forced_account_index(
             std::env::var("CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX")
                 .ok()
@@ -1414,21 +1420,48 @@ async fn run_request(
         {
             context.upstream_path = format!("{}?{query}", context.upstream_path);
         }
-        let upstream = shared
+        let outcome = shared
             .pipeline
-            .handle_responses(context, Some(trace_id.to_string()))
+            .handle_responses_for_server(context, Some(trace_id.to_string()))
             .await;
         let manager = {
             let state = shared.pipeline.state().await;
             state.active_account_manager.clone()
+        };
+        let crate::pipeline::ResponsesOutcome { response: upstream, deferred } = outcome;
+        // Streaming success: the forward stage decides the ledger row
+        // (`forwarded ? success : stream_forward_failed`) and owns the
+        // network-error cleanup on a mid-stream stall — exactly like the
+        // thread-goal forward below (TS runtime-rotation-proxy.ts:1424-1450).
+        let (cleanup, usage) = match deferred {
+            Some(deferred) => (
+                StreamCleanup::NetworkFailure {
+                    account_index: deferred.account_index,
+                    family: deferred.family,
+                    model: deferred.model,
+                    session_key: deferred.session_key,
+                    cooldown_ms: config.network_error_cooldown_ms,
+                },
+                Some(StreamUsage {
+                    recorder: Arc::new(deferred.recorder),
+                    status_code: upstream.status,
+                    account: deferred.success_completion.account,
+                    on_success: (UsageLedgerOutcome::Success, None),
+                    on_failure: (
+                        UsageLedgerOutcome::Failure,
+                        Some("stream_forward_failed".to_string()),
+                    ),
+                }),
+            ),
+            None => (StreamCleanup::None, None),
         };
         return Ok(stream_upstream_to_client(
             Arc::clone(&shared),
             manager,
             upstream,
             config.stream_stall_timeout_ms,
-            StreamCleanup::None,
-            None,
+            cleanup,
+            usage,
         )
         .await);
     }

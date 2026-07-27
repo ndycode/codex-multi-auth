@@ -39,19 +39,12 @@ use crate::misc::{compute_sha256, ensure_codex_gitignore_entry, format_storage_e
 use crate::path_state::get_storage_path_state;
 use crate::public_types::AccountStorageV3;
 
-/// Write a file with mode 0600 (unix; no-op mode on Windows — Node parity).
+/// Write a file with `mode` applied atomically at open(2) on unix (no-op mode
+/// on Windows — Node parity). Node passes `mode` into `fs.writeFile`, so the
+/// WAL/temp files (which hold every account's refresh token) never exist with
+/// broader permissions — no write-then-chmod window, no 0644 crash residue.
 pub(crate) fn write_file_with_mode(path: &Path, content: &str, mode: u32) -> io::Result<()> {
-    fs::write(path, content)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = mode;
-    }
-    Ok(())
+    cma_core::json_io::write_text_file_with_mode_sync(path, content, Some(mode))
 }
 
 /// `ensureDirectory` — `mkdir -p` with mode 0700 plus a best-effort POSIX
@@ -313,7 +306,31 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            // Applied at open(2): never any bits outside 0600 (default umask
+            // leaves exactly 0600; a write-then-chmod impl would transiently
+            // expose 0644 and could leave it behind on crash).
+            assert_eq!(mode & !0o600, 0, "no bits outside 0600: {mode:o}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_file_with_mode_does_not_chmod_pre_existing_files() {
+        // Node's fs.writeFile uses `mode` only when O_CREAT creates the file;
+        // a pre-existing file keeps its permissions. This pins the fix from
+        // write-then-chmod (which always chmodded) to mode-at-open.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wal.json");
+        fs::write(&path, "old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        write_file_with_mode(&path, "new", 0o600).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640,
+            "pre-existing perms preserved (Node parity)"
+        );
     }
 }

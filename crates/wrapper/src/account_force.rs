@@ -164,7 +164,11 @@ pub fn format_forced_account_list(accounts: &[Value]) -> String {
 
 fn normalize_identifier(value: Option<&str>) -> String {
     match value {
-        Some(v) if !v.trim().is_empty() => v.trim().to_ascii_lowercase(),
+        // Full Unicode lowercasing (TS String.prototype.toLowerCase), not
+        // ASCII-only: `--account Ä@example.com` must match a stored
+        // `ä@example.com` — --account never falls back, so an ASCII-only
+        // mismatch fails the run hard.
+        Some(v) if !v.trim().is_empty() => v.trim().to_lowercase(),
         _ => String::new(),
     }
 }

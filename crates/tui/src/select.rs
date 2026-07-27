@@ -12,7 +12,21 @@
 //! - `truncate_ansi` appends `\x1b[0m` after the `...` suffix only when the
 //!   kept prefix contains an ESC (ui-01);
 //! - cleanup tears down timers/listeners BEFORE restoring the terminal mode,
-//!   each step individually guarded, and the cursor is always re-shown.
+//!   each step individually guarded, and the cursor is always re-shown;
+//! - external SIGINT/SIGTERM during the menu cancels WITH terminal
+//!   restoration (unix, [`menu_signals`]) — TS `process.once(signal,
+//!   () => finish(null))` — instead of dying with raw mode on and the
+//!   cursor hidden.
+//!
+//! Accepted loss vs TS (R-deviation): VT application-keypad hotkeys
+//! (`ESC O p`..`ESC O y` → '0'-'9' etc., DECKPAM mode) do NOT reach the live
+//! loop on unix — crossterm's parser only understands `ESC O` for
+//! A/B/C/D/H/F/P-S and discards the rest, and it never surfaces raw bytes.
+//! TS decoded them in `decodeHotkeyInput`; the pure decoder is kept below
+//! ([`decode_hotkey_input`]) for parity tests and for a future raw-stdin
+//! reader, but numpad digits in application-keypad mode are currently
+//! ignored by [`select`]. (NumLock-normal mode and the Windows console are
+//! unaffected.)
 //!
 //! Rendering is split into the pure [`render_select_frame`] (exact-string
 //! testable) and the thin stdout writer used by [`select`].
@@ -291,9 +305,13 @@ fn color_code(color: Option<MenuColor>) -> &'static str {
 }
 
 /// TS `decodeHotkeyInput`: keypad escape sequences map to their digit/operator;
-/// otherwise the first printable ASCII char wins; else `None`. Exported logic
-/// kept as a pure byte-level function for parity tests; the interactive loop
-/// receives already-decoded chars from crossterm.
+/// otherwise the first printable ASCII char wins; else `None`.
+///
+/// NOTE: this pure byte-level decoder is NOT wired into the live loop — the
+/// loop consumes crossterm events, and crossterm neither parses `ESC O p..y`
+/// (application-keypad digits) nor exposes the raw bytes, so those hotkeys
+/// are an accepted loss on unix (see the module header). Kept for parity
+/// tests and for a future raw-stdin reader.
 pub fn decode_hotkey_input(data: &[u8]) -> Option<char> {
     let input = String::from_utf8_lossy(data);
     let mapped = match input.as_ref() {
@@ -323,6 +341,72 @@ pub fn decode_hotkey_input(data: &[u8]) -> Option<char> {
 
 fn is_selectable<T>(item: &MenuItem<T>) -> bool {
     !item.disabled && !item.separator && !item.heading
+}
+
+/// External-signal protection for the menu's lifetime — TS
+/// `process.once("SIGINT"/"SIGTERM", onSignal)` where `onSignal` is
+/// `finish(null)`: while a menu is open, SIGINT/SIGTERM set a flag that the
+/// select loop (which wakes at least every 500 ms) turns into a cancel WITH
+/// terminal restoration. Without this, an external `kill <pid>` (SIGTERM) or
+/// out-of-TTY SIGINT terminates mid-menu with raw mode still enabled and the
+/// cursor hidden (`\x1b[?25l` never undone), corrupting the shell until
+/// `reset`. Outside any menu the conditional-default action re-runs the OS
+/// default handler (terminate), so normal Ctrl-C / kill behavior is
+/// preserved for the rest of the process. Windows: console Ctrl-C arrives as
+/// a key event in raw mode and is handled by the Ctrl-C-as-escape arm.
+#[cfg(unix)]
+mod menu_signals {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, LazyLock};
+
+    /// TRUE while NO menu is open → a signal runs the default handler.
+    static OUTSIDE_MENU: LazyLock<Arc<AtomicBool>> =
+        LazyLock::new(|| Arc::new(AtomicBool::new(true)));
+    /// Set by the handler while a menu is open; polled by the select loop.
+    static SIGNALLED: LazyLock<Arc<AtomicBool>> =
+        LazyLock::new(|| Arc::new(AtomicBool::new(false)));
+    /// Menu nesting depth (`on_input` callbacks may open nested menus).
+    static DEPTH: AtomicUsize = AtomicUsize::new(0);
+    static INSTALL: LazyLock<()> = LazyLock::new(|| {
+        for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+            // Registration order matters (actions run in order): outside a
+            // menu the first action terminates via the emulated default
+            // handler; inside a menu it is skipped and the second action
+            // records the signal for the loop.
+            let _ = signal_hook::flag::register_conditional_default(
+                signal,
+                Arc::clone(&OUTSIDE_MENU),
+            );
+            let _ = signal_hook::flag::register(signal, Arc::clone(&SIGNALLED));
+        }
+    });
+
+    /// RAII guard for the menu-open window; nested menus keep protection
+    /// until the outermost scope drops.
+    pub struct MenuSignalScope;
+
+    impl MenuSignalScope {
+        pub fn enter() -> Self {
+            LazyLock::force(&INSTALL);
+            if DEPTH.fetch_add(1, Ordering::SeqCst) == 0 {
+                SIGNALLED.store(false, Ordering::SeqCst);
+                OUTSIDE_MENU.store(false, Ordering::SeqCst);
+            }
+            MenuSignalScope
+        }
+
+        pub fn signalled(&self) -> bool {
+            SIGNALLED.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for MenuSignalScope {
+        fn drop(&mut self) {
+            if DEPTH.fetch_sub(1, Ordering::SeqCst) == 1 {
+                OUTSIDE_MENU.store(true, Ordering::SeqCst);
+            }
+        }
+    }
 }
 
 /// Inputs to the pure frame renderer (one call == one TS `render()`).
@@ -661,6 +745,10 @@ pub fn select<T: Clone>(
         cleanup_terminal(was_raw);
         return Ok(None);
     }
+    // Menu-lifetime SIGINT/SIGTERM protection (TS process.once(signal,
+    // finish(null))); dropped on every return path.
+    #[cfg(unix)]
+    let signal_scope = menu_signals::MenuSignalScope::enter();
 
     // Drain any buffered input so a queued Enter cannot instantly accept.
     while crossterm::event::poll(Duration::from_millis(0)).unwrap_or(false) {
@@ -752,6 +840,13 @@ pub fn select<T: Clone>(
 
     loop {
         let now = Instant::now();
+        // External SIGINT/SIGTERM during the menu: TS finish(null) —
+        // restore the terminal (raw mode + cursor) and return cancel. The
+        // poll timeout below is ≤500 ms, bounding the latency.
+        #[cfg(unix)]
+        if signal_scope.signalled() {
+            finish!(None);
+        }
         if let Some(deadline) = escape_deadline
             && now >= deadline {
                 // Bare ESC with no follow-up bytes: it really was Escape.
@@ -899,6 +994,39 @@ mod tests {
     use crate::theme::{create_ui_theme, CreateUiThemeOptions};
 
     const ESC: char = '\x1b';
+
+    /// Finding: an external SIGINT/SIGTERM during a menu must become a
+    /// cancel (flag polled by the loop → terminal restore) instead of
+    /// terminating the process with raw mode on and the cursor hidden. The
+    /// process surviving `raise(SIGTERM)` here proves the default handler
+    /// was suppressed while a menu scope is active; the flag is what the
+    /// loop turns into `finish!(None)`.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(menu_signals)]
+    fn external_signal_inside_a_menu_scope_flags_cancel_instead_of_terminating() {
+        let scope = menu_signals::MenuSignalScope::enter();
+        assert!(!scope.signalled());
+        signal_hook::low_level::raise(signal_hook::consts::SIGTERM).unwrap();
+        for _ in 0..200 {
+            if scope.signalled() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            scope.signalled(),
+            "SIGTERM inside a menu scope must set the cancel flag"
+        );
+        // A second signal inside the SAME scope is still swallowed (flag
+        // already set; loop exits within one poll interval anyway).
+        signal_hook::low_level::raise(signal_hook::consts::SIGINT).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(scope.signalled());
+        drop(scope);
+        // NOTE: the outside-menu path (conditional default → terminate) is
+        // deliberately not exercised — it would kill the test binary.
+    }
 
     // ---- truncateAnsi ANSI reset placement (ui-01) — from test/select.test.ts ----
 

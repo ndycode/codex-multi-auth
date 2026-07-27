@@ -54,6 +54,11 @@ const TOAST_DEBOUNCE_MS: u64 = 60_000;
 /// distinct messages.
 static TOAST_HISTORY: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
 
+/// Test capture sink: when armed, emitted toasts are recorded here (and NOT
+/// written to stderr). The identical-message debounce still applies first,
+/// so captures reflect exactly what a user would have seen.
+static TOAST_CAPTURE: Mutex<Option<Vec<(String, String)>>> = Mutex::new(None);
+
 /// Show a runtime toast as a stderr notice.
 ///
 /// Returns `true` when the notice was emitted, `false` when it was suppressed
@@ -90,6 +95,15 @@ pub fn show_runtime_toast_with(
         history.retain(|_, last| now.duration_since(*last) < window);
         history.insert(key, now);
     }
+    {
+        let mut capture = TOAST_CAPTURE
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some(captured) = capture.as_mut() {
+            captured.push((variant.as_str().to_string(), body));
+            return true;
+        }
+    }
     let line = match variant {
         ToastVariant::Success => format!("[{PLUGIN_NAME}] {body}"),
         _ => format!("[{PLUGIN_NAME}] {}: {body}", variant.as_str()),
@@ -97,6 +111,25 @@ pub fn show_runtime_toast_with(
     // Swallow write errors (TS swallowed every showToast failure).
     let _ = writeln!(std::io::stderr(), "{line}");
     true
+}
+
+/// Test hook: arm the capture sink (also clears the debounce history so the
+/// capture starts from a clean slate).
+pub fn start_toast_capture_for_tests() {
+    reset_toast_debounce_for_tests();
+    let mut capture = TOAST_CAPTURE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    *capture = Some(Vec::new());
+}
+
+/// Test hook: disarm the capture sink and return the `(variant, message)`
+/// pairs emitted while it was armed.
+pub fn take_captured_toasts_for_tests() -> Vec<(String, String)> {
+    let mut capture = TOAST_CAPTURE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    capture.take().unwrap_or_default()
 }
 
 /// Test hook: clear the debounce history so tests observe fresh behavior.

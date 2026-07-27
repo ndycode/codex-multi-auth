@@ -92,7 +92,11 @@ pub fn parse_retry_after_header_ms(headers: &HeaderMap, now: i64) -> Option<i64>
     if let Some(as_seconds) = parse_env_int(Some(retry_after))
         && as_seconds > 0
     {
-        return Some(as_seconds * 1000);
+        // Saturate like the sibling sites in get_quota_window_wait_ms: TS
+        // float math keeps a huge finite value that downstream clamps to the
+        // 7-day cap; a plain i64 multiply would wrap negative in release
+        // builds (account never benched) or panic with overflow-checks.
+        return Some(as_seconds.saturating_mul(1000));
     }
     if let Some(as_date) = parse_date_ms(retry_after)
         && as_date > now
@@ -381,6 +385,19 @@ mod tests {
             );
         }
         map
+    }
+
+    #[test]
+    fn hostile_huge_retry_after_seconds_saturates_instead_of_wrapping() {
+        // H1 hostile-upstream hardening: an absurd `retry-after` (e.g. a
+        // leaked epoch-ns timestamp) must stay a huge POSITIVE ms value that
+        // the downstream markRateLimitedWithReason clamp turns into the 7-day
+        // bench — a wrapped negative would clamp to 0 and never bench.
+        let h = headers(&[("retry-after", "99999999999999999999")]);
+        assert_eq!(parse_retry_after_header_ms(&h, 0), Some(i64::MAX));
+        // In-i64-range seconds whose ms conversion overflows also saturate.
+        let h = headers(&[("retry-after", "9000000000000000000")]);
+        assert_eq!(parse_retry_after_header_ms(&h, 0), Some(i64::MAX));
     }
 
     fn utc_string(epoch_ms: i64) -> String {

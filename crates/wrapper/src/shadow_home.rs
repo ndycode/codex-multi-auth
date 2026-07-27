@@ -709,7 +709,20 @@ fn symlink_dir_impl(source: &Path, destination: &Path) -> io::Result<()> {
     }
     #[cfg(windows)]
     {
-        std::os::windows::fs::symlink_dir(source, destination)
+        // Node parity: `fs.symlinkSync(source, destination, "junction")` —
+        // on win32 the JS launcher creates NTFS junctions, which need NO
+        // privilege. `std::os::windows::fs::symlink_dir` requires
+        // SeCreateSymbolicLinkPrivilege / Developer Mode and fails for a
+        // standard user, which would skip every link-only dir (sqlite,
+        // cache, …) and degrade sessions/plugins/skills to full copies.
+        // Junctions require an absolute target; the call sites pass absolute
+        // paths, but canonicalize-by-joining defensively for relative ones.
+        let absolute_source = if source.is_absolute() {
+            source.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(source)
+        };
+        junction::create(&absolute_source, destination)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -1692,8 +1705,14 @@ pub fn create_runtime_rotation_proxy_codex_home(
         )?;
         omit_runtime_rotation_shadow_home_state_files(&shadow_codex_home);
         let original_config_path = original_codex_home.join(SHADOW_HOME_CONFIG_FILE);
+        // TS parity: readFileSync throws on an unreadable-but-existing config
+        // (Windows lock, ACL, transient EBUSY) — the error propagates, the
+        // shadow home is removed below, and the caller falls back to a normal
+        // launch against the user's REAL config. Silently defaulting to an
+        // empty string would keep the proxy but drop the user's entire
+        // config (model, profiles, MCP servers, trust) for the run.
         let raw_config = if original_config_path.exists() {
-            fs::read_to_string(&original_config_path).unwrap_or_default()
+            fs::read_to_string(&original_config_path)?
         } else {
             String::new()
         };
@@ -1790,6 +1809,82 @@ mod tests {
         assert!(is_sqlite_sidecar_file("a.sqlite-shm"));
         assert!(!is_sqlite_sidecar_file("a.sqlite"));
         assert!(!is_sqlite_main_file("a.sqlite-wal"));
+    }
+
+    /// Node `symlinkSync(..., "junction")` parity: on win32 the dir mirror
+    /// must create an unprivileged NTFS junction (a reparse point), never
+    /// fall back to a copy just because SeCreateSymbolicLinkPrivilege is
+    /// absent (standard users / no Developer Mode). Runs fine WITH the
+    /// privilege too — a junction is created either way.
+    #[cfg(windows)]
+    #[test]
+    fn windows_dir_mirror_links_via_junction_without_symlink_privilege() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("sqlite");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("state.sqlite"), b"db").unwrap();
+        let destination = temp.path().join("shadow-sqlite");
+
+        let how = mirror_directory_into_shadow_home(&source, &destination).unwrap();
+        assert_eq!(how, "linked", "junction, not copy");
+        // A junction is a name-surrogate reparse point: symlink_metadata
+        // reports is_symlink() on Windows and the link resolves live.
+        let meta = fs::symlink_metadata(&destination).unwrap();
+        assert!(meta.file_type().is_symlink(), "reparse point expected");
+        assert!(destination.join("state.sqlite").exists(), "link resolves");
+        fs::write(source.join("new.sqlite"), b"live").unwrap();
+        assert!(destination.join("new.sqlite").exists(), "live-linked, not a copy");
+
+        // link_directory_into_shadow_home shares the same seam.
+        let second = temp.path().join("shadow-cache");
+        assert!(link_directory_into_shadow_home(&source, &second));
+        assert!(fs::symlink_metadata(&second).unwrap().file_type().is_symlink());
+    }
+
+    /// TS parity: an EXISTING config.toml that cannot be read (lock/ACL)
+    /// must abort shadow-home creation (caller then runs Codex normally
+    /// against the real config) instead of silently proceeding with an
+    /// EMPTY shadow config — which would drop the user's model/profiles/
+    /// MCP servers for the run. The failed attempt removes the shadow dir.
+    #[cfg(windows)]
+    #[test]
+    fn unreadable_config_toml_aborts_shadow_home_creation() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let codex_home = temp.path().join("codex-home");
+        fs::create_dir_all(&codex_home).unwrap();
+        let config_path = codex_home.join("config.toml");
+        fs::write(&config_path, "model = \"gpt-5.5\"\n").unwrap();
+        // Hold the file open with NO sharing: any other open (the mirror's
+        // read_to_string) fails with ERROR_SHARING_VIOLATION.
+        let _exclusive = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(&config_path)
+            .unwrap();
+
+        let mut base_env = HashMap::new();
+        base_env.insert(
+            "CODEX_HOME".to_string(),
+            codex_home.display().to_string(),
+        );
+        let result = create_runtime_rotation_proxy_codex_home(
+            &base_env,
+            "http://127.0.0.1:9/",
+            "test-key",
+        );
+        assert!(result.is_err(), "unreadable config must propagate an error");
+
+        // The partially-built shadow home was cleaned up.
+        let shadow_root = codex_home.join("multi-auth").join("runtime-shadow-homes");
+        let leftovers: Vec<_> = fs::read_dir(&shadow_root)
+            .map(|entries| entries.flatten().collect())
+            .unwrap_or_default();
+        assert!(
+            leftovers.is_empty(),
+            "shadow dir removed on failure: {leftovers:?}"
+        );
     }
 
     #[test]
