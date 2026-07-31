@@ -39,6 +39,7 @@ const VALID_SOURCES = new Set<UsageLedgerSource>([
 ]);
 const VALID_OPERATIONS = new Set<UsageLedgerOperation>([
 	"responses",
+	"messages",
 	"models",
 	"thread-goal",
 	"auth-refresh",

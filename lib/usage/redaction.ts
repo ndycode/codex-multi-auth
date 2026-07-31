@@ -19,6 +19,7 @@ const VALID_SOURCES = new Set<UsageLedgerSource>([
 ]);
 const VALID_OPERATIONS = new Set<UsageLedgerOperation>([
 	"responses",
+	"messages",
 	"models",
 	"thread-goal",
 	"auth-refresh",
@@ -163,4 +164,3 @@ export function normalizeUsageLedgerRow(
 export function usageRowToJsonLine(row: UsageLedgerRow): string {
 	return `${JSON.stringify(row)}\n`;
 }
-

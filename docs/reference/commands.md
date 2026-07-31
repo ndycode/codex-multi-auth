@@ -367,11 +367,11 @@ reports neutral account labels and does not expose raw account emails.
 
 ## Local bridge commands
 
-The optional local bridge exposes only `/health`, `/v1/models`, and
-`/v1/responses` on loopback. Forwarded bridge requests require a bearer token
-by default. When a runtime client API key is configured for the bridge, inbound
-auth must remain enabled (`requireAuth=true`); the bridge rewrites outbound
-auth for the rotation proxy and strips inbound cookies / proxy-auth headers.
+The optional local bridge exposes `/health`, `/v1/models`, and `/v1/responses`
+on loopback. A MiniMax backend also exposes `/anthropic/v1/messages` and
+`/anthropic/v1/messages/count_tokens`. Forwarded bridge requests require a
+local client token by default. Clients can send it as a bearer token or
+`x-api-key`; the bridge replaces inbound credentials before forwarding.
 
 ```bash
 codex-multi-auth bridge token create [--label <label>] [--json]
@@ -411,6 +411,20 @@ console.log(bridge.baseUrl); // e.g. http://127.0.0.1:43123
 // Clients: Authorization: Bearer <cma_local_...> from `bridge token create`
 ```
 
+For direct MiniMax access, select a regional backend instead of a runtime
+proxy. The provider key remains inside the host process, and local client auth
+must stay enabled:
+
+```ts
+const bridge = await startLocalBridge({
+  miniMax: {
+    apiKey: process.env.MINIMAX_API_KEY!,
+    region: "global", // or "cn"
+  },
+  requireAuth: true,
+});
+```
+
 Operator checklist:
 
 1. Ensure runtime rotation is available (`codex-multi-auth rotation status` / a wrapper session that owns a proxy).
@@ -420,7 +434,8 @@ Operator checklist:
 5. Generate glue with `codex-multi-auth integrations --kind python|curl|env|...`.
 
 Security invariants match the library: loopback-only bind, loopback-only
-`runtimeBaseUrl`, and `requireAuth=true` whenever a runtime client key is injected.
+`runtimeBaseUrl`, and `requireAuth=true` whenever a runtime or MiniMax key is
+injected.
 
 ---
 

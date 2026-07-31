@@ -334,4 +334,146 @@ describe("local bridge", () => {
 		expect(headers.get("cookie")).toBeNull();
 		expect(headers.get("proxy-authorization")).toBeNull();
 	});
+
+	it("serves the MiniMax catalog and forwards both compatible request paths", async () => {
+		const { calls, fetchImpl } = createFetch();
+		const verifyBearerToken = vi.fn(
+			async (authorization: string | null) =>
+				authorization
+					? {
+							id: "token-1",
+							label: "test",
+							prefix: "cma_local_test",
+							tokenHash: "hash",
+							createdAt: 1,
+							lastUsedAt: null,
+							revokedAt: null,
+						}
+					: null,
+		);
+		const server = await startLocalBridge({
+			miniMax: { apiKey: "mm-test", region: "global" },
+			fetchImpl,
+			verifyBearerToken,
+		});
+		openServers.push(server);
+
+		const bearerClientHeaders = {
+			authorization: "Bearer bearer-client",
+			"content-type": "application/json",
+			cookie: "local-cookie",
+		};
+		const anthropicClientHeaders = {
+			"content-type": "application/json",
+			"x-api-key": "anthropic-client",
+			cookie: "local-cookie",
+		};
+		const health = await fetch(`${server.baseUrl}/health`);
+		expect(await health.json()).toEqual({
+			ok: true,
+			service: "codex-multi-auth-local-bridge",
+			backend: "MiniMax",
+			region: "global",
+		});
+
+		const models = await fetch(`${server.baseUrl}/v1/models`, {
+			headers: bearerClientHeaders,
+		});
+		expect(models.status).toBe(200);
+		expect(await models.json()).toMatchObject({
+			object: "list",
+			data: [
+				{ id: "MiniMax-M3", context_window: 1_000_000 },
+				{ id: "MiniMax-M2.7", context_window: 204_800 },
+			],
+		});
+
+		for (const path of [
+			"/v1/responses",
+			"/anthropic/v1/messages",
+			"/anthropic/v1/messages/count_tokens",
+		]) {
+			const response = await fetch(`${server.baseUrl}${path}`, {
+				method: "POST",
+				headers: path.startsWith("/anthropic/")
+					? anthropicClientHeaders
+					: bearerClientHeaders,
+				body: JSON.stringify({ model: "MiniMax-M3", input: "hello" }),
+			});
+			expect(response.status).toBe(200);
+		}
+
+		expect(calls.map((call) => call.url)).toEqual([
+			"https://api.minimax.io/v1/responses",
+			"https://api.minimax.io/anthropic/v1/messages",
+			"https://api.minimax.io/anthropic/v1/messages/count_tokens",
+		]);
+		expect(
+			verifyBearerToken.mock.calls.map(([authorization]) => authorization),
+		).toEqual([
+			"Bearer bearer-client",
+			"Bearer bearer-client",
+			null,
+			"Bearer anthropic-client",
+			null,
+			"Bearer anthropic-client",
+		]);
+		for (const call of calls) {
+			const headers = new Headers(call.init?.headers as HeadersInit);
+			expect(headers.get("authorization")).toBe("Bearer mm-test");
+			expect(headers.get("x-api-key")).toBeNull();
+			expect(headers.get("cookie")).toBeNull();
+		}
+	});
+
+	it("selects the China MiniMax endpoints", async () => {
+		const { calls, fetchImpl } = createFetch();
+		const server = await startLocalBridge({
+			miniMax: { apiKey: "mm-test", region: "cn" },
+			fetchImpl,
+			verifyBearerToken: vi.fn().mockResolvedValue({
+				id: "token-1",
+				label: "test",
+				prefix: "cma_local_test",
+				tokenHash: "hash",
+				createdAt: 1,
+				lastUsedAt: null,
+				revokedAt: null,
+			}),
+		});
+		openServers.push(server);
+
+		for (const path of ["/v1/responses", "/anthropic/v1/messages"]) {
+			await fetch(`${server.baseUrl}${path}`, {
+				method: "POST",
+				headers: {
+					authorization: "Bearer local-client",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ model: "MiniMax-M2.7", input: "hello" }),
+			});
+		}
+
+		expect(calls.map((call) => call.url)).toEqual([
+			"https://api.minimaxi.com/v1/responses",
+			"https://api.minimaxi.com/anthropic/v1/messages",
+		]);
+	});
+
+	it("requires a provider key and local auth for MiniMax", async () => {
+		const { fetchImpl } = createFetch();
+		await expect(
+			startLocalBridge({
+				miniMax: { apiKey: "" },
+				fetchImpl,
+			}),
+		).rejects.toThrow(/requires a MiniMax apiKey/i);
+		await expect(
+			startLocalBridge({
+				miniMax: { apiKey: "mm-test" },
+				fetchImpl,
+				requireAuth: false,
+			}),
+		).rejects.toThrow(/requires requireAuth=true/i);
+	});
 });

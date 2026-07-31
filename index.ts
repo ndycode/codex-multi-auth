@@ -4720,6 +4720,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	};
 };
 
+export * from "./lib/local-bridge.js";
+export * from "./lib/providers/minimax.js";
+
 export const OpenAIAuthPlugin = OpenAIOAuthPlugin;
 
 export default OpenAIOAuthPlugin;

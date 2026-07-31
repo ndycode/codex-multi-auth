@@ -7,6 +7,7 @@ export type UsageLedgerSource =
 
 export type UsageLedgerOperation =
 	| "responses"
+	| "messages"
 	| "models"
 	| "thread-goal"
 	| "auth-refresh"
@@ -118,4 +119,3 @@ export interface UsageLedgerPaths {
 	dir: string;
 	current: string;
 }
-

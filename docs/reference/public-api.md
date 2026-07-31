@@ -126,9 +126,11 @@ These details are documented for operator expectations. Internal helper process 
 `startLocalBridge` (package root / public barrel) is the host API that opens the
 optional loopback bridge. There is no `bridge start` CLI daemon.
 
-- Bind host must be loopback; `runtimeBaseUrl` must also be loopback (the runtime rotation proxy).
-- Default `requireAuth=true`. Configuring `runtimeClientApiKey` **requires** `requireAuth=true`.
-- Surfaces: `/health`, `/v1/models`, `/v1/responses` only.
+- Bind host must be loopback; runtime mode also requires a loopback `runtimeBaseUrl`.
+- Default `requireAuth=true`. Configuring `runtimeClientApiKey` or `miniMax` **requires** `requireAuth=true`.
+- Runtime surfaces: `/health`, `/v1/models`, and `/v1/responses`.
+- MiniMax surfaces add `/anthropic/v1/messages` and `/anthropic/v1/messages/count_tokens` with Global or China endpoints.
+- Inbound bearer and `x-api-key` credentials are local client tokens; backend credentials replace them before egress.
 - Client tokens are managed with `codex-multi-auth bridge token ...` (hashes on disk).
 - Client snippets: `codex-multi-auth integrations ...`.
 

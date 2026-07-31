@@ -3,6 +3,11 @@ import type { Socket } from "node:net";
 import { Hono } from "hono";
 import { fetch as undiciFetch } from "undici";
 import { verifyLocalClientBearerToken } from "./local-client-tokens.js";
+import {
+	createMiniMaxModelsResponse,
+	getMiniMaxEndpoints,
+	type MiniMaxRegion,
+} from "./providers/minimax.js";
 import { appendUsageLedgerRow } from "./usage/index.js";
 
 export interface LocalBridgeServer {
@@ -12,22 +17,32 @@ export interface LocalBridgeServer {
 	close: () => Promise<void>;
 }
 
-export interface LocalBridgeOptions {
+interface LocalBridgeCommonOptions {
 	host?: string;
 	port?: number;
-	runtimeBaseUrl: string;
 	fetchImpl?: typeof fetch;
 	requireAuth?: boolean;
 	verifyBearerToken?: typeof verifyLocalClientBearerToken;
-	/**
-	 * Client API key for an auth-enabled runtime proxy (runtime-proxy-03). When
-	 * set, the bridge replaces the inbound client's Authorization with this key on
-	 * the forwarded request, so it can talk to a runtime proxy that requires a
-	 * per-process client token. The inbound request is still authenticated by the
-	 * bridge's own verifyBearerToken check first.
-	 */
-	runtimeClientApiKey?: string;
 }
+
+export interface MiniMaxBridgeBackendOptions {
+	apiKey: string;
+	region?: MiniMaxRegion;
+}
+
+export type LocalBridgeOptions = LocalBridgeCommonOptions &
+	(
+		| {
+				runtimeBaseUrl: string;
+				runtimeClientApiKey?: string;
+				miniMax?: never;
+		  }
+		| {
+				miniMax: MiniMaxBridgeBackendOptions;
+				runtimeBaseUrl?: never;
+				runtimeClientApiKey?: never;
+		  }
+	);
 
 const DEFAULT_HOST = "127.0.0.1";
 const HOP_BY_HOP_HEADERS = new Set([
@@ -87,7 +102,7 @@ function responseHeadersForClient(headers: Headers): Headers {
 	return result;
 }
 
-function forwardHeaders(headers: Headers, runtimeClientApiKey?: string): Headers {
+function forwardHeaders(headers: Headers, outboundBearerToken?: string): Headers {
 	const result = new Headers(headers);
 	for (const key of HOP_BY_HOP_HEADERS) {
 		result.delete(key);
@@ -102,13 +117,10 @@ function forwardHeaders(headers: Headers, runtimeClientApiKey?: string): Headers
 	// alongside the managed token.
 	result.delete("cookie");
 	result.delete("proxy-authorization");
-	// runtime-proxy-03: present the runtime proxy's client token. We replace the
-	// inbound client's Authorization (already validated by the bridge) rather than
-	// forwarding it verbatim, so the bridge can authenticate to an auth-enabled
-	// runtime proxy. When no key is configured, strip any inbound Authorization to
-	// avoid leaking the caller's bridge token upstream (runtime-proxy-02).
-	if (runtimeClientApiKey && runtimeClientApiKey.trim().length > 0) {
-		result.set("authorization", `Bearer ${runtimeClientApiKey.trim()}`);
+	// Present only the configured backend credential. The inbound client's
+	// Authorization was already validated locally and must never cross this bridge.
+	if (outboundBearerToken && outboundBearerToken.trim().length > 0) {
+		result.set("authorization", `Bearer ${outboundBearerToken.trim()}`);
 	} else {
 		result.delete("authorization");
 	}
@@ -193,31 +205,51 @@ export async function startLocalBridge(
 	// "::1" produce an invalid "http://::1:port".
 	const bindHost = toBindHost(host);
 	const urlHost = toUrlHost(host);
-	const runtimeBaseUrl = options.runtimeBaseUrl.trim().replace(/\/+$/, "");
-	if (!runtimeBaseUrl) {
-		throw new Error("Local bridge requires a runtimeBaseUrl.");
-	}
-	// Egress guard (runtime-proxy-02): the bridge forwards the caller's bearer token
-	// to runtimeBaseUrl. That target must be the loopback runtime proxy, never an
-	// arbitrary remote host — otherwise a misconfigured base URL would exfiltrate the
-	// local client token (and, downstream, managed account material) off-box.
-	let runtimeHost: string;
-	try {
-		runtimeHost = new URL(runtimeBaseUrl).hostname;
-	} catch {
-		throw new Error(`Local bridge runtimeBaseUrl is not a valid URL: ${runtimeBaseUrl}`);
-	}
-	if (!isLoopbackHost(runtimeHost)) {
-		throw new Error(
-			`Local bridge refuses to forward to non-loopback runtimeBaseUrl host "${runtimeHost}". ` +
-				"It must target the loopback runtime proxy.",
-		);
-	}
 	const port = options.port ?? 0;
 	const fetchImpl = options.fetchImpl ?? (undiciFetch as typeof fetch);
 	const requireAuth = options.requireAuth ?? true;
 	const verifyBearerToken = options.verifyBearerToken ?? verifyLocalClientBearerToken;
+	const miniMax = options.miniMax;
+	const runtimeBaseUrl = options.runtimeBaseUrl?.trim().replace(/\/+$/, "") || null;
 	const runtimeClientApiKey = options.runtimeClientApiKey?.trim() || undefined;
+	const miniMaxRegion = miniMax?.region ?? "global";
+	if (miniMaxRegion !== "global" && miniMaxRegion !== "cn") {
+		throw new Error(`Local bridge received an unsupported MiniMax region: ${miniMaxRegion}`);
+	}
+	const miniMaxApiKey = miniMax?.apiKey.trim() || undefined;
+	const miniMaxEndpoints = miniMax ? getMiniMaxEndpoints(miniMaxRegion) : null;
+
+	if (miniMax) {
+		if (!miniMaxApiKey) {
+			throw new Error("Local bridge requires a MiniMax apiKey.");
+		}
+		if (!requireAuth) {
+			throw new Error(
+				"Local bridge requires requireAuth=true for a MiniMax backend.",
+			);
+		}
+	} else {
+		if (!runtimeBaseUrl) {
+			throw new Error("Local bridge requires a runtimeBaseUrl.");
+		}
+		// The runtime target must remain loopback-only. Allowing an arbitrary URL
+		// here would send local bridge credentials outside the trusted boundary.
+		let runtimeHost: string;
+		try {
+			runtimeHost = new URL(runtimeBaseUrl).hostname;
+		} catch {
+			throw new Error(
+				`Local bridge runtimeBaseUrl is not a valid URL: ${runtimeBaseUrl}`,
+			);
+		}
+		if (!isLoopbackHost(runtimeHost)) {
+			throw new Error(
+				`Local bridge refuses to forward to non-loopback runtimeBaseUrl host "${runtimeHost}". ` +
+					"It must target the loopback runtime proxy.",
+			);
+		}
+	}
+
 	if (runtimeClientApiKey && !requireAuth) {
 		// Security: forwarding a runtime client key while accepting unauthenticated
 		// inbound requests turns the bridge into an open local capability proxy —
@@ -231,45 +263,66 @@ export async function startLocalBridge(
 	}
 	const app = new Hono();
 
-	app.get("/health", (context) =>
-		context.json({
+	app.get("/health", (context) => {
+		if (miniMax) {
+			return context.json({
+				ok: true,
+				service: "codex-multi-auth-local-bridge",
+				backend: "MiniMax",
+				region: miniMaxRegion,
+			});
+		}
+		return context.json({
 			ok: true,
 			service: "codex-multi-auth-local-bridge",
 			runtimeBaseUrl,
-		}),
-	);
+		});
+	});
+
+	const authorize = async (
+		request: Request,
+		startedAt: number,
+	): Promise<Response | null> => {
+		if (!requireAuth) return null;
+		let token = await verifyBearerToken(
+			request.headers.get("authorization"),
+			startedAt,
+		);
+		if (!token) {
+			const apiKey = request.headers.get("x-api-key")?.trim();
+			if (apiKey) {
+				token = await verifyBearerToken(`Bearer ${apiKey}`, startedAt);
+			}
+		}
+		if (token) return null;
+		return new Response(
+			JSON.stringify({
+				error: {
+					message: "Local bridge rejected an unauthenticated request.",
+					code: "local_bridge_unauthorized",
+				},
+			}),
+			{
+				status: 401,
+				headers: { "content-type": "application/json; charset=utf-8" },
+			},
+		);
+	};
 
 	const forward = async (
 		request: Request,
-		targetPath: "/v1/models" | "/v1/responses",
+		targetUrl: string,
+		operation: "models" | "responses" | "messages",
+		outboundBearerToken?: string,
 	): Promise<Response> => {
 		const startedAt = Date.now();
-		if (requireAuth) {
-			const token = await verifyBearerToken(
-				request.headers.get("authorization"),
-				startedAt,
-			);
-			if (!token) {
-				return new Response(
-					JSON.stringify({
-						error: {
-							message: "Local bridge rejected an unauthenticated request.",
-							code: "local_bridge_unauthorized",
-						},
-					}),
-					{
-						status: 401,
-						headers: { "content-type": "application/json; charset=utf-8" },
-					},
-				);
-			}
-		}
-		const targetUrl = `${runtimeBaseUrl}${targetPath}`;
+		const unauthorized = await authorize(request, startedAt);
+		if (unauthorized) return unauthorized;
 		let upstream: Response;
 		try {
 			upstream = await fetchImpl(targetUrl, {
 				method: request.method,
-				headers: forwardHeaders(request.headers, runtimeClientApiKey),
+				headers: forwardHeaders(request.headers, outboundBearerToken),
 				body:
 					request.method === "GET" || request.method === "HEAD"
 						? undefined
@@ -278,7 +331,7 @@ export async function startLocalBridge(
 		} catch {
 			await appendUsageLedgerRow({
 				source: "local-bridge",
-				operation: targetPath === "/v1/models" ? "models" : "responses",
+				operation,
 				outcome: "failure",
 				statusCode: 502,
 				errorCode: "local_bridge_upstream_error",
@@ -287,7 +340,7 @@ export async function startLocalBridge(
 			return new Response(
 				JSON.stringify({
 					error: {
-						message: "Local bridge failed to reach the runtime proxy.",
+						message: "Local bridge failed to reach the configured backend.",
 						code: "local_bridge_upstream_error",
 					},
 				}),
@@ -299,7 +352,7 @@ export async function startLocalBridge(
 		}
 		await appendUsageLedgerRow({
 			source: "local-bridge",
-			operation: targetPath === "/v1/models" ? "models" : "responses",
+			operation,
 			outcome: upstream.ok ? "success" : "failure",
 			statusCode: upstream.status,
 			durationMs: Date.now() - startedAt,
@@ -311,13 +364,70 @@ export async function startLocalBridge(
 		});
 	};
 
-	app.get("/v1/models", (context) => forward(context.req.raw, "/v1/models"));
-	app.post("/v1/responses", (context) => forward(context.req.raw, "/v1/responses"));
+	if (miniMaxEndpoints && miniMaxApiKey) {
+		app.get("/v1/models", async (context) => {
+			const startedAt = Date.now();
+			const unauthorized = await authorize(context.req.raw, startedAt);
+			if (unauthorized) return unauthorized;
+			await appendUsageLedgerRow({
+				source: "local-bridge",
+				operation: "models",
+				outcome: "success",
+				statusCode: 200,
+				durationMs: Date.now() - startedAt,
+			}).catch(() => undefined);
+			return context.json(createMiniMaxModelsResponse());
+		});
+		app.post("/v1/responses", (context) =>
+			forward(
+				context.req.raw,
+				`${miniMaxEndpoints.responsesBaseUrl}/responses`,
+				"responses",
+				miniMaxApiKey,
+			),
+		);
+		app.post("/anthropic/v1/messages", (context) =>
+			forward(
+				context.req.raw,
+				`${miniMaxEndpoints.messagesBaseUrl}/v1/messages`,
+				"messages",
+				miniMaxApiKey,
+			),
+		);
+		app.post("/anthropic/v1/messages/count_tokens", (context) =>
+			forward(
+				context.req.raw,
+				`${miniMaxEndpoints.messagesBaseUrl}/v1/messages/count_tokens`,
+				"messages",
+				miniMaxApiKey,
+			),
+		);
+	} else if (runtimeBaseUrl) {
+		app.get("/v1/models", (context) =>
+			forward(
+				context.req.raw,
+				`${runtimeBaseUrl}/v1/models`,
+				"models",
+				runtimeClientApiKey,
+			),
+		);
+		app.post("/v1/responses", (context) =>
+			forward(
+				context.req.raw,
+				`${runtimeBaseUrl}/v1/responses`,
+				"responses",
+				runtimeClientApiKey,
+			),
+		);
+	}
+	const notFoundMessage = miniMax
+		? "Local bridge only accepts /health, /v1/models, /v1/responses, and MiniMax Messages API paths."
+		: "Local bridge only accepts /health, /v1/models, and /v1/responses.";
 	app.all("*", (context) =>
 		context.json(
 			{
 				error: {
-					message: "Local bridge only accepts /health, /v1/models, and /v1/responses.",
+					message: notFoundMessage,
 					code: "local_bridge_not_found",
 				},
 			},
