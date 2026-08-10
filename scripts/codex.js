@@ -4321,6 +4321,7 @@ async function createRuntimeRotationAppHelperContext(
 			...baseContext.env,
 			...helperEnv,
 		},
+		proxyAppServerAccountRead: options.proxyAppServerAccountRead === true,
 		cleanup: async (details) => {
 			try {
 				await cleanup(details);
@@ -4350,6 +4351,16 @@ async function createRuntimeRotationProxyContextIfEnabled(
 
 	if (isCodexAppCommand(rawArgs)) {
 		return createRuntimeRotationAppHelperContext(baseContext, configTomlModule);
+	}
+	if (isCodexAppServerCommand(rawArgs)) {
+		return createRuntimeRotationAppHelperContext(baseContext, configTomlModule, {
+			// A resident server owns its proxy for its whole lifetime, so the helper
+			// stops with it instead of idling on after exit — a supervised server
+			// that restarts would otherwise strand one helper per restart.
+			detachOnExit: false,
+			useCanonicalHome: true,
+			proxyAppServerAccountRead: true,
+		});
 	}
 	if (
 		isCodexInteractiveTuiCommand(rawArgs) ||
@@ -4550,6 +4561,14 @@ function isCodexAppCommand(rawArgs) {
 	return findForwardedCommand(rawArgs)?.command === "app";
 }
 
+// `app-server` is a resident server rather than a one-shot forwarded command:
+// clients attach for the life of the process and drive whole threads through it,
+// so it takes the canonical-home transport alongside the interactive entry points
+// below. The shadow home cannot host one. Codex refuses to start when
+// `<CODEX_HOME>/app-server-control` is a symlink, which is exactly what the shadow
+// mirror makes of it, and the mirror snapshots the runtime SQLite state rather than
+// linking it, so the server would serve a frozen, throwaway thread index — the same
+// divergence that hung resume (#647).
 function isCodexAppServerCommand(rawArgs) {
 	return findForwardedCommand(rawArgs)?.command === "app-server";
 }

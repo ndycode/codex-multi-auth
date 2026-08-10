@@ -2146,7 +2146,7 @@ describe("codex bin wrapper", () => {
 		}
 	});
 
-	it("starts the opt-in runtime rotation proxy for app-server without capturing protocol stdio", () => {
+	it("starts the opt-in runtime rotation proxy for app-server without capturing protocol stdio", async () => {
 		const fixtureRoot = createWrapperFixture();
 		createRuntimeRotationProxyFixtureModule(fixtureRoot);
 		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
@@ -2173,27 +2173,39 @@ describe("codex bin wrapper", () => {
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 			CODEX_HOME: originalHome,
 			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
 			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
 			OPENAI_API_KEY: undefined,
 		});
 
 		const output = combinedOutput(result);
 		expect(result.status).toBe(0);
+		// The server runs on the canonical home, so the provider is configured
+		// entirely through `-c` overrides rather than a rewritten shadow config.
+		expect(output).toContain("FORWARDED:app-server --listen stdio://");
 		expect(output).toContain(
-			`FORWARDED:app-server --listen stdio:// -c cli_auth_credentials_store="file" -c model_provider="${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
+			`-c model_provider="${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
 		);
+		expect(output).toContain(
+			`-c model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}.base_url="http://127.0.0.1:4567"`,
+		);
+		expect(output).toContain(
+			`-c model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}.requires_openai_auth=false`,
+		);
+		expect(output).toContain(
+			`-c model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}.env_key="OPENAI_API_KEY"`,
+		);
+		expect(output).toContain(`CODEX_HOME:${originalHome}`);
 		const apiKeyMatch = output.match(/^OPENAI_API_KEY:([0-9a-f]{64})$/m);
 		expect(apiKeyMatch?.[1]).toBeTruthy();
-		expect(output).toContain("requires_openai_auth = false");
-		expect(output).toContain('name = "codex-multi-auth"');
-		expect(output).toContain(
-			`experimental_bearer_token = "${apiKeyMatch?.[1]}"`,
+		// account/read still reports the multi-auth identity: moving the transport
+		// must not silently drop the rewrite stdio clients depend on.
+		expect(output).toContain("APP_SERVER_LABEL:1");
+		// The canonical home's own config is never rewritten on disk.
+		expect(readFileSync(join(originalHome, "config.toml"), "utf8")).toBe(
+			'model_provider = "openai"\n',
 		);
-		expect(output).toContain('wire_api = "responses"');
-		expect(output).not.toContain("env_key");
-		expect(readFileSync(markerPath, "utf8")).toBe(
-			"start:http://127.0.0.1:4567\nclose\n",
-		);
+		await waitForFileText(markerPath, "start:http://127.0.0.1:4567\nclose\n");
 	});
 
 	it("rewrites app-server account/read responses to the codex-multi-auth display name", () => {
@@ -3153,6 +3165,79 @@ describe("codex bin wrapper", () => {
 			await waitForFileText(markerPath, "start:http://127.0.0.1:4567\nclose\n");
 		});
 	}
+
+	// `app-server` is a resident server: clients attach for the life of the process
+	// and drive whole threads through it, so it needs the canonical home for the
+	// same reason resume did. On the shadow transport it cannot even start — Codex
+	// rejects a symlinked `<CODEX_HOME>/app-server-control`, which is what the
+	// shadow mirror makes of it — and a server that did start would serve the
+	// mirror's frozen snapshot of the thread index instead of the real one.
+	it("uses the canonical Codex home for `app-server` runtime routing", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			"const args = process.argv.slice(2);",
+			"console.log(`APP_SERVER_HOME_IS_ORIGINAL:${process.env.CODEX_HOME === process.env.ORIGINAL_CODEX_HOME}`);",
+			// A symlinked control directory is what makes Codex refuse to start on
+			// the shadow transport; on the canonical home it is the real directory.
+			'const controlPath = path.join(process.env.CODEX_HOME ?? "", "app-server-control");',
+			"console.log(`APP_SERVER_CONTROL_IS_SYMLINK:${fs.existsSync(controlPath) && fs.lstatSync(controlPath).isSymbolicLink()}`);",
+			// The thread index only exists in the canonical home; the shadow mirror
+			// snapshots it, so a shadow-hosted server serves a frozen copy.
+			'const statePath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite");',
+			'console.log(`APP_SERVER_THREAD_INDEX:${fs.existsSync(statePath) ? fs.readFileSync(statePath, "utf8").trim() : "missing"}`);',
+			'console.log(`APP_SERVER_COMMAND:${args[0]}`);',
+			'console.log(`APP_SERVER_LISTEN:${args[args.indexOf("--listen") + 1]}`);',
+			'console.log(`APP_SERVER_HAS_BASE_URL_OVERRIDE:${args.some((arg) => arg.includes("model_providers.codex-multi-auth-runtime-proxy.base_url="))}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		const listenUrl = "unix:///tmp/codex-multi-auth-app-server-test.sock";
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(join(originalHome, "app-server-control"), { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+		writeFileSync(
+			join(originalHome, "state_5.sqlite"),
+			"canonical-thread-index\n",
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["app-server", "--listen", listenUrl], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		if (result.status !== 0) {
+			throw new Error(output);
+		}
+		expect(output).toContain("APP_SERVER_HOME_IS_ORIGINAL:true");
+		expect(output).toContain("APP_SERVER_CONTROL_IS_SYMLINK:false");
+		expect(output).toContain("APP_SERVER_THREAD_INDEX:canonical-thread-index");
+		expect(output).toContain("APP_SERVER_COMMAND:app-server");
+		expect(output).toContain(`APP_SERVER_LISTEN:${listenUrl}`);
+		// Rotation is still active: the proxy overrides ride along as `-c` args, so
+		// the pinned account still bills the server's model calls.
+		expect(output).toContain("APP_SERVER_HAS_BASE_URL_OVERRIDE:true");
+		// The canonical home is never rewritten on disk.
+		expect(readFileSync(join(originalHome, "config.toml"), "utf8")).toBe(
+			'model_provider = "openai"\n',
+		);
+		await waitForFileText(markerPath, "start:http://127.0.0.1:4567\nclose\n");
+	});
 
 	// Printing help makes no model requests, so it must not pay for the rotation
 	// transport at all. This matters most for resume/fork now that they are
