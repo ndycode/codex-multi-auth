@@ -55,10 +55,12 @@ Official Codex CLI
 
 Runtime rotation enabled -> one of three transports
   |
-  |- interactive TUI (no forwarded subcommand)
+  |- interactive TUI (no forwarded subcommand), resume, fork, app-server
   |    canonical CODEX_HOME + ephemeral -c provider overrides
-  |    (no shadow copy, no provider/transport rewrite of config.toml,
-  |     detach on exit; the auth-store reconcile above still applies)
+  |    (no shadow copy, no provider/transport rewrite of config.toml;
+  |     the auth-store reconcile above still applies)
+  |    detach on exit, except app-server: a resident server owns its
+  |    proxy for its whole lifetime, so the helper stops with it
   |
   |- codex app
   |    app runtime helper process + shadow CODEX_HOME
@@ -67,6 +69,10 @@ Runtime rotation enabled -> one of three transports
   |    shadow CODEX_HOME/config.toml
   |      |- model_provider = "codex-multi-auth-runtime-proxy"
   |      |- provider base_url = localhost proxy
+  |
+  |- (help and schema generation take no transport at all:
+  |   --help/-h on any of these, and app-server help / generate-ts /
+  |   generate-json-schema, forward without starting a proxy)
   v
 lib/runtime-rotation-proxy.ts
   |- validates local client token
@@ -162,7 +168,7 @@ Policy evaluation (`lib/policy/runtime-policy.ts`) can block paused/drained acco
 
 1. The wrapper checks `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY` and `codexRuntimeRotationProxy`.
 2. If disabled, the command forwards to the official Codex CLI unchanged except for normal wrapper compatibility settings.
-3. If enabled, `createRuntimeRotationProxyContextIfEnabled` (`scripts/codex.js`) picks one of three transports from the forwarded argv:
+3. If enabled, `createRuntimeRotationProxyContextIfEnabled` (`scripts/codex.js`) routes the forwarded argv onto one of three transports. More branches than transports: the interactive commands and `app-server` share the canonical-home helper, differing only in options.
 
    | Branch | Predicate | Transport |
    | --- | --- | --- |

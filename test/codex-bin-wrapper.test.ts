@@ -2174,6 +2174,7 @@ describe("codex bin wrapper", () => {
 			CODEX_HOME: originalHome,
 			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
 			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER_PID: "1",
 			OPENAI_API_KEY: undefined,
 		});
 
@@ -2206,7 +2207,21 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(join(originalHome, "config.toml"), "utf8")).toBe(
 			'model_provider = "openai"\n',
 		);
-		await waitForFileText(markerPath, "start:http://127.0.0.1:4567\nclose\n");
+		// The helper stopped with the server rather than being detached to idle
+		// out. Asserted by the helper's own liveness rather than by the proxy's
+		// `close` marker: on Windows the terminate is unconditional and never
+		// runs the child's shutdown handler, so the marker would never arrive
+		// even though cleanup did exactly what it should.
+		await waitForPath(markerPath);
+		const marker = readFileSync(markerPath, "utf8");
+		expect(marker).toContain("start:http://127.0.0.1:4567");
+		const helperPidMatch = marker.match(/^start:[^\n]*:pid=(\d+)$/m);
+		expect(helperPidMatch?.[1]).toBeTruthy();
+		const helperPid = Number(helperPidMatch?.[1]);
+		for (let attempt = 0; attempt < 40 && isProcessAlive(helperPid); attempt += 1) {
+			await sleep(100);
+		}
+		expect(isProcessAlive(helperPid)).toBe(false);
 	});
 
 	it("rewrites app-server account/read responses to the codex-multi-auth display name", () => {
@@ -3217,6 +3232,7 @@ describe("codex bin wrapper", () => {
 			ORIGINAL_CODEX_HOME: originalHome,
 			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
 			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER_PID: "1",
 			OPENAI_API_KEY: undefined,
 		});
 
@@ -3236,7 +3252,21 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(join(originalHome, "config.toml"), "utf8")).toBe(
 			'model_provider = "openai"\n',
 		);
-		await waitForFileText(markerPath, "start:http://127.0.0.1:4567\nclose\n");
+		// The helper stopped with the server rather than being detached to idle
+		// out. Asserted by the helper's own liveness rather than by the proxy's
+		// `close` marker: on Windows the terminate is unconditional and never
+		// runs the child's shutdown handler, so the marker would never arrive
+		// even though cleanup did exactly what it should.
+		await waitForPath(markerPath);
+		const marker = readFileSync(markerPath, "utf8");
+		expect(marker).toContain("start:http://127.0.0.1:4567");
+		const helperPidMatch = marker.match(/^start:[^\n]*:pid=(\d+)$/m);
+		expect(helperPidMatch?.[1]).toBeTruthy();
+		const helperPid = Number(helperPidMatch?.[1]);
+		for (let attempt = 0; attempt < 40 && isProcessAlive(helperPid); attempt += 1) {
+			await sleep(100);
+		}
+		expect(isProcessAlive(helperPid)).toBe(false);
 	});
 
 	// Printing help makes no model requests, so it must not pay for the rotation
