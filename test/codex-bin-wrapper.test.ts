@@ -2173,7 +2173,6 @@ describe("codex bin wrapper", () => {
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 			CODEX_HOME: originalHome,
 			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
-			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
 			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
 			OPENAI_API_KEY: undefined,
 		});
@@ -2182,7 +2181,9 @@ describe("codex bin wrapper", () => {
 		expect(result.status).toBe(0);
 		// The server runs on the canonical home, so the provider is configured
 		// entirely through `-c` overrides rather than a rewritten shadow config.
-		expect(output).toContain("FORWARDED:app-server --listen stdio://");
+		expect(output).toContain(
+			'FORWARDED:app-server --listen stdio:// -c cli_auth_credentials_store="file"',
+		);
 		expect(output).toContain(
 			`-c model_provider="${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
 		);
@@ -3215,7 +3216,6 @@ describe("codex bin wrapper", () => {
 			CODEX_HOME: originalHome,
 			ORIGINAL_CODEX_HOME: originalHome,
 			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
-			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
 			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
 			OPENAI_API_KEY: undefined,
 		});

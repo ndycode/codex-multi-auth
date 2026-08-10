@@ -27,7 +27,7 @@ Public overview of how `codex-multi-auth` fits around the official Codex CLI: ac
 | Binary | Script | Role |
 | --- | --- | --- |
 | `codex-multi-auth` | `scripts/codex-multi-auth.js` | Account manager only. Bare subcommands (`status`, `login`, …) normalize to the local auth manager. |
-| `codex-multi-auth-codex` | `scripts/codex.js` | Wrapper: `auth ...` stays local; every other command forwards to official Codex with optional runtime rotation and a shadow `CODEX_HOME`. |
+| `codex-multi-auth-codex` | `scripts/codex.js` | Wrapper: `auth ...` stays local; every other command forwards to official Codex with optional runtime rotation, on a shadow `CODEX_HOME` for request commands and the canonical one for interactive and resident surfaces. |
 | `mcodex` | `scripts/mcodex.js` | Convenience over `codex.js`: default forward, `--monitor` (live `list` via `watch`), `--tmux` / `-t` (optional `--live-accounts`). |
 | `codex-multi-auth-app-launcher` | `scripts/codex-app-launcher.js` | Desktop launcher helper for supported user-level shortcuts / managed macOS wrapper apps. |
 
@@ -60,7 +60,8 @@ The standalone manager normalizes bare account-manager commands, so both `codex-
 - Handles multi-auth `auth` subcommands locally.
 - Forwards non-auth commands to official Codex.
 - For request-bearing sessions with runtime rotation enabled, creates a temporary shadow `CODEX_HOME`, writes a local provider (`codex-multi-auth-runtime-proxy`), and starts a loopback proxy for that process.
-- For interactive TUI sessions, keeps the canonical `CODEX_HOME` and passes the same provider as `-c` overrides instead, so session history and SQLite state are not copied into a shadow and reindexed on every launch.
+- For interactive TUI sessions, `resume`/`fork`, and `app-server`, keeps the canonical `CODEX_HOME` and passes the same provider as `-c` overrides instead, so session history and SQLite state are not copied into a shadow and reindexed on every launch.
+- `app-server` is on that list for a stronger reason than the others: it is a resident server whose clients drive whole threads through it, and it cannot start at all in a shadow home, because Codex refuses when `<CODEX_HOME>/app-server-control` exists and is not a directory. Its helper also stops with the server rather than idling on, so a supervised restart does not strand one proxy per cycle.
 - Keeps forwarded sessions on file-backed auth state unless the caller opts out.
 - Supports ephemeral force-pin: `codex-multi-auth-codex --account <index|email|id>` (or `CODEX_MULTI_AUTH_FORCE_ACCOUNT`) for a single invocation only — never mutates the persisted `switch` pin.
 
@@ -201,7 +202,8 @@ Terminal user or Codex app
   v
 codex-multi-auth-codex wrapper / app bind / mcodex
   |
-  | shadow CODEX_HOME + provider: codex-multi-auth-runtime-proxy
+  | provider: codex-multi-auth-runtime-proxy
+  |   (shadow CODEX_HOME for request commands; canonical for TUI/resume/fork/app-server)
   v
 localhost Responses proxy (client token)
   |

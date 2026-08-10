@@ -4286,7 +4286,17 @@ async function createRuntimeRotationAppHelperContext(
 
 	const cleanup = async ({ exitCode } = {}) => {
 		const livedMs = Date.now() - startedAt;
-		if (exitCode === 0 && (options.detachOnExit === true || livedMs < detachGraceMs)) {
+		// The grace window exists for callers that exit immediately and expect the
+		// helper to outlive them — `codex app` hands off to the desktop app and
+		// returns at once. A caller that opts out explicitly means it, and a
+		// resident server that happens to exit quickly (a client attaches, runs one
+		// query, disconnects) must not strand a helper for the full idle timeout
+		// just for being short-lived. Only `detachOnExit === true` detaches past
+		// the window; only an unset `detachOnExit` still detaches inside it.
+		const detach =
+			options.detachOnExit === true ||
+			(options.detachOnExit !== false && livedMs < detachGraceMs);
+		if (exitCode === 0 && detach) {
 			helper.stdout?.destroy();
 			helper.stderr?.destroy();
 			helper.unref();
