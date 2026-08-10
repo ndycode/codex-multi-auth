@@ -148,6 +148,7 @@ The 2.0.1 line makes runtime rotation the default for request-bearing wrapper-la
 - Installed wrappers may perform a best-effort daily npm version check during normal forwarded startup. If a newer package is detected, update manually with `npm install -g codex-multi-auth@latest`.
 - Official Codex app binaries are not patched.
 - Pause/drain account policies and budget/profile checks are enforced on the rotation path via `evaluateRuntimePolicy`.
+- `codex-multi-auth-codex app-server` now runs against the canonical `CODEX_HOME` instead of a temporary shadow home, so it sees the real thread index and no longer fails to start on a home that already has an `app-server-control` directory. Nothing migrates and no state moves; the observable differences are that no shadow home appears under `runtime-shadow-homes/` for this command, and that the proxy now runs in the same detached rotation helper the interactive TUI uses — visible as a `--codex-multi-auth-runtime-app-helper` process while the server runs — and stops when the server exits. Help and schema-generation forms are unaffected — they take no transport at all.
 
 Validate after enabling:
 
