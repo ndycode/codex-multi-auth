@@ -28,6 +28,14 @@ interface ForecastCliOptions {
 	json: boolean;
 	explain: boolean;
 	model: string;
+	/**
+	 * True only when the invocation actually carried `--model`. `model` always
+	 * holds a value (it falls back to DEFAULT_PROBE_MODEL so the probe and the
+	 * header have something to name), so it cannot distinguish an explicit
+	 * request from the default — and the availability family must never follow a
+	 * default the user did not ask for.
+	 */
+	modelProvided: boolean;
 	runtimeOverlay: boolean;
 }
 
@@ -156,6 +164,7 @@ function parseForecastArgs(
 		json: false,
 		explain: false,
 		model: DEFAULT_PROBE_MODEL,
+		modelProvided: false,
 		runtimeOverlay: true,
 	};
 
@@ -184,6 +193,7 @@ function parseForecastArgs(
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;
+			options.modelProvided = true;
 			i += 1;
 			continue;
 		}
@@ -193,6 +203,7 @@ function parseForecastArgs(
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;
+			options.modelProvided = true;
 			continue;
 		}
 		return { ok: false, message: `Unknown option: ${arg}` };
@@ -223,6 +234,18 @@ export async function runForecastCommand(
 	const options = parsedArgs.options;
 	const requestedModel = options.model?.trim() || DEFAULT_PROBE_MODEL;
 	const probeModel = resolveNormalizedModel(requestedModel);
+	// Resolved once, not once per account: getModelProfile re-parses and
+	// re-resolves the model string on every call.
+	//
+	// Only an EXPLICIT `--model` may move the availability family. The default
+	// probe model is `gpt-5.6-sol`, whose prompt family is `gpt-5.2`, so
+	// deriving the family unconditionally would flip a bare `forecast` off the
+	// codex family and report a codex-rate-limited account as `ready` — the
+	// exact forecast/runtime desync this threading exists to remove, aimed at
+	// the default invocation instead.
+	const forecastFamily = options.modelProvided
+		? getModelProfile(requestedModel).promptFamily
+		: undefined;
 	const display = deps.loadDashboardDisplaySettings
 		? (await deps.loadDashboardDisplaySettings().catch(() => null)) ??
 			deps.defaultDisplay
@@ -374,7 +397,7 @@ export async function runForecastCommand(
 		quotaCache,
 		allAccounts: storage.accounts,
 		runtimeOverlay,
-		family: getModelProfile(requestedModel).promptFamily,
+		family: forecastFamily,
 	}));
 	const forecastResults = deps.evaluateForecastAccounts(forecastInputs);
 	const summary = deps.summarizeForecast(forecastResults);

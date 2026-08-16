@@ -318,6 +318,21 @@ describe("buildPinnedUnavailableErrorBody", () => {
 		expect(body.message).not.toContain("unpin");
 	});
 
+	it("drops an out-of-range reset instead of throwing on toISOString", () => {
+		// A corrupted / hand-edited storage file can carry a `coolingDownUntil`
+		// or rate-limit reset past the ECMAScript time range. `new Date(x)
+		// .toISOString()` throws RangeError there, and this builder runs on the
+		// 503 path — a throw would replace the pin diagnostics with a generic 500.
+		const body = buildPinnedUnavailableErrorBody(
+			0,
+			new Map([[0, "rate-limited"]]),
+			{ pinSource: "manual", resetAtMs: 8.64e15 + 1, now: 1_700_000_000_000 },
+		);
+		expect(body.reset_at).toBeNull();
+		expect(body.retry_after_ms).toBeNull();
+		expect(body.message).not.toContain("resets at");
+	});
+
 	it("keeps the unpin advice for manual pins and nulls an unknown reset", () => {
 		const body = buildPinnedUnavailableErrorBody(
 			1,

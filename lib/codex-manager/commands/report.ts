@@ -46,6 +46,14 @@ interface ReportCliOptions {
 	json: boolean;
 	explain: boolean;
 	model: string;
+	/**
+	 * True only when the invocation actually carried `--model`. `model` always
+	 * holds a value (it falls back to DEFAULT_PROBE_MODEL for the probe and the
+	 * `modelSelection` block), so it cannot distinguish an explicit request from
+	 * the default — and the availability family must never follow a default the
+	 * user did not ask for.
+	 */
+	modelProvided: boolean;
 	maxAccounts?: number;
 	maxProbes?: number;
 	cachedOnly: boolean;
@@ -144,6 +152,7 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 		json: false,
 		explain: false,
 		model: DEFAULT_PROBE_MODEL,
+		modelProvided: false,
 		cachedOnly: false,
 	};
 
@@ -172,6 +181,7 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;
+			options.modelProvided = true;
 			i += 1;
 			continue;
 		}
@@ -181,6 +191,7 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;
+			options.modelProvided = true;
 			continue;
 		}
 		if (arg === "--max-accounts") {
@@ -462,6 +473,16 @@ export async function runReportCommand(
 		}
 	}
 
+	// `inspectRequestedModel` already resolved the profile, so reuse its
+	// `promptFamily` instead of re-resolving the model once per account.
+	//
+	// Only an EXPLICIT `--model` may move the availability family: the default
+	// probe model is `gpt-5.6-sol`, whose prompt family is `gpt-5.2`, so
+	// deriving it unconditionally would make a bare `report` describe gpt-5.2
+	// availability while the wrapper routes codex-family traffic.
+	const forecastFamily = options.modelProvided
+		? modelInspection.promptFamily
+		: undefined;
 	const forecastResults = storage
 		? evaluateForecastAccounts(
 				storage.accounts.map((account, index) => ({
@@ -474,7 +495,7 @@ export async function runReportCommand(
 					quotaCache,
 					allAccounts: storage.accounts,
 					runtimeOverlay: runtimeSnapshot,
-					family: getModelProfile(modelInspection.normalized).promptFamily,
+					family: forecastFamily,
 				})),
 			)
 		: [];

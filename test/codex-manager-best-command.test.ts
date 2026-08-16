@@ -168,12 +168,17 @@ describe("runBestCommand", () => {
 			})),
 		});
 
+		// No `--model` means no family: DEFAULT_LIVE_PROBE_MODEL is `gpt-5.6-sol`,
+		// whose prompt family is `gpt-5.2`. Threading it would let a bare `best`
+		// recommend an account that is rate-limited on the codex family, and the
+		// resulting pin would 503 on every Codex request.
 		await expect(runBestCommand(["--json"], deps)).resolves.toBe(0);
 		const defaulted = evaluateForecastAccounts.mock.calls.at(-1)?.[0] as
 			| Array<{ family?: string }>
 			| undefined;
-		expect(defaulted?.[0]?.family).toBe(
-			getModelProfile(DEFAULT_LIVE_PROBE_MODEL).promptFamily,
+		expect(defaulted?.[0]?.family).toBeUndefined();
+		expect(getModelProfile(DEFAULT_LIVE_PROBE_MODEL).promptFamily).not.toBe(
+			"codex",
 		);
 
 		const explicitDeps = createDeps({

@@ -120,10 +120,20 @@ The default-on localhost Responses proxy returns JSON error payloads with a stab
 | `runtime_rotation_proxy_unauthorized` | `401` | Local request did not include the per-process proxy client key |
 | `runtime_rotation_proxy_payload_too_large` | `413` | Request body exceeded the proxy safety cap |
 | `codex_runtime_rotation_pool_exhausted` | `429` or `503` | No managed account can currently service the runtime request |
-| `codex_pinned_account_unavailable` | `503` | A manual pin is set (via `codex-multi-auth switch`) but the pinned account is rate-limited, cooling down, disabled, or blocked by policy. Run `codex-multi-auth status` for details, or `codex-multi-auth unpin` to allow rotation |
+| `codex_pinned_account_unavailable` | `503` | A pin is in force — either a manual pin (`codex-multi-auth switch`) or a forced per-invocation pin (`--account` / `CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX`) — but the pinned account is rate-limited, cooling down, disabled, or blocked by policy. The remedy depends on `pin_source` (see below) |
 | `codex_runtime_rotation_proxy_error` | `500` | Proxy failed before forwarding the request |
 
 Pool exhaustion includes a `reason`, `retry_after_ms`, and a hint to run `codex-multi-auth rotation status`. Pinned-account-unavailable responses include a `pinnedAccountIndex` field identifying the pinned account, a structured `reason` field carrying the runtime skip reason (for example `rate-limited`, `cooling-down:auth-failure`, `circuit-open`, `disabled`, `workspace-disabled`, `policy-blocked`, `missing`, `already-attempted`) or `null` when no reason was recorded, and an `account_skip_reasons` map keyed by account index that mirrors the pool-exhausted response shape. The human-readable `message` appends the same reason in parentheses when present (see issue #486).
+
+Pinned-account-unavailable responses also carry:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `pin_source` | `"forced"`, `"manual"`, or `null` | `"forced"` when the pin came from `--account` / `CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX`, `"manual"` when it came from `codex-multi-auth switch`. `unpin` clears only a manual pin, so the `message` tells a forced-pin caller to relaunch instead |
+| `reset_at` | ISO-8601 string or `null` | When the blocking state ends — the latest of the gating rate-limit record, the account cooldown, and the circuit-breaker deadline. `null` under a permanent blocker (`disabled`, `workspace-disabled`, `policy-blocked`, `missing`, invalidated auth) or when nothing bounds recovery |
+| `retry_after_ms` | number or `null` | `reset_at` expressed as a delay from the moment the response was built; `null` whenever `reset_at` is `null` |
+
+When `reset_at` is present the `message` appends `; the recorded limit resets at <ISO>`.
 
 Account policy pause/drain is enforced through runtime policy evaluation and contributes to selection skip reasons such as `policy-blocked`.
 

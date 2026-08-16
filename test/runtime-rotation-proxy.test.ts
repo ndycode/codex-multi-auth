@@ -892,14 +892,28 @@ describe("runtime rotation proxy", () => {
 		});
 		// Zero the network-error cooldown so every request reaches upstream
 		// and records a breaker failure; otherwise the cooldown absorbs the
-		// retries and the breaker never opens.
-		vi.stubEnv("CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS", "0");
-		const proxy = await startProxy({
-			accountManager,
-			fetchImpl,
-			options: { forcedAccountIndex: 0 },
-		});
-		vi.unstubAllEnvs();
+		// retries and the breaker never opens. The proxy reads the value once at
+		// startup, so restore the exact prior value right after — `unstubAllEnvs`
+		// would clear every other stub too, and an assertion failure before it ran
+		// would leak the override into every later test (this file's afterEach
+		// only clears CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX).
+		const previousCooldown =
+			process.env.CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS;
+		process.env.CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS = "0";
+		let proxy: Awaited<ReturnType<typeof startProxy>>;
+		try {
+			proxy = await startProxy({
+				accountManager,
+				fetchImpl,
+				options: { forcedAccountIndex: 0 },
+			});
+		} finally {
+			if (previousCooldown === undefined) {
+				delete process.env.CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS;
+			} else {
+				process.env.CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS = previousCooldown;
+			}
+		}
 		const body = {
 			model: "gpt-5-codex",
 			stream: true,

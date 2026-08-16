@@ -193,6 +193,9 @@ export interface PinnedUnavailableErrorBody {
 	account_skip_reasons: Record<string, string>;
 }
 
+/** Largest epoch-ms a `Date` can represent; beyond it `toISOString()` throws. */
+const MAX_ECMASCRIPT_TIME_MS = 8.64e15;
+
 export interface PinnedUnavailableContext {
 	/**
 	 * "forced" when the pin came from the wrapper's forced-account mode
@@ -228,7 +231,14 @@ export function buildPinnedUnavailableErrorBody(
 	const resetAtMs =
 		typeof context?.resetAtMs === "number" &&
 		Number.isFinite(context.resetAtMs) &&
-		context.resetAtMs > 0
+		context.resetAtMs > 0 &&
+		// `new Date(x).toISOString()` throws RangeError past the ECMAScript time
+		// range. The deadline is read from persisted account state
+		// (`rateLimitResetTimes`, `coolingDownUntil`) which a corrupted or
+		// hand-edited storage file can carry out of range, and this builder runs
+		// on the 503 path: a throw here would drop the pin diagnostics entirely
+		// and surface the proxy's generic 500 instead.
+		context.resetAtMs <= MAX_ECMASCRIPT_TIME_MS
 			? context.resetAtMs
 			: null;
 	const now = context?.now ?? Date.now();
@@ -236,8 +246,8 @@ export function buildPinnedUnavailableErrorBody(
 	const resetAt = resetAtMs !== null ? new Date(resetAtMs).toISOString() : null;
 	const waitSuffix =
 		resetAt !== null ? `; the recorded limit resets at ${resetAt}` : "";
-	// A forced pin belongs to the launching process, not to ndy's persisted
-	// pin state, so `unpin` would clear nothing — say what actually helps.
+	// A forced pin belongs to the launching process, not to the persisted pin
+	// state, so `unpin` would clear nothing — say what actually helps.
 	const remedy =
 		pinSource === "forced"
 			? "the pin was set by this session's launcher, so relaunch to select a different account"

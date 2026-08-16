@@ -144,6 +144,49 @@ describe("runReportCommand", () => {
 		expect(codex.accounts[0]?.availability).toBe("ready");
 	});
 
+	it("keeps the default (no --model) report on the codex family", async () => {
+		// DEFAULT_PROBE_MODEL is `gpt-5.6-sol`, whose prompt family is `gpt-5.2`.
+		// A bare `report` must NOT inherit that family: the wrapper routes
+		// codex-family traffic, so a codex record has to keep gating the default
+		// report and a gpt-5.2 record must not.
+		const readForecast = (
+			deps: ReportCommandDeps,
+		): { accounts: Array<{ availability: string }> } =>
+			(
+				JSON.parse(
+					String(
+						(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ??
+							"{}",
+					),
+				) as { forecast: { accounts: Array<{ availability: string }> } }
+			).forecast;
+		const withRecord = (
+			rateLimitResetTimes: Record<string, number>,
+		): ReportCommandDeps => {
+			const storage = createStorage([
+				{
+					email: "one@example.com",
+					refreshToken: "refresh-token-1",
+					accessToken: "access-token-1",
+					expiresAt: 10,
+					addedAt: 1,
+					lastUsed: 1,
+					enabled: true,
+					rateLimitResetTimes,
+				},
+			]);
+			return createDeps({ loadAccounts: vi.fn(async () => storage) });
+		};
+
+		const codexDeps = withRecord({ codex: 31_000 });
+		await expect(runReportCommand(["--json"], codexDeps)).resolves.toBe(0);
+		expect(readForecast(codexDeps).accounts[0]?.availability).toBe("delayed");
+
+		const generalDeps = withRecord({ "gpt-5.2": 31_000 });
+		await expect(runReportCommand(["--json"], generalDeps)).resolves.toBe(0);
+		expect(readForecast(generalDeps).accounts[0]?.availability).toBe("ready");
+	});
+
 	it("rejects a flag-like or whitespace-only --model value instead of consuming it", async () => {
 		// Split-arg form trims before validating, so "  -x" / "   " can't slip
 		// through and silently fall back to the default model.

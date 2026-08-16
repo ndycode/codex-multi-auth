@@ -287,14 +287,24 @@ export async function runBestCommand(
 		}
 	}
 
+	// Resolved once, not once per account. Only an EXPLICIT `--model` may move
+	// the availability family: DEFAULT_LIVE_PROBE_MODEL is `gpt-5.6-sol`, whose
+	// prompt family is `gpt-5.2`, so deriving it unconditionally would let a bare
+	// `best` recommend an account that is rate-limited on the codex family the
+	// wrapper actually routes — and every Codex request would then 503 off the
+	// pin that recommendation produced.
+	const forecastFamily = options.modelProvided
+		? getModelProfile(probeModel).promptFamily
+		: undefined;
+	const forecastActiveIndex = deps.resolveActiveIndex(storage, "codex");
 	const forecastInputs = storage.accounts.map((account, index) => ({
 		index,
 		account,
-		isCurrent: index === deps.resolveActiveIndex(storage, "codex"),
+		isCurrent: index === forecastActiveIndex,
 		now,
 		refreshFailure: refreshFailures.get(index),
 		liveQuota: liveQuotaByIndex.get(index),
-		family: getModelProfile(probeModel).promptFamily,
+		family: forecastFamily,
 	}));
 	const forecastResults = deps.evaluateForecastAccounts(forecastInputs);
 	const recommendation = deps.recommendForecastAccount(forecastResults);

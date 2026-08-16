@@ -198,13 +198,17 @@ describe("runForecastCommand", () => {
 			| undefined;
 		expect(explicit?.[0]?.family).toBe(getModelProfile("gpt-5.6-sol").promptFamily);
 
+		// No `--model` means no family: DEFAULT_PROBE_MODEL is `gpt-5.6-sol`,
+		// whose prompt family is `gpt-5.2`, so threading it here would move a bare
+		// `forecast` off the codex family that the wrapper actually routes and
+		// report a codex-rate-limited account as `ready`. Leaving it undefined
+		// keeps evaluateForecastAccount on its codex default.
 		await expect(runForecastCommand(["--json"], deps)).resolves.toBe(0);
 		const defaulted = evaluateForecastAccounts.mock.calls.at(-1)?.[0] as
 			| Array<{ family?: string }>
 			| undefined;
-		expect(defaulted?.[0]?.family).toBe(
-			getModelProfile(DEFAULT_PROBE_MODEL).promptFamily,
-		);
+		expect(defaulted?.[0]?.family).toBeUndefined();
+		expect(getModelProfile(DEFAULT_PROBE_MODEL).promptFamily).not.toBe("codex");
 	});
 
 	it("honors --no-runtime-overlay in json forecast output", async () => {
