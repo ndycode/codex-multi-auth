@@ -1294,6 +1294,22 @@ export class AccountManager {
 		return getCircuitBreaker(getAccountCircuitKey(account)).isAvailable();
 	}
 
+	/**
+	 * When the account's circuit breaker will admit an attempt again, as an
+	 * epoch-ms deadline — null when it already would. Lets the pinned-503
+	 * recovery metadata cover circuit-open skips, whose deadline lives in the
+	 * breaker rather than the persisted account record.
+	 */
+	getCircuitRecoveryTime(
+		account: ManagedAccount,
+		now = Date.now(),
+	): number | null {
+		const waitMs = getCircuitBreaker(
+			getAccountCircuitKey(account),
+		).getTimeUntilAvailable(now);
+		return waitMs > 0 ? now + waitMs : null;
+	}
+
 	incrementAuthFailures(account: ManagedAccount): number {
 		account.consecutiveAuthFailures =
 			(account.consecutiveAuthFailures ?? 0) + 1;

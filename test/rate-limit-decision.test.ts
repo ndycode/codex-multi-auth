@@ -295,5 +295,39 @@ describe("buildPinnedUnavailableErrorBody", () => {
 		expect(body.message).not.toContain("Pinned account 1");
 		expect(body.message).not.toContain("(");
 		expect(body.account_skip_reasons).toEqual({});
+		expect(body.pin_source).toBeNull();
+		expect(body.reset_at).toBeNull();
+		expect(body.retry_after_ms).toBeNull();
+	});
+
+	it("tailors the remedy to a forced pin and threads the recorded reset", () => {
+		const resetAtMs = 1_700_000_030_000;
+		const body = buildPinnedUnavailableErrorBody(
+			0,
+			new Map([[0, "rate-limited"]]),
+			{ pinSource: "forced", resetAtMs, now: 1_700_000_000_000 },
+		);
+		expect(body.pin_source).toBe("forced");
+		expect(body.reset_at).toBe(new Date(resetAtMs).toISOString());
+		expect(body.retry_after_ms).toBe(30_000);
+		expect(body.message).toContain(
+			`the recorded limit resets at ${new Date(resetAtMs).toISOString()}`,
+		);
+		// A forced pin is not cleared by `unpin`; the remedy must not suggest it.
+		expect(body.message).toContain("set by this session's launcher");
+		expect(body.message).not.toContain("unpin");
+	});
+
+	it("keeps the unpin advice for manual pins and nulls an unknown reset", () => {
+		const body = buildPinnedUnavailableErrorBody(
+			1,
+			new Map([[1, "disabled"]]),
+			{ pinSource: "manual" },
+		);
+		expect(body.pin_source).toBe("manual");
+		expect(body.reset_at).toBeNull();
+		expect(body.retry_after_ms).toBeNull();
+		expect(body.message).toContain("codex-multi-auth unpin");
+		expect(body.message).not.toContain("resets at");
 	});
 });

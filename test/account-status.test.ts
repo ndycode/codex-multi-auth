@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	formatRateLimitEntry,
+	getAccountRecoveryTimeForFamily,
 	getRateLimitResetTimeForFamily,
 	resolveActiveIndex,
 } from "../lib/runtime/account-status.js";
@@ -99,5 +100,91 @@ describe("account status helpers", () => {
 				"codex",
 			),
 		).toBe("resets in 4000ms");
+	});
+});
+
+describe("getAccountRecoveryTimeForFamily", () => {
+	it("returns the LATEST gating reset so a retry lands after real recovery", () => {
+		// Family-wide and requested-model records overlap: the account stays
+		// skipped until the later one expires, so the earliest reset would
+		// send a client straight back into a 503.
+		expect(
+			getAccountRecoveryTimeForFamily(
+				{
+					rateLimitResetTimes: {
+						codex: 3_000,
+						"codex:gpt-5-codex": 9_000,
+					},
+				},
+				1_000,
+				"codex",
+				"gpt-5-codex",
+			),
+		).toBe(9_000);
+	});
+
+	it("ignores records that do not gate the request", () => {
+		// Another model's record in the same family does not block this
+		// request (selection checks only the family key and the requested
+		// model's key), so it must not inflate the advertised recovery.
+		expect(
+			getAccountRecoveryTimeForFamily(
+				{
+					rateLimitResetTimes: {
+						codex: 3_000,
+						"codex:gpt-5.3-codex": 9_000,
+					},
+				},
+				1_000,
+				"codex",
+				"gpt-5-codex",
+			),
+		).toBe(3_000);
+		// Without a model only the family-wide key gates.
+		expect(
+			getAccountRecoveryTimeForFamily(
+				{ rateLimitResetTimes: { "codex:gpt-5-codex": 9_000 } },
+				1_000,
+				"codex",
+			),
+		).toBeNull();
+	});
+
+	it("ignores other families and expired records", () => {
+		expect(
+			getAccountRecoveryTimeForFamily(
+				{ rateLimitResetTimes: { "gpt-5.2": 9_000, codex: 500 } },
+				1_000,
+				"codex",
+			),
+		).toBeNull();
+	});
+
+	it("folds an active cooldown into the recovery moment", () => {
+		expect(
+			getAccountRecoveryTimeForFamily(
+				{ rateLimitResetTimes: { codex: 3_000 }, coolingDownUntil: 7_000 },
+				1_000,
+				"codex",
+			),
+		).toBe(7_000);
+		expect(
+			getAccountRecoveryTimeForFamily(
+				{ coolingDownUntil: 2_000 },
+				1_000,
+				"codex",
+			),
+		).toBe(2_000);
+	});
+
+	it("returns null when nothing bounds recovery", () => {
+		expect(getAccountRecoveryTimeForFamily({}, 1_000, "codex")).toBeNull();
+		expect(
+			getAccountRecoveryTimeForFamily(
+				{ coolingDownUntil: 900 },
+				1_000,
+				"codex",
+			),
+		).toBeNull();
 	});
 });

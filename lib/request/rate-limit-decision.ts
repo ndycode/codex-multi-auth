@@ -185,12 +185,31 @@ export interface PinnedUnavailableErrorBody {
 	code: "codex_pinned_account_unavailable";
 	pinnedAccountIndex: number | null;
 	reason: string | null;
+	/** How the pin was set; forced pins are not cleared by `unpin`. */
+	pin_source: "forced" | "manual" | null;
+	/** When the blocking record ends, when the skip reason is time-bounded. */
+	reset_at: string | null;
+	retry_after_ms: number | null;
 	account_skip_reasons: Record<string, string>;
+}
+
+export interface PinnedUnavailableContext {
+	/**
+	 * "forced" when the pin came from the wrapper's forced-account mode
+	 * (`--account` / CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX), "manual" when it
+	 * came from `switch`. `unpin` clears only the manual kind, so the remedy
+	 * line must not suggest it for a forced pin.
+	 */
+	pinSource?: "forced" | "manual" | null;
+	/** Epoch ms when the blocking record ends (rate limit or cooldown). */
+	resetAtMs?: number | null;
+	now?: number;
 }
 
 export function buildPinnedUnavailableErrorBody(
 	pinnedIndex: number | null | undefined,
 	accountSkipReasons: ReadonlyMap<number, string>,
+	context?: PinnedUnavailableContext,
 ): PinnedUnavailableErrorBody {
 	const normalizedPinnedIndex =
 		typeof pinnedIndex === "number" ? pinnedIndex : null;
@@ -205,11 +224,32 @@ export function buildPinnedUnavailableErrorBody(
 		normalizedPinnedIndex === null
 			? "The pinned account"
 			: `Pinned account ${normalizedPinnedIndex + 1}`;
+	const pinSource = context?.pinSource ?? null;
+	const resetAtMs =
+		typeof context?.resetAtMs === "number" &&
+		Number.isFinite(context.resetAtMs) &&
+		context.resetAtMs > 0
+			? context.resetAtMs
+			: null;
+	const now = context?.now ?? Date.now();
+	const retryAfterMs = resetAtMs !== null ? Math.max(0, resetAtMs - now) : null;
+	const resetAt = resetAtMs !== null ? new Date(resetAtMs).toISOString() : null;
+	const waitSuffix =
+		resetAt !== null ? `; the recorded limit resets at ${resetAt}` : "";
+	// A forced pin belongs to the launching process, not to ndy's persisted
+	// pin state, so `unpin` would clear nothing — say what actually helps.
+	const remedy =
+		pinSource === "forced"
+			? "the pin was set by this session's launcher, so relaunch to select a different account"
+			: "run `codex-multi-auth status` for details, or `codex-multi-auth unpin` to allow rotation";
 	return {
-		message: `${accountPhrase} is currently unavailable${reasonSuffix}; run \`codex-multi-auth status\` for details, or \`codex-multi-auth unpin\` to allow rotation.`,
+		message: `${accountPhrase} is currently unavailable${reasonSuffix}${waitSuffix}; ${remedy}.`,
 		code: "codex_pinned_account_unavailable",
 		pinnedAccountIndex: normalizedPinnedIndex,
 		reason: skipReason,
+		pin_source: pinSource,
+		reset_at: resetAt,
+		retry_after_ms: retryAfterMs,
 		account_skip_reasons: Object.fromEntries(
 			[...accountSkipReasons.entries()].map(([index, reason]) => [
 				String(index),

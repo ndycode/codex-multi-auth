@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Socket } from "node:net";
 import {
 	AccountManager,
+	AUTH_INVALIDATION_MARKER,
 	extractAccountId,
 	type ManagedAccount,
 } from "./accounts.js";
@@ -72,6 +73,7 @@ import {
 	responseHeadersForClient,
 	withTimeout,
 } from "./request/stream-failover-runtime.js";
+import { getAccountRecoveryTimeForFamily } from "./runtime/account-status.js";
 import { chooseAccount } from "./runtime/rotation-account-selection.js";
 import {
 	createRotationProxyState,
@@ -165,6 +167,19 @@ function toUrlHost(host: string): string {
 // failures surfaced only as a last-write-wins status.lastError string. Logs are
 // level-gated and carry the per-request correlation id set in handleRequest.
 const proxyLog = createLogger("runtime-proxy");
+
+/**
+ * Pinned skip reasons that no timer clears: the account stays unselectable
+ * after any concurrent rate-limit record or cooldown expires, so the pinned
+ * 503 must not advertise that record's expiry as a recovery time.
+ */
+const PINNED_PERMANENT_SKIP_REASONS: ReadonlySet<string> = new Set([
+	"missing",
+	"disabled",
+	"workspace-disabled",
+	"policy-blocked",
+	AUTH_INVALIDATION_MARKER,
+]);
 const DEFAULT_QUOTA_REMAINING_THRESHOLD = 10;
 
 /** @internal Stable identity key for in-memory quota snapshots across reloads. */
@@ -1573,9 +1588,62 @@ async function handleRequestInner(
 		// null reason indicates a forecast/runtime state desync (the pinned
 		// account was selected but no skip reason was recorded) — see #486.
 		if (isPinned) {
+			const pinnedAccount =
+				typeof pinnedIndex === "number"
+					? accountManager.getAccountByIndex(pinnedIndex)
+					: null;
+			const pinnedSkipReason =
+				typeof pinnedIndex === "number"
+					? accountSkipReasons.get(pinnedIndex) ?? null
+					: null;
+			// A permanent blocker (disabled, no enabled workspace, invalidated
+			// auth, policy block, out-of-range pin) outlives every timed record,
+			// so advertising a record's expiry would invite a retry into another
+			// 503. Selection rejects such an account before any attempt, so the
+			// recorded skip reason is the permanent one in exactly these cases.
+			const pinnedBlockedPermanently =
+				pinnedSkipReason !== null &&
+				PINNED_PERMANENT_SKIP_REASONS.has(pinnedSkipReason);
+			// Otherwise recovery comes from the pinned account's persisted state, not the
+			// recorded skip reason: a direct 429/cooldown on the pinned account
+			// reaches this 503 as "already-attempted" (the retry loop's selection
+			// verdict) while the record it just wrote is what actually bounds
+			// recovery — and with several overlapping records the account stays
+			// skipped until the LAST one expires, so the latest bound is the one
+			// worth advertising.
+			const pinnedStateRecoveryAtMs =
+				pinnedAccount === null
+					? null
+					: getAccountRecoveryTimeForFamily(
+							pinnedAccount,
+							state.now(),
+							context.family,
+							context.model,
+						);
+			// An open circuit outlives the short failure cooldowns that tripped
+			// it; its deadline lives in the breaker, not the account record.
+			const pinnedCircuitRecoveryAtMs =
+				pinnedAccount === null
+					? null
+					: accountManager.getCircuitRecoveryTime(pinnedAccount, state.now());
+			const pinnedResetAtMs =
+				pinnedBlockedPermanently ||
+				(pinnedStateRecoveryAtMs === null && pinnedCircuitRecoveryAtMs === null)
+					? null
+					: Math.max(
+							pinnedStateRecoveryAtMs ?? 0,
+							pinnedCircuitRecoveryAtMs ?? 0,
+						);
 			const errorBody = buildPinnedUnavailableErrorBody(
 				pinnedIndex,
 				accountSkipReasons,
+				{
+					// typeof check so a forced index of 0 still reads as forced.
+					pinSource:
+						typeof state.forcedAccountIndex === "number" ? "forced" : "manual",
+					resetAtMs: pinnedResetAtMs,
+					now: state.now(),
+				},
 			);
 			if (errorBody.reason === null) {
 				state.status.lastError = `pinned-503 missing skip reason (pinnedIndex=${pinnedIndex})`;

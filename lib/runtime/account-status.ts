@@ -1,3 +1,4 @@
+import { getQuotaKey } from "../accounts/rate-limits.js";
 import type { ModelFamily } from "../prompts/codex.js";
 
 export function resolveActiveIndex(
@@ -36,6 +37,42 @@ export function getRateLimitResetTimeForFamily(
 	}
 
 	return minReset;
+}
+
+/**
+ * The moment the account becomes usable again for a `family`/`model`
+ * request: the LATEST bound among the records that actually gate that
+ * request plus any active cooldown. Two deliberate differences from
+ * getRateLimitResetTimeForFamily, whose earliest-reset answer feeds wait
+ * displays: the account stays skipped while ANY gating record is active,
+ * so the earliest reset would send clients back into a 503 — and only the
+ * keys selection consults (`family`, plus `family:<model>` when a model is
+ * known; see isRateLimitedForFamily) may contribute, because another
+ * model's record does not block this request and would overstate its
+ * recovery. Null when nothing bounds recovery.
+ */
+export function getAccountRecoveryTimeForFamily(
+	account: {
+		rateLimitResetTimes?: Record<string, number | undefined>;
+		coolingDownUntil?: number;
+	},
+	now: number,
+	family: ModelFamily,
+	model?: string | null,
+): number | null {
+	let latest: number | null = null;
+	const consider = (value: number | undefined): void => {
+		if (typeof value !== "number" || !Number.isFinite(value)) return;
+		if (value <= now) return;
+		if (latest === null || value > latest) latest = value;
+	};
+	const times = account.rateLimitResetTimes;
+	if (times) {
+		consider(times[getQuotaKey(family)]);
+		if (model) consider(times[getQuotaKey(family, model)]);
+	}
+	consider(account.coolingDownUntil);
+	return latest;
 }
 
 export function formatRateLimitEntry(
