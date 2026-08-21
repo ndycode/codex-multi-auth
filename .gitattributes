@@ -9,3 +9,8 @@
 # test/config-schema-generated.test.ts; pin LF so Windows autocrlf
 # checkouts do not produce spurious drift failures.
 config/schema/config.schema.json text eol=lf
+crates/testkit/goldens/** -text
+crates/**/*.rs text eol=lf
+Cargo.toml text eol=lf
+crates/**/Cargo.toml text eol=lf
+Cargo.lock text eol=lf

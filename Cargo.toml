@@ -1,0 +1,77 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/core",
+  "crates/config",
+  "crates/storage",
+  "crates/rotation",
+  "crates/climirror",
+  "crates/usage",
+  "crates/tui",
+  "crates/auth",
+  "crates/accounts",
+  "crates/request",
+  "crates/quota",
+  "crates/runtime",
+  "crates/proxy",
+  "crates/wrapper",
+  "crates/manager",
+  "crates/bin",
+  "crates/testkit",
+]
+
+[workspace.package]
+version = "3.0.0-alpha.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+repository = "https://github.com/ndycode/codex-multi-auth"
+
+[workspace.dependencies]
+# async
+tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "time", "process", "sync", "signal"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures = "0.3"
+bytes = "1.10"
+async-trait = "0.1"
+# http server
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "original-uri"] }
+hyper = { version = "1.7", features = ["http1", "server", "client"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
+http = "1.3"
+http-body = "1.0"
+http-body-util = "0.1"
+# http client - rustls ONLY, no openssl anywhere
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "gzip", "brotli", "deflate", "charset", "http2"] }
+url = "2.5"
+# serialization - preserve_order is MANDATORY (JSON key-order byte compat)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+# cli
+clap = { version = "4.5", features = ["derive"] }
+# terminal
+crossterm = "0.29"
+unicode-segmentation = "1.12"
+# crypto / random
+sha1 = "0.10"
+sha2 = "0.10"
+subtle = "2.6"
+rand = "0.9"
+uuid = { version = "1.18", features = ["v4"] }
+base64 = "0.22"
+# misc
+thiserror = "2.0"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+home = "0.5"
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+regex = "1.11"
+# dev
+tempfile = "3"
+serial_test = "3"
+proptest = "1"
+wiremock = "0.6"
+insta = { version = "1", features = ["json"] }
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
