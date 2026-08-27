@@ -38,6 +38,20 @@ describe("codex-manager help parsers", () => {
 		});
 	});
 
+	it("rejects --account combined with --org", () => {
+		// --org rebinds the login to a different workspace, which is exactly the
+		// identity change a targeted re-auth refuses to write.
+		const result = parseAuthLoginArgs([
+			"--account",
+			"2",
+			"--org",
+			"org_team",
+		]);
+		expect(result.ok).toBe(false);
+		expect(result.ok === false && result.reason === "error" && result.message)
+			.toContain("Cannot combine --account with --org");
+	});
+
 	it("rejects --account without an identity", () => {
 		expect(parseAuthLoginArgs(["--account"])).toEqual({
 			ok: false,

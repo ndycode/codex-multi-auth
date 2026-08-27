@@ -32,6 +32,14 @@ export interface ResolvedAccountWrite {
 	accessToken?: string;
 	expiresAt?: number;
 	workspaces?: Workspace[];
+	/**
+	 * Keep the saved row's `enabled` flag instead of re-enabling it. A targeted
+	 * re-authentication only tops up credentials for a row the user named, so it
+	 * must not pull a deliberately disabled account back into rotation behind
+	 * their back. A plain login still re-enables: signing in is the user asking
+	 * for that account to be usable again.
+	 */
+	preserveEnabledState?: boolean;
 	now: number;
 }
 
@@ -192,7 +200,7 @@ export function buildUpdatedAccount(
 			refreshToken: write.refreshToken,
 			accessToken: write.accessToken,
 			expiresAt: write.expiresAt,
-			enabled: true,
+			enabled: write.preserveEnabledState ? existing.enabled : true,
 			authInvalidatedAt: undefined,
 			authInvalidationErrorCode: undefined,
 			lastUsed: write.now,

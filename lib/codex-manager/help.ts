@@ -161,6 +161,18 @@ export function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
 		};
 	}
 
+	// --org rebinds a login to a different workspace, which is exactly the
+	// identity change a targeted re-auth is built to refuse. Rejecting the pair
+	// up front beats failing after the user has already completed a sign-in.
+	if (options.account && options.org) {
+		return {
+			ok: false,
+			reason: "error",
+			message:
+				"Cannot combine --account with --org. Re-authenticate the saved account on its own workspace, or register the other workspace with --org on its own.",
+		};
+	}
+
 	return { ok: true, options };
 }
 

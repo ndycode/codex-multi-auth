@@ -28,10 +28,10 @@ import { createLogger } from "../logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import {
 	type AccountMetadataV3,
-	type AccountStorageV3,
 	findMatchingAccountIndex,
 	withAccountStorageTransaction,
 } from "../storage.js";
+import { cloneAccountStorageForPersistence } from "../storage/account-persistence.js";
 import { CodexValidationError } from "../errors.js";
 import type { AccountIdSource, TokenResult } from "../types.js";
 import { UI_COPY } from "../ui/ui-copy.js";
@@ -113,33 +113,54 @@ export function resolveAccountSelection(
 				}))
 			: undefined;
 
-	const override = resolveOrgOverride(orgOverride);
-	if (override) {
-		// Prefer the token candidate's human label for the chosen org so the
-		// saved row is identifiable, falling back to a bare manual binding.
-		const matched = candidates.find(
-			(candidate) => candidate.accountId === override,
+	// A targeted re-authentication names one saved row, which is a stricter and
+	// more specific instruction than the ambient CODEX_AUTH_ACCOUNT_ID env var
+	// that resolveOrgOverride also honours. Consulting the override first let an
+	// unrelated exported org id hijack `login --account <n>` and then fail the
+	// identity guard with a misleading "does not match" message. An explicit
+	// `--org` cannot reach here alongside a target: parseAuthLoginArgs rejects
+	// that combination outright.
+	if (targetAccountId) {
+		const targetedCandidate = candidates.find(
+			(candidate) => candidate.accountId === targetAccountId,
 		);
-		return {
-			...tokens,
-			accountIdOverride: override,
-			accountIdSource: "manual",
-			accountLabel: matched?.label,
-			workspaces,
-		};
-	}
-
-	const targetedCandidate = targetAccountId
-		? candidates.find((candidate) => candidate.accountId === targetAccountId)
-		: undefined;
-	if (targetedCandidate) {
-		return {
-			...tokens,
-			accountIdOverride: targetedCandidate.accountId,
-			accountIdSource: targetedCandidate.source,
-			accountLabel: targetedCandidate.label,
-			workspaces,
-		};
+		if (targetedCandidate) {
+			return {
+				...tokens,
+				accountIdOverride: targetedCandidate.accountId,
+				// `id_token` candidates auto-follow the access token inside
+				// resolveRequestAccountId, which would rewrite this binding back to
+				// the access-token account and make the caller's own identity guard
+				// reject the write. Pin those as an explicit selection; a `token`
+				// candidate already IS the access-token account, and an `org`
+				// candidate never auto-follows, so both keep their source.
+				accountIdSource:
+					targetedCandidate.source === "id_token"
+						? "manual"
+						: targetedCandidate.source,
+				accountLabel: targetedCandidate.label,
+				workspaces,
+			};
+		}
+		// The user signed in as somebody else. Fall through to the generic
+		// selection so persistAccountPool refuses the write with the precise
+		// identity-mismatch message instead of a confusing override error.
+	} else {
+		const override = resolveOrgOverride(orgOverride);
+		if (override) {
+			// Prefer the token candidate's human label for the chosen org so the
+			// saved row is identifiable, falling back to a bare manual binding.
+			const matched = candidates.find(
+				(candidate) => candidate.accountId === override,
+			);
+			return {
+				...tokens,
+				accountIdOverride: override,
+				accountIdSource: "manual",
+				accountLabel: matched?.label,
+				workspaces,
+			};
+		}
 	}
 
 	if (candidates.length === 0) {
@@ -446,55 +467,133 @@ export async function runSignInFlow(
 export type PersistAccountPoolOutcome = AccountPoolWriteOutcome;
 
 /** @internal */
+export interface PersistAccountPoolResult {
+	/** How the pool absorbed this login (appended, refreshed, or rebound). */
+	outcome: PersistAccountPoolOutcome;
+	/** Index of the row the login actually wrote. */
+	accountIndex: number;
+	/** Global selection index after the write. */
+	activeIndex: number;
+	/**
+	 * Whether the written row is the one plain `codex` will use. Callers gate the
+	 * ~/.codex/auth.json sync on this: refreshing the active account must publish
+	 * its new tokens, and refreshing any other row must not steal the selection.
+	 */
+	isActiveAccount: boolean;
+	/** Whether the written row is enabled for rotation after the write. */
+	accountEnabled: boolean;
+}
+
+/** @internal */
+export type ExpectedLoginAccount = Pick<
+	AccountMetadataV3,
+	"recordId" | "accountId" | "email" | "refreshToken"
+>;
+
+/** @internal */
 export interface PersistAccountPoolOptions {
 	/** Keep every global/model-family selection on its pre-login identity. */
 	preserveSelection?: boolean;
 	/** Refuse the write unless the OAuth result is this saved account. */
-	expectedAccount?: Pick<
-		AccountMetadataV3,
-		"recordId" | "accountId" | "email" | "refreshToken"
-	>;
+	expectedAccount?: ExpectedLoginAccount;
+	/**
+	 * Position {@link expectedAccount} occupied when the caller resolved it.
+	 * Treated as a hint that is verified against the row actually sitting there,
+	 * never trusted: the pool can change between the caller's read and this
+	 * transaction. It exists so an unambiguous positional request such as
+	 * `login --account 2` stays deterministic when several saved rows share an
+	 * identity, which identity matching alone cannot tell apart.
+	 */
+	expectedAccountIndex?: number;
 }
 
 function sameExpectedLoginIdentity(
 	write: ResolvedAccountWrite,
-	expected: NonNullable<PersistAccountPoolOptions["expectedAccount"]>,
+	expected: ExpectedLoginAccount,
 ): boolean {
 	const expectedAccountId = expected.accountId?.trim();
 	const incomingAccountId = write.accountId?.trim();
 	const expectedEmail = sanitizeEmail(expected.email);
 	const incomingEmail = sanitizeEmail(write.email);
 
-	// When either side carries the provider identity, both must carry and match
-	// it. The provider id is authoritative when the user changes their email;
-	// falling back to a shared email across different workspaces would let a
-	// targeted re-auth overwrite the wrong saved account.
-	if (expectedAccountId || incomingAccountId) {
-		return Boolean(
-			expectedAccountId &&
-				incomingAccountId &&
-				expectedAccountId === incomingAccountId,
-		);
+	// When the saved row already carries the provider identity it is
+	// authoritative and the incoming login must match it: the id survives an
+	// email change, and falling back to a shared email across workspaces would
+	// let a targeted re-auth overwrite the wrong saved account.
+	if (expectedAccountId) {
+		return incomingAccountId === expectedAccountId;
 	}
+	// A pre-#491 row saved before workspace tracking carries no account id at
+	// all. Fresh tokens essentially always carry one, so demanding the id on both
+	// sides made every legacy row permanently un-refreshable through --account.
+	// Email is the only identity such a row has, and the caller already resolved
+	// it to a single unambiguous row before starting the sign-in.
 	return Boolean(expectedEmail && incomingEmail === expectedEmail);
 }
 
+function matchesExpectedAccount(
+	account: AccountMetadataV3 | undefined,
+	expected: ExpectedLoginAccount,
+): boolean {
+	if (!account) return false;
+	if (expected.recordId && account.recordId) {
+		return account.recordId === expected.recordId;
+	}
+	const expectedAccountId = expected.accountId?.trim();
+	const candidateAccountId = account.accountId?.trim();
+	if (expectedAccountId || candidateAccountId) {
+		return Boolean(
+			expectedAccountId &&
+				candidateAccountId &&
+				expectedAccountId === candidateAccountId,
+		);
+	}
+	const expectedEmail = sanitizeEmail(expected.email);
+	const candidateEmail = sanitizeEmail(account.email);
+	if (expectedEmail || candidateEmail) {
+		return Boolean(expectedEmail && candidateEmail === expectedEmail);
+	}
+	return account.refreshToken === expected.refreshToken;
+}
+
+/**
+ * Locate the saved row a targeted re-authentication must write.
+ *
+ * Resolution is deliberately identity-first and refresh-token-last. The runtime
+ * rotation proxy rewrites a stored refreshToken whenever it refreshes an account
+ * (AccountManager.commitRefreshedAuth), so a sign-in that overlaps a live codex
+ * session would otherwise "lose" its own target and throw away a completed
+ * OAuth. `recordId` is exact when both sides have one, the caller's position is
+ * honoured only while the row sitting there is still the same identity, and
+ * findMatchingAccountIndex supplies the same composite/email/refresh-token
+ * ladder the rest of the pool already resolves identities with.
+ */
 function resolveExpectedAccountIndex(
 	accounts: readonly AccountMetadataV3[],
-	expected: NonNullable<PersistAccountPoolOptions["expectedAccount"]>,
+	expected: ExpectedLoginAccount,
+	hintedIndex: number | undefined,
 ): number | undefined {
-	const matches: number[] = [];
-	for (let index = 0; index < accounts.length; index += 1) {
-		const account = accounts[index];
-		if (!account) continue;
-		if (expected.recordId) {
-			if (account.recordId !== expected.recordId) continue;
-		} else if (account.refreshToken !== expected.refreshToken) {
-			continue;
-		}
-		matches.push(index);
+	if (expected.recordId) {
+		const byRecordId = accounts.findIndex(
+			(account) => account?.recordId === expected.recordId,
+		);
+		if (byRecordId >= 0) return byRecordId;
 	}
-	return matches.length === 1 ? matches[0] : undefined;
+	if (
+		validSelectionIndex(hintedIndex, accounts) &&
+		matchesExpectedAccount(accounts[hintedIndex], expected)
+	) {
+		return hintedIndex;
+	}
+	return findMatchingAccountIndex(
+		accounts,
+		{
+			accountId: expected.accountId,
+			email: expected.email,
+			refreshToken: expected.refreshToken,
+		},
+		{ allowUniqueAccountIdFallbackWithoutEmail: true },
+	);
 }
 
 function validSelectionIndex(
@@ -514,7 +613,7 @@ export async function persistAccountPool(
 	results: TokenSuccessWithAccount[],
 	replaceAll: boolean,
 	options: PersistAccountPoolOptions = {},
-): Promise<PersistAccountPoolOutcome | null> {
+): Promise<PersistAccountPoolResult | null> {
 	if (results.length === 0) return null;
 
 	return await withAccountStorageTransaction(async (loadedStorage, persist) => {
@@ -544,6 +643,9 @@ export async function persistAccountPool(
 				accessToken: result.access,
 				expiresAt: result.expires,
 				workspaces: result.workspaces,
+				// A targeted re-auth only tops up credentials for the row the user
+				// named; it must not silently re-enable an account they disabled.
+				preserveEnabledState: Boolean(options.expectedAccount),
 				now,
 			};
 		});
@@ -555,7 +657,11 @@ export async function persistAccountPool(
 		}
 		const expectedAccountIndex =
 			options.expectedAccount && stored
-				? resolveExpectedAccountIndex(stored.accounts, options.expectedAccount)
+				? resolveExpectedAccountIndex(
+						stored.accounts,
+						options.expectedAccount,
+						options.expectedAccountIndex,
+					)
 				: undefined;
 		if (options.expectedAccount && expectedAccountIndex === undefined) {
 			throw new CodexValidationError(
@@ -599,23 +705,45 @@ export async function persistAccountPool(
 					: nextActiveIndex;
 		}
 
-		const nextStorage: AccountStorageV3 = {
-			version: 3,
-			accounts,
-			activeIndex: nextActiveIndex,
-			activeIndexByFamily,
-			affinityGeneration: stored?.affinityGeneration,
-		};
-		// Login only updates a row in place or appends one; it never reorders or
-		// removes the pool. Preserve the raw pin position so even duplicate
-		// identities keep pointing at the exact row the user selected.
-		if (validSelectionIndex(stored?.pinnedAccountIndex, accounts)) {
-			nextStorage.pinnedAccountIndex = stored.pinnedAccountIndex;
+		// Reuse the shared persistence clone so the pin/affinity carry-over rule
+		// (issue #474) keeps living in exactly one place instead of being
+		// re-derived at every write site with a slightly different validity check.
+		const nextStorage = cloneAccountStorageForPersistence(stored);
+		nextStorage.accounts = accounts;
+		nextStorage.activeIndex = nextActiveIndex;
+		nextStorage.activeIndexByFamily = activeIndexByFamily;
+		// A selection-preserving login leaves the pool exactly where it was, so a
+		// manual `switch <n>` pin survives it: login only updates a row in place
+		// or appends one and never reorders, so the raw position still points at
+		// the row the user pinned even when two rows share an identity.
+		//
+		// A plain login is the opposite. It moves activeIndex onto the account
+		// just signed in and publishes that account to ~/.codex/auth.json.
+		// Carrying an old pin through it would leave storage claiming one account
+		// is active while the runtime proxy routes every request to another
+		// (runtime-rotation-proxy resolves pinnedAccountIndex first) -- the
+		// contradiction `status` reports as "runtime using N but pin requests M".
+		if (
+			!options.preserveSelection ||
+			!validSelectionIndex(nextStorage.pinnedAccountIndex, accounts)
+		) {
+			delete nextStorage.pinnedAccountIndex;
 		}
 
 		await persist(nextStorage);
 
-		return outcome;
+		if (outcome === null) return null;
+		return {
+			outcome,
+			accountIndex: activeIndex,
+			activeIndex: nextActiveIndex,
+			// The Codex CLI reads the `codex` family selection, so that -- not the
+			// bare global index -- decides whether this write owns the native
+			// ~/.codex/auth.json credentials.
+			isActiveAccount:
+				activeIndex === (activeIndexByFamily.codex ?? nextActiveIndex),
+			accountEnabled: accounts[activeIndex]?.enabled !== false,
+		};
 	});
 }
 

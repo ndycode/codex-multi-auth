@@ -169,7 +169,11 @@ codex-multi-auth login --account <index|email|account_id> --preserve-selection
 ```
 
 Add `--device-auth` on a remote shell. The refreshed OAuth identity must match
-the requested saved account or nothing is written.
+the requested saved account or nothing is written. Refreshing the account Codex
+is currently using still publishes its new tokens to the native CLI; refreshing
+any other account leaves the active selection and the manual pin untouched. A
+disabled account stays disabled. `--account` cannot be combined with `--org`,
+which would rebind the row to a different workspace.
 
 ---
 

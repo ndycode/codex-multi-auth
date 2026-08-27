@@ -148,7 +148,7 @@ Turning `showQuotaDetails` off reduces the line to a bare `live session OK`.
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow (mutually exclusive with `--device-auth`) |
 | `--org <org_id>` | login | Bind this login to a specific ChatGPT workspace/org id (same seat can be registered as personal vs team/business) |
 | `--preserve-selection` | login | Add or refresh credentials without changing the active global/model-family selections or manual pin; performs one sign-in and exits |
-| `--account <index\|email\|account_id>` | login | Re-authenticate exactly one saved account. Implies `--preserve-selection` and refuses a different OAuth identity before writing |
+| `--account <index\|email\|account_id>` | login | Re-authenticate exactly one saved account. Implies `--preserve-selection`, refuses a different OAuth identity before writing, keeps a disabled account disabled, and cannot be combined with `--org` |
 | `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle, history | Print machine-readable output |
 | `--csv` | usage | Print or write CSV bucket output |
 | `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |
@@ -641,7 +641,7 @@ failure.
 - `codex-multi-auth login` remains browser-first by default.
 - `codex-multi-auth login --org <org_id>` binds the login to one ChatGPT workspace.
 - `codex-multi-auth login --device-auth` uses OpenAI Codex device-code login. It prints `https://auth.openai.com/codex/device` and a one-time code, then polls for completion without opening a browser or starting the local callback server.
-- `codex-multi-auth login --account <identity> --preserve-selection` refreshes a saved account transactionally without changing the account used by Codex. If the provider returns a different account id/email, the write is refused and the previous credentials remain intact. Combine it with `--device-auth` for remote shells.
+- `codex-multi-auth login --account <identity> --preserve-selection` refreshes a saved account transactionally without changing which account is selected. If the provider returns a different account id/email, the write is refused and the previous credentials remain intact. Refreshing the account that is currently active still writes its new tokens to the native `~/.codex/auth.json`, so plain `codex` keeps working; refreshing any other account leaves that file alone. A manual `switch <n>` pin survives the refresh, and an account you disabled stays disabled. `--account` cannot be combined with `--org` — re-authenticate the saved row on its own workspace, or register the other workspace with `--org` on its own. Combine it with `--device-auth` for remote shells.
 - `codex-multi-auth login --manual` and `codex-multi-auth login --no-browser` force the manual callback flow instead of launching a browser.
 - `CODEX_AUTH_NO_BROWSER=1` suppresses browser launch for automation/headless sessions. False-like values such as `0` and `false` do not disable browser launch by themselves.
 - In non-TTY/manual shells, pass the full redirect URL on stdin, for example: `echo "http://127.0.0.1:1455/auth/callback?code=..." | codex-multi-auth login --manual`.

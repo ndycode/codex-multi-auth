@@ -400,7 +400,16 @@ async function runAuthLoginFlow(
 			);
 			return 1;
 		}
-		let forceNewLogin = existingCount > 0 || Boolean(expectedAccount);
+		// Positional hint for the write, re-verified (never trusted) inside the
+		// storage transaction. resolveLoginAccountTarget hands back a row out of
+		// this very array, so indexOf is an exact identity lookup.
+		const expectedAccountIndex =
+			expectedAccount && refreshedStorage
+				? refreshedStorage.accounts.indexOf(expectedAccount)
+				: -1;
+		// A non-empty pool already forces a fresh sign-in, and a resolved target
+		// implies the pool was non-empty, so it adds no condition of its own.
+		let forceNewLogin = existingCount > 0;
 		let onboardingBackupDiscoveryWarning: string | null = null;
 		const loadNamedBackupsForOnboarding = async (): Promise<
 			NamedBackupSummary[]
@@ -581,15 +590,14 @@ async function runAuthLoginFlow(
 				loginOptions.org,
 				expectedAccount?.accountId,
 			);
-			let persistOutcome: Awaited<ReturnType<typeof persistAccountPool>>;
+			let persistResult: Awaited<ReturnType<typeof persistAccountPool>>;
 			try {
-				persistOutcome =
-					loginOptions.preserveSelection || expectedAccount
-						? await persistAccountPool([resolved], false, {
-								preserveSelection: loginOptions.preserveSelection,
-								expectedAccount: expectedAccount ?? undefined,
-							})
-						: await persistAccountPool([resolved], false);
+				persistResult = await persistAccountPool([resolved], false, {
+					preserveSelection: loginOptions.preserveSelection,
+					expectedAccount: expectedAccount ?? undefined,
+					expectedAccountIndex:
+						expectedAccountIndex >= 0 ? expectedAccountIndex : undefined,
+				});
 			} catch (error) {
 				if (error instanceof CodexValidationError) {
 					console.error(`Re-authentication failed: ${error.message}`);
@@ -597,7 +605,13 @@ async function runAuthLoginFlow(
 				}
 				throw error;
 			}
-			if (!loginOptions.preserveSelection || existingCount === 0) {
+			// Publish to ~/.codex/auth.json exactly when this write owns the
+			// selection. Skipping the sync whenever --preserve-selection was passed
+			// stranded the native CLI on the expired tokens of the very account the
+			// user had just refreshed, and nothing downstream repaired it: the
+			// drift check compares identity, not tokens, so a same-identity refresh
+			// never looks like drift.
+			if (!persistResult || persistResult.isActiveAccount) {
 				await syncSelectionToCodex(resolved);
 			}
 
@@ -610,12 +624,17 @@ async function runAuthLoginFlow(
 			// same-email login that maps onto an existing entry updates or
 			// rebinds it instead of growing the pool (issue #512).
 			const outcomeMessage =
-				persistOutcome === "rebound"
+				persistResult?.outcome === "rebound"
 					? `Rebound workspace for existing account. Total: ${count}`
-					: persistOutcome === "updated"
+					: persistResult?.outcome === "updated"
 						? `Updated existing account. Total: ${count}`
 						: `Added account. Total: ${count}`;
 			console.log(outcomeMessage);
+			if (persistResult && !persistResult.accountEnabled) {
+				console.log(
+					`Account ${persistResult.accountIndex + 1} is still disabled and stays out of rotation. Re-enable it from the manage menu in "codex-multi-auth login".`,
+				);
+			}
 			console.log("Next steps:");
 			console.log("  codex-multi-auth status  Check that the wrapper is active.");
 			console.log(

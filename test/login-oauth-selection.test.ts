@@ -156,6 +156,49 @@ describe("resolveAccountSelection", () => {
 		expect(result.accountLabel).toContain("Target");
 	});
 
+	it("prefers an explicit --account target over an ambient env override", () => {
+		// CODEX_AUTH_ACCOUNT_ID is ambient config; `--account` names one saved row
+		// for this call. Letting the env win hijacked the targeted re-auth and
+		// then failed the identity guard with a misleading mismatch error.
+		process.env.CODEX_AUTH_ACCOUNT_ID = "org_env";
+		jwtPayloads.set("access-token", {
+			[JWT_CLAIM_PATH]: { chatgpt_account_id: "acc_personal" },
+			organizations: [
+				{ id: "org_env", name: "Env" },
+				{ id: "org_target", name: "Target" },
+			],
+		});
+
+		const result = resolveAccountSelection(
+			BASE_TOKENS,
+			undefined,
+			"org_target",
+		);
+
+		expect(result.accountIdOverride).toBe("org_target");
+	});
+
+	it("pins an id_token-sourced target so the access token cannot overwrite it", () => {
+		// `id_token` auto-follows the access token in resolveRequestAccountId,
+		// which would rewrite the binding back to the access-token account and
+		// make persistAccountPool reject our own write.
+		jwtPayloads.set("access-token", {
+			[JWT_CLAIM_PATH]: { chatgpt_account_id: "acc_access" },
+		});
+		jwtPayloads.set("id-token", {
+			[JWT_CLAIM_PATH]: { chatgpt_account_id: "acc_id_only" },
+		});
+
+		const result = resolveAccountSelection(
+			{ ...BASE_TOKENS, idToken: "id-token" },
+			undefined,
+			"acc_id_only",
+		);
+
+		expect(result.accountIdOverride).toBe("acc_id_only");
+		expect(result.accountIdSource).toBe("manual");
+	});
+
 	it("binds an explicit --org override as manual and reuses the candidate label", () => {
 		jwtPayloads.set("access-token", {
 			organizations: [
@@ -304,7 +347,12 @@ describe("persistAccountPool selection-preserving re-auth", () => {
 		expect(persisted?.accounts[1]?.refreshToken).toBe("new-refresh-b");
 	});
 
-	it("preserves a pin even for a normal add that selects the new login", async () => {
+	it("drops a stale pin on a normal add that selects the new login", async () => {
+		// A plain login moves activeIndex onto the account just signed in and
+		// publishes it to ~/.codex/auth.json. Carrying the old pin through would
+		// leave storage claiming one account is active while the runtime proxy
+		// (which resolves pinnedAccountIndex first) routes every request to
+		// another -- what `status` surfaces as "runtime using N, pin requests M".
 		const a = savedAccount("a");
 		const b = savedAccount("b");
 		installTransaction({
@@ -318,7 +366,146 @@ describe("persistAccountPool selection-preserving re-auth", () => {
 		await persistAccountPool([incoming("b")], false);
 
 		expect(persisted?.activeIndex).toBe(1);
-		expect(persisted?.pinnedAccountIndex).toBe(0);
+		expect(persisted?.pinnedAccountIndex).toBeUndefined();
+	});
+
+	it("finds the target after the runtime rotated its refresh token", async () => {
+		// AccountManager.commitRefreshedAuth rewrites a stored refreshToken
+		// whenever a live codex session refreshes the account. Matching the target
+		// by refresh token alone threw away a completed OAuth as "no longer
+		// present" whenever a sign-in overlapped an active session.
+		const expected = savedAccount("rot");
+		installTransaction({
+			version: 3,
+			accounts: [{ ...expected, refreshToken: "runtime-rotated-refresh" }],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		});
+
+		await persistAccountPool([incoming("rot")], false, {
+			preserveSelection: true,
+			expectedAccount: expected,
+		});
+
+		expect(persisted?.accounts[0]?.refreshToken).toBe("new-refresh-rot");
+	});
+
+	it("re-authenticates a legacy row that carries no account id", async () => {
+		// Rows saved before workspace tracking (#491) have no accountId, while
+		// fresh tokens essentially always carry one. Demanding the id on both
+		// sides made every such row permanently un-refreshable via --account.
+		const legacy: AccountMetadataV3 = {
+			...savedAccount("legacy"),
+			accountId: undefined,
+		};
+		installTransaction({
+			version: 3,
+			accounts: [legacy],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		});
+
+		await persistAccountPool([incoming("legacy")], false, {
+			preserveSelection: true,
+			expectedAccount: legacy,
+		});
+
+		expect(persisted?.accounts[0]?.refreshToken).toBe("new-refresh-legacy");
+		expect(persisted?.accounts[0]?.accountId).toBe("acc_legacy");
+	});
+
+	it("keeps a deliberately disabled account out of rotation", async () => {
+		const disabled: AccountMetadataV3 = {
+			...savedAccount("off"),
+			enabled: false,
+		};
+		installTransaction({
+			version: 3,
+			accounts: [disabled],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		});
+
+		const result = await persistAccountPool([incoming("off")], false, {
+			preserveSelection: true,
+			expectedAccount: disabled,
+		});
+
+		expect(persisted?.accounts[0]?.refreshToken).toBe("new-refresh-off");
+		expect(persisted?.accounts[0]?.enabled).toBe(false);
+		expect(result?.accountEnabled).toBe(false);
+	});
+
+	it("re-enables an account on a plain login", async () => {
+		// Signing in without a target IS the user asking for that account back.
+		const disabled: AccountMetadataV3 = {
+			...savedAccount("off"),
+			enabled: false,
+		};
+		installTransaction({
+			version: 3,
+			accounts: [disabled],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		});
+
+		const result = await persistAccountPool([incoming("off")], false);
+
+		expect(persisted?.accounts[0]?.enabled).toBe(true);
+		expect(result?.accountEnabled).toBe(true);
+	});
+
+	it("ignores an index hint that no longer holds the expected identity", async () => {
+		const a = savedAccount("a");
+		const b = savedAccount("b");
+		installTransaction({
+			version: 3,
+			accounts: [a, b],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		});
+
+		// The caller saw `b` at index 0; a concurrent write reordered the pool.
+		await persistAccountPool([incoming("b")], false, {
+			preserveSelection: true,
+			expectedAccount: b,
+			expectedAccountIndex: 0,
+		});
+
+		expect(persisted?.accounts[0]?.refreshToken).toBe("old-refresh-a");
+		expect(persisted?.accounts[1]?.refreshToken).toBe("new-refresh-b");
+	});
+
+	it("reports which row it wrote and whether that row owns the Codex selection", async () => {
+		const a = savedAccount("a");
+		const b = savedAccount("b");
+		installTransaction({
+			version: 3,
+			accounts: [a, b],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+		});
+
+		const refreshedActive = await persistAccountPool([incoming("b")], false, {
+			preserveSelection: true,
+			expectedAccount: b,
+		});
+		expect(refreshedActive).toMatchObject({
+			outcome: "updated",
+			accountIndex: 1,
+			activeIndex: 1,
+			isActiveAccount: true,
+		});
+
+		const refreshedOther = await persistAccountPool([incoming("a")], false, {
+			preserveSelection: true,
+			expectedAccount: a,
+		});
+		expect(refreshedOther).toMatchObject({
+			accountIndex: 0,
+			activeIndex: 1,
+			isActiveAccount: false,
+		});
 	});
 
 	it("rejects a different OAuth identity before persistence", async () => {
@@ -356,9 +543,13 @@ describe("persistAccountPool selection-preserving re-auth", () => {
 			pinnedAccountIndex: 1,
 		});
 
+		// Identity matching alone cannot separate these rows, and its newest-wins
+		// tie-break actively points at the other one (lastUsed 99 vs 1). The
+		// caller's verified position is what keeps `--account 1` deterministic.
 		await persistAccountPool([incoming("dup")], false, {
 			preserveSelection: true,
 			expectedAccount: target,
+			expectedAccountIndex: 0,
 		});
 
 		expect(persisted?.accounts[0]?.refreshToken).toBe("new-refresh-dup");
