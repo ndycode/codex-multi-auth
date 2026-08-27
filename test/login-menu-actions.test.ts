@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { promptLoginMode } from "../lib/cli.js";
+import { CodexValidationError } from "../lib/errors.js";
 import { UI_COPY } from "../lib/ui/ui-copy.js";
 import type {
 	AccountMetadataV3,
@@ -396,6 +397,27 @@ describe("handleManageAction toggle", () => {
 	});
 });
 
+// persistAccountPool reports the row it wrote and whether that row owns the
+// native ~/.codex/auth.json selection.
+function refreshResult(
+	overrides: Partial<{
+		outcome: "inserted" | "updated" | "rebound";
+		accountIndex: number;
+		activeIndex: number;
+		isActiveAccount: boolean;
+		accountEnabled: boolean;
+	}> = {},
+) {
+	return {
+		outcome: "updated" as const,
+		accountIndex: 0,
+		activeIndex: 0,
+		isActiveAccount: true,
+		accountEnabled: true,
+		...overrides,
+	};
+}
+
 describe("handleManageAction refresh", () => {
 	it("runs the OAuth flow and persists the resolved selection on success", async () => {
 		const storage = storageWith([account("a")]);
@@ -403,7 +425,7 @@ describe("handleManageAction refresh", () => {
 		const resolved = { type: "success" as const, accountIdOverride: "acc_a" };
 		runOAuthFlowMock.mockResolvedValue(tokenResult);
 		resolveAccountSelectionMock.mockReturnValue(resolved);
-		persistAccountPoolMock.mockResolvedValue(undefined);
+		persistAccountPoolMock.mockResolvedValue(refreshResult());
 		syncSelectionToCodexMock.mockResolvedValue(undefined);
 
 		await handleManageAction(storage, {
@@ -413,10 +435,98 @@ describe("handleManageAction refresh", () => {
 
 		// Non-TTY sign-in mode resolves to "browser" without prompting.
 		expect(runOAuthFlowMock).toHaveBeenCalledWith(true, "browser");
-		expect(resolveAccountSelectionMock).toHaveBeenCalledWith(tokenResult);
-		expect(persistAccountPoolMock).toHaveBeenCalledWith([resolved], false);
+		expect(resolveAccountSelectionMock).toHaveBeenCalledWith(
+			tokenResult,
+			undefined,
+			"acc_a",
+		);
+		expect(persistAccountPoolMock).toHaveBeenCalledWith([resolved], false, {
+			preserveSelection: true,
+			expectedAccount: storage.accounts[0],
+			expectedAccountIndex: 0,
+		});
+		// Account 1 is the active row, so its fresh tokens must reach the native
+		// Codex CLI; dropping this sync left `codex` on the expired credentials.
 		expect(syncSelectionToCodexMock).toHaveBeenCalledWith(resolved);
 		expect(logSpy).toHaveBeenCalledWith("Refreshed account 1.");
+	});
+
+	it("leaves the Codex selection alone when refreshing a non-active row", async () => {
+		const storage = storageWith([account("a"), account("b")]);
+		const resolved = { type: "success" as const, accountIdOverride: "acc_b" };
+		runOAuthFlowMock.mockResolvedValue({ type: "success" });
+		resolveAccountSelectionMock.mockReturnValue(resolved);
+		persistAccountPoolMock.mockResolvedValue(
+			refreshResult({ accountIndex: 1, isActiveAccount: false }),
+		);
+
+		await handleManageAction(storage, {
+			mode: "manage",
+			refreshAccountIndex: 1,
+		} satisfies MenuResult);
+
+		expect(syncSelectionToCodexMock).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledWith("Refreshed account 2.");
+	});
+
+	it("refuses a mismatched sign-in without crashing the dashboard", async () => {
+		// Nothing between here and the process entrypoint catches this, so an
+		// uncaught throw would take the whole interactive session down.
+		const storage = storageWith([account("a")]);
+		runOAuthFlowMock.mockResolvedValue({ type: "success" });
+		resolveAccountSelectionMock.mockReturnValue({ type: "success" });
+		persistAccountPoolMock.mockRejectedValue(
+			new CodexValidationError(
+				"The authenticated Codex identity does not match the account requested for re-authentication.",
+			),
+		);
+
+		await expect(
+			handleManageAction(storage, {
+				mode: "manage",
+				refreshAccountIndex: 0,
+			} satisfies MenuResult),
+		).resolves.toBeUndefined();
+
+		expect(errorSpy.mock.calls.map(String).join("\n")).toContain(
+			"Refresh failed: The authenticated Codex identity does not match",
+		);
+		expect(syncSelectionToCodexMock).not.toHaveBeenCalled();
+	});
+
+	it("names the row that was actually written, not the stale menu index", async () => {
+		// The pool can shift between the dashboard render and the transaction.
+		const storage = storageWith([account("a"), account("b")]);
+		runOAuthFlowMock.mockResolvedValue({ type: "success" });
+		resolveAccountSelectionMock.mockReturnValue({ type: "success" });
+		persistAccountPoolMock.mockResolvedValue(
+			refreshResult({ accountIndex: 0, isActiveAccount: true }),
+		);
+
+		await handleManageAction(storage, {
+			mode: "manage",
+			refreshAccountIndex: 1,
+		} satisfies MenuResult);
+
+		expect(logSpy).toHaveBeenCalledWith("Refreshed account 1.");
+	});
+
+	it("reports that a refreshed account is still disabled", async () => {
+		const storage = storageWith([account("a")]);
+		runOAuthFlowMock.mockResolvedValue({ type: "success" });
+		resolveAccountSelectionMock.mockReturnValue({ type: "success" });
+		persistAccountPoolMock.mockResolvedValue(
+			refreshResult({ accountEnabled: false }),
+		);
+
+		await handleManageAction(storage, {
+			mode: "manage",
+			refreshAccountIndex: 0,
+		} satisfies MenuResult);
+
+		expect(logSpy.mock.calls.map(String).join("\n")).toContain(
+			"Account 1 is still disabled",
+		);
 	});
 
 	it("reports a failed OAuth flow without persisting anything", async () => {
@@ -472,7 +582,9 @@ describe("handleManageAction refresh", () => {
 		const resolved = { type: "success" as const, accountIdOverride: "acc_a" };
 		runOAuthFlowMock.mockResolvedValue({ type: "success" });
 		resolveAccountSelectionMock.mockReturnValue(resolved);
-		persistAccountPoolMock.mockResolvedValue(undefined);
+		persistAccountPoolMock.mockResolvedValue(
+			refreshResult({ isActiveAccount: false }),
+		);
 		syncSelectionToCodexMock.mockResolvedValue(undefined);
 
 		await handleManageAction(storage, {
@@ -481,7 +593,7 @@ describe("handleManageAction refresh", () => {
 		} satisfies MenuResult);
 
 		expect(runOAuthFlowMock).toHaveBeenCalledWith(true, "manual");
-		expect(syncSelectionToCodexMock).toHaveBeenCalledWith(resolved);
+		expect(syncSelectionToCodexMock).not.toHaveBeenCalled();
 	});
 
 	it("bails out silently on a non-transport prompt selection", async () => {

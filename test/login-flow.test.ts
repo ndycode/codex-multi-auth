@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ACCOUNT_LIMITS } from "../lib/constants.js";
+import { CodexValidationError } from "../lib/errors.js";
 import type { AccountMetadataV3, AccountStorageV3 } from "../lib/storage.js";
 
 const {
@@ -98,6 +99,36 @@ function deps() {
 	};
 }
 
+type PersistOutcome = "inserted" | "updated" | "rebound";
+
+// persistAccountPool reports which row it wrote and whether that row owns the
+// native ~/.codex/auth.json selection; the flow gates its sync on that.
+function persistResult(
+	overrides: Partial<{
+		outcome: PersistOutcome;
+		accountIndex: number;
+		activeIndex: number;
+		isActiveAccount: boolean;
+		accountEnabled: boolean;
+	}> = {},
+) {
+	return {
+		outcome: "inserted" as PersistOutcome,
+		accountIndex: 0,
+		activeIndex: 0,
+		isActiveAccount: true,
+		accountEnabled: true,
+		...overrides,
+	};
+}
+
+// A plain login opts into none of the targeted-re-auth behaviour.
+const PLAIN_PERSIST_OPTIONS = {
+	preserveSelection: undefined,
+	expectedAccount: undefined,
+	expectedAccountIndex: undefined,
+};
+
 const CANCELLED = { type: "failed" as const, message: "User cancelled login" };
 const TOKEN_SUCCESS = { type: "success" as const };
 const RESOLVED = { type: "success" as const, accountIdOverride: "acc_x" };
@@ -126,7 +157,10 @@ beforeEach(() => {
 	// "rebound"/"updated" semantics override this with a non-growing impl.
 	persistAccountPoolMock.mockImplementation(async () => {
 		accountsOnDisk = storageWith((accountsOnDisk?.accounts.length ?? 0) + 1);
-		return "inserted";
+		return persistResult({
+			accountIndex: (accountsOnDisk?.accounts.length ?? 1) - 1,
+			activeIndex: (accountsOnDisk?.accounts.length ?? 1) - 1,
+		});
 	});
 	syncSelectionToCodexMock.mockResolvedValue(undefined);
 	promptAddAnotherAccountMock.mockResolvedValue(false);
@@ -177,6 +211,130 @@ describe("runAuthLogin argument handling", () => {
 });
 
 describe("runAuthLogin explicit transports", () => {
+	it("targeted re-auth of a non-active row preserves selection and skips the Codex sync", async () => {
+		accountsOnDisk = storageWith(2);
+		runSignInFlowMock.mockResolvedValue(TOKEN_SUCCESS);
+		persistAccountPoolMock.mockResolvedValue(
+			persistResult({
+				outcome: "updated",
+				accountIndex: 1,
+				activeIndex: 0,
+				isActiveAccount: false,
+			}),
+		);
+
+		expect(
+			await runAuthLogin(
+				["--account", "acc_a1", "--preserve-selection"],
+				deps(),
+			),
+		).toBe(0);
+
+		expect(promptLoginModeMock).not.toHaveBeenCalled();
+		expect(runSignInFlowMock).toHaveBeenCalledExactlyOnceWith(true, "browser");
+		expect(persistAccountPoolMock).toHaveBeenCalledExactlyOnceWith(
+			[RESOLVED],
+			false,
+			{
+				preserveSelection: true,
+				expectedAccount: expect.objectContaining({ accountId: "acc_a1" }),
+				// The position the target occupied when the flow resolved it, so
+				// the transaction can stay deterministic across duplicate rows.
+				expectedAccountIndex: 1,
+			},
+		);
+		expect(syncSelectionToCodexMock).not.toHaveBeenCalled();
+		expect(promptAddAnotherAccountMock).not.toHaveBeenCalled();
+	});
+
+	it("syncs Codex auth when the refreshed row is the active account", async () => {
+		// Regression: gating the sync on --preserve-selection alone stranded the
+		// native CLI on the expired tokens of the account just refreshed, and the
+		// drift check never repaired it (it compares identity, not tokens).
+		accountsOnDisk = storageWith(2);
+		runSignInFlowMock.mockResolvedValue(TOKEN_SUCCESS);
+		persistAccountPoolMock.mockResolvedValue(
+			persistResult({
+				outcome: "updated",
+				accountIndex: 0,
+				activeIndex: 0,
+				isActiveAccount: true,
+			}),
+		);
+
+		expect(
+			await runAuthLogin(["--account", "1", "--preserve-selection"], deps()),
+		).toBe(0);
+
+		expect(persistAccountPoolMock).toHaveBeenCalledExactlyOnceWith(
+			[RESOLVED],
+			false,
+			{
+				preserveSelection: true,
+				expectedAccount: expect.objectContaining({ accountId: "acc_a0" }),
+				expectedAccountIndex: 0,
+			},
+		);
+		expect(syncSelectionToCodexMock).toHaveBeenCalledExactlyOnceWith(RESOLVED);
+	});
+
+	it("tells the user a refreshed account is still disabled", async () => {
+		accountsOnDisk = storageWith(2);
+		runSignInFlowMock.mockResolvedValue(TOKEN_SUCCESS);
+		persistAccountPoolMock.mockResolvedValue(
+			persistResult({
+				outcome: "updated",
+				accountIndex: 1,
+				activeIndex: 0,
+				isActiveAccount: false,
+				accountEnabled: false,
+			}),
+		);
+
+		expect(await runAuthLogin(["--account", "2"], deps())).toBe(0);
+
+		expect(loggedLines(logSpy).join("\n")).toContain(
+			"Account 2 is still disabled",
+		);
+	});
+
+	it("rejects --account combined with --org before starting a login", async () => {
+		expect(
+			await runAuthLogin(["--account", "2", "--org", "org_team"], deps()),
+		).toBe(1);
+
+		expect(loadAccountsMock).not.toHaveBeenCalled();
+		expect(runSignInFlowMock).not.toHaveBeenCalled();
+		expect(loggedLines(errorSpy).join("\n")).toContain(
+			"Cannot combine --account with --org",
+		);
+	});
+
+	it("refuses a missing targeted account before starting OAuth", async () => {
+		accountsOnDisk = storageWith(1);
+
+		expect(await runAuthLogin(["--account", "acc_missing"], deps())).toBe(1);
+
+		expect(runSignInFlowMock).not.toHaveBeenCalled();
+		expect(persistAccountPoolMock).not.toHaveBeenCalled();
+		expect(loggedLines(errorSpy).join("\n")).toContain("missing or ambiguous");
+	});
+
+	it("reports a targeted identity mismatch without syncing selection", async () => {
+		accountsOnDisk = storageWith(1);
+		runSignInFlowMock.mockResolvedValue(TOKEN_SUCCESS);
+		persistAccountPoolMock.mockRejectedValue(
+			new CodexValidationError("authenticated identity does not match"),
+		);
+
+		expect(await runAuthLogin(["--account", "acc_a0"], deps())).toBe(1);
+
+		expect(syncSelectionToCodexMock).not.toHaveBeenCalled();
+		expect(loggedLines(errorSpy).join("\n")).toContain(
+			"Re-authentication failed",
+		);
+	});
+
 	it("bypasses the dashboard with --device-auth and exits cleanly on cancel", async () => {
 		// With saved accounts a plain `login` would open the dashboard; an
 		// explicit transport must skip it, and cancelling must NOT fall back to
@@ -218,10 +376,12 @@ describe("runAuthLogin explicit transports", () => {
 		expect(resolveAccountSelectionMock).toHaveBeenCalledExactlyOnceWith(
 			TOKEN_SUCCESS,
 			"org_team",
+			undefined,
 		);
 		expect(persistAccountPoolMock).toHaveBeenCalledExactlyOnceWith(
 			[RESOLVED],
 			false,
+			PLAIN_PERSIST_OPTIONS,
 		);
 		expect(syncSelectionToCodexMock).toHaveBeenCalledExactlyOnceWith(RESOLVED);
 		// Empty pool at start: this was not a forced re-login.
@@ -240,7 +400,7 @@ describe("runAuthLogin explicit transports", () => {
 			runSignInFlowMock.mockResolvedValue(TOKEN_SUCCESS);
 			persistAccountPoolMock.mockImplementation(async () => {
 				accountsOnDisk = storageWith(1);
-				return outcome;
+				return persistResult({ outcome });
 			});
 
 			expect(await runAuthLogin(["--manual"], deps())).toBe(0);
@@ -252,7 +412,7 @@ describe("runAuthLogin explicit transports", () => {
 		runSignInFlowMock.mockResolvedValue(TOKEN_SUCCESS);
 		persistAccountPoolMock.mockImplementation(async () => {
 			accountsOnDisk = storageWith(ACCOUNT_LIMITS.MAX_ACCOUNTS);
-			return "inserted";
+			return persistResult();
 		});
 
 		expect(await runAuthLogin(["--manual"], deps())).toBe(0);
