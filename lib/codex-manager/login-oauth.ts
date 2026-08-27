@@ -694,15 +694,34 @@ export async function persistAccountPool(
 			validSelectionIndex(stored?.activeIndex, accounts)
 				? stored.activeIndex
 				: activeIndex;
+		const priorActiveIndex = stored?.activeIndex;
 		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
 		for (const family of MODEL_FAMILIES) {
-			const priorFamilyIndex =
-				stored?.activeIndexByFamily?.[family] ?? stored?.activeIndex;
-			activeIndexByFamily[family] =
-				options.preserveSelection &&
-				validSelectionIndex(priorFamilyIndex, accounts)
-					? priorFamilyIndex
-					: nextActiveIndex;
+			const storedFamilyIndex = stored?.activeIndexByFamily?.[family];
+			const priorFamilyIndex = storedFamilyIndex ?? priorActiveIndex;
+			if (!validSelectionIndex(priorFamilyIndex, accounts)) {
+				activeIndexByFamily[family] = nextActiveIndex;
+				continue;
+			}
+			if (options.preserveSelection) {
+				activeIndexByFamily[family] = priorFamilyIndex;
+				continue;
+			}
+			// A family the user deliberately pointed at a DIFFERENT account than
+			// the global selection is a setting of its own, and a plain login must
+			// not silently drag it onto the account just signed in: adding a third
+			// account used to move a deliberate `codex-max -> account 2` binding
+			// onto account 3. Families that were merely following the global
+			// selection keep following it, which is what makes a plain login still
+			// feel like "this new account is now the one in use".
+			//
+			// Indices stay meaningful here because login only updates a row in
+			// place or appends one; it never reorders or removes the pool.
+			const followedGlobalSelection =
+				storedFamilyIndex === undefined || storedFamilyIndex === priorActiveIndex;
+			activeIndexByFamily[family] = followedGlobalSelection
+				? nextActiveIndex
+				: priorFamilyIndex;
 		}
 
 		// Reuse the shared persistence clone so the pin/affinity carry-over rule

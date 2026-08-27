@@ -104,6 +104,12 @@ export interface UsageSummaryBucket {
 	reasoningTokens: number;
 	totalTokens: number;
 	costUsd: number;
+	/**
+	 * Requests that consumed tokens but could not be priced, so `costUsd` is an
+	 * UNDER-count by an unknown amount. A cost budget cannot be evaluated while
+	 * this is above zero; see `evaluateBudgetGuard`.
+	 */
+	unpricedRequests: number;
 }
 
 export interface UsageSummary {

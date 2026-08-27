@@ -347,6 +347,65 @@ describe("persistAccountPool selection-preserving re-auth", () => {
 		expect(persisted?.accounts[1]?.refreshToken).toBe("new-refresh-b");
 	});
 
+	it("keeps a per-family assignment the user made deliberately", async () => {
+		// A plain login used to overwrite EVERY activeIndexByFamily entry with the
+		// account just signed in, silently destroying a deliberate
+		// `codex-max -> account 2` binding when a third account was added.
+		const a = savedAccount("a");
+		const b = savedAccount("b");
+		installTransaction({
+			version: 3,
+			accounts: [a, b],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0, "codex-max": 1 },
+		});
+
+		await persistAccountPool([incoming("c")], false);
+
+		expect(persisted?.accounts).toHaveLength(3);
+		expect(persisted?.activeIndex).toBe(2);
+		// codex was merely following the global selection, so it follows the new
+		// account; codex-max was pointed somewhere else on purpose and stays.
+		expect(persisted?.activeIndexByFamily?.codex).toBe(2);
+		expect(persisted?.activeIndexByFamily?.["codex-max"]).toBe(1);
+	});
+
+	it("moves every family that was following the global selection", async () => {
+		const a = savedAccount("a");
+		const b = savedAccount("b");
+		installTransaction({
+			version: 3,
+			accounts: [a, b],
+			activeIndex: 1,
+			// Both families sit on the global selection, so neither is a
+			// deliberate override and both follow the new login.
+			activeIndexByFamily: { codex: 1, "codex-max": 1 },
+		});
+
+		await persistAccountPool([incoming("c")], false);
+
+		expect(persisted?.activeIndex).toBe(2);
+		expect(persisted?.activeIndexByFamily?.codex).toBe(2);
+		expect(persisted?.activeIndexByFamily?.["codex-max"]).toBe(2);
+	});
+
+	it("moves families with no saved entry of their own", async () => {
+		const a = savedAccount("a");
+		installTransaction({
+			version: 3,
+			accounts: [a],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		});
+
+		await persistAccountPool([incoming("b")], false);
+
+		expect(persisted?.activeIndex).toBe(1);
+		for (const family of Object.values(persisted?.activeIndexByFamily ?? {})) {
+			expect(family).toBe(1);
+		}
+	});
+
 	it("drops a stale pin on a normal add that selects the new login", async () => {
 		// A plain login moves activeIndex onto the account just signed in and
 		// publishes it to ~/.codex/auth.json. Carrying the old pin through would

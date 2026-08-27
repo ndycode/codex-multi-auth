@@ -361,6 +361,16 @@ Windows are `hour|day|week|month` (UTC). Example:
 codex-multi-auth budget limit personal --window day --requests 100 --tokens 500000 --cost 10
 ```
 
+`--cost` can only be enforced for models with a known price. Some routable
+models have no published rate (`UNPRICED_ROUTABLE_MODELS` in
+`lib/usage/pricing.ts`, which currently covers every `pro`, `mini`, and `nano`
+tier), and their spend is recorded as unknown rather than guessed. If usage in
+the window includes such a model, a `--cost` limit **fails closed**: the guard
+reports `cost limit cannot be evaluated` and blocks, because treating unknown
+spend as `$0.00` would let a cost cap be exceeded without ever firing. Budget on
+`--requests` or `--tokens` instead if you route to unpriced models, or add a
+rate to `MODEL_PRICING`. Priced models are unaffected.
+
 `monitor` aggregates runtime observability, usage, policy, routing profile,
 budget, model matrix, quota cache, and current project context. `models`
 reports neutral account labels and does not expose raw account emails.

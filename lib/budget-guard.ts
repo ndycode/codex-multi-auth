@@ -31,6 +31,7 @@ export interface BudgetGuardEvaluation {
 		requests: number;
 		totalTokens: number;
 		costUsd: number;
+		unpricedRequests: number;
 	};
 	limits: {
 		maxRequests: number | null;
@@ -229,13 +230,21 @@ export function evaluateBudgetGuard(
 	) {
 		reasons.push(`token limit reached (${summary.totals.totalTokens}/${limit.maxTokens})`);
 	}
-	if (
-		typeof limit.maxCostUsd === "number" &&
-		summary.totals.costUsd >= limit.maxCostUsd
-	) {
-		reasons.push(
-			`cost limit reached (${summary.totals.costUsd.toFixed(6)}/${limit.maxCostUsd.toFixed(6)})`,
-		);
+	if (typeof limit.maxCostUsd === "number") {
+		if (summary.totals.costUsd >= limit.maxCostUsd) {
+			reasons.push(
+				`cost limit reached (${summary.totals.costUsd.toFixed(6)}/${limit.maxCostUsd.toFixed(6)})`,
+			);
+		} else if ((summary.totals.unpricedRequests ?? 0) > 0) {
+			// The window contains token usage we have no rate for, so `costUsd` is
+			// an under-count by an unknown amount and this limit cannot be
+			// evaluated. Counting unknown cost as zero is what made a cost budget
+			// silently unenforceable for every unpriced model; an unevaluable spend
+			// limit fails closed instead. Priced models are unaffected.
+			reasons.push(
+				`cost limit cannot be evaluated: ${summary.totals.unpricedRequests} request(s) in this window used a model with no known price, so recorded cost (${summary.totals.costUsd.toFixed(6)}) is incomplete. Price the model in lib/usage/pricing.ts, or budget on --requests/--tokens instead of --cost.`,
+			);
+		}
 	}
 	return {
 		key: limit.key,
@@ -246,6 +255,7 @@ export function evaluateBudgetGuard(
 			requests: summary.totals.requests,
 			totalTokens: summary.totals.totalTokens,
 			costUsd: summary.totals.costUsd,
+			unpricedRequests: summary.totals.unpricedRequests,
 		},
 		limits: {
 			maxRequests: limit.maxRequests ?? null,

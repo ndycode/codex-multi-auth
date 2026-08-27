@@ -5,6 +5,26 @@ Dates use ISO format (`YYYY-MM-DD`).
 
 This repository's current stable release line is `2.x`. Full release notes live in [`docs/releases/`](docs/releases/) — this file is the short version. Pre-`0.1.0` iteration history is archived in [`docs/releases/legacy-pre-0.1-history.md`](docs/releases/legacy-pre-0.1-history.md).
 
+## [Unreleased]
+
+### Fixed
+
+- `budget limit --cost` is enforced for unpriced models instead of silently
+  ignoring them. 2.9.0 fixed the guard comparing `0 >= limit`, but eight
+  routable models (`gpt-5.4-pro`, `gpt-5.5-pro`, `gpt-5.2-pro`, `gpt-5.4-mini`,
+  `gpt-5.4-nano`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5.1` — every `pro` tier among
+  them) still had no entry in `MODEL_PRICING`, so their rows priced to `null`,
+  aggregated as `$0.00`, and a cost cap never fired for them. Usage summaries
+  now carry `unpricedRequests`, and a `--cost` limit fails closed with
+  `cost limit cannot be evaluated` while unknown-cost usage is in the window.
+  Their rates are still unknown and are not guessed; a wrong number would move
+  the trip point rather than fix it
+- A plain `login` no longer overwrites per-model-family account selections the
+  user set deliberately. Every `activeIndexByFamily` entry was reset to the
+  account just signed in, so adding a third account silently moved a
+  `codex-max -> account 2` binding onto account 3. Families that were merely
+  following the global selection still follow it
+
 ## [2.9.0] - 2026-08-25
 
 `budget set --cost` and `--tokens` were accepted but never enforced, a dead network path counted against account health, and account removal left live sessions routed to the wrong account. [Full notes](docs/releases/v2.9.0.md).

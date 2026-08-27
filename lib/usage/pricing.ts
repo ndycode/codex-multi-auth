@@ -64,6 +64,31 @@ const MODEL_PRICING: Record<string, UsageModelPricing> = {
 	},
 };
 
+/**
+ * Models the router can normalize to that have no published rate here yet.
+ *
+ * Their cost is deliberately reported as unknown (`null`) rather than guessed:
+ * a wrong dollar figure is worse than no figure, and it would silently move a
+ * `maxCostUsd` budget's trip point. Nothing may treat an unknown cost as zero —
+ * `evaluateBudgetGuard` refuses a cost budget while unknown-cost usage is in
+ * the window instead of counting it as free (that under-count made cost caps
+ * unenforceable for exactly these models, every `pro` tier among them).
+ *
+ * Add a real rate to MODEL_PRICING and delete the entry here once published;
+ * `test/usage-pricing-coverage.test.ts` fails if a NEW routable model appears
+ * in neither list.
+ */
+export const UNPRICED_ROUTABLE_MODELS = [
+	"gpt-5.1",
+	"gpt-5.2-pro",
+	"gpt-5.4-mini",
+	"gpt-5.4-nano",
+	"gpt-5.4-pro",
+	"gpt-5.5-pro",
+	"gpt-5-mini",
+	"gpt-5-nano",
+] as const;
+
 function normalizeModelName(model: string | null | undefined): string | null {
 	const trimmed = model?.trim().toLowerCase();
 	return trimmed && trimmed.length > 0 ? trimmed : null;

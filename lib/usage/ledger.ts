@@ -459,6 +459,7 @@ function createBucket(key: string): UsageSummaryBucket {
 		reasoningTokens: 0,
 		totalTokens: 0,
 		costUsd: 0,
+		unpricedRequests: 0,
 	};
 }
 
@@ -489,6 +490,12 @@ function addRowToBucket(bucket: UsageSummaryBucket, row: UsageLedgerRow): void {
 	bucket.reasoningTokens += row.tokens.reasoningTokens;
 	bucket.totalTokens += row.tokens.totalTokens;
 	bucket.costUsd = Number((bucket.costUsd + (row.costUsd ?? 0)).toFixed(8));
+	// Only rows that actually consumed tokens count as unpriced spend. A blocked
+	// or cancelled request carries no tokens and no cost, and must not make a
+	// cost budget unevaluable.
+	if (row.costUsd === null && row.tokens.totalTokens > 0) {
+		bucket.unpricedRequests += 1;
+	}
 }
 
 export function summarizeUsageRows(

@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import type { UsageSummary } from "../lib/usage/index.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
-function makeSummary(requests: number, totalTokens: number, costUsd: number): UsageSummary {
+function makeSummary(
+	requests: number,
+	totalTokens: number,
+	costUsd: number,
+	unpricedRequests = 0,
+): UsageSummary {
 	return {
 		since: null,
 		until: null,
@@ -23,6 +28,7 @@ function makeSummary(requests: number, totalTokens: number, costUsd: number): Us
 			reasoningTokens: 0,
 			totalTokens,
 			costUsd,
+			unpricedRequests,
 		},
 		buckets: [],
 	};
@@ -71,6 +77,54 @@ describe("budget guard", () => {
 		const blocked = evaluateBudgetGuard(limit, makeSummary(2, 101, 1.1));
 		expect(blocked.allowed).toBe(false);
 		expect(blocked.reasons.length).toBe(3);
+	});
+
+	it("refuses a cost budget it cannot evaluate", async () => {
+		// Unpriced models used to contribute $0, so a cost cap simply never
+		// tripped for them — `maxCostUsd` was unenforceable for every `pro` tier.
+		// An unevaluable spend limit now fails closed instead of reading as free.
+		const { evaluateBudgetGuard } = await import("../lib/budget-guard.js");
+		const limit = {
+			key: "probe",
+			window: "day" as const,
+			maxCostUsd: 100,
+			updatedAt: 0,
+		};
+
+		const withUnpriced = evaluateBudgetGuard(
+			limit,
+			makeSummary(1, 2_000_000, 0, 1),
+		);
+		expect(withUnpriced.allowed).toBe(false);
+		expect(withUnpriced.reasons.join(" ")).toContain(
+			"cost limit cannot be evaluated",
+		);
+		expect(withUnpriced.usage.unpricedRequests).toBe(1);
+
+		// Fully priced usage under the cap is unaffected.
+		expect(
+			evaluateBudgetGuard(limit, makeSummary(1, 2_000_000, 5, 0)).allowed,
+		).toBe(true);
+	});
+
+	it("ignores unpriced usage when no cost budget is configured", async () => {
+		const { evaluateBudgetGuard } = await import("../lib/budget-guard.js");
+		const evaluation = evaluateBudgetGuard(
+			{ key: "probe", window: "day", maxRequests: 10, updatedAt: 0 },
+			makeSummary(1, 2_000_000, 0, 4),
+		);
+		expect(evaluation.allowed).toBe(true);
+		expect(evaluation.reasons).toEqual([]);
+	});
+
+	it("still reports a breached cost limit ahead of the unevaluable case", async () => {
+		const { evaluateBudgetGuard } = await import("../lib/budget-guard.js");
+		const evaluation = evaluateBudgetGuard(
+			{ key: "probe", window: "day", maxCostUsd: 1, updatedAt: 0 },
+			makeSummary(2, 3_000_000, 5, 1),
+		);
+		expect(evaluation.allowed).toBe(false);
+		expect(evaluation.reasons.join(" ")).toContain("cost limit reached");
 	});
 
 	it("computes utc budget window starts", async () => {
