@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JWT_CLAIM_PATH } from "../lib/constants.js";
+import type { AccountMetadataV3, AccountStorageV3 } from "../lib/storage.js";
 
 // Maps fake token strings to decoded JWT payloads so the real candidate
 // extraction in lib/auth/token-utils.ts runs against controlled claims.
-const { jwtPayloads } = vi.hoisted(() => ({
+const { jwtPayloads, withAccountStorageTransactionMock } = vi.hoisted(() => ({
 	jwtPayloads: new Map<string, unknown>(),
+	withAccountStorageTransactionMock: vi.fn(),
 }));
 
 vi.mock("../lib/auth/auth.js", async (importOriginal) => {
@@ -15,8 +17,20 @@ vi.mock("../lib/auth/auth.js", async (importOriginal) => {
 	};
 });
 
-const { isAbortError, isOAuthCancellation, resolveAccountSelection } =
-	await import("../lib/codex-manager/login-oauth.js");
+vi.mock("../lib/storage.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../lib/storage.js")>();
+	return {
+		...actual,
+		withAccountStorageTransaction: withAccountStorageTransactionMock,
+	};
+});
+
+const {
+	isAbortError,
+	isOAuthCancellation,
+	persistAccountPool,
+	resolveAccountSelection,
+} = await import("../lib/codex-manager/login-oauth.js");
 
 const BASE_TOKENS = {
 	type: "success" as const,
@@ -30,6 +44,7 @@ const originalEnvOverride = process.env.CODEX_AUTH_ACCOUNT_ID;
 
 beforeEach(() => {
 	jwtPayloads.clear();
+	withAccountStorageTransactionMock.mockReset();
 	delete process.env.CODEX_AUTH_ACCOUNT_ID;
 });
 
@@ -121,6 +136,26 @@ describe("resolveAccountSelection", () => {
 		]);
 	});
 
+	it("selects the targeted saved workspace instead of the default candidate", () => {
+		jwtPayloads.set("access-token", {
+			[JWT_CLAIM_PATH]: { chatgpt_account_id: "acc_personal" },
+			organizations: [
+				{ id: "org_default", name: "Default", is_default: true },
+				{ id: "org_target", name: "Target" },
+			],
+		});
+
+		const result = resolveAccountSelection(
+			BASE_TOKENS,
+			undefined,
+			"org_target",
+		);
+
+		expect(result.accountIdOverride).toBe("org_target");
+		expect(result.accountIdSource).toBe("org");
+		expect(result.accountLabel).toContain("Target");
+	});
+
 	it("binds an explicit --org override as manual and reuses the candidate label", () => {
 		jwtPayloads.set("access-token", {
 			organizations: [
@@ -191,5 +226,197 @@ describe("resolveAccountSelection", () => {
 		const result = resolveAccountSelection(BASE_TOKENS, "   ");
 
 		expect(result.accountIdOverride).toBe("org_env");
+	});
+});
+
+function savedAccount(id: string): AccountMetadataV3 {
+	return {
+		accountId: `acc_${id}`,
+		email: `${id}@example.com`,
+		refreshToken: `old-refresh-${id}`,
+		accessToken: `old-access-${id}`,
+		expiresAt: 10,
+		enabled: true,
+		addedAt: 1,
+		lastUsed: 1,
+	};
+}
+
+function incoming(id: string) {
+	const access = `access-${id}`;
+	const idToken = `id-${id}`;
+	jwtPayloads.set(access, {
+		email: `${id}@example.com`,
+		[JWT_CLAIM_PATH]: { chatgpt_account_id: `acc_${id}` },
+	});
+	jwtPayloads.set(idToken, { email: `${id}@example.com` });
+	return {
+		type: "success" as const,
+		access,
+		refresh: `new-refresh-${id}`,
+		expires: 20,
+		idToken,
+		accountIdOverride: `acc_${id}`,
+		accountIdSource: "token" as const,
+	};
+}
+
+describe("persistAccountPool selection-preserving re-auth", () => {
+	let persisted: AccountStorageV3 | null;
+
+	beforeEach(() => {
+		persisted = null;
+	});
+
+	function installTransaction(storage: AccountStorageV3): void {
+		withAccountStorageTransactionMock.mockImplementation(async (handler) =>
+			handler(storage, async (next: AccountStorageV3) => {
+				persisted = next;
+			}),
+		);
+	}
+
+	it("refreshes the target while preserving global, family, pin, and affinity state", async () => {
+		const a = savedAccount("a");
+		const b = savedAccount("b");
+		installTransaction({
+			version: 3,
+			accounts: [a, b],
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0, "codex-max": 1 },
+			pinnedAccountIndex: 0,
+			affinityGeneration: 7,
+		});
+
+		await persistAccountPool([incoming("b")], false, {
+			preserveSelection: true,
+			expectedAccount: b,
+		});
+
+		expect(persisted).toMatchObject({
+			activeIndex: 0,
+			pinnedAccountIndex: 0,
+			affinityGeneration: 7,
+		});
+		expect(persisted?.activeIndexByFamily?.codex).toBe(0);
+		expect(persisted?.activeIndexByFamily?.["codex-max"]).toBe(1);
+		expect(persisted?.accounts).toHaveLength(2);
+		expect(persisted?.accounts[1]?.refreshToken).toBe("new-refresh-b");
+	});
+
+	it("preserves a pin even for a normal add that selects the new login", async () => {
+		const a = savedAccount("a");
+		const b = savedAccount("b");
+		installTransaction({
+			version: 3,
+			accounts: [a, b],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+			pinnedAccountIndex: 0,
+		});
+
+		await persistAccountPool([incoming("b")], false);
+
+		expect(persisted?.activeIndex).toBe(1);
+		expect(persisted?.pinnedAccountIndex).toBe(0);
+	});
+
+	it("rejects a different OAuth identity before persistence", async () => {
+		const a = savedAccount("a");
+		const b = savedAccount("b");
+		installTransaction({
+			version: 3,
+			accounts: [a, b],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+			pinnedAccountIndex: 0,
+		});
+
+		await expect(
+			persistAccountPool([incoming("a")], false, {
+				preserveSelection: true,
+				expectedAccount: b,
+			}),
+		).rejects.toThrow("does not match");
+		expect(persisted).toBeNull();
+	});
+
+	it("updates the exact targeted row when saved identities are duplicated", async () => {
+		const target = savedAccount("dup");
+		const other = {
+			...savedAccount("dup"),
+			refreshToken: "old-refresh-other-row",
+			lastUsed: 99,
+		};
+		installTransaction({
+			version: 3,
+			accounts: [target, other],
+			activeIndex: 1,
+			activeIndexByFamily: { codex: 1 },
+			pinnedAccountIndex: 1,
+		});
+
+		await persistAccountPool([incoming("dup")], false, {
+			preserveSelection: true,
+			expectedAccount: target,
+		});
+
+		expect(persisted?.accounts[0]?.refreshToken).toBe("new-refresh-dup");
+		expect(persisted?.accounts[1]?.refreshToken).toBe(
+			"old-refresh-other-row",
+		);
+		expect(persisted?.activeIndex).toBe(1);
+		expect(persisted?.activeIndexByFamily?.codex).toBe(1);
+		expect(persisted?.pinnedAccountIndex).toBe(1);
+	});
+
+	it("accepts an email change when the provider account id is unchanged", async () => {
+		const target = savedAccount("renamed");
+		installTransaction({
+			version: 3,
+			accounts: [target],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+			pinnedAccountIndex: 0,
+		});
+		const result = incoming("renamed");
+		jwtPayloads.set(result.access, {
+			email: "new-address@example.com",
+			[JWT_CLAIM_PATH]: { chatgpt_account_id: "acc_renamed" },
+		});
+		jwtPayloads.set(result.idToken, { email: "new-address@example.com" });
+
+		await persistAccountPool([result], false, {
+			preserveSelection: true,
+			expectedAccount: target,
+		});
+
+		expect(persisted?.accounts[0]?.email).toBe("new-address@example.com");
+		expect(persisted?.pinnedAccountIndex).toBe(0);
+	});
+
+	it("tracks the exact record across a concurrent refresh-token rotation", async () => {
+		const expected = { ...savedAccount("stable"), recordId: "record-stable" };
+		installTransaction({
+			version: 3,
+			accounts: [
+				{
+					...expected,
+					refreshToken: "runtime-rotated-refresh",
+				},
+			],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+			pinnedAccountIndex: 0,
+		});
+
+		await persistAccountPool([incoming("stable")], false, {
+			preserveSelection: true,
+			expectedAccount: expected,
+		});
+
+		expect(persisted?.accounts[0]?.recordId).toBe("record-stable");
+		expect(persisted?.accounts[0]?.refreshToken).toBe("new-refresh-stable");
+		expect(persisted?.pinnedAccountIndex).toBe(0);
 	});
 });

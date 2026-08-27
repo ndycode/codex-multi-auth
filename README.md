@@ -161,6 +161,15 @@ codex-multi-auth forecast --live
 
 If browser launch is blocked, use the alternate login paths in [docs/getting-started.md](docs/getting-started.md#alternate-login-paths).
 For remote or headless shells, prefer `codex-multi-auth login --device-auth`.
+To refresh one saved account without changing the active selection or manual
+pin, run:
+
+```bash
+codex-multi-auth login --account <index|email|account_id> --preserve-selection
+```
+
+Add `--device-auth` on a remote shell. The refreshed OAuth identity must match
+the requested saved account or nothing is written.
 
 ---
 

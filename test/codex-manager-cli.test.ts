@@ -6329,6 +6329,11 @@ describe("codex manager cli commands", () => {
 		uiMocks.select.mockResolvedValueOnce("manual");
 
 		const authModule = await import("../lib/auth/auth.js");
+		const accountsModule = await import("../lib/accounts.js");
+		vi.mocked(accountsModule.extractAccountId).mockReturnValueOnce("acc_refresh");
+		vi.mocked(accountsModule.extractAccountEmail).mockReturnValueOnce(
+			"refresh@example.com",
+		);
 		vi.mocked(authModule.createAuthorizationFlow).mockResolvedValueOnce({
 			pkce: { challenge: "pkce-challenge", verifier: "pkce-verifier" },
 			state: "oauth-state",

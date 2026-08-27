@@ -27,9 +27,12 @@ import { setCodexCliActiveSelection } from "../codex-cli/writer.js";
 import { createLogger } from "../logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import {
+	type AccountMetadataV3,
+	type AccountStorageV3,
 	findMatchingAccountIndex,
 	withAccountStorageTransaction,
 } from "../storage.js";
+import { CodexValidationError } from "../errors.js";
 import type { AccountIdSource, TokenResult } from "../types.js";
 import { UI_COPY } from "../ui/ui-copy.js";
 import {
@@ -91,6 +94,7 @@ export function isAbortError(error: unknown): boolean {
 export function resolveAccountSelection(
 	tokens: TokenSuccess,
 	orgOverride?: string,
+	targetAccountId?: string,
 ): TokenSuccessWithAccount {
 	const candidates = getAccountIdCandidates(tokens.access, tokens.idToken);
 
@@ -121,6 +125,19 @@ export function resolveAccountSelection(
 			accountIdOverride: override,
 			accountIdSource: "manual",
 			accountLabel: matched?.label,
+			workspaces,
+		};
+	}
+
+	const targetedCandidate = targetAccountId
+		? candidates.find((candidate) => candidate.accountId === targetAccountId)
+		: undefined;
+	if (targetedCandidate) {
+		return {
+			...tokens,
+			accountIdOverride: targetedCandidate.accountId,
+			accountIdSource: targetedCandidate.source,
+			accountLabel: targetedCandidate.label,
 			workspaces,
 		};
 	}
@@ -429,9 +446,74 @@ export async function runSignInFlow(
 export type PersistAccountPoolOutcome = AccountPoolWriteOutcome;
 
 /** @internal */
+export interface PersistAccountPoolOptions {
+	/** Keep every global/model-family selection on its pre-login identity. */
+	preserveSelection?: boolean;
+	/** Refuse the write unless the OAuth result is this saved account. */
+	expectedAccount?: Pick<
+		AccountMetadataV3,
+		"recordId" | "accountId" | "email" | "refreshToken"
+	>;
+}
+
+function sameExpectedLoginIdentity(
+	write: ResolvedAccountWrite,
+	expected: NonNullable<PersistAccountPoolOptions["expectedAccount"]>,
+): boolean {
+	const expectedAccountId = expected.accountId?.trim();
+	const incomingAccountId = write.accountId?.trim();
+	const expectedEmail = sanitizeEmail(expected.email);
+	const incomingEmail = sanitizeEmail(write.email);
+
+	// When either side carries the provider identity, both must carry and match
+	// it. The provider id is authoritative when the user changes their email;
+	// falling back to a shared email across different workspaces would let a
+	// targeted re-auth overwrite the wrong saved account.
+	if (expectedAccountId || incomingAccountId) {
+		return Boolean(
+			expectedAccountId &&
+				incomingAccountId &&
+				expectedAccountId === incomingAccountId,
+		);
+	}
+	return Boolean(expectedEmail && incomingEmail === expectedEmail);
+}
+
+function resolveExpectedAccountIndex(
+	accounts: readonly AccountMetadataV3[],
+	expected: NonNullable<PersistAccountPoolOptions["expectedAccount"]>,
+): number | undefined {
+	const matches: number[] = [];
+	for (let index = 0; index < accounts.length; index += 1) {
+		const account = accounts[index];
+		if (!account) continue;
+		if (expected.recordId) {
+			if (account.recordId !== expected.recordId) continue;
+		} else if (account.refreshToken !== expected.refreshToken) {
+			continue;
+		}
+		matches.push(index);
+	}
+	return matches.length === 1 ? matches[0] : undefined;
+}
+
+function validSelectionIndex(
+	index: number | undefined,
+	accounts: readonly AccountMetadataV3[],
+): index is number {
+	return (
+		typeof index === "number" &&
+		Number.isInteger(index) &&
+		index >= 0 &&
+		index < accounts.length
+	);
+}
+
+/** @internal */
 export async function persistAccountPool(
 	results: TokenSuccessWithAccount[],
 	replaceAll: boolean,
+	options: PersistAccountPoolOptions = {},
 ): Promise<PersistAccountPoolOutcome | null> {
 	if (results.length === 0) return null;
 
@@ -466,24 +548,72 @@ export async function persistAccountPool(
 			};
 		});
 
+		if (options.expectedAccount && writes.length !== 1) {
+			throw new CodexValidationError(
+				"Targeted re-authentication accepts exactly one OAuth result. No saved credentials were changed.",
+			);
+		}
+		const expectedAccountIndex =
+			options.expectedAccount && stored
+				? resolveExpectedAccountIndex(stored.accounts, options.expectedAccount)
+				: undefined;
+		if (options.expectedAccount && expectedAccountIndex === undefined) {
+			throw new CodexValidationError(
+				"The requested Codex account is no longer present. No saved credentials were changed.",
+			);
+		}
+
+		const expectedAccount = options.expectedAccount;
+		if (
+			expectedAccount &&
+			writes.some((write) => !sameExpectedLoginIdentity(write, expectedAccount))
+		) {
+			throw new CodexValidationError(
+				"The authenticated Codex identity does not match the account requested for re-authentication. No saved credentials were changed.",
+			);
+		}
+
 		const { accounts, activeIndex, outcome } = applyAccountPoolResults({
 			existing,
 			writes,
 			priorActiveIndex: stored?.activeIndex,
-			findMatchingAccountIndex,
+			findMatchingAccountIndex:
+				expectedAccountIndex === undefined
+					? findMatchingAccountIndex
+					: () => expectedAccountIndex,
 		});
 
+		const nextActiveIndex =
+			options.preserveSelection &&
+			validSelectionIndex(stored?.activeIndex, accounts)
+				? stored.activeIndex
+				: activeIndex;
 		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
 		for (const family of MODEL_FAMILIES) {
-			activeIndexByFamily[family] = activeIndex;
+			const priorFamilyIndex =
+				stored?.activeIndexByFamily?.[family] ?? stored?.activeIndex;
+			activeIndexByFamily[family] =
+				options.preserveSelection &&
+				validSelectionIndex(priorFamilyIndex, accounts)
+					? priorFamilyIndex
+					: nextActiveIndex;
 		}
 
-		await persist({
+		const nextStorage: AccountStorageV3 = {
 			version: 3,
 			accounts,
-			activeIndex,
+			activeIndex: nextActiveIndex,
 			activeIndexByFamily,
-		});
+			affinityGeneration: stored?.affinityGeneration,
+		};
+		// Login only updates a row in place or appends one; it never reorders or
+		// removes the pool. Preserve the raw pin position so even duplicate
+		// identities keep pointing at the exact row the user selected.
+		if (validSelectionIndex(stored?.pinnedAccountIndex, accounts)) {
+			nextStorage.pinnedAccountIndex = stored.pinnedAccountIndex;
+		}
+
+		await persist(nextStorage);
 
 		return outcome;
 	});

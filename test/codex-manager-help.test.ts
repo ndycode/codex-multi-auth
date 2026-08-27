@@ -7,6 +7,46 @@ import {
 import { DEFAULT_PROBE_MODEL } from "../lib/request/helpers/model-map.js";
 
 describe("codex-manager help parsers", () => {
+	it("parses selection-preserving and targeted re-auth options", () => {
+		expect(
+			parseAuthLoginArgs([
+				"--device-auth",
+				"--preserve-selection",
+				"--account",
+				"acc_target",
+			]),
+		).toEqual({
+			ok: true,
+			options: {
+				manual: false,
+				deviceAuth: true,
+				preserveSelection: true,
+				account: "acc_target",
+			},
+		});
+	});
+
+	it("makes a targeted re-auth preserve selection even without the flag", () => {
+		expect(parseAuthLoginArgs(["--account=a@example.com"])).toEqual({
+			ok: true,
+			options: {
+				manual: false,
+				deviceAuth: false,
+				preserveSelection: true,
+				account: "a@example.com",
+			},
+		});
+	});
+
+	it("rejects --account without an identity", () => {
+		expect(parseAuthLoginArgs(["--account"])).toEqual({
+			ok: false,
+			reason: "error",
+			message:
+				"Missing value for --account. Usage: codex-multi-auth login --account <index|email|account_id>",
+		});
+	});
+
 	it("parses login flags without printing usage", () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
 

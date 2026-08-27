@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ACCOUNT_LIMITS } from "../lib/constants.js";
+import { CodexValidationError } from "../lib/errors.js";
 import type { AccountMetadataV3, AccountStorageV3 } from "../lib/storage.js";
 
 const {
@@ -177,6 +178,56 @@ describe("runAuthLogin argument handling", () => {
 });
 
 describe("runAuthLogin explicit transports", () => {
+	it("targeted re-auth preserves selection and does not sync Codex auth", async () => {
+		accountsOnDisk = storageWith(2);
+		runSignInFlowMock.mockResolvedValue(TOKEN_SUCCESS);
+
+		expect(
+			await runAuthLogin(
+				["--account", "acc_a1", "--preserve-selection"],
+				deps(),
+			),
+		).toBe(0);
+
+		expect(promptLoginModeMock).not.toHaveBeenCalled();
+		expect(runSignInFlowMock).toHaveBeenCalledExactlyOnceWith(true, "browser");
+		expect(persistAccountPoolMock).toHaveBeenCalledExactlyOnceWith(
+			[RESOLVED],
+			false,
+			{
+				preserveSelection: true,
+				expectedAccount: expect.objectContaining({ accountId: "acc_a1" }),
+			},
+		);
+		expect(syncSelectionToCodexMock).not.toHaveBeenCalled();
+		expect(promptAddAnotherAccountMock).not.toHaveBeenCalled();
+	});
+
+	it("refuses a missing targeted account before starting OAuth", async () => {
+		accountsOnDisk = storageWith(1);
+
+		expect(await runAuthLogin(["--account", "acc_missing"], deps())).toBe(1);
+
+		expect(runSignInFlowMock).not.toHaveBeenCalled();
+		expect(persistAccountPoolMock).not.toHaveBeenCalled();
+		expect(loggedLines(errorSpy).join("\n")).toContain("missing or ambiguous");
+	});
+
+	it("reports a targeted identity mismatch without syncing selection", async () => {
+		accountsOnDisk = storageWith(1);
+		runSignInFlowMock.mockResolvedValue(TOKEN_SUCCESS);
+		persistAccountPoolMock.mockRejectedValue(
+			new CodexValidationError("authenticated identity does not match"),
+		);
+
+		expect(await runAuthLogin(["--account", "acc_a0"], deps())).toBe(1);
+
+		expect(syncSelectionToCodexMock).not.toHaveBeenCalled();
+		expect(loggedLines(errorSpy).join("\n")).toContain(
+			"Re-authentication failed",
+		);
+	});
+
 	it("bypasses the dashboard with --device-auth and exits cleanly on cancel", async () => {
 		// With saved accounts a plain `login` would open the dashboard; an
 		// explicit transport must skip it, and cancelling must NOT fall back to
@@ -218,6 +269,7 @@ describe("runAuthLogin explicit transports", () => {
 		expect(resolveAccountSelectionMock).toHaveBeenCalledExactlyOnceWith(
 			TOKEN_SUCCESS,
 			"org_team",
+			undefined,
 		);
 		expect(persistAccountPoolMock).toHaveBeenCalledExactlyOnceWith(
 			[RESOLVED],

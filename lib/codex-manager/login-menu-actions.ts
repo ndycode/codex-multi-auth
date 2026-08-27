@@ -26,7 +26,6 @@ import {
 	persistAccountPool,
 	resolveAccountSelection,
 	runOAuthFlow,
-	syncSelectionToCodex,
 } from "./login-oauth.js";
 import { persistAndSyncSelectedAccount } from "./persist-selected-account.js";
 
@@ -428,9 +427,15 @@ export async function handleManageAction(
 			return;
 		}
 
-		const resolved = resolveAccountSelection(tokenResult);
-		await persistAccountPool([resolved], false);
-		await syncSelectionToCodex(resolved);
+		const resolved = resolveAccountSelection(
+			tokenResult,
+			undefined,
+			existing.accountId,
+		);
+		await persistAccountPool([resolved], false, {
+			preserveSelection: true,
+			expectedAccount: existing,
+		});
 		console.log(`Refreshed account ${idx + 1}.`);
 	}
 }

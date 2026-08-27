@@ -413,9 +413,16 @@ describe("handleManageAction refresh", () => {
 
 		// Non-TTY sign-in mode resolves to "browser" without prompting.
 		expect(runOAuthFlowMock).toHaveBeenCalledWith(true, "browser");
-		expect(resolveAccountSelectionMock).toHaveBeenCalledWith(tokenResult);
-		expect(persistAccountPoolMock).toHaveBeenCalledWith([resolved], false);
-		expect(syncSelectionToCodexMock).toHaveBeenCalledWith(resolved);
+		expect(resolveAccountSelectionMock).toHaveBeenCalledWith(
+			tokenResult,
+			undefined,
+			"acc_a",
+		);
+		expect(persistAccountPoolMock).toHaveBeenCalledWith([resolved], false, {
+			preserveSelection: true,
+			expectedAccount: storage.accounts[0],
+		});
+		expect(syncSelectionToCodexMock).not.toHaveBeenCalled();
 		expect(logSpy).toHaveBeenCalledWith("Refreshed account 1.");
 	});
 
@@ -481,7 +488,7 @@ describe("handleManageAction refresh", () => {
 		} satisfies MenuResult);
 
 		expect(runOAuthFlowMock).toHaveBeenCalledWith(true, "manual");
-		expect(syncSelectionToCodexMock).toHaveBeenCalledWith(resolved);
+		expect(syncSelectionToCodexMock).not.toHaveBeenCalled();
 	});
 
 	it("bails out silently on a non-transport prompt selection", async () => {

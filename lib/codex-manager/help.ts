@@ -8,7 +8,7 @@ export function printUsage(): void {
 			"Codex Multi-Auth CLI",
 			"",
 			"Start here:",
-			"  codex-multi-auth login [--device-auth|--manual|--no-browser] [--org <org_id>]",
+			"  codex-multi-auth login [--device-auth|--manual|--no-browser] [--org <org_id>] [--preserve-selection] [--account <index|email|account_id>]",
 			"  codex-multi-auth status [--json]   (list is the same command)",
 			"  codex-multi-auth check            (always live-probes)",
 			"",
@@ -61,7 +61,9 @@ export function printUsage(): void {
 export type AuthLoginOptions = {
 	manual: boolean;
 	deviceAuth: boolean;
+	preserveSelection?: boolean;
 	org?: string;
+	account?: string;
 };
 
 export type ParsedAuthLoginArgs =
@@ -87,6 +89,33 @@ export function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
 		}
 		if (arg === "--device-auth") {
 			options.deviceAuth = true;
+			continue;
+		}
+		if (arg === "--preserve-selection") {
+			options.preserveSelection = true;
+			continue;
+		}
+		if (arg === "--account" || arg?.startsWith("--account=")) {
+			let value: string | undefined;
+			if (arg === "--account") {
+				value = args[i + 1];
+				i += 1;
+			} else {
+				value = arg.slice("--account=".length);
+			}
+			const trimmed = value?.trim();
+			if (!trimmed || trimmed.startsWith("--")) {
+				return {
+					ok: false,
+					reason: "error",
+					message:
+						"Missing value for --account. Usage: codex-multi-auth login --account <index|email|account_id>",
+				};
+			}
+			options.account = trimmed;
+			// A targeted re-auth must never select the refreshed account as a
+			// side effect, even if the caller omits the redundant safety flag.
+			options.preserveSelection = true;
 			continue;
 		}
 		if (arg === "--org" || arg?.startsWith("--org=")) {
