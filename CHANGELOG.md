@@ -5,25 +5,20 @@ Dates use ISO format (`YYYY-MM-DD`).
 
 This repository's current stable release line is `2.x`. Full release notes live in [`docs/releases/`](docs/releases/) — this file is the short version. Pre-`0.1.0` iteration history is archived in [`docs/releases/legacy-pre-0.1-history.md`](docs/releases/legacy-pre-0.1-history.md).
 
-## [Unreleased]
+## [2.9.1] - 2026-08-28
+
+A `--cost` budget can no longer be silently defeated by the models most worth capping, and refreshing one account from the login dashboard stops disturbing the others. [Full notes](docs/releases/v2.9.1.md).
+
+### Added
+
+- `codex-multi-auth login --account <index|email|account_id>` re-authenticates exactly one saved account, leaving the active selection, every per-family rotation position, and a manual `switch` pin untouched. The write is refused if the OAuth identity is not the account you named, so the previous credentials stay intact. Implies `--preserve-selection`, and cannot be combined with `--org` ([#679](https://github.com/ndycode/codex-multi-auth/pull/679), thanks [@fnmendez](https://github.com/fnmendez))
 
 ### Fixed
 
-- `budget limit --cost` is enforced for unpriced models instead of silently
-  ignoring them. 2.9.0 fixed the guard comparing `0 >= limit`, but eight
-  routable models (`gpt-5.4-pro`, `gpt-5.5-pro`, `gpt-5.2-pro`, `gpt-5.4-mini`,
-  `gpt-5.4-nano`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5.1` — every `pro` tier among
-  them) still had no entry in `MODEL_PRICING`, so their rows priced to `null`,
-  aggregated as `$0.00`, and a cost cap never fired for them. Usage summaries
-  now carry `unpricedRequests`, and a `--cost` limit fails closed with
-  `cost limit cannot be evaluated` while unknown-cost usage is in the window.
-  Their rates are still unknown and are not guessed; a wrong number would move
-  the trip point rather than fix it
-- A plain `login` no longer overwrites per-model-family account selections the
-  user set deliberately. Every `activeIndexByFamily` entry was reset to the
-  account just signed in, so adding a third account silently moved a
-  `codex-max -> account 2` binding onto account 3. Families that were merely
-  following the global selection still follow it
+- A `--cost` budget is enforced for models with no published price instead of counting them as free. 2.9.0 fixed the guard comparing `0 >= limit`, but eight of the fifteen routable model ids (`gpt-5.4-pro`, `gpt-5.5-pro`, `gpt-5.2-pro`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5.1` — every `pro` tier among them) had no `MODEL_PRICING` entry, so their rows priced to `null`, aggregated as `$0.00`, and a cost cap never fired: two million tokens on `gpt-5.5-pro` passed a `--cost 1` cap. Usage summaries now carry `unpricedRequests` and a `--cost` limit fails closed with `cost limit cannot be evaluated`. The missing rates are deliberately not guessed — a wrong figure would move the trip point rather than fix it ([fe9b0d1](https://github.com/ndycode/codex-multi-auth/commit/fe9b0d16))
+- A plain `login` no longer resets every model family's rotation position onto the account just signed in. Families track which account they are on independently, so one that had rotated away from a rate-limited account kept its own position; adding an account discarded that. Families that were following the global selection still follow it ([fe9b0d1](https://github.com/ndycode/codex-multi-auth/commit/fe9b0d16))
+- Refreshing an account from the login dashboard no longer rewrites the native `~/.codex/auth.json` unconditionally. Refreshing account 3 while account 1 was active handed plain `codex` account 3's credentials, silently switching accounts; the sync now runs only when the refreshed account is the one Codex is using — which also means refreshing the active account does update it, where a selection-preserving refresh previously left it on expired tokens ([#679](https://github.com/ndycode/codex-multi-auth/pull/679))
+- Refreshing a disabled account no longer returns it to rotation. The merge set `enabled: true` unconditionally, so topping up a credential silently undid a deliberate disable; a targeted refresh now preserves the flag and says the account is still out of rotation ([#679](https://github.com/ndycode/codex-multi-auth/pull/679))
 
 ## [2.9.0] - 2026-08-25
 
