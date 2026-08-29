@@ -86,6 +86,21 @@ describe("CI workflow parity", () => {
 		expect(windowsJob).not.toContain("github.event_name");
 	});
 
+	it("builds generated dist before script typechecking", () => {
+		const ci = readWorkflow("ci.yml");
+		for (const jobName of ["release-harness", "scripts-windows"]) {
+			const job = extractJobBlock(ci, jobName);
+			const buildIndex = job.indexOf("run: npm run build");
+			const scriptTypecheckIndex = job.indexOf("run: npm run typecheck:scripts");
+
+			expect(buildIndex, `${jobName} must build before script typechecking`).toBeGreaterThanOrEqual(0);
+			expect(scriptTypecheckIndex, `${jobName} must run script typechecking`).toBeGreaterThanOrEqual(0);
+			expect(buildIndex, `${jobName} build must precede script typechecking`).toBeLessThan(
+				scriptTypecheckIndex,
+			);
+		}
+	});
+
 	// Issue #523: validate the engines floor (node >=18) with a runtime smoke
 	// job that installs the packed tarball on Node 18 without devDependencies.
 	it("smoke-tests the packed CLI on the Node 18 engines floor", () => {

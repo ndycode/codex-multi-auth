@@ -94,6 +94,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build
+        run: npm run build
+
       - name: Typecheck scripts
         run: npm run typecheck:scripts
 
@@ -119,6 +122,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Build
+        run: npm run build
 
       - name: Typecheck scripts
         run: npm run typecheck:scripts
