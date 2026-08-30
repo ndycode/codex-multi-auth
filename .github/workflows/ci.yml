@@ -183,9 +183,6 @@ jobs:
         # not only the post-merge push-to-main run of the test matrix.
         run: npm run coverage
 
-      - name: Build
-        run: npm run build
-
       - name: Typecheck scripts
         run: npm run typecheck:scripts
 
