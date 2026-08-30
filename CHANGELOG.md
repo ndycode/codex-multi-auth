@@ -5,6 +5,19 @@ Dates use ISO format (`YYYY-MM-DD`).
 
 This repository's current stable release line is `2.x`. Full release notes live in [`docs/releases/`](docs/releases/) — this file is the short version. Pre-`0.1.0` iteration history is archived in [`docs/releases/legacy-pre-0.1-history.md`](docs/releases/legacy-pre-0.1-history.md).
 
+## [2.9.2] - 2026-08-30
+
+A maintenance release with no runtime, CLI, or configuration changes: `npm run typecheck:scripts` failed on every clean checkout. [Full notes](docs/releases/v2.9.2.md).
+
+### Fixed
+
+- `npm run typecheck:scripts` builds generated output before it runs the compiler. `scripts/codex-multi-auth.js` imports `../dist/lib/codex-manager.js` and `tsconfig.scripts.json` typechecks that file with `checkJs`, so on a fresh clone the script stopped with `TS2307: Cannot find module '../dist/lib/codex-manager.js'`. The build now lives in the script itself, matching `pack:check`, `coverage`, `bench:runtime-path` and `generate:schema`, which covers all three CI call sites and a clean local tree in one place ([#680](https://github.com/ndycode/codex-multi-auth/pull/680), thanks [@smpark00](https://github.com/smpark00))
+
+### Changed
+
+- `CONTRIBUTING.md` lists `npm run typecheck:scripts` in the documented local gate, now that it works from a clean checkout ([#680](https://github.com/ndycode/codex-multi-auth/pull/680))
+- The `validate` CI job drops a build step made redundant by the script change, leaving per-job compile counts unchanged, and `test/ci-workflows.test.ts` derives its build-ordering guard over every job in `ci.yml` instead of a hardcoded pair, reading steps by YAML key position so a commented-out or `if:`-guarded build cannot satisfy it ([#680](https://github.com/ndycode/codex-multi-auth/pull/680))
+
 ## [2.9.1] - 2026-08-28
 
 A `--cost` budget can no longer be silently defeated by the models most worth capping, and refreshing one account from the login dashboard stops disturbing the others. [Full notes](docs/releases/v2.9.1.md).
