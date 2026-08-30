@@ -24,6 +24,7 @@ If a proposal conflicts with OpenAI policy boundaries, it will be declined.
 ```bash
 npm ci
 npm run typecheck
+npm run typecheck:scripts
 npm run lint
 npm test
 npm run build
@@ -99,6 +100,7 @@ Set `HUSKY=0` in environments where the hook install is undesirable.
 2. Keep commits atomic and reviewable.
 3. Run the full local gate:
    - `npm run typecheck`
+   - `npm run typecheck:scripts`
    - `npm run lint`
    - `npm test`
    - `npm run build`

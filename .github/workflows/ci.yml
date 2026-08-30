@@ -94,9 +94,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
-        run: npm run build
-
       - name: Typecheck scripts
         run: npm run typecheck:scripts
 
@@ -122,9 +119,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Build
-        run: npm run build
 
       - name: Typecheck scripts
         run: npm run typecheck:scripts
@@ -188,9 +182,6 @@ jobs:
         # tests-ci-05: run coverage on PRs so the 80% threshold gates the PR,
         # not only the post-merge push-to-main run of the test matrix.
         run: npm run coverage
-
-      - name: Build
-        run: npm run build
 
       - name: Typecheck scripts
         run: npm run typecheck:scripts
