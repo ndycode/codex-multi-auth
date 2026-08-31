@@ -84,6 +84,7 @@ The proxy:
 - strips hop-by-hop and stale decoded response headers before returning data to the local Codex client
 - records runtime status for `codex-multi-auth status`, `codex-multi-auth report`, and `codex-multi-auth rotation status`
 - appends redacted usage ledger rows after request completion or failure
+- when the experimental **context budget guard** is enabled (`contextBudgetGuardEnabled`, disabled by default), pauses the next request on a session that has crossed a hard context-usage threshold, before it reaches upstream — see [features.md](features.md#context-budget-guard-experimental)
 
 ### 4. Local governance
 
