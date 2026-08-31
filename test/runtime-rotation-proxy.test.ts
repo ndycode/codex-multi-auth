@@ -987,6 +987,80 @@ describe("runtime rotation proxy", () => {
 		expect(proxy.getStatus().retries).toBe(2);
 	});
 
+	it("never credits the pool token bucket during a pinned failure storm", async () => {
+		// A pin bypasses the bucket on the way in, so the refund sites must not
+		// pay it back on the way out -- a refund without a matching consume mints
+		// tokens the pool never issued, and every pinned failure would top the
+		// bucket up for the unpinned requests sharing it.
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const pinned = accountManager.getAccountByIndex(0);
+		if (!pinned) throw new Error("missing pinned account");
+		const tokenTracker = getTokenTracker();
+		const trackerKey = getRuntimeTrackerKey(pinned);
+		const quotaKey = "codex:gpt-5-codex";
+		const before = tokenTracker.getTokens(trackerKey, quotaKey);
+		const { calls, fetchImpl } = createRecordingFetch(
+			() =>
+				new Response("upstream failed", {
+					status: HTTP_STATUS.SERVICE_UNAVAILABLE,
+				}),
+		);
+		const previousServerErrorCooldown =
+			process.env.CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS;
+		process.env.CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS = "0";
+		let proxy: Awaited<ReturnType<typeof startProxy>>;
+		try {
+			proxy = await startProxy({
+				accountManager,
+				fetchImpl,
+				options: { forcedAccountIndex: 0 },
+			});
+		} finally {
+			if (previousServerErrorCooldown === undefined) {
+				delete process.env.CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS;
+			} else {
+				process.env.CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS =
+					previousServerErrorCooldown;
+			}
+		}
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+		});
+
+		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+		expect(calls.length).toBeGreaterThan(1);
+		expect(tokenTracker.getTokens(trackerKey, quotaKey)).toBe(before);
+	});
+
+	it("does not extend the pinned cooldown waiver to unpinned selection", async () => {
+		// allowPinnedCooldown is set only on the pinned branch. An unpinned pool
+		// must keep skipping a cooling-down account and rotate past it.
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const first = accountManager.getAccountByIndex(0);
+		if (!first) throw new Error("missing account");
+		accountManager.markAccountCoolingDown(first, 60_000, "server-error");
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: ok\n\n"),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+		});
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(
+			calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID)),
+		).toEqual(["acc_2"]);
+	});
+
 	it("still refuses a pin that arrives already cooling down from another request", async () => {
 		// The waiver is scoped to the RETRY passes of one request. A pin that is
 		// already cooling down when the request arrives must still 503 on the
