@@ -1053,6 +1053,13 @@ function resolveNumberSetting(
 		);
 	}
 	const candidate = envValue ?? configValue ?? defaultValue;
+	// Math.max/Math.min propagate NaN, so a non-finite candidate would be
+	// returned as-is and every threshold comparison against it reads false --
+	// a setting that silently disables whatever it gates. parseNumberEnv already
+	// rejects non-finite env values and zod rejects NaN on the config field, so
+	// this is a boundary guard for the ~20 settings that share this helper
+	// rather than a reachable path through loadPluginConfig.
+	if (!Number.isFinite(candidate)) return defaultValue;
 	const min = options?.min ?? Number.NEGATIVE_INFINITY;
 	const max = options?.max ?? Number.POSITIVE_INFINITY;
 	return Math.max(min, Math.min(max, candidate));
@@ -1908,10 +1915,13 @@ export function getContextBudgetGuardModelWindowOverrides(
 	for (const [rawModel, rawValue] of Object.entries(overrides)) {
 		const model = rawModel.trim().toLowerCase();
 		if (!model) continue;
-		if (typeof rawValue !== "number" || !Number.isFinite(rawValue) || rawValue <= 0) {
-			continue;
-		}
-		normalized[model] = Math.floor(rawValue);
+		if (typeof rawValue !== "number" || !Number.isFinite(rawValue)) continue;
+		// Floor first: the schema accepts any positive number, so a sub-1 value
+		// passes a `rawValue > 0` check and then floors to 0, which is stored as
+		// a window of zero tokens and silently ignored downstream.
+		const tokens = Math.floor(rawValue);
+		if (tokens <= 0) continue;
+		normalized[model] = tokens;
 	}
 	return normalized;
 }

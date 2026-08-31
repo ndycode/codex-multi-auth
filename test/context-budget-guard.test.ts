@@ -159,6 +159,33 @@ describe("context budget guard", () => {
 		expect(guard.getAdvisory("")).toEqual({ level: "ok" });
 	});
 
+	it("ignores a non-finite or negative token count instead of recording it", () => {
+		// percent is a division by the window: a non-finite count puts
+		// "Infinity%" in the notice a user reads, and every threshold comparison
+		// against NaN is false, which disables the guard silently.
+		const guard = new ContextBudgetGuard({
+			enabled: true,
+			modelWindowOverrides: { [MODEL]: 100_000 },
+		});
+		for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+			guard.update("session-1", {
+				model: MODEL,
+				contextTokens: bad,
+				updatedAt: 0,
+			});
+			expect(guard.getAdvisory("session-1", 0, MODEL), `${bad}`).toEqual({
+				level: "ok",
+			});
+		}
+		// A good value still records after a rejected one.
+		guard.update("session-1", {
+			model: MODEL,
+			contextTokens: 99_000,
+			updatedAt: 1,
+		});
+		expect(guard.getAdvisory("session-1", 1, MODEL).level).toBe("hard");
+	});
+
 	it("evaluates the window of the model the NEXT request will use", () => {
 		// The snapshot says how much context the session carries; the window
 		// belongs to the model about to be sent. Pairing carried tokens with the

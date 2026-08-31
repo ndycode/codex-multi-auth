@@ -127,6 +127,19 @@ export class ContextBudgetGuard {
 	 */
 	update(key: string, snapshot: ContextBudgetSnapshot): void {
 		if (!this.enabled || !key) return;
+		// Both production call sites source contextTokens from
+		// lib/usage/usage-extraction.ts, whose nonNegativeInteger already returns
+		// 0 for anything non-finite, so this is a boundary guard rather than a
+		// reachable path today. It is here because percent is a division by the
+		// window: a non-finite count would put `Infinity%` in the pause notice a
+		// user reads, and every threshold comparison against NaN is false, which
+		// disables the guard silently.
+		if (
+			!Number.isFinite(snapshot.contextTokens) ||
+			snapshot.contextTokens < 0
+		) {
+			return;
+		}
 		this.maybePrune(snapshot.updatedAt || Date.now());
 		this.snapshots.set(key, snapshot);
 	}

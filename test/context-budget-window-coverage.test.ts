@@ -99,6 +99,30 @@ describe("context budget window coverage", () => {
 		});
 	});
 
+	it("never returns a zero-token window for a sub-1 override", () => {
+		// The schema accepts any positive number. Checking `override > 0` on the
+		// RAW value admits anything in (0, 1), which then floors to 0 and returned
+		// `{ tokens: 0 }` -- breaking the contract that an unresolvable window is
+		// null, and handing a caller that trusts it a division by zero.
+		for (const value of [0.5, 0.9, 0.0001]) {
+			expect(
+				getEffectiveContextWindow("gpt-5.6-sol", { "gpt-5.6-sol": value }),
+				`override ${value}`,
+			).toBeNull();
+		}
+		// A sub-1 override on an estimated model falls through to the estimate
+		// rather than shadowing it with zero.
+		expect(getEffectiveContextWindow("gpt-5.5", { "gpt-5.5": 0.5 })).toEqual({
+			tokens: 260_000,
+			source: "estimate",
+		});
+		// 1 and above still resolve as overrides.
+		expect(getEffectiveContextWindow("gpt-5.5", { "gpt-5.5": 1.9 })).toEqual({
+			tokens: 1,
+			source: "override",
+		});
+	});
+
 	it("applies an override keyed by the canonical id to an alias of it", () => {
 		expect(
 			getEffectiveContextWindow("gpt-5-codex", { "gpt-5.3-codex": 88_000 }),

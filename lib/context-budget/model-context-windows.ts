@@ -106,8 +106,15 @@ export function getEffectiveContextWindow(
 
 	for (const candidate of candidates) {
 		const override = overrides?.[candidate];
-		if (typeof override === "number" && Number.isFinite(override) && override > 0) {
-			return { tokens: Math.floor(override), source: "override" };
+		if (typeof override !== "number" || !Number.isFinite(override)) continue;
+		// Floor BEFORE the positivity check, not after. Checking `override > 0`
+		// on the raw value admits anything in (0, 1), which then floors to 0 and
+		// returns a zero-token window -- breaking this function's contract that a
+		// window it cannot resolve comes back as null, and handing any caller
+		// that trusts it a division by zero.
+		const tokens = Math.floor(override);
+		if (tokens > 0) {
+			return { tokens, source: "override" };
 		}
 	}
 
