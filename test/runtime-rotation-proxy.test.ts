@@ -774,6 +774,133 @@ describe("runtime rotation proxy", () => {
 		});
 	});
 
+	it("retries a healthy forced pin after a zero-cooldown upstream 503", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			attempt === 1
+				? new Response("upstream failed", {
+						status: HTTP_STATUS.SERVICE_UNAVAILABLE,
+					})
+				: textEventStream("data: recovered\n\n"),
+		);
+		const previousServerErrorCooldown =
+			process.env.CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS;
+		process.env.CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS = "0";
+		let proxy: Awaited<ReturnType<typeof startProxy>>;
+		try {
+			proxy = await startProxy({
+				accountManager,
+				fetchImpl,
+				options: { forcedAccountIndex: 0 },
+			});
+		} finally {
+			if (previousServerErrorCooldown === undefined) {
+				delete process.env.CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS;
+			} else {
+				process.env.CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS =
+					previousServerErrorCooldown;
+			}
+		}
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+		});
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.text()).toBe("data: recovered\n\n");
+		expect(
+			calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID)),
+		).toEqual(["acc_1", "acc_1"]);
+		expect(proxy.getStatus().retries).toBe(1);
+	});
+
+	it("bounds forced-pin transport retries by the configured attempt budget", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const { calls, fetchImpl } = createRecordingFetch(() => {
+			throw new TypeError("fetch failed");
+		});
+		const previousNetworkErrorCooldown =
+			process.env.CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS;
+		const previousMaxRetries = process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
+		process.env.CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS = "0";
+		process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = "2";
+		let proxy: Awaited<ReturnType<typeof startProxy>>;
+		try {
+			proxy = await startProxy({
+				accountManager,
+				fetchImpl,
+				options: { forcedAccountIndex: 0 },
+			});
+		} finally {
+			if (previousNetworkErrorCooldown === undefined) {
+				delete process.env.CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS;
+			} else {
+				process.env.CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS =
+					previousNetworkErrorCooldown;
+			}
+			if (previousMaxRetries === undefined) {
+				delete process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
+			} else {
+				process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = previousMaxRetries;
+			}
+		}
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+		});
+		const payload = (await response.json()) as {
+			error: { code: string; reason: string | null };
+		};
+
+		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+		expect(payload.error).toMatchObject({
+			code: "codex_pinned_account_unavailable",
+			reason: "network-error",
+		});
+		expect(calls).toHaveLength(3);
+		expect(
+			calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID)),
+		).toEqual(["acc_1", "acc_1", "acc_1"]);
+	});
+
+	it("stops a non-counting forced-pin retry loop after 16 selections", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const consumeTokenSpy = vi
+			.spyOn(accountManager, "consumeToken")
+			.mockReturnValue(false);
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: should-not-be-reached\n\n"),
+		);
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { forcedAccountIndex: 0 },
+		});
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+		});
+		const payload = (await response.json()) as {
+			error: { code: string; reason: string | null };
+		};
+
+		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+		expect(payload.error).toMatchObject({
+			code: "codex_pinned_account_unavailable",
+			reason: "token-exhausted",
+		});
+		expect(consumeTokenSpy).toHaveBeenCalledTimes(16);
+		expect(calls).toHaveLength(0);
+	});
 	it("fails hard (503, no upstream call) when the forced account is unavailable (#623)", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 2));
@@ -825,7 +952,8 @@ describe("runtime rotation proxy", () => {
 		});
 
 		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
-		// One direct attempt on the pin, then fail-hard — never a rotation.
+		// The 429 creates a real blocker, so the pin stops after one upstream
+		// attempt rather than rotating or spending retries against the same limit.
 		expect(calls).toHaveLength(1);
 		const payload = (await response.json()) as {
 			error: {
@@ -839,17 +967,13 @@ describe("runtime rotation proxy", () => {
 		};
 		expect(payload.error.code).toBe("codex_pinned_account_unavailable");
 		expect(payload.error.pin_source).toBe("forced");
-		// The retry loop's selection verdict — recovery metadata must not
-		// depend on this string, only on the account's persisted state.
-		expect(payload.error.reason).toBe("already-attempted");
+		// Re-selection reports the live blocker instead of masking it with
+		// attempted-index bookkeeping.
+		expect(payload.error.reason).toBe("rate-limited");
 		expect(payload.error.retry_after_ms).toBeGreaterThan(0);
 		expect(Date.parse(payload.error.reset_at ?? "")).toBeGreaterThan(now);
-		// This is the dominant #675 path, and the reason above is exactly why
-		// it was reported: selection had already overwritten the real class
-		// with its own bookkeeping token by the time the body was built. The
-		// sentence follows the pin's re-read runtime state instead, so the 429
-		// that just landed is described as the rate limit it is — while the
-		// machine-readable `reason` still reports the selection verdict.
+		// The human sentence and machine-readable reason now agree on the 429's
+		// live blocker and its persisted recovery deadline.
 		expect(payload.error.message).toContain("(rate-limited)");
 		expect(payload.error.message).toContain("the rate limit resets at");
 		expect(payload.error.message).not.toContain("already-attempted");
@@ -906,10 +1030,9 @@ describe("runtime rotation proxy", () => {
 		// Two upstream 5xx responses record breaker failures without disabling;
 		// the third response is a workspace-disabled 403, which records the
 		// failure that opens the breaker AND calls setAccountEnabled(index, false).
-		// Selection on the next pass sees the pin in attemptedIndexes and
-		// records "already-attempted", so the disable never reaches the recorded
-		// skip reason — the 503 must still refuse to advertise the circuit's
-		// ~30s reset for an account no timer will re-admit.
+		// Selection on the next pass reports the permanent disable. The 503 must
+		// refuse to advertise the circuit's ~30s reset for an account no timer
+		// will re-admit.
 		//
 		// The first two failures are 5xx rather than transport exceptions on
 		// purpose: a transport exception deliberately does not credit the
@@ -952,20 +1075,14 @@ describe("runtime rotation proxy", () => {
 				previousServerErrorCooldown,
 			);
 		}
-		const body = {
+		const response = await postResponses(proxy, {
 			model: "gpt-5-codex",
 			stream: true,
 			input: [{ type: "message", role: "user", content: "hi" }],
-		};
-
-		for (let attempt = 0; attempt < 2; attempt += 1) {
-			const failed = await postResponses(proxy, body);
-			expect(failed.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
-		}
-		expect(calls).toHaveLength(2);
-
-		const response = await postResponses(proxy, body);
+		});
 		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+		// The first two 5xx responses and the disabling 403 all happen inside
+		// this request's bounded pin-retry budget.
 		expect(calls).toHaveLength(3);
 		expect(accountManager.getAccountByIndex(0)?.enabled).toBe(false);
 

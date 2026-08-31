@@ -56,10 +56,11 @@ export function chooseAccount(params: {
 	// selection signal. We do NOT call markSwitched here — the proxy must not
 	// clobber the pin set by the CLI. See issue #474.
 	if (typeof pinnedIndex === "number") {
-		if (attemptedIndexes.has(pinnedIndex)) {
-			skipReasons?.set(pinnedIndex, "already-attempted");
-			return null;
-		}
+		// A pin has no alternative account to rotate to. Re-evaluate its live
+		// blockers on every pass so a healthy account can use the caller's bounded
+		// retry budget; attemptedIndexes remains authoritative for unpinned pool
+		// selection below. The proxy also carries an absolute loop guard for retry
+		// branches that do not advance their transient-attempt counter.
 		if (pinnedIndex < 0 || pinnedIndex >= accountManager.getAccountCount()) {
 			skipReasons?.set(pinnedIndex, "missing");
 			return null;

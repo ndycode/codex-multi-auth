@@ -231,11 +231,10 @@ export interface PinnedUnavailableContext {
 	recoveryBound?: "rate-limit" | "other" | "unknown";
 	/**
 	 * The pin's CURRENT runtime skip reason, re-read from account state at the
-	 * moment the 503 is built. `accountSkipReasons` holds the SELECTION
-	 * verdict, and on the dominant path the retry loop has already overwritten
-	 * it with its own bookkeeping token ("already-attempted") — wording the
-	 * sentence from that is what issue #675 reported. Omitted when the caller
-	 * did not re-read runtime state.
+	 * moment the 503 is built. `accountSkipReasons` holds the most recent
+	 * selection or attempt verdict, which can be less specific than a cooldown
+	 * or breaker created later in the same pass. Omitted when the caller did not
+	 * re-read runtime state.
 	 */
 	currentSkipReason?: string | null;
 	now?: number;
@@ -421,9 +420,9 @@ export function buildPinnedUnavailableErrorBody(
 	// recorded verdict that names a real blocker class wins, because the
 	// selection-only classes ("missing", "policy-blocked") have no
 	// runtime-state equivalent and would be lost. Otherwise the re-read runtime
-	// state is the truth and the recorded token is the retry loop's own
-	// bookkeeping — the dominant path in issue #675, where a 503/429 on the pin
-	// re-enters selection and records "already-attempted" over the real class.
+	// state is the truth and the recorded token is only the earlier attempt
+	// verdict. This also preserves compatibility with legacy callers that may
+	// still supply an internal bookkeeping token.
 	const describedSkipReason =
 		skipReason !== null && isDescribedBlocker(skipReason)
 			? skipReason

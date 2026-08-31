@@ -84,13 +84,33 @@ describe("chooseAccount pinned selection (issue #474)", () => {
 		expect(markSwitched).not.toHaveBeenCalled();
 	});
 
+	it("reselects a healthy pin that this request already tried", () => {
+		const accountManager = manager();
+		const markSwitched = vi.spyOn(accountManager, "markSwitched");
+		const skipReasons = new Map<number, string>();
+
+		const selected = chooseAccount({
+			...baseParams(accountManager),
+			attemptedIndexes: new Set([1]),
+			pinnedIndex: 1,
+			skipReasons,
+		});
+
+		expect(selected?.index).toBe(1);
+		expect(skipReasons.has(1)).toBe(false);
+		expect(markSwitched).not.toHaveBeenCalled();
+	});
+
 	it.each([
+		["missing", { pinnedIndex: 7, attemptedIndexes: new Set([7]) }],
 		[
-			"already-attempted",
-			{ pinnedIndex: 1, attemptedIndexes: new Set([1]) },
+			"policy-blocked",
+			{
+				pinnedIndex: 1,
+				attemptedIndexes: new Set([1]),
+				policy: policyWith([1]),
+			},
 		],
-		["missing", { pinnedIndex: 7 }],
-		["policy-blocked", { pinnedIndex: 1, policy: policyWith([1]) }],
 	] as const)(
 		"refuses the pin with reason %s instead of falling back",
 		(reason, overrides) => {
@@ -116,6 +136,7 @@ describe("chooseAccount pinned selection (issue #474)", () => {
 
 		const selected = chooseAccount({
 			...baseParams(accountManager),
+			attemptedIndexes: new Set([1]),
 			pinnedIndex: 1,
 			skipReasons,
 		});
@@ -132,6 +153,7 @@ describe("chooseAccount pinned selection (issue #474)", () => {
 
 		const selected = chooseAccount({
 			...baseParams(accountManager),
+			attemptedIndexes: new Set([1]),
 			pinnedIndex: 1,
 			skipReasons,
 		});
@@ -149,6 +171,7 @@ describe("chooseAccount pinned selection (issue #474)", () => {
 
 		const selected = chooseAccount({
 			...baseParams(accountManager),
+			attemptedIndexes: new Set([1]),
 			pinnedIndex: 1,
 			skipReasons,
 		});
@@ -169,6 +192,7 @@ describe("chooseAccount pinned selection (issue #474)", () => {
 
 		const selected = chooseAccount({
 			...baseParams(accountManager),
+			attemptedIndexes: new Set([1]),
 			pinnedIndex: 1,
 			skipReasons,
 		});

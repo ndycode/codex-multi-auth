@@ -439,9 +439,8 @@ describe("buildPinnedUnavailableErrorBody", () => {
 	});
 
 	it("passes an unknown skip token through verbatim with neutral recovery wording", () => {
-		// The retry loop reports selection verdicts like "already-attempted"
-		// through the same seam; those must stay legible without claiming a
-		// limit or inventing a translation.
+		// Unknown or legacy selection tokens pass through the same seam; those
+		// must stay legible without claiming a limit or inventing a translation.
 		const resetAtMs = 1_700_000_030_000;
 		const body = buildPinnedUnavailableErrorBody(
 			0,
@@ -456,16 +455,14 @@ describe("buildPinnedUnavailableErrorBody", () => {
 		expect(body.message).not.toContain("limit resets");
 	});
 
-	// The dominant #675 path: the pin takes a 503/429 during the request, the
-	// retry loop re-enters selection, and selection records "already-attempted"
-	// over whatever class actually blocks the account. Wording the sentence
-	// from that recorded verdict is what shipped an internal token and a
-	// class-less deadline to operators.
+	// A loop can stop with an attempt verdict while the failure it just handled
+	// created a more specific live cooldown or breaker. The sentence follows
+	// that re-read blocker rather than shipping a class-less deadline.
 	it("words the sentence from the re-read runtime blocker, not the loop's verdict", () => {
 		const resetAtMs = 1_700_000_030_000;
 		const body = buildPinnedUnavailableErrorBody(
 			0,
-			new Map([[0, "already-attempted"]]),
+			new Map([[0, "network-error"]]),
 			{
 				pinSource: "forced",
 				resetAtMs,
@@ -474,14 +471,14 @@ describe("buildPinnedUnavailableErrorBody", () => {
 				now: 1_700_000_000_000,
 			},
 		);
-		// The machine-readable contract still reports what selection decided.
-		expect(body.reason).toBe("already-attempted");
+		// The machine-readable contract still reports the recorded attempt verdict.
+		expect(body.reason).toBe("network-error");
 		// The human sentence describes what is actually gating the pin.
 		expect(body.message).toContain("(paused after repeated upstream errors)");
 		expect(body.message).toContain(
 			`the next attempt is allowed at ${new Date(resetAtMs).toISOString()}`,
 		);
-		expect(body.message).not.toContain("already-attempted");
+		expect(body.message).not.toContain("network-error");
 		expect(body.message).not.toContain("circuit-open");
 	});
 

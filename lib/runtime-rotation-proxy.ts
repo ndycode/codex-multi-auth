@@ -214,6 +214,7 @@ export function buildQuotaScheduleKey(
 }
 
 const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
+const MAX_RUNTIME_SELECTION_ITERATIONS = 16;
 
 const MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024;
 const MAX_THREAD_GOAL_FALLBACKS = 512;
@@ -1013,15 +1014,25 @@ async function handleRequestInner(
 		// applies unchanged because it all keys off `pinnedIndex` / `isPinned`.
 		const pinnedIndex = state.forcedAccountIndex ?? storageMeta.pinnedAccountIndex;
 		const isPinned = typeof pinnedIndex === "number";
+		// Pool attempts are normally capped by account count because an unpinned
+		// account is selected at most once per request. A pin can only retry the
+		// same account, so give it the full configured transient-attempt budget.
+		// The independent iteration ceiling below remains the absolute safety cap.
+		if (isPinned) {
+			transientAttemptLimit = Math.max(1, state.maxRuntimeAccountAttempts);
+		}
 		if (storageMeta.affinityGeneration > state.lastObservedAffinityGeneration) {
 			state.sessionAffinityStore?.clearAll();
 			state.lastObservedAffinityGeneration = storageMeta.affinityGeneration;
 		}
 
+		let runtimeSelectionIterations = 0;
 		while (
-			attemptedIndexes.size < accountCount &&
-			transientAttempts < transientAttemptLimit
+			(isPinned || attemptedIndexes.size < accountCount) &&
+			transientAttempts < transientAttemptLimit &&
+			runtimeSelectionIterations < MAX_RUNTIME_SELECTION_ITERATIONS
 		) {
+			runtimeSelectionIterations += 1;
 			const rotationStickyBoost: Record<number, number> =
 				state.minRotationIntervalMs > 0 &&
 				state.lastGlobalAccountIndex !== null &&
@@ -1615,7 +1626,7 @@ async function handleRequestInner(
 
 		if (
 			transientAttempts >= transientAttemptLimit &&
-			attemptedIndexes.size < accountCount
+			(isPinned || attemptedIndexes.size < accountCount)
 		) {
 			exhaustionReason = "budget";
 		} else if (
@@ -1647,17 +1658,13 @@ async function handleRequestInner(
 			// so advertising a record's expiry would invite a retry into another
 			// 503.
 			//
-			// The recorded reason alone is not enough to detect one. It is the
-			// SELECTION verdict, and this request can make the pin permanently
-			// unselectable after selection already ran: a workspace-disabled
-			// 402/403 calls setAccountEnabled(index, false) above and then
-			// continues, so the next pass records "already-attempted" and the
-			// disable never surfaces. With a breaker tripped by the same failure
-			// the 503 would then advertise the circuit's ~30s reset for an
-			// account no timer will ever re-admit. Re-read the pin's CURRENT
-			// runtime state so a permanent blocker cannot hide behind the
-			// verdict; the recorded reason still covers the selection-only
-			// verdicts ("missing", "policy-blocked") that state cannot express.
+			// The recorded reason alone is not enough to detect every concurrent
+			// state change: it is the most recent selection/attempt verdict, while
+			// this request or another one can make the pin permanently unselectable
+			// after that verdict was recorded. Re-read the pin's CURRENT runtime
+			// state so a permanent blocker cannot hide behind an earlier transient
+			// failure; the recorded reason still covers selection-only verdicts
+			// ("missing", "policy-blocked") that state cannot express.
 			const pinnedCurrentSkipReason =
 				pinnedAccount === null
 					? null
@@ -1671,13 +1678,10 @@ async function handleRequestInner(
 					PINNED_PERMANENT_SKIP_REASONS.has(pinnedSkipReason)) ||
 				(pinnedCurrentSkipReason !== null &&
 					PINNED_PERMANENT_SKIP_REASONS.has(pinnedCurrentSkipReason));
-			// Otherwise recovery comes from the pinned account's persisted state, not the
-			// recorded skip reason: a direct 429/cooldown on the pinned account
-			// reaches this 503 as "already-attempted" (the retry loop's selection
-			// verdict) while the record it just wrote is what actually bounds
-			// recovery — and with several overlapping records the account stays
-			// skipped until the LAST one expires, so the latest bound is the one
-			// worth advertising.
+			// Otherwise recovery comes from the pinned account's persisted state,
+			// not merely the recorded skip token. With several overlapping records
+			// the account stays skipped until the LAST one expires, so the latest
+			// bound is the one worth advertising.
 			//
 			// One clock for the whole body. The recovery bound and the
 			// rate-limit bound are compared against each other below, so
@@ -1730,9 +1734,8 @@ async function handleRequestInner(
 						typeof state.forcedAccountIndex === "number" ? "forced" : "manual",
 					resetAtMs: pinnedResetAtMs,
 					recoveryBound,
-					// The recorded verdict above is the retry loop's
-					// "already-attempted" on the dominant path; the re-read runtime
-					// state is what the operator-facing sentence should describe.
+					// Re-read runtime state for the operator-facing sentence so a
+					// concurrent or later blocker can refine the recorded verdict.
 					currentSkipReason: pinnedCurrentSkipReason,
 					now: evaluatedAtMs,
 				},
