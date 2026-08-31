@@ -869,6 +869,58 @@ describe("runtime rotation proxy", () => {
 		).toEqual(["acc_1", "acc_1", "acc_1"]);
 	});
 
+	it("caps forced-pin upstream attempts at 16 when the configured budget is higher", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const { calls, fetchImpl } = createRecordingFetch(() => {
+			throw new TypeError("fetch failed");
+		});
+		const previousNetworkErrorCooldown =
+			process.env.CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS;
+		const previousMaxRetries = process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
+		process.env.CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS = "0";
+		process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = "20";
+		let proxy: Awaited<ReturnType<typeof startProxy>>;
+		try {
+			proxy = await startProxy({
+				accountManager,
+				fetchImpl,
+				options: { forcedAccountIndex: 0 },
+			});
+		} finally {
+			if (previousNetworkErrorCooldown === undefined) {
+				delete process.env.CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS;
+			} else {
+				process.env.CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS =
+					previousNetworkErrorCooldown;
+			}
+			if (previousMaxRetries === undefined) {
+				delete process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
+			} else {
+				process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = previousMaxRetries;
+			}
+		}
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+		});
+		const payload = (await response.json()) as {
+			error: { code: string; reason: string | null };
+		};
+
+		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+		expect(payload.error).toMatchObject({
+			code: "codex_pinned_account_unavailable",
+			reason: "network-error",
+		});
+		expect(calls).toHaveLength(16);
+		expect(
+			new Set(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))),
+		).toEqual(new Set(["acc_1"]));
+	});
+
 	it("does not apply the pinned selection guard to an unpinned pool", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 17));

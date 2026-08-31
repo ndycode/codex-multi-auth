@@ -214,6 +214,9 @@ export function buildQuotaScheduleKey(
 }
 
 const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
+// This is a hard safety ceiling over every pinned selection pass, including
+// branches that do not consume the transient-attempt budget. It deliberately
+// overrides larger retry settings for pinned requests.
 const MAX_PINNED_SELECTION_ITERATIONS = 16;
 
 const MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024;
@@ -1016,8 +1019,9 @@ async function handleRequestInner(
 		const isPinned = typeof pinnedIndex === "number";
 		// Pool attempts are normally capped by account count because an unpinned
 		// account is selected at most once per request. A pin can only retry the
-		// same account, so give it the full configured transient-attempt budget.
-		// The independent iteration ceiling below remains the absolute safety cap.
+		// same account, so use the configured transient-attempt limit instead of
+		// the account-count limit. Every pinned pass is still subject to the hard
+		// 16-selection ceiling above, which wins when the configured limit is higher.
 		if (isPinned) {
 			transientAttemptLimit = Math.max(1, state.maxRuntimeAccountAttempts);
 		}
