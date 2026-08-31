@@ -32,4 +32,30 @@ describe("backend settings helpers", () => {
 		expect(preview.hint).toContain("timeouts");
 		expect(buildBackendConfigPatch({ ...left, fetchTimeoutMs: 10 } as never)).toHaveProperty("fetchTimeoutMs");
 	});
+
+	/**
+	 * These two are the gate on the Experimental menu's Save: the controller
+	 * only persists when backendSettingsEqual() says something changed, and it
+	 * writes exactly what buildBackendConfigPatch() returns. A toggle absent
+	 * from both compares equal no matter what the user pressed, so the write is
+	 * skipped and the choice is lost on the next launch.
+	 */
+	it("sees a change in an experimental-only toggle", () => {
+		const off = { contextBudgetGuardEnabled: false } as never;
+		const on = { contextBudgetGuardEnabled: true } as never;
+		expect(backendSettingsSnapshot(on)).toHaveProperty(
+			"contextBudgetGuardEnabled",
+			true,
+		);
+		expect(backendSettingsEqual(off, on)).toBe(false);
+	});
+
+	it("writes an experimental-only toggle into the persisted patch", () => {
+		expect(
+			buildBackendConfigPatch({ contextBudgetGuardEnabled: true } as never),
+		).toHaveProperty("contextBudgetGuardEnabled", true);
+		expect(
+			buildBackendConfigPatch({ contextBudgetGuardEnabled: false } as never),
+		).toHaveProperty("contextBudgetGuardEnabled", false);
+	});
 });

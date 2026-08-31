@@ -257,7 +257,7 @@
         },
         "contextBudgetGuardHardPercent": {
           "type": "number",
-          "minimum": 0,
+          "minimum": 10,
           "maximum": 100
         },
         "contextBudgetGuardModelWindowOverrides": {

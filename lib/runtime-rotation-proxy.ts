@@ -496,6 +496,45 @@ function getThreadGoalFallback(
 	return goal;
 }
 
+/**
+ * Session identity that is stable for the life of a conversation.
+ *
+ * Every source here keeps the same value across turns, so state keyed on it
+ * accumulates. `resolveSessionKey` adds `previous_response_id` on top for
+ * callers that only need "requests that belong together right now".
+ */
+function resolveStableSessionKey(
+	headers: Headers,
+	parsedBody: RequestBody | null,
+): string | null {
+	const headerKey =
+		headers.get(OPENAI_HEADERS.SESSION_ID) ??
+		headers.get(OPENAI_HEADERS.CONVERSATION_ID) ??
+		null;
+	if (headerKey && headerKey.trim().length > 0) return headerKey.trim();
+	if (!parsedBody) return null;
+	if (typeof parsedBody.prompt_cache_key === "string") {
+		const key = parsedBody.prompt_cache_key.trim();
+		if (key.length > 0) return key;
+	}
+	const metadata = parsedBody.metadata;
+	if (isRecord(metadata)) {
+		return (
+			readStringRecordValue(metadata, "session_id") ??
+			readStringRecordValue(metadata, "conversation_id") ??
+			readStringRecordValue(metadata, "thread_id")
+		);
+	}
+	return null;
+}
+
+/**
+ * Session identity for affinity/pinning: the stable sources above, plus
+ * `previous_response_id` as a last resort. Precedence is unchanged from
+ * before `resolveStableSessionKey` was split out — `previous_response_id`
+ * still outranks the `metadata` fallbacks — so which account a request pins
+ * to does not shift.
+ */
 function resolveSessionKey(headers: Headers, parsedBody: RequestBody | null): string | null {
 	const headerKey =
 		headers.get(OPENAI_HEADERS.SESSION_ID) ??
@@ -545,6 +584,7 @@ function buildResponsesRequestContext(
 		family: getModelFamily(model ?? CURRENT_CODEX_MODEL),
 		stream: parsedBody?.stream === true,
 		sessionKey: resolveSessionKey(headers, parsedBody),
+		stableSessionKey: resolveStableSessionKey(headers, parsedBody),
 	};
 }
 
@@ -558,6 +598,7 @@ function buildModelsRequestContext(req: IncomingMessage): RequestContext {
 		family: "codex",
 		stream: false,
 		sessionKey: null,
+		stableSessionKey: null,
 	};
 }
 
@@ -586,6 +627,8 @@ function buildThreadGoalRequestContext(
 		family: "codex",
 		stream: false,
 		sessionKey,
+		stableSessionKey:
+			bodyThreadKey ?? queryThreadKey ?? resolveStableSessionKey(headers, parsedBody),
 	};
 }
 
@@ -1010,10 +1053,20 @@ async function handleRequestInner(
 		};
 		if (isResponsesRequest) {
 			budgetAdvisory = state.contextBudgetGuard.getAdvisory(
-				context.sessionKey ?? "",
+				context.stableSessionKey ?? "",
 				requestStartedAt,
+				context.model,
 			);
 			if (budgetAdvisory.level === "hard") {
+				// One-shot: the pause returns before the request is forwarded, so
+				// `update()` below never runs for it and the recorded usage cannot
+				// fall on its own. Without dropping the snapshot the first crossing
+				// would wedge the session permanently — including the `/compact`
+				// turn this pause tells the user to run, which carries the same
+				// session key.
+				state.contextBudgetGuard.noteHardPauseEmitted(
+					context.stableSessionKey ?? "",
+				);
 				await usageRecorder.record({
 					outcome: "blocked",
 					statusCode: HTTP_STATUS.OK,
@@ -1661,10 +1714,17 @@ async function handleRequestInner(
 			// doubles as a live read of the session's current context size. Record
 			// it even on a broken stream, matching the ledger's own choice above —
 			// the tokens upstream billed for were still resent as full context.
-			if (usageTokens && context.sessionKey && context.model) {
-				state.contextBudgetGuard.update(context.sessionKey, {
+			//
+			// input + output, NOT total: `usageTokens.totalTokens` is the
+			// provider's `total_tokens`, which also counts `reasoning_tokens`.
+			// Reasoning is not carried into the next turn's input, so counting
+			// it here inflates the measurement by this turn's thinking budget
+			// against a deliberately tight threshold. `outputTokens` is already
+			// reasoning-stripped (lib/usage/usage-extraction.ts).
+			if (usageTokens && context.stableSessionKey && context.model) {
+				state.contextBudgetGuard.update(context.stableSessionKey, {
 					model: context.model,
-					totalTokens: usageTokens.totalTokens,
+					contextTokens: usageTokens.inputTokens + usageTokens.outputTokens,
 					updatedAt: state.now(),
 				});
 			}

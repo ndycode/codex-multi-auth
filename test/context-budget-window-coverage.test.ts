@@ -60,4 +60,48 @@ describe("context budget window coverage", () => {
 		const [unestimatedModel] = UNESTIMATED_ROUTABLE_MODELS;
 		expect(getEffectiveContextWindow(unestimatedModel, undefined)).toBeNull();
 	});
+
+	/**
+	 * The checks above validate the CANONICAL key space
+	 * (`profile.normalizedModel`). The guard is never handed one of those: the
+	 * rotation proxy copies `body.model` verbatim, so the lookup has to work on
+	 * the raw ids clients actually send. Looking those up straight against the
+	 * table returned null for Codex CLI's own default model.
+	 */
+	it("resolves the raw client model strings the runtime actually passes", () => {
+		for (const raw of [
+			"gpt-5-codex",
+			"gpt-5.1-codex",
+			"gpt-5.2-codex",
+			"gpt-5.3-codex",
+			"gpt-5.3-codex-high",
+			"gpt-5.1-codex-max",
+			"GPT-5.5",
+			"openai/gpt-5.5",
+		]) {
+			expect(
+				getEffectiveContextWindow(raw, undefined),
+				`${raw} resolved to no window; the guard silently no-ops for it`,
+			).toEqual({ tokens: 260_000, source: "estimate" });
+		}
+	});
+
+	it("still refuses to invent a window for a model it does not know", () => {
+		// resolveNormalizedModel() would fall back to DEFAULT_MODEL here and
+		// hand this a 260k window; the exact/alias-only resolver must not.
+		expect(getEffectiveContextWindow("totally-made-up-model", undefined)).toBeNull();
+	});
+
+	it("prefers an override keyed by the raw string over the canonical estimate", () => {
+		expect(getEffectiveContextWindow("gpt-5-codex", { "gpt-5-codex": 99_000 })).toEqual({
+			tokens: 99_000,
+			source: "override",
+		});
+	});
+
+	it("applies an override keyed by the canonical id to an alias of it", () => {
+		expect(
+			getEffectiveContextWindow("gpt-5-codex", { "gpt-5.3-codex": 88_000 }),
+		).toEqual({ tokens: 88_000, source: "override" });
+	});
 });

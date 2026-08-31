@@ -132,7 +132,7 @@ Context budget guard fields (ships **disabled**; thresholds and overrides are se
 | --- | --- | --- |
 | `contextBudgetGuardEnabled` | `false` | Pause the next request on a session once it crosses `contextBudgetGuardHardPercent` of the model's context window |
 | `contextBudgetGuardSoftPercent` | `65` | Attach a non-blocking `x-codex-context-budget-percent` header once usage crosses this percent |
-| `contextBudgetGuardHardPercent` | `69` | Pause threshold — see [Context Budget Guard](../features.md#context-budget-guard-experimental) |
+| `contextBudgetGuardHardPercent` | `69` | Pause threshold, `10`-`100` — see [Context Budget Guard](../features.md#context-budget-guard-experimental) |
 | `contextBudgetGuardModelWindowOverrides` | `{}` | `{ "<model>": <tokens> }` — a real observed ceiling always overrides this package's built-in estimate |
 
 ## Backend Controls

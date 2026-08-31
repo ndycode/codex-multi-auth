@@ -1,3 +1,5 @@
+import { getNormalizedModel } from "../request/helpers/model-map.js";
+
 /**
  * Context-window size estimates for the Context Budget Guard.
  *
@@ -56,6 +58,31 @@ function normalizeModelName(model: string | null | undefined): string | null {
 	return trimmed && trimmed.length > 0 ? trimmed : null;
 }
 
+/**
+ * Model ids to try, in order, against the override map and the estimate table.
+ *
+ * The guard is fed the model string exactly as the client sent it: the
+ * rotation proxy is a pass-through and `buildResponsesRequestContext` copies
+ * `body.model` verbatim. That raw string is very often NOT a key of this
+ * file's table — Codex CLI's own default is `gpt-5-codex`, and every
+ * reasoning-suffixed alias (`gpt-5.3-codex-high`, …) is an alias-map entry
+ * rather than a catalog model. Looking up only the raw string made the guard
+ * silently return "no window, skip" for the most common model in the product.
+ *
+ * So: try the raw (lowercased) string first, so a user override keyed exactly
+ * the way they type the model still wins, then the catalog's canonical id for
+ * it. `getNormalizedModel` is deliberately the exact/alias-only resolver —
+ * `resolveNormalizedModel` falls back to `DEFAULT_MODEL` for anything it does
+ * not recognize, which would hand an unknown model gpt-5.5's window and
+ * evaluate a real session against a fabricated number.
+ */
+function windowLookupCandidates(model: string | null | undefined): string[] {
+	const raw = normalizeModelName(model);
+	if (!raw) return [];
+	const canonical = normalizeModelName(getNormalizedModel(raw));
+	return canonical && canonical !== raw ? [raw, canonical] : [raw];
+}
+
 export interface EffectiveContextWindow {
 	tokens: number;
 	source: "override" | "estimate";
@@ -74,17 +101,21 @@ export function getEffectiveContextWindow(
 	model: string | null | undefined,
 	overrides: Record<string, number> | undefined,
 ): EffectiveContextWindow | null {
-	const normalized = normalizeModelName(model);
-	if (!normalized) return null;
+	const candidates = windowLookupCandidates(model);
+	if (candidates.length === 0) return null;
 
-	const override = overrides?.[normalized];
-	if (typeof override === "number" && Number.isFinite(override) && override > 0) {
-		return { tokens: Math.floor(override), source: "override" };
+	for (const candidate of candidates) {
+		const override = overrides?.[candidate];
+		if (typeof override === "number" && Number.isFinite(override) && override > 0) {
+			return { tokens: Math.floor(override), source: "override" };
+		}
 	}
 
-	const estimate = ESTIMATED_MODEL_CONTEXT_WINDOWS[normalized];
-	if (typeof estimate === "number") {
-		return { tokens: estimate, source: "estimate" };
+	for (const candidate of candidates) {
+		const estimate = ESTIMATED_MODEL_CONTEXT_WINDOWS[candidate];
+		if (typeof estimate === "number") {
+			return { tokens: estimate, source: "estimate" };
+		}
 	}
 
 	return null;

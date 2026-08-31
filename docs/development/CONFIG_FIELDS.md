@@ -185,6 +185,15 @@ reasonable single env var), but the other three fields do:
 `CODEX_AUTH_CONTEXT_BUDGET_GUARD_ENABLED`, `CODEX_AUTH_CONTEXT_BUDGET_SOFT_PCT`,
 `CODEX_AUTH_CONTEXT_BUDGET_HARD_PCT`.
 
+`contextBudgetGuardHardPercent` accepts `10`-`100`. A hard threshold below that is
+cleared by every measurement, which would pause every session from its first turn, so
+lower values are rejected by the schema and clamped by the runtime.
+
+A hard pause is one-shot per measurement: it is emitted, then the tracked usage for that
+session is dropped so the next request is forwarded and re-measured. The pause cannot
+forward its own request, so nothing else could ever lower the recorded number -- and the
+`/compact` turn the notice asks for travels on the same session key.
+
 ### Notifications
 
 | Key | Default |

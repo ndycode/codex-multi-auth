@@ -1056,8 +1056,18 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								// selection entirely rather than inside its retry loop.
 								const contextBudgetAdvisory = contextBudgetGuard.getAdvisory(
 									sessionAffinityKey ?? "",
+									Date.now(),
+									model,
 								);
 								if (contextBudgetAdvisory.level === "hard") {
+									// One-shot: this pause returns before the request is
+									// forwarded, so the onUsage hook that would lower the
+									// recorded usage never runs. Dropping the snapshot keeps
+									// the session recoverable — otherwise the `/compact` turn
+									// this message asks for is blocked by the same key.
+									contextBudgetGuard.noteHardPauseEmitted(
+										sessionAffinityKey ?? "",
+									);
 									return createContextBudgetPauseResponse(
 										contextBudgetAdvisory,
 									);
@@ -2806,11 +2816,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														// Responses is mostly stateless (store=false): this
 														// turn's input_tokens reflects the full conversation
 														// resent this call, so it doubles as a live read of
-														// the session's current context size.
+														// the session's current context size. input + output, NOT
+														// total: total_tokens also counts reasoning tokens, which
+														// are not resent as context on the next turn.
 														if (sessionAffinityKey && model) {
 															contextBudgetGuard.update(sessionAffinityKey, {
 																model,
-																totalTokens: usage.totalTokens,
+																contextTokens: usage.inputTokens + usage.outputTokens,
 																updatedAt: Date.now(),
 															});
 														}

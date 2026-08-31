@@ -62,6 +62,17 @@ export interface RequestContext {
 	family: ModelFamily;
 	stream: boolean;
 	sessionKey: string | null;
+	/**
+	 * `sessionKey` minus the `previous_response_id` fallback.
+	 *
+	 * `previous_response_id` changes on every turn, which is fine for session
+	 * affinity (a fresh key just means "no pin yet") but wrong for anything
+	 * that has to ACCUMULATE across turns: a per-turn key never finds what the
+	 * previous turn stored, and leaves one dead map entry behind per request.
+	 * Consumers that track state over a conversation use this instead, and
+	 * no-op when it is null.
+	 */
+	stableSessionKey: string | null;
 }
 
 export type ExhaustionReason =

@@ -1871,13 +1871,22 @@ export function getContextBudgetGuardSoftPercent(pluginConfig: PluginConfig): nu
 	);
 }
 
-/** Percent of the effective context window at which the guard pauses the next request. */
+/**
+ * Percent of the effective context window at which the guard pauses the next
+ * request.
+ *
+ * Floored at 10, not 0. `resolveNumberSetting` clamps out-of-range values
+ * instead of rejecting them, so a configured (or env-supplied) `0` would be a
+ * legal threshold that every recorded snapshot clears — pausing every session
+ * from its first turn on. The guard applies the same floor in `configure()`
+ * so a directly constructed instance cannot be set below it either.
+ */
 export function getContextBudgetGuardHardPercent(pluginConfig: PluginConfig): number {
 	return resolveNumberSetting(
 		"CODEX_AUTH_CONTEXT_BUDGET_HARD_PCT",
 		pluginConfig.contextBudgetGuardHardPercent,
 		69,
-		{ min: 0, max: 100 },
+		{ min: 10, max: 100 },
 	);
 }
 
