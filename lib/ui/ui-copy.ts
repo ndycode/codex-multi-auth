@@ -110,7 +110,7 @@ export const UI_COPY = {
 		experimentalSubtitle:
 			"Preview sync and backup actions before they become stable",
 		experimentalHelpMenu:
-			"Enter Select | 1 Sync | 2 Backup | 3 Guard | [ - Down | ] + Up | S Save | Q Back",
+			"Enter Select | 1 Sync | 2 Backup | 3 Guard | 4 Budget | [ - Down | ] + Up | S Save | Q Back",
 		experimentalHelpPreview: "Enter Select | A Apply | Q Back",
 		experimentalHelpStatus: "Enter Select | Q Back",
 		experimentalSync: "Sync Accounts to oc-chatgpt-multi-auth",
@@ -121,6 +121,7 @@ export const UI_COPY = {
 		experimentalRefreshInterval: "Refresh Guard Interval",
 		experimentalDecreaseInterval: "Decrease Refresh Interval",
 		experimentalIncreaseInterval: "Increase Refresh Interval",
+		experimentalContextBudgetGuard: "Enable Context Budget Guard",
 		backend: "Backend Controls",
 		back: "Back",
 		previewHeading: "Live Preview",

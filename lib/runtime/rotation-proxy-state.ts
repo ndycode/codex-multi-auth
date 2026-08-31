@@ -1,4 +1,5 @@
 import { AccountManager } from "../accounts.js";
+import type { ContextBudgetGuard } from "../context-budget-guard.js";
 import type { PreemptiveQuotaScheduler } from "../preemptive-quota-scheduler.js";
 import {
 	recordRuntimeReload,
@@ -34,6 +35,7 @@ export interface RotationProxyStateInit {
 	maxRequestBodyBytes: number;
 	quotaRemainingPercentThreshold: number;
 	preemptiveQuotaScheduler: PreemptiveQuotaScheduler;
+	contextBudgetGuard: ContextBudgetGuard;
 	sessionAffinityStore: SessionAffinityStore | null;
 	lastObservedAffinityGeneration: number;
 	/**

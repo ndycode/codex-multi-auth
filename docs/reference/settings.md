@@ -98,12 +98,14 @@ Experimental settings currently cover:
 - one-way sync preview/apply into `oc-chatgpt-multi-auth`
 - named local pool backup export with filename prompt
 - refresh guard controls (`proactiveRefreshGuardian`, `proactiveRefreshIntervalMs`)
+- context budget guard (`contextBudgetGuardEnabled`) — pause a session before it hits the model's context window; see [Context Budget Guard](../features.md#context-budget-guard-experimental)
 
 Experimental shortcuts:
 
 - `1` sync preview
 - `2` named backup export
 - `3` toggle refresh guard
+- `4` toggle context budget guard
 - `[` or `-` decrease refresh interval
 - `]` or `+` increase refresh interval
 - `S` save and return
@@ -123,6 +125,15 @@ Named backup behavior:
 - appends `.json` when omitted
 - rejects separators, traversal (`..`), `.rotate.`, `.tmp`, and `.wal` suffixes
 - fails safely on collisions instead of overwriting by default
+
+Context budget guard fields (ships **disabled**; thresholds and overrides are settings/env-only — no interactive controls beyond the on/off toggle):
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `contextBudgetGuardEnabled` | `false` | Pause the next request on a session once it crosses `contextBudgetGuardHardPercent` of the model's context window |
+| `contextBudgetGuardSoftPercent` | `65` | Attach a non-blocking `x-codex-context-budget-percent` header once usage crosses this percent |
+| `contextBudgetGuardHardPercent` | `69` | Pause threshold, `10`-`100` — see [Context Budget Guard](../features.md#context-budget-guard-experimental) |
+| `contextBudgetGuardModelWindowOverrides` | `{}` | `{ "<model>": <tokens> }` — a real observed ceiling always overrides this package's built-in estimate |
 
 ## Backend Controls
 

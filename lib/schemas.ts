@@ -77,6 +77,16 @@ export const PluginConfigSchema = z.object({
 	preemptiveQuotaRemainingPercent5h: z.number().min(0).max(100).optional(),
 	preemptiveQuotaRemainingPercent7d: z.number().min(0).max(100).optional(),
 	preemptiveQuotaMaxDeferralMs: z.number().min(1_000).optional(),
+	contextBudgetGuardEnabled: z.boolean().optional(),
+	contextBudgetGuardSoftPercent: z.number().min(0).max(100).optional(),
+	// Floor of 10, not 0: a hard threshold at 0 is satisfied by every recorded
+	// snapshot, so it would pause every session from its first turn. A value
+	// below the floor is dropped by the per-field sanitizer and the default (69)
+	// applies.
+	contextBudgetGuardHardPercent: z.number().min(10).max(100).optional(),
+	contextBudgetGuardModelWindowOverrides: z
+		.record(z.string(), z.number().positive())
+		.optional(),
 	routingMutex: z.enum(["enabled", "legacy"]).optional(),
 	schedulingStrategy: z.enum(["hybrid", "sequential"]).optional(),
 });

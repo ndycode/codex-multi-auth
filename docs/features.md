@@ -49,6 +49,24 @@ Runtime rotation is part of the current architecture. It is default-on and local
 
 ---
 
+## Context Budget Guard (experimental)
+
+Ships **disabled** — enable it from Settings → Experimental (`4`) or `contextBudgetGuardEnabled` in `settings.json`.
+
+A Responses session mostly resends its full conversation on every turn, so each turn's `input_tokens` plus the part of its output that becomes history doubles as a live read of how full the session's context window already is. (`total_tokens` is deliberately not used: it also counts `reasoning_tokens`, which are dropped rather than resent.) This guard tracks that per session and, once it crosses a hard threshold, pauses the **next** request locally — before it reaches upstream — with a notice suggesting `/compact` or `/clear`, rather than waiting on the eventual `context_length_exceeded` 400 that the existing reactive context-overflow handler only reacts to after the fact.
+
+| Capability | What it gives you | Configure via |
+| --- | --- | --- |
+| Soft threshold (default 65%) | Non-blocking `x-codex-context-budget-percent` response header once crossed | `contextBudgetGuardSoftPercent` |
+| Hard threshold (default 69%) | Pauses the next forwarded request with a synthetic, locally-answered notice — no wasted upstream round-trip | `contextBudgetGuardHardPercent` |
+| Model window overrides | A real observed ceiling for a model always overrides this package's built-in estimate | `contextBudgetGuardModelWindowOverrides` |
+
+The built-in per-model window estimates are deliberately **not** presented as verified facts: per [the v2.5.0 release notes](releases/v2.5.0.md), the context window OpenAI's published API docs advertise does not necessarily match the ChatGPT Codex backend this wrapper actually talks to. Set `contextBudgetGuardModelWindowOverrides` once you've observed a model's real ceiling for the most accurate percentages. The guard runs in both the plugin-loader fetch path and the default-on runtime rotation proxy, keyed by the stable part of the session identity `codex-multi-auth`'s session affinity already uses -- the session/conversation header, `prompt_cache_key`, or a `metadata` id, but never `previous_response_id`, which changes every turn and so could never accumulate. It survives account rotation within one conversation, and no-ops entirely for a client that sends none of those.
+
+A hard pause is **one-shot per measurement**: the notice is emitted and the tracked usage for that session is dropped, so the very next request is forwarded and re-measured. That is what keeps the pause from becoming a dead end -- the paused request never reaches upstream, so it can never itself produce a lower reading, and the `/compact` turn the notice asks for travels on the same session key. A session that really did compact comes back under the threshold and stays quiet; one that did not is paused again on the turn after. See [Settings reference](reference/settings.md#experimental) and [Configuration guide](development/CONTEXT_BUDGET_GUARD_PLAN.md) for the full design.
+
+---
+
 ## Local Governance
 
 All governance data stays under `~/.codex/multi-auth`. Nothing here is a hosted multi-user service.

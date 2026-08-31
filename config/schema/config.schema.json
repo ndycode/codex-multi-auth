@@ -247,6 +247,29 @@
           "type": "number",
           "minimum": 1000
         },
+        "contextBudgetGuardEnabled": {
+          "type": "boolean"
+        },
+        "contextBudgetGuardSoftPercent": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "contextBudgetGuardHardPercent": {
+          "type": "number",
+          "minimum": 10,
+          "maximum": 100
+        },
+        "contextBudgetGuardModelWindowOverrides": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        },
         "routingMutex": {
           "type": "string",
           "enum": [

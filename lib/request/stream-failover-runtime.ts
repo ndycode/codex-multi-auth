@@ -153,12 +153,14 @@ export async function forwardStreamingResponse(
 	 * forward. Implementations are expected to swallow their own errors.
 	 */
 	onChunk?: (chunk: Uint8Array) => void,
+	/** Additional response headers, applied after (so they can override) the forwarded upstream ones. */
+	extraHeaders?: Record<string, string>,
 ): Promise<boolean> {
 	status.streamsStarted += 1;
-	res.writeHead(
-		upstream.status,
-		responseHeadersForClient(upstream.headers),
-	);
+	res.writeHead(upstream.status, {
+		...responseHeadersForClient(upstream.headers),
+		...extraHeaders,
+	});
 	if (!upstream.body) {
 		res.end();
 		return true;

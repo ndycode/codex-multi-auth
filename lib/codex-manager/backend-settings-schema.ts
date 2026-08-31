@@ -32,6 +32,29 @@ export type BackendNumberSettingKey =
 	| "preemptiveQuotaRemainingPercent7d"
 	| "preemptiveQuotaMaxDeferralMs";
 
+/**
+ * Backend toggles that persist with the backend config but are NOT listed in
+ * BACKEND_TOGGLE_OPTIONS, because their home in the UI is the Experimental
+ * menu rather than a Backend settings category.
+ *
+ * They still have to travel through `backendSettingsSnapshot` and
+ * `buildBackendConfigPatch`: those two are what the Experimental save path
+ * uses to decide "did anything change" and "what do we write to
+ * settings.json". A toggle missing from both compares equal to its old value
+ * no matter what the user pressed, so the save is skipped and the change
+ * lives only in memory until the next launch drops it.
+ *
+ * Kept out of BACKEND_TOGGLE_OPTIONS so the settings menu's "every toggle
+ * belongs to a category" invariant (test/codex-manager-cli.test.ts) still
+ * holds without inventing a category for an experimental flag.
+ */
+export const EXPERIMENTAL_TOGGLE_KEYS = [
+	"contextBudgetGuardEnabled",
+] as const satisfies readonly (keyof PluginConfig)[];
+
+export type ExperimentalToggleSettingKey =
+	(typeof EXPERIMENTAL_TOGGLE_KEYS)[number];
+
 export type BackendSettingFocusKey =
 	| BackendToggleSettingKey
 	| BackendNumberSettingKey

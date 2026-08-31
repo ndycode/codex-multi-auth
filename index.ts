@@ -82,6 +82,10 @@ import {
 	getPreemptiveQuotaMaxDeferralMs,
 	getPreemptiveQuotaRemainingPercent5h,
 	getPreemptiveQuotaRemainingPercent7d,
+	getContextBudgetGuardEnabled,
+	getContextBudgetGuardSoftPercent,
+	getContextBudgetGuardHardPercent,
+	getContextBudgetGuardModelWindowOverrides,
 	getProactiveRefreshBufferMs,
 	getProactiveRefreshGuardian,
 	getProactiveRefreshIntervalMs,
@@ -114,6 +118,11 @@ import {
 	PROVIDER_ID,
 } from "./lib/constants.js";
 import { handleContextOverflow } from "./lib/context-overflow.js";
+import { ContextBudgetGuard } from "./lib/context-budget-guard.js";
+import {
+	buildContextBudgetHeaders,
+	createContextBudgetPauseResponse,
+} from "./lib/context-budget-response.js";
 import {
 	EntitlementCache,
 	resolveEntitlementAccountKey,
@@ -273,6 +282,7 @@ import { ensureLiveAccountSyncEntry } from "./lib/runtime/live-sync-entry.js";
 import { applyLoaderRuntimeSetup } from "./lib/runtime/loader-setup.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
 import { applyPreemptiveQuotaSettingsFromConfig } from "./lib/runtime/quota-settings.js";
+import { applyContextBudgetGuardSettingsFromConfig } from "./lib/runtime/context-budget-settings.js";
 import {
 	ensureLiveAccountSyncState,
 	ensureRefreshGuardianState,
@@ -416,6 +426,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let sessionAffinityConfigKey: string | null = null;
 	const entitlementCache = new EntitlementCache();
 	const preemptiveQuotaScheduler = new PreemptiveQuotaScheduler();
+	const contextBudgetGuard = new ContextBudgetGuard();
 	const capabilityPolicyStore = new CapabilityPolicyStore();
 	let accountReloadInFlight: Promise<AccountManager> | null = null;
 	const exposeAdvancedCodexTools =
@@ -692,6 +703,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			getPreemptiveQuotaMaxDeferralMs,
 		});
 
+	const applyContextBudgetGuardSettings = (
+		pluginConfig: ReturnType<typeof loadPluginConfig>,
+	): void =>
+		applyContextBudgetGuardSettingsFromConfig(pluginConfig, {
+			configure: (options) => contextBudgetGuard.configure(options),
+			getContextBudgetGuardEnabled,
+			getContextBudgetGuardSoftPercent,
+			getContextBudgetGuardHardPercent,
+			getContextBudgetGuardModelWindowOverrides,
+		});
+
 	// Event handler for session recovery and account selection
 	const eventHandler = async (input: {
 		event: { type: string; properties?: unknown };
@@ -749,6 +771,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					ensureSessionAffinity,
 					ensureRefreshGuardian,
 					applyPreemptiveQuotaSettings,
+					applyContextBudgetGuardSettings,
 				});
 
 				// Only handle OAuth auth type, skip API key auth
@@ -1024,6 +1047,31 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										.trim() || undefined;
 								const sessionAffinityKey =
 									threadIdCandidate ?? promptCacheKey ?? null;
+								// Context budget guard: pause BEFORE spending an upstream
+								// round-trip on a request the tracked session is already over
+								// the hard threshold for, rather than waiting on the eventual
+								// context_length_exceeded 400 that handleContextOverflow below
+								// only reacts to after the fact. Independent of which account
+								// ends up serving the request, so it runs ahead of account
+								// selection entirely rather than inside its retry loop.
+								const contextBudgetAdvisory = contextBudgetGuard.getAdvisory(
+									sessionAffinityKey ?? "",
+									Date.now(),
+									model,
+								);
+								if (contextBudgetAdvisory.level === "hard") {
+									// One-shot: this pause returns before the request is
+									// forwarded, so the onUsage hook that would lower the
+									// recorded usage never runs. Dropping the snapshot keeps
+									// the session recoverable — otherwise the `/compact` turn
+									// this message asks for is blocked by the same key.
+									contextBudgetGuard.noteHardPauseEmitted(
+										sessionAffinityKey ?? "",
+									);
+									return createContextBudgetPauseResponse(
+										contextBudgetAdvisory,
+									);
+								}
 								const sessionAffinityVersion =
 									(sessionAffinityWriteVersion += 1);
 								const effectivePromptCacheKey =
@@ -2763,7 +2811,22 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														);
 														storedResponseIdForSuccess = true;
 													},
-													onUsage: usageDeferral.onUsage,
+													onUsage: (usage) => {
+														usageDeferral.onUsage(usage);
+														// Responses is mostly stateless (store=false): this
+														// turn's input_tokens reflects the full conversation
+														// resent this call, so it doubles as a live read of
+														// the session's current context size. input + output, NOT
+														// total: total_tokens also counts reasoning tokens, which
+														// are not resent as context on the next turn.
+														if (sessionAffinityKey && model) {
+															contextBudgetGuard.update(sessionAffinityKey, {
+																model,
+																contextTokens: usage.inputTokens + usage.outputTokens,
+																updatedAt: Date.now(),
+															});
+														}
+													},
 													streamStallTimeoutMs,
 												},
 											);
@@ -2938,6 +3001,24 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											clearPoolExhaustionCooldown();
 											clearServerBurstCooldown();
 											syncRuntimeObservability(requestTraceId);
+											// Non-blocking: contextBudgetAdvisory reflects usage
+											// observed as of the PRIOR turn (this turn's own usage
+											// isn't known yet for a streaming body), attached as a
+											// header for `codex-multi-auth status` / the statusline
+											// rather than altering this response's body.
+											if (contextBudgetAdvisory.level === "soft") {
+												const headers = new Headers(successResponse.headers);
+												for (const [name, value] of Object.entries(
+													buildContextBudgetHeaders(contextBudgetAdvisory),
+												)) {
+													headers.set(name, value);
+												}
+												return new Response(successResponse.body, {
+													status: successResponse.status,
+													statusText: successResponse.statusText,
+													headers,
+												});
+											}
 											return successResponse;
 										}
 										if (retryNextAccountBeforeFallback) {

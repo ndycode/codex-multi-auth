@@ -25,6 +25,10 @@ import {
 	getPreemptiveQuotaMaxDeferralMs,
 	getPreemptiveQuotaRemainingPercent5h,
 	getPreemptiveQuotaRemainingPercent7d,
+	getContextBudgetGuardEnabled,
+	getContextBudgetGuardSoftPercent,
+	getContextBudgetGuardHardPercent,
+	getContextBudgetGuardModelWindowOverrides,
 	getRoutingMutexMode,
 	getSchedulingStrategy,
 	loadPluginConfig,
@@ -55,6 +59,11 @@ import {
 	PreemptiveQuotaScheduler,
 	readQuotaSchedulerSnapshot,
 } from "./preemptive-quota-scheduler.js";
+import { ContextBudgetGuard } from "./context-budget-guard.js";
+import {
+	buildContextBudgetHeaders,
+	createContextBudgetPauseResponse,
+} from "./context-budget-response.js";
 import { createLogger, maskString, runWithCorrelationId } from "./logger.js";
 import { CodexValidationError } from "./errors.js";
 import { normalizeEmailKey } from "./storage/identity.js";
@@ -487,6 +496,45 @@ function getThreadGoalFallback(
 	return goal;
 }
 
+/**
+ * Session identity that is stable for the life of a conversation.
+ *
+ * Every source here keeps the same value across turns, so state keyed on it
+ * accumulates. `resolveSessionKey` adds `previous_response_id` on top for
+ * callers that only need "requests that belong together right now".
+ */
+function resolveStableSessionKey(
+	headers: Headers,
+	parsedBody: RequestBody | null,
+): string | null {
+	const headerKey =
+		headers.get(OPENAI_HEADERS.SESSION_ID) ??
+		headers.get(OPENAI_HEADERS.CONVERSATION_ID) ??
+		null;
+	if (headerKey && headerKey.trim().length > 0) return headerKey.trim();
+	if (!parsedBody) return null;
+	if (typeof parsedBody.prompt_cache_key === "string") {
+		const key = parsedBody.prompt_cache_key.trim();
+		if (key.length > 0) return key;
+	}
+	const metadata = parsedBody.metadata;
+	if (isRecord(metadata)) {
+		return (
+			readStringRecordValue(metadata, "session_id") ??
+			readStringRecordValue(metadata, "conversation_id") ??
+			readStringRecordValue(metadata, "thread_id")
+		);
+	}
+	return null;
+}
+
+/**
+ * Session identity for affinity/pinning: the stable sources above, plus
+ * `previous_response_id` as a last resort. Precedence is unchanged from
+ * before `resolveStableSessionKey` was split out — `previous_response_id`
+ * still outranks the `metadata` fallbacks — so which account a request pins
+ * to does not shift.
+ */
 function resolveSessionKey(headers: Headers, parsedBody: RequestBody | null): string | null {
 	const headerKey =
 		headers.get(OPENAI_HEADERS.SESSION_ID) ??
@@ -536,6 +584,7 @@ function buildResponsesRequestContext(
 		family: getModelFamily(model ?? CURRENT_CODEX_MODEL),
 		stream: parsedBody?.stream === true,
 		sessionKey: resolveSessionKey(headers, parsedBody),
+		stableSessionKey: resolveStableSessionKey(headers, parsedBody),
 	};
 }
 
@@ -549,6 +598,7 @@ function buildModelsRequestContext(req: IncomingMessage): RequestContext {
 		family: "codex",
 		stream: false,
 		sessionKey: null,
+		stableSessionKey: null,
 	};
 }
 
@@ -577,6 +627,8 @@ function buildThreadGoalRequestContext(
 		family: "codex",
 		stream: false,
 		sessionKey,
+		stableSessionKey:
+			bodyThreadKey ?? queryThreadKey ?? resolveStableSessionKey(headers, parsedBody),
 	};
 }
 
@@ -765,6 +817,12 @@ export async function startRuntimeRotationProxy(
 			getPreemptiveQuotaRemainingPercent7d(pluginConfig),
 		maxDeferralMs: getPreemptiveQuotaMaxDeferralMs(pluginConfig),
 	});
+	const contextBudgetGuard = new ContextBudgetGuard({
+		enabled: getContextBudgetGuardEnabled(pluginConfig),
+		softPercent: getContextBudgetGuardSoftPercent(pluginConfig),
+		hardPercent: getContextBudgetGuardHardPercent(pluginConfig),
+		modelWindowOverrides: getContextBudgetGuardModelWindowOverrides(pluginConfig),
+	});
 	const sessionAffinityStore = getSessionAffinity(pluginConfig)
 		? new SessionAffinityStore({
 				ttlMs: getSessionAffinityTtlMs(pluginConfig),
@@ -796,6 +854,7 @@ export async function startRuntimeRotationProxy(
 		maxRequestBodyBytes,
 		quotaRemainingPercentThreshold,
 		preemptiveQuotaScheduler,
+		contextBudgetGuard,
 		sessionAffinityStore,
 		lastObservedAffinityGeneration,
 		forcedAccountIndex,
@@ -979,6 +1038,50 @@ async function handleRequestInner(
 			});
 			return;
 		}
+		// Context budget guard: pause BEFORE spending an upstream round-trip on a
+		// request that the tracked session is already over the hard threshold
+		// for, rather than reacting to the eventual context_length_exceeded 400
+		// (which this rotation-proxy path does not otherwise handle at all — see
+		// lib/context-overflow.ts, wired only into the plugin-loader fetch path).
+		// Runs independent of account selection: which account serves the
+		// request has no bearing on how full its context already is. Hoisted
+		// to function scope (not just this `if`) so the soft-threshold branch
+		// below can attach its non-blocking header to the eventual forwarded
+		// response.
+		let budgetAdvisory: ReturnType<typeof state.contextBudgetGuard.getAdvisory> = {
+			level: "ok",
+		};
+		if (isResponsesRequest) {
+			budgetAdvisory = state.contextBudgetGuard.getAdvisory(
+				context.stableSessionKey ?? "",
+				requestStartedAt,
+				context.model,
+			);
+			if (budgetAdvisory.level === "hard") {
+				// One-shot: the pause returns before the request is forwarded, so
+				// `update()` below never runs for it and the recorded usage cannot
+				// fall on its own. Without dropping the snapshot the first crossing
+				// would wedge the session permanently — including the `/compact`
+				// turn this pause tells the user to run, which carries the same
+				// session key.
+				state.contextBudgetGuard.noteHardPauseEmitted(
+					context.stableSessionKey ?? "",
+				);
+				await usageRecorder.record({
+					outcome: "blocked",
+					statusCode: HTTP_STATUS.OK,
+					errorCode: "context_budget_guard_paused",
+				});
+				const pauseResponse = createContextBudgetPauseResponse(budgetAdvisory);
+				res.writeHead(
+					pauseResponse.status,
+					Object.fromEntries(pauseResponse.headers.entries()),
+				);
+				res.end(await pauseResponse.text());
+				return;
+			}
+		}
+
 		const upstreamUrl = buildUpstreamUrl(
 			req,
 			state.upstreamBaseUrl,
@@ -1616,10 +1719,32 @@ async function handleRequestInner(
 				},
 				state.streamStallTimeoutMs,
 				usageScanner.push,
+				budgetAdvisory.level === "soft"
+					? buildContextBudgetHeaders(budgetAdvisory)
+					: undefined,
 			);
 			// A stream that broke mid-flight still bills for whatever the upstream
 			// reported before the break, so record the counts on both outcomes.
 			const usageTokens = usageScanner.result();
+			// Responses is mostly stateless (store=false): each successful turn's
+			// input_tokens reflects the full conversation resent this call, so it
+			// doubles as a live read of the session's current context size. Record
+			// it even on a broken stream, matching the ledger's own choice above —
+			// the tokens upstream billed for were still resent as full context.
+			//
+			// input + output, NOT total: `usageTokens.totalTokens` is the
+			// provider's `total_tokens`, which also counts `reasoning_tokens`.
+			// Reasoning is not carried into the next turn's input, so counting
+			// it here inflates the measurement by this turn's thinking budget
+			// against a deliberately tight threshold. `outputTokens` is already
+			// reasoning-stripped (lib/usage/usage-extraction.ts).
+			if (usageTokens && context.stableSessionKey && context.model) {
+				state.contextBudgetGuard.update(context.stableSessionKey, {
+					model: context.model,
+					contextTokens: usageTokens.inputTokens + usageTokens.outputTokens,
+					updatedAt: state.now(),
+				});
+			}
 			await usageRecorder.record({
 				outcome: forwarded ? "success" : "failure",
 				statusCode: upstream.status,

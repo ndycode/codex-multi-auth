@@ -7,6 +7,7 @@
  */
 
 import { logDebug } from "./logger.js";
+import { createSyntheticSseResponse } from "./synthetic-response.js";
 
 /**
  * Error patterns that indicate context overflow
@@ -58,74 +59,11 @@ Alternatively, you can switch to a model with a larger context window.`;
  * (recovery-01). Returns 200 OK so the host session does not lock on the 400.
  */
 export function createContextOverflowResponse(model: string = "unknown"): Response {
-  const messageId = `msg_synthetic_overflow_${Date.now()}_${Math.random()
-    .toString(36)
-    .slice(2, 8)}`;
-  const responseId = `resp_synthetic_overflow_${Date.now()}_${Math.random()
-    .toString(36)
-    .slice(2, 8)}`;
-  const events: string[] = [];
-
-  const push = (type: string, payload: Record<string, unknown>): void => {
-    events.push(`event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`);
-  };
-
-  const baseResponse = {
-    id: responseId,
-    object: "response",
+  return createSyntheticSseResponse({
     model,
-  };
-
-  // response.created
-  push("response.created", { response: { ...baseResponse, status: "in_progress" } });
-
-  // output item (assistant message) added
-  push("response.output_item.added", {
-    output_index: 0,
-    item: {
-      id: messageId,
-      type: "message",
-      role: "assistant",
-      content: [],
-    },
-  });
-
-  // streamed text + its terminal "done" carrying the final canonical text
-  push("response.output_text.delta", {
-    output_index: 0,
-    content_index: 0,
-    delta: CONTEXT_OVERFLOW_MESSAGE,
-  });
-  push("response.output_text.done", {
-    output_index: 0,
-    content_index: 0,
-    text: CONTEXT_OVERFLOW_MESSAGE,
-  });
-
-  // terminal response.completed with the full output array
-  push("response.completed", {
-    response: {
-      ...baseResponse,
-      status: "completed",
-      output: [
-        {
-          id: messageId,
-          type: "message",
-          role: "assistant",
-          content: [{ type: "output_text", text: CONTEXT_OVERFLOW_MESSAGE }],
-        },
-      ],
-      usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
-    },
-  });
-
-  return new Response(events.join(""), {
-    status: 200,
-    headers: {
-      "Content-Type": "text/event-stream",
-      "X-Codex-Plugin-Synthetic": "true",
-      "X-Codex-Plugin-Error-Type": "context_overflow",
-    },
+    message: CONTEXT_OVERFLOW_MESSAGE,
+    idPrefix: "synthetic_overflow",
+    errorType: "context_overflow",
   });
 }
 
