@@ -4282,6 +4282,72 @@ describe("AccountManager", () => {
 			}
 		});
 
+		it("names the admission gate that actually rejected the request", () => {
+			// `account_skip_reasons` is written from this verdict. Re-deriving it
+			// afterwards with getManagedAccountRuntimeSkipReason reports the FIRST
+			// blocker on the account instead of the gate that rejected, so a drained
+			// bucket on a cooling-down account came back as the cooldown.
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						refreshToken: "token-1",
+						email: "gates@example.com",
+						addedAt: now,
+						lastUsed: now,
+					},
+				],
+			};
+			const manager = new AccountManager(undefined, stored);
+			const account = manager.getCurrentAccount()!;
+			const tokenTracker = getTokenTracker();
+			const trackerKey = getRuntimeTrackerKey(account);
+			const quotaKey = "codex:gpt-5.1";
+
+			expect(manager.consumeTokenWithReason(account, "codex", "gpt-5.1")).toEqual({
+				ok: true,
+			});
+
+			tokenTracker.drain(
+				trackerKey,
+				quotaKey,
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+			);
+			// A cooldown on the same account must not be reported in place of the
+			// bucket: the bucket is what rejected.
+			manager.markAccountCoolingDown(account, 60_000, "server-error");
+			expect(manager.consumeTokenWithReason(account, "codex", "gpt-5.1")).toEqual({
+				ok: false,
+				reason: "token-exhausted",
+			});
+			// Contrast: re-deriving the reason from account state answers with the
+			// cooldown, which is NOT what rejected this call. That substitution is
+			// exactly the mis-attribution consumeTokenWithReason exists to avoid.
+			expect(
+				manager.getManagedAccountRuntimeSkipReason(account, "codex", "gpt-5.1"),
+			).toBe("cooling-down:server-error");
+
+			// With the bucket bypassed the only gate left is circuit admission, so a
+			// rejection there is reported as such and never as an exhausted bucket.
+			manager.recordFailure(account, "codex", "gpt-5.1");
+			manager.recordFailure(account, "codex", "gpt-5.1");
+			manager.recordFailure(account, "codex", "gpt-5.1");
+			expect(
+				manager.consumeTokenWithReason(account, "codex", "gpt-5.1", {
+					bypassTokenBucket: true,
+				}),
+			).toEqual({ ok: false, reason: "circuit-open" });
+
+			// consumeToken stays the boolean face of the same evaluation.
+			expect(
+				manager.consumeToken(account, "codex", "gpt-5.1", {
+					bypassTokenBucket: true,
+				}),
+			).toBe(false);
+		});
+
 		it("consumeToken returns false and refunds the token when the circuit is open", () => {
 			const now = Date.now();
 			const stored = {

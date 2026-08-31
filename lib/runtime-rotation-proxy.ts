@@ -1160,22 +1160,19 @@ async function handleRequestInner(
 				continue;
 			}
 
-			if (
-				!accountManager.consumeToken(selected, context.family, context.model, {
-					bypassTokenBucket: bypassPoolTokenBucket,
-				})
-			) {
-				// consumeToken also takes the race-safe circuit admission slot. If the
-				// circuit changed after selection, report that live blocker; otherwise
-				// this is the unpinned pool bucket running dry.
-				accountSkipReasons.set(
-					selected.index,
-					accountManager.getManagedAccountRuntimeSkipReason(
-						selected,
-						context.family,
-						context.model,
-					) ?? "token-exhausted",
-				);
+			// consumeToken also takes the race-safe circuit admission slot, so it
+			// can reject for either gate. Take the reason from the call that
+			// rejected rather than re-deriving it: a second evaluation reports the
+			// first blocker it finds (a live cooldown would mask a drained bucket)
+			// and cannot see a half-open probe slot that was just claimed.
+			const admission = accountManager.consumeTokenWithReason(
+				selected,
+				context.family,
+				context.model,
+				{ bypassTokenBucket: bypassPoolTokenBucket },
+			);
+			if (!admission.ok) {
+				accountSkipReasons.set(selected.index, admission.reason);
 				exhaustionReason = "rate-limit";
 				continue;
 			}
