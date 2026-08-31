@@ -4,6 +4,15 @@ import type { RuntimePolicyDecision } from "../policy/runtime-policy.js";
 import type { SessionAffinityStore } from "../session-affinity.js";
 
 /**
+ * Whether a runtime skip reason is a cooldown, the one blocker a pinned
+ * retry may waive. `getManagedAccountRuntimeSkipReason` emits either the
+ * bare token or `cooling-down:<reason>`.
+ */
+function isCooldownReason(reason: string): boolean {
+	return reason === "cooling-down" || reason.startsWith("cooling-down:");
+}
+
+/**
  * `chooseAccount` is a SYNC selector that internally advances the rotation
  * cursor (the session-affinity-preferred branch and the round-robin fallback
  * both call `accountManager.markSwitched(...)`, and the hybrid selector advances
@@ -21,15 +30,6 @@ import type { SessionAffinityStore } from "../session-affinity.js";
  * `startRuntimeRotationProxy` and the regression in
  * `test/runtime-rotation-proxy.test.ts`.
  */
-/**
- * Whether a runtime skip reason is a cooldown, the one blocker a pinned
- * retry may waive. `getManagedAccountRuntimeSkipReason` emits either the
- * bare token or `cooling-down:<reason>`.
- */
-function isCooldownReason(reason: string): boolean {
-	return reason === "cooling-down" || reason.startsWith("cooling-down:");
-}
-
 export function chooseAccount(params: {
 	accountManager: AccountManager;
 	sessionAffinityStore: SessionAffinityStore | null;
