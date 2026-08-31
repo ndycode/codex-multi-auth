@@ -1084,11 +1084,13 @@ export class AccountManager {
 		account: ManagedAccount,
 		family: ModelFamily,
 		model?: string | null,
+		options: { bypassTokenBucket?: boolean } = {},
 	): boolean {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const tokenTracker = getTokenTracker();
 		const trackerKey = getRuntimeTrackerKey(account);
-		if (!tokenTracker.tryConsume(trackerKey, quotaKey)) {
+		const shouldConsumeToken = options.bypassTokenBucket !== true;
+		if (shouldConsumeToken && !tokenTracker.tryConsume(trackerKey, quotaKey)) {
 			return false;
 		}
 
@@ -1096,7 +1098,9 @@ export class AccountManager {
 			getCircuitBreaker(getAccountCircuitKey(account)).canExecute();
 			return true;
 		} catch {
-			tokenTracker.refundToken(trackerKey, quotaKey);
+			if (shouldConsumeToken) {
+				tokenTracker.refundToken(trackerKey, quotaKey);
+			}
 			return false;
 		}
 	}

@@ -4227,6 +4227,61 @@ describe("AccountManager", () => {
 			expect(result).toBe(true);
 		});
 
+		it("can bypass an exhausted pool bucket without bypassing circuit admission", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						refreshToken: "token-1",
+						email: "pinned@example.com",
+						addedAt: now,
+						lastUsed: now,
+					},
+				],
+			};
+			const manager = new AccountManager(undefined, stored);
+			const account = manager.getCurrentAccount()!;
+			const tokenTracker = getTokenTracker();
+			const trackerKey = getRuntimeTrackerKey(account);
+			const quotaKey = "codex:gpt-5.1";
+			tokenTracker.drain(
+				trackerKey,
+				quotaKey,
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+			);
+
+			expect(manager.consumeToken(account, "codex", "gpt-5.1")).toBe(false);
+			const tryConsumeSpy = vi.spyOn(tokenTracker, "tryConsume");
+			const refundTokenSpy = vi.spyOn(tokenTracker, "refundToken");
+			try {
+				expect(
+					manager.consumeToken(account, "codex", "gpt-5.1", {
+						bypassTokenBucket: true,
+					}),
+				).toBe(true);
+				expect(tryConsumeSpy).not.toHaveBeenCalled();
+				expect(tokenTracker.getTokens(trackerKey, quotaKey)).toBeLessThan(1);
+
+				manager.recordFailure(account, "codex", "gpt-5.1");
+				manager.recordFailure(account, "codex", "gpt-5.1");
+				manager.recordFailure(account, "codex", "gpt-5.1");
+				expect(
+					manager.consumeToken(account, "codex", "gpt-5.1", {
+						bypassTokenBucket: true,
+					}),
+				).toBe(false);
+				// A rejected bypass must not refund another request's bucket token.
+				expect(tryConsumeSpy).not.toHaveBeenCalled();
+				expect(refundTokenSpy).not.toHaveBeenCalled();
+				expect(tokenTracker.getTokens(trackerKey, quotaKey)).toBeLessThan(1);
+			} finally {
+				tryConsumeSpy.mockRestore();
+				refundTokenSpy.mockRestore();
+			}
+		});
+
 		it("consumeToken returns false and refunds the token when the circuit is open", () => {
 			const now = Date.now();
 			const stored = {

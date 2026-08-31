@@ -1013,6 +1013,16 @@ async function handleRequestInner(
 		// applies unchanged because it all keys off `pinnedIndex` / `isPinned`.
 		const pinnedIndex = state.forcedAccountIndex ?? storageMeta.pinnedAccountIndex;
 		const isPinned = typeof pinnedIndex === "number";
+		// The token bucket spreads load across a selectable pool. A pin has no
+		// alternative account, so exhausting that local heuristic can only reject a
+		// request that the pinned account could serve. Keep circuit-breaker admission
+		// inside consumeToken, but do not debit the pool-scoring bucket for a pin.
+		const bypassPoolTokenBucket = isPinned;
+		const refundConsumedPoolToken = (account: ManagedAccount): void => {
+			if (!bypassPoolTokenBucket) {
+				accountManager.refundToken(account, context.family, context.model);
+			}
+		};
 		if (storageMeta.affinityGeneration > state.lastObservedAffinityGeneration) {
 			state.sessionAffinityStore?.clearAll();
 			state.lastObservedAffinityGeneration = storageMeta.affinityGeneration;
@@ -1150,8 +1160,22 @@ async function handleRequestInner(
 				continue;
 			}
 
-			if (!accountManager.consumeToken(selected, context.family, context.model)) {
-				accountSkipReasons.set(selected.index, "token-exhausted");
+			if (
+				!accountManager.consumeToken(selected, context.family, context.model, {
+					bypassTokenBucket: bypassPoolTokenBucket,
+				})
+			) {
+				// consumeToken also takes the race-safe circuit admission slot. If the
+				// circuit changed after selection, report that live blocker; otherwise
+				// this is the unpinned pool bucket running dry.
+				accountSkipReasons.set(
+					selected.index,
+					accountManager.getManagedAccountRuntimeSkipReason(
+						selected,
+						context.family,
+						context.model,
+					) ?? "token-exhausted",
+				);
 				exhaustionReason = "rate-limit";
 				continue;
 			}
@@ -1166,7 +1190,7 @@ async function handleRequestInner(
 				tokenInvalidationCooldownMs: state.tokenInvalidationCooldownMs,
 			});
 			if (!refreshed.ok) {
-				accountManager.refundToken(selected, context.family, context.model);
+				refundConsumedPoolToken(selected);
 				exhaustionReason = "auth-failure";
 				if (refreshed.invalidated) {
 					// Refresh endpoint explicitly revoked the token. Stop cascade:
@@ -1195,7 +1219,7 @@ async function handleRequestInner(
 
 			const accountId = resolveAccountId(refreshed.account, refreshed.accessToken);
 			if (!accountId) {
-				accountManager.refundToken(refreshed.account, context.family, context.model);
+				refundConsumedPoolToken(refreshed.account);
 				accountManager.recordFailure(refreshed.account, context.family, context.model);
 				accountManager.markAccountCoolingDown(
 					refreshed.account,
@@ -1260,7 +1284,7 @@ async function handleRequestInner(
 					code: "codex_runtime_rotation_transport_error",
 					error: transportError,
 				});
-				accountManager.refundToken(refreshed.account, context.family, context.model);
+				refundConsumedPoolToken(refreshed.account);
 				// A pre-header transport exception is a property of the network path,
 				// not of this account's credentials or quota, so it must NOT feed the
 				// account's circuit breaker / health tracker: that is what would
@@ -1333,11 +1357,7 @@ async function handleRequestInner(
 					const accountWasEnabled =
 						accountManager.getAccountByIndex(refreshed.account.index)?.enabled !==
 						false;
-					accountManager.refundToken(
-						refreshed.account,
-						context.family,
-						context.model,
-					);
+					refundConsumedPoolToken(refreshed.account);
 					if (accountWasEnabled) {
 						accountManager.recordFailure(
 							refreshed.account,
@@ -1425,7 +1445,7 @@ async function handleRequestInner(
 
 			if (upstream.status === HTTP_STATUS.UNAUTHORIZED) {
 				const bodyText = await readErrorBody(upstream, state.streamStallTimeoutMs);
-				accountManager.refundToken(refreshed.account, context.family, context.model);
+				refundConsumedPoolToken(refreshed.account);
 				accountManager.recordFailure(refreshed.account, context.family, context.model);
 				if (isTokenInvalidationError(bodyText)) {
 					// The upstream explicitly revoked this OAuth token. Applying a long
@@ -1478,7 +1498,7 @@ async function handleRequestInner(
 
 			if (upstream.status >= 500) {
 				await readErrorBody(upstream, state.streamStallTimeoutMs);
-				accountManager.refundToken(refreshed.account, context.family, context.model);
+				refundConsumedPoolToken(refreshed.account);
 				accountManager.recordFailure(refreshed.account, context.family, context.model);
 				accountManager.markAccountCoolingDown(
 					refreshed.account,
