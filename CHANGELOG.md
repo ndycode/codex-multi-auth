@@ -5,6 +5,21 @@ Dates use ISO format (`YYYY-MM-DD`).
 
 This repository's current stable release line is `2.x`. Full release notes live in [`docs/releases/`](docs/releases/) — this file is the short version. Pre-`0.1.0` iteration history is archived in [`docs/releases/legacy-pre-0.1-history.md`](docs/releases/legacy-pre-0.1-history.md).
 
+## [2.10.0] - 2026-08-31
+
+A pinned account gets a real bounded retry instead of a single attempt, and a new opt-in guard can pause a session before it overflows the model's context window. [Full notes](docs/releases/v2.10.0.md).
+
+### Added
+
+- Context Budget Guard, experimental and shipping **disabled**. Enable it from Settings → Experimental or with `contextBudgetGuardEnabled`. It tracks how full each session's context window is from the tokens each turn actually carries (`input_tokens` plus the reasoning-stripped output, never `total_tokens`) and answers the next request locally with a `/compact` notice once usage crosses `contextBudgetGuardHardPercent`, before that request costs an upstream round-trip. A soft threshold attaches a non-blocking `x-codex-context-budget-percent` header instead. Window sizes are best-effort estimates, not published facts, so `contextBudgetGuardModelWindowOverrides` always wins and a model with no estimate is skipped rather than guessed at. The pause is one-shot per measurement: it drops what it recorded as it fires, so the `/compact` turn it asks for is never blocked by it ([#681](https://github.com/ndycode/codex-multi-auth/pull/681))
+
+### Fixed
+
+- A pinned request retries a transient upstream failure instead of returning `codex_pinned_account_unavailable` on the first one. Every transient branch cools the account down before the next selection pass, and selection refuses a cooling-down pin, so the retry budget could never be spent. A pinned retry now waives that account's own cooldown, and only from the second pass of the same request, with 250ms/500ms/1s backoff and a cap of `min(retryAllAccountsMaxRetries + 1, 4)` upstream attempts. Rate limits, open circuits, disabled accounts and policy blocks all still stop it, the cooldown still applies to every other request and still sets `retry_after_ms`, and a pin already cooling down on arrival is still refused without an upstream call ([#683](https://github.com/ndycode/codex-multi-auth/pull/683))
+- A pinned request is no longer refused by the local token bucket. That bucket spreads load across the selectable pool, and a pin has no alternative account, so a drained bucket could only reject a request the pinned account could serve. Circuit-breaker admission still applies, and the bucket is neither consumed nor refunded for a pin ([#682](https://github.com/ndycode/codex-multi-auth/pull/682))
+- `account_skip_reasons` names the admission gate that actually rejected a request. The reason was re-derived from account state afterwards, which reports the first blocker it finds — so a drained bucket on a cooling-down account was reported as the cooldown, and a rejection from a half-open circuit whose probe another request had just claimed was reported as an exhausted bucket ([#682](https://github.com/ndycode/codex-multi-auth/pull/682))
+- A context-window override below 1 token is dropped instead of being stored as a window of zero. `contextBudgetGuardModelWindowOverrides` validated positivity on the raw value and floored afterwards, so any value in `(0, 1)` was accepted by the schema and then silently ignored ([#681](https://github.com/ndycode/codex-multi-auth/pull/681))
+
 ## [2.9.2] - 2026-08-30
 
 A maintenance release with no runtime, CLI, or configuration changes: `npm run typecheck:scripts` failed on every clean checkout. [Full notes](docs/releases/v2.9.2.md).
