@@ -25,6 +25,10 @@ import {
 	getPreemptiveQuotaMaxDeferralMs,
 	getPreemptiveQuotaRemainingPercent5h,
 	getPreemptiveQuotaRemainingPercent7d,
+	getContextBudgetGuardEnabled,
+	getContextBudgetGuardSoftPercent,
+	getContextBudgetGuardHardPercent,
+	getContextBudgetGuardModelWindowOverrides,
 	getRoutingMutexMode,
 	getSchedulingStrategy,
 	loadPluginConfig,
@@ -55,6 +59,11 @@ import {
 	PreemptiveQuotaScheduler,
 	readQuotaSchedulerSnapshot,
 } from "./preemptive-quota-scheduler.js";
+import { ContextBudgetGuard } from "./context-budget-guard.js";
+import {
+	buildContextBudgetHeaders,
+	createContextBudgetPauseResponse,
+} from "./context-budget-response.js";
 import { createLogger, maskString, runWithCorrelationId } from "./logger.js";
 import { CodexValidationError } from "./errors.js";
 import { normalizeEmailKey } from "./storage/identity.js";
@@ -765,6 +774,12 @@ export async function startRuntimeRotationProxy(
 			getPreemptiveQuotaRemainingPercent7d(pluginConfig),
 		maxDeferralMs: getPreemptiveQuotaMaxDeferralMs(pluginConfig),
 	});
+	const contextBudgetGuard = new ContextBudgetGuard({
+		enabled: getContextBudgetGuardEnabled(pluginConfig),
+		softPercent: getContextBudgetGuardSoftPercent(pluginConfig),
+		hardPercent: getContextBudgetGuardHardPercent(pluginConfig),
+		modelWindowOverrides: getContextBudgetGuardModelWindowOverrides(pluginConfig),
+	});
 	const sessionAffinityStore = getSessionAffinity(pluginConfig)
 		? new SessionAffinityStore({
 				ttlMs: getSessionAffinityTtlMs(pluginConfig),
@@ -796,6 +811,7 @@ export async function startRuntimeRotationProxy(
 		maxRequestBodyBytes,
 		quotaRemainingPercentThreshold,
 		preemptiveQuotaScheduler,
+		contextBudgetGuard,
 		sessionAffinityStore,
 		lastObservedAffinityGeneration,
 		forcedAccountIndex,
@@ -979,6 +995,40 @@ async function handleRequestInner(
 			});
 			return;
 		}
+		// Context budget guard: pause BEFORE spending an upstream round-trip on a
+		// request that the tracked session is already over the hard threshold
+		// for, rather than reacting to the eventual context_length_exceeded 400
+		// (which this rotation-proxy path does not otherwise handle at all — see
+		// lib/context-overflow.ts, wired only into the plugin-loader fetch path).
+		// Runs independent of account selection: which account serves the
+		// request has no bearing on how full its context already is. Hoisted
+		// to function scope (not just this `if`) so the soft-threshold branch
+		// below can attach its non-blocking header to the eventual forwarded
+		// response.
+		let budgetAdvisory: ReturnType<typeof state.contextBudgetGuard.getAdvisory> = {
+			level: "ok",
+		};
+		if (isResponsesRequest) {
+			budgetAdvisory = state.contextBudgetGuard.getAdvisory(
+				context.sessionKey ?? "",
+				requestStartedAt,
+			);
+			if (budgetAdvisory.level === "hard") {
+				await usageRecorder.record({
+					outcome: "blocked",
+					statusCode: HTTP_STATUS.OK,
+					errorCode: "context_budget_guard_paused",
+				});
+				const pauseResponse = createContextBudgetPauseResponse(budgetAdvisory);
+				res.writeHead(
+					pauseResponse.status,
+					Object.fromEntries(pauseResponse.headers.entries()),
+				);
+				res.end(await pauseResponse.text());
+				return;
+			}
+		}
+
 		const upstreamUrl = buildUpstreamUrl(
 			req,
 			state.upstreamBaseUrl,
@@ -1599,10 +1649,25 @@ async function handleRequestInner(
 				},
 				state.streamStallTimeoutMs,
 				usageScanner.push,
+				budgetAdvisory.level === "soft"
+					? buildContextBudgetHeaders(budgetAdvisory)
+					: undefined,
 			);
 			// A stream that broke mid-flight still bills for whatever the upstream
 			// reported before the break, so record the counts on both outcomes.
 			const usageTokens = usageScanner.result();
+			// Responses is mostly stateless (store=false): each successful turn's
+			// input_tokens reflects the full conversation resent this call, so it
+			// doubles as a live read of the session's current context size. Record
+			// it even on a broken stream, matching the ledger's own choice above —
+			// the tokens upstream billed for were still resent as full context.
+			if (usageTokens && context.sessionKey && context.model) {
+				state.contextBudgetGuard.update(context.sessionKey, {
+					model: context.model,
+					totalTokens: usageTokens.totalTokens,
+					updatedAt: state.now(),
+				});
+			}
 			await usageRecorder.record({
 				outcome: forwarded ? "success" : "failure",
 				statusCode: upstream.status,

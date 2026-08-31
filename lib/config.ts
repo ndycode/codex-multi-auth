@@ -243,6 +243,10 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	preemptiveQuotaRemainingPercent5h: 5,
 	preemptiveQuotaRemainingPercent7d: 5,
 	preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
+	contextBudgetGuardEnabled: false,
+	contextBudgetGuardSoftPercent: 65,
+	contextBudgetGuardHardPercent: 69,
+	contextBudgetGuardModelWindowOverrides: {},
 	routingMutex: "legacy",
 	schedulingStrategy: "hybrid",
 };
@@ -1842,6 +1846,67 @@ export function getPreemptiveQuotaMaxDeferralMs(
 	);
 }
 
+/**
+ * Whether the (experimental, opt-in) context budget guard is enabled.
+ *
+ * Ships disabled: pausing a session before it hits the context window is a
+ * staged behavior change, not a default-on safety net like preemptive quota
+ * deferral, so an explicit opt-in is required.
+ */
+export function getContextBudgetGuardEnabled(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_CONTEXT_BUDGET_GUARD_ENABLED",
+		pluginConfig.contextBudgetGuardEnabled,
+		false,
+	);
+}
+
+/** Percent of the effective context window at which the guard's non-blocking advisory fires. */
+export function getContextBudgetGuardSoftPercent(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_CONTEXT_BUDGET_SOFT_PCT",
+		pluginConfig.contextBudgetGuardSoftPercent,
+		65,
+		{ min: 0, max: 100 },
+	);
+}
+
+/** Percent of the effective context window at which the guard pauses the next request. */
+export function getContextBudgetGuardHardPercent(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_CONTEXT_BUDGET_HARD_PCT",
+		pluginConfig.contextBudgetGuardHardPercent,
+		69,
+		{ min: 0, max: 100 },
+	);
+}
+
+/**
+ * User-supplied context-window sizes, keyed by normalized model id, that
+ * always take priority over this package's own best-effort estimates (see
+ * `lib/context-budget/model-context-windows.ts`). Settings-only: there is no
+ * environment override, the same as `unsupportedCodexFallbackChain`, since a
+ * per-model token count is not a reasonable single env var.
+ */
+export function getContextBudgetGuardModelWindowOverrides(
+	pluginConfig: PluginConfig,
+): Record<string, number> {
+	const overrides = pluginConfig.contextBudgetGuardModelWindowOverrides;
+	if (!overrides || typeof overrides !== "object") {
+		return {};
+	}
+	const normalized: Record<string, number> = {};
+	for (const [rawModel, rawValue] of Object.entries(overrides)) {
+		const model = rawModel.trim().toLowerCase();
+		if (!model) continue;
+		if (typeof rawValue !== "number" || !Number.isFinite(rawValue) || rawValue <= 0) {
+			continue;
+		}
+		normalized[model] = Math.floor(rawValue);
+	}
+	return normalized;
+}
+
 const ROUTING_MUTEX_MODES = new Set<string>(["enabled", "legacy"]);
 
 /**
@@ -2229,6 +2294,26 @@ const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
 		key: "preemptiveQuotaMaxDeferralMs",
 		envNames: ["CODEX_AUTH_PREEMPTIVE_QUOTA_MAX_DEFERRAL_MS"],
 		getValue: getPreemptiveQuotaMaxDeferralMs,
+	},
+	{
+		key: "contextBudgetGuardEnabled",
+		envNames: ["CODEX_AUTH_CONTEXT_BUDGET_GUARD_ENABLED"],
+		getValue: getContextBudgetGuardEnabled,
+	},
+	{
+		key: "contextBudgetGuardSoftPercent",
+		envNames: ["CODEX_AUTH_CONTEXT_BUDGET_SOFT_PCT"],
+		getValue: getContextBudgetGuardSoftPercent,
+	},
+	{
+		key: "contextBudgetGuardHardPercent",
+		envNames: ["CODEX_AUTH_CONTEXT_BUDGET_HARD_PCT"],
+		getValue: getContextBudgetGuardHardPercent,
+	},
+	{
+		key: "contextBudgetGuardModelWindowOverrides",
+		envNames: [],
+		getValue: getContextBudgetGuardModelWindowOverrides,
 	},
 	// config-01/config-07: these three live settings were missing from the explain
 	// report, so `config explain` silently under-reported the effective config. A

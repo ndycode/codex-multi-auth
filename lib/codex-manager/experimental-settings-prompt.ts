@@ -28,6 +28,7 @@ type ExperimentalSettingsCopy = {
 	experimentalRefreshInterval: string;
 	experimentalDecreaseInterval: string;
 	experimentalIncreaseInterval: string;
+	experimentalContextBudgetGuard: string;
 	saveAndBack: string;
 	backNoSave: string;
 	experimentalHelpMenu: string;
@@ -139,6 +140,11 @@ export async function promptExperimentalSettingsMenu<TTargetState>(
 					value: { type: "increase-refresh-interval" },
 					color: "green",
 				},
+				{
+					label: `${params.formatDashboardSettingState(draft.contextBudgetGuardEnabled ?? false)} ${copy.experimentalContextBudgetGuard}`,
+					value: { type: "toggle-context-budget-guard" },
+					color: "yellow",
+				},
 				{ label: copy.saveAndBack, value: { type: "save" }, color: "green" },
 				{ label: copy.backNoSave, value: { type: "back" }, color: "red" },
 			],
@@ -175,6 +181,13 @@ export async function promptExperimentalSettingsMenu<TTargetState>(
 					refreshIntervalMax,
 					(draft.proactiveRefreshIntervalMs ?? 60000) + refreshIntervalStep,
 				),
+			};
+			continue;
+		}
+		if (actionType === "toggle-context-budget-guard") {
+			draft = {
+				...draft,
+				contextBudgetGuardEnabled: !(draft.contextBudgetGuardEnabled ?? false),
 			};
 			continue;
 		}

@@ -162,6 +162,29 @@ Upgrade note:
 missing, invalid, or stale reset data. A trusted future reset may schedule through the
 reset time, subject to the scheduler's seven-day safety ceiling.
 
+### Context Budget Guard (experimental)
+
+| Key | Default |
+| --- | --- |
+| `contextBudgetGuardEnabled` | `false` |
+| `contextBudgetGuardSoftPercent` | `65` |
+| `contextBudgetGuardHardPercent` | `69` |
+| `contextBudgetGuardModelWindowOverrides` | `{}` |
+
+Ships disabled. When enabled, pauses the next forwarded request on a session once its
+context usage crosses `contextBudgetGuardHardPercent` of the model's context window,
+before the request reaches upstream — see [features.md](../features.md#context-budget-guard-experimental).
+`contextBudgetGuardSoftPercent` only attaches a non-blocking
+`x-codex-context-budget-percent` header; it never pauses a request. Window sizes come
+from `lib/context-budget/model-context-windows.ts`'s best-effort estimates, which are
+NOT verified against the ChatGPT Codex backend (see `docs/releases/v2.5.0.md`) — set
+`contextBudgetGuardModelWindowOverrides` (`{ "<model>": <tokens> }`) to the real ceiling
+once observed; an override always takes priority over the built-in estimate. No env var
+overrides `contextBudgetGuardModelWindowOverrides` itself (a per-model map is not a
+reasonable single env var), but the other three fields do:
+`CODEX_AUTH_CONTEXT_BUDGET_GUARD_ENABLED`, `CODEX_AUTH_CONTEXT_BUDGET_SOFT_PCT`,
+`CODEX_AUTH_CONTEXT_BUDGET_HARD_PCT`.
+
 ### Notifications
 
 | Key | Default |
