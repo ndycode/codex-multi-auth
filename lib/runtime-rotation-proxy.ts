@@ -98,7 +98,7 @@ import {
 } from "./runtime/rotation-token-refresh.js";
 import { SessionAffinityStore } from "./session-affinity.js";
 import type { RequestBody } from "./types.js";
-import { isRecord } from "./utils.js";
+import { isRecord, sleep } from "./utils.js";
 
 // Re-exports: these symbols were defined in this module before the §4.1.3
 // phase-1 and phase-2 carves and are part of its public surface (lib/index.ts
@@ -218,6 +218,39 @@ const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
 // branches that do not consume the transient-attempt budget. It deliberately
 // overrides larger retry settings for pinned requests.
 const MAX_PINNED_SELECTION_ITERATIONS = 16;
+/**
+ * Ceiling on same-account re-sends for one pinned request.
+ *
+ * The pool's transient budget is derived from `retryAllAccountsMaxRetries`,
+ * whose documented meaning is "wait and retry when EVERY account is
+ * rate-limited". For an unpinned pool that budget spends across different
+ * accounts; for a pin every unit of it is another copy of the same
+ * (non-idempotent) request to the same upstream, so raising that pool knob
+ * must not silently multiply pinned re-sends. A user who LOWERS the knob
+ * still gets fewer attempts.
+ */
+const MAX_PINNED_TRANSIENT_ATTEMPTS = 4;
+/**
+ * Backoff before each pinned re-attempt: 250ms, 500ms, 1s, capped.
+ *
+ * A pinned retry re-sends the SAME non-idempotent request to the SAME
+ * upstream, and the retry loop has no other delay anywhere in it. The
+ * account's cooldown used to supply that spacing by accident, by blocking
+ * selection outright — which is also why the retry budget could never be
+ * spent. Waiving the cooldown for the retry (see `allowPinnedCooldown`)
+ * removes that accidental spacing, so replace it with a real one that is
+ * short enough not to dominate the request's latency: at most
+ * 250 + 500 + 1000 = 1.75s across the whole request at the default budget.
+ */
+const PINNED_RETRY_BACKOFF_STEPS_MS = [250, 500, 1_000] as const;
+
+function pinnedRetryBackoffMs(attempt: number): number {
+	const index = Math.min(
+		Math.max(0, attempt - 1),
+		PINNED_RETRY_BACKOFF_STEPS_MS.length - 1,
+	);
+	return PINNED_RETRY_BACKOFF_STEPS_MS[index] ?? 0;
+}
 
 const MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024;
 const MAX_THREAD_GOAL_FALLBACKS = 512;
@@ -1017,13 +1050,25 @@ async function handleRequestInner(
 		// applies unchanged because it all keys off `pinnedIndex` / `isPinned`.
 		const pinnedIndex = state.forcedAccountIndex ?? storageMeta.pinnedAccountIndex;
 		const isPinned = typeof pinnedIndex === "number";
+		// `rotations` counts moves to a DIFFERENT account. A pinned request has
+		// nowhere to move: every retry below re-attempts the same one. Counting
+		// those reported several account rotations on a single-account pool whose
+		// pin forbids rotation, in `rotation status` and the persisted counters.
+		const noteRotation = (): void => {
+			if (!isPinned) state.status.rotations += 1;
+		};
 		// Pool attempts are normally capped by account count because an unpinned
 		// account is selected at most once per request. A pin can only retry the
 		// same account, so use the configured transient-attempt limit instead of
-		// the account-count limit. Every pinned pass is still subject to the hard
-		// 16-selection ceiling above, which wins when the configured limit is higher.
+		// the account-count limit -- capped by MAX_PINNED_TRANSIENT_ATTEMPTS so a
+		// pool knob about rate-limited rotation cannot become a same-account
+		// re-send multiplier. Every pinned pass is still subject to the hard
+		// 16-selection ceiling above.
 		if (isPinned) {
-			transientAttemptLimit = Math.max(1, state.maxRuntimeAccountAttempts);
+			transientAttemptLimit = Math.max(
+				1,
+				Math.min(state.maxRuntimeAccountAttempts, MAX_PINNED_TRANSIENT_ATTEMPTS),
+			);
 		}
 		if (storageMeta.affinityGeneration > state.lastObservedAffinityGeneration) {
 			state.sessionAffinityStore?.clearAll();
@@ -1037,6 +1082,13 @@ async function handleRequestInner(
 			(!isPinned ||
 				runtimeSelectionIterations < MAX_PINNED_SELECTION_ITERATIONS)
 		) {
+			// Space out same-account re-sends. The loop has no other delay in it,
+			// and the pinned retry deliberately waives the account's own cooldown
+			// (below), so without this two copies of the same non-idempotent
+			// request would hit upstream back to back.
+			if (isPinned && transientAttempts > 0) {
+				await sleep(pinnedRetryBackoffMs(transientAttempts));
+			}
 			runtimeSelectionIterations += 1;
 			const rotationStickyBoost: Record<number, number> =
 				state.minRotationIntervalMs > 0 &&
@@ -1074,6 +1126,12 @@ async function handleRequestInner(
 					stickyBoostByAccount: rotationStickyBoost,
 					pidOffsetEnabled: state.pidOffsetEnabled,
 					schedulingStrategy: state.schedulingStrategy,
+					// Only on a RETRY pass. The first pass still honors a cooldown
+					// another request left on the pin, so an already-cooling pinned
+					// account 503s immediately as before; from the second pass on,
+					// this request's own retry budget outranks the cooldown it just
+					// created for itself.
+					allowPinnedCooldown: isPinned && transientAttempts > 0,
 				});
 			const selected =
 				state.routingMutexMode === "enabled"
@@ -1162,13 +1220,19 @@ async function handleRequestInner(
 				);
 				accountManager.recordRateLimit(selected, context.family, context.model);
 				accountManager.saveToDiskDebounced();
-				state.status.rotations += 1;
+				noteRotation();
 				continue;
 			}
 
 			if (!accountManager.consumeToken(selected, context.family, context.model)) {
 				accountSkipReasons.set(selected.index, "token-exhausted");
 				exhaustionReason = "rate-limit";
+				// Nothing inside this loop refills the bucket and a pin has no other
+				// account to move to, so re-selecting would burn the whole
+				// 16-iteration ceiling re-deriving the identical verdict. Unpinned
+				// selection still continues -- there the next pass picks a DIFFERENT
+				// account.
+				if (isPinned) break;
 				continue;
 			}
 
@@ -1183,9 +1247,12 @@ async function handleRequestInner(
 			});
 			if (!refreshed.ok) {
 				accountManager.refundToken(selected, context.family, context.model);
-				if (isPinned) {
-					accountSkipReasons.set(selected.index, "auth-failure");
-				}
+				// No accountSkipReasons write here: ensureFreshAccessToken always
+				// applies an auth cooldown before returning !ok, so the next
+				// selection pass overwrites whatever this set with
+				// cooling-down:auth-failure, the invalidated exit returns a 401
+				// without reading the map at all, and the budget-boundary block
+				// below already records "auth-failure" for a pin out of retries.
 				exhaustionReason = "auth-failure";
 				if (refreshed.invalidated) {
 					// Refresh endpoint explicitly revoked the token. Stop cascade:
@@ -1208,7 +1275,7 @@ async function handleRequestInner(
 				transientAttempts += 1;
 				transientExhaustionReason = "auth-failure";
 				state.status.retries += 1;
-				state.status.rotations += 1;
+				noteRotation();
 				continue;
 			}
 
@@ -1231,7 +1298,7 @@ async function handleRequestInner(
 				transientAttempts += 1;
 				transientExhaustionReason = "auth-failure";
 				state.status.retries += 1;
-				state.status.rotations += 1;
+				noteRotation();
 				continue;
 			}
 
@@ -1303,7 +1370,7 @@ async function handleRequestInner(
 				transientAttempts += 1;
 				transientExhaustionReason = "network-error";
 				state.status.retries += 1;
-				state.status.rotations += 1;
+				noteRotation();
 				continue;
 			}
 			const quotaSnapshot = readQuotaSchedulerSnapshot(
@@ -1341,7 +1408,7 @@ async function handleRequestInner(
 				transientAttempts += 1;
 				transientExhaustionReason = "rate-limit";
 				state.status.retries += 1;
-				state.status.rotations += 1;
+				noteRotation();
 				continue;
 			}
 
@@ -1369,7 +1436,7 @@ async function handleRequestInner(
 					state.sessionAffinityStore?.forgetSession(context.sessionKey);
 					exhaustionReason = "deactivated";
 					state.status.retries += 1;
-					state.status.rotations += 1;
+					noteRotation();
 					continue;
 				}
 
@@ -1491,7 +1558,7 @@ async function handleRequestInner(
 				transientAttempts += 1;
 				transientExhaustionReason = "auth-failure";
 				state.status.retries += 1;
-				state.status.rotations += 1;
+				noteRotation();
 				continue;
 			}
 
@@ -1509,7 +1576,7 @@ async function handleRequestInner(
 				transientAttempts += 1;
 				transientExhaustionReason = "server-error";
 				state.status.retries += 1;
-				state.status.rotations += 1;
+				noteRotation();
 				continue;
 			}
 

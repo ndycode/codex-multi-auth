@@ -21,6 +21,15 @@ import type { SessionAffinityStore } from "../session-affinity.js";
  * `startRuntimeRotationProxy` and the regression in
  * `test/runtime-rotation-proxy.test.ts`.
  */
+/**
+ * Whether a runtime skip reason is a cooldown, the one blocker a pinned
+ * retry may waive. `getManagedAccountRuntimeSkipReason` emits either the
+ * bare token or `cooling-down:<reason>`.
+ */
+function isCooldownReason(reason: string): boolean {
+	return reason === "cooling-down" || reason.startsWith("cooling-down:");
+}
+
 export function chooseAccount(params: {
 	accountManager: AccountManager;
 	sessionAffinityStore: SessionAffinityStore | null;
@@ -35,6 +44,22 @@ export function chooseAccount(params: {
 	stickyBoostByAccount?: Record<number, number>;
 	pidOffsetEnabled?: boolean;
 	schedulingStrategy?: "hybrid" | "sequential";
+	/**
+	 * Admit a pinned account that is only blocked by its own cooldown.
+	 *
+	 * Set by the proxy for the RETRY passes of one pinned request, never for
+	 * the first pass. A cooldown exists to keep OTHER requests off a flaky
+	 * account; a retry budget exists to give THIS request another attempt.
+	 * Conflating them meant every transient branch cooled the pin down before
+	 * the next selection pass and the budget could never be spent — a pinned
+	 * request got exactly one upstream attempt under shipped defaults.
+	 *
+	 * Only the cooldown is waived. Rate limits, an open circuit, a disabled
+	 * account, workspace and policy blocks all still reject the pin, and the
+	 * cooldown itself stays on the account for everyone else and for the 503's
+	 * `retry_after_ms`.
+	 */
+	allowPinnedCooldown?: boolean;
 }): ManagedAccount | null {
 	const {
 		accountManager,
@@ -50,6 +75,7 @@ export function chooseAccount(params: {
 		stickyBoostByAccount,
 		pidOffsetEnabled,
 		schedulingStrategy,
+		allowPinnedCooldown,
 	} = params;
 
 	// Manual pin (from `codex-multi-auth switch <n>`) overrides every other
@@ -79,7 +105,7 @@ export function chooseAccount(params: {
 			family,
 			model,
 		);
-		if (reason) {
+		if (reason && !(allowPinnedCooldown === true && isCooldownReason(reason))) {
 			skipReasons?.set(pinnedIndex, reason);
 			return null;
 		}

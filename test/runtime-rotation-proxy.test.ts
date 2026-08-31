@@ -869,7 +869,7 @@ describe("runtime rotation proxy", () => {
 		).toEqual(["acc_1", "acc_1", "acc_1"]);
 	});
 
-	it("caps forced-pin upstream attempts at 16 when the configured budget is higher", async () => {
+	it("caps forced-pin upstream attempts regardless of how high the pool retry knob goes", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 1));
 		const { calls, fetchImpl } = createRecordingFetch(() => {
@@ -915,10 +915,101 @@ describe("runtime rotation proxy", () => {
 			code: "codex_pinned_account_unavailable",
 			reason: "network-error",
 		});
-		expect(calls).toHaveLength(16);
+		// `retryAllAccountsMaxRetries` is the "retry when every account is
+		// rate-limited" POOL knob. For a pin each unit of it is another copy of
+		// the same non-idempotent request to the same upstream, so it is capped
+		// at MAX_PINNED_TRANSIENT_ATTEMPTS instead of being spent 1:1.
+		expect(calls).toHaveLength(4);
 		expect(
 			new Set(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))),
 		).toEqual(new Set(["acc_1"]));
+	});
+
+	it("retries a forced pin through the cooldown its own failure created", async () => {
+		// Every transient branch cools the account down before continuing, and
+		// chooseAccount refuses a cooling-down pin. With a REAL cooldown (the
+		// shipped defaults are 4s/6s, not 0) the retry budget was unreachable and
+		// a pin got exactly one upstream attempt -- the bug this whole change is
+		// supposed to fix. Zeroing the cooldown, as the other tests here do,
+		// bypasses the only thing that was blocking the retry, so this one uses
+		// a deliberately huge 60s cooldown: the retry has to happen because a
+		// pinned retry WAIVES its own cooldown, not because it outlasted one.
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) => {
+			if (attempt <= 2) throw new TypeError("fetch failed");
+			return textEventStream("data: recovered\n\n");
+		});
+		const previousNetworkErrorCooldown =
+			process.env.CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS;
+		const previousMaxRetries = process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
+		process.env.CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS = "30";
+		process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = "2";
+		let proxy: Awaited<ReturnType<typeof startProxy>>;
+		try {
+			proxy = await startProxy({
+				accountManager,
+				fetchImpl,
+				options: { forcedAccountIndex: 0 },
+			});
+		} finally {
+			if (previousNetworkErrorCooldown === undefined) {
+				delete process.env.CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS;
+			} else {
+				process.env.CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS =
+					previousNetworkErrorCooldown;
+			}
+			if (previousMaxRetries === undefined) {
+				delete process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
+			} else {
+				process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = previousMaxRetries;
+			}
+		}
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+		});
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.text()).toBe("data: recovered\n\n");
+		expect(calls).toHaveLength(3);
+		expect(
+			new Set(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))),
+		).toEqual(new Set(["acc_1"]));
+		// A pin re-attempts ONE account; none of that is a rotation.
+		expect(proxy.getStatus().rotations).toBe(0);
+		expect(proxy.getStatus().retries).toBe(2);
+	});
+
+	it("still refuses a pin that arrives already cooling down from another request", async () => {
+		// The waiver is scoped to the RETRY passes of one request. A pin that is
+		// already cooling down when the request arrives must still 503 on the
+		// spot, exactly as before -- otherwise the cooldown would stop protecting
+		// the account from new traffic at all.
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const pinned = accountManager.getAccountByIndex(0);
+		if (!pinned) throw new Error("missing pinned account");
+		accountManager.markAccountCoolingDown(pinned, 60_000, "server-error");
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: should-not-be-reached\n\n"),
+		);
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { forcedAccountIndex: 0 },
+		});
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+		});
+
+		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+		expect(calls).toHaveLength(0);
 	});
 
 	it("does not apply the pinned selection guard to an unpinned pool", async () => {
@@ -1027,7 +1118,7 @@ describe("runtime rotation proxy", () => {
 		expect(calls).toHaveLength(2);
 	});
 
-	it("stops a non-counting forced-pin retry loop after 16 selections", async () => {
+	it("ends a forced-pin loop immediately when nothing in it can change the verdict", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 1));
 		const consumeTokenSpy = vi
@@ -1056,7 +1147,10 @@ describe("runtime rotation proxy", () => {
 			code: "codex_pinned_account_unavailable",
 			reason: "token-exhausted",
 		});
-		expect(consumeTokenSpy).toHaveBeenCalledTimes(16);
+		// Nothing inside the loop refills the token bucket and a pin cannot move
+		// to another account, so re-selecting only re-derives the same answer.
+		// This used to spend all 16 ceiling iterations to return the same 503.
+		expect(consumeTokenSpy).toHaveBeenCalledTimes(1);
 		expect(calls).toHaveLength(0);
 	});
 	it("fails hard (503, no upstream call) when the forced account is unavailable (#623)", async () => {
@@ -1159,7 +1253,11 @@ describe("runtime rotation proxy", () => {
 		});
 
 		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
-		expect(calls).toHaveLength(1);
+		// A pin has no other account to fall back to, so it spends its bounded
+		// retry budget (MAX_PINNED_TRANSIENT_ATTEMPTS) before giving up. It used
+		// to stop after one attempt only because its own cooldown blocked
+		// re-selection.
+		expect(calls).toHaveLength(4);
 		const payload = (await response.json()) as {
 			error: {
 				code: string;
