@@ -149,6 +149,12 @@ The 2.0.1 line makes runtime rotation the default for request-bearing wrapper-la
 - Official Codex app binaries are not patched.
 - Pause/drain account policies and budget/profile checks are enforced on the rotation path via `evaluateRuntimePolicy`.
 
+Pinned requests can now retry the same healthy account within the configured
+attempt budget, but the entire pinned selection loop has an absolute
+16-selection-pass safety ceiling. That ceiling overrides retry settings above
+16 and includes branches that do not increment the transient-attempt counter;
+pinned requests still never rotate to another account.
+
 `codex app-server` launched through the wrapper changed transport (#659). Three consequences worth knowing before you upgrade:
 
 - It runs against your canonical `CODEX_HOME` and no longer creates a shadow home under `<CODEX_HOME>/multi-auth/runtime-shadow-homes/`. On 0.147.0 the old path was effectively unusable: Codex refuses to start when `<CODEX_HOME>/app-server-control` is a symlink, which is what the shadow mirror made of it, and a server that did start served every attached client a frozen copy of the thread index.
