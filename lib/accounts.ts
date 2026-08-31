@@ -1084,20 +1084,47 @@ export class AccountManager {
 		account: ManagedAccount,
 		family: ModelFamily,
 		model?: string | null,
+		options: { bypassTokenBucket?: boolean } = {},
 	): boolean {
+		return this.consumeTokenWithReason(account, family, model, options).ok;
+	}
+
+	/**
+	 * `consumeToken`, but it says which admission gate rejected the request.
+	 *
+	 * There are two gates and they are not interchangeable to a caller writing
+	 * `account_skip_reasons`: the pool-scoring token bucket, and the circuit
+	 * breaker's race-safe admission slot. Re-deriving the answer afterwards
+	 * with `getManagedAccountRuntimeSkipReason` gets it wrong in both
+	 * directions -- that helper reports the FIRST blocker it finds (so a live
+	 * cooldown masks a drained bucket), and its `isAvailable()` check answers
+	 * true for a half-open breaker whose single probe `canExecute()` just
+	 * handed to a concurrent request. Reporting the gate that actually
+	 * rejected removes the race and the mis-attribution, and avoids a second
+	 * state-mutating evaluation (`clearExpiredRateLimits`) on the hot path.
+	 */
+	consumeTokenWithReason(
+		account: ManagedAccount,
+		family: ModelFamily,
+		model?: string | null,
+		options: { bypassTokenBucket?: boolean } = {},
+	): { ok: true } | { ok: false; reason: "token-exhausted" | "circuit-open" } {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const tokenTracker = getTokenTracker();
 		const trackerKey = getRuntimeTrackerKey(account);
-		if (!tokenTracker.tryConsume(trackerKey, quotaKey)) {
-			return false;
+		const shouldConsumeToken = options.bypassTokenBucket !== true;
+		if (shouldConsumeToken && !tokenTracker.tryConsume(trackerKey, quotaKey)) {
+			return { ok: false, reason: "token-exhausted" };
 		}
 
 		try {
 			getCircuitBreaker(getAccountCircuitKey(account)).canExecute();
-			return true;
+			return { ok: true };
 		} catch {
-			tokenTracker.refundToken(trackerKey, quotaKey);
-			return false;
+			if (shouldConsumeToken) {
+				tokenTracker.refundToken(trackerKey, quotaKey);
+			}
+			return { ok: false, reason: "circuit-open" };
 		}
 	}
 

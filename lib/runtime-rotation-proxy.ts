@@ -1050,6 +1050,16 @@ async function handleRequestInner(
 		// applies unchanged because it all keys off `pinnedIndex` / `isPinned`.
 		const pinnedIndex = state.forcedAccountIndex ?? storageMeta.pinnedAccountIndex;
 		const isPinned = typeof pinnedIndex === "number";
+		// The token bucket spreads load across a selectable pool. A pin has no
+		// alternative account, so exhausting that local heuristic can only reject a
+		// request that the pinned account could serve. Keep circuit-breaker admission
+		// inside consumeToken, but do not debit the pool-scoring bucket for a pin.
+		const bypassPoolTokenBucket = isPinned;
+		const refundConsumedPoolToken = (account: ManagedAccount): void => {
+			if (!bypassPoolTokenBucket) {
+				accountManager.refundToken(account, context.family, context.model);
+			}
+		};
 		// `rotations` counts moves to a DIFFERENT account. A pinned request has
 		// nowhere to move: every retry below re-attempts the same one. Counting
 		// those reported several account rotations on a single-account pool whose
@@ -1224,12 +1234,25 @@ async function handleRequestInner(
 				continue;
 			}
 
-			if (!accountManager.consumeToken(selected, context.family, context.model)) {
-				accountSkipReasons.set(selected.index, "token-exhausted");
+			// consumeToken also takes the race-safe circuit admission slot, so it
+			// can reject for either gate. Take the reason from the call that
+			// rejected rather than re-deriving it: a second evaluation reports the
+			// first blocker it finds (a live cooldown would mask a drained bucket)
+			// and cannot see a half-open probe slot that was just claimed.
+			const admission = accountManager.consumeTokenWithReason(
+				selected,
+				context.family,
+				context.model,
+				{ bypassTokenBucket: bypassPoolTokenBucket },
+			);
+			if (!admission.ok) {
+				accountSkipReasons.set(selected.index, admission.reason);
 				exhaustionReason = "rate-limit";
-				// Nothing inside this loop refills the bucket and a pin has no other
-				// account to move to, so re-selecting would burn the whole
-				// 16-iteration ceiling re-deriving the identical verdict. Unpinned
+				// Neither gate can change inside this loop -- nothing here refills the
+				// bucket or closes a circuit -- and a pin has no other account to move
+				// to, so re-selecting would burn the whole 16-iteration ceiling
+				// re-deriving the identical verdict. (For a pin the bucket is bypassed
+				// entirely, so the reason here is always circuit-open.) Unpinned
 				// selection still continues -- there the next pass picks a DIFFERENT
 				// account.
 				if (isPinned) break;
@@ -1246,7 +1269,7 @@ async function handleRequestInner(
 				tokenInvalidationCooldownMs: state.tokenInvalidationCooldownMs,
 			});
 			if (!refreshed.ok) {
-				accountManager.refundToken(selected, context.family, context.model);
+				refundConsumedPoolToken(selected);
 				// No accountSkipReasons write here: ensureFreshAccessToken always
 				// applies an auth cooldown before returning !ok, so the next
 				// selection pass overwrites whatever this set with
@@ -1281,7 +1304,7 @@ async function handleRequestInner(
 
 			const accountId = resolveAccountId(refreshed.account, refreshed.accessToken);
 			if (!accountId) {
-				accountManager.refundToken(refreshed.account, context.family, context.model);
+				refundConsumedPoolToken(refreshed.account);
 				accountManager.recordFailure(refreshed.account, context.family, context.model);
 				accountManager.markAccountCoolingDown(
 					refreshed.account,
@@ -1346,7 +1369,7 @@ async function handleRequestInner(
 					code: "codex_runtime_rotation_transport_error",
 					error: transportError,
 				});
-				accountManager.refundToken(refreshed.account, context.family, context.model);
+				refundConsumedPoolToken(refreshed.account);
 				// A pre-header transport exception is a property of the network path,
 				// not of this account's credentials or quota, so it must NOT feed the
 				// account's circuit breaker / health tracker: that is what would
@@ -1419,11 +1442,7 @@ async function handleRequestInner(
 					const accountWasEnabled =
 						accountManager.getAccountByIndex(refreshed.account.index)?.enabled !==
 						false;
-					accountManager.refundToken(
-						refreshed.account,
-						context.family,
-						context.model,
-					);
+					refundConsumedPoolToken(refreshed.account);
 					if (accountWasEnabled) {
 						accountManager.recordFailure(
 							refreshed.account,
@@ -1511,7 +1530,7 @@ async function handleRequestInner(
 
 			if (upstream.status === HTTP_STATUS.UNAUTHORIZED) {
 				const bodyText = await readErrorBody(upstream, state.streamStallTimeoutMs);
-				accountManager.refundToken(refreshed.account, context.family, context.model);
+				refundConsumedPoolToken(refreshed.account);
 				accountManager.recordFailure(refreshed.account, context.family, context.model);
 				if (isTokenInvalidationError(bodyText)) {
 					// The upstream explicitly revoked this OAuth token. Applying a long
@@ -1564,7 +1583,7 @@ async function handleRequestInner(
 
 			if (upstream.status >= 500) {
 				await readErrorBody(upstream, state.streamStallTimeoutMs);
-				accountManager.refundToken(refreshed.account, context.family, context.model);
+				refundConsumedPoolToken(refreshed.account);
 				accountManager.recordFailure(refreshed.account, context.family, context.model);
 				accountManager.markAccountCoolingDown(
 					refreshed.account,
