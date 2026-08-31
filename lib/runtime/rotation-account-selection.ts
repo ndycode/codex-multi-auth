@@ -58,6 +58,13 @@ export function chooseAccount(params: {
 	 * account, workspace and policy blocks all still reject the pin, and the
 	 * cooldown itself stays on the account for everyone else and for the 503's
 	 * `retry_after_ms`.
+	 *
+	 * One ordering note: `getAccountRuntimeSkipReason` reports the FIRST
+	 * blocker it finds and checks the cooldown before the circuit, so an
+	 * account that is both cooling down and circuit-open reads as a cooldown
+	 * and is admitted here. That is safe: `consumeTokenWithReason` takes the
+	 * breaker's admission slot immediately after selection and rejects it with
+	 * `circuit-open`, which is also the more accurate skip reason to report.
 	 */
 	allowPinnedCooldown?: boolean;
 }): ManagedAccount | null {
