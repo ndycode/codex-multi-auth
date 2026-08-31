@@ -1,10 +1,10 @@
 # PROJECT KNOWLEDGE BASE
 
 Generated: 2026-04-25
-Commit: 6147f88
+Commit: cc9a501
 Validated: 2026-06-10 against commit 98d9819 (repo audit; claims re-checked against the tree, content not regenerated)
 Branch: main
-Package version: 2.9.2
+Package version: 2.10.0
 
 ## OVERVIEW
 
