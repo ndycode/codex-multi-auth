@@ -4,6 +4,15 @@ import type { RuntimePolicyDecision } from "../policy/runtime-policy.js";
 import type { SessionAffinityStore } from "../session-affinity.js";
 
 /**
+ * Whether a runtime skip reason is a cooldown, the one blocker a pinned
+ * retry may waive. `getManagedAccountRuntimeSkipReason` emits either the
+ * bare token or `cooling-down:<reason>`.
+ */
+function isCooldownReason(reason: string): boolean {
+	return reason === "cooling-down" || reason.startsWith("cooling-down:");
+}
+
+/**
  * `chooseAccount` is a SYNC selector that internally advances the rotation
  * cursor (the session-affinity-preferred branch and the round-robin fallback
  * both call `accountManager.markSwitched(...)`, and the hybrid selector advances
@@ -35,6 +44,29 @@ export function chooseAccount(params: {
 	stickyBoostByAccount?: Record<number, number>;
 	pidOffsetEnabled?: boolean;
 	schedulingStrategy?: "hybrid" | "sequential";
+	/**
+	 * Admit a pinned account that is only blocked by its own cooldown.
+	 *
+	 * Set by the proxy for the RETRY passes of one pinned request, never for
+	 * the first pass. A cooldown exists to keep OTHER requests off a flaky
+	 * account; a retry budget exists to give THIS request another attempt.
+	 * Conflating them meant every transient branch cooled the pin down before
+	 * the next selection pass and the budget could never be spent — a pinned
+	 * request got exactly one upstream attempt under shipped defaults.
+	 *
+	 * Only the cooldown is waived. Rate limits, an open circuit, a disabled
+	 * account, workspace and policy blocks all still reject the pin, and the
+	 * cooldown itself stays on the account for everyone else and for the 503's
+	 * `retry_after_ms`.
+	 *
+	 * One ordering note: `getAccountRuntimeSkipReason` reports the FIRST
+	 * blocker it finds and checks the cooldown before the circuit, so an
+	 * account that is both cooling down and circuit-open reads as a cooldown
+	 * and is admitted here. That is safe: `consumeTokenWithReason` takes the
+	 * breaker's admission slot immediately after selection and rejects it with
+	 * `circuit-open`, which is also the more accurate skip reason to report.
+	 */
+	allowPinnedCooldown?: boolean;
 }): ManagedAccount | null {
 	const {
 		accountManager,
@@ -50,16 +82,18 @@ export function chooseAccount(params: {
 		stickyBoostByAccount,
 		pidOffsetEnabled,
 		schedulingStrategy,
+		allowPinnedCooldown,
 	} = params;
 
 	// Manual pin (from `codex-multi-auth switch <n>`) overrides every other
 	// selection signal. We do NOT call markSwitched here — the proxy must not
 	// clobber the pin set by the CLI. See issue #474.
 	if (typeof pinnedIndex === "number") {
-		if (attemptedIndexes.has(pinnedIndex)) {
-			skipReasons?.set(pinnedIndex, "already-attempted");
-			return null;
-		}
+		// A pin has no alternative account to rotate to. Re-evaluate its live
+		// blockers on every pass so a healthy account can use the caller's bounded
+		// retry budget; attemptedIndexes remains authoritative for unpinned pool
+		// selection below. The proxy also carries an absolute loop guard for retry
+		// branches that do not advance their transient-attempt counter.
 		if (pinnedIndex < 0 || pinnedIndex >= accountManager.getAccountCount()) {
 			skipReasons?.set(pinnedIndex, "missing");
 			return null;
@@ -78,7 +112,7 @@ export function chooseAccount(params: {
 			family,
 			model,
 		);
-		if (reason) {
+		if (reason && !(allowPinnedCooldown === true && isCooldownReason(reason))) {
 			skipReasons?.set(pinnedIndex, reason);
 			return null;
 		}
