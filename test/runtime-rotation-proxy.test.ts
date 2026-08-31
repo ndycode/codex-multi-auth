@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { request } from "node:http";
-import { AccountManager } from "../lib/accounts.js";
+import { AccountManager, getRuntimeTrackerKey } from "../lib/accounts.js";
 import { CodexValidationError } from "../lib/errors.js";
 import { HTTP_STATUS, OPENAI_HEADERS } from "../lib/constants.js";
 import {
@@ -21,7 +21,11 @@ import {
 } from "../lib/routing-mutex.js";
 import * as runtimePolicy from "../lib/policy/runtime-policy.js";
 import { resetRefreshQueue } from "../lib/refresh-queue.js";
-import { resetTrackers } from "../lib/rotation.js";
+import {
+	DEFAULT_TOKEN_BUCKET_CONFIG,
+	getTokenTracker,
+	resetTrackers,
+} from "../lib/rotation.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 
 const {
@@ -772,6 +776,48 @@ describe("runtime rotation proxy", () => {
 			lastAccountIndex: 2,
 			lastAccountId: "acc_3",
 		});
+	});
+
+	it("does not let the pool token bucket starve a forced pin", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 2));
+		const pinnedAccount = accountManager.getAccountByIndex(0);
+		if (!pinnedAccount) throw new Error("expected pinned account");
+		const tokenTracker = getTokenTracker();
+		const trackerKey = getRuntimeTrackerKey(pinnedAccount);
+		const quotaKey = "codex:gpt-5-codex";
+		tokenTracker.drain(
+			trackerKey,
+			quotaKey,
+			DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+		);
+		const tryConsumeSpy = vi.spyOn(tokenTracker, "tryConsume");
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			textEventStream("data: pinned\n\n"),
+		);
+		const proxy = await startProxy({
+			accountManager,
+			fetchImpl,
+			options: { forcedAccountIndex: 0 },
+		});
+
+		try {
+			const response = await postResponses(proxy, {
+				model: "gpt-5-codex",
+				stream: true,
+				input: [{ type: "message", role: "user", content: "hi" }],
+			});
+
+			expect(response.status).toBe(HTTP_STATUS.OK);
+			expect(await response.text()).toBe("data: pinned\n\n");
+			expect(calls).toHaveLength(1);
+			expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
+			// A pinned request neither consumes nor refills the pool-scoring bucket.
+			expect(tryConsumeSpy).not.toHaveBeenCalled();
+			expect(tokenTracker.getTokens(trackerKey, quotaKey)).toBeLessThan(1);
+		} finally {
+			tryConsumeSpy.mockRestore();
+		}
 	});
 
 	it("fails hard (503, no upstream call) when the forced account is unavailable (#623)", async () => {
