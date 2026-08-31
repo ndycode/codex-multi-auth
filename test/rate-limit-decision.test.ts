@@ -455,6 +455,20 @@ describe("buildPinnedUnavailableErrorBody", () => {
 		expect(body.message).not.toContain("limit resets");
 	});
 
+	it.each([
+		["auth-failure", "authentication failure"],
+		["network-error", "upstream network error"],
+		["server-error", "upstream server error"],
+	])("words the direct %s attempt verdict for operators", (reason, wording) => {
+		const body = buildPinnedUnavailableErrorBody(0, new Map([[0, reason]]), {
+			pinSource: "forced",
+		});
+
+		expect(body.reason).toBe(reason);
+		expect(body.message).toContain(`(${wording})`);
+		expect(body.message).not.toContain(`(${reason})`);
+	});
+
 	// A loop can stop with an attempt verdict while the failure it just handled
 	// created a more specific live cooldown or breaker. The sentence follows
 	// that re-read blocker rather than shipping a class-less deadline.

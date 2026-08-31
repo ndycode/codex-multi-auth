@@ -324,6 +324,36 @@ const BLOCKER_DESCRIPTIONS: ReadonlyMap<string, BlockerDescription> = new Map<
 	),
 ]);
 
+// Retry-budget exhaustion can end immediately after an upstream attempt,
+// before selection gets another pass to translate that attempt into a live
+// cooldown or breaker. Keep these final verdicts operator-facing without
+// treating them as live blockers: a concurrently opened circuit or cooldown
+// must still take precedence in buildPinnedUnavailableErrorBody below.
+const ATTEMPT_VERDICT_DESCRIPTIONS: ReadonlyMap<string, BlockerDescription> =
+	new Map([
+		[
+			"auth-failure",
+			{
+				parenthetical: "authentication failure",
+				deadlineNoun: "available-again",
+			},
+		],
+		[
+			"network-error",
+			{
+				parenthetical: "upstream network error",
+				deadlineNoun: "available-again",
+			},
+		],
+		[
+			"server-error",
+			{
+				parenthetical: "upstream server error",
+				deadlineNoun: "available-again",
+			},
+		],
+	]);
+
 /** Whether the sentence has real wording for this token, or must echo it raw. */
 function isDescribedBlocker(skipReason: string): boolean {
 	return BLOCKER_DESCRIPTIONS.has(skipReason);
@@ -351,7 +381,9 @@ function describePinnedBlocker(
 			deadline: DEADLINE_SENTENCES["available-again"],
 		};
 	}
-	const described = BLOCKER_DESCRIPTIONS.get(skipReason);
+	const described =
+		BLOCKER_DESCRIPTIONS.get(skipReason) ??
+		ATTEMPT_VERDICT_DESCRIPTIONS.get(skipReason);
 	if (described === undefined) {
 		// Permanent blockers never reach the deadline clause (the call site
 		// suppresses their reset time), and future or internal tokens stay

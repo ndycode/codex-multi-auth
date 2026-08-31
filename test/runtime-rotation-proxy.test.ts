@@ -869,6 +869,112 @@ describe("runtime rotation proxy", () => {
 		).toEqual(["acc_1", "acc_1", "acc_1"]);
 	});
 
+	it("does not apply the pinned selection guard to an unpinned pool", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 17));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			attempt === 17
+				? textEventStream("data: recovered\n\n")
+				: new Response("upstream failed", {
+						status: HTTP_STATUS.SERVICE_UNAVAILABLE,
+					}),
+		);
+		const previousServerErrorCooldown =
+			process.env.CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS;
+		const previousMaxRetries = process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
+		process.env.CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS = "0";
+		process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = "16";
+		let proxy: Awaited<ReturnType<typeof startProxy>>;
+		try {
+			proxy = await startProxy({ accountManager, fetchImpl });
+		} finally {
+			if (previousServerErrorCooldown === undefined) {
+				delete process.env.CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS;
+			} else {
+				process.env.CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS =
+					previousServerErrorCooldown;
+			}
+			if (previousMaxRetries === undefined) {
+				delete process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
+			} else {
+				process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = previousMaxRetries;
+			}
+		}
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+		});
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.text()).toBe("data: recovered\n\n");
+		expect(calls).toHaveLength(17);
+		expect(
+			new Set(calls.map((call) => call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).size,
+		).toBe(17);
+	});
+
+	it("reports the final server error at the forced-pin budget boundary", async () => {
+		const now = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(now, 1));
+		const { calls, fetchImpl } = createRecordingFetch(
+			() =>
+				new Response("upstream failed", {
+					status: HTTP_STATUS.SERVICE_UNAVAILABLE,
+				}),
+		);
+		const previousServerErrorCooldown =
+			process.env.CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS;
+		const previousMaxRetries = process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
+		process.env.CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS = "0";
+		process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = "1";
+		let proxy: Awaited<ReturnType<typeof startProxy>>;
+		try {
+			proxy = await startProxy({
+				accountManager,
+				fetchImpl,
+				options: { forcedAccountIndex: 0 },
+			});
+		} finally {
+			if (previousServerErrorCooldown === undefined) {
+				delete process.env.CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS;
+			} else {
+				process.env.CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS =
+					previousServerErrorCooldown;
+			}
+			if (previousMaxRetries === undefined) {
+				delete process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
+			} else {
+				process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES = previousMaxRetries;
+			}
+		}
+
+		const response = await postResponses(proxy, {
+			model: "gpt-5-codex",
+			stream: true,
+			input: [{ type: "message", role: "user", content: "hi" }],
+		});
+		const payload = (await response.json()) as {
+			error: {
+				code: string;
+				message: string;
+				reason: string | null;
+				account_skip_reasons: Record<string, string>;
+			};
+		};
+
+		expect(response.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+		expect(payload.error).toMatchObject({
+			code: "codex_pinned_account_unavailable",
+			reason: "server-error",
+			account_skip_reasons: { "0": "server-error" },
+		});
+		expect(payload.error.message).toContain("(upstream server error)");
+		expect(payload.error.message).not.toContain("(server-error)");
+		expect(calls).toHaveLength(2);
+	});
+
 	it("stops a non-counting forced-pin retry loop after 16 selections", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 1));

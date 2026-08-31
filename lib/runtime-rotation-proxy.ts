@@ -214,7 +214,7 @@ export function buildQuotaScheduleKey(
 }
 
 const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
-const MAX_RUNTIME_SELECTION_ITERATIONS = 16;
+const MAX_PINNED_SELECTION_ITERATIONS = 16;
 
 const MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024;
 const MAX_THREAD_GOAL_FALLBACKS = 512;
@@ -1030,7 +1030,8 @@ async function handleRequestInner(
 		while (
 			(isPinned || attemptedIndexes.size < accountCount) &&
 			transientAttempts < transientAttemptLimit &&
-			runtimeSelectionIterations < MAX_RUNTIME_SELECTION_ITERATIONS
+			(!isPinned ||
+				runtimeSelectionIterations < MAX_PINNED_SELECTION_ITERATIONS)
 		) {
 			runtimeSelectionIterations += 1;
 			const rotationStickyBoost: Record<number, number> =
@@ -1178,6 +1179,9 @@ async function handleRequestInner(
 			});
 			if (!refreshed.ok) {
 				accountManager.refundToken(selected, context.family, context.model);
+				if (isPinned) {
+					accountSkipReasons.set(selected.index, "auth-failure");
+				}
 				exhaustionReason = "auth-failure";
 				if (refreshed.invalidated) {
 					// Refresh endpoint explicitly revoked the token. Stop cascade:
@@ -1622,6 +1626,29 @@ async function handleRequestInner(
 				...(usageTokens ?? {}),
 			});
 			return;
+		}
+
+		if (
+			isPinned &&
+			typeof pinnedIndex === "number" &&
+			transientAttempts >= transientAttemptLimit
+		) {
+			const pinnedAccount = accountManager.getAccountByIndex(pinnedIndex);
+			const liveReason = pinnedAccount
+				? accountManager.getManagedAccountRuntimeSkipReason(
+						pinnedAccount,
+						context.family,
+						context.model,
+					)
+				: "missing";
+			const finalAttemptReason =
+				transientExhaustionReason === "rate-limit"
+					? "rate-limited"
+					: transientExhaustionReason;
+			const finalPinnedReason = liveReason ?? finalAttemptReason;
+			if (finalPinnedReason !== null) {
+				accountSkipReasons.set(pinnedIndex, finalPinnedReason);
+			}
 		}
 
 		if (
