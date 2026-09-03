@@ -127,6 +127,10 @@ function normalizeTokens(input: UsageLedgerAppendInput): UsageTokenCounts {
 			providedTotal === null
 				? computedTotal
 				: Math.max(0, Math.trunc(providedTotal)),
+		// Carried through so `estimateUsageCostUsd` below can refuse to price a
+		// tier it has no rate for. Dropping it here would silently restore the
+		// standard-rate under-count this field exists to prevent.
+		...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
 	};
 }
 

@@ -19,12 +19,38 @@ export type UsageLedgerOutcome =
 	| "blocked"
 	| "cancelled";
 
+/**
+ * The service tier a response was actually billed at.
+ *
+ * OpenAI's Fast/priority tier costs more than standard (2x for GPT-6 Astra), so
+ * a rate table with no tier dimension under-counts such a session. `standard`
+ * and `default` are the same thing on the wire; anything this union does not
+ * name is normalised to `unknown`, which is treated as unpriced rather than
+ * assumed cheap.
+ */
+export type UsageServiceTier =
+	| "standard"
+	| "priority"
+	| "flex"
+	| "batch"
+	| "scale"
+	| "unknown";
+
 export interface UsageTokenCounts {
 	inputTokens: number;
 	outputTokens: number;
 	cachedInputTokens: number;
 	reasoningTokens: number;
 	totalTokens: number;
+	/**
+	 * Rides on the token counts rather than a separate parameter so it reaches
+	 * the ledger through every existing path: the `onUsage` callback in
+	 * `response-handler.ts` carries this shape, and both the streaming scanner
+	 * and the non-streaming branch already funnel through
+	 * `extractResponsesUsage`. Absent when the response did not report one,
+	 * which is the common case and is priced as `standard`.
+	 */
+	serviceTier?: UsageServiceTier;
 }
 
 export interface UsageLedgerAccountRef {
@@ -71,6 +97,11 @@ export interface UsageLedgerAppendInput {
 	cachedInputTokens?: number | null;
 	reasoningTokens?: number | null;
 	totalTokens?: number | null;
+	/**
+	 * The tier the response reported. Absent means standard, which is what every
+	 * rate in `MODEL_PRICING` is quoted at.
+	 */
+	serviceTier?: UsageServiceTier;
 	costUsd?: number | null;
 }
 

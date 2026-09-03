@@ -170,6 +170,15 @@ describe("GPT-6 Astra", () => {
 				inputUsdPerMillion: 10,
 				outputUsdPerMillion: 50,
 				reasoningUsdPerMillion: 50,
+				// Fast tier, also published at launch. See
+				// test/usage-service-tier.test.ts for how it is applied.
+				serviceTiers: {
+					priority: {
+						inputUsdPerMillion: 20,
+						outputUsdPerMillion: 100,
+						reasoningUsdPerMillion: 100,
+					},
+				},
 			});
 			expect(
 				estimateUsageCostUsd("gpt-6-astra", {
