@@ -108,6 +108,13 @@ export const DEFAULT_MODEL = "gpt-5.5";
 // actual request routing and the legacy `gpt-5` alias remain opt-in per 2.5.0.
 // Bare `gpt-5.6` aliases to Sol; we pin the canonical id so the probe display
 // and report `modelSelection` read `gpt-5.6-sol` without a remap arrow.
+//
+// GPT-6 Astra deliberately does NOT lead the probe as of its 2026-09-03 launch.
+// A probe only needs a response's quota headers, and Astra is still rolling out
+// org by org, so leading with it would spend one failed request per probe for
+// every account without entitlement yet and buy nothing. Move DEFAULT_PROBE_MODEL
+// to `gpt-6-astra` once it is broadly available, and put `gpt-5.6-sol` directly
+// behind it in QUOTA_PROBE_MODEL_CHAIN.
 export const DEFAULT_PROBE_MODEL = "gpt-5.6-sol";
 
 // Single source of truth for the live/quota probe fallback chain. Both the
@@ -155,6 +162,62 @@ const GPT_5_6_LUNA_EFFORTS = [
 	"high",
 	"xhigh",
 	"max",
+] as const satisfies readonly ModelReasoningEffort[];
+
+/**
+ * GPT-6 Astra, OpenAI's 2026-09-03 frontier release.
+ *
+ * There is no Sol/Terra/Luna split this generation: the announced lineup is the
+ * flagship plus `aeon`, a long-horizon variant built for runs measured in days.
+ * `gpt-6-astra` is the API model name OpenAI published at launch;
+ * `gpt-6-astra-aeon` is the second slug that shipped beside it in the Codex
+ * model list. "Astra Pro" is a plan tier, not a separate slug we have seen, so
+ * it is deliberately not registered as its own canonical model — the GPT-6
+ * resolver below claims `gpt-6-astra-pro` and every other unrecognised GPT-6 id
+ * for the flagship rather than letting it fall through to GPT-5.5.
+ */
+const GPT_6_ASTRA_MODEL = "gpt-6-astra";
+const GPT_6_ASTRA_AEON_MODEL = "gpt-6-astra-aeon";
+
+/** Bare `gpt-6` resolves to the flagship, mirroring bare `gpt-5.6` -> Sol. */
+const GPT_6_FLAGSHIP_ALIAS = "gpt-6";
+
+/**
+ * Astra inherits the GPT-5.6 frontier effort ladder: no `none`/`minimal`, and
+ * `ultra` at the top. OpenAI has published no default effort for Astra, so the
+ * flagship follows the tier it succeeds (Sol, `low`) and the long-horizon
+ * variant follows the catalog's other long-running models (`medium`).
+ */
+const GPT_6_ASTRA_EFFORTS = [
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+	"ultra",
+] as const satisfies readonly ModelReasoningEffort[];
+
+/**
+ * Cyber-specialty models from the upstream Codex catalog
+ * (openai/codex `codex-rs/models-manager/models.json`).
+ *
+ * They are hidden in the Codex picker and gated behind the Daybreak program,
+ * but the catalog marks them `supported_in_api`, so a client can and does name
+ * them. Until now every `gpt-daybreak-*` id missed the codex resolver (no
+ * `codex` token) and the general GPT-5 resolver (no `gpt 5` tokens) and landed
+ * on `DEFAULT_MODEL` — asking for the cyber-permissive model silently ran
+ * GPT-5.5. Reasoning ladders and defaults below are the catalog's own values.
+ */
+const DAYBREAK_BLUE_MODEL = "gpt-daybreak-blue-latest";
+const DAYBREAK_RED_MODEL = "gpt-daybreak-red-latest";
+
+const DAYBREAK_EFFORTS = [
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+	"ultra",
 ] as const satisfies readonly ModelReasoningEffort[];
 
 const GPT_5_5_CANONICAL_MODEL = "gpt-5.5";
@@ -241,6 +304,40 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
 		defaultReasoningEffort: "medium",
 		supportedReasoningEfforts: ["medium"],
 		capabilities: TOOL_CAPABILITIES.compactOnly,
+	},
+	// Like GPT-5.6, GPT-6 Astra ships its base instructions inline in the
+	// upstream model catalog rather than as a `gpt_6_prompt.md`, so it stays on
+	// the GPT-5.2 prompt family with every other post-5.2 general model. Adding
+	// a `gpt-6` prompt family here would also widen MODEL_FAMILIES, which is a
+	// persisted key space (`activeIndexByFamily`) and would need a storage
+	// migration to grow.
+	[GPT_6_ASTRA_MODEL]: {
+		normalizedModel: GPT_6_ASTRA_MODEL,
+		promptFamily: "gpt-5.2",
+		defaultReasoningEffort: "low",
+		supportedReasoningEfforts: GPT_6_ASTRA_EFFORTS,
+		capabilities: TOOL_CAPABILITIES.full,
+	},
+	[GPT_6_ASTRA_AEON_MODEL]: {
+		normalizedModel: GPT_6_ASTRA_AEON_MODEL,
+		promptFamily: "gpt-5.2",
+		defaultReasoningEffort: "medium",
+		supportedReasoningEfforts: GPT_6_ASTRA_EFFORTS,
+		capabilities: TOOL_CAPABILITIES.full,
+	},
+	[DAYBREAK_BLUE_MODEL]: {
+		normalizedModel: DAYBREAK_BLUE_MODEL,
+		promptFamily: "gpt-5.2",
+		defaultReasoningEffort: "low",
+		supportedReasoningEfforts: DAYBREAK_EFFORTS,
+		capabilities: TOOL_CAPABILITIES.full,
+	},
+	[DAYBREAK_RED_MODEL]: {
+		normalizedModel: DAYBREAK_RED_MODEL,
+		promptFamily: "gpt-5.2",
+		defaultReasoningEffort: "medium",
+		supportedReasoningEfforts: DAYBREAK_EFFORTS,
+		capabilities: TOOL_CAPABILITIES.full,
 	},
 	// GPT-5.6 ships its base instructions inline in the upstream model catalog
 	// rather than as a `gpt_5_6_prompt.md`, so these stay on the GPT-5.2 prompt
@@ -362,6 +459,31 @@ function addGpt56Aliases(): void {
 	);
 }
 
+function addGpt6Aliases(): void {
+	addEffortAliases(GPT_6_ASTRA_MODEL, GPT_6_ASTRA_MODEL, GPT_6_ASTRA_EFFORTS);
+	addEffortAliases(
+		GPT_6_ASTRA_AEON_MODEL,
+		GPT_6_ASTRA_AEON_MODEL,
+		GPT_6_ASTRA_EFFORTS,
+	);
+	addEffortAliases(
+		GPT_6_FLAGSHIP_ALIAS,
+		GPT_6_ASTRA_MODEL,
+		GPT_6_ASTRA_EFFORTS,
+	);
+	// `astra` on its own is how the model is spoken about everywhere; accept it
+	// rather than letting it fall through to GPT-5.5.
+	addEffortAliases("astra", GPT_6_ASTRA_MODEL, GPT_6_ASTRA_EFFORTS);
+	addEffortAliases("astra-aeon", GPT_6_ASTRA_AEON_MODEL, GPT_6_ASTRA_EFFORTS);
+}
+
+function addDaybreakAliases(): void {
+	addEffortAliases(DAYBREAK_BLUE_MODEL, DAYBREAK_BLUE_MODEL, DAYBREAK_EFFORTS);
+	addEffortAliases(DAYBREAK_RED_MODEL, DAYBREAK_RED_MODEL, DAYBREAK_EFFORTS);
+	addEffortAliases("daybreak-blue", DAYBREAK_BLUE_MODEL, DAYBREAK_EFFORTS);
+	addEffortAliases("daybreak-red", DAYBREAK_RED_MODEL, DAYBREAK_EFFORTS);
+}
+
 function addGeneralAliases(): void {
 	addReasoningAliases(GPT_5_5_CANONICAL_MODEL, GPT_5_5_CANONICAL_MODEL);
 	addReasoningAliases(GPT_5_5_RELEASE_MODEL, GPT_5_5_CANONICAL_MODEL);
@@ -417,6 +539,8 @@ function addCodexAliases(): void {
 addCodexAliases();
 addGeneralAliases();
 addGpt56Aliases();
+addGpt6Aliases();
+addDaybreakAliases();
 
 export { MODEL_MAP };
 
@@ -523,6 +647,71 @@ function resolveCodexCatalogModel(modelId: string): string | undefined {
  * model than the caller asked for. Unrecognised tiers resolve to Sol, matching
  * OpenAI's bare `gpt-5.6` alias.
  */
+/**
+ * Resolve GPT-6 identifiers that are not exact aliases — a dated snapshot id
+ * (`gpt-6-astra-2026-09-03`), the "Astra Pro" plan tier (`gpt-6-astra-pro`), or
+ * any tier name OpenAI adds after this file was written.
+ *
+ * This is the same guard the 5.6 resolver exists for, one major version up:
+ * without it, `resolveGeneralGpt5CatalogModel` never matches (it requires a
+ * `gpt 5` token pair) and every unrecognised GPT-6 id lands on `DEFAULT_MODEL`,
+ * running GPT-5.5 for a caller who asked for the frontier model. `aeon` keeps
+ * its own canonical id because it is a behaviourally different model (long
+ * horizon), not a rename of the flagship; everything else resolves to the
+ * flagship, matching OpenAI's bare `gpt-6` alias.
+ *
+ * Ids carrying a `codex` token are left to `resolveCodexCatalogModel`, exactly
+ * as the 5.6 resolver defers them.
+ */
+function resolveGpt6CatalogModel(modelId: string): string | undefined {
+	const tokens = tokenizeModelId(modelId);
+	const gptIndex = tokens.indexOf("gpt");
+	const versionToken = gptIndex === -1 ? undefined : tokens[gptIndex + 1];
+	// `gpt6` with no separator tokenizes as ONE token, so the `gpt` + `6` pair
+	// never forms and it used to fall through to GPT-5.5 while still passing
+	// capability-policy's catalog gate. Gate and resolver have to agree on the
+	// same id or the policy store keys state a request never reads.
+	const isGpt6 = versionToken === "6" || tokens.includes("gpt6");
+	// A bare `astra` token counts too. OpenAI's own launch material and every
+	// picker label say "Astra" without the `gpt-6` prefix, so `Astra Pro` and
+	// `astra-fast` reach this resolver with no version tokens at all; without
+	// this clause they miss every branch and land on GPT-5.5.
+	//
+	// It is anchored, not a free-floating substring: an id that names a
+	// DIFFERENT GPT major version does not get claimed for the frontier model
+	// just because `astra` appears in it, so `gpt-4-astra-x` is declined here
+	// rather than silently running GPT-6.
+	const namesOtherGptVersion =
+		versionToken !== undefined &&
+		/^\d+$/.test(versionToken) &&
+		versionToken !== "6";
+	const isAstra = tokens.includes("astra") && !namesOtherGptVersion;
+	if ((!isGpt6 && !isAstra) || tokens.includes("codex")) {
+		return undefined;
+	}
+
+	if (tokens.includes("aeon")) return GPT_6_ASTRA_AEON_MODEL;
+	return GPT_6_ASTRA_MODEL;
+}
+
+/**
+ * Resolve the Daybreak cyber models, including ids that are not exact aliases
+ * (a pinned `gpt-daybreak-red-2026-08-14`, say).
+ *
+ * `red` is the cyber-permissive variant and `blue` the defensive one; an
+ * unrecognised Daybreak id resolves to `blue`, the more restricted of the two,
+ * so a typo cannot silently upgrade a caller into the permissive model.
+ */
+function resolveDaybreakCatalogModel(modelId: string): string | undefined {
+	const tokens = tokenizeModelId(modelId);
+	if (!tokens.includes("daybreak")) {
+		return undefined;
+	}
+
+	if (tokens.includes("red")) return DAYBREAK_RED_MODEL;
+	return DAYBREAK_BLUE_MODEL;
+}
+
 function resolveGpt56CatalogModel(modelId: string): string | undefined {
 	const tokens = tokenizeModelId(modelId);
 	const gptIndex = tokens.indexOf("gpt");
@@ -616,9 +805,21 @@ export function resolveNormalizedModel(model: string | undefined): string {
 		return mappedModel;
 	}
 
+	// Daybreak first: its slugs carry neither a `codex` nor a `gpt 5` token, so
+	// every other resolver declines them and they would reach DEFAULT_MODEL.
+	const daybreakCatalogModel = resolveDaybreakCatalogModel(modelId);
+	if (daybreakCatalogModel) {
+		return daybreakCatalogModel;
+	}
+
 	const codexCatalogModel = resolveCodexCatalogModel(modelId);
 	if (codexCatalogModel) {
 		return codexCatalogModel;
+	}
+
+	const gpt6CatalogModel = resolveGpt6CatalogModel(modelId);
+	if (gpt6CatalogModel) {
+		return gpt6CatalogModel;
 	}
 
 	const gpt56CatalogModel = resolveGpt56CatalogModel(modelId);

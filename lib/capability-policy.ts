@@ -37,7 +37,23 @@ function normalizeModel(model: string | undefined): string | null {
 		? (trimmedInput.split("/").pop() ?? trimmedInput)
 		: trimmedInput;
 	const exactMatch = getNormalizedModel(withoutProvider);
-	const shouldUseFallbackCatalog = /gpt[-_\s]?5|codex/i.test(withoutProvider);
+	// The catalog fallback is gated so an unrelated model id is not dragged onto
+	// a GPT-5 default. GPT-6 Astra and the Daybreak cyber models have to be named
+	// here as well: without them an id the alias table does not carry, such as
+	// `gpt-6-astra-pro`, keeps its raw string as the policy key while routing
+	// resolves it to `gpt-6-astra`, so the policy store tracks a key no request
+	// ever uses.
+	//
+	// The separator class matches `tokenizeModelId`, which splits on any RUN of
+	// non-alphanumerics. A hand-picked `[-_\s]` was narrower than the resolver it
+	// guards, so `gpt.6-turbo` kept its raw key here while
+	// `resolveNormalizedModel` routed it to `gpt-6-astra`; `*` rather than `?`
+	// because the tokenizer collapses repeats, so `gpt..6-turbo` and `gpt---5`
+	// resolve too. It must not widen to every hyphenated id: an unknown one
+	// would inherit the DEFAULT_MODEL key, which is why `gpt-4o`,
+	// `gpt-4.5-preview` and `gpt.4-turbo` still fail this test.
+	const shouldUseFallbackCatalog =
+		/gpt[^a-z0-9]*[56]|codex|astra|daybreak/i.test(withoutProvider);
 	const mapped =
 		exactMatch ??
 		(shouldUseFallbackCatalog

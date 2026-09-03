@@ -51,6 +51,18 @@ export const UNESTIMATED_ROUTABLE_MODELS = [
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
+	// GPT-6 Astra published two different numbers on day one: 1.05M for the API
+	// surface and 272K as the Codex context. This wrapper talks to the Codex
+	// backend, and the same split is what the v2.5.0 notes warn about — so no
+	// estimate is entered here. `gpt-daybreak-red-latest` is the one model whose
+	// upstream catalog entry pins `context_window` and `max_context_window` to
+	// the same 372000, but that is the Codex picker's number rather than a
+	// measured ceiling for this transport, so it stays unestimated too. Set
+	// `contextBudgetGuardModelWindowOverrides` once you know your real ceiling.
+	"gpt-6-astra",
+	"gpt-6-astra-aeon",
+	"gpt-daybreak-blue-latest",
+	"gpt-daybreak-red-latest",
 ] as const;
 
 function normalizeModelName(model: string | null | undefined): string | null {
