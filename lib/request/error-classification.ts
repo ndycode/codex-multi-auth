@@ -35,6 +35,15 @@ export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> 
 	// from Astra requires `gpt-5.6-sol` to carry its own entry below. A second
 	// element here is only ever consulted when the first is already in
 	// `attemptedModels` for that same call.
+	//
+	// Depth is not free: every hop spends one of the shared per-request outbound
+	// attempts (`tryConsumeOutboundRequestAttempt`). A single-account balanced
+	// session gets a budget of 5, and the aeon walk needs exactly 5, so it fits
+	// with nothing spare. Spend an attempt on a retry or a stream failover and
+	// the tail hops become unreachable, ending as an attempt-budget-exhausted
+	// 503 rather than `gpt-5.4`. Hops are ordered most-valuable-first so what is
+	// lost first matters least. Do not add a hop to a GPT-6 row without
+	// re-checking that budget; `test/gpt6-astra-models.test.ts` asserts it.
 	"gpt-6-astra": ["gpt-5.6-sol", "gpt-5.5"],
 	// aeon steps to the flagship first: still GPT-6, still Astra, just without
 	// the long-horizon behaviour.

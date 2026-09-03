@@ -666,17 +666,27 @@ function resolveCodexCatalogModel(modelId: string): string | undefined {
 function resolveGpt6CatalogModel(modelId: string): string | undefined {
 	const tokens = tokenizeModelId(modelId);
 	const gptIndex = tokens.indexOf("gpt");
+	const versionToken = gptIndex === -1 ? undefined : tokens[gptIndex + 1];
 	// `gpt6` with no separator tokenizes as ONE token, so the `gpt` + `6` pair
 	// never forms and it used to fall through to GPT-5.5 while still passing
 	// capability-policy's catalog gate. Gate and resolver have to agree on the
 	// same id or the policy store keys state a request never reads.
-	const isGpt6 =
-		(gptIndex !== -1 && tokens[gptIndex + 1] === "6") || tokens.includes("gpt6");
+	const isGpt6 = versionToken === "6" || tokens.includes("gpt6");
 	// A bare `astra` token counts too. OpenAI's own launch material and every
 	// picker label say "Astra" without the `gpt-6` prefix, so `Astra Pro` and
 	// `astra-fast` reach this resolver with no version tokens at all; without
 	// this clause they miss every branch and land on GPT-5.5.
-	if ((!isGpt6 && !tokens.includes("astra")) || tokens.includes("codex")) {
+	//
+	// It is anchored, not a free-floating substring: an id that names a
+	// DIFFERENT GPT major version does not get claimed for the frontier model
+	// just because `astra` appears in it, so `gpt-4-astra-x` is declined here
+	// rather than silently running GPT-6.
+	const namesOtherGptVersion =
+		versionToken !== undefined &&
+		/^\d+$/.test(versionToken) &&
+		versionToken !== "6";
+	const isAstra = tokens.includes("astra") && !namesOtherGptVersion;
+	if ((!isGpt6 && !isAstra) || tokens.includes("codex")) {
 		return undefined;
 	}
 

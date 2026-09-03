@@ -579,9 +579,10 @@ function resolveModelFamilyForStatus(model) {
 	// branch below is a `startsWith`, so `openai/gpt-6` used to match none of
 	// them and return null, dropping status routing back to `activeIndex`
 	// instead of the family index. Strip the prefix once, for all of them.
-	const stripped =
-		typeof model === "string" ? stripProviderPrefix(model.trim()) : "";
-	const normalized = typeof stripped === "string" ? stripped.toLowerCase() : "";
+	const normalized =
+		typeof model === "string"
+			? stripProviderPrefix(model.trim()).toLowerCase()
+			: "";
 	// GPT-6 Astra and the Daybreak cyber models share the gpt-5.2 prompt family
 	// with the GPT-5.6 general tiers (see lib/request/helpers/model-map.ts
 	// MODEL_PROFILES). Daybreak has to be checked explicitly: its slug matches
@@ -1278,7 +1279,18 @@ const DIRECT_UNSUPPORTED_MODEL_PATTERN =
 	/['"]([^'"]+)['"]\s+model is not supported when using codex with a chatgpt account/i;
 const CURRENT_CODEX_MODEL = "gpt-5.3-codex";
 const LEGACY_CODEX_MODEL = "gpt-5-codex";
+// Mirrors the GPT-6 rows of lib/request/error-classification.ts
+// `DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN`. This table is walked differently
+// from lib's: `resolveUnsupportedModelRetryTarget` keys on the model named in
+// the error output and falls back to the original requested model, with
+// `attemptedModels` accumulating, so a row's later entries ARE reachable here.
+// The two tables are not identical today (`gpt-5.3-codex` has a row in lib and
+// not here), which predates GPT-6 and is left alone; the GPT-6 rows are pinned
+// in parity by test/codex-model-resolution.test.ts.
 const WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN = {
+	"gpt-6-astra": ["gpt-5.6-sol", "gpt-5.5"],
+	"gpt-6-astra-aeon": ["gpt-6-astra", "gpt-5.6-sol"],
+	"gpt-5.6-sol": ["gpt-5.5"],
 	"gpt-5": ["gpt-5.5"],
 	"gpt-5-pro": ["gpt-5.5-pro"],
 	"gpt-5-chat-latest": ["gpt-5.5"],
@@ -2352,12 +2364,21 @@ function resolveGpt6RequestedModel(stripped) {
 	const gptIndex = tokens.indexOf("gpt");
 	// `gpt6` with no separator tokenizes as one token, so the `gpt` + `6` pair
 	// never forms; mirror lib and claim it here.
-	const isGpt6 =
-		(gptIndex !== -1 && tokens[gptIndex + 1] === "6") || tokens.includes("gpt6");
+	const versionToken = gptIndex === -1 ? undefined : tokens[gptIndex + 1];
+	// `gpt6` with no separator tokenizes as one token, so the `gpt` + `6` pair
+	// never forms; mirror lib and claim it here.
+	const isGpt6 = versionToken === "6" || tokens.includes("gpt6");
 	// A bare `astra` token counts too: picker labels and OpenAI's own material
 	// say "Astra" with no `gpt-6` prefix, so `Astra Pro` arrives with no version
-	// tokens and would otherwise miss every branch and land on 5.5.
-	if ((!isGpt6 && !tokens.includes("astra")) || tokens.includes("codex")) {
+	// tokens and would otherwise miss every branch and land on 5.5. Anchored so
+	// an id naming a different GPT major version, `gpt-4-astra-x`, is not
+	// claimed for the frontier model.
+	const namesOtherGptVersion =
+		versionToken !== undefined &&
+		/^\d+$/.test(versionToken) &&
+		versionToken !== "6";
+	const isAstra = tokens.includes("astra") && !namesOtherGptVersion;
+	if ((!isGpt6 && !isAstra) || tokens.includes("codex")) {
 		return "";
 	}
 	if (tokens.includes("aeon")) return GPT_6_ASTRA_AEON_MODEL;
@@ -6369,6 +6390,7 @@ export {
 	coerceReasoningEffortForModel,
 	resolveModelFamilyForStatus,
 	canonicalizeRequestedModelName,
+	WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN,
 };
 
 // Run the wrapper only when actually launched (as the `codex-multi-auth-codex`

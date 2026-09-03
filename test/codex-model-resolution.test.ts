@@ -4,6 +4,7 @@ import {
 	resolveNormalizedModel,
 } from "../lib/request/helpers/model-map.js";
 import { getReasoningConfig } from "../lib/request/request-transformer.js";
+import { DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN } from "../lib/request/error-classification.js";
 
 // The `codex-multi-auth-codex` wrapper (scripts/codex.js) runs before the
 // TypeScript build, so it re-implements the model map instead of importing it.
@@ -19,6 +20,7 @@ const wrapper = (await import("../scripts/codex.js")) as {
 	coerceReasoningEffortForModel: (model: string, effort: string) => string;
 	resolveModelFamilyForStatus: (model: string) => string | null;
 	canonicalizeRequestedModelName: (model: string) => string;
+	WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN: Record<string, string[]>;
 };
 // The wrapper reads the flag once, at import. Clear it immediately so it cannot
 // leak into subprocesses that other wrapper tests spawn (which need real main()).
@@ -244,5 +246,27 @@ describe("codex.js wrapper — GPT-6 status family does not swallow codex ids", 
 			resolveNormalizedModel("gpt-6-codex"),
 		);
 		expect(getModelProfile("gpt-6-codex").promptFamily).toBe("gpt-5-codex");
+	});
+});
+
+describe("codex.js wrapper — unsupported-model fallback chain parity", () => {
+	// The wrapper keeps its OWN table (WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN)
+	// because it runs before the TypeScript build. It shipped without the GPT-6
+	// rows lib got, so `codex-multi-auth-codex --model gpt-6-astra` on an
+	// unentitled account exited with the failure code while the plugin-host path
+	// retried, and docs advertised the retry for both.
+	//
+	// Pinned to the GPT-6 rows only. The two tables already diverge elsewhere
+	// (`gpt-5.3-codex` has a row in lib and none in the wrapper), which predates
+	// GPT-6 and is deliberately not asserted here.
+	const GPT6_ROWS = ["gpt-6-astra", "gpt-6-astra-aeon", "gpt-5.6-sol"];
+
+	it.each(GPT6_ROWS)("wrapper carries the `%s` row lib has", (model) => {
+		const libRow = DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN[model];
+		expect(libRow, `lib lost its ${model} row`).toBeDefined();
+		expect(
+			wrapper.WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN[model],
+			`wrapper is missing the ${model} row, so the CLI path will not retry it`,
+		).toEqual(libRow);
 	});
 });

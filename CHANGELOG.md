@@ -81,6 +81,19 @@ This repository's current stable release line is `2.x`. Full release notes live 
   `gpt6` token, the `gpt` + `6` pair never formed, and the id fell to
   `DEFAULT_MODEL` while still passing `capability-policy`'s catalog gate. Gate
   and resolver now agree on it
+- The `codex-multi-auth-codex` wrapper retries the GPT-6 rows too. It keeps its
+  own `WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN`, which shipped without them, so
+  `codex-multi-auth-codex --model gpt-6-astra` on an unentitled account exited
+  with the failure code while the plugin-host path retried, and the docs
+  advertised the retry for both. A parity test now pins the GPT-6 rows across
+  the two tables. Note the wrapper's retry has always been unconditional rather
+  than gated on `fallbackOnUnsupportedCodexModel`; it prints the swap to stderr,
+  and the docs now say which path gates it and which does not
+- The bare-`astra` branch of the GPT-6 resolver is anchored to a GPT-6 version
+  token or to an id with no GPT version at all. It existed for picker labels
+  such as `Astra Pro`, but it also claimed any id merely containing `astra`, so
+  a `gpt-4-astra-x` would have run the frontier model for a caller who named
+  GPT-4
 - `capability-policy`'s catalog gate matches the tokenizer's separator rule.
   It tested a hand-picked `[-_\s]` where `tokenizeModelId` splits on any run of
   non-alphanumerics, so `gpt.6-turbo` and `gpt---5` kept their raw string as the

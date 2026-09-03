@@ -10,6 +10,7 @@ import { getReasoningConfig } from "../lib/request/request-transformer.js";
 import { estimateUsageCostUsd, getUsageModelPricing } from "../lib/usage/pricing.js";
 import { getEffectiveContextWindow } from "../lib/context-budget/model-context-windows.js";
 import { resolveUnsupportedCodexFallbackModel } from "../lib/request/error-classification.js";
+import { computeOutboundRequestAttemptBudget } from "../lib/request/request-attempt-budget.js";
 
 /**
  * GPT-6 Astra (2026-09-03) and the Daybreak cyber models.
@@ -74,6 +75,21 @@ describe("GPT-6 Astra", () => {
 			expect(getNormalizedModel("gpt-5.6")).toBe("gpt-5.6-sol");
 			expect(resolveNormalizedModel("gpt-5.6-terra-fast")).toBe("gpt-5.6-terra");
 			expect(getNormalizedModel("codex-max")).toBe("gpt-5.3-codex");
+		});
+
+		it("does not claim an `astra` token that names a different GPT version", () => {
+			// The bare-`astra` branch exists for picker labels with no version tokens
+			// at all. Left unanchored it also swallowed any id that merely contains
+			// `astra`, so a hypothetical `gpt-4-astra-x` would have run the frontier
+			// model for a caller who named GPT-4.
+			expect(resolveNormalizedModel("gpt-4-astra-x")).not.toBe("gpt-6-astra");
+			expect(resolveNormalizedModel("gpt-4-astra-aeon")).not.toBe(
+				"gpt-6-astra-aeon",
+			);
+			// The labels it exists for still work.
+			expect(resolveNormalizedModel("Astra Pro")).toBe("gpt-6-astra");
+			expect(resolveNormalizedModel("astra-fast")).toBe("gpt-6-astra");
+			expect(resolveNormalizedModel("gpt-6-astra-x")).toBe("gpt-6-astra");
 		});
 
 		it("defers ids carrying a `codex` token to the codex resolver", () => {
@@ -362,6 +378,35 @@ describe("unsupported-model fallback chain", () => {
 		// have no row, deliberately, because nothing steps into them.
 		expect(walk("gpt-5.6-terra")).toEqual([]);
 		expect(walk("gpt-5.6-luna")).toEqual([]);
+	});
+
+	it("fits the single-account attempt budget, with no headroom to spare", () => {
+		// Every fallback hop is a separate outbound attempt against the shared
+		// per-request budget (index.ts tryConsumeOutboundRequestAttempt), so chain
+		// depth is not free. For the common single-account balanced session the
+		// budget is 5, and the aeon walk needs exactly 5: the initial attempt plus
+		// four hops. It fits, and nothing is left over.
+		//
+		// The consequence is real and worth stating rather than hiding: if that
+		// session also spends an attempt on an ordinary retry or a stream failover,
+		// the tail hops become unreachable and the request ends as an
+		// attempt-budget-exhausted 503 instead of reaching `gpt-5.4`. That needs an
+		// account entitled to none of aeon, Astra, Sol or 5.5. The hops are ordered
+		// so the ones lost first are the least valuable.
+		//
+		// This assertion exists to fail loudly if anyone deepens a GPT-6 row: the
+		// added hop would be dead for every single-account user.
+		const budget = computeOutboundRequestAttemptBudget({
+			accountCount: 1,
+			maxSameAccountRetries: 1, // balanced failover mode
+			emptyResponseMaxRetries: 2, // lib/config.ts default
+			streamFailoverMax: 2, // balanced, clamped to 1 by capStreamFailoverMax
+		});
+		expect(budget).toBe(5);
+
+		const attemptsForDeepestWalk = walk("gpt-6-astra-aeon").length + 1;
+		expect(attemptsForDeepestWalk).toBe(5);
+		expect(attemptsForDeepestWalk).toBeLessThanOrEqual(budget);
 	});
 
 	it("stays inert unless the user opted in", () => {
