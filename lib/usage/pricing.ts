@@ -123,6 +123,17 @@ export function getUsageModelPricing(
 	if (!normalized) {
 		return null;
 	}
+	// `Object.hasOwn`, not a bare index. The model string arrives raw from the
+	// client (`createUsageLedgerRow` only trims it), so `constructor`,
+	// `toString` and friends reach this lookup and a bare index hands back the
+	// matching `Object.prototype` member. That object is truthy, so it is
+	// returned as a rate, and every field on it is undefined: the cost comes out
+	// `NaN` instead of `null`. A NaN cost is worse than an unknown one, because
+	// `NaN >= limit` is false, so it silently makes a `maxCostUsd` budget
+	// unenforceable rather than failing closed the way an unpriced model does.
+	if (!Object.hasOwn(MODEL_PRICING, normalized)) {
+		return null;
+	}
 	return MODEL_PRICING[normalized] ?? null;
 }
 

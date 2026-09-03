@@ -1259,7 +1259,9 @@ export function getUnsupportedCodexFallbackChain(
 		return stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
 	};
 
-	const normalized: Record<string, string[]> = {};
+	// Null-prototype: the keys come from user config, so a `__proto__` entry on a
+	// plain object would reassign this object's prototype rather than add a row.
+	const normalized: Record<string, string[]> = Object.create(null);
 	for (const [key, value] of Object.entries(chain)) {
 		if (typeof key !== "string" || !Array.isArray(value)) continue;
 		const normalizedKey = normalizeModel(key);

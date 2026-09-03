@@ -105,7 +105,14 @@ function canonicalizeModelName(model: string | undefined): string | undefined {
 function normalizeFallbackChain(
 	customChain: Record<string, string[]> | undefined,
 ): Record<string, string[]> {
-	const normalized: Record<string, string[]> = {};
+	// Null-prototype, because both the keys written here and the keys read out of
+	// it are caller-controlled. On a plain object, a `customChain` entry named
+	// `__proto__` reassigns this object's prototype instead of adding a row, and
+	// a lookup for `constructor` returns `Object.prototype.constructor`, a
+	// truthy non-array whose `.length` is 1, so the emptiness check passes and
+	// the `for...of` below throws `targets is not iterable` inside the request
+	// path.
+	const normalized: Record<string, string[]> = Object.create(null);
 	for (const [key, values] of Object.entries(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN)) {
 		const normalizedKey = canonicalizeModelName(key);
 		if (!normalizedKey) continue;
@@ -238,7 +245,9 @@ export function resolveUnsupportedCodexFallbackModel(
 
 	const chain = normalizeFallbackChain(options.customChain);
 	const targets = chain[currentModel] ?? [];
-	if (targets.length === 0) return undefined;
+	// Belt and braces with the null-prototype chain above: a `customChain` the
+	// caller passed straight through could still carry a non-array value.
+	if (!Array.isArray(targets) || targets.length === 0) return undefined;
 
 	for (const target of targets) {
 		if (!options.fallbackToGpt52OnUnsupportedGpt53 &&
