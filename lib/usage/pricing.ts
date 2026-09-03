@@ -8,6 +8,19 @@ export interface UsageModelPricing {
 }
 
 const MODEL_PRICING: Record<string, UsageModelPricing> = {
+	// GPT-6 Astra, published at the 2026-09-03 launch: $10 / 1M input,
+	// $50 / 1M output on the standard service tier. Fast mode is 2x standard
+	// ($20 / $100); this table has no service-tier dimension, so it prices the
+	// standard tier and a Fast-mode session is under-counted by half. No cached
+	// input rate was published, so `cachedInputUsdPerMillion` is deliberately
+	// absent: `estimateUsageCostUsd` then bills cached tokens at the full input
+	// rate, which over-states cost. That is the safe direction for a
+	// `maxCostUsd` budget — it trips early, never late.
+	"gpt-6-astra": {
+		inputUsdPerMillion: 10,
+		outputUsdPerMillion: 50,
+		reasoningUsdPerMillion: 50,
+	},
 	"gpt-5-codex": {
 		inputUsdPerMillion: 1.25,
 		outputUsdPerMillion: 10,
@@ -79,6 +92,15 @@ const MODEL_PRICING: Record<string, UsageModelPricing> = {
  * in neither list.
  */
 export const UNPRICED_ROUTABLE_MODELS = [
+	// OpenAI published a rate for the Astra flagship at launch but not for the
+	// long-horizon `aeon` variant, and the Daybreak cyber models are sold under
+	// a separate controlled-access agreement with no public per-token rate.
+	// Pricing `aeon` off the flagship would be a guess on the model whose whole
+	// purpose is running for days, which is exactly where a wrong rate does the
+	// most damage.
+	"gpt-6-astra-aeon",
+	"gpt-daybreak-blue-latest",
+	"gpt-daybreak-red-latest",
 	"gpt-5.1",
 	"gpt-5.2-pro",
 	"gpt-5.4-mini",

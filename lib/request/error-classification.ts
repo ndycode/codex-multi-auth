@@ -23,6 +23,15 @@ const MODEL_ACCESS_DENIED_PATTERN =
 	/the model [`'"]([^`'"]+)[`'"] does not exist or you do not have access to it/i;
 
 export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> = {
+	// GPT-6 Astra rolls out org by org, so an account that is not entitled yet
+	// gets a real unsupported-model response for it. This chain only fires when
+	// the user has opted into `fallbackOnUnsupportedCodexModel` (default
+	// `false`), and only on that response, so it never silently swaps the model
+	// out from under a request the account could have served.
+	"gpt-6-astra": ["gpt-5.6-sol", "gpt-5.5"],
+	// aeon steps to the flagship first: still GPT-6, still Astra, just without
+	// the long-horizon behaviour.
+	"gpt-6-astra-aeon": ["gpt-6-astra", "gpt-5.6-sol"],
 	"gpt-5": ["gpt-5.5"],
 	"gpt-5-pro": ["gpt-5.5-pro"],
 	"gpt-5-chat-latest": ["gpt-5.5"],

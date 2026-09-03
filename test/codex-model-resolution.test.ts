@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { resolveNormalizedModel } from "../lib/request/helpers/model-map.js";
+import {
+	getModelProfile,
+	resolveNormalizedModel,
+} from "../lib/request/helpers/model-map.js";
 import { getReasoningConfig } from "../lib/request/request-transformer.js";
 
 // The `codex-multi-auth-codex` wrapper (scripts/codex.js) runs before the
@@ -63,6 +66,55 @@ describe("codex.js wrapper — GPT-5.6 model resolution", () => {
 	});
 });
 
+describe("codex.js wrapper — GPT-6 Astra and Daybreak resolution", () => {
+	it("maps the flagship and the long-horizon variant to their own ids", () => {
+		expect(wrapper.normalizeRequestedModel("gpt-6-astra")).toBe("gpt-6-astra");
+		expect(wrapper.normalizeRequestedModel("gpt-6-astra-aeon")).toBe(
+			"gpt-6-astra-aeon",
+		);
+	});
+
+	it("treats bare `gpt-6`, `astra`, and provider-prefixed ids as the flagship", () => {
+		expect(wrapper.normalizeRequestedModel("gpt-6")).toBe("gpt-6-astra");
+		expect(wrapper.normalizeRequestedModel("astra")).toBe("gpt-6-astra");
+		expect(wrapper.normalizeRequestedModel("openai/gpt-6")).toBe("gpt-6-astra");
+	});
+
+	it("resolves unrecognised GPT-6 ids to Astra, never silently to 5.5", () => {
+		expect(wrapper.normalizeRequestedModel("gpt-6-astra-pro")).toBe("gpt-6-astra");
+		expect(wrapper.normalizeRequestedModel("gpt-6-astra-2026-09-03")).toBe(
+			"gpt-6-astra",
+		);
+		expect(wrapper.normalizeRequestedModel("gpt-6-turbo")).toBe("gpt-6-astra");
+	});
+
+	it("resolves Daybreak slugs instead of dropping them onto 5.5", () => {
+		expect(wrapper.normalizeRequestedModel("gpt-daybreak-red-latest")).toBe(
+			"gpt-daybreak-red-latest",
+		);
+		expect(wrapper.normalizeRequestedModel("gpt-daybreak-teal")).toBe(
+			"gpt-daybreak-blue-latest",
+		);
+	});
+
+	it("buckets GPT-6 and Daybreak into the gpt-5.2 prompt family for status", () => {
+		expect(wrapper.resolveModelFamilyForStatus("gpt-6-astra")).toBe("gpt-5.2");
+		expect(wrapper.resolveModelFamilyForStatus("gpt-6-astra-aeon")).toBe("gpt-5.2");
+		expect(wrapper.resolveModelFamilyForStatus("gpt-daybreak-red-latest")).toBe(
+			"gpt-5.2",
+		);
+	});
+
+	it("strips GPT-6 effort suffixes when canonicalizing", () => {
+		expect(wrapper.canonicalizeRequestedModelName("gpt-6-astra-max")).toBe(
+			"gpt-6-astra",
+		);
+		expect(wrapper.canonicalizeRequestedModelName("gpt-6-astra-aeon-ultra")).toBe(
+			"gpt-6-astra-aeon",
+		);
+	});
+});
+
 describe("codex.js wrapper — reasoning-effort coercion", () => {
 	it("upgrades `none`/`minimal` (rejected by 5.6) to a supported effort", () => {
 		expect(wrapper.coerceReasoningEffortForModel("gpt-5.6-sol", "none")).toBe("low");
@@ -93,6 +145,23 @@ describe("codex.js wrapper — reasoning-effort coercion", () => {
 // here instead of silently shipping a divergent CLI path.
 describe("codex.js wrapper — parity with lib/request/helpers/model-map", () => {
 	const MODEL_IDS = [
+		"gpt-6",
+		"gpt-6-astra",
+		"gpt-6-astra-aeon",
+		"gpt-6-astra-max",
+		"gpt-6-astra-ultra",
+		"gpt-6-astra-aeon-xhigh",
+		"gpt-6-astra-pro",
+		"gpt-6-astra-2026-09-03",
+		"astra",
+		"astra-aeon",
+		"openai/gpt-6",
+		"gpt-6-codex",
+		"gpt-daybreak-blue-latest",
+		"gpt-daybreak-red-latest",
+		"daybreak-red",
+		"daybreak-blue-high",
+		"gpt-daybreak-teal",
 		"gpt-5.6",
 		"gpt-5.6-sol",
 		"gpt-5.6-terra",
@@ -121,6 +190,10 @@ describe("codex.js wrapper — parity with lib/request/helpers/model-map", () =>
 	// wrapper mirrors. lib's getReasoningConfig applies the same fallback + the
 	// ultra->max wire rewrite, so the two must agree for every known effort.
 	const COERCION_MODELS = [
+		"gpt-6-astra",
+		"gpt-6-astra-aeon",
+		"gpt-daybreak-blue-latest",
+		"gpt-daybreak-red-latest",
 		"gpt-5.6-sol",
 		"gpt-5.6-terra",
 		"gpt-5.6-luna",
@@ -138,4 +211,19 @@ describe("codex.js wrapper — parity with lib/request/helpers/model-map", () =>
 			);
 		});
 	}
+});
+
+describe("codex.js wrapper — GPT-6 status family does not swallow codex ids", () => {
+	it("leaves a `gpt-6-codex` id in the codex status bucket", () => {
+		// This function returns the rate-limit bucket, which is `codex` for every
+		// codex id (`/codex/responses` buckets there), not the prompt family lib's
+		// profile reports. The GPT-6 branch must not claim a codex id off it.
+		expect(wrapper.resolveModelFamilyForStatus("gpt-6-codex")).toBe("codex");
+		expect(wrapper.resolveModelFamilyForStatus("gpt-5.3-codex")).toBe("codex");
+		// Routing still sends it to the current codex model, same as lib.
+		expect(wrapper.normalizeRequestedModel("gpt-6-codex")).toBe(
+			resolveNormalizedModel("gpt-6-codex"),
+		);
+		expect(getModelProfile("gpt-6-codex").promptFamily).toBe("gpt-5-codex");
+	});
 });

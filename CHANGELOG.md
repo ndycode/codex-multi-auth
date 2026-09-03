@@ -5,6 +5,64 @@ Dates use ISO format (`YYYY-MM-DD`).
 
 This repository's current stable release line is `2.x`. Full release notes live in [`docs/releases/`](docs/releases/) — this file is the short version. Pre-`0.1.0` iteration history is archived in [`docs/releases/legacy-pre-0.1-history.md`](docs/releases/legacy-pre-0.1-history.md).
 
+## [Unreleased]
+
+### Added
+
+- GPT-6 Astra is a first-class model family. `gpt-6-astra` and the long-horizon
+  `gpt-6-astra-aeon` each resolve to their own canonical id with the frontier
+  reasoning ladder (`low` through `max`, plus `ultra`, which is rewritten to
+  `max` on the wire exactly as upstream Codex does). Bare `gpt-6` and `astra`
+  resolve to the flagship, and `none`/`minimal` are coerced up to `low` because
+  Astra does not accept them. A dedicated GPT-6 resolver claims every id the
+  alias table does not name, including the `gpt-6-astra-pro` plan tier, dated
+  snapshots, and any tier OpenAI adds later, so an unrecognised GPT-6 id can
+  never fall through to GPT-5.5. That silent downgrade is the exact failure
+  v2.5.0 had to fix for GPT-5.6, one major version down. `aeon` deliberately
+  keeps its own id rather than collapsing into the flagship: it is a
+  behaviourally different model, not a rename. Both shipped config templates
+  carry the two models, and the `codex-multi-auth-codex` wrapper mirrors the
+  same map, with a model-by-effort parity suite pinning the two together
+- The Daybreak cyber models from the upstream Codex catalog
+  (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, plus `daybreak-blue`
+  and `daybreak-red` shorthands) resolve to their own ids. Their slugs carry
+  neither a `codex` nor a `gpt 5` token, so every resolver declined them and
+  asking for the cyber-permissive model silently ran GPT-5.5. An unrecognised
+  Daybreak id resolves to `blue`, the defensive variant, so a typo cannot
+  upgrade a caller into the permissive one. They stay out of the picker
+  templates, matching their `visibility: hide` upstream
+- `gpt-6-astra` is priced at its published launch rate, $10 per 1M input and $50
+  per 1M output on the standard service tier. No cached-input rate was
+  published, so cached tokens bill at the full input rate, which over-states
+  cost and makes a `maxCostUsd` budget trip early rather than late. Fast mode is
+  2x standard and this table has no service-tier dimension, so a Fast-mode
+  session is under-counted by half. `gpt-6-astra-aeon` and both Daybreak models
+  have no published rate and are listed in `UNPRICED_ROUTABLE_MODELS` rather
+  than guessed at, so a cost budget fails closed while they are in the window
+- An unsupported-model fallback chain for Astra: `gpt-6-astra` steps to
+  `gpt-5.6-sol` then `gpt-5.5`, and `gpt-6-astra-aeon` steps to the flagship
+  first, since that is still GPT-6 Astra without the long-horizon behaviour.
+  Astra rolls out org by org, so an account that is not entitled yet gets a real
+  unsupported-model response for it. The chain is opt-in
+  (`fallbackOnUnsupportedCodexModel` defaults to `false`) and fires only on that
+  response, so it never swaps the model out from under a request the account
+  could have served
+- All four new models are listed in `UNESTIMATED_ROUTABLE_MODELS`. OpenAI
+  published two different context windows for Astra on launch day, 1.05M for the
+  API surface and 272K for Codex, and this wrapper talks to the Codex backend.
+  Set `contextBudgetGuardModelWindowOverrides` once you know your real ceiling
+
+### Fixed
+
+- The `codex-multi-auth-codex` wrapper resolves codex model ids that its
+  explicit list does not name, matching lib. Its final clause tested
+  `model === "codex"` where `resolveCodexCatalogModel` tests for the `codex`
+  substring, so ids such as `gpt-6-codex` resolved to nothing in the wrapper
+  while lib resolved them to the current codex model
+- The wrapper buckets Daybreak ids into the `gpt-5.2` prompt family for status
+  instead of returning no family at all. Their slug matched none of
+  `resolveModelFamilyForStatus`'s branches
+
 ## [2.10.0] - 2026-08-31
 
 A pinned account gets a real bounded retry instead of a single attempt, and a new opt-in guard can pause a session before it overflows the model's context window. [Full notes](docs/releases/v2.10.0.md).

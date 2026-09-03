@@ -52,7 +52,9 @@ describe("model map", () => {
 
 		it("returns undefined for unknown exact identifiers", () => {
 			expect(getNormalizedModel("unknown-model")).toBeUndefined();
-			expect(getNormalizedModel("gpt-6")).toBeUndefined();
+			// `gpt-6` used to belong here. It is now a registered alias for the
+			// Astra flagship, so the unknown-id case moved up a version.
+			expect(getNormalizedModel("gpt-7")).toBeUndefined();
 			expect(getNormalizedModel("gpt-5.7")).toBeUndefined();
 			expect(getNormalizedModel("")).toBeUndefined();
 		});

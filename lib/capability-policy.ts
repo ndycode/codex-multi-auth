@@ -37,7 +37,15 @@ function normalizeModel(model: string | undefined): string | null {
 		? (trimmedInput.split("/").pop() ?? trimmedInput)
 		: trimmedInput;
 	const exactMatch = getNormalizedModel(withoutProvider);
-	const shouldUseFallbackCatalog = /gpt[-_\s]?5|codex/i.test(withoutProvider);
+	// The catalog fallback is gated so an unrelated model id is not dragged onto
+	// a GPT-5 default. GPT-6 Astra and the Daybreak cyber models have to be named
+	// here as well: without them an id the alias table does not carry, such as
+	// `gpt-6-astra-pro`, keeps its raw string as the policy key while routing
+	// resolves it to `gpt-6-astra`, so the policy store tracks a key no request
+	// ever uses.
+	const shouldUseFallbackCatalog = /gpt[-_\s]?[56]|codex|astra|daybreak/i.test(
+		withoutProvider,
+	);
 	const mapped =
 		exactMatch ??
 		(shouldUseFallbackCatalog

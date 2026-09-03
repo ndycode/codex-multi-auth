@@ -194,6 +194,9 @@ Some Windows installs expose Codex only as a packaged `shell:AppsFolder` app ent
 
 The shipped config templates expose first-class current OpenAI model aliases:
 
+- both templates lead with GPT-6 Astra: `gpt-6-astra` and the long-horizon `gpt-6-astra-aeon`. Bare `gpt-6` and `astra` resolve to the flagship, `astra-aeon` to the long-horizon variant. Astra takes the same reasoning ladder as GPT-5.6 (`low` through `max`, plus `ultra`) and rejects `none`/`minimal`, which are coerced up to `low`
+- any GPT-6 id the alias table does not name resolves to Astra rather than falling back to GPT-5.5. That covers the `gpt-6-astra-pro` plan tier, dated snapshots such as `gpt-6-astra-2026-09-03`, and tiers added after this release. An id carrying `aeon` stays on `gpt-6-astra-aeon`, because it is a different model rather than a rename of the flagship
+- the Daybreak cyber models (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, shorthand `daybreak-blue` / `daybreak-red`) resolve to their own ids but are not listed in the templates, matching their hidden visibility in the upstream Codex picker. An unrecognised Daybreak id resolves to `blue`, the defensive variant
 - both `config/codex-modern.json` and `config/codex-legacy.json` include the GPT-5.6 tiers (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`), plus `gpt-5.5` and `gpt-5.5-pro`. The modern template collapses each tier's efforts into `variants`; the legacy template lists one entry per effort (for example `gpt-5.6-sol-high`) for Codex builds that predate the `variants` picker
 - GPT-5.6 adds two reasoning tiers above `xhigh`: `max`, and `ultra` on Sol/Terra only. `ultra` selects Codex's automatic subagent delegation and is sent to the API as `max`, mirroring upstream Codex
 - no GPT-5.6 tier accepts `none` or `minimal` reasoning effort; requests using them are coerced up to `low`
@@ -201,6 +204,7 @@ The shipped config templates expose first-class current OpenAI model aliases:
 - `config/codex-modern.json` and `config/codex-legacy.json` expose current documented GPT-5.5, GPT-5.4, and GPT-5.3 Codex model IDs
 - deprecated Codex selectors such as `gpt-5-codex` and `gpt-5.1-codex*` are treated as compatibility aliases and retried on the current documented Codex model when the ChatGPT Codex surface rejects them
 - the wrapper and optional plugin-host runtime try those models directly and only fall back to `gpt-5.4` after a real ChatGPT Codex unsupported-model response
+- GPT-6 Astra has its own entry in that chain: `gpt-6-astra` steps to `gpt-5.6-sol` then `gpt-5.5`, and `gpt-6-astra-aeon` steps to `gpt-6-astra` first. Astra rolls out org by org, so an account without entitlement gets a real unsupported-model response for it. Like every other entry, this only applies when `fallbackOnUnsupportedCodexModel` is on (it defaults to `false`) and only after that response, never as a pre-emptive downgrade
 
 ---
 

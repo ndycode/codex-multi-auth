@@ -575,6 +575,18 @@ async function applyForcedAccountSelection(rawArgs, env = process.env) {
 
 function resolveModelFamilyForStatus(model) {
 	const normalized = typeof model === "string" ? model.trim().toLowerCase() : "";
+	// GPT-6 Astra and the Daybreak cyber models share the gpt-5.2 prompt family
+	// with the GPT-5.6 general tiers (see lib/request/helpers/model-map.ts
+	// MODEL_PROFILES). Daybreak has to be checked explicitly: its slug matches
+	// none of the branches below, so it used to fall through to `null` and get
+	// bucketed against no family at all.
+	if (
+		(normalized.startsWith("gpt-6") || normalized.startsWith("astra")) &&
+		!normalized.includes("codex")
+	) {
+		return "gpt-5.2";
+	}
+	if (normalized.includes("daybreak")) return "gpt-5.2";
 	// GPT-5.6 general tiers share the gpt-5.2 prompt family (see
 	// lib/request/helpers/model-map.ts MODEL_PROFILES). Check before the generic
 	// gpt-5 catch-all, which would otherwise mis-bucket them as codex.
@@ -1901,6 +1913,10 @@ function hasCliAuthCredentialsStoreOverride(args) {
 // This wrapper runs before the TypeScript build, so it cannot import that source.
 const SUPPORTED_REASONING_EFFORTS_BY_MODEL = {
 	[CURRENT_CODEX_MODEL]: ["low", "medium", "high", "xhigh"],
+	"gpt-6-astra": ["low", "medium", "high", "xhigh", "max", "ultra"],
+	"gpt-6-astra-aeon": ["low", "medium", "high", "xhigh", "max", "ultra"],
+	"gpt-daybreak-blue-latest": ["low", "medium", "high", "xhigh", "max", "ultra"],
+	"gpt-daybreak-red-latest": ["low", "medium", "high", "xhigh", "max", "ultra"],
 	"gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
 	"gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
 	"gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
@@ -1960,6 +1976,18 @@ const GPT_5_6_LUNA_MODEL = "gpt-5.6-luna";
 const GPT_5_6_FLAGSHIP_ALIAS = "gpt-5.6";
 const GPT_5_6_SOL_TERRA_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 const GPT_5_6_LUNA_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+// GPT-6 Astra (2026-09-03). No Sol/Terra/Luna split this generation: the
+// flagship plus `aeon`, a long-horizon variant. Same frontier effort ladder as
+// 5.6 (no `none`/`minimal`, `ultra` at the top). Bare `gpt-6` -> flagship.
+const GPT_6_ASTRA_MODEL = "gpt-6-astra";
+const GPT_6_ASTRA_AEON_MODEL = "gpt-6-astra-aeon";
+const GPT_6_FLAGSHIP_ALIAS = "gpt-6";
+const GPT_6_ASTRA_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
+// Daybreak cyber models from the upstream Codex catalog. `red` is the
+// cyber-permissive variant, `blue` the defensive one.
+const DAYBREAK_BLUE_MODEL = "gpt-daybreak-blue-latest";
+const DAYBREAK_RED_MODEL = "gpt-daybreak-red-latest";
+const DAYBREAK_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 const GENERAL_GPT5_VERSION_CATALOG = {
 	1: {
 		base: "gpt-5.1",
@@ -2163,6 +2191,47 @@ function seedRequestedModelAliases() {
 		GPT_5_6_SOL_MODEL,
 		GPT_5_6_SOL_TERRA_EFFORTS,
 	);
+	addRequestedModelEffortAliases(
+		GPT_6_ASTRA_MODEL,
+		GPT_6_ASTRA_MODEL,
+		GPT_6_ASTRA_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		GPT_6_ASTRA_AEON_MODEL,
+		GPT_6_ASTRA_AEON_MODEL,
+		GPT_6_ASTRA_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		GPT_6_FLAGSHIP_ALIAS,
+		GPT_6_ASTRA_MODEL,
+		GPT_6_ASTRA_EFFORTS,
+	);
+	addRequestedModelEffortAliases("astra", GPT_6_ASTRA_MODEL, GPT_6_ASTRA_EFFORTS);
+	addRequestedModelEffortAliases(
+		"astra-aeon",
+		GPT_6_ASTRA_AEON_MODEL,
+		GPT_6_ASTRA_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		DAYBREAK_BLUE_MODEL,
+		DAYBREAK_BLUE_MODEL,
+		DAYBREAK_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		DAYBREAK_RED_MODEL,
+		DAYBREAK_RED_MODEL,
+		DAYBREAK_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		"daybreak-blue",
+		DAYBREAK_BLUE_MODEL,
+		DAYBREAK_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		"daybreak-red",
+		DAYBREAK_RED_MODEL,
+		DAYBREAK_EFFORTS,
+	);
 	addRequestedModelReasoningAliases(CURRENT_CODEX_MODEL, CURRENT_CODEX_MODEL);
 	addRequestedModelReasoningAliases("gpt-5.3-codex-spark", CURRENT_CODEX_MODEL);
 	addRequestedModelReasoningAliases(LEGACY_CODEX_MODEL, CURRENT_CODEX_MODEL);
@@ -2218,6 +2287,13 @@ function resolveStableGeneralGpt5Variant(variant) {
 	return fallback;
 }
 
+// The final clause is a catch-all on the `codex` substring, matching
+// `resolveCodexCatalogModel` in lib/request/helpers/model-map.ts. It used to be
+// an exact `normalized === "codex"` check, so any codex id the explicit list
+// above did not name (`gpt-6-codex`, `gpt-5.7-codex`, …) resolved to nothing in
+// the wrapper while lib resolved it to the current codex model — a silent drift
+// between the two, which is exactly what test/codex-model-resolution.test.ts
+// exists to prevent.
 function resolveCodexRequestedModel(normalized) {
 	if (
 		normalized.includes("gpt-5.1-codex-max") ||
@@ -2246,7 +2322,7 @@ function resolveCodexRequestedModel(normalized) {
 		normalized.includes("gpt 5.1 codex") ||
 		normalized.includes("gpt-5-codex") ||
 		normalized.includes("gpt 5 codex") ||
-		normalized === "codex"
+		normalized.includes("codex")
 	) {
 		return CURRENT_CODEX_MODEL;
 	}
@@ -2258,6 +2334,39 @@ function resolveCodexRequestedModel(normalized) {
 // future `gpt-5.6-terra-fast`). Without this the general GPT-5 resolver sees
 // minor `6`, finds no catalog entry, and silently falls back to 5.5. Unknown
 // tiers resolve to Sol, matching OpenAI's bare `gpt-5.6` alias.
+// Resolve GPT-6 identifiers that are not exact aliases (a dated snapshot, the
+// `gpt-6-astra-pro` plan tier, or a tier OpenAI adds later). Without this the
+// general GPT-5 resolver never matches (it needs a `gpt 5` token pair) and the
+// id falls through to 5.5 — running GPT-5.5 for a caller who asked for the
+// frontier model. `aeon` keeps its own id because it is a behaviourally
+// different model, not a rename. Mirrors lib/request/helpers/model-map.ts.
+function resolveGpt6RequestedModel(stripped) {
+	const tokens = tokenizeRequestedModel(stripped);
+	const gptIndex = tokens.indexOf("gpt");
+	const isGpt6 = gptIndex !== -1 && tokens[gptIndex + 1] === "6";
+	// A bare `astra` token counts too: picker labels and OpenAI's own material
+	// say "Astra" with no `gpt-6` prefix, so `Astra Pro` arrives with no version
+	// tokens and would otherwise miss every branch and land on 5.5.
+	if ((!isGpt6 && !tokens.includes("astra")) || tokens.includes("codex")) {
+		return "";
+	}
+	if (tokens.includes("aeon")) return GPT_6_ASTRA_AEON_MODEL;
+	return GPT_6_ASTRA_MODEL;
+}
+
+// Daybreak slugs carry neither a `codex` nor a `gpt 5` token, so every other
+// resolver declines them and they would reach the 5.5 default. An unrecognised
+// Daybreak id resolves to `blue`, the more restricted of the two, so a typo
+// cannot silently upgrade a caller into the cyber-permissive model.
+function resolveDaybreakRequestedModel(stripped) {
+	const tokens = tokenizeRequestedModel(stripped);
+	if (!tokens.includes("daybreak")) {
+		return "";
+	}
+	if (tokens.includes("red")) return DAYBREAK_RED_MODEL;
+	return DAYBREAK_BLUE_MODEL;
+}
+
 function resolveGpt56RequestedModel(stripped) {
 	const tokens = tokenizeRequestedModel(stripped);
 	const gptIndex = tokens.indexOf("gpt");
@@ -2316,9 +2425,19 @@ function normalizeRequestedModel(model) {
 		return exactMatch;
 	}
 
+	const daybreakModel = resolveDaybreakRequestedModel(stripped);
+	if (daybreakModel) {
+		return daybreakModel;
+	}
+
 	const codexModel = resolveCodexRequestedModel(normalized);
 	if (codexModel) {
 		return codexModel;
+	}
+
+	const gpt6Model = resolveGpt6RequestedModel(stripped);
+	if (gpt6Model) {
+		return gpt6Model;
 	}
 
 	const gpt56Model = resolveGpt56RequestedModel(stripped);
