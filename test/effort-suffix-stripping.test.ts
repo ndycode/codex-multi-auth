@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { REASONING_EFFORTS, stripModelEffortSuffix } from "../lib/constants.js";
 import { CapabilityPolicyStore } from "../lib/capability-policy.js";
+import { EntitlementCache } from "../lib/entitlement-cache.js";
 import { resolveUnsupportedCodexFallbackModel } from "../lib/request/error-classification.js";
 import { getUnsupportedCodexFallbackChain } from "../lib/config.js";
 
@@ -50,6 +51,28 @@ describe("stripModelEffortSuffix", () => {
 });
 
 describe("the four call sites agree on one key per model", () => {
+	it("the entitlement cache shares one block across effort suffixes", () => {
+		// This is the fourth call site the suite name claims and did not cover.
+		// Before the fix a block written for `gpt-6-astra-max` was invisible to a
+		// lookup for `gpt-6-astra`, so the same account/model pair was probed and
+		// blocked twice under two keys.
+		const cache = new EntitlementCache();
+		cache.markBlocked("acc:1", "gpt-6-astra-max", "unsupported-model", 60_000, 1_000);
+
+		expect(cache.isBlocked("acc:1", "gpt-6-astra", 1_500).blocked).toBe(true);
+		expect(cache.isBlocked("acc:1", "gpt-6-astra-ultra", 1_500).blocked).toBe(true);
+		expect(cache.isBlocked("acc:1", "gpt-6-astra-max", 1_500).blocked).toBe(true);
+	});
+
+	it("the entitlement cache still keeps Codex Max separate from Codex", () => {
+		// If `-max` were stripped here, blocking Codex Max would also block the
+		// plain codex model, taking a working model out of rotation.
+		const cache = new EntitlementCache();
+		cache.markBlocked("acc:2", "codex-max", "unsupported-model", 60_000, 1_000);
+		expect(cache.isBlocked("acc:2", "codex-max", 1_500).blocked).toBe(true);
+		expect(cache.isBlocked("acc:2", "codex", 1_500).blocked).toBe(false);
+	});
+
 	it("capability policy shares a key across effort suffixes", () => {
 		const store = new CapabilityPolicyStore();
 		store.recordSuccess("id:acc", "gpt-6-astra-max", 1_000);
