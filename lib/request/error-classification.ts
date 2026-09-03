@@ -5,7 +5,7 @@
  */
 
 import { isRecord } from "../utils.js";
-import { HTTP_STATUS } from "../constants.js";
+import { HTTP_STATUS, stripModelEffortSuffix } from "../constants.js";
 
 export interface EntitlementError {
         isEntitlement: true;
@@ -99,7 +99,7 @@ function canonicalizeModelName(model: string | undefined): string | undefined {
 	const stripped = trimmed.includes("/")
 		? (trimmed.split("/").pop() ?? trimmed)
 		: trimmed;
-	return stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
+	return stripModelEffortSuffix(stripped);
 }
 
 function normalizeFallbackChain(

@@ -1,4 +1,5 @@
 import { createLogger } from "./logger.js";
+import { stripModelEffortSuffix } from "./constants.js";
 
 const log = createLogger("entitlement-cache");
 
@@ -37,7 +38,7 @@ function normalizeModel(model: string | undefined): string | null {
 	const trimmed = model.trim().toLowerCase();
 	if (!trimmed) return null;
 	const stripped = trimmed.includes("/") ? (trimmed.split("/").pop() ?? trimmed) : trimmed;
-	return stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
+	return stripModelEffortSuffix(stripped);
 }
 
 function normalizeEntitlementEmail(email: string | undefined): string | undefined {

@@ -2,6 +2,7 @@ import {
 	getNormalizedModel,
 	resolveNormalizedModel,
 } from "./request/helpers/model-map.js";
+import { stripModelEffortSuffix } from "./constants.js";
 
 export interface CapabilityPolicySnapshot {
 	successes: number;
@@ -61,7 +62,7 @@ function normalizeModel(model: string | undefined): string | null {
 			: withoutProvider);
 	const trimmed = mapped.trim().toLowerCase();
 	if (!trimmed) return null;
-	return trimmed.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
+	return stripModelEffortSuffix(trimmed);
 }
 
 /**
