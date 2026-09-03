@@ -164,6 +164,7 @@ describe("codex.js wrapper — reasoning-effort coercion", () => {
 describe("codex.js wrapper — parity with lib/request/helpers/model-map", () => {
 	const MODEL_IDS = [
 		"gpt-6",
+		"gpt6",
 		"gpt-6-astra",
 		"gpt-6-astra-aeon",
 		"gpt-6-astra-max",

@@ -48,6 +48,17 @@ describe("capability policy store", () => {
 		store.recordSuccess("id:acc_gpt6", "gpt.6-turbo", 1_000);
 		expect(store.getBoost("id:acc_gpt6", "gpt-6-astra", 1_500)).toBeGreaterThan(0);
 
+		// The tokenizer collapses a RUN of separators, so the gate uses `*`, not
+		// `?`. Repeated separators and no separator at all both have to route the
+		// same way the resolver does.
+		const repeated = new CapabilityPolicyStore();
+		repeated.recordSuccess("id:acc_rep", "gpt..6-turbo", 1_000);
+		expect(repeated.getBoost("id:acc_rep", "gpt-6-astra", 1_500)).toBeGreaterThan(0);
+
+		const bare = new CapabilityPolicyStore();
+		bare.recordSuccess("id:acc_bare", "gpt6", 1_000);
+		expect(bare.getBoost("id:acc_bare", "gpt-6-astra", 1_500)).toBeGreaterThan(0);
+
 		// The same holds for ids the alias table does carry, and for Daybreak.
 		const aliased = new CapabilityPolicyStore();
 		aliased.recordSuccess("id:acc_astra", "gpt-6-astra-pro", 1_000);
@@ -67,6 +78,8 @@ describe("capability policy store", () => {
 		store.recordSuccess("id:acc_other", "gpt-5.5", 1_000);
 		expect(store.getBoost("id:acc_other", "gpt-4o", 1_500)).toBe(0);
 		expect(store.getBoost("id:acc_other", "gpt.4-turbo", 1_500)).toBe(0);
+		expect(store.getBoost("id:acc_other", "gpt-4.5-preview", 1_500)).toBe(0);
+		expect(store.getBoost("id:acc_other", "gpt..4", 1_500)).toBe(0);
 	});
 
 	it("uses canonical model normalization across aliases", () => {

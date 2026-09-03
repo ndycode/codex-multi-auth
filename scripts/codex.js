@@ -2350,7 +2350,10 @@ function resolveCodexRequestedModel(normalized) {
 function resolveGpt6RequestedModel(stripped) {
 	const tokens = tokenizeRequestedModel(stripped);
 	const gptIndex = tokens.indexOf("gpt");
-	const isGpt6 = gptIndex !== -1 && tokens[gptIndex + 1] === "6";
+	// `gpt6` with no separator tokenizes as one token, so the `gpt` + `6` pair
+	// never forms; mirror lib and claim it here.
+	const isGpt6 =
+		(gptIndex !== -1 && tokens[gptIndex + 1] === "6") || tokens.includes("gpt6");
 	// A bare `astra` token counts too: picker labels and OpenAI's own material
 	// say "Astra" with no `gpt-6` prefix, so `Astra Pro` arrives with no version
 	// tokens and would otherwise miss every branch and land on 5.5.

@@ -328,6 +328,33 @@ describe("unsupported-model fallback chain", () => {
 		expect(hops).not.toContain("gpt-6-astra-aeon");
 	});
 
+	it("reads a row's second candidate only when the first is already attempted", () => {
+		// This covers the RESOLVER's skip-attempted contract, not the runtime walk.
+		// Keep the distinction: index.ts seeds `attemptedModels` with the requested
+		// model alone (index.ts:1269-1271) and then advances the model each hop, so
+		// it never asks a row for its second candidate. These entries are defensive,
+		// for a caller that arrives with a pre-seeded set. Asserting this shape and
+		// calling it proof of the fallback path is exactly the mistake that hid the
+		// stranded `gpt-5.5` hop, which is why `walk()` above exists separately.
+		const secondCandidate = (requestedModel: string, attempted: string[]) =>
+			resolveUnsupportedCodexFallbackModel({
+				requestedModel,
+				errorBody: unsupportedBody,
+				attemptedModels: attempted,
+				fallbackOnUnsupportedCodexModel: true,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+
+		expect(secondCandidate("gpt-6-astra", ["gpt-5.6-sol"])).toBe("gpt-5.5");
+		expect(secondCandidate("gpt-6-astra-aeon", ["gpt-6-astra"])).toBe(
+			"gpt-5.6-sol",
+		);
+		// Exhausting every candidate on a row ends the resolve rather than looping.
+		expect(
+			secondCandidate("gpt-6-astra", ["gpt-5.6-sol", "gpt-5.5"]),
+		).toBeUndefined();
+	});
+
 	it("ends the walk at a model with no row, which is what stranded it", () => {
 		// This is the mechanism behind the bug the `gpt-5.6-sol` row fixes: a
 		// model with no row returns undefined and the walk stops there, however

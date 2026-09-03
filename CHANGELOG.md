@@ -34,9 +34,13 @@ This repository's current stable release line is `2.x`. Full release notes live 
 - `gpt-6-astra` is priced at its published launch rate, $10 per 1M input and $50
   per 1M output on the standard service tier. No cached-input rate was
   published, so cached tokens bill at the full input rate, which over-states
-  cost and makes a `maxCostUsd` budget trip early rather than late. Fast mode is
-  2x standard and this table has no service-tier dimension, so a Fast-mode
-  session is under-counted by half. `gpt-6-astra-aeon` and both Daybreak models
+  cost and makes a `maxCostUsd` budget trip early rather than late. OpenAI's
+  Fast service tier is 2x standard, and no row in this table has ever carried a
+  service-tier dimension, so a session billed at that tier is under-counted by
+  half for Astra exactly as it already is for `gpt-5.6-sol` and every other
+  priced model. Nothing in this repo selects that tier: `fastSession` is a local
+  latency setting that lowers reasoning effort, not OpenAI's billed Fast mode.
+  `gpt-6-astra-aeon` and both Daybreak models
   have no published rate and are listed in `UNPRICED_ROUTABLE_MODELS` rather
   than guessed at, so a cost budget fails closed while they are in the window
 - An unsupported-model fallback chain for Astra: `gpt-6-astra` steps to
@@ -67,6 +71,22 @@ This repository's current stable release line is `2.x`. Full release notes live 
 - The wrapper buckets Daybreak ids into the `gpt-5.2` prompt family for status
   instead of returning no family at all. Their slug matched none of
   `resolveModelFamilyForStatus`'s branches
+- `resolveModelFamilyForStatus` strips the provider prefix before classifying.
+  Every branch is a `startsWith`, and `resolveStatusModel` forwards the raw
+  `--model` value, so `openai/gpt-6` matched none of them and status routing
+  fell back to `activeIndex` instead of the family index. This affected
+  `openai/gpt-5.6-sol` and `openai/gpt-5.1` the same way before GPT-6 existed
+- `gpt6`, written with no separator, resolves to Astra rather than GPT-5.5.
+  `tokenizeModelId` splits on non-alphanumeric runs, so it produced a single
+  `gpt6` token, the `gpt` + `6` pair never formed, and the id fell to
+  `DEFAULT_MODEL` while still passing `capability-policy`'s catalog gate. Gate
+  and resolver now agree on it
+- `capability-policy`'s catalog gate matches the tokenizer's separator rule.
+  It tested a hand-picked `[-_\s]` where `tokenizeModelId` splits on any run of
+  non-alphanumerics, so `gpt.6-turbo` and `gpt---5` kept their raw string as the
+  policy key while routing resolved them to a canonical model, leaving the store
+  tracking a key no request reads. It is still narrow enough that `gpt-4o`,
+  `gpt-4.5-preview` and `gpt.4-turbo` do not reach the resolver
 
 ## [2.10.0] - 2026-08-31
 
