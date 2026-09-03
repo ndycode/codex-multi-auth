@@ -96,11 +96,17 @@ describe("prototype keys cannot masquerade as model ids", () => {
 
 	describe("config-supplied fallback chain", () => {
 		it("does not let a `__proto__` key reassign the returned object's prototype", () => {
+			// JSON.parse, deliberately, not an object literal. A literal
+			// `__proto__:` key sets THAT literal's prototype and never becomes an
+			// own property, so `Object.entries` in the function under test would
+			// not see it and this case would pass with or without the fix. Config
+			// reaches the function through `JSON.parse` of settings.json, which
+			// does create a real own property. Verified non-vacuous against the
+			// unfixed sibling repo, where this exact construction fails.
 			const chain = getUnsupportedCodexFallbackChain({
-				unsupportedCodexFallbackChain: {
-					__proto__: ["gpt-5.4"],
-					"gpt-6-astra": ["gpt-5.6-sol"],
-				},
+				unsupportedCodexFallbackChain: JSON.parse(
+					'{"__proto__": ["gpt-5.4"], "gpt-6-astra": ["gpt-5.6-sol"]}',
+				),
 			} as never);
 
 			expect(Array.isArray(Object.getPrototypeOf(chain))).toBe(false);
