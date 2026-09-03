@@ -5,7 +5,9 @@ Dates use ISO format (`YYYY-MM-DD`).
 
 This repository's current stable release line is `2.x`. Full release notes live in [`docs/releases/`](docs/releases/) — this file is the short version. Pre-`0.1.0` iteration history is archived in [`docs/releases/legacy-pre-0.1-history.md`](docs/releases/legacy-pre-0.1-history.md).
 
-## [Unreleased]
+## [2.11.0] - 2026-09-04
+
+GPT-6 Astra and the Daybreak cyber models are first-class, and five defects found while wiring them up are fixed. [Full notes](docs/releases/v2.11.0.md).
 
 ### Added
 
@@ -100,6 +102,18 @@ This repository's current stable release line is `2.x`. Full release notes live 
   policy key while routing resolved them to a canonical model, leaving the store
   tracking a key no request reads. It is still narrow enough that `gpt-4o`,
   `gpt-4.5-preview` and `gpt.4-turbo` do not reach the resolver
+
+- Prototype member names are no longer mistaken for model ids. Model strings
+  reach several lookup tables raw from the caller, so `constructor`,
+  `__proto__` and `toString` indexed them and came back truthy. Three
+  consequences, all fixed: `estimateUsageCostUsd` returned `NaN` rather than
+  `null`, which silently made a `maxCostUsd` cap unenforceable because
+  `NaN >= limit` is false; the unsupported-model fallback chain threw
+  `TypeError: targets is not iterable` inside the request path; and
+  `models --model <name>` emitted a row whose normalizedModel, promptFamily
+  and capabilities were all undefined. The fallback chains are now
+  null-prototype objects, which also stops an `unsupportedCodexFallbackChain`
+  key of `__proto__` reassigning the object's prototype
 
 ## [2.10.0] - 2026-08-31
 
