@@ -574,7 +574,14 @@ async function applyForcedAccountSelection(rawArgs, env = process.env) {
 }
 
 function resolveModelFamilyForStatus(model) {
-	const normalized = typeof model === "string" ? model.trim().toLowerCase() : "";
+	// `resolveStatusModel` hands over the raw `--model` / `-m` value or the
+	// config value verbatim, so a provider-qualified id arrives intact. Every
+	// branch below is a `startsWith`, so `openai/gpt-6` used to match none of
+	// them and return null, dropping status routing back to `activeIndex`
+	// instead of the family index. Strip the prefix once, for all of them.
+	const stripped =
+		typeof model === "string" ? stripProviderPrefix(model.trim()) : "";
+	const normalized = typeof stripped === "string" ? stripped.toLowerCase() : "";
 	// GPT-6 Astra and the Daybreak cyber models share the gpt-5.2 prompt family
 	// with the GPT-5.6 general tiers (see lib/request/helpers/model-map.ts
 	// MODEL_PROFILES). Daybreak has to be checked explicitly: its slug matches

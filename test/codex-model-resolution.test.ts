@@ -105,6 +105,24 @@ describe("codex.js wrapper — GPT-6 Astra and Daybreak resolution", () => {
 		);
 	});
 
+	it("classifies a provider-qualified id, which every branch is a startsWith", () => {
+		// `resolveStatusModel` passes the raw `--model` value through, so
+		// `openai/gpt-6` arrives intact. Before the prefix was stripped it matched
+		// no branch and returned null, dropping status routing back to
+		// `activeIndex` instead of the family index. This was never GPT-6 specific.
+		expect(wrapper.resolveModelFamilyForStatus("openai/gpt-6")).toBe("gpt-5.2");
+		expect(wrapper.resolveModelFamilyForStatus("openai/gpt-6-astra")).toBe(
+			"gpt-5.2",
+		);
+		expect(wrapper.resolveModelFamilyForStatus("openai/gpt-5.6-sol")).toBe(
+			"gpt-5.2",
+		);
+		expect(wrapper.resolveModelFamilyForStatus("openai/gpt-5.1")).toBe("gpt-5.1");
+		expect(wrapper.resolveModelFamilyForStatus("models/gpt-5.3-codex")).toBe(
+			"codex",
+		);
+	});
+
 	it("strips GPT-6 effort suffixes when canonicalizing", () => {
 		expect(wrapper.canonicalizeRequestedModelName("gpt-6-astra-max")).toBe(
 			"gpt-6-astra",

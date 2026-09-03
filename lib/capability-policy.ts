@@ -43,9 +43,15 @@ function normalizeModel(model: string | undefined): string | null {
 	// `gpt-6-astra-pro`, keeps its raw string as the policy key while routing
 	// resolves it to `gpt-6-astra`, so the policy store tracks a key no request
 	// ever uses.
-	const shouldUseFallbackCatalog = /gpt[-_\s]?[56]|codex|astra|daybreak/i.test(
-		withoutProvider,
-	);
+	//
+	// The separator class matches `tokenizeModelId`, which splits on any run of
+	// non-alphanumerics. A hand-picked `[-_\s]` was narrower than the resolver
+	// it guards, so `gpt.6-turbo` kept its raw key here while
+	// `resolveNormalizedModel` routed it to `gpt-6-astra`. It must not widen to
+	// every hyphenated id: an unknown one would inherit the DEFAULT_MODEL key,
+	// which is why `gpt-4o` and `gpt.4-turbo` still fail this test.
+	const shouldUseFallbackCatalog =
+		/gpt[^a-z0-9]?[56]|codex|astra|daybreak/i.test(withoutProvider);
 	const mapped =
 		exactMatch ??
 		(shouldUseFallbackCatalog

@@ -275,27 +275,66 @@ describe("unsupported-model fallback chain", () => {
 		},
 	};
 
-	function fallbackFor(requestedModel: string, attemptedModels: string[] = []) {
-		return resolveUnsupportedCodexFallbackModel({
-			requestedModel,
-			errorBody: unsupportedBody,
-			attemptedModels,
-			fallbackOnUnsupportedCodexModel: true,
-			fallbackToGpt52OnUnsupportedGpt53: true,
-		});
+	/**
+	 * Walk the chain the way index.ts's retry loop does.
+	 *
+	 * That loop reassigns `model` to whatever came back and passes THAT as
+	 * `requestedModel` on the next unsupported response. Calling the resolver
+	 * once with the original model and a pre-seeded `attemptedModels` proves
+	 * nothing about the runtime: it reads a second element off the first
+	 * model's row, which the stepwise walk never reaches. Every hop below has
+	 * to come from a row of its own.
+	 */
+	function walk(requestedModel: string): string[] {
+		const attempted = new Set<string>([requestedModel]);
+		const hops: string[] = [];
+		let model: string | undefined = requestedModel;
+
+		for (let step = 0; step < 10; step += 1) {
+			const next: string | undefined = resolveUnsupportedCodexFallbackModel({
+				requestedModel: model,
+				errorBody: unsupportedBody,
+				attemptedModels: attempted,
+				fallbackOnUnsupportedCodexModel: true,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+			if (!next) break;
+			hops.push(next);
+			attempted.add(model as string);
+			attempted.add(next);
+			model = next;
+		}
+
+		return hops;
 	}
 
-	it("steps the flagship down to GPT-5.6 Sol", () => {
-		expect(fallbackFor("gpt-6-astra")).toBe("gpt-5.6-sol");
+	it("walks the flagship down to a model every account has", () => {
+		expect(walk("gpt-6-astra")).toEqual(["gpt-5.6-sol", "gpt-5.5", "gpt-5.4"]);
 	});
 
-	it("steps aeon to the flagship first, then to Sol", () => {
-		expect(fallbackFor("gpt-6-astra-aeon")).toBe("gpt-6-astra");
-		expect(fallbackFor("gpt-6-astra-aeon", ["gpt-6-astra"])).toBe("gpt-5.6-sol");
+	it("walks aeon through the flagship first", () => {
+		// Still GPT-6, still Astra, just without the long-horizon behaviour.
+		expect(walk("gpt-6-astra-aeon")).toEqual([
+			"gpt-6-astra",
+			"gpt-5.6-sol",
+			"gpt-5.5",
+			"gpt-5.4",
+		]);
 	});
 
-	it("has a floor below Sol", () => {
-		expect(fallbackFor("gpt-6-astra", ["gpt-5.6-sol"])).toBe("gpt-5.5");
+	it("terminates instead of cycling", () => {
+		const hops = walk("gpt-6-astra-aeon");
+		expect(new Set(hops).size).toBe(hops.length);
+		expect(hops).not.toContain("gpt-6-astra-aeon");
+	});
+
+	it("ends the walk at a model with no row, which is what stranded it", () => {
+		// This is the mechanism behind the bug the `gpt-5.6-sol` row fixes: a
+		// model with no row returns undefined and the walk stops there, however
+		// many entries the row that pointed at it listed. Terra and Luna still
+		// have no row, deliberately, because nothing steps into them.
+		expect(walk("gpt-5.6-terra")).toEqual([]);
+		expect(walk("gpt-5.6-luna")).toEqual([]);
 	});
 
 	it("stays inert unless the user opted in", () => {

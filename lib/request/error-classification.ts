@@ -28,10 +28,24 @@ export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> 
 	// the user has opted into `fallbackOnUnsupportedCodexModel` (default
 	// `false`), and only on that response, so it never silently swaps the model
 	// out from under a request the account could have served.
+	//
+	// This table is walked ONE HOP AT A TIME, not as a per-request candidate
+	// list. index.ts reassigns `model` to whatever came back and passes that as
+	// `requestedModel` on the next unsupported response, so reaching `gpt-5.5`
+	// from Astra requires `gpt-5.6-sol` to carry its own entry below. A second
+	// element here is only ever consulted when the first is already in
+	// `attemptedModels` for that same call.
 	"gpt-6-astra": ["gpt-5.6-sol", "gpt-5.5"],
 	// aeon steps to the flagship first: still GPT-6, still Astra, just without
 	// the long-horizon behaviour.
 	"gpt-6-astra-aeon": ["gpt-6-astra", "gpt-5.6-sol"],
+	// The hop that makes the Astra path reach a model every account has. GPT-5.6
+	// shipped without a chain entry, so an unsupported 5.6 response ended the
+	// walk; with Astra above it that would have stranded the fallback one rung
+	// short of the floor it documents. Terra and Luna are deliberately still
+	// absent: nothing steps into them, so giving them a hop would change 5.6
+	// behaviour beyond completing this path.
+	"gpt-5.6-sol": ["gpt-5.5"],
 	"gpt-5": ["gpt-5.5"],
 	"gpt-5-pro": ["gpt-5.5-pro"],
 	"gpt-5-chat-latest": ["gpt-5.5"],

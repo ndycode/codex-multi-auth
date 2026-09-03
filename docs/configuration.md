@@ -204,7 +204,8 @@ The shipped config templates expose first-class current OpenAI model aliases:
 - `config/codex-modern.json` and `config/codex-legacy.json` expose current documented GPT-5.5, GPT-5.4, and GPT-5.3 Codex model IDs
 - deprecated Codex selectors such as `gpt-5-codex` and `gpt-5.1-codex*` are treated as compatibility aliases and retried on the current documented Codex model when the ChatGPT Codex surface rejects them
 - the wrapper and optional plugin-host runtime try those models directly and only fall back to `gpt-5.4` after a real ChatGPT Codex unsupported-model response
-- GPT-6 Astra has its own entry in that chain: `gpt-6-astra` steps to `gpt-5.6-sol` then `gpt-5.5`, and `gpt-6-astra-aeon` steps to `gpt-6-astra` first. Astra rolls out org by org, so an account without entitlement gets a real unsupported-model response for it. Like every other entry, this only applies when `fallbackOnUnsupportedCodexModel` is on (it defaults to `false`) and only after that response, never as a pre-emptive downgrade
+- GPT-6 Astra has its own entry in that chain: `gpt-6-astra` steps to `gpt-5.6-sol`, `gpt-5.6-sol` steps to `gpt-5.5`, and `gpt-6-astra-aeon` steps to `gpt-6-astra` first. Astra rolls out org by org, so an account without entitlement gets a real unsupported-model response for it. Like every other entry, this only applies when `fallbackOnUnsupportedCodexModel` is on (it defaults to `false`) and only after that response, never as a pre-emptive downgrade
+- the chain is walked one hop at a time: each unsupported response resolves from the model that just failed, not from the one you originally asked for. A model with no entry of its own ends the walk, which is why `gpt-5.6-sol` carries one. `unsupportedCodexFallbackChain` overrides follow the same rule, so a multi-hop path needs an entry per hop
 
 ---
 

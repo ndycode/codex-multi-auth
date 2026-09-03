@@ -40,13 +40,18 @@ This repository's current stable release line is `2.x`. Full release notes live 
   have no published rate and are listed in `UNPRICED_ROUTABLE_MODELS` rather
   than guessed at, so a cost budget fails closed while they are in the window
 - An unsupported-model fallback chain for Astra: `gpt-6-astra` steps to
-  `gpt-5.6-sol` then `gpt-5.5`, and `gpt-6-astra-aeon` steps to the flagship
-  first, since that is still GPT-6 Astra without the long-horizon behaviour.
-  Astra rolls out org by org, so an account that is not entitled yet gets a real
-  unsupported-model response for it. The chain is opt-in
-  (`fallbackOnUnsupportedCodexModel` defaults to `false`) and fires only on that
-  response, so it never swaps the model out from under a request the account
-  could have served
+  `gpt-5.6-sol`, and `gpt-6-astra-aeon` steps to the flagship first, since that
+  is still GPT-6 Astra without the long-horizon behaviour. Astra rolls out org
+  by org, so an account that is not entitled yet gets a real unsupported-model
+  response for it. The chain is opt-in (`fallbackOnUnsupportedCodexModel`
+  defaults to `false`) and fires only on that response, so it never swaps the
+  model out from under a request the account could have served
+- `gpt-5.6-sol` gains its own chain entry to `gpt-5.5`. The chain is walked one
+  hop at a time (`index.ts` reassigns the model and passes that as the next
+  `requestedModel`), so a model with no entry of its own ends the walk. GPT-5.6
+  shipped without one, which would have stranded the Astra path a rung short of
+  a model every account has. Terra and Luna stay without entries: nothing steps
+  into them
 - All four new models are listed in `UNESTIMATED_ROUTABLE_MODELS`. OpenAI
   published two different context windows for Astra on launch day, 1.05M for the
   API surface and 272K for Codex, and this wrapper talks to the Codex backend.
