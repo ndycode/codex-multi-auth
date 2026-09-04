@@ -2,6 +2,7 @@ import { existsSync, promises as fs, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { parseBooleanEnv } from "./env-parsing.js";
+import { stripModelEffortSuffix } from "./constants.js";
 import { withRetry, withRetrySync } from "./fs-retry.js";
 import { logWarn } from "./logger.js";
 import { StorageError } from "./errors.js";
@@ -1256,7 +1257,7 @@ export function getUnsupportedCodexFallbackChain(
 		const stripped = trimmed.includes("/")
 			? (trimmed.split("/").pop() ?? trimmed)
 			: trimmed;
-		return stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
+		return stripModelEffortSuffix(stripped);
 	};
 
 	// Null-prototype: the keys come from user config, so a `__proto__` entry on a
