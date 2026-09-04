@@ -1486,6 +1486,57 @@ describe("codex manager cli commands", () => {
 		);
 	});
 
+	it("dispatches limits --json through the public manager CLI", async () => {
+		const now = Date.now();
+		storageMocks.loadAccounts.mockResolvedValue({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: { codex: 0 },
+			accounts: [
+				{
+					accountId: "acct-limits",
+					email: "limits@example.com",
+					accessToken: "access-secret",
+					refreshToken: "refresh-secret",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		});
+		quotaCacheMocks.loadQuotaCache.mockResolvedValue({
+			byAccountId: {
+				"acct-limits": {
+					updatedAt: now,
+					status: 200,
+					model: "gpt-5.6-codex",
+					primary: { usedPercent: 25, windowMinutes: 300 },
+					secondary: { usedPercent: 50, windowMinutes: 10_080 },
+				},
+			},
+			byEmail: {},
+		});
+		const logSpy = silenceConsole("log");
+		const errorSpy = silenceConsole("error");
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+
+		const exitCode = await runCodexMultiAuthCli(["limits", "--json"]);
+		const authExitCode = await runCodexMultiAuthCli(["auth", "limits", "--json"]);
+
+		expect(exitCode).toBe(0);
+		expect(authExitCode).toBe(0);
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledTimes(2);
+		const serialized = String(logSpy.mock.calls[0]?.[0]);
+		const payload = JSON.parse(serialized) as {
+			schemaVersion: number;
+			accounts: Array<{ quota: { primary: { usedPercent: number } } | null }>;
+		};
+		expect(payload.schemaVersion).toBe(1);
+		expect(payload.accounts[0]?.quota?.primary.usedPercent).toBe(25);
+		expect(serialized).not.toContain("access-secret");
+		expect(serialized).not.toContain("refresh-secret");
+	});
+
 	it("runs forecast in json mode", async () => {
 		const now = Date.now();
 		storageMocks.loadAccounts.mockResolvedValueOnce({

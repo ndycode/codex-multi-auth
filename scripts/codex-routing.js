@@ -2,6 +2,7 @@ const AUTH_SUBCOMMANDS = new Set([
 	"login",
 	"list",
 	"status",
+	"limits",
 	"switch",
 	"unpin",
 	"workspace",

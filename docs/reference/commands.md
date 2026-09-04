@@ -41,6 +41,7 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | `codex-multi-auth login` | Open interactive auth dashboard. Flags: `--device-auth`, `--manual`/`--no-browser`, `--org <org_id>`, `--preserve-selection`, `--account <index\|email\|account_id>` |
 | `codex-multi-auth status` | Print account pool, pin, runtime metrics, and storage summary (`list` is the same command) |
 | `codex-multi-auth check` | Live-probe account health against the Codex backend |
+| `codex-multi-auth limits --json` | Print configured accounts joined to their cached quota windows; add `--refresh` for an age-gated refresh |
 
 ---
 
@@ -78,6 +79,36 @@ Reset-time details:
   `forecast` keep their narrower percentage-only summaries.
 
 Turning `showQuotaDetails` off reduces the line to a bare `live session OK`.
+
+---
+
+## `codex-multi-auth limits`
+
+Prints a stable, machine-readable quota snapshot for local integrations:
+
+```console
+codex-multi-auth limits --json
+codex-multi-auth limits --json --refresh
+```
+
+The default command reads the local quota cache and performs no network
+requests. `--refresh` reuses the dashboard's sequential quota refresh and its
+five-minute freshness floor: only enabled accounts with usable credentials and
+missing or stale cache entries are probed. Countdown text should be calculated
+by the consumer from `resetAtMs`; the command emits numeric values rather than
+locale-formatted dates.
+
+The top-level object has `schemaVersion: 1`, a millisecond `generatedAt`, a
+`mode` of `cached` or `refresh` describing the requested command mode, and
+`accounts`. Each configured account includes
+`index`, `label`, `enabled`, `current`, and either a `quota` object or `null`.
+Quota objects contain `updatedAt`, HTTP `status`, `planType`, and `primary` /
+`secondary` windows with `usedPercent`, `windowMinutes`, and `resetAtMs`.
+Unavailable provider values are explicit JSON `null`; internal probe-model names,
+credentials, and orphan cache entries are not emitted.
+
+`--json` is required. `--help` / `-h` prints focused usage. Unknown flags fail
+with exit code 1 without reading account storage or quota cache.
 
 ---
 
@@ -149,7 +180,7 @@ Turning `showQuotaDetails` off reduces the line to a bare `live session OK`.
 | `--org <org_id>` | login | Bind this login to a specific ChatGPT workspace/org id (same seat can be registered as personal vs team/business) |
 | `--preserve-selection` | login | Add or refresh credentials without changing the active global/model-family selections or manual pin; performs one sign-in and exits |
 | `--account <index\|email\|account_id>` | login | Re-authenticate exactly one saved account. Implies `--preserve-selection`, refuses a different OAuth identity before writing, keeps a disabled account disabled, and cannot be combined with `--org` |
-| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle, history | Print machine-readable output |
+| `--json` | limits, verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle, history | Print machine-readable output |
 | `--csv` | usage | Print or write CSV bucket output |
 | `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |
 | `--live` | best, forecast, report, fix | Use live probe before decisions/output |
