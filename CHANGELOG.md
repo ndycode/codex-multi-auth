@@ -5,6 +5,55 @@ Dates use ISO format (`YYYY-MM-DD`).
 
 This repository's current stable release line is `2.x`. Full release notes live in [`docs/releases/`](docs/releases/) — this file is the short version. Pre-`0.1.0` iteration history is archived in [`docs/releases/legacy-pre-0.1-history.md`](docs/releases/legacy-pre-0.1-history.md).
 
+## [2.12.0] - 2026-09-04
+
+Effort suffixes resolve to one key per model, usage is priced by service tier instead of assuming standard rates, and a class of lookup defect where a prototype member name was mistaken for a model id is closed. [Full notes](docs/releases/v2.12.0.md).
+
+### Added
+
+- Service-tier aware pricing. Every rate in `MODEL_PRICING` is a STANDARD-tier
+  rate and the estimator had no tier input, so a session billed at OpenAI's Fast
+  tier was priced at half its cost and a `maxCostUsd` cap could overrun without
+  tripping. The tier is read off the Responses payload (both the bare object and
+  the stream-event shape), carried on `UsageTokenCounts` so it reaches the ledger
+  through every existing path, and applied at Astra's published Fast rate of $20
+  / $100 per 1M. A tier with no published rate is reported as unknown cost rather
+  than approximated, so a budget fails closed exactly as it does for an unpriced
+  model ([#686](https://github.com/ndycode/codex-multi-auth/pull/686))
+- `gpt-6-astra` carries a cached-input rate of $1 standard and $2 on Fast. It
+  shipped without one in 2.11.0, which made Astra the only row in the table
+  billing cached tokens at the FULL input rate: a tenfold over-statement on a
+  cache-heavy session that trips a cost cap far too early. The 90% cached
+  discount is a uniform platform rate every other row already encodes at
+  input/10 ([#686](https://github.com/ndycode/codex-multi-auth/pull/686))
+
+### Fixed
+
+- `max` and `ultra` effort suffixes are stripped from a model id, so
+  `gpt-6-astra-ultra` no longer keys separately from the model it routes to. Four
+  call sites stripped only `none|minimal|low|medium|high|xhigh`, a set that
+  predates GPT-5.6: the entitlement cache blocked the same account and model pair
+  twice under two keys, the capability policy recorded outcomes under a key the
+  matrix never reads, and the fallback chain found no row for an effort-suffixed
+  model. The shared `stripModelEffortSuffix` derives its set from
+  `REASONING_EFFORTS` and names the one real exception, `codex-max` and
+  `gpt-5.1-codex-max`, whose final segment is part of the model NAME
+  ([#685](https://github.com/ndycode/codex-multi-auth/pull/685))
+- The service tier survives the runtime recorder and a ledger round-trip.
+  `createRuntimeUsageRecorder` rebuilds the ledger input field by field and
+  `normalizeParsedUsageRow` rebuilds only the numeric token fields, so a Fast
+  response through the runtime proxy, the default path, priced at the standard
+  rate, and a persisted Fast row read back as standard
+  ([#686](https://github.com/ndycode/codex-multi-auth/pull/686))
+- A response reporting its tier as `fast` is recognised. The upstream catalog
+  names the tier `priority` and displays it as "Fast", so either spelling can
+  arrive; unmapped it became `unknown` and failed a cost budget closed on a tier
+  that does have a rate ([#686](https://github.com/ndycode/codex-multi-auth/pull/686))
+- `normalizeUsageLedgerRow` validates the service tier instead of accepting any
+  truthy value. Every other field in that normaliser is checked against its
+  allowed set, and the ledger read path already rejected an unknown tier, which
+  left the write path as the only unvalidated way onto a row
+
 ## [2.11.0] - 2026-09-04
 
 GPT-6 Astra and the Daybreak cyber models are first-class, and five defects found while wiring them up are fixed. [Full notes](docs/releases/v2.11.0.md).
