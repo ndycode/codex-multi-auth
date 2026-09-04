@@ -8,7 +8,7 @@ import { estimateUsageCostUsd } from "../lib/usage/pricing.js";
 import { normalizeUsageLedgerRow } from "../lib/usage/redaction.js";
 import { createStreamUsageDeferral } from "../lib/usage/stream-usage-deferral.js";
 import { createRuntimeUsageRecorder } from "../lib/policy/runtime-policy.js";
-import type { UsageTokenCounts } from "../lib/usage/types.js";
+import { isKnownServiceTier, type UsageTokenCounts } from "../lib/usage/types.js";
 
 /**
  * OpenAI's Fast tier costs more than standard: $20/$100 against $10/$50 for
@@ -291,5 +291,41 @@ describe("tier spellings and cached rates", () => {
 		expect(
 			estimateUsageCostUsd("gpt-6-astra", { ...cachedOnly, serviceTier: "priority" }),
 		).toBe(2);
+	});
+});
+
+describe("the write path validates the tier, not just the read path", () => {
+	it("drops an unknown tier instead of storing it on the row", () => {
+		// `normalizeUsageLedgerRow` validates every other field against its
+		// allowed set (normalizeSource, normalizeOperation, normalizeOutcome).
+		// serviceTier was passed through on a bare truthiness check, which made
+		// the write path the only unvalidated way onto a row while the ledger
+		// READ path already rejected the same value. Found by a release-gate
+		// stress probe.
+		for (const bad of ["free-lunch", "PRIORITY", "", 5, null, {}]) {
+			const row = normalizeUsageLedgerRow({
+				outcome: "success",
+				model: "gpt-6-astra",
+				inputTokens: 10,
+				outputTokens: 10,
+				serviceTier: bad as never,
+			});
+			expect(row.tokens.serviceTier, JSON.stringify(bad)).toBeUndefined();
+		}
+	});
+
+	it("still stores every tier the union declares", () => {
+		// Non-vacuous: the guard must not reject valid tiers along with bad ones.
+		for (const tier of ["standard", "priority", "flex", "batch", "scale"] as const) {
+			const row = normalizeUsageLedgerRow({
+				outcome: "success",
+				model: "gpt-6-astra",
+				inputTokens: 10,
+				outputTokens: 10,
+				serviceTier: tier,
+			});
+			expect(row.tokens.serviceTier, tier).toBe(tier);
+			expect(isKnownServiceTier(row.tokens.serviceTier)).toBe(true);
+		}
 	});
 });
