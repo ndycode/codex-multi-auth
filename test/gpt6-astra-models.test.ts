@@ -169,7 +169,18 @@ describe("GPT-6 Astra", () => {
 			expect(getUsageModelPricing("gpt-6-astra")).toEqual({
 				inputUsdPerMillion: 10,
 				outputUsdPerMillion: 50,
+				cachedInputUsdPerMillion: 1,
 				reasoningUsdPerMillion: 50,
+				// Fast tier, also published at launch. See
+				// test/usage-service-tier.test.ts for how it is applied.
+				serviceTiers: {
+					priority: {
+						inputUsdPerMillion: 20,
+						outputUsdPerMillion: 100,
+						cachedInputUsdPerMillion: 2,
+						reasoningUsdPerMillion: 100,
+					},
+				},
 			});
 			expect(
 				estimateUsageCostUsd("gpt-6-astra", {
@@ -181,9 +192,13 @@ describe("GPT-6 Astra", () => {
 			).toBe(60);
 		});
 
-		it("bills cached input at the full input rate, since none is published", () => {
-			// Over-stating cost is the safe direction: a maxCostUsd budget trips
-			// early rather than late. Never silently free.
+		it("bills cached input at the platform 90% discount, never free", () => {
+			// This shipped billing cached tokens at the FULL input rate, on the
+			// reasoning that no Astra-specific cached figure was published. That
+			// made Astra the only model in the table doing so and over-stated a
+			// cache-heavy session tenfold, tripping a maxCostUsd cap far too
+			// early. The discount is a uniform platform rate that every other row
+			// already encodes at input/10.
 			expect(
 				estimateUsageCostUsd("gpt-6-astra", {
 					inputTokens: 1_000_000,
@@ -191,7 +206,17 @@ describe("GPT-6 Astra", () => {
 					outputTokens: 0,
 					reasoningTokens: 0,
 				}),
-			).toBe(10);
+			).toBe(1);
+			// Still never zero: counting cached tokens as free is what made cost
+			// caps unenforceable once already.
+			expect(
+				estimateUsageCostUsd("gpt-6-astra", {
+					inputTokens: 1_000_000,
+					cachedInputTokens: 1_000_000,
+					outputTokens: 0,
+					reasoningTokens: 0,
+				}),
+			).toBeGreaterThan(0);
 		});
 
 		it("reports aeon's cost as unknown rather than guessing it", () => {

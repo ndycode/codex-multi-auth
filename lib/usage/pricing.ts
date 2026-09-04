@@ -1,25 +1,57 @@
-import type { UsageTokenCounts } from "./types.js";
+import type { UsageServiceTier, UsageTokenCounts } from "./types.js";
 
 export interface UsageModelPricing {
 	inputUsdPerMillion: number;
 	outputUsdPerMillion: number;
 	cachedInputUsdPerMillion?: number;
 	reasoningUsdPerMillion?: number;
+	/**
+	 * Rates for non-standard service tiers, keyed by `UsageServiceTier`.
+	 *
+	 * Every entry in `MODEL_PRICING` is a STANDARD-tier rate. OpenAI's Fast tier
+	 * costs more (2x for GPT-6 Astra), so pricing a Fast session off the standard
+	 * row under-counts it by half and lets a `maxCostUsd` cap overrun.
+	 *
+	 * A tier absent from this map is deliberately NOT approximated from the
+	 * standard rate. Only Astra's Fast multiplier is published; inventing one for
+	 * the rest would move a budget's trip point on a guess, which is the failure
+	 * this file exists to avoid. `estimateUsageCostUsd` reports an unlisted tier
+	 * as unknown cost instead, so a budget fails closed the same way it does for
+	 * an unpriced model.
+	 */
+	serviceTiers?: Partial<Record<UsageServiceTier, UsageModelPricing>>;
 }
 
 const MODEL_PRICING: Record<string, UsageModelPricing> = {
 	// GPT-6 Astra, published at the 2026-09-03 launch: $10 / 1M input,
-	// $50 / 1M output on the standard service tier. Fast mode is 2x standard
-	// ($20 / $100); this table has no service-tier dimension, so it prices the
-	// standard tier and a Fast-mode session is under-counted by half. No cached
-	// input rate was published, so `cachedInputUsdPerMillion` is deliberately
-	// absent: `estimateUsageCostUsd` then bills cached tokens at the full input
-	// rate, which over-states cost. That is the safe direction for a
-	// `maxCostUsd` budget — it trips early, never late.
+	// $50 / 1M output on the standard service tier, and $20 / $100 on Fast,
+	// carried in `serviceTiers` below.
+	//
+	// The cached-input rate is the platform-wide 90% cached discount, which every
+	// other row in this table already encodes at exactly input/10. It shipped
+	// absent at first, on the reasoning that no Astra-specific cached figure was
+	// published; that made Astra the only model billing cached tokens at the FULL
+	// input rate, over-stating a cache-heavy session tenfold and tripping a
+	// `maxCostUsd` cap far too early. Over-stating is the safer direction than
+	// under-stating, but a 10x error blocks legitimate work, and the discount is
+	// a uniform platform rate rather than a per-model guess.
 	"gpt-6-astra": {
 		inputUsdPerMillion: 10,
 		outputUsdPerMillion: 50,
+		cachedInputUsdPerMillion: 1,
 		reasoningUsdPerMillion: 50,
+		serviceTiers: {
+			// Published at launch alongside the standard rate: Fast mode is up to
+			// 2.5x the speed at 2x the price, $20 / $100 per 1M. This is the only
+			// tier multiplier OpenAI has published for any model in this table,
+			// which is why it is the only one listed anywhere in this file.
+			priority: {
+				inputUsdPerMillion: 20,
+				outputUsdPerMillion: 100,
+				cachedInputUsdPerMillion: 2,
+				reasoningUsdPerMillion: 100,
+			},
+		},
 	},
 	"gpt-5-codex": {
 		inputUsdPerMillion: 1.25,
@@ -137,11 +169,37 @@ export function getUsageModelPricing(
 	return MODEL_PRICING[normalized] ?? null;
 }
 
+/**
+ * Pick the rate that applies to a response's service tier.
+ *
+ * Returns `null` when the tier is real but this table has no rate for it, which
+ * the caller turns into an unknown cost. `standard` and an absent tier both use
+ * the base row, because every entry in `MODEL_PRICING` is a standard-tier rate.
+ */
+function resolveServiceTierPricing(
+	pricing: UsageModelPricing,
+	serviceTier: UsageServiceTier | undefined,
+): UsageModelPricing | null {
+	if (!serviceTier || serviceTier === "standard") {
+		return pricing;
+	}
+	return pricing.serviceTiers?.[serviceTier] ?? null;
+}
+
 export function estimateUsageCostUsd(
 	model: string | null | undefined,
 	tokens: UsageTokenCounts,
 ): number | null {
-	const pricing = getUsageModelPricing(model);
+	const basePricing = getUsageModelPricing(model);
+	if (!basePricing) {
+		return null;
+	}
+
+	// Resolve the tier BEFORE any arithmetic. A response billed at a tier this
+	// table has no rate for must report unknown cost, not a standard-tier
+	// figure: under-counting is what lets a `maxCostUsd` cap overrun, and
+	// `evaluateBudgetGuard` already knows how to fail closed on `null`.
+	const pricing = resolveServiceTierPricing(basePricing, tokens.serviceTier);
 	if (!pricing) {
 		return null;
 	}

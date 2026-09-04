@@ -24,6 +24,7 @@ import {
 	type UsageLedgerOperation,
 	type UsageLedgerOutcome,
 	type UsageLedgerSource,
+	type UsageServiceTier,
 } from "../usage/index.js";
 
 export interface RuntimePolicyAccount {
@@ -73,6 +74,14 @@ export interface RuntimeUsageRecordInput {
 	cachedInputTokens?: number | null;
 	reasoningTokens?: number | null;
 	totalTokens?: number | null;
+	/**
+	 * Billed service tier, when upstream reported one. Carried explicitly
+	 * because the row below is rebuilt field by field: a spread from the
+	 * usage deferral reaches this input, but anything not named here is
+	 * dropped before the ledger, which would price a Fast response at the
+	 * standard rate.
+	 */
+	serviceTier?: UsageServiceTier;
 }
 
 export async function loadRuntimePolicyState(
@@ -298,6 +307,7 @@ export function createRuntimeUsageRecorder(input: {
 				cachedInputTokens: recordInput.cachedInputTokens,
 				reasoningTokens: recordInput.reasoningTokens,
 				totalTokens: recordInput.totalTokens,
+				serviceTier: recordInput.serviceTier,
 			};
 			await append(row).catch(() => undefined);
 		},
