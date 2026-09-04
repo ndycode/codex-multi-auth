@@ -89,6 +89,8 @@ Prints a stable, machine-readable quota snapshot for local integrations:
 ```console
 codex-multi-auth limits --json
 codex-multi-auth limits --json --refresh
+codex-multi-auth auth limits --json          # supported namespaced alias
+codex-multi-auth auth limits --json --refresh
 ```
 
 The default command reads the local quota cache and performs no network
@@ -679,6 +681,11 @@ failure.
 
 ## Upgrade Notes
 
+- `codex-multi-auth limits` adds a machine-readable quota contract. It requires
+  `--json`, emits schema version 1, defaults to zero-network cached mode, and
+  accepts `--refresh` for the existing sequential five-minute age-gated refresh.
+  The namespaced `codex-multi-auth auth limits ...` form is an alias. No npm
+  scripts or storage migrations were added.
 - `codex-multi-auth login` remains browser-first by default.
 - `codex-multi-auth login --org <org_id>` binds the login to one ChatGPT workspace.
 - `codex-multi-auth login --device-auth` uses OpenAI Codex device-code login. It prints `https://auth.openai.com/codex/device` and a one-time code, then polls for completion without opening a browser or starting the local callback server.

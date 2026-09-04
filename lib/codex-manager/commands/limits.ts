@@ -28,6 +28,7 @@ interface ParsedLimitsOptions {
 	help: boolean;
 }
 
+/** Parse the intentionally small, JSON-only limits command surface. */
 function parseLimitsOptions(args: string[]):
 	| { ok: true; options: ParsedLimitsOptions }
 	| { ok: false; message: string } {
@@ -53,6 +54,7 @@ function parseLimitsOptions(args: string[]):
 	return { ok: true, options };
 }
 
+/** Convert a cached quota window to the explicit-null public JSON contract. */
 function publicWindow(window: QuotaCacheEntry["primary"]) {
 	return {
 		usedPercent: window.usedPercent ?? null,
@@ -61,6 +63,7 @@ function publicWindow(window: QuotaCacheEntry["primary"]) {
 	};
 }
 
+/** Remove internal probe metadata and stabilize optional quota fields. */
 function publicQuotaEntry(entry: QuotaCacheEntry) {
 	return {
 		updatedAt: entry.updatedAt,
@@ -71,6 +74,12 @@ function publicQuotaEntry(entry: QuotaCacheEntry) {
 	};
 }
 
+/**
+ * Emit configured accounts joined to safe cached quota records.
+ *
+ * Cached mode performs no provider requests. Refresh mode delegates to the
+ * existing sequential, age-gated refresh path before serializing the snapshot.
+ */
 export async function runLimitsCommand(
 	args: string[],
 	deps: LimitsCommandDeps,
