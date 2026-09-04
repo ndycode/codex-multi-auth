@@ -1,0 +1,49 @@
+[package]
+name = "cma-proxy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cma-core = { path = "../core" }
+cma-config = { path = "../config" }
+cma-storage = { path = "../storage" }
+cma-auth = { path = "../auth" }
+cma-accounts = { path = "../accounts" }
+cma-rotation = { path = "../rotation" }
+cma-request = { path = "../request" }
+cma-quota = { path = "../quota" }
+cma-cli-mirror = { path = "../climirror" }
+cma-usage = { path = "../usage" }
+cma-runtime = { path = "../runtime" }
+serde.workspace = true
+serde_json.workspace = true
+axum.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
+subtle.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+uuid.workspace = true
+rand.workspace = true
+sha2.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serial_test.workspace = true
+proptest.workspace = true
+insta.workspace = true
+wiremock.workspace = true
+base64.workspace = true
+cma-testkit = { path = "../testkit" }
+
+[lints.rust]
+unsafe_code = "deny"

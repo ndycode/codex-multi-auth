@@ -1,0 +1,45 @@
+{
+  "accounts": [
+    {
+      "accountId": "acct-user-one",
+      "email": "user.one@example.com",
+      "access_token": "at-fixture-account-one-0000000001",
+      "refresh_token": "rt-fixture-account-one-0000000001",
+      "id_token": "idt-fixture-account-one-0000000001",
+      "active": true,
+      "accessToken": "at-fixture-account-one-0000000001",
+      "refreshToken": "rt-fixture-account-one-0000000001",
+      "idToken": "idt-fixture-account-one-0000000001",
+      "account_id": "acct-user-one",
+      "auth": {
+        "tokens": {
+          "access_token": "at-fixture-account-one-0000000001",
+          "accessToken": "at-fixture-account-one-0000000001",
+          "refresh_token": "rt-fixture-account-one-0000000001",
+          "refreshToken": "rt-fixture-account-one-0000000001",
+          "id_token": "idt-fixture-account-one-0000000001",
+          "idToken": "idt-fixture-account-one-0000000001",
+          "account_id": "acct-user-one",
+          "accountId": "acct-user-one"
+        }
+      },
+      "isActive": true,
+      "is_active": true
+    },
+    {
+      "accountId": "acct-user-two",
+      "email": "user.two@example.com",
+      "access_token": "at-old-cli-two",
+      "refresh_token": "rt-old-cli-two",
+      "id_token": "idt-old-cli-two",
+      "active": false,
+      "isActive": false,
+      "is_active": false
+    }
+  ],
+  "activeAccountId": "acct-user-one",
+  "active_account_id": "acct-user-one",
+  "activeEmail": "user.one@example.com",
+  "active_email": "user.one@example.com",
+  "codexMultiAuthSyncVersion": 1750000000000
+}
