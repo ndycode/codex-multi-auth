@@ -2,7 +2,7 @@
 
 Reference for dashboard display settings and runtime `pluginConfig` values available from `codex-multi-auth login` -> `Settings`.
 
-`pluginConfig` is the persisted compatibility name for runtime settings. It covers wrapper/runtime rotation behavior and optional plugin-host behavior. Defaults below match `DEFAULT_PLUGIN_CONFIG` in `lib/config.ts` (package `2.11.0`).
+`pluginConfig` is the persisted compatibility name for runtime settings. It covers wrapper/runtime rotation behavior and optional plugin-host behavior. Defaults below match `DEFAULT_PLUGIN_CONFIG` in `lib/config.ts` (package `2.12.0`).
 
 ---
 
