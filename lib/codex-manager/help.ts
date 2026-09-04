@@ -11,6 +11,7 @@ export function printUsage(): void {
 			"  codex-multi-auth login [--device-auth|--manual|--no-browser] [--org <org_id>] [--preserve-selection] [--account <index|email|account_id>]",
 			"  codex-multi-auth status [--json]   (list is the same command)",
 			"  codex-multi-auth check            (always live-probes)",
+			"  codex-multi-auth limits --json [--refresh]   (structured quota windows; refresh is age-gated)",
 			"",
 			"Daily use:",
 			"  codex-multi-auth list [--json]",

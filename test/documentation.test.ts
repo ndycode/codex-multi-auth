@@ -533,7 +533,7 @@ describe("Documentation Integrity", () => {
 			`codex-multi-auth fix --live --model ${DEFAULT_MODEL}`,
 		);
 		expect(commandRef).toContain(
-			"| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle, history |",
+			"| `--json` | limits, verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle, history |",
 		);
 		expect(commandRef).toContain(
 			"| `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |",

@@ -214,6 +214,7 @@ which would rebind the row to a different workspace.
 | Command | What it answers |
 | --- | --- |
 | `codex-multi-auth report --live --json` | How do I get the full machine-readable health report? |
+| `codex-multi-auth limits --json [--refresh]` | How do I read account quota windows without parsing internal cache files or terminal text? |
 | `codex-multi-auth fix --live --model gpt-5.5` | How do I run live repair probes with a chosen model? |
 | `codex-multi-auth why-selected --json` | Which account does the selector pick now, and why? |
 | `codex-multi-auth usage --since 24h --by project` | What local usage has been recorded recently? |

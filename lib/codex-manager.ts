@@ -35,6 +35,7 @@ import { runBudgetCommand } from "./codex-manager/commands/budget.js";
 import { runBridgeCommand } from "./codex-manager/commands/bridge.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
 import { runIntegrationsCommand } from "./codex-manager/commands/integrations.js";
+import { runLimitsCommand } from "./codex-manager/commands/limits.js";
 import { runModelsCommand } from "./codex-manager/commands/models.js";
 import { runMonitorCommand } from "./codex-manager/commands/monitor.js";
 import { runConfigExplainCommand } from "./codex-manager/commands/config-explain.js";
@@ -89,6 +90,7 @@ import { runHistoryCommand } from "./codex-manager/commands/history.js";
 import { runUnpinCommand } from "./codex-manager/commands/unpin.js";
 import { runWorkspaceCommand } from "./codex-manager/commands/workspace.js";
 import { runUsageCommand } from "./codex-manager/commands/usage.js";
+import { refreshQuotaCacheForMenu } from "./codex-manager/login-menu-data.js";
 import { printUsage } from "./codex-manager/help.js";
 import {
 	availabilityTone,
@@ -518,6 +520,17 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 	["login", (rest) => runAuthLogin(rest, { runForecast, createRepairCommandDeps })],
 	["list", runListOrStatusCommand],
 	["status", runListOrStatusCommand],
+	[
+		"limits",
+		(rest) =>
+			runLimitsCommand(rest, {
+				setStoragePath,
+				loadAccounts,
+				loadQuotaCache,
+				refreshQuotaCache: refreshQuotaCacheForMenu,
+				resolveActiveIndex,
+			}),
+	],
 	[
 		"switch",
 		(rest) =>

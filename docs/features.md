@@ -25,6 +25,7 @@ User-facing capability map for Codex CLI multi-account OAuth, account switching,
 | --- | --- | --- |
 | Readiness and risk forecast | Suggests the best next account | `codex-multi-auth forecast` |
 | Live quota probe mode | Uses live headers for stronger decisions (probe leads with `gpt-5.6-sol`) | `codex-multi-auth forecast --live` |
+| Machine-readable quota snapshot | Joins configured accounts to cached quota windows without exposing credentials; optional refresh retains the dashboard's five-minute freshness floor | `codex-multi-auth limits --json [--refresh]` |
 | Best-account helper | Shortcut for selection-oriented workflows | `codex-multi-auth best` |
 | JSON report output | Inspect account state in automation or support workflows | `codex-multi-auth report --live --json` |
 | Why-selected explanation | Explains current routing/selection context | `codex-multi-auth why-selected` |
