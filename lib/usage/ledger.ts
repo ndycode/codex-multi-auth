@@ -7,19 +7,20 @@ import {
 	normalizeUsageLedgerRow,
 	usageRowToJsonLine,
 } from "./redaction.js";
-import type {
-	UsageLedgerAppendInput,
-	UsageLedgerOperation,
-	UsageLedgerPaths,
-	UsageLedgerQuery,
-	UsageLedgerOutcome,
-	UsageLedgerRow,
-	UsageLedgerSource,
-	UsageSummary,
-	UsageSummaryBucket,
-	UsageSummaryGroupBy,
-	UsageSummaryQuery,
-	UsageTokenCounts,
+import {
+	isKnownServiceTier,
+	type UsageLedgerAppendInput,
+	type UsageLedgerOperation,
+	type UsageLedgerPaths,
+	type UsageLedgerQuery,
+	type UsageLedgerOutcome,
+	type UsageLedgerRow,
+	type UsageLedgerSource,
+	type UsageSummary,
+	type UsageSummaryBucket,
+	type UsageSummaryGroupBy,
+	type UsageSummaryQuery,
+	type UsageTokenCounts,
 } from "./types.js";
 
 const USAGE_DIR_NAME = "usage";
@@ -320,6 +321,14 @@ function normalizeParsedUsageRow(value: unknown): UsageLedgerRow | null {
 			Number.isFinite(value.tokens.totalTokens)
 				? Math.max(0, Math.trunc(value.tokens.totalTokens))
 				: 0,
+		// Validated against the union rather than passed through: the file is
+		// on disk and can be edited, and an unrecognised string would reach the
+		// pricer as a tier it has no rate for. Rebuilding only the numeric
+		// fields dropped this entirely, so a persisted Fast row read back as
+		// standard in `usage` reports.
+		...(isKnownServiceTier(value.tokens.serviceTier)
+			? { serviceTier: value.tokens.serviceTier }
+			: {}),
 	};
 	const account = isRecord(value.account)
 		? {

@@ -80,10 +80,6 @@ export function extractUsageTokenCounts(
 }
 
 /**
- * Pull the `usage` object out of a Responses payload, whether it arrived as a
- * bare response object (non-streaming) or wrapped in a stream event envelope.
- */
-/**
  * Read the billed service tier off a Responses payload.
  *
  * `service_tier` sits on the response object, not inside `usage`, and a stream
@@ -100,6 +96,12 @@ function extractServiceTier(payload: Record<string, unknown>): UsageServiceTier 
 	if (normalized.length === 0) return undefined;
 	// `default` is what the API calls the standard tier on the wire.
 	if (normalized === "default" || normalized === "standard") return "standard";
+	// The upstream catalog names this tier `priority` with the display name
+	// "Fast", and lists `fast` in `additional_speed_tiers`, so a response can
+	// report either spelling. Without this it becomes `unknown`, which prices
+	// as unpriced and fails a cost budget closed on a tier we DO have a rate
+	// for.
+	if (normalized === "fast") return "priority";
 	if (
 		normalized === "priority" ||
 		normalized === "flex" ||
@@ -111,6 +113,11 @@ function extractServiceTier(payload: Record<string, unknown>): UsageServiceTier 
 	return "unknown";
 }
 
+/**
+ * Pull the `usage` object out of a Responses payload, whether it arrived as a
+ * bare response object (non-streaming) or wrapped in a stream event envelope,
+ * and attach the tier it was billed at.
+ */
 export function extractResponsesUsage(payload: unknown): UsageTokenCounts | null {
 	if (!isRecord(payload)) return null;
 	const serviceTier = extractServiceTier(payload);

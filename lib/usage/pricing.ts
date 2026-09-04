@@ -25,14 +25,20 @@ export interface UsageModelPricing {
 const MODEL_PRICING: Record<string, UsageModelPricing> = {
 	// GPT-6 Astra, published at the 2026-09-03 launch: $10 / 1M input,
 	// $50 / 1M output on the standard service tier, and $20 / $100 on Fast,
-	// carried in `serviceTiers` below. No cached input rate was published, so
-	// `cachedInputUsdPerMillion` is deliberately absent: `estimateUsageCostUsd`
-	// then bills cached tokens at the full input rate, which over-states cost.
-	// That is the safe direction for a `maxCostUsd` budget — it trips early,
-	// never late.
+	// carried in `serviceTiers` below.
+	//
+	// The cached-input rate is the platform-wide 90% cached discount, which every
+	// other row in this table already encodes at exactly input/10. It shipped
+	// absent at first, on the reasoning that no Astra-specific cached figure was
+	// published; that made Astra the only model billing cached tokens at the FULL
+	// input rate, over-stating a cache-heavy session tenfold and tripping a
+	// `maxCostUsd` cap far too early. Over-stating is the safer direction than
+	// under-stating, but a 10x error blocks legitimate work, and the discount is
+	// a uniform platform rate rather than a per-model guess.
 	"gpt-6-astra": {
 		inputUsdPerMillion: 10,
 		outputUsdPerMillion: 50,
+		cachedInputUsdPerMillion: 1,
 		reasoningUsdPerMillion: 50,
 		serviceTiers: {
 			// Published at launch alongside the standard rate: Fast mode is up to
@@ -42,6 +48,7 @@ const MODEL_PRICING: Record<string, UsageModelPricing> = {
 			priority: {
 				inputUsdPerMillion: 20,
 				outputUsdPerMillion: 100,
+				cachedInputUsdPerMillion: 2,
 				reasoningUsdPerMillion: 100,
 			},
 		},

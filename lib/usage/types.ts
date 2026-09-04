@@ -28,13 +28,30 @@ export type UsageLedgerOutcome =
  * name is normalised to `unknown`, which is treated as unpriced rather than
  * assumed cheap.
  */
-export type UsageServiceTier =
-	| "standard"
-	| "priority"
-	| "flex"
-	| "batch"
-	| "scale"
-	| "unknown";
+export const USAGE_SERVICE_TIERS = [
+	"standard",
+	"priority",
+	"flex",
+	"batch",
+	"scale",
+	"unknown",
+] as const;
+
+export type UsageServiceTier = (typeof USAGE_SERVICE_TIERS)[number];
+
+/**
+ * Narrow an unvalidated value to a known tier.
+ *
+ * The ledger is JSONL on disk and can be hand-edited, so a value read back from
+ * it is untrusted. An unrecognised string reaching the pricer would be treated
+ * as a tier with no rate and silently make every affected row unpriced.
+ */
+export function isKnownServiceTier(value: unknown): value is UsageServiceTier {
+	return (
+		typeof value === "string" &&
+		(USAGE_SERVICE_TIERS as readonly string[]).includes(value)
+	);
+}
 
 export interface UsageTokenCounts {
 	inputTokens: number;
