@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Codex Sign-In Complete</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0b0b;
+      --panel: #111111;
+      --text: #f2f2f2;
+      --muted: #a3a3a3;
+      --line: #232323;
+      --ok: #7cf0a6;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Geist Mono", "GeistMono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      padding: 24px;
+    }
+
+    main {
+      width: min(520px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 20px;
+      display: grid;
+      gap: 14px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--ok);
+      font-size: 13px;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    dl {
+      margin: 0;
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 8px 12px;
+      font-size: 13px;
+    }
+
+    dt {
+      color: var(--muted);
+    }
+
+    dd {
+      margin: 0;
+      color: var(--text);
+      word-break: break-word;
+    }
+
+    code {
+      background: #171717;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 2px 6px;
+      font-family: inherit;
+      font-size: 12px;
+    }
+
+    @media (max-width: 520px) {
+      dl {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main role="main" aria-label="OAuth callback received">
+    <h1>Sign-in complete</h1>
+    <p>Return to your terminal to finish Codex login.</p>
+
+    <div class="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span>
+      Callback received
+    </div>
+
+    <dl>
+      <dt>Endpoint</dt>
+      <dd><code>localhost:1455</code></dd>
+      <dt>Flow</dt>
+      <dd>OAuth callback captured</dd>
+      <dt>Next</dt>
+      <dd>Close this tab and continue in terminal</dd>
+    </dl>
+  </main>
+</body>
+</html>

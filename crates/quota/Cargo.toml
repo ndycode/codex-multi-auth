@@ -1,0 +1,35 @@
+[package]
+name = "cma-quota"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cma-core = { path = "../core" }
+cma-config = { path = "../config" }
+cma-storage = { path = "../storage" }
+cma-accounts = { path = "../accounts" }
+cma-request = { path = "../request" }
+cma-usage = { path = "../usage" }
+cma-rotation = { path = "../rotation" }
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+notify.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serial_test.workspace = true
+proptest.workspace = true
+insta.workspace = true
+wiremock.workspace = true
+cma-testkit = { path = "../testkit" }
+
+[lints.rust]
+unsafe_code = "deny"

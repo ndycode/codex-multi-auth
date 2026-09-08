@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "updatedAt": 1750000000000,
+  "currentRequestId": null,
+  "responsesRequests": 3,
+  "authRefreshRequests": 1,
+  "diagnosticProbeRequests": 0,
+  "poolExhaustionCooldownUntil": null,
+  "serverBurstCooldownUntil": null,
+  "lastAccountIndex": 1,
+  "lastAccountLabel": "Team Business",
+  "lastAccountEmail": "user.two@example.com",
+  "lastAccountId": "acct-user-two",
+  "lastAccountUpdatedAt": 1750000000000,
+  "lastPoolExhaustionReason": "all-accounts-rate-limited",
+  "lastPoolExhaustionRetryAfterMs": 30000,
+  "lastPoolExhaustionSkipReasons": {
+    "0": "rate-limited",
+    "1": "cooldown"
+  },
+  "lastRuntimeResetAt": null,
+  "lastRuntimeResetReason": null,
+  "lastRuntimeReloadAt": 1750000000000,
+  "lastRuntimeReloadReason": "accounts-file-changed",
+  "accountSkipReasons": {
+    "0": "rate-limited"
+  },
+  "policyBlockedIndexes": [
+    2
+  ],
+  "policyBlockedReasons": {
+    "2": "paused"
+  },
+  "runtimeMetrics": {
+    "startedAt": 1749990000000,
+    "totalRequests": 3,
+    "successfulRequests": 2,
+    "failedRequests": 1,
+    "responsesRequests": 3,
+    "authRefreshRequests": 1,
+    "diagnosticProbeRequests": 0,
+    "outboundRequestAttemptBudget": null,
+    "outboundRequestAttemptsConsumed": 0,
+    "requestAttemptBudgetExhaustions": 0,
+    "poolExhaustionFastFails": 0,
+    "serverBurstFastFails": 0,
+    "rateLimitedResponses": 1,
+    "serverErrors": 0,
+    "networkErrors": 0,
+    "userAborts": 0,
+    "authRefreshFailures": 0,
+    "emptyResponseRetries": 0,
+    "accountRotations": 1,
+    "sameAccountRetries": 0,
+    "streamFailoverAttempts": 0,
+    "streamFailoverCandidatesConsidered": 0,
+    "lastStreamFailoverCandidateCount": 0,
+    "streamFailoverRecoveries": 0,
+    "streamFailoverCrossAccountRecoveries": 0,
+    "cumulativeLatencyMs": 5150,
+    "lastRequestAt": 1750000000000,
+    "lastError": "429 rate_limit_exceeded"
+  }
+}

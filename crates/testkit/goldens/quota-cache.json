@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "byAccountId": {
+    "acct-user-one": {
+      "updatedAt": 1750000000000,
+      "status": 200,
+      "model": "gpt-5.2",
+      "planType": "plus",
+      "primary": {
+        "usedPercent": 42,
+        "windowMinutes": 300,
+        "resetAtMs": 1750010000000
+      },
+      "secondary": {
+        "usedPercent": 12.5,
+        "windowMinutes": 10080,
+        "resetAtMs": 1750600000000
+      }
+    },
+    "acct-user-two": {
+      "updatedAt": 1750000000000,
+      "status": 429,
+      "model": "gpt-5-codex",
+      "planType": "team",
+      "primary": {
+        "usedPercent": 100,
+        "windowMinutes": 300,
+        "resetAtMs": 1750000600000
+      },
+      "secondary": {
+        "usedPercent": 63,
+        "windowMinutes": 10080,
+        "resetAtMs": 1750550000000
+      }
+    }
+  },
+  "byEmail": {
+    "user.one@example.com": {
+      "updatedAt": 1750000000000,
+      "status": 200,
+      "model": "gpt-5.2",
+      "planType": "plus",
+      "primary": {
+        "usedPercent": 42,
+        "windowMinutes": 300,
+        "resetAtMs": 1750010000000
+      },
+      "secondary": {
+        "usedPercent": 12.5,
+        "windowMinutes": 10080,
+        "resetAtMs": 1750600000000
+      }
+    },
+    "user.two@example.com": {
+      "updatedAt": 1750000000000,
+      "status": 429,
+      "model": "gpt-5-codex",
+      "planType": "team",
+      "primary": {
+        "usedPercent": 100,
+        "windowMinutes": 300,
+        "resetAtMs": 1750000600000
+      },
+      "secondary": {
+        "usedPercent": 63,
+        "windowMinutes": 10080,
+        "resetAtMs": 1750550000000
+      }
+    }
+  }
+}

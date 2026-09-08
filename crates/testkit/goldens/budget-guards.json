@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "limits": {
+    "team-alpha": {
+      "key": "team-alpha",
+      "window": "day",
+      "maxRequests": 500,
+      "maxTokens": 2000000,
+      "maxCostUsd": 25,
+      "updatedAt": 1750000000000
+    },
+    "personal": {
+      "key": "personal",
+      "window": "month",
+      "maxCostUsd": 100,
+      "updatedAt": 1750000000000
+    }
+  }
+}

@@ -1,0 +1,38 @@
+[package]
+name = "cma-request"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cma-core = { path = "../core" }
+cma-config = { path = "../config" }
+cma-auth = { path = "../auth" }
+cma-accounts = { path = "../accounts" }
+cma-storage = { path = "../storage" }
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+url.workspace = true
+http.workspace = true
+bytes.workspace = true
+futures.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+regex.workspace = true
+sha2.workspace = true
+base64.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serial_test.workspace = true
+proptest.workspace = true
+insta.workspace = true
+wiremock.workspace = true
+cma-testkit = { path = "../testkit" }
+
+[lints.rust]
+unsafe_code = "deny"
