@@ -35,3 +35,6 @@ test-results.md
 
 # OMC session scratch (never publish)
 .omc/
+
+# Rust
+/target

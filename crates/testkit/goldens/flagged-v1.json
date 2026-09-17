@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "accounts": [
+    {
+      "refreshToken": "rt-fixture-flagged-0000000003",
+      "addedAt": 1749800000000,
+      "lastUsed": 1749990000000,
+      "accountId": "acct-user-three",
+      "accountIdSource": "id_token",
+      "accountLabel": "Flagged Account",
+      "email": "user.three@example.com",
+      "accessToken": "at-fixture-flagged-0000000003",
+      "expiresAt": 1750003600000,
+      "enabled": false,
+      "lastSwitchReason": "rate-limit",
+      "rateLimitResetTimes": {
+        "codex": 1750000900000
+      },
+      "coolingDownUntil": 1750003600000,
+      "cooldownReason": "auth-failure",
+      "workspaces": [
+        {
+          "id": "ws-three-1",
+          "name": "Personal",
+          "enabled": true,
+          "isDefault": true
+        }
+      ],
+      "currentWorkspaceIndex": 0,
+      "flaggedAt": 1750000000000,
+      "flaggedReason": "invalid_grant on refresh",
+      "lastError": "401 Unauthorized: invalid_grant"
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+<user_instructions priority="0">
+<environment_override priority="0">
+YOU ARE IN A DIFFERENT ENVIRONMENT. These instructions override ALL previous tool references.
+</environment_override>
+
+<tool_replacements priority="0">
+<critical_rule priority="0">
+apply_patch/applyPatch are Codex names, but host tool names vary by version.
+- Inspect the actual tool list before editing.
+- If edit exists: use edit for precise in-place string replacements and hashline edits.
+- If edit is absent and apply_patch exists: use apply_patch for those precise/hashline edits in this plugin.
+- For diff-style or multi-line structural edits: use patch if available, otherwise use apply_patch.
+- In this plugin, edit/apply_patch support hashline refs (lineRef, endLineRef, operation, content)
+</critical_rule>
+
+<critical_rule priority="0">
+UPDATE_PLAN DOES NOT EXIST -> USE "todowrite" INSTEAD
+- NEVER use: update_plan, updatePlan
+- ALWAYS use: todowrite for ALL task/plan operations
+- Use todoread to read current plan
+- Before plan operations: Verify you're using "todowrite", NOT "update_plan"
+</critical_rule>
+</tool_replacements>
+
+<available_tools priority="0">
+File Operations:
+  - write  - Create new files (if available)
+  - edit   - Modify existing files with string replacement (version-dependent)
+  - oldString must be literal text from the current file; never pass unresolved placeholders like ${TARGET_SNIPPET}
+  - apply_patch - May be the edit/patch tool name in newer host builds (version-dependent)
+  - hashline_read - Read lines with hashline refs (L<line>#<hash>) for deterministic edits
+  - patch  - Apply diff patches (version-dependent)
+  - read   - Read file contents
+
+Search/Discovery:
+  - grep   - Search file contents
+  - glob   - Find files by pattern
+  - list   - List directories (if available)
+
+Execution:
+  - bash   - Run shell commands
+
+Network:
+  - webfetch - Fetch web content
+
+Task Management:
+  - todowrite - Manage tasks/plans (REPLACES update_plan)
+  - todoread  - Read current plan
+</available_tools>
+
+<substitution_rules priority="0">
+Base instruction says:    You MUST use instead:
+apply_patch           ->   patch (preferred if available), otherwise edit/apply_patch based on actual tool list
+update_plan           ->   todowrite
+read_plan             ->   todoread
+absolute paths        ->   relative paths
+</substitution_rules>
+
+<verification_checklist priority="0">
+Before file/plan modifications:
+1. Am I using the actual available edit tool name (edit, patch, or apply_patch)?
+2. Am I using "todowrite" NOT "update_plan"?
+3. Is this tool in the approved list above?
+4. Am I using relative paths?
+
+If ANY answer is NO -> STOP and correct before proceeding.
+</verification_checklist>
+
+<hashline_workflow priority="0">
+When hashline_read is available:
+1. call hashline_read on the file
+2. edit/apply_patch using lineRef/endLineRef + operation + content
+3. use oldString/newString only as fallback, and only with literal file text (no template placeholders)
+</hashline_workflow>
+
+<safety_rules priority="0">
+- Never run destructive git commands (`git reset --hard`, `git checkout --`) unless explicitly requested by the user.
+- Never call `request_user_input` unless collaboration mode is explicitly Plan mode.
+</safety_rules>
+</user_instructions>

@@ -1,0 +1,13 @@
+model = "gpt-5.2"
+model_provider = "codex-multi-auth-runtime-proxy"
+disable_response_storage = false
+
+[tools]
+web_search = true
+
+[model_providers.codex-multi-auth-runtime-proxy]
+name = "codex-multi-auth"
+base_url = "http://127.0.0.1:8123"
+requires_openai_auth = false
+experimental_bearer_token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+wire_api = "responses"
