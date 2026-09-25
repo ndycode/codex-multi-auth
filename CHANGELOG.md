@@ -5,6 +5,122 @@ Dates use ISO format (`YYYY-MM-DD`).
 
 This repository's current stable release line is `2.x`. Full release notes live in [`docs/releases/`](docs/releases/) — this file is the short version. Pre-`0.1.0` iteration history is archived in [`docs/releases/legacy-pre-0.1-history.md`](docs/releases/legacy-pre-0.1-history.md).
 
+## [2.17.0] - 2026-09-26
+
+Codex CLI 0.156+ no longer refuses org-sourced accounts, and an opt-in native desktop binding adds capability-aware routing, API/ZDR pools, reset credits and Responses WebSockets. [Full notes](docs/releases/v2.17.0.md).
+
+### Added
+
+- With runtime rotation on, interactive `mcodex resume` lists sessions across
+  providers, including desktop sessions saved under `openai` that Codex's own
+  picker hides. Explicit ids, `--last`, remote and non-interactive invocations
+  keep native behaviour, and a failed discovery falls back to the native
+  picker. Needs a Codex version with app-server `thread/list`
+  ([#699](https://github.com/ndycode/codex-multi-auth/pull/699))
+- `rotation bind-app --native` keeps the desktop app on its real OpenAI login
+  (Remote Control pairing keeps working) while inference routes through the
+  account pool. Requires `cli_auth_credentials_store = "file"`;
+  `--custom-provider` and `unbind-app` roll it back
+  ([#702](https://github.com/ndycode/codex-multi-auth/pull/702))
+- Native mode routes each request only to an account and workspace whose
+  catalog advertises the requested model, effort and speed, serves Responses
+  over WebSockets, and schedules subscriptions by a 5% reserve, priority tier
+  and earliest reset. Catalog outages never block inference
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- A `switch` pin stays strict in native mode: tiers, the reserve and automatic
+  reset redemption apply only when nothing is pinned, and a model the pinned
+  account doesn't advertise is refused with 403
+  `model_not_available_in_account_catalog`
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- `login --api` adds API and ZDR credentials as explicit `api/<model>` and
+  `zdr/<model>` pools that fail closed and are never a fallback for
+  subscription requests. `api-routes.json` stores the keys in plain text
+  (mode 0600 on macOS/Linux; Windows relies on your user profile's ACLs)
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- `account priority <index> <0..9>` (default 1) and `resets list|redeem|auto`
+  for earned subscription reset credits; `resets auto last-resort` redeems
+  only when every eligible subscription is blocked, `manual` (the default)
+  never does
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- Subscription priming, opt-in only: `check --prime`, or per-account
+  `account auto-prime <index> on|off` (default off, every 15 minutes while a
+  router runs). Priming uses subscription quota
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- `check accounts|resets|capabilities` runs one part of `check`
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- `status --json` adds `apiAccounts`, `totalAccountCount`, `selectionMode`,
+  `modelInventory`, and per-account priority, `autoPrime`,
+  `lastInferenceRequestAt`, reset-credit and forecast fields
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- `fix --live` rebinds an org-sourced account the backend no longer
+  authorizes, reports `rebound-unauthorized-workspace`, and resyncs
+  `~/.codex/auth.json` when the active account changed
+  ([#701](https://github.com/ndycode/codex-multi-auth/pull/701))
+
+### Changed
+
+- New logins pick a unique Personal workspace over an organization default.
+  With several workspaces and no unique Personal one, an interactive login asks
+  and a non-interactive login keeps the automatic choice and warns with `--org`
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- `login` checks the chosen workspace against `wham/accounts/check` (10-second
+  timeout, fails open). An unauthorized automatic choice falls back to the
+  backend's default; an explicit `--org` is saved as chosen but `auth.json`
+  gets the authorized default
+  ([#701](https://github.com/ndycode/codex-multi-auth/pull/701))
+- Plain `check` also refreshes reset credits and model discovery. Billable API
+  capability probes reuse results younger than 15 minutes; only
+  `check capabilities` forces them
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- `check` rejects unknown arguments with exit 1 (2.16.0 ignored them), so
+  scripts passing extra flags to `check` need updating
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- `ws` (8.21.3) is a new runtime dependency. Downgrading below 2.17.0 drops
+  account priority tiers on the next policy write; see `docs/upgrade.md`
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+
+### Fixed
+
+- `~/.codex/auth.json` no longer gets an `org-...` id as `tokens.account_id`,
+  which Codex CLI 0.156+ refuses on every request ("selected workspace missing
+  from routing discovery"). The token's `chatgpt_account_id` is written
+  instead, a stale org id from an older release is rewritten, and a switch no
+  longer carries the previous account's workspace id onto new tokens
+  ([#703](https://github.com/ndycode/codex-multi-auth/pull/703), for
+  [#700](https://github.com/ndycode/codex-multi-auth/issues/700))
+- `best --live`, `forecast --live` and `report --live` keep an explicit or
+  org-sourced workspace binding across a token refresh instead of overwriting
+  it with the token's default
+  ([#701](https://github.com/ndycode/codex-multi-auth/pull/701))
+- A refreshed token whose `accounts.json` write keeps failing (Windows
+  EBUSY/EPERM) is kept live and journaled to
+  `<accounts-file>.pending-auth.json` instead of being discarded after the old
+  refresh token was already spent
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- On macOS and Linux, the `codex app` app-server shim in
+  `~/.codex/multi-auth/app-server-shims/` runs the original Node in place
+  instead of a hard link or copy, which current Homebrew Node could not start
+  from, so the desktop app's app-server launch failed
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- A quota reset header too large to represent (e.g. a 308-digit
+  `reset-after-seconds`) no longer reads as a window that never resets: reset
+  times are capped at 7 days ahead, and `formatWaitTime` prints `unknown`
+  instead of `NaNs` / `Infinitym NaNs`
+  ([45b7dd20](https://github.com/ndycode/codex-multi-auth/commit/45b7dd20))
+- Windows: a `codex.cmd` npm shim on PATH is launchable when package and
+  `npm root -g` lookup both miss
+  ([ad59405c](https://github.com/ndycode/codex-multi-auth/commit/ad59405c))
+- Windows: `CODEX_MULTI_AUTH_REAL_CODEX_BIN` pointing at `codex.cmd` or its sh
+  shim resolves to the package's `codex.js` instead of failing every launch
+  ([933c1ff7](https://github.com/ndycode/codex-multi-auth/commit/933c1ff7))
+
+### Security
+
+- `hono` pinned to `4.13.9` (2.16.0 shipped `4.12.33`, inside the `<=4.13.4`
+  range of seven advisories including GHSA-8j4g-w8fx-2239) and the dev-only
+  `nanoid` to `3.3.18` for GHSA-2v37-7h3g-55p8
+  ([#704](https://github.com/ndycode/codex-multi-auth/pull/704))
+
 ## [2.16.0] - 2026-09-23
 
 GPT-6 Sol and Luna are supported, and every retired model now runs on its named replacement. [Full notes](docs/releases/v2.16.0.md).
