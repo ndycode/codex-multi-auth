@@ -35,6 +35,9 @@ export interface ResetCreditIO {
 }
 /** No credentials or credit IDs are persisted. One global redemption lease covers
  * all accounts: concurrent exhausted requests cannot independently spend credits. */
+/** A stored time further ahead than this came from a clock that has since stepped back: treat it as expired. */
+const FUTURE_SKEW_MS=5*60000;
+const within=(at:number|undefined,now:number,windowMs:number)=>at!==undefined&&at<=now+FUTURE_SKEW_MS&&now-at<windowMs;
 const automaticChecks = new Map<string, {targets:string; promise:Promise<{key:string;outcome:ResetOutcome}|null>}>();
 export class ResetCreditService {
  constructor(private readonly path:string,private readonly io:ResetCreditIO){}
@@ -56,7 +59,7 @@ export class ResetCreditService {
  private async read(target:ResetTarget){return parseResetSnapshot(await this.io.read(target),target.accountId,this.now());}
  async refresh(targets:ResetTarget[]):Promise<Record<string,ResetSnapshot>>{
   const results=await mapWithConcurrency(targets,3,async t=>{try{return {key:t.key,snapshot:await this.read(t)}}catch{return null}});
-  return withFileTransactionLock(this.path,async()=>{const state=await this.status();const updated:Record<string,ResetSnapshot>={};for(const row of results)if(row){const old=state.snapshots[row.key];if(!old||old.updatedAt<=row.snapshot.updatedAt)state.snapshots[row.key]=row.snapshot;updated[row.key]=row.snapshot;}await this.save(state);return updated;});
+  return withFileTransactionLock(this.path,async()=>{const state=await this.status();const updated:Record<string,ResetSnapshot>={};const now=this.now();for(const row of results)if(row){const old=state.snapshots[row.key];if(!old||old.updatedAt<=row.snapshot.updatedAt||old.updatedAt>now+FUTURE_SKEW_MS)state.snapshots[row.key]=row.snapshot;updated[row.key]=row.snapshot;}await this.save(state);return updated;});
  }
  private async consumeLocked(state:State,target:ResetTarget,automatic=false):Promise<ResetOutcome>{
   if(state.pending&&state.pending.key!==target.key)throw Error('A reset redemption is pending for another account; retry that account explicitly first.');
@@ -71,7 +74,7 @@ export class ResetCreditService {
  async redeem(target:ResetTarget):Promise<ResetOutcome>{
   return withFileTransactionLock(this.path,async()=>{
    const state=await this.status();
-   if(!state.pending&&state.lastRedemptionAt!==undefined&&this.now()-state.lastRedemptionAt<10000)throw Error('A reset was just redeemed; refresh usage before trying again.');
+   if(!state.pending&&within(state.lastRedemptionAt,this.now(),10000))throw Error('A reset was just redeemed; refresh usage before trying again.');
    if(!state.pending){const snapshot=await this.read(target);state.snapshots[target.key]=snapshot;await this.save(state);if(snapshot.availableCount===null)throw Error('Reset-credit availability is unknown');if(snapshot.availableCount===0)return 'noCredit';}
    return this.consumeLocked(state,target);
   });
@@ -88,7 +91,7 @@ export class ResetCreditService {
   if(!targets.length||(await this.status()).policy!=='last-resort')return null;
   return withFileTransactionLock(this.path,async()=>{
    const state=await this.status();
-   if(state.policy!=='last-resort'||state.pending||(state.lastAutomaticCheckAt!==undefined&&this.now()-state.lastAutomaticCheckAt<60000)||(state.lastRedemptionAt!==undefined&&this.now()-state.lastRedemptionAt<300000))return null;
+   if(state.policy!=='last-resort'||state.pending||within(state.lastAutomaticCheckAt,this.now(),60000)||within(state.lastRedemptionAt,this.now(),300000))return null;
    state.lastAutomaticCheckAt=this.now();await this.save(state);
    // Missing/failed reads prevent spending. A scheduled reset that has arrived
    // is confirmed by ordinaryUsageAllowed, never inferred from a clock or %.

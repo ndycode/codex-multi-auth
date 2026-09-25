@@ -9,6 +9,8 @@ import { logWarn } from "../logger.js";
 export const AUTOMATIC_CHECK_INTERVAL_MS = 15 * 60000;
 /** First tick after router start, so a short CLI session still gets its check. */
 export const AUTOMATIC_CHECK_INITIAL_DELAY_MS = 5000;
+/** An attempt stamped further ahead than this predates a backwards clock step: treat it as expired. */
+const FUTURE_SKEW_MS = 5 * 60000;
 const schema = z.record(z.string().regex(/^sha256:[a-f0-9]{64}$/), z.number().finite().nonnegative());
 const retry = { maxAttempts: 6, backoffMs: 25 };
 export interface AutomaticAccountCheckOptions {
@@ -67,7 +69,7 @@ export async function runAutomaticAccountChecks(options: AutomaticAccountCheckOp
             if (!policy?.autoPrime || policy.paused || policy.drained || account.enabled === false || account.authInvalidatedAt || (account.coolingDownUntil ?? 0) > now)
                 continue;
             const lastAttempt = attempts[key];
-            if (lastAttempt !== undefined && now - lastAttempt < AUTOMATIC_CHECK_INTERVAL_MS)
+            if (lastAttempt !== undefined && lastAttempt <= now + FUTURE_SKEW_MS && now - lastAttempt < AUTOMATIC_CHECK_INTERVAL_MS)
                 continue;
             attempts[key] = now;
             await saveAttempts(options.path, attempts);

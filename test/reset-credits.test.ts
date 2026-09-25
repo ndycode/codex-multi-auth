@@ -105,3 +105,25 @@ it("retries a transient EPERM publishing reset state",async()=>{
  try {await expect(f.service.refresh([target("a")])).resolves.toBeDefined();expect(failed).toBe(true);expect((await f.service.status()).snapshots.a?.availableCount).toBe(2);}
  finally {spy.mockRestore();}
 });
+
+describe('future-dated timestamps after a backwards clock step',()=>{
+ const later=()=>Date.now()+3600000;
+ const seed=async(state:Record<string,unknown>)=>fs.writeFile(join(dir,'state.json'),JSON.stringify({version:1,policy:'manual',snapshots:{},...state}));
+ it('does not treat a future lastRedemptionAt as a just-completed redemption',async()=>{
+  const f=fixture();await seed({lastRedemptionAt:later()});
+  await expect(f.service.redeem(target('a'))).resolves.toBe('reset');
+ });
+ it.each(['lastAutomaticCheckAt','lastRedemptionAt'])('does not let a future %s suppress automatic redemption',async field=>{
+  const f=fixture();await seed({policy:'last-resort',[field]:later()});
+  expect(await f.service.automatic([target('a')])).toMatchObject({key:'a',outcome:'reset'});
+ });
+ it('replaces a cached snapshot whose updatedAt is in the future',async()=>{
+  const f=fixture();await seed({snapshots:{a:{updatedAt:later(),availableCount:0,ordinaryUsageAllowed:null,planType:null,primary:{},secondary:{}}}});
+  await f.service.refresh([target('a')]);
+  expect((await f.service.status()).snapshots.a?.availableCount).toBe(2);
+ });
+ it('still honours a timestamp within the clock-skew allowance',async()=>{
+  const f=fixture();await seed({lastRedemptionAt:Date.now()+60000});
+  await expect(f.service.redeem(target('a'))).rejects.toThrow(/just redeemed/);
+ });
+});

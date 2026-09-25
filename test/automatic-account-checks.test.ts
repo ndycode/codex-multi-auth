@@ -159,3 +159,11 @@ describe("initial automatic check", () => {
         expect(vi.getTimerCount()).toBe(0);
     });
 });
+it("does not let a future-dated attempt suppress checks after a backwards clock step", async () => {
+    const f = fixture();
+    f.enable(0);
+    const key = getAccountPolicyKey(f.storage.accounts[0]!);
+    await fs.writeFile(f.options.path, JSON.stringify({ [key]: 1000 + 3600000 }));
+    await runAutomaticAccountChecks(f.options);
+    expect(f.check).toHaveBeenCalledTimes(1);
+});
