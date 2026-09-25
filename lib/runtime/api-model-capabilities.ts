@@ -82,7 +82,10 @@ function classifyProbe403(data: unknown, setting: { effort?: string; tier?: stri
 	if (CREDENTIAL_ACCESS_CODES.has(code) || ["api_key", "organization", "project"].includes(param)) return "lost";
 	// Same model-level denial codes the runtime capability classifier uses.
 	if (classifyCapabilityFailure(403, data) === "model") return "model";
-	if (setting.effort && ["reasoning.effort", "reasoning"].includes(param)) return "setting";
+	// Compatibility and tier probes also carry an effort, but only an effort probe
+	// tests it: an effort-param 403 elsewhere explains nothing about the probed setting.
+	const effortProbe = Boolean(setting.effort) && !setting.tier && !setting.compatibility;
+	if (effortProbe && ["reasoning.effort", "reasoning"].includes(param)) return "setting";
 	if (setting.tier && param === "service_tier") return "setting";
 	if (setting.compatibility && ["tools", "tool_choice"].includes(param)) return "setting";
 	return "ambiguous";
