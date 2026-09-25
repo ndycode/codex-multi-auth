@@ -329,7 +329,7 @@ describe("ensureFreshAccessToken", () => {
 		);
 	});
 
-	it("cools down and stays retryable when the commit itself fails", async () => {
+	it("keeps serving the rotated credential when the commit write stays locked", async () => {
 		const accountManager = managerWith(STALE_EXPIRES);
 		queuedRefreshMock.mockResolvedValue({
 			type: "success",
@@ -345,10 +345,9 @@ describe("ensureFreshAccessToken", () => {
 
 		const result = await ensureFreshAccessToken(refreshParams(accountManager));
 
-		expect(result).toMatchObject({ ok: false, retryable: true });
-		expect(
-			accountManager.getAccountByIndex(0)?.coolingDownUntil ?? 0,
-		).toBeGreaterThan(NOW);
+		// The old refresh token is spent; the new one is journaled and used.
+		expect(result).toMatchObject({ ok: true, accessToken: "access-new" });
+		expect(accountManager.getAccountByIndex(0)?.refreshToken).toBe("refresh-new");
 	});
 });
 

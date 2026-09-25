@@ -4030,29 +4030,20 @@ function installRuntimeRotationAppServerCliShim(forwardedEnv, configArgs = []) {
 			// Best-effort stale shim cleanup only; the copy below will report a
 			// persistent failure without leaving a partially-created helper.
 		}
-		if (
-			process.platform === "win32" ||
-			(process.env.CODEX_MULTI_AUTH_TEST_FORCE_APP_SERVER_SHIM_COPY ?? "") === "1"
-		) {
-			// A Windows hard link to the running node.exe remains locked by the
-			// helper process itself, which prevents the shim directory from being
-			// removed during graceful helper shutdown. Use an independent image so
-			// the helper can clean up its app-server shim before exiting.
+		if (process.platform === "win32") {
+			// A running hard-linked node.exe prevents helper cleanup on Windows.
 			withSynchronousFileOperationRetry(() => {
 				maybeThrowSimulatedAppServerShimFileError("copy");
 				copyFileSync(process.execPath, executablePath);
 			});
 		} else {
-			try {
-				linkSync(process.execPath, executablePath);
-			} catch {
-				withSynchronousFileOperationRetry(() => {
-					maybeThrowSimulatedAppServerShimFileError("copy");
-					copyFileSync(process.execPath, executablePath);
-				});
-			}
-		}
-		if (process.platform !== "win32") {
+			// Relocating Node breaks installations with executable-relative shared
+			// libraries (including Homebrew). Invoke the original image in place.
+			const quotedNode = "'" + process.execPath.replace(/'/g, "'\\''") + "'";
+			withSynchronousFileOperationRetry(() => {
+				maybeThrowSimulatedAppServerShimFileError("copy");
+				writeFileSync(executablePath, `#!/bin/sh\nexec ${quotedNode} "$@"\n`, { mode: 0o755 });
+			});
 			chmodSync(executablePath, 0o755);
 		}
 		writeFileSync(
@@ -5973,8 +5964,13 @@ function createCompatibilityCodexHome(
 	};
 }
 
-function buildForwardArgs(rawArgs) {
-	const { args: compatibilityArgs, requestedModel } = rewriteReasoningConfigArgs(rawArgs);
+function buildForwardArgs(rawArgs, { preserveNativeSettings = false } = {}) {
+	// Native app binding keeps the caller's model and reasoning settings verbatim;
+	// it still needs the file auth store, because the router authenticates the
+	// desktop token it reads from auth.json.
+	const { args: compatibilityArgs, requestedModel } = preserveNativeSettings
+		? { args: [...rawArgs], requestedModel: extractRequestedModel(rawArgs) }
+		: rewriteReasoningConfigArgs(rawArgs);
 	const forceFileAuthStore = (process.env.CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE ?? "1").trim() !== "0";
 	if (!forceFileAuthStore) {
 		return { args: compatibilityArgs, requestedModel };
@@ -6558,21 +6554,27 @@ async function main() {
 	// Resolve `--account` / CODEX_MULTI_AUTH_FORCE_ACCOUNT before forwarding: strip
 	// the launcher-only flag from the Codex args and publish the resolved pin, or
 	// fail hard so a forced account can never silently fall back to another one.
+	if (hasNativeAppBinding(process.env)) {
+        const forced = resolveForcedAccountSelector(rawArgs, process.env);
+        if (forced.error || forced.selector !== null) {
+            console.error(forced.error ?? "Native app binding uses the persistent inference selection. Use codex-multi-auth switch instead of --account.");
+            return 1;
+        }
+        delete process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX;
+        // Best effort: a locked or read-only config.toml (Windows EPERM/EBUSY)
+        // must not block the launch; the per-invocation override below still applies.
+        await ensurePersistedCodexFileAuthStore();
+        const { args: nativeArgs } = buildForwardArgs(forced.strippedArgs, { preserveNativeSettings: true });
+        const result = await forwardToRealCodexOnce(realCodexBin, nativeArgs, process.env);
+        return result.exitCode;
+    }
 	const forcedAccount = await applyForcedAccountSelection(rawArgs, process.env);
 	if (forcedAccount.error) {
 		console.error(forcedAccount.error);
 		return 1;
 	}
 	const forwardArgs = [...forcedAccount.forwardArgs];
-	if (hasNativeAppBinding(process.env)) {
-		if (process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX) {
-			console.error("Native app binding uses the persistent inference selection. Use codex-multi-auth switch instead of --account.");
-			return 1;
-		}
-		// Preserve native model IDs, reasoning settings, account/read and desktop login.
-		const result = await forwardToRealCodexOnce(realCodexBin, forwardArgs, process.env);
-		return result.exitCode;
-	}
+
 
 	if (process.stdin.isTTY && process.stdout.isTTY && !bypass) {
 		const pickerRequest = getResumePickerRequest(forwardArgs);

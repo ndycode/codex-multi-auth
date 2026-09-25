@@ -121,8 +121,7 @@ describe("install-codex-auth script", () => {
 			APPDATA: appData,
 			LOCALAPPDATA: localAppData,
 		};
-		const configDir = path.join(appData, "Codex");
-		const configPath = path.join(configDir, "Codex.json");
+		const { configDir, configPath } = resolveInstallPaths(process.platform, env, home);
 		const initialConfig = JSON.stringify({ plugin: ["existing-plugin"] }, null, 2);
 
 		mkdirSync(configDir, { recursive: true });
@@ -162,8 +161,7 @@ describe("install-codex-auth script", () => {
 			APPDATA: appData,
 			LOCALAPPDATA: localAppData,
 		};
-		const configDir = path.join(appData, "Codex");
-		const configPath = path.join(configDir, "Codex.json");
+		const { configDir, configPath } = resolveInstallPaths(process.platform, env, home);
 		// An already-initialized config from before the GPT-5.6 tiers shipped: it
 		// has a user-customized known model and a bespoke custom model, but no 5.6.
 		const initialConfig = {
@@ -324,7 +322,7 @@ describe("codex app launcher installer", () => {
 		expect(plan.commandArgs).toContain("-EncodedCommand ");
 		const decodedCommand = decodeWindowsEncodedCommand(plan.commandArgs);
 		expect(decodedCommand).toContain(process.execPath);
-		expect(decodedCommand).toContain("scripts\\codex.js");
+		expect(decodedCommand).toContain(path.join("scripts", "codex.js"));
 		expect(decodedCommand).toContain(" app");
 
 		const psScript = createWindowsShortcutPowerShellScript(plan);

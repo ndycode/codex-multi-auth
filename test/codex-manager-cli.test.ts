@@ -1,3 +1,4 @@
+vi.mock("../lib/runtime/account-reset-credits.js", async original => ({...await original<typeof import("../lib/runtime/account-reset-credits.js")>(),refreshAndPrintResetCredits:vi.fn(async()=>{})}));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexUnavailableError } from "../lib/errors.js";
 import {
@@ -3238,8 +3239,7 @@ describe("codex manager cli commands", () => {
 			if (accessToken === "access-alpha-refreshed") return "owner@example.com";
 			return undefined;
 		});
-		quotaProbeMocks.fetchCodexQuotaSnapshot
-			.mockResolvedValueOnce({
+		quotaProbeMocks.fetchCodexQuotaSnapshot.mockImplementation(async ({ accessToken }) => accessToken === "access-alpha-refreshed" ? {
 				status: 200,
 				model: "gpt-5-codex",
 				primary: {
@@ -3252,8 +3252,7 @@ describe("codex manager cli commands", () => {
 					windowMinutes: 10080,
 					resetAtMs: now + 2_000,
 				},
-			})
-			.mockResolvedValueOnce({
+			} : {
 				status: 200,
 				model: "gpt-5-codex",
 				primary: {
@@ -7096,6 +7095,13 @@ describe("codex manager cli commands", () => {
 		vi.mocked(accountsModule.extractAccountEmail).mockImplementationOnce(
 			() => "user@example.com",
 		);
+		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValueOnce([
+			{
+				accountId: "workspace-beta",
+				source: "org",
+				label: "Workspace Beta [id:beta]",
+			},
+		]);
 		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValueOnce([
 			{
 				accountId: "workspace-beta",

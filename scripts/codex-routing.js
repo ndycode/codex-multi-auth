@@ -10,6 +10,7 @@ const AUTH_SUBCOMMANDS = new Set([
 	"check",
 	"features",
 	"usage",
+	"resets",
 	"verify-flagged",
 	"verify",
 	"forecast",

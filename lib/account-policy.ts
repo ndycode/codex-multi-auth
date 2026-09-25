@@ -11,6 +11,10 @@ export interface AccountPolicy {
 	accountKey: string;
 	tags: string[];
 	weight: number;
+	/** Lower tiers are tried first; absent legacy values use tier 1. */
+	priority?: number;
+	/** Opt in to periodic first-use completion for unused personal subscriptions. */
+	autoPrime?: boolean;
 	paused: boolean;
 	drained: boolean;
 	note: string | null;
@@ -59,6 +63,8 @@ function normalizePolicy(key: string, value: unknown): AccountPolicy {
 		accountKey: key,
 		tags,
 		weight: normalizeWeight(record.weight),
+		priority: normalizePriority(record.priority),
+		autoPrime: record.autoPrime === true,
 		paused: record.paused === true,
 		drained: record.drained === true,
 		note: note.length > 0 ? note.slice(0, 500) : null,
@@ -189,6 +195,11 @@ export async function saveAccountPolicyStore(
 	await queued;
 }
 
+/** Tiers are integers 0-9; anything else (including legacy absence) is tier 1. */
+function normalizePriority(value: unknown): number {
+	return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 9 ? value : 1;
+}
+
 export function upsertAccountPolicy(
 	store: AccountPolicyStore,
 	accountKey: string,
@@ -207,6 +218,8 @@ export function upsertAccountPolicy(
 		),
 	].sort();
 	next.weight = normalizeWeight(next.weight);
+	next.priority = normalizePriority(next.priority);
+	next.autoPrime = next.autoPrime === true;
 	next.updatedAt = now;
 	store.accounts[accountKey] = next;
 	return next;
@@ -219,4 +232,3 @@ export function normalizeAccountPolicyTag(value: string): string | null {
 export function resetAccountPolicyWriteQueueForTests(): void {
 	writeQueue = Promise.resolve();
 }
-

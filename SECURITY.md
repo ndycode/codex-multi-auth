@@ -110,3 +110,15 @@ For non-vulnerability security questions, open a GitHub discussion.
 
 This project is not affiliated with OpenAI.
 For OpenAI platform security concerns, contact OpenAI directly.
+
+## Automatic first-use checks
+
+Automatic subscription priming is off by default and requires per-account
+`account auto-prime <index> on`. A running CLI/app router checks every 15 minutes;
+completion consumes subscription quota only when headers identify an unused
+personal subscription. The checker uses verified current subscription credentials,
+respects account/workspace disablement and pause/drain policy, and never uses
+API/ZDR credentials or reset credits. A private attempt file stores hashed account
+keys and timestamps under a cross-process lock. It contains no prompts or tokens.
+Manual checks still require `--prime`; enabling an account policy does not change
+that command's default.

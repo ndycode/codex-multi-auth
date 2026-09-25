@@ -4,6 +4,7 @@ import { isCodexUnavailableError } from "../errors.js";
 import type { ModelFamily } from "../prompts/codex.js";
 import {
 	type AccountStorageV3,
+	cloneTrackedAccountStorage,
 	bumpStorageAffinityGeneration,
 	type FlaggedAccountMetadataV1,
 	reconcilePinnedAccountIndex,
@@ -85,13 +86,7 @@ export async function runRuntimeAccountCheck(
 ): Promise<void> {
 	const loadedStorage = await deps.hydrateEmails(await deps.loadAccounts());
 	const workingStorage = loadedStorage
-		? {
-				...loadedStorage,
-				accounts: loadedStorage.accounts.map((account) => ({ ...account })),
-				activeIndexByFamily: loadedStorage.activeIndexByFamily
-					? { ...loadedStorage.activeIndexByFamily }
-					: {},
-			}
+		? cloneTrackedAccountStorage(loadedStorage)
 		: deps.createEmptyStorage();
 
 	if (workingStorage.accounts.length === 0) {

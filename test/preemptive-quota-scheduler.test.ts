@@ -413,3 +413,11 @@ describe("preemptive quota scheduler", () => {
 	});
 
 });
+
+it('clears only the recovered model quota without clearing sibling models',()=>{
+ const scheduler=new PreemptiveQuotaScheduler();const now=Date.now();
+ for(const key of ['account:model','account:model-other'])scheduler.update(key,{updatedAt:now,status:429,primary:{usedPercent:100,resetAtMs:now+60000},secondary:{}});
+ scheduler.clear('account:model');
+ expect(scheduler.getDeferral('account:model',now).defer).toBe(false);
+ expect(scheduler.getDeferral('account:model-other',now).defer).toBe(true);
+});

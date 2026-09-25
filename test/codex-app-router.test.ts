@@ -50,6 +50,8 @@ function createRouterFixture(root: string, options: { withProxyModule?: boolean 
 				"    getStatus: () => ({",
 				"      totalRequests: 2,",
 				"      upstreamRequests: 1,",
+				"      websocketConnections: 3,",
+				"      websocketUpstreamRequests: 7,",
 				"      retries: 0,",
 				"      rotations: 1,",
 				"      lastAccountIndex: 1,",
@@ -135,6 +137,8 @@ describe("codex app router daemon", () => {
 			expect(running.startedAt).toBeTypeOf("number");
 			expect(running.baseUrl).toBe("http://127.0.0.1:4567");
 			expect(running.lastAccountLabel).toBe("Account 2");
+			expect(running.websocketConnections).toBe(3);
+			expect(running.websocketUpstreamRequests).toBe(7);
 			expect(running).not.toHaveProperty("clientApiKey");
 			if (process.platform !== "win32") {
 				expect(statSync(statusPath).mode & 0o777).toBe(0o600);

@@ -51,7 +51,8 @@ describe("live-account-sync", () => {
 		const bumped = new Date(Date.now() + 2_000);
 		await fs.utimes(storagePath, bumped, bumped);
 
-		await vi.advanceTimersByTimeAsync(900);
+		// Fake-clock advancement does not wait for the real filesystem stat callback.
+		await vi.waitFor(() => expect(sync.getSnapshot().errorCount).toBeGreaterThan(0), { timeout: 3000 });
 
 		const snapshot = sync.getSnapshot();
 		expect(snapshot.errorCount).toBeGreaterThan(0);

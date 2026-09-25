@@ -22,6 +22,7 @@ export const ACCOUNT_MANAGER_COMMANDS = new Set([
 	"check",
 	"features",
 	"usage",
+	"resets",
 	"verify-flagged",
 	"verify",
 	"forecast",

@@ -68,6 +68,54 @@ describe("quota-probe", () => {
 		vi.useRealTimers();
 	});
 
+	it("does not start or retry a quota probe after cancellation",async()=>{
+      const controller=new AbortController();controller.abort();const fetchMock=vi.fn();vi.stubGlobal("fetch",fetchMock);
+      await expect(fetchCodexQuotaSnapshot({accountId:"fixture",accessToken:"fixture",signal:controller.signal})).rejects.toMatchObject({name:"AbortError"});
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+	it("finishes one tiny check probe when a subscription reports zero usage", async () => {
+		const headers = makeQuotaHeaders({"x-codex-primary-used-percent":"0", "x-codex-secondary-used-percent":"0", "x-codex-primary-reset-after-seconds":"18000","x-codex-secondary-reset-after-seconds":"604800", "x-codex-plan-type":"prolite", "content-type":"text/event-stream"});
+		const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => new Response('data: {"type":"response.completed","response":{"status":"completed"}}\n\n', {status:200,headers}));
+		vi.stubGlobal("fetch", fetchMock);
+		const snapshot = await fetchCodexQuotaSnapshot({accountId:"fixture",accessToken:"fixture-token",primeUnusedSubscription:true});
+		expect(snapshot.primingCompleted).toBe(true);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(JSON.parse(String(fetchMock.mock.calls[0]![1].body)).instructions).toBe(`instructions:${DEFAULT_PROBE_MODEL}`);
+        expect(getCodexInstructionsMock).toHaveBeenCalledWith(DEFAULT_PROBE_MODEL);
+	});
+
+	it("uses canonical instructions when a backend rejects replacement instructions",async()=>{
+ vi.stubGlobal("fetch",vi.fn(async(_url,init)=>{
+  const body=JSON.parse(String(init.body));
+  return body.instructions===`instructions:${body.model}`
+   ? new Response("",{status:200,headers:makeQuotaHeaders()})
+   : Response.json({detail:"Instructions are not valid"},{status:400});
+ }));
+ await expect(fetchCodexQuotaSnapshot({accountId:"fixture",accessToken:"fixture",primeUnusedSubscription:true})).resolves.toMatchObject({status:200});
+ });
+
+	it("does not claim completion or retry another model when a first-use stream ends early", async () => {
+		const fetchMock = vi.fn(async () => new Response('data: {"type":"response.created"}\n\n', {status:200,headers:makeQuotaHeaders({"x-codex-primary-used-percent":"0","x-codex-secondary-used-percent":"0","x-codex-primary-reset-after-seconds":"18000","x-codex-secondary-reset-after-seconds":"604800","content-type":"text/event-stream"})}));
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(fetchCodexQuotaSnapshot({accountId:"fixture",accessToken:"fixture-token",primeUnusedSubscription:true})).resolves.toMatchObject({status:200, primingFailure:"stream ended early"});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it.each(["free", "unknown", "business", ""])("does not prime a %s plan", async plan => {
+		vi.stubGlobal("fetch", vi.fn(async () => new Response("",{status:200,headers:makeQuotaHeaders({"x-codex-primary-used-percent":"0","x-codex-secondary-used-percent":"0","x-codex-primary-reset-after-seconds":"18000","x-codex-secondary-reset-after-seconds":"604800","x-codex-plan-type":plan})})));
+		const result = await fetchCodexQuotaSnapshot({accountId:"fixture",accessToken:"fixture-token",primeUnusedSubscription:true});
+		expect(result.primingCompleted).toBeUndefined();
+		expect(result.primingFailure).toBeUndefined();
+	});
+
+	it("does not prime fractional usage rounded to zero in the display", async () => {
+		vi.stubGlobal("fetch", vi.fn(async () => new Response("",{status:200,headers:makeQuotaHeaders({"x-codex-primary-used-percent":"0.01","x-codex-secondary-used-percent":"0","x-codex-primary-reset-after-seconds":"18000","x-codex-secondary-reset-after-seconds":"604800"})})));
+		const result = await fetchCodexQuotaSnapshot({accountId:"fixture",accessToken:"fixture-token",primeUnusedSubscription:true});
+		expect(result.primingCompleted).toBeUndefined();
+		expect(result.primingFailure).toBeUndefined();
+	});
+
 	it("returns parsed quota snapshot from response headers", async () => {
 		const fetchMock = vi.fn(async () => new Response("", { status: 200, headers: makeQuotaHeaders() }));
 		vi.stubGlobal("fetch", fetchMock);

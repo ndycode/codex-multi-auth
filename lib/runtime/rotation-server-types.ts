@@ -1,3 +1,5 @@
+import type { QuotaCacheData } from "../quota-cache.js";
+import type { ApiRouteCredential } from "../api-route-store.js";
 import type { AccountStorageV3 } from "../storage.js";
 import type { AccountManager } from "../accounts.js";
 import type { ModelFamily } from "../prompts/codex.js";
@@ -18,6 +20,10 @@ export interface RuntimeRotationProxyServer {
 }
 
 export interface RuntimeRotationProxyStatus {
+	streamQuotaUpdates?: number;
+	lastStreamQuotaUpdateAt?: number;
+ websocketConnections?: number;
+ websocketUpstreamRequests?: number;
 	startedAt: number;
 	totalRequests: number;
 	upstreamRequests: number;
@@ -28,6 +34,8 @@ export interface RuntimeRotationProxyStatus {
 	lastAccountIndex: number | null;
 	lastAccountLabel: string | null;
 	lastAccountId: string | null;
+	/** Outgoing ChatGPT-Account-ID; distinct from the saved account binding. */
+	lastRequestedWorkspaceId?: string | null;
 	lastAccountUpdatedAt: number | null;
 }
 
@@ -35,6 +43,8 @@ export interface RuntimeRotationProxyOptions {
 	nativeOpenai?: boolean;
 	/** Override the native credential reader for embedded hosts and tests. */
 	readNativeAccountStorage?: () => Promise<AccountStorageV3 | null>;
+	readApiRoutes?: () => Promise<ApiRouteCredential[]>;
+	readSubscriptionQuota?: () => Promise<QuotaCacheData | null>;
 	catalogAccount?: { email: string; accountId: string; };
 	host?: string;
 	port?: number;

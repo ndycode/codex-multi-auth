@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, delimiter, dirname, extname, isAbsolute, join, relative } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, win32 } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -67,12 +67,12 @@ function resolveWindowsCmdPath(env) {
 	return "cmd.exe";
 }
 
-export function splitPathEntries(pathValue) {
+export function splitPathEntries(pathValue, platform = process.platform) {
 	if (typeof pathValue !== "string" || pathValue.trim().length === 0) {
 		return [];
 	}
 	return pathValue
-		.split(delimiter)
+		.split(platform === "win32" ? ";" : ":")
 		.map((entry) => entry.trim())
 		.filter((entry) => entry.length > 0);
 }
@@ -97,7 +97,7 @@ function resolveCodexExecutableFromPath(
 ) {
 	for (const entry of pathEntries) {
 		for (const executableName of resolveCandidateExecutableNames(platform)) {
-			const candidate = join(entry, executableName);
+			const candidate = (platform === "win32" ? win32.join : join)(entry, executableName);
 			if (!existsSyncImpl(candidate)) {
 				continue;
 			}
@@ -134,7 +134,7 @@ function resolveCodexExecutableFromSystemPath(
 	selfScriptPath,
 	realpathSyncImpl,
 ) {
-	const pathEntries = splitPathEntries(env.PATH ?? env.Path ?? "");
+	const pathEntries = splitPathEntries(env.PATH ?? env.Path ?? "", platform);
 	const fromEnvPath = resolveCodexExecutableFromPath(
 		pathEntries,
 		platform,

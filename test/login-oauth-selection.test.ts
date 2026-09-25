@@ -113,7 +113,7 @@ describe("resolveAccountSelection", () => {
 		});
 	});
 
-	it("prefers the default non-personal org among multiple candidates and keeps every workspace", () => {
+	it("prefers Personal over the default business org and keeps every workspace", async () => {
 		jwtPayloads.set("access-token", {
 			[JWT_CLAIM_PATH]: { chatgpt_account_id: "acc_personal" },
 			organizations: [
@@ -124,9 +124,9 @@ describe("resolveAccountSelection", () => {
 
 		const result = resolveAccountSelection(BASE_TOKENS);
 
-		expect(result.accountIdOverride).toBe("org_team");
+		expect(result.accountIdOverride).toBe("org_personal");
 		expect(result.accountIdSource).toBe("org");
-		expect(result.accountLabel).toContain("Acme Team");
+		expect(result.accountLabel).toContain("Personal");
 		// Issue #491/#512: every workspace exposed by the token must persist so
 		// `workspace <account>` can switch between them later.
 		expect(result.workspaces?.map((workspace) => workspace.id)).toEqual([
@@ -134,6 +134,12 @@ describe("resolveAccountSelection", () => {
 			"org_personal",
 			"org_team",
 		]);
+		const persist = vi.fn(async (_next:AccountStorageV3) => {});
+		withAccountStorageTransactionMock.mockImplementation(async handler => handler(null,persist));
+		await persistAccountPool([result],false);
+		const saved=persist.mock.calls[0]?.[0]?.accounts[0];
+		expect(saved?.workspaces?.[saved.currentWorkspaceIndex ?? 0]?.id).toBe("org_personal");
+
 	});
 
 	it("selects the targeted saved workspace instead of the default candidate", () => {

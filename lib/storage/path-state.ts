@@ -72,3 +72,13 @@ export async function runWithStoragePathState<T>(
 		fn,
 	);
 }
+
+/** Temporarily use the shared pool without mutating the caller or sibling async scopes. */
+export function runWithGlobalStoragePath<T>(fn: () => T | Promise<T>): Promise<T> {
+	return runWithStoragePathState({
+		currentStoragePath: null,
+		currentLegacyProjectStoragePath: null,
+		currentLegacyWorktreeStoragePath: null,
+		currentProjectRoot: null,
+	}, fn);
+}

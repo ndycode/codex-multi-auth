@@ -49,6 +49,7 @@ export interface RuntimePolicyDecision {
 	blockedAccountIndexes: Set<number>;
 	blockedAccountReasons?: Record<number, string>;
 	scoreBoostByAccount: Record<number, number>;
+	priorityByAccount?: Record<number, number>;
 	budgetEvaluations: BudgetGuardEvaluation[];
 }
 
@@ -166,6 +167,7 @@ export async function evaluateRuntimePolicy(input: {
 	const blockedAccountIndexes = new Set<number>();
 	const blockedAccountReasons: Record<number, string> = {};
 	const scoreBoostByAccount: Record<number, number> = {};
+	const priorityByAccount: Record<number, number> = {};
 	const profile = input.state.project.profile;
 
 	if (profile?.modelDenylist.length && matchesModel(profile.modelDenylist, input.model)) {
@@ -205,6 +207,7 @@ export async function evaluateRuntimePolicy(input: {
 			account.index,
 		);
 		const accountPolicy = input.state.accountPolicies.accounts[accountKey];
+		priorityByAccount[account.index] = accountPolicy?.priority ?? 1;
 		let boost = 0;
 		if (accountPolicy?.paused) {
 			blockedAccountIndexes.add(account.index);
@@ -267,6 +270,7 @@ export async function evaluateRuntimePolicy(input: {
 		blockedAccountIndexes,
 		blockedAccountReasons,
 		scoreBoostByAccount,
+		priorityByAccount,
 		budgetEvaluations,
 	};
 }

@@ -1,3 +1,5 @@
+import { createInferenceActivityWriter } from "./inference-activity.js";
+import { createLogger } from "../logger.js";
 import { existsSync, readFileSync, promises as fs } from "node:fs";
 import { join } from "node:path";
 import { getCodexMultiAuthDir } from "../runtime-paths.js";
@@ -46,7 +48,11 @@ export interface RuntimeObservabilitySnapshot {
 	lastAccountLabel?: string | null;
 	lastAccountEmail?: string | null;
 	lastAccountId?: string | null;
+	/** Outgoing request scope, not proof of the upstream billing plan. */
+	lastRequestedWorkspaceId?: string | null;
 	lastAccountUpdatedAt?: number | null;
+	/** Actual inference dispatches, keyed by hashed credential identity (not selection or health checks). */
+	lastInferenceRequestAtByAccount?: Record<string, number>;
 	lastPoolExhaustionReason?: string | null;
 	lastPoolExhaustionRetryAfterMs?: number | null;
 	lastPoolExhaustionSkipReasons?: Record<string, string>;
@@ -67,6 +73,15 @@ const RETRYABLE_SNAPSHOT_ERRORS = new Set(["EBUSY", "EPERM"]);
 
 let snapshotState: RuntimeObservabilitySnapshot | null = null;
 let pendingWrite: Promise<void> | null = null;
+/** Latest snapshot waiting behind the in-flight write; newer mutations replace it. */
+let queuedSnapshot: RuntimeObservabilitySnapshot | null = null;
+const inferenceActivity = createInferenceActivityWriter(undefined, 1000, () =>
+	createLogger("runtime-observability").warn("Inference activity could not be saved"));
+
+/** Write pending inference times now (proxy shutdown). */
+export function flushRuntimeInferenceActivity(): Promise<void> {
+	return inferenceActivity.flush();
+}
 
 function getSnapshotPath(): string {
 	return join(getCodexMultiAuthDir(), SNAPSHOT_FILE_NAME);
@@ -86,7 +101,9 @@ function createDefaultSnapshot(): RuntimeObservabilitySnapshot {
 		lastAccountLabel: null,
 		lastAccountEmail: null,
 		lastAccountId: null,
+		lastRequestedWorkspaceId: null,
 		lastAccountUpdatedAt: null,
+		lastInferenceRequestAtByAccount: {},
 		lastPoolExhaustionReason: null,
 		lastPoolExhaustionRetryAfterMs: null,
 		lastPoolExhaustionSkipReasons: {},
@@ -130,6 +147,23 @@ function createDefaultSnapshot(): RuntimeObservabilitySnapshot {
 	};
 }
 
+function normalizeInferenceTimes(value: unknown): Record<string, number> {
+ if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+ return Object.fromEntries(Object.entries(value)
+  .filter((entry): entry is [string, number] => /^sha256:[a-f0-9]{64}$/.test(entry[0]) && typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] > 0)
+  .sort((a,b)=>b[1]-a[1]).slice(0,1000));
+}
+
+export function recordRuntimeInferenceRequest(accountKey: string, at: number): void {
+ if (!/^sha256:[a-f0-9]{64}$/.test(accountKey) || !Number.isFinite(at) || at <= 0) return;
+ mutateRuntimeObservabilitySnapshot(snapshot => {
+  const times = normalizeInferenceTimes(snapshot.lastInferenceRequestAtByAccount);
+  times[accountKey] = Math.max(times[accountKey] ?? 0, at);
+  snapshot.lastInferenceRequestAtByAccount = normalizeInferenceTimes(times);
+ });
+ if (PERSIST_RUNTIME_SNAPSHOT) inferenceActivity.record(accountKey, at);
+}
+
 function normalizePersistedSnapshot(
 	parsed: Partial<RuntimeObservabilitySnapshot> | null,
 ): RuntimeObservabilitySnapshot | null {
@@ -147,6 +181,8 @@ function normalizePersistedSnapshot(
 		...base,
 		...parsed,
 		version: RUNTIME_OBSERVABILITY_SNAPSHOT_VERSION,
+		lastInferenceRequestAtByAccount: normalizeInferenceTimes(parsed.lastInferenceRequestAtByAccount),
+		lastRequestedWorkspaceId: typeof parsed.lastRequestedWorkspaceId === "string" && parsed.lastRequestedWorkspaceId.length <= 256 ? parsed.lastRequestedWorkspaceId : null,
 		runtimeMetrics: {
 			...base.runtimeMetrics,
 			...(parsed.runtimeMetrics ?? {}),
@@ -260,10 +296,18 @@ export function mutateRuntimeObservabilitySnapshot(
 	if (!PERSIST_RUNTIME_SNAPSHOT) {
 		return;
 	}
-	const nextSnapshot = structuredClone(snapshot);
+	// At most one write in flight and one queued: a burst of per-request
+	// mutations collapses into the latest snapshot instead of an unbounded chain.
+	const alreadyQueued = queuedSnapshot !== null;
+	queuedSnapshot = structuredClone(snapshot);
+	if (alreadyQueued) return;
 	pendingWrite = (pendingWrite ?? Promise.resolve())
 		.catch(() => undefined)
-		.then(() => writeSnapshot(nextSnapshot))
+		.then(() => {
+			const next = queuedSnapshot;
+			queuedSnapshot = null;
+			return next ? writeSnapshot(next) : undefined;
+		})
 		.catch(() => undefined);
 }
 
@@ -343,4 +387,3 @@ export async function loadPersistedRuntimeObservabilitySnapshot(): Promise<Runti
 		return null;
 	}
 }
-

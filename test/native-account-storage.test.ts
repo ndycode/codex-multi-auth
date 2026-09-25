@@ -50,7 +50,7 @@ it("refreshes the bounded fallback age after a verified settled cache hit", asyn
     const initial=await read(); now+=10000;
     expect((await read()).verified).toBe(true); expect(parse).toHaveBeenCalledTimes(1);
     await writeFile(path,"changed"); parse.mockRejectedValueOnce(Object.assign(Error("locked"),{code:"EBUSY"}));
-    expect(await read()).toEqual({storage:initial.storage,verified:false});
+    expect(await read()).toEqual({storage:initial.storage,verified:false,transientFailure:true,routingAvailable:true});
 });
 
 

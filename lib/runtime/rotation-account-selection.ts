@@ -1,3 +1,4 @@
+import { compareSubscriptionQuota, usesSubscriptionReserve, type SubscriptionQuotaPreference } from "./subscription-quota-order.js";
 import type { AccountManager, ManagedAccount } from "../accounts.js";
 import type { ModelFamily } from "../prompts/codex.js";
 import type { RuntimePolicyDecision } from "../policy/runtime-policy.js";
@@ -40,6 +41,11 @@ export function chooseAccount(params: {
 	now: number;
 	policy: RuntimePolicyDecision | null;
 	pinnedIndex: number | null;
+	/** Soft preference, used only within the first eligible priority tier. */
+	preferredIndex?: number | null;
+	/** Soft pin: first eligible attempt across tiers, then normal fallback. Ignored whenever `pinnedIndex` is set, which is how the proxy applies a stored `switch` pin. */
+	fallbackPinnedIndex?: number | null;
+	subscriptionQuotaByAccount?: Record<number, SubscriptionQuotaPreference>;
 	skipReasons?: Map<number, string>;
 	stickyBoostByAccount?: Record<number, number>;
 	pidOffsetEnabled?: boolean;
@@ -84,6 +90,65 @@ export function chooseAccount(params: {
 		schedulingStrategy,
 		allowPinnedCooldown,
 	} = params;
+
+ const fallbackPin = params.fallbackPinnedIndex;
+ const quotaByAccount = params.subscriptionQuotaByAccount;
+ const hasNonReserve = quotaByAccount && accountManager.getAccountsSnapshot().some(a =>
+  a.enabled !== false && !attemptedIndexes.has(a.index) && !policy?.blockedAccountIndexes.has(a.index) &&
+  !accountManager.getAccountRuntimeSkipReason(a.index,family,model) && !quotaByAccount[a.index]?.exhausted && !usesSubscriptionReserve(quotaByAccount[a.index]));
+ if (pinnedIndex === null && typeof fallbackPin === "number" && !attemptedIndexes.has(fallbackPin) &&
+  !quotaByAccount?.[fallbackPin]?.exhausted && !(hasNonReserve && usesSubscriptionReserve(quotaByAccount?.[fallbackPin]))) {
+  const selected = chooseAccount({...params, pinnedIndex: fallbackPin, allowPinnedCooldown: false});
+  if (selected) return selected;
+ }
+
+	if (pinnedIndex === null && policy?.priorityByAccount) {
+		const priorities = policy.priorityByAccount;
+		let candidates = accountManager.getAccountsSnapshot().filter(account => {
+			if (account.enabled === false || attemptedIndexes.has(account.index) || policy.blockedAccountIndexes.has(account.index)) return false;
+			const reason = accountManager.getAccountRuntimeSkipReason(account.index, family, model);
+			if (reason) skipReasons?.set(account.index, reason);
+			return !reason;
+		});
+		if (!candidates.length) return null;
+  if (quotaByAccount) {
+   const usable = candidates.filter(a => !quotaByAccount[a.index]?.exhausted);
+   if (!usable.length) return null;
+   const nonReserve = usable.filter(a => !usesSubscriptionReserve(quotaByAccount[a.index]));
+   candidates = nonReserve.length ? nonReserve : usable;
+  }
+		const tier = Math.min(...candidates.map(a => priorities[a.index] ?? 1));
+		const tierIndexes = new Set(candidates.filter(a => (priorities[a.index] ?? 1) === tier).map(a => a.index));
+		let preferred = params.preferredIndex;
+  if (quotaByAccount) {
+   // Rank only measured accounts: "no data" compares equal to everything, which
+   // is not transitive and would make the winner depend on storage order.
+   const ranked = candidates.flatMap(a=>{
+    const quota=quotaByAccount[a.index];
+    return tierIndexes.has(a.index) && quota ? [{account:a,quota}] : [];
+   }).sort((a,b)=>compareSubscriptionQuota(a.quota,b.quota)).map(entry=>entry.account);
+   const best=ranked[0];
+   const bestQuota=best && quotaByAccount[best.index];
+   if (best && bestQuota && (bestQuota.resetAtMs !== null || bestQuota.remainingPercent !== null)) {
+    const preferredQuota=typeof preferred === "number" ? quotaByAccount[preferred] : undefined;
+    if (!preferredQuota || !tierIndexes.has(preferred ?? -1) || compareSubscriptionQuota(bestQuota,preferredQuota)<0) preferred=best.index;
+   }
+  }
+		// Re-evaluate tiers on every attempt. Never persist a temporary tier block.
+		return chooseAccount({
+			...params,
+			policy: {
+				...policy,
+				priorityByAccount: undefined,
+				blockedAccountIndexes: new Set([
+					...policy.blockedAccountIndexes,
+					...accountManager.getAccountsSnapshot().filter(a => !tierIndexes.has(a.index)).map(a => a.index),
+				]),
+			},
+			fallbackPinnedIndex: null,
+			pinnedIndex: typeof preferred === "number" && tierIndexes.has(preferred) ? preferred : null,
+		});
+	}
 
 	// Manual pin (from `codex-multi-auth switch <n>`) overrides every other
 	// selection signal. We do NOT call markSwitched here — the proxy must not

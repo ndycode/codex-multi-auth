@@ -543,8 +543,8 @@ async function enqueueActiveSelectionWrite<T>(task: () => Promise<T>): Promise<T
 export async function setCodexCliActiveSelection(
 	selection: ActiveSelection,
 ): Promise<boolean> {
+	if (!isCodexCliSyncEnabled()) return false;
 	return enqueueActiveSelectionWrite(() => withNativeBindingLock(getCodexCliConfigPath(), async () => {
-		if (!isCodexCliSyncEnabled()) return false;
 		// Native app binding deliberately separates desktop identity from inference selection.
 		try {
 			if (hasNativeProviderConfig(await fs.readFile(getCodexCliConfigPath(), "utf8"))) return false;

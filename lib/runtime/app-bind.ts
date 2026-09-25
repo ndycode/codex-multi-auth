@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { mkdir, open, readFile, readdir, rename, rm, unlink } from "node:fs/promises";
+import { connect } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import process from "node:process";
@@ -159,6 +160,8 @@ export interface DetachedProcessStopOptions {
 	/** Expected per-process nonce when verifying a persisted PID. */
 	identityToken?: string;
 	verifyProcessIdentity?: ProcessIdentityVerifier;
+	/** Called once the recorded PID is verified as this router, before it is stopped. */
+	onOwnershipVerified?: () => void;
 }
 
 export interface RuntimeRotationAppHelperStatus {
@@ -641,6 +644,25 @@ function spawnRouter(state: AppBindState): void {
 	}
 }
 
+/**
+ * Whether anything still accepts connections at a recorded router address.
+ * Only "refused" is proof that no router serves it; a timeout or an unusable
+ * address is "unknown".
+ */
+export async function probeRouterAddress(baseUrl: string | null | undefined, platform: NodeJS.Platform = process.platform, timeoutMs = platform === "win32" ? WINDOWS_PROCESS_IDENTITY_PROBE_TIMEOUT_MS : 1000): Promise<"refused" | "listening" | "unknown"> {
+	let url: URL;
+	try { url = new URL(baseUrl ?? ""); } catch { return "unknown"; }
+	const port = Number(url.port);
+	if (!Number.isInteger(port) || port <= 0) return "unknown";
+	return new Promise((resolve) => {
+		const socket = connect({ host: url.hostname.replace(/^\[|\]$/g, ""), port });
+		const done = (result: "refused" | "listening" | "unknown") => { clearTimeout(timer); socket.destroy(); resolve(result); };
+		const timer = setTimeout(() => done("unknown"), timeoutMs);
+		socket.once("connect", () => done("listening"));
+		socket.once("error", (error: NodeJS.ErrnoException) => done(error.code === "ECONNREFUSED" ? "refused" : "unknown"));
+	});
+}
+
 async function maybeStartRouter(state: AppBindState, options: AppBindOptions): Promise<boolean> {
 	if (options.spawnDetached === false) return false;
 	const router = await readRouterStatus(state.statusPath);
@@ -756,6 +778,7 @@ export async function stopRuntimeRotationRouterProcess(
 	if (!verified) {
 		return false;
 	}
+	options.onOwnershipVerified?.();
 	return stopDetachedProcess(router.pid, platform, options);
 }
 
@@ -1427,9 +1450,31 @@ async function bindCodexAppRuntimeRotationLocked(
 	const catalogAccount = options.nativeOpenai === false ? undefined : options.catalogAccount ?? existingState?.catalogAccount;
 	if (existingState && (!!existingState.nativeOpenai !== nativeOpenai || JSON.stringify(catalogAccount) !== JSON.stringify(existingState.catalogAccount))) {
 		const router = await readRouterStatus(paths.statusPath);
+		let ownRouter = false;
 		await stopRouter(router, platform, existingState.routerScriptPath, {
-			log: options.log, identityToken: existingState.identityToken, verifyProcessIdentity: options.verifyProcessIdentity		});
-		if (router?.pid && isProcessAlive(router.pid)) throw new Error("Stop the existing app router before changing provider mode");
+			log: options.log, identityToken: existingState.identityToken, verifyProcessIdentity: options.verifyProcessIdentity,
+			onOwnershipVerified: () => { ownRouter = true; },
+		});
+		// Refuse only when the recorded PID is verifiably our router and it survived
+		// the stop. A recycled PID now owned by another process must not block
+		// mode changes forever (unbind treats the same case as a warning).
+		if (router?.pid && isProcessAlive(router.pid)) {
+			if (ownRouter) throw new Error("Stop the existing app router before changing provider mode");
+			// A failed identity check is not proof: a slow or failing process probe
+			// (common on Windows) also returns false for a live router. Treat the pid
+			// as recycled only when nothing answers at the recorded router address.
+			const address = await probeRouterAddress(router.baseUrl ?? existingState.baseUrl, options.platform ?? process.platform);
+			if (address !== "refused") {
+				throw new Error(
+					`Could not confirm that the app router recorded as pid ${router.pid} has stopped (its address ${address === "listening" ? "still accepts connections" : "could not be checked"}). Stop it before changing provider mode.`,
+				);
+			}
+			options.log?.(`Warning: recorded router pid ${router.pid} is not the app router; continuing`);
+			// The record describes a router that no longer exists. Drop it so
+			// maybeStartRouter starts a replacement instead of trusting the live
+			// (recycled) pid and leaving the new mode pointed at a dead address.
+			await unlinkIfExists(paths.statusPath);
+		}
 	}
 
 	const host = existingState?.host ?? "127.0.0.1";

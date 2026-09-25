@@ -1,3 +1,6 @@
+const discoveryMocks=vi.hoisted(()=>({resets:vi.fn(),models:vi.fn()}));
+vi.mock("../lib/runtime/account-reset-credits.js",()=>({refreshAndPrintResetCredits:discoveryMocks.resets}));
+vi.mock("../lib/runtime/model-discovery-status.js",()=>({refreshAndPrintModelInventory:discoveryMocks.models}));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QuotaCacheData } from "../lib/quota-cache.js";
 import type { AccountMetadataV3, AccountStorageV3 } from "../lib/storage.js";
@@ -239,6 +242,7 @@ describe("runHealthCheck live probe", () => {
 		await runHealthCheck({ liveProbe: true });
 
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledExactlyOnceWith({
+			primeUnusedSubscription: false,
 			accountId: "acc_a",
 			accessToken: "access-a",
 			model: inspectRequestedModel(DEFAULT_LIVE_PROBE_MODEL).normalized,
@@ -320,6 +324,28 @@ describe("runHealthCheck live probe", () => {
 	});
 });
 
+it("checks usable accounts concurrently while committing results in account order",async()=>{
+ loadAccountsMock.mockResolvedValue(storageWith([account("one"),account("two"),account("three"),account("four")]));
+ let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+ const started:string[]=[];
+ fetchCodexQuotaSnapshotMock.mockImplementation(async ({accountId}:{accountId:string})=>{
+  started.push(accountId);if(accountId==="acc_one") await gate;return snapshot();
+ });
+ const pending=runHealthCheck({liveProbe:true});
+ try{await vi.waitFor(()=>expect(started).toContain("acc_four"),{timeout:5000});}
+ finally{release();await pending;}
+ expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(4);
+ expect(logged()).toContain("Checking account probes");
+ const rows=[...logged().matchAll(/(?:one|two|three|four)@example\.com/g)].map(match=>match[0]);
+ expect(rows).toEqual(["one@example.com","two@example.com","three@example.com","four@example.com"]);
+ // Priming is opt-in (`check --prime`); a plain or scheduled check never starts quota windows.
+ expect(fetchCodexQuotaSnapshotMock.mock.calls.every(([options])=>options.primeUnusedSubscription===false)).toBe(true);
+ fetchCodexQuotaSnapshotMock.mockClear();
+ await runHealthCheck({liveProbe:true,primeUnusedSubscription:true});
+ expect(fetchCodexQuotaSnapshotMock.mock.calls.every(([options])=>options.primeUnusedSubscription===true)).toBe(true);
+
+});
+
 describe("runHealthCheck with a Codex CLI mirror", () => {
 	it("syncs the active account's mirror id, not the saved explicit id", async () => {
 		loadAccountsMock.mockResolvedValue(
@@ -338,4 +364,11 @@ describe("runHealthCheck with a Codex CLI mirror", () => {
 			expect.objectContaining({ accountId: "ws-authorized" }),
 		);
 	});
+});
+
+it("continues model discovery when reset-credit persistence fails",async()=>{
+ loadAccountsMock.mockResolvedValue(storageWith([account("one")]));
+ discoveryMocks.resets.mockRejectedValueOnce(Error("state locked"));
+ await expect(runHealthCheck({discoverModels:true})).resolves.toBeUndefined();
+ expect(discoveryMocks.models).toHaveBeenCalled();expect(logged()).toContain("could not be refreshed");
 });

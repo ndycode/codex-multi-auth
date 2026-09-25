@@ -1,4 +1,11 @@
 import type { NativeAccountSnapshot } from "./native-account-storage.js";
+import type { QuotaCacheData, QuotaCacheEntry } from "../quota-cache.js";
+import type {RuntimeCapabilityFailures} from "./runtime-capability-failures.js";
+import type {RouteModel} from "../model-route-policy.js";
+import type {ModelInventory} from "./model-discovery-status.js";
+import type { ApiModelCapabilities } from "./api-model-capabilities.js";
+import type { ApiModelRuntime } from "./api-model-runtime.js";
+import type { ApiRouteCredential } from "../api-route-store.js";
 import type { AccountModelCatalog } from "./account-model-catalog.js";
 import { AccountManager } from "../accounts.js";
 import type { ContextBudgetGuard } from "../context-budget-guard.js";
@@ -20,6 +27,8 @@ import type { SessionAffinityStore } from "../session-affinity.js";
 export interface RotationProxyStateInit {
 	nativeOpenai?: boolean;
 	readNativeAccountStorage?: () => Promise<NativeAccountSnapshot>;
+	readApiRoutes?: () => Promise<ApiRouteCredential[]>;
+	readSubscriptionQuota?: () => Promise<QuotaCacheData | null>;
 	catalogAccount?: { email: string; accountId: string; };
 	activeAccountManager: AccountManager;
 	routingMutexMode: "enabled" | "legacy";
@@ -70,8 +79,18 @@ export interface RotationProxyState extends RotationProxyStateInit {
 	readonly knownAccountManagers: Set<AccountManager>;
 	readonly status: RuntimeRotationProxyStatus;
 	modelCatalog?: AccountModelCatalog;
-    catalogsByVersion?: Map<string, AccountModelCatalog>;
+	modelCatalogs?: Map<string, AccountModelCatalog>;
     catalogBackoff?: Map<string, number>;
+    /** Short-lived per-request file reads (quota cache, reset credits), keyed by source. */
+    readCache?: Map<string, { at: number; value: Promise<unknown> }>;
+ capabilityFailures?: RuntimeCapabilityFailures;
+	apiModelRuntime?: ApiModelRuntime;
+ apiModelCapabilities?:ApiModelCapabilities;
+	catalogEtag?: string;
+ catalogOAuthModels?:RouteModel[];
+ catalogApiRoutes?:ApiRouteCredential[];
+ catalogInventory?:ModelInventory;
+ subscriptionQuotaObservations?: Map<string, QuotaCacheEntry>;
 	readonly threadGoalFallbacks: Map<string, string | null>;
 	lastGlobalAccountIndex: number | null;
 	lastGlobalSwitchAt: number;

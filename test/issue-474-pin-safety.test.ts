@@ -194,7 +194,7 @@ describe("issue #474 — pin-honored review feedback", () => {
 			).toBe(true);
 			expect(
 				logInfo.mock.calls.some(([msg]) =>
-					/Pinned: account 100 \(set by switch\)/.test(String(msg)),
+					/Pinned: account 100 \(/.test(String(msg)),
 				),
 			).toBe(false);
 		});

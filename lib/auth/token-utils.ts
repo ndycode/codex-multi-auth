@@ -220,19 +220,35 @@ function collectCandidatesFromPayload(
  * Removes duplicate candidates by accountId.
  */
 function uniqueCandidates(candidates: AccountIdCandidate[]): AccountIdCandidate[] {
-	const seen = new Set<string>();
-	const result: AccountIdCandidate[] = [];
+	const byId = new Map<string, AccountIdCandidate>();
 	for (const candidate of candidates) {
-		if (seen.has(candidate.accountId)) continue;
-		seen.add(candidate.accountId);
-		result.push(candidate);
+		const kept = byId.get(candidate.accountId);
+		if (!kept) {
+			byId.set(candidate.accountId, { ...candidate });
+			continue;
+		}
+		const wasPersonal = isPersonalAccountCandidate(kept);
+		if (kept.isPersonal === undefined && candidate.isPersonal !== undefined) {
+			kept.isPersonal = candidate.isPersonal;
+		}
+		if (!wasPersonal && isPersonalAccountCandidate(candidate) && kept.isPersonal !== false) {
+			kept.label = candidate.label;
+		}
 	}
-	return result;
+	return [...byId.values()];
+}
+
+/** Explicit metadata wins over the conventional Personal display name. */
+export function isPersonalAccountCandidate(candidate: AccountIdCandidate): boolean {
+	return candidate.isPersonal === true ||
+		(candidate.isPersonal !== false && /^Personal(?:\s*\(|\s*\[|$)/i.test(candidate.label.trim()));
 }
 
 /**
  * Select the best workspace candidate for OAuth account binding.
- * Preference order:
+ * Prefer a uniquely identifiable Personal workspace. Ambiguous CLI logins
+ * require an explicit choice before reaching this fallback selector.
+ * Fallback order when no unique Personal candidate exists:
  * 1) org default that is not personal
  * 2) org default (any)
  * 3) id_token candidate
@@ -244,6 +260,8 @@ export function selectBestAccountCandidate(
 	candidates: AccountIdCandidate[],
 ): AccountIdCandidate | undefined {
 	if (candidates.length === 0) return undefined;
+	const personal = candidates.filter(isPersonalAccountCandidate);
+	if (personal.length === 1) return personal[0];
 
 	const orgDefaultNonPersonal = candidates.find(
 		(candidate) =>

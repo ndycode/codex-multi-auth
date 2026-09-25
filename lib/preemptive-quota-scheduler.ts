@@ -354,6 +354,11 @@ export class PreemptiveQuotaScheduler {
 		}
 	}
 
+	/** Forget one verified recovered model; preserve sibling quota buckets. */
+	clear(key: string): void {
+		this.snapshots.delete(key);
+	}
+
 	/** Forget every cached quota observation. */
 	clearAll(): void {
 		this.snapshots.clear();

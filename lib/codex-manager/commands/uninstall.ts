@@ -70,7 +70,7 @@ function printUninstallUsage(): void {
 			"Options:",
 			"  --dry-run          Show what would be removed without making changes",
 			"  --json             Print machine-readable JSON output",
-			"  --clear-accounts   Also remove stored account credentials (irreversible)",
+			"  --clear-accounts   Also remove stored account credentials and API keys (irreversible)",
 			"",
 			"Behavior:",
 			"  Reverses all first-run setup changes: unbinds Codex app, removes OS launchers,",

@@ -64,6 +64,7 @@ export type AuthMenuAction =
 	| { type: "forecast" }
 	| { type: "fix" }
 	| { type: "settings" }
+	| { type: "api-models" }
 	| { type: "fresh" }
 	| { type: "check" }
 	| { type: "deep-check" }
@@ -467,6 +468,7 @@ export function authMenuFocusKey(action: AuthMenuAction): string {
 		case "add":
 		case "forecast":
 		case "fix":
+		case "api-models":
 		case "settings":
 		case "fresh":
 		case "check":

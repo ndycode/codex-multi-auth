@@ -8,12 +8,18 @@ it("bounds active work and preserves order while draining failures", async () =>
     let released!: () => void;
     const gate = new Promise<void>(resolve => { released = resolve; });
     let settled = false;
-    const pending = mapWithConcurrency([0, 1, 2], 2, async (value) => { if (value === 0)
-        throw Error("fixture"); await gate; return value; }).catch(e => { settled = true; return e; });
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(settled).toBe(false);
-    released();
+    let failed=false,parked!:()=>void;
+    const waiting=new Promise<void>(resolve=>{parked=resolve;});
+    const pending = mapWithConcurrency([0,1,2],2,async value=>{
+        if(value===0){failed=true;throw Error("fixture");}
+        parked();await gate;return value;
+    }).catch(e=>{settled=true;return e;});
+    try {
+        await waiting;
+        await new Promise(resolve=>setImmediate(resolve));
+        expect(failed).toBe(true);
+        expect(settled).toBe(false);
+    } finally {released();}
     expect((await pending).message).toBe("fixture");
 });
 it("rejects invalid concurrency and handles empty input", async () => {

@@ -3,6 +3,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -48,7 +49,7 @@ async function projectAccountsDir(codexHome: string, projectRoot: string): Promi
 		getProjectStorageKey: (p: string) => string;
 		resolveProjectStorageIdentityRoot: (p: string) => string;
 	};
-	const identityRoot = paths.resolveProjectStorageIdentityRoot(projectRoot);
+	const identityRoot = paths.resolveProjectStorageIdentityRoot(realpathSync(projectRoot));
 	const key = paths.getProjectStorageKey(identityRoot);
 	return join(codexHome, ".codex", "multi-auth", "projects", key);
 }

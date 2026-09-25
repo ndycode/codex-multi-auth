@@ -46,6 +46,7 @@ export type LoginMode =
 	| "forecast"
 	| "fix"
 	| "settings"
+	| "api-models"
 	| "fresh"
 	| "manage"
 	| "check"
@@ -158,6 +159,7 @@ async function promptLoginModeFallback(existingAccounts: ExistingAccountInfo[]):
 		while (true) {
 			const answer = await rl.question(UI_COPY.fallback.selectModePrompt);
 			const normalized = answer.trim().toLowerCase();
+			if (normalized === "api") return { mode: "api-models" };
 			if (normalized === "a" || normalized === "add") return { mode: "add" };
 			if (normalized === "b" || normalized === "p" || normalized === "forecast") {
 				return { mode: "forecast" };
@@ -214,6 +216,8 @@ export async function promptLoginMode(
 				return { mode: "forecast" };
 			case "fix":
 				return { mode: "fix" };
+			case "api-models":
+				return { mode: "api-models" };
 			case "settings":
 				return { mode: "settings" };
 			case "fresh":

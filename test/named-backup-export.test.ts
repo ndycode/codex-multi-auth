@@ -1,7 +1,7 @@
-import { existsSync, promises as fs } from "node:fs";
+import { existsSync, realpathSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
 	exportNamedBackupFile,
 	normalizeNamedBackupFileName,
@@ -33,9 +33,14 @@ async function removeWithRetry(
 	}
 }
 
+// Canonicalize the macOS /var temporary-root alias without weakening export guards.
+const originalTmpdir = process.env.TMPDIR;
+beforeAll(() => { if (process.platform !== "win32") process.env.TMPDIR = realpathSync(tmpdir()); });
+afterAll(() => { if (originalTmpdir === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = originalTmpdir; });
+
 describe("named backup export", () => {
 	const testRoot = join(
-		tmpdir(),
+		realpathSync(tmpdir()),
 		`codex-named-backup-${Math.random().toString(36).slice(2)}`,
 	);
 	let storagePath: string;

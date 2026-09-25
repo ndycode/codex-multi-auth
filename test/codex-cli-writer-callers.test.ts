@@ -101,4 +101,29 @@ describe("Codex auth.json writer callers", () => {
 		);
 		expect(violations).toEqual([]);
 	});
+
+	// A module that writes its own auth.json (e.g. an isolated CODEX_HOME for a
+	// native RPC) bypasses the writer, so its literal token object must apply
+	// the same mapping.
+	const literalWrites = sources.flatMap((path) => {
+		const source = readFileSync(path, "utf-8");
+		if (!/["']auth\.json["']/.test(source)) return [];
+		return [...source.matchAll(/\baccount_id\s*[:=]\s*([^,}\n;]+)/g)].map((match) => ({
+			file: relative(ROOT, path),
+			value: match[1]?.trim() ?? "",
+		}));
+	});
+
+	it("finds the literal auth.json token writers", () => {
+		expect(literalWrites.map(({ file }) => file.replace(/\\/g, "/"))).toContain(
+			"lib/runtime/native-rate-limits.ts",
+		);
+	});
+
+	it("routes every literal auth.json account_id through codexCliAccountIdFor()", () => {
+		const violations = literalWrites
+			.filter(({ value }) => !value.startsWith("codexCliAccountIdFor("))
+			.map(({ file, value }) => `${file}: account_id ${value}`);
+		expect(violations).toEqual([]);
+	});
 });

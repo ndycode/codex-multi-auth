@@ -200,7 +200,7 @@ function normalizeModelName(model: string | null | undefined): string | null {
 export function getUsageModelPricing(
 	model: string | null | undefined,
 ): UsageModelPricing | null {
-	const normalized = normalizeModelName(model);
+	const normalized = normalizeModelName(model?.replace(/^(api|zdr)\//, ""));
 	if (!normalized) {
 		return null;
 	}
@@ -218,7 +218,7 @@ export function getUsageModelPricing(
 	// `gpt-5.6-sol` request; pricing it at the retired model's old rate would
 	// under-count a `maxCostUsd` budget. Rows already on disk are unaffected:
 	// the ledger stores `costUsd` when a row is written and never re-prices it.
-	const effective = Object.hasOwn(RETIRED_MODEL_REPLACEMENTS, normalized)
+	const effective = !/^(api|zdr)\//.test(model ?? "") && Object.hasOwn(RETIRED_MODEL_REPLACEMENTS, normalized)
 		? RETIRED_MODEL_REPLACEMENTS[normalized]
 		: normalized;
 	if (!effective || !Object.hasOwn(MODEL_PRICING, effective)) {

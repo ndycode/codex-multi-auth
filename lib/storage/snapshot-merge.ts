@@ -107,6 +107,8 @@ export function mergeAccountSnapshot(base: AccountStorageV3 | null, current: Acc
         // An unavailable initial read is not authority to replace the inventory.
         base = {version:3, accounts:[], activeIndex:0};
     }
+    if (!current && base.accounts.length === 0 && "restoreReason" in base && base.restoreReason === "missing-storage")
+        current = { version: 3, accounts: [], activeIndex: 0 };
     if (!current)
         return conflict();
     const aliases = new Map<string, Set<string>>();
@@ -173,4 +175,26 @@ export function mergeAccountSnapshot(base: AccountStorageV3 | null, current: Acc
     if (pinned !== undefined && pinned >= 0)
         result.pinnedAccountIndex = pinned;
     return result;
+}
+
+/** Save observations independently of unresolved user-edit conflicts. Inventory stays disk-owned. */
+export function mergeAccountRuntimeObservations(base: AccountStorageV3, current: AccountStorageV3, local: AccountStorageV3): AccountStorageV3 {
+    const observations = structuredClone(base);
+    const matches = (a: AccountMetadataV3, b: AccountMetadataV3) => a.recordId && b.recordId
+        ? a.recordId === b.recordId : getAccountIdentityKey(a) === getAccountIdentityKey(b);
+    for (const prior of observations.accounts) {
+        const next = local.accounts.find(row => matches(prior, row));
+        if (!next) continue;
+        prior.lastUsed = Math.max(prior.lastUsed, next.lastUsed);
+        for (const field of ["rateLimitResetTimes", "coolingDownUntil", "cooldownReason", "lastSwitchReason"] as const) {
+            if (next[field] === undefined) delete prior[field];
+            else Object.assign(prior, { [field]: structuredClone(next[field]) });
+        }
+        // Preserve runtime workspace disables without committing labels or workspace selection.
+        for (const workspace of prior.workspaces ?? []) {
+            const updated = next.workspaces?.find(row => row.id === workspace.id);
+            if (updated) { workspace.enabled = updated.enabled; workspace.disabledAt = updated.disabledAt; }
+        }
+    }
+    return mergeAccountSnapshot(base, current, observations);
 }

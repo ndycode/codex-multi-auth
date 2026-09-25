@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { hostname } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { logWarn } from "../logger.js";
 import { withRetry } from "../fs-retry.js";
 type Lease = {
@@ -89,6 +89,21 @@ async function recoverDeadOwner(path: string): Promise<void> {
     abandonedOwners.delete(name);
     await removeEmpty(path);
 }
+async function recoverDeadCandidates(lock: string): Promise<void> {
+    const parent = dirname(lock), prefix = `${basename(lock)}.candidate-`;
+    for (const entry of await fs.readdir(parent, { withFileTypes: true })) {
+        if (!entry.name.startsWith(prefix) || !entry.isDirectory() || entry.isSymbolicLink()) continue;
+        const candidate = join(parent, entry.name);
+        try {
+            const owners = await fs.readdir(candidate);
+            // An empty candidate may belong to a live writer still publishing its owner.
+            if (owners.length !== 1 || !ownerPattern.test(owners[0] ?? "")) continue;
+            await recoverDeadOwner(candidate);
+        } catch (error) {
+            if (code(error) !== "ENOENT") logWarn("Storage candidate cleanup deferred", { code: code(error) ?? "unknown" });
+        }
+    }
+}
 /** Local-disk transaction lock. Live processes are never evicted by age.
  * Publish an already-populated directory atomically: there is no ownerless acquisition window.
  * Recovery unlinks only the dead owner's unique filename; rmdir cannot erase a new owner's lock.
@@ -104,11 +119,12 @@ export async function withFileTransactionLock<T>(path: string, action: () => Pro
     if (leases.getStore()?.get(key)?.active)
         return action();
     const lock = `${key}.write-lock`;
+    await recoverDeadCandidates(lock);
     const candidate = await fs.mkdtemp(`${lock}.candidate-`);
-    await fs.chmod(candidate, 0o700);
     const owner = `${host}.${process.pid}.${randomUUID()}`;
     let published = false;
     try {
+        await fs.chmod(candidate, 0o700);
         await fs.writeFile(join(candidate, owner), "", { flag: "wx", mode: 0o600 });
         await withRetry(async () => {
             try {
@@ -154,7 +170,7 @@ export async function withFileTransactionLock<T>(path: string, action: () => Pro
             await removeEmpty(directory);
         }, { maxAttempts: 6, backoffMs: 25 });
         } catch (error) {
-            if (published) {abandonedOwners.add(owner);retryAbandonedRelease(directory, owner);}
+            abandonedOwners.add(owner);retryAbandonedRelease(directory, owner);
             logWarn("Storage lock cleanup deferred", { code: code(error) ?? "unknown" });
         }
     }

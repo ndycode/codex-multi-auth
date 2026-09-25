@@ -7,6 +7,7 @@ import {
   deduplicateAccounts,
   deduplicateAccountsByEmail,
   setStoragePathDirect,
+  saveAccounts,
   type AccountStorageV3,
 } from "../lib/storage.js";
 import type { ModelFamily } from "../lib/prompts/codex.js";
@@ -290,6 +291,8 @@ describe("Multi-Account Rotation Integration", () => {
 			it("concurrent saves complete without corruption", async () => {
 				const storage = createStorageFromTestAccounts(TEST_ACCOUNTS.slice(0, 3));
 				const manager = new AccountManager(undefined, storage);
+
+				await saveAccounts(storage);
 
 				const saves = Array.from({ length: 10 }, () => manager.saveToDisk());
 				await Promise.all(saves);

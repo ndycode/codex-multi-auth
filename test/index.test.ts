@@ -386,6 +386,14 @@ const saveAccountsMock = vi.fn(
 		};
 	},
 );
+const clearCredentialSidecarsMock = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("../lib/storage/credential-sidecars.js", () => ({
+	clearCredentialSidecars: clearCredentialSidecarsMock,
+	clearAccountsAndCredentialSidecars: async (clearPool: () => Promise<void>) => {
+		await clearPool();
+		await clearCredentialSidecarsMock();
+	},
+}));
 const clearAccountsMock = vi.fn(async () => {
 	mockStorage.accounts = [];
 	mockStorage.activeIndex = 0;
@@ -903,6 +911,22 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(vi.mocked(loggerModule.logInfo)).not.toHaveBeenCalledWith(
 				expect.stringContaining("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 			);
+		});
+
+		it("removes stored API keys and runtime sidecars on the login menu's delete-all reset", async () => {
+			const cliModule = await import("../lib/cli.js");
+			clearCredentialSidecarsMock.mockClear();
+			clearAccountsMock.mockClear();
+			mockStorage.accounts = [{ refreshToken: "fixture-refresh", accountId: "fixture", email: "fixture@example.com", addedAt: 1, lastUsed: 1 }] as typeof mockStorage.accounts;
+			vi.mocked(cliModule.promptLoginMode)
+				// Fresh leaves the menu for sign-in; no second prompt is consumed.
+				.mockResolvedValueOnce({ mode: "fresh", deleteAll: true } as never);
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: () => Promise<unknown>;
+			};
+			await autoMethod.authorize().catch(() => undefined);
+			expect(clearAccountsMock).toHaveBeenCalledTimes(1);
+			expect(clearCredentialSidecarsMock).toHaveBeenCalledTimes(1);
 		});
 
 		it("uses combined flagged persistence when verify-flagged restores from the login menu", async () => {

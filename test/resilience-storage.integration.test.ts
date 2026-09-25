@@ -1,9 +1,9 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AccountManager } from "../lib/accounts.js";
-import { saveAccounts, loadAccounts, clearAccounts, setStoragePathDirect, cloneTrackedAccountStorage, withAccountAndFlaggedStorageTransaction } from "../lib/storage.js";
+import { saveAccounts, loadAccounts, getStoragePath, clearAccounts, setStoragePathDirect, cloneTrackedAccountStorage, withAccountAndFlaggedStorageTransaction } from "../lib/storage.js";
 import { withRetry } from "../lib/fs-retry.js";
 const dirs: string[] = [];
 afterEach(async () => { setStoragePathDirect(null); for (const dir of dirs.splice(0))
@@ -248,4 +248,217 @@ it.each([false, true])("clears the loser's auth-failure cooldown when this proce
     expect(row.coolingDownUntil).toBeUndefined();
     expect(row.cooldownReason).toBeUndefined();
     expect(manager.isAccountCoolingDown(manager.getAccountByIndex(0)!)).toBe(false);
+});
+
+it("refuses backup recovery as the merge base after primary corruption", async () => {
+ await setup();
+ const proposed = (await loadAccounts())!;
+ const path = getStoragePath();
+ const backup = structuredClone(proposed);
+ backup.accounts.push({recordId:"backup-only",accountId:"backup-only",refreshToken:"fixture-old",addedAt:1,lastUsed:1});
+ await writeFile(path + ".bak", JSON.stringify(backup));
+ await writeFile(path, "{corrupt");
+ proposed.accounts[0]!.accountLabel = "Local edit";
+ // Unreadable storage is reported as such, not as a concurrent edit.
+ const failure = saveAccounts(proposed);
+ await expect(failure).rejects.toMatchObject({code:"EACCOUNTSUNREADABLE"});
+ await expect(failure).rejects.not.toThrow(/concurrently/);
+ expect(await readFile(path,"utf8")).toBe("{corrupt");
+});
+
+async function writeJournal(path: string, storage: unknown) {
+ const { createHash } = await import("node:crypto");
+ const content = JSON.stringify(storage);
+ await writeFile(path + ".wal", JSON.stringify({ version: 1, content, checksum: createHash("sha256").update(content).digest("hex") }));
+}
+
+it("merges a transaction against a recoverable journal when the primary is missing", async () => {
+ const manager = await setup();
+ const path = getStoragePath();
+ const journal = (await loadAccounts())!;
+ journal.accounts.push({ recordId: "journal-only", accountId: "journal-only", refreshToken: "fixture-journal", addedAt: 2, lastUsed: 2 });
+ await writeJournal(path, journal);
+ await rm(path);
+ const { withAccountStorageTransaction } = await import("../lib/storage.js");
+ await withAccountStorageTransaction(async (current, persist) => persist({ ...(current ?? { version: 3 as const, activeIndex: 0, accounts: [] }), accounts: [...(current?.accounts ?? []), { recordId: "new", accountId: "new", refreshToken: "fixture-new", addedAt: 3, lastUsed: 3 }] }));
+ expect((await loadAccounts())?.accounts.map(a => a.recordId)).toEqual(["first", "journal-only", "new"]);
+ manager.getAccountByIndex(0)!.lastUsed = 30;
+ await manager.saveToDisk();
+ expect((await loadAccounts())?.accounts.map(a => a.recordId)).toEqual(["first", "journal-only", "new"]);
+});
+
+it("keeps a rotated refresh token live instead of dropping it when the primary is corrupt", async () => {
+ const manager = await setup();
+ const path = getStoragePath();
+ await writeFile(path + ".bak", await readFile(path, "utf8"));
+ await writeFile(path, "{corrupt");
+ const committed = await manager.commitRefreshedAuth(manager.getAccountByIndex(0)!, { type: "oauth", access: "fixture-fresh", refresh: "fixture-rotated", expires: Date.now() + 3600000 });
+ expect(committed?.refreshToken).toBe("fixture-rotated");
+ // A torn/corrupt primary is never replaced from an older backup behind the user's back.
+ expect(await readFile(path, "utf8")).toBe("{corrupt");
+ await writeFile(path, await readFile(path + ".bak", "utf8"));
+ await manager.flushPendingSave();
+ expect((await loadAccounts())?.accounts.map(a => a.refreshToken)).toEqual(["fixture-rotated"]);
+});
+
+it("keeps a rotated refresh token while the primary stays locked and saves it once readable", async () => {
+ const { vi } = await import("vitest");
+ const { promises: fs } = await import("node:fs");
+ const manager = await setup();
+ const path = getStoragePath();
+ const original = fs.readFile.bind(fs);
+ const locked = vi.spyOn(fs, "readFile").mockImplementation((async (file: unknown, ...rest: unknown[]) => {
+  if (String(file) === path) throw Object.assign(new Error("locked"), { code: "EBUSY" });
+  return (original as (...args: unknown[]) => Promise<unknown>)(file, ...rest);
+ }) as typeof fs.readFile);
+ try {
+  const committed = await manager.commitRefreshedAuth(manager.getAccountByIndex(0)!, { type: "oauth", access: "fixture-fresh", refresh: "fixture-rotated", expires: Date.now() + 3600000 });
+  expect(committed?.refreshToken).toBe("fixture-rotated");
+  expect(manager.getAccountByIndex(0)?.refreshToken).toBe("fixture-rotated");
+ } finally { locked.mockRestore(); }
+ await manager.flushPendingSave();
+ expect((await loadAccounts())?.accounts[0]?.refreshToken).toBe("fixture-rotated");
+});
+
+it("recovers a rotated refresh token in a new process when the old one exits before saving", async () => {
+ const { vi } = await import("vitest");
+ const { promises: fs, existsSync } = await import("node:fs");
+ const manager = await setup();
+ const path = getStoragePath();
+ const original = fs.readFile.bind(fs);
+ const locked = vi.spyOn(fs, "readFile").mockImplementation((async (file: unknown, ...rest: unknown[]) => {
+  if (String(file) === path) throw Object.assign(new Error("locked"), { code: "EBUSY" });
+  return (original as (...args: unknown[]) => Promise<unknown>)(file, ...rest);
+ }) as typeof fs.readFile);
+ try {
+  await manager.commitRefreshedAuth(manager.getAccountByIndex(0)!, { type: "oauth", access: "fixture-fresh", refresh: "fixture-rotated", expires: Date.now() + 3600000 });
+ } finally { locked.mockRestore(); }
+ // The first process dies here: its debounced save never runs.
+ expect(JSON.parse(await readFile(path, "utf8")).accounts[0].refreshToken).toBe("fixture-first");
+ const next = new AccountManager(undefined, await loadAccounts());
+ expect(next.getAccountByIndex(0)?.refreshToken).toBe("fixture-rotated");
+ await next.saveToDisk();
+ expect(JSON.parse(await readFile(path, "utf8")).accounts[0].refreshToken).toBe("fixture-rotated");
+ expect(existsSync(path + ".pending-auth.json")).toBe(false);
+ await manager.flushPendingSave();
+ expect((await loadAccounts())?.accounts[0]?.refreshToken).toBe("fixture-rotated");
+});
+
+async function withAccountsWriteLocked<T>(path: string, run: () => Promise<T>): Promise<T> {
+ const { vi } = await import("vitest");
+ const { promises: fs } = await import("node:fs");
+ const original = fs.rename.bind(fs);
+ // The read succeeds but the atomic replace keeps failing, like a scanner holding accounts.json.
+ const spy = vi.spyOn(fs, "rename").mockImplementation((async (from: unknown, to: unknown) => {
+  if (String(to) === path) throw Object.assign(new Error("busy"), { code: "EBUSY" });
+  return original(from as string, to as string);
+ }) as typeof fs.rename);
+ try { return await run(); } finally { spy.mockRestore(); }
+}
+
+it("journals a rotated token when the accounts write keeps failing with EBUSY", async () => {
+ const manager = await setup();
+ const path = getStoragePath();
+ const committed = await withAccountsWriteLocked(path, () => manager.commitRefreshedAuth(manager.getAccountByIndex(0)!, { type: "oauth", access: "fixture-fresh", refresh: "fixture-rotated", expires: Date.now() + 3600000 }));
+ expect(committed?.refreshToken).toBe("fixture-rotated");
+ expect(manager.getAccountByIndex(0)?.refreshToken).toBe("fixture-rotated");
+ // A new process recovers it even though this one never saved.
+ const next = new AccountManager(undefined, await loadAccounts());
+ expect(next.getAccountByIndex(0)?.refreshToken).toBe("fixture-rotated");
+ await manager.flushPendingSave();
+});
+
+it("chains a second rotation of the same account while the first is only journaled", async () => {
+ const manager = await setup();
+ const path = getStoragePath();
+ await withAccountsWriteLocked(path, async () => {
+  await manager.commitRefreshedAuth(manager.getAccountByIndex(0)!, { type: "oauth", access: "fixture-fresh-1", refresh: "fixture-rotated-1", expires: Date.now() + 3600000 });
+  await manager.commitRefreshedAuth(manager.getAccountByIndex(0)!, { type: "oauth", access: "fixture-fresh-2", refresh: "fixture-rotated-2", expires: Date.now() + 7200000 });
+ });
+ expect(JSON.parse(await readFile(path, "utf8")).accounts[0].refreshToken).toBe("fixture-first");
+ const next = new AccountManager(undefined, await loadAccounts());
+ expect(next.getAccountByIndex(0)?.refreshToken).toBe("fixture-rotated-2");
+ await manager.flushPendingSave();
+});
+
+it("keeps a journaled rotated token live when a native request re-reads the unchanged primary", async () => {
+ const { createNativeAccountStorageReader } = await import("../lib/runtime/native-account-storage.js");
+ const { syncNativeAccountCredentials } = await import("../lib/runtime/native-account-sync.js");
+ const manager = await setup();
+ const path = getStoragePath();
+ const readNative = createNativeAccountStorageReader(undefined, path);
+ await readNative();
+ await withAccountsWriteLocked(path, () => manager.commitRefreshedAuth(manager.getAccountByIndex(0)!, { type: "oauth", access: "fixture-fresh", refresh: "fixture-rotated", expires: Date.now() + 3600000 }));
+ // The deferred save has not run; the primary still holds the spent token.
+ expect(JSON.parse(await readFile(path, "utf8")).accounts[0].refreshToken).toBe("fixture-first");
+ const snapshot = await readNative();
+ expect(snapshot.verified).toBe(true);
+ syncNativeAccountCredentials(manager, snapshot.storage!);
+ expect(manager.getAccountByIndex(0)?.refreshToken).toBe("fixture-rotated");
+ expect(manager.getAccountByIndex(0)?.access).toBe("fixture-fresh");
+ await manager.flushPendingSave();
+});
+
+ it("journals a spent rotation when the primary write fails with EACCES", async () => {
+ const {vi}=await import("vitest"); const {promises:fs}=await import("node:fs");
+ const manager = await setup();
+ const path = getStoragePath();
+ const original = fs.rename.bind(fs);
+ const rename = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+  if (String(to) === path) throw Object.assign(new Error("denied"), {code:"EACCES"});
+  return original(from, to);
+ });
+ try {
+  const result = await manager.commitRefreshedAuth(manager.getAccountByIndex(0)!, {type:"oauth",access:"fixture-fresh",refresh:"fixture-rotated",expires:Date.now()+3600000});
+  expect(result?.refreshToken).toBe("fixture-rotated");
+  expect(new AccountManager(undefined,await loadAccounts()).getAccountByIndex(0)?.refreshToken).toBe("fixture-rotated");
+ } finally {rename.mockRestore();await manager.flushPendingSave();}
+});
+
+it("saves the first account from a synthetic missing-store load",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"fresh-pool-"));dirs.push(dir);setStoragePathDirect(join(dir,"accounts.json"));
+ const storage=(await loadAccounts())!;
+ expect(storage.accounts).toEqual([]);
+ storage.accounts.push({accountId:"first",refreshToken:"fixture-first",addedAt:1,lastUsed:1});
+ await saveAccounts(storage);
+ expect((await loadAccounts())?.accounts).toHaveLength(1);
+});
+it("persists runtime blockers during debounced saves while conflicting user edits remain pending",async()=>{
+ const manager=await setup();const live=manager.getAccountByIndex(0)!;
+ live.accountLabel="Local";
+ const external=(await loadAccounts())!;external.accounts[0]!.accountLabel="External";await saveAccounts(external);
+ const until=Date.now()+60000;
+ live.rateLimitResetTimes={codex:until};live.coolingDownUntil=until;live.cooldownReason="rate-limit";
+ manager.saveToDiskDebounced();await manager.flushPendingSave();
+ expect((await loadAccounts())?.accounts[0]).toMatchObject({accountLabel:"External",rateLimitResetTimes:{codex:until},coolingDownUntil:until,cooldownReason:"rate-limit"});
+ expect(live.accountLabel).toBe("Local");
+ live.rateLimitResetTimes.codex=until+1000;manager.saveToDiskDebounced();await manager.flushPendingSave();
+ expect((await loadAccounts())?.accounts[0]?.rateLimitResetTimes?.codex).toBe(until+1000);
+ await expect(manager.saveToDisk()).rejects.toMatchObject({code:"ESTALE"});
+});
+it("journals a spent rotation after account lock acquisition times out",async()=>{
+ const {vi}=await import("vitest");const locks=await import("../lib/storage/file-lock.js");
+ const manager=await setup(),path=getStoragePath(),original=locks.withFileTransactionLock;
+ const lock=vi.spyOn(locks,"withFileTransactionLock").mockImplementation((target,action,options)=>{
+  if(target===path)throw Object.assign(Error("busy"),{code:"ELOCKED"});
+  return original(target,action,options);
+ });
+ try {expect(await manager.commitRefreshedAuth(manager.getAccountByIndex(0)!,{type:"oauth",access:"fixture-new",refresh:"fixture-rotated",expires:Date.now()+3600000})).toMatchObject({refreshToken:"fixture-rotated"});}
+ finally {lock.mockRestore();}
+ expect(new AccountManager(undefined,await loadAccounts()).getAccountByIndex(0)?.refreshToken).toBe("fixture-rotated");
+ await manager.flushPendingSave();
+});
+it("preserves a live network cooldown while rescuing a journaled rotation",async()=>{
+ const {vi}=await import("vitest");const locks=await import("../lib/storage/file-lock.js");
+ const manager=await setup(),path=getStoragePath(),original=locks.withFileTransactionLock;
+ const live=manager.getAccountByIndex(0)!,until=Date.now()+60000;
+ live.coolingDownUntil=until;live.cooldownReason="network-error";
+ const lock=vi.spyOn(locks,"withFileTransactionLock").mockImplementation((target,action,options)=>{
+  if(target===path)throw Object.assign(Error("busy"),{code:"ELOCKED"});
+  return original(target,action,options);
+ });
+ try {
+  await manager.commitRefreshedAuth(live,{type:"oauth",access:"fixture-new",refresh:"fixture-rotated",expires:Date.now()+3600000});
+  expect(live).toMatchObject({coolingDownUntil:until,cooldownReason:"network-error"});
+ } finally {lock.mockRestore();await manager.flushPendingSave();}
 });

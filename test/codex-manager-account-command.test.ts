@@ -106,3 +106,29 @@ describe("account command", () => {
 	});
 });
 
+
+ it("sets and reports an account priority tier",async()=>{
+  const store:AccountPolicyStore={version:1,accounts:{}};const deps=makeDeps(store);
+  expect(await runAccountCommand(["priority","1","2"],deps)).toBe(0);
+  const key=getAccountPolicyKey(makeStorage().accounts[0]!,0);
+  expect(store.accounts[key]?.priority).toBe(2);
+  deps.logInfo.mockClear();await runAccountCommand(["policy","list","--json"],deps);
+  expect(JSON.parse(String(deps.logInfo.mock.calls[0]?.[0])).accounts[0].priority).toBe(2);
+ });
+ it.each(["-1","10","1.5","2junk",""])("rejects invalid priority %s",async(value)=>{
+  const deps=makeDeps({version:1,accounts:{}});
+  expect(await runAccountCommand(["priority","1",value],deps)).toBe(1);
+  expect(deps.savePolicyStore).not.toHaveBeenCalled();
+ });
+it("configures per-account automatic priming without enabling it for other accounts",async()=>{
+ const store:AccountPolicyStore={version:1,accounts:{}};const deps=makeDeps(store);
+ expect(await runAccountCommand(["auto-prime","1","on"],deps)).toBe(0);
+ const key=getAccountPolicyKey(makeStorage().accounts[0]!);
+ expect(store.accounts[key]).toMatchObject({autoPrime:true});
+ expect(await runAccountCommand(["policy","list","--json"],deps)).toBe(0);
+ expect(JSON.parse(deps.logInfo.mock.calls.at(-1)![0]).accounts[0].autoPrime).toBe(true);
+ expect(await runAccountCommand(["auto-prime","1","off"],deps)).toBe(0);
+ expect(store.accounts[key]).toMatchObject({autoPrime:false});
+ expect(await runAccountCommand(["auto-prime","1","yes"],deps)).toBe(1);
+ expect(await runAccountCommand(["auto-prime","1","on","extra"],deps)).toBe(1);
+});

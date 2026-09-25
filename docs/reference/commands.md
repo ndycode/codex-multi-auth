@@ -39,15 +39,41 @@ Compatibility forms are supported for migrations and wrapper-routed environments
 | Command | Description |
 | --- | --- |
 | `codex-multi-auth login` | Open interactive auth dashboard. Flags: `--device-auth`, `--manual`/`--no-browser`, `--org <org_id>`, `--preserve-selection`, `--account <index\|email\|account_id>` |
-| `codex-multi-auth status` | Print account pool, pin, runtime metrics, and storage summary (`list` is the same command) |
-| `codex-multi-auth check` | Live-probe account health against the Codex backend |
+| `codex-multi-auth login --api` | Manage API/ZDR credentials, priority, and explicit model visibility in an interactive terminal |
+| `codex-multi-auth status` | Print account pool, pin, runtime metrics, storage summary, and cached per-credential model discovery (`list` is the same command) |
+| `codex-multi-auth check` | Live-probe account health and refresh model discovery for subscription and API credentials |
 | `codex-multi-auth limits --json` | Print configured accounts joined to their cached quota windows; add `--refresh` for an age-gated refresh |
 
 ---
 
+API model entries require explicit selection and never serve as automatic paid
+fallbacks. See [model route pools](../design/model-route-pools.md) for setup and
+refresh behavior.
+
 ## `codex-multi-auth check`
 
-Live-probes every stored account and prints one line per account. Unlike
+Run `check` for the full check, or select one portion:
+
+| Command | Work performed |
+| --- | --- |
+| `check accounts` | Account authentication and live quota checks; skips reset-credit and model discovery checks |
+| `check resets` | Refresh available subscription reset credits, showing the account number and email; does not redeem credits or run inference/model probes |
+| `check capabilities` | Refresh model and capability discovery for enabled subscription workspaces and API credentials, and force the configured capability probes even inside the 15-minute cache; updates the running router catalog |
+| `check --prime`, `check accounts --prime` | Also send a tiny first-use request to genuinely unused Personal subscriptions (Plus/Pro, every window at 0%, full-length reset). This starts their 5-hour and weekly windows and uses subscription quota |
+
+Plain `check` refreshes model discovery but reuses API capability probe results
+younger than 15 minutes, including results from an earlier `check` process
+(stored as hashes in `api-capability-probes.json`). Only `check capabilities`
+sends the billable probes regardless of age. No check sends the first-use
+request unless you pass `--prime`; the dashboard's Quick and Deep Check do not
+prime. Separately, `account auto-prime <index> on` authorizes periodic priming
+by a running CLI/app router.
+
+Existing scheduled checks keep their full-check behavior. Use
+`codex-multi-auth resets redeem <account-number>` for an explicit redemption. Unknown check arguments return a usage error;
+`check --help` prints usage without making network requests.
+
+Plain `check` and `check accounts` live-probe every stored account and print one line per account. Unlike
 `fix`, `check` does not skip disabled accounts: an account whose token is
 still usable is re-enabled as part of the run. When `showQuotaDetails` is on
 (the default, see [settings.md](settings.md)) the healthy lines carry a
@@ -192,6 +218,7 @@ fail with exit code 1 without reading account storage or quota cache.
 | Flag | Applies to | Meaning |
 | --- | --- | --- |
 | `--account <index\|email\|id>` | `codex-multi-auth-codex` (forwarded Codex runs) | Force one account for this invocation only; the session never rotates and persisted `switch` state is untouched. Requires the runtime rotation proxy. See [Force an account for one invocation](#force-an-account-for-one-invocation) |
+| `--api` | login | Open API credential and model visibility setup; use alone |
 | `--device-auth` | login | Use the OpenAI Codex device-code flow for remote/headless login (mutually exclusive with `--manual` / `--no-browser`) |
 | `--manual`, `--no-browser` | login | Skip browser launch and use manual callback flow (mutually exclusive with `--device-auth`) |
 | `--org <org_id>` | login | Bind this login to a specific ChatGPT workspace/org id (same seat can be registered as personal vs team/business) |
@@ -219,7 +246,7 @@ fail with exit code 1 without reading account storage or quota cache.
 | `--all` | verify | Run both `--paths` and `--flagged` together |
 | `--now`, `-n` | why-selected | Recompute the current selection from live state (default). Note: on fix/doctor/verify-flagged, `-n` means `--dry-run` instead |
 | `--last`, `-l` | why-selected | Recompute selection from current state and attach the last persisted runtime snapshot |
-| `--clear-accounts` | uninstall | Also remove stored account credentials (irreversible) |
+| `--clear-accounts` | uninstall | Also remove stored account credentials and API keys (irreversible) |
 | `--stdout` | init-config | Force template output to stdout even when other write modes are considered |
 | `--remove` / `--dry-run` | `codex-multi-auth-app-launcher` | Remove managed launcher routing, or preview install/remove without writing |
 
@@ -291,6 +318,7 @@ Usage:
 codex-multi-auth account tag <index> <tag>
 codex-multi-auth account untag <index> <tag>
 codex-multi-auth account weight <index> <0..10>
+codex-multi-auth account priority <index> <0..9>
 codex-multi-auth account pause <index>
 codex-multi-auth account unpause <index>
 codex-multi-auth account drain <index>
@@ -312,6 +340,22 @@ Notes:
   interact with routing-profile preferred/avoid tags.
 
 ---
+
+### Automatic subscription priming
+
+`codex-multi-auth account auto-prime <index> on|off` controls automatic first-use
+completion for that account (default: off). `account policy list` and `status`
+show the setting; their JSON outputs include `autoPrime`.
+
+While a CLI/app router is running, it checks opted-in subscription accounts
+every 15 minutes. It completes the tiny response only for a personal subscription
+with zero usage and no established reset countdown. This consumes subscription
+quota. Paused, drained, disabled, invalidated, and cooling accounts are skipped;
+API/ZDR credentials and reset credits are never used. The private
+`<accounts-file>.automatic-checks.json` stores only hashed keys and attempt times
+to prevent duplicate attempts across router processes. Stopping the router stops
+these checks; this setting does not create an OS scheduled task. Manual `check`
+still needs `--prime`, regardless of account policy.
 
 ## `codex-multi-auth workspace`
 
@@ -648,19 +692,31 @@ Packaged desktop app support uses a reversible bind instead of patching app file
 and the real desktop login, while routing inference through the local account
 pool. This preserves the native authentication path used by Remote Control
 pairing and other account-dependent desktop features; pairing still requires a
-supported native app and its normal account setup. `codex-multi-auth switch <index>` pins the inference account; it does not
+supported native app and its normal account setup. `codex-multi-auth switch <index>` pins the inference account, as in every other mode: requests go only to that account, a model it does not advertise is refused with 403 `model_not_available_in_account_catalog`, and an unavailable pin fails with 503 `codex_pinned_account_unavailable` instead of rotating. Automatic reset-credit redemption never moves traffic off the pin. Run `codex-multi-auth unpin` to resume rotation. It does not
 change the desktop login in this mode. Sign out/in using the desktop app to
 change its real login. An auth-sync warning after a CLI switch can reflect this
 intentional separation; check `rotation status` for the routing state.
 
-Use `--native --catalog-account <index>` to discover models and their metadata
-from one enabled reference account, independently of the inference pin. The
-reference is stored by identity, not list position. Without a reference, the
-proxy combines eligible catalogs, preserving the first complete record for each
-model. Requests are sent only to eligible accounts advertising the requested
-model; a reference catalog does not grant another account access. Catalogs refresh
-on demand after 60 seconds (failed discovery retries after 5 seconds), using the
-native client's version. No model IDs or reasoning settings are hardcoded.
+Use `--native --catalog-account <index>` to prefer an enabled reference account's
+model metadata. Discovery still combines enabled accounts and their enabled
+workspaces. Requests require one workspace to support the complete requested
+model, reasoning, and speed combination. Within a chosen account the selected
+workspace is preferred, followed by its stored binding and other enabled
+workspaces. Workspace choice is per request and does not change the desktop login
+or saved selection. Explicit account constraints and API/ZDR pool boundaries
+remain enforced. Catalogs refresh on demand after 5 minutes (failed discovery
+retries after 5 seconds), using the native client's version. A throttled catalog
+honors `Retry-After`, capped at 15 minutes; `check capabilities` retries at once.
+Discovery outages never block inference: a workspace whose catalog has not been
+fetched successfully is unknown and stays routable, and once one fetch succeeds
+that last successful catalog decides, whatever its age.
+
+`check` refreshes the running native proxy and reports each credential/workspace
+separately. It labels the stored binding and preferred workspace, and highlights
+new models, changed capabilities, and availability differences. First discovery
+establishes a baseline; failed discovery means unknown access. Recent changes
+remain visible for 24 hours. Catalog access is reported separately from live
+inference verification. Disabled workspaces are not contacted.
 
 Native mode currently requires file-backed desktop credentials
 (`cli_auth_credentials_store = "file"`) in the same Codex home as the router.
@@ -669,8 +725,8 @@ keyring-only credentials are not supported. The proxy authenticates the exact,
 unexpired local desktop token or a current enabled managed-account token. It does
 not modify the app binary or add UI controls. Desktop profile and quota displays
 can still describe the desktop login; use multi-auth status for inference routing.
-WebSocket attempts receive an authenticated HTTP 426 response so compatible
-native clients fall back to HTTP streaming.
+Responses WebSockets use the same authentication, model/workspace eligibility,
+and privacy-pool routing as HTTP streaming.
 
 **Upgrade notes:** Existing binds keep their recorded provider mode on upgrade and
 on `reset-runtime`. Legacy binds without a recorded mode remain on the custom provider.
@@ -770,6 +826,29 @@ failure.
   The namespaced `codex-multi-auth auth limits ...` form is an alias. No npm
   scripts or storage migrations were added.
 - `codex-multi-auth login` remains browser-first by default.
+- New logins prefer a uniquely identified Personal workspace over an organization default. If several workspaces exist without a unique Personal choice, interactive login asks you to pick one before saving, and the pick is saved as an explicit binding like `--org`. Noninteractive login keeps the 2.16.0 automatic choice and prints a warning naming `--org`. Organization (`org-`) aliases of the token's workspace do not count as extra workspaces and are not offered in the picker. Cancelling the choice saves nothing. Explicit overrides and targeted re-authentication take precedence.
+- `check` now refreshes reset credits and model/capability discovery. API
+  capability probes remain opt-in per credential and billable; plain `check`
+  reuses results younger than 15 minutes, and `check capabilities` forces them.
+  `check --prime` (or `check accounts --prime`) also sends a tiny first-use
+  request to genuinely unused Personal subscriptions, which starts their quota
+  windows; manual checks require `--prime`. Per-account `account auto-prime <index> on|off`
+  (default off) authorizes recurring router checks every 15 minutes, with durable
+  cross-process attempt limits in `<accounts-file>.automatic-checks.json`. Use
+  `check accounts|resets|capabilities` to run one portion; unknown arguments exit 1.
+- `status` labels the forecast as "Forecast suggestion". `status --json` adds
+  `apiAccounts`, `totalAccountCount`, `selectionMode`, `modelInventory`, and
+  per-account priority, forecast, and reset-credit fields.
+- New commands include `login --api`, `resets list|redeem|auto`, and
+  `account priority <index> <0..9>`. API credentials and reset state live in the
+  new local files `api-routes.json` (mode 0600) and `reset-credits.json`.
+  `uninstall --clear-accounts` and the dashboard's delete-all reset remove both,
+  along with `api-capability-probes.json` and `inference-activity/`.
+- Subscription accounts default to priority tier 1 (`account priority` accepts
+  0-9; lower is tried first). API/ZDR credentials choose a tier from 1 to 9
+  when added, with 9 recommended; tier 0 stays reserved for subscriptions.
+- This routing release adds no npm scripts and requires no manual storage migration.
+
 - `codex-multi-auth login --org <org_id>` binds the login to one ChatGPT workspace.
 - `codex-multi-auth login --device-auth` uses OpenAI Codex device-code login. It prints `https://auth.openai.com/codex/device` and a one-time code, then polls for completion without opening a browser or starting the local callback server.
 - `codex-multi-auth login --account <identity> --preserve-selection` refreshes a saved account transactionally without changing which account is selected. If the provider returns a different account id/email, the write is refused and the previous credentials remain intact. Refreshing the account that is currently active still writes its new tokens to the native `~/.codex/auth.json`, so plain `codex` keeps working; refreshing any other account leaves that file alone. A manual `switch <n>` pin survives the refresh, and an account you disabled stays disabled. `--account` cannot be combined with `--org` — re-authenticate the saved row on its own workspace, or register the other workspace with `--org` on its own. Combine it with `--device-auth` for remote shells.
@@ -861,3 +940,108 @@ codex-multi-auth doctor --fix
 - [error-contracts.md](error-contracts.md)
 - [settings.md](settings.md)
 - [../troubleshooting.md](../troubleshooting.md)
+
+Subscription priorities use 0 first and default to 1. A `switch` pin is strict in
+native app-bind mode too: tiers apply only when nothing is pinned. Accounts
+without the requested model, reasoning or speed are excluded. Larger-numbered tiers can
+serve requests when earlier tiers are unavailable. `account policy list` and
+`status` show priorities. Explicit wrapper `--account` remains a hard constraint.
+
+`check` displays elapsed progress while waiting for network checks. Valid-token
+account probes run with up to three requests in flight; token refreshes and
+account-state commits remain ordered. Model discovery refills free worker slots
+rather than waiting for whole batches. API capability probes retain their
+existing four-request concurrency limit and explicit checks still request fresh
+capability results. Redirected output uses occasional plain progress lines.
+
+`status` also lists API/ZDR accounts with their configured priority, enabled state,
+visible-model count, and last inference request time. Priority 0 runs first.
+Subscription priorities are changed with `account priority <index> <0..9>`;
+API/ZDR priorities are changed through the API credential menu under `login`.
+Candidates must support the requested model and settings before priority applies.
+Explicit API selection and ZDR privacy-pool restrictions still apply.
+
+The old account `lastUsed` field includes selection and refresh activity, so it
+is labeled **account activity**, not inference usage. **Last inference request**
+is recorded when the proxy dispatches a Responses or image request; it does not
+claim the request completed successfully. Health/model checks do not update it.
+Timestamps are stored separately from diagnostic snapshots using hashed account
+identities. Historical inference times are not guessed when no record exists.
+JSON status preserves the legacy `accounts[].lastUsed` field and adds
+`accounts[].lastInferenceRequestAt`, `apiAccounts`, and `totalAccountCount`.
+
+### Reading status and check output
+
+Terminal reports highlight account headings, successful probes, warnings, and
+new or changed capabilities using the configured UI theme. Text labels remain
+available without color. Redirected output is plain by default; `NO_COLOR=1`
+disables color and `FORCE_COLOR=1` explicitly enables it. `status --json` remains
+uncolored regardless of these settings.
+
+`priority tier` is configured routing policy, not a unique ranking: multiple
+accounts can share a tier. Lower tiers are considered first within the applicable
+privacy pool, after eligibility filtering. `forecast risk` is a separate health
+estimate (0–100, lower is better), not a prediction for every model/setting
+combination. `status --json` exposes `forecastRiskScore` and `forecastRiskLevel`
+for subscription accounts. In native app-bind mode with no `switch` pin, the
+currently active account is a soft preference: it is favoured within the first
+eligible tier (quota ordering can still pick another account there), and requests
+fall back through configured tiers when it is unavailable. A stored `switch` pin is
+different: it is strict and never falls back. A configured tier of 0 does not itself
+mean that the account is pinned.
+
+API/ZDR setup recommends tier 9 and offers tiers 1–9 within its own pool.
+Legacy configured priorities remain readable. API/ZDR requests remain explicitly
+selected (including API-only model entries); subscription requests never gain a
+paid fallback merely because subscription accounts are unavailable.
+
+Status forecast scores include cached quota observations and show their age.
+Expired windows are excluded from usage pressure. Missing quota is labeled
+`quota unknown`; a zero score in that case applies only to other known signals.
+The heuristic adds 10/20/35/55 points at 70/80/90/98 percent used respectively
+(using the more consumed window), plus penalties for auth failures, cooldowns,
+rate limits and other blockers. The selected account receives a five-point
+preference before clamping to 0–100. This score is not a probability or the
+runtime scheduling score, and does not rewrite configured priority tiers.
+
+For native subscription requests, `automatic order` estimates the order from the
+last check. It is separate from `priority tier` and can change with requested
+model/workspace and newer runtime observations. Eligible accounts above a 5%
+reserve go first. A stored `switch` pin bypasses this order entirely. Otherwise, configured tiers,
+then earliest limiting-window reset, with remaining percentage breaking ties. The reserve
+is used only when ordinary eligible subscription accounts are unavailable.
+Unknown/stale reset observations do not receive a reset bonus. API/ZDR pools are
+never automatic paid fallbacks for subscription requests.
+
+`check --prime` completes one tiny probe for a personal subscription that reports exactly
+zero usage and has no established reset countdown. A full relative window can
+be an unused-account placeholder; receiving headers alone does not prove the
+timer started. A completed probe is reported explicitly. Incomplete or timed-out
+streams produce a warning, and no second model is tried after that first-use
+request. Existing countdowns, fractional usage, API credentials and business
+workspaces do not trigger extra consumption. Checks retain bounded parallelism.
+
+Ordinary inference has no special priority override for 100% accounts. It follows
+configured tiers, capability eligibility, earliest reset and the
+5% reserve; a stored `switch` pin overrides all of them. Remaining quota only breaks reset-time ties. There is no target to
+consume 1% merely to change a rounded display. Explicit strict invocation pins
+and API/ZDR privacy pool isolation remain intact.
+
+### Earned subscription resets
+
+- `codex-multi-auth resets list`: cached reset-credit counts for native credential workspaces.
+- `codex-multi-auth resets list --refresh`: refresh counts without inference or redemption.
+- `codex-multi-auth resets redeem <account-number>`: explicitly redeem one available reset and re-read usage.
+- `codex-multi-auth resets auto manual|last-resort`: choose automatic redemption policy (default: manual).
+
+Organization display aliases are kept separate from the native credential workspace used by the usage endpoint; reset operations never change saved display preferences.
+
+`status` includes cached counts and observation age; `check` refreshes them with bounded parallelism. Unknown availability is not zero. These are earned subscription resets, separate from paid API credits.
+
+Last-resort mode first rechecks all eligible subscription workspaces. It spends a credit only when every read confirms included usage is blocked. Remaining reserves, a scheduled reset that has recovered or is due within a minute, unknown usage, API/ZDR routes, and explicit single-account invocation pins prevent automatic redemption. Network failures never authorize a new redemption. An ambiguous redemption remains pending under the same idempotency key; retry the same account explicitly. Concurrent redemptions are serialized and automatic redemptions have a five-minute minimum interval.
+
+The installed native Codex backend must support the earned-reset RPC methods. An explicit native executable override is available through `CODEX_MULTI_AUTH_USAGE_CODEX_BIN`. Usage reads run in a private temporary home without changing desktop login or saved workspace preferences. No refresh tokens are given to that process.
+
+### Credential-scoped access programs
+
+When API model discovery omits access-program metadata, administrators may configure verified entitlements in each API route's `accessPrograms` map or its `modelAccessPrograms` overrides. Per-model overrides replace the default map. Removing the setting removes the advertised metadata without needing to discard discovery caches. Advertisements merge only within the same API/ZDR pool; they never inherit another credential pool's capabilities. This configuration describes server-granted access; it does not grant access.

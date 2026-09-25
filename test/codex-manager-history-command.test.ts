@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	runHistoryCommand,
@@ -241,7 +242,7 @@ describe("runHistoryCommand list", () => {
 
 		expect(code).toBe(0);
 		// The command must look under <overridden-home>/sessions, not ~/.codex.
-		expect(seenDirs).toContain("D:\\custom\\.codex\\sessions");
+		expect(seenDirs).toContain(join("D:\\custom\\.codex", "sessions"));
 		const payload = JSON.parse(allOutput(deps.logInfo));
 		expect(payload.count).toBe(1);
 	});

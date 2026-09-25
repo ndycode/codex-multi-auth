@@ -152,3 +152,31 @@ it("keeps the committed result when the owner file cannot be released, and recla
     await expect(withFileTransactionLock(path, async () => 43, { waitMs: 200 })).resolves.toBe(43);
     expect((await readdir(dir)).filter(p => p.includes("write-lock"))).toEqual([]);
 });
+
+it("reclaims a killed waiter's populated candidate without touching a live writer",async()=>{
+ const {path,worker,dir}=await fixture();
+ const a=launch(worker,path);await a.wait("entered");
+ const b=launch(worker,path);await b.wait("started");
+ await vi.waitFor(async()=>{
+  const candidates=(await readdir(dir)).filter(p=>p.includes(".candidate-"));
+  expect((await Promise.all(candidates.map(p=>readdir(join(dir,p))))).flat().some(p=>p.includes(`.${b.child.pid}.`))).toBe(true);
+ },{timeout:5000});
+ const exit=once(b.child,"exit");b.child.kill("SIGKILL");await exit;
+ await expect(withFileTransactionLock(path,async()=>{}, {waitMs:0})).rejects.toMatchObject({code:"ELOCKED"});
+ expect(a.messages).not.toContain("saved");
+ a.child.send("go");await a.wait("saved");
+ await withFileTransactionLock(path,async()=>{});
+ expect((await readdir(dir)).filter(p=>p.includes("write-lock"))).toEqual([]);
+});
+it("retries cleanup of an unpublished candidate after a failed acquisition",async()=>{
+ const {path,worker,dir}=await fixture();const a=launch(worker,path);await a.wait("entered");
+ const original=fs.unlink.bind(fs);
+ const unlink=vi.spyOn(fs,"unlink").mockImplementation(async path=>{
+  if(String(path).includes(".candidate-"))throw Object.assign(Error("busy"),{code:"EBUSY"});
+  return original(path);
+ });
+ try {await expect(withFileTransactionLock(path,async()=>{}, {waitMs:0})).rejects.toMatchObject({code:"ELOCKED"});}
+ finally {unlink.mockRestore();}
+ await vi.waitFor(async()=>expect((await readdir(dir)).filter(p=>p.includes(".candidate-"))).toEqual([]),{timeout:5000});
+ a.child.send("go");await a.wait("saved");
+});

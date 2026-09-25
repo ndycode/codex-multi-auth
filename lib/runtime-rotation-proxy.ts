@@ -1,11 +1,32 @@
+import { startAutomaticAccountChecks } from "./runtime/automatic-account-checks.js";
+import { createAutomaticSubscriptionCheck } from "./runtime/automatic-subscription-checks.js";
+import { ClientCancellationError } from "./request/client-cancellation.js";
 import { createNativeAccountStorageReader } from "./runtime/native-account-storage.js";
-import { mapWithConcurrency } from "./concurrency.js";
-import { syncNativeAccountCredentials } from "./runtime/native-account-sync.js";
+import { resetSnapshotQuota } from "./runtime/reset-credits.js";
+import { createResetCreditService, loadResetCreditState } from "./runtime/account-reset-credits.js";
+import { recoverResetQuota, applyConfirmedReset } from "./runtime/reset-credit-routing.js";
+import { readSubscriptionQuotaEvent } from "./runtime/subscription-quota-event.js";
+import { loadQuotaCache } from "./quota-cache.js";
+import { findQuotaCacheEntryForAccount } from "./quota-readiness.js";
+import { subscriptionQuotaPreference, compareSubscriptionQuota, type SubscriptionQuotaPreference } from "./runtime/subscription-quota-order.js";
+import { inferenceAccountKey } from "./runtime/inference-activity.js";
+import { modelScopeId, workspaceModelScopes } from "./runtime/workspace-model-scopes.js";
+import { RuntimeCapabilityFailures, classifyCapabilityFailure } from "./runtime/runtime-capability-failures.js";
+import { ResponseOutcome } from "./request/response-outcome.js";
+import { ResponsesWebSocketGateway } from "./runtime/responses-websocket.js";
+import { ApiModelCapabilities } from "./runtime/api-model-capabilities.js";
+import { saveModelInventory } from "./runtime/model-discovery-status.js";
+import { loadApiRoutes, updateApiModelDiscovery } from "./api-route-store.js";
+import { ApiModelRuntime } from "./runtime/api-model-runtime.js";
+import { buildVisibleModelUnion, parseModelRoute, canonicalServiceTier, type RouteModel } from "./model-route-policy.js";
+import { isSameNativeAccount, syncNativeAccountCredentials } from "./runtime/native-account-sync.js";
+import { sanitizeEmail } from "./auth/token-utils.js";
 import { isNativeClientToken } from "./runtime/native-client-auth.js";
-import { CatalogRetryError, AccountModelCatalog } from "./runtime/account-model-catalog.js";
+import { CatalogRetryError, AccountModelCatalog, clampCatalogRetryMs } from "./runtime/account-model-catalog.js";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
+import * as zlib from "node:zlib";
 import {
 	AccountManager,
 	AUTH_INVALIDATION_MARKER,
@@ -48,6 +69,8 @@ import {
 import { getModelFamily, type ModelFamily } from "./prompts/codex.js";
 import { CURRENT_CODEX_MODEL } from "./request/helpers/model-map.js";
 import {
+	recordRuntimeInferenceRequest,
+	flushRuntimeInferenceActivity,
 	mutateRuntimeObservabilitySnapshot,
 	recordRuntimeAccountRecovery,
 	recordRuntimePoolExhaustion,
@@ -66,6 +89,7 @@ import {
 import {
 	PreemptiveQuotaScheduler,
 	readQuotaSchedulerSnapshot,
+	type QuotaSchedulerSnapshot,
 } from "./preemptive-quota-scheduler.js";
 import { ContextBudgetGuard } from "./context-budget-guard.js";
 import {
@@ -312,6 +336,30 @@ const DEFAULT_MODEL_CAPACITY_RETRY_MS = 10 * 60_000;
 const MAX_MODEL_CAPACITY_RETRY_MS = 60 * 60_000;
 const MODEL_CAPACITY_RETRY_ENV = "CODEX_MULTI_AUTH_MODEL_CAPACITY_RETRY_MS";
 
+function getApiModelRuntime(state:RotationProxyState):ApiModelRuntime {
+ if(state.apiModelRuntime)return state.apiModelRuntime;
+ const capabilities=state.apiModelCapabilities??=new ApiModelCapabilities();
+ const production=state.readApiRoutes===loadApiRoutes;
+ state.apiModelRuntime=new ApiModelRuntime(state.fetchImpl,state.now,production?updateApiModelDiscovery:undefined,production?(models,refresh,route,force)=>capabilities.enrich(models,refresh,route,force):undefined,()=>{
+  const runtime=state.apiModelRuntime;
+  if(!runtime)return;
+  const models=[...(state.catalogOAuthModels??[]),...buildVisibleModelUnion(runtime.cachedCatalogs())];
+  setCatalogEtag(state,models);
+  if(state.catalogInventory){
+   state.catalogInventory={...state.catalogInventory,checkedAt:state.now(),entries:[
+    ...state.catalogInventory.entries.filter(entry=>entry.kind==="oauth"),
+    ...runtime.statuses(state.catalogApiRoutes??[]).map(entry=>({id:modelScopeId(entry.kind,entry.id),label:entry.label,kind:entry.kind,enabled:runtime.cachedCatalogs().some(c=>c.id===entry.id&&c.enabled),checkedAt:entry.checkedAt,error:entry.error,models:entry.availableModels,visibleModels:entry.visibleModels,entitlements:entry.entitlements})),
+   ]};
+   void saveModelInventory(state.catalogInventory).catch(()=>{state.status.lastError="Model discovery status could not be saved";});
+  }
+ });
+ return state.apiModelRuntime;
+}
+function setCatalogEtag(state:RotationProxyState,models:RouteModel[]):string {
+ return state.catalogEtag='"'+createHash("sha256").update(JSON.stringify(models)).digest("hex")+'"';
+}
+
+
 function capacityRetryBackoffMs(attempt: number): number {
 	const index = Math.min(
 		Math.max(0, attempt - 1),
@@ -428,8 +476,21 @@ function createOutboundHeaders(
 	return headers;
 }
 
+/** Files every native Responses request reads change rarely; share one read per second. */
+const PER_REQUEST_READ_TTL_MS = 1000;
+function cachedRead<T>(state: RotationProxyState, key: string, load: () => Promise<T>): Promise<T> {
+	const cache = state.readCache ??= new Map();
+	const now = Date.now();
+	const hit = cache.get(key);
+	if (hit && hit.at <= now && now - hit.at < PER_REQUEST_READ_TTL_MS) return hit.value as Promise<T>;
+	const value = load();
+	cache.set(key, { at: now, value });
+	value.catch(() => { if (cache.get(key)?.value === value) cache.delete(key); });
+	return value;
+}
+
 function catalogAccountKey(account: ManagedAccount): string {
-	return `${account.index}:${account.accountId ?? ""}:${account.email ?? ""}`;
+	return workspaceModelScopes(account).find(scope=>scope.bound)?.id ?? "unavailable";
 }
 
 function isAuthorizedClient(headers: Headers, clientApiKey: string): boolean {
@@ -473,16 +534,19 @@ function accountIdentityFromAccount(
 function recordLastRuntimeAccount(
 	status: RuntimeRotationProxyStatus,
 	identity: RuntimeRotationAccountIdentity,
+	requestedWorkspaceId: string,
 ): void {
 	status.lastAccountIndex = identity.index;
 	status.lastAccountLabel = identity.label;
 	status.lastAccountId = identity.accountId;
+	status.lastRequestedWorkspaceId = requestedWorkspaceId;
 	status.lastAccountUpdatedAt = identity.updatedAt;
 	mutateRuntimeObservabilitySnapshot((snapshot) => {
 		snapshot.lastAccountIndex = identity.index;
 		snapshot.lastAccountLabel = identity.label;
 		snapshot.lastAccountEmail = null;
 		snapshot.lastAccountId = identity.accountId;
+		snapshot.lastRequestedWorkspaceId = requestedWorkspaceId;
 		snapshot.lastAccountUpdatedAt = identity.updatedAt;
 	});
 }
@@ -577,6 +641,35 @@ async function readRequestBody(
 		chunks.push(buffer);
 	}
 	return Buffer.concat(chunks);
+}
+
+/** Inspect the decoded entity before any credential or policy decision. */
+async function decodeRequestBody(body: Buffer, encoding: string | null, maxBytes: number): Promise<Buffer> {
+	const coding = encoding?.trim().toLowerCase() ?? "identity";
+	if (!coding || coding === "identity") return body;
+	// Older supported Node releases lack Zstandard. Reject explicitly there;
+	// forwarding opaque bytes would bypass the model/credential boundary.
+	const zstd = (zlib as typeof zlib & { zstdDecompress?: typeof zlib.gunzip }).zstdDecompress;
+	const decode: ((input: Buffer, options: { maxOutputLength: number }, callback: (error: Error | null, output: Buffer) => void) => void) | undefined = coding === "gzip" ? zlib.gunzip
+		: coding === "deflate" ? zlib.inflate
+		: coding === "br" ? zlib.brotliDecompress
+		: coding === "zstd" ? zstd : undefined;
+	if (!decode) throw createRuntimeProxyHttpError(
+		"Unsupported request content encoding. Zstandard requires a Node runtime with Zstandard support.",
+		415, "unsupported_content_encoding",
+	);
+	return new Promise((resolve, reject) => {
+		decode(body, { maxOutputLength: maxBytes }, (error, decoded) => {
+			if (error) {
+				const tooLarge = "code" in error && error.code === "ERR_BUFFER_TOO_LARGE";
+				reject(createRuntimeProxyHttpError(
+					tooLarge ? "Decoded request body is too large." : "Invalid compressed request body.",
+					tooLarge ? 413 : 400,
+					tooLarge ? "runtime_rotation_proxy_payload_too_large" : "invalid_request_body",
+				));
+			} else resolve(decoded);
+		});
+	});
 }
 
 function parseRequestBody(body: Buffer): RequestBody | null {
@@ -967,10 +1060,10 @@ export async function startRuntimeRotationProxy(
 		enabled: getPreemptiveQuotaEnabled(pluginConfig),
 		remainingPercentThresholdPrimary:
 			options.quotaRemainingPercentThreshold ??
-			getPreemptiveQuotaRemainingPercent5h(pluginConfig),
+			(options.nativeOpenai ? 0 : getPreemptiveQuotaRemainingPercent5h(pluginConfig)),
 		remainingPercentThresholdSecondary:
 			options.quotaRemainingPercentThreshold ??
-			getPreemptiveQuotaRemainingPercent7d(pluginConfig),
+			(options.nativeOpenai ? 0 : getPreemptiveQuotaRemainingPercent7d(pluginConfig)),
 		maxDeferralMs: getPreemptiveQuotaMaxDeferralMs(pluginConfig),
 	});
 	const contextBudgetGuard = new ContextBudgetGuard({
@@ -993,6 +1086,8 @@ export async function startRuntimeRotationProxy(
 	const state = createRotationProxyState({
 		nativeOpenai: options.nativeOpenai === true,
 		readNativeAccountStorage: options.readNativeAccountStorage || !options.accountManager ? createNativeAccountStorageReader(options.readNativeAccountStorage) : undefined,
+		readApiRoutes: options.readApiRoutes ?? loadApiRoutes,
+		readSubscriptionQuota: options.readSubscriptionQuota ?? (options.accountManager ? undefined : loadQuotaCache),
 		catalogAccount: options.catalogAccount,
 		activeAccountManager,
 		routingMutexMode,
@@ -1020,8 +1115,10 @@ export async function startRuntimeRotationProxy(
 		forcedAccountIndex,
 	});
 
+	const websocketGateway = new ResponsesWebSocketGateway(fetchImpl, {maxPayloadBytes: state.maxRequestBodyBytes});
+	state.fetchImpl = websocketGateway.fetch;
 	const server = createServer((req, res) => {
-		void handleRequest(state, req, res);
+		websocketGateway.handle(req, () => handleRequest(state, req, res));
 	});
 	const sockets = new Set<Socket>();
 	server.on("connection", (socket) => {
@@ -1053,12 +1150,18 @@ export async function startRuntimeRotationProxy(
 	const resolvedPort =
 		typeof address === "object" && address ? address.port : port;
 
+	if (state.nativeOpenai) websocketGateway.attach(server, `http://${urlHost}:${resolvedPort}`);
+	// Embedded managers own their own lifecycle; ordinary CLI/app routers check opted-in accounts periodically.
+	const automaticChecks = options.accountManager ? undefined : startAutomaticAccountChecks(createAutomaticSubscriptionCheck());
 	return {
 		host: bindHost,
 		port: resolvedPort,
 		baseUrl: `http://${urlHost}:${resolvedPort}`,
 		close: async () => {
+			await automaticChecks?.stop();
+			websocketGateway.close();
 			await closeServer(server, sockets);
+			await flushRuntimeInferenceActivity();
 			await state.activeAccountManager.flushPendingSave();
 		},
 		// Live client connections, which the app helper reads as evidence that a
@@ -1067,6 +1170,8 @@ export async function startRuntimeRotationProxy(
 		getOpenConnectionCount: () => sockets.size,
 		getStatus: () => ({
 			...state.status,
+ websocketConnections: websocketGateway.stats.connections,
+ websocketUpstreamRequests: websocketGateway.stats.upstreamRequests,
 			// Redact any email/token material that leaked into a raw upstream or
 			// refresh error string before exposing it to status/report consumers
 			// (errors-logging-08). maskString is a no-op for clean diagnostic text.
@@ -1110,6 +1215,10 @@ async function handleRequestInner(
 		const managedOAuthFor = (manager: AccountManager): boolean => state.nativeOpenai === true && manager.getAccountsSnapshot().some(account =>
 			isLiveManagedToken(account.access, account.expires, account.enabled, account.authInvalidatedAt));
 		let managedStorageVerified = true;
+		// A missing or unreadable store (not a transient lock) must not become an
+		// empty pool: that would discard the live manager's learned state and hide
+		// the cause behind catalog/403 errors.
+		let nativeStorageMissing = false;
         let nativeOAuthResult: boolean | undefined;
 		const nativeOAuth = async (): Promise<boolean> =>
 			(nativeOAuthResult ??= !!(state.nativeOpenai && bearer && await isNativeClientToken(bearer, state.now())));
@@ -1123,42 +1232,48 @@ async function handleRequestInner(
 				return;
 			}
 			const snapshot = await state.readNativeAccountStorage();
-            const disk = snapshot.storage;
-            managedStorageVerified = snapshot.verified;
+            const disk = snapshot.storage ?? {version: 3 as const, accounts: [], activeIndex: 0, activeIndexByFamily: {}};
+            managedStorageVerified = snapshot.verified && snapshot.storage !== null;
             // A concurrent request may have replaced the manager while this read waited.
             accountManager = state.activeAccountManager;
-			const presentsKnownCredential = apiKeyClient || managedOAuthFor(accountManager) ||
+			const presentsKnownCredential = apiKeyClient || (snapshot.storage !== null && managedOAuthFor(accountManager)) ||
 				!!disk?.accounts.some(a => isLiveManagedToken(a.accessToken, a.expiresAt, a.enabled, a.authInvalidatedAt)) ||
 				await nativeOAuth();
 			if (!presentsKnownCredential) {
 				writeUnauthorized(res);
 				return;
 			}
-			if (!disk) {
-				// Managed tokens died with the store, but the API key and the desktop's
-				// own login still identify the client. A 401 would tell the native
-				// client its login is bad when the store is what is missing.
-				if (apiKeyClient || await nativeOAuth()) {
-					writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, {
-						error: {
-							message: "Account storage is unavailable. Run codex-multi-auth login or check the account store.",
-							code: "native_account_storage_unavailable",
-						},
-					});
-				} else {
-					writeUnauthorized(res);
-				}
-				return;
-			}
-            if (snapshot.verified) {
+			if (snapshot.transientFailure && snapshot.routingAvailable === false && (apiKeyClient || await nativeOAuth())) {
+                writeJson(res, 503, {error:{code:"native_account_storage_unavailable",message:"Account storage is temporarily unavailable. Retry when it is readable."}});
+                return;
+            }
+            nativeStorageMissing = snapshot.storage === null && !snapshot.transientFailure;
+            if (snapshot.verified && snapshot.storage !== null) {
 			const accounts = accountManager.getAccountsSnapshot();
-			const sameInventory = accounts.length === disk.accounts.length && accounts.every((a, i) => a.accountId === disk.accounts[i]?.accountId && a.email === disk.accounts[i]?.email);
+			const sameInventory = accounts.length === disk.accounts.length && accounts.every((a, i) => isSameNativeAccount(a, disk.accounts[i]));
 			if (!sameInventory) {
 				accountManager = new AccountManager(undefined, disk);
 				accountManager.setRoutingMutexMode(state.routingMutexMode);
                 // Preserve independently learned limits by identity, never by the old index.
+                // A record id survives an email change; the account identity survives a
+                // re-login that re-derives an unstored record id. Rows with neither an
+                // accountId nor an email share no identity and match only by refresh token.
+                const rebuilt = accountManager.getAccountsSnapshot();
+                const claimed = new Set<number>();
+                const identityOf = (a: { accountId?: string; email?: string; refreshToken?: string }) => {
+                    const id = a.accountId?.trim(), email = sanitizeEmail(a.email);
+                    return id || email ? JSON.stringify([id ?? null, email ?? null]) : a.refreshToken?.trim() ? `refresh:${a.refreshToken.trim()}` : null;
+                };
+                const carryTarget = (previous: (typeof accounts)[number]) => {
+                    const unclaimed = rebuilt.filter(a => !claimed.has(a.index));
+                    const identity = identityOf(previous);
+                    const found = unclaimed.find(a => a.recordId && a.recordId === previous.recordId)
+                        ?? (identity === null ? undefined : unclaimed.find(a => identityOf(a) === identity));
+                    if (found) claimed.add(found.index);
+                    return found;
+                };
                 for (const previous of accounts) {
-                    const current = accountManager.getAccountsSnapshot().find(a => a.accountId === previous.accountId && a.email === previous.email);
+                    const current = carryTarget(previous);
                     const live = current && accountManager.getAccountByIndex(current.index);
                     if (!live) continue;
                     for (const [key, until] of Object.entries(previous.rateLimitResetTimes)) {
@@ -1174,10 +1289,10 @@ async function handleRequestInner(
                 state.activeAccountManager = accountManager;
 				state.knownAccountManagers.add(accountManager);
 				state.modelCatalog = undefined;
-                state.catalogsByVersion?.clear();
+                state.modelCatalogs?.clear();
 			} else if (syncNativeAccountCredentials(accountManager, disk)) {
 				state.modelCatalog = undefined;
-                state.catalogsByVersion?.clear();
+                state.modelCatalogs?.clear();
 			}
             }
 		}
@@ -1222,18 +1337,49 @@ async function handleRequestInner(
 		}
 
 		state.status.totalRequests += 1;
-		const requestBody =
+		let requestBody =
 			isResponsesRequest || isImageRequest ||
 			(isThreadGoalRequest && req.method === "POST")
 				? await readRequestBody(req, state.maxRequestBodyBytes)
 				: Buffer.alloc(0);
+		if (isResponsesRequest) {
+			requestBody = await decodeRequestBody(requestBody, incomingHeaders.get("content-encoding"), state.maxRequestBodyBytes);
+			const parsed = parseRequestBody(requestBody);
+			if (!parsed || typeof parsed.model !== "string" || !parsed.model.trim()) {
+				throw createRuntimeProxyHttpError("Responses requests require a JSON object with a model.", 400, "invalid_request_body");
+			}
+   let route;
+   try { route=parseModelRoute(parsed.model); } catch { throw createRuntimeProxyHttpError("Invalid model route.",400,"invalid_model_route"); }
+   if(route.kind==="oauth"&&route.serviceTier){
+    if(parsed.service_tier&&canonicalServiceTier(String(parsed.service_tier))!==canonicalServiceTier(route.serviceTier))throw createRuntimeProxyHttpError("Conflicting speed selection.",400,"conflicting_service_tier");
+    parsed.model=route.upstreamModel;parsed.service_tier=route.serviceTier;
+    requestBody=Buffer.from(JSON.stringify(parsed));
+   }
+		}
 		const context = isModelsRequest
 			? buildModelsRequestContext(req)
 			: isThreadGoalRequest
 				? buildThreadGoalRequestContext(req, requestBody, incomingUrl.pathname)
 				: isImageRequest
 					? buildImageRequestContext(req, requestBody, incomingUrl.pathname)
-					: buildResponsesRequestContext(req, requestBody);
+						: buildResponsesRequestContext(req, requestBody);
+		if (isResponsesRequest) {
+			context.headers.delete("content-encoding");
+			context.headers.delete("content-length");
+		}
+		// Explicit API/ZDR routes never touch the OAuth pool, so they stay available.
+		// Everything else would route through a manager the store no longer backs.
+		// A 401 would tell the native client its login is bad when the store is what
+		// is missing, so independently authenticated clients get a 503 (#702).
+		if (nativeStorageMissing && !(isResponsesRequest && context.model && /^(api|zdr)\//.test(context.model))) {
+			writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, {
+				error: {
+					message: "Account storage is unavailable. Run codex-multi-auth login or check the account store.",
+					code: "native_account_storage_unavailable",
+				},
+			});
+			return;
+		}
 		const requestStartedAt = state.now();
 		let policyDecision: RuntimePolicyDecision | null = null;
 		let projectKey: string | null = null;
@@ -1348,18 +1494,113 @@ async function handleRequestInner(
 			}
 		}
 
+		// Explicit API aliases are handled before all OAuth selection. An absent
+		// credential or catalog is a hard failure, never an ordinary-model fallback.
+		if (context.model && /^(api|zdr)\//.test(context.model)) {
+			if (!isResponsesRequest) {
+				writeJson(res, 400, { error: { code: "api_route_requires_responses" } });
+				return;
+			}
+			const body = parseRequestBody(requestBody);
+			if (!body) {
+				writeJson(res, 400, { error: { code: "invalid_request_body" } });
+				return;
+			}
+			const apiRuntime=getApiModelRuntime(state);
+			const controller = new AbortController();
+			const abort = () => {
+				if (!res.writableEnded) controller.abort();
+			};
+			res.on("close", abort);
+			try {
+				const apiRoutes = (await state.readApiRoutes?.()) ?? [];
+				let attemptedCredentialIndex: number | undefined;
+				const upstream = await apiRuntime.request(
+					context.model,
+					body,
+					apiRoutes,
+					controller.signal,
+					(credentialIndex) => {
+						attemptedCredentialIndex = credentialIndex;
+      const credential = apiRoutes[credentialIndex];
+      if (credential) recordRuntimeInferenceRequest(`sha256:${modelScopeId(credential.kind, credential.id)}`, state.now());
+						const label = `${context.model?.startsWith("zdr/") ? "ZDR" : "API"} credential ${credentialIndex + 1}`;
+						state.status.upstreamRequests++;
+						state.status.lastAccountIndex = null;
+						state.status.lastAccountId = null;
+						state.status.lastRequestedWorkspaceId = null;
+						state.status.lastAccountLabel = label;
+						state.status.lastAccountUpdatedAt = state.now();
+						mutateRuntimeObservabilitySnapshot((snapshot) => {
+							snapshot.lastAccountIndex = null;
+							snapshot.lastAccountId = null;
+							snapshot.lastRequestedWorkspaceId = null;
+							snapshot.lastAccountEmail = null;
+							snapshot.lastAccountLabel = label;
+							snapshot.lastAccountUpdatedAt = state.now();
+						});
+					},
+				);
+				const responseOutcome = new ResponseOutcome(upstream.headers.get("content-type")?.includes("text/event-stream") === true);
+				const scanner = createUsageStreamScanner({
+					contentType: upstream.headers.get("content-type"),
+					onEvent: event => responseOutcome.observe(event),
+				});
+				const forwarded = await forwardStreamingResponse(
+					upstream,
+					res,
+					state.status,
+					() => controller.abort(),
+					state.streamStallTimeoutMs,
+					scanner.push,
+ state.catalogEtag ? {"x-models-etag":state.catalogEtag} : undefined,
+					() => {scanner.result();return responseOutcome.finish();},
+				);
+				const attemptedCredential = attemptedCredentialIndex === undefined ? undefined : apiRoutes[attemptedCredentialIndex];
+				if (!forwarded && attemptedCredential) apiRuntime.recordStreamFailure(attemptedCredential, context.model, body, responseOutcome.rejection);
+				if (apiRuntime.lastPersistenceError) state.status.lastError = apiRuntime.lastPersistenceError;
+				await usageRecorder.record({
+					outcome: forwarded && upstream.ok ? "success" : "failure",
+					statusCode: upstream.status,
+					errorCode: responseOutcome.finish().errorCode ?? (forwarded ? null : "stream_forward_failed"),
+					...(scanner.result() ?? {}),
+				});
+            } catch (error) {
+                if (error instanceof ClientCancellationError || res.destroyed) {
+                    if (!res.destroyed) res.destroy();
+                    return;
+                }
+                throw error;
+            } finally {
+				res.off("close", abort);
+			}
+			return;
+		}
+
 		const upstreamUrl = buildUpstreamUrl(
 			req,
 			state.upstreamBaseUrl,
 			context.upstreamPath,
 		);
 		const attemptedIndexes = new Set<number>();
-		let catalogEligibleKeys: Set<string> | undefined;
-		const catalogExcludedIndexes = (): number[] => {
-			const eligibleKeys = catalogEligibleKeys;
-			if (!eligibleKeys) return [];
-			return accountManager.getAccountsSnapshot().filter(account => !eligibleKeys.has(catalogAccountKey(account))).map(account => account.index);
+		// The upstream's own capability 400/403/404, forwarded instead of a
+		// synthetic 503 when no other account can take the request.
+		let lastCapabilityRejection: { status: number; body: string; headers: Record<string, string>; account: ManagedAccount } | undefined;
+		// True while no other failure has followed the last capability rejection.
+		let capabilityRejectionIsLatest = false;
+		// Entitlements belong to the workspace, so each workspace is tried at most
+		// once per request even when several accounts share it.
+		const rejectedWorkspaces = new Set<string>();
+		const forwardCapabilityRejection = async (rejection: NonNullable<typeof lastCapabilityRejection>): Promise<void> => {
+			res.writeHead(rejection.status, rejection.headers);
+			res.end(rejection.body);
+			await usageRecorder?.record({ outcome: "failure", statusCode: rejection.status, errorCode: "upstream_capability_rejected", account: rejection.account });
 		};
+        let catalogEligibleKeys: Set<string> | undefined;
+        const catalogExcludedIndexes = (): number[] => {
+            const eligible = catalogEligibleKeys;
+            return eligible ? accountManager.getAccountsSnapshot().filter(account => !workspaceCandidates.has(account.index)).map(account => account.index) : [];
+        };
 		let exhaustionReason: ExhaustionReason = "no-account";
 		let accountCount = accountManager.getAccountCount();
 		let transientAttemptLimit = Math.max(
@@ -1435,33 +1676,56 @@ async function handleRequestInner(
 		// everything downstream — deterministic pick, no cursor advance, no
 		// stale-state recovery, the `codex_pinned_account_unavailable` failure —
 		// applies unchanged because it all keys off `pinnedIndex` / `isPinned`.
-		const pinnedIndex = state.forcedAccountIndex ?? storageMeta.pinnedAccountIndex;
+		const preferredIndex = state.nativeOpenai
+			? storageMeta.pinnedAccountIndex ?? accountManager.getCurrentAccountForFamily(context.family)?.index ?? null
+			: null;
+		const workspaceCandidates = new Map<number, ReturnType<typeof workspaceModelScopes>>();
+  const readSubscriptionQuota = state.readSubscriptionQuota;
+  const subscriptionQuotaCache = state.nativeOpenai && isResponsesRequest && readSubscriptionQuota ? await cachedRead(state, "subscription-quota", readSubscriptionQuota).catch(()=>null) ?? null : null;
+  const subscriptionQuotaByAccount: Record<number, SubscriptionQuotaPreference> = {};
+  const resetCreditState=state.nativeOpenai&&isResponsesRequest ? await cachedRead(state, "reset-credits", loadResetCreditState).catch(()=>null):null;
+  const quotaForScope = (account: ManagedAccount, scope: ReturnType<typeof workspaceModelScopes>[number]) => {
+   // Cached checks describe only the stored account binding, never its sibling workspaces.
+   const cached = scope.bound ? findQuotaCacheEntryForAccount(subscriptionQuotaCache,account,accountManager.getAccountsSnapshot()) : null;
+   const observed = state.subscriptionQuotaObservations?.get(JSON.stringify([scope.id,context.model]));
+   const reset=resetCreditState?.snapshots[scope.id];
+   if(reset && reset.updatedAt > Math.max(cached?.updatedAt??0,observed?.updatedAt??0) && reset.updatedAt <= state.now() && state.now()-reset.updatedAt<=60000)return resetSnapshotQuota(reset);
+   return observed && observed.updatedAt >= (cached?.updatedAt ?? 0) ? observed : cached;
+  };
+  // A stored `switch` pin is a hard constraint in native mode too (#702), not a
+  // preference: it fails with codex_pinned_account_unavailable rather than
+  // silently serving from another account.
+  const pinnedIndex = state.forcedAccountIndex ?? storageMeta.pinnedAccountIndex;
 		const isPinned = typeof pinnedIndex === "number";
 		if (state.nativeOpenai && (isModelsRequest || (isResponsesRequest && context.model))) {
 			const requestedVersion = incomingUrl.searchParams.get("client_version") ?? incomingHeaders.get("version");
-			// Unversioned requests use the stable unversioned catalog, never the last
-			// client's version: interleaved clients must not choose each other's catalog.
-			const clientVersion = requestedVersion && /^[0-9A-Za-z.+_-]{1,80}$/.test(requestedVersion) ? requestedVersion : undefined;
-            const versionKey = clientVersion ?? "";
-            const versions = state.catalogsByVersion ??= new Map();
+            const catalogClientVersion = requestedVersion && /^[0-9A-Za-z.+_-]{1,80}$/.test(requestedVersion) ? requestedVersion : undefined;
             const backoff = state.catalogBackoff ??= new Map();
-            state.modelCatalog = versions.get(versionKey);
+			const forceCatalogRefresh = isModelsRequest && incomingUrl.searchParams.get("refresh_capabilities") === "1";
+			// An explicit capability check is a deliberate retry: it must not stay
+			// parked behind an earlier throttle's backoff.
+			if (forceCatalogRefresh) backoff.clear();
+			const catalogsByVersion = state.modelCatalogs ??= new Map();
+			const versionKey = catalogClientVersion ?? "";
+			state.modelCatalog = catalogsByVersion.get(versionKey);
+			if (forceCatalogRefresh) state.modelCatalog?.refresh();
 			state.modelCatalog ??= new AccountModelCatalog(async (key) => {
-				const retryAt = backoff.get(key) ?? 0;
+                const retryAt = backoff.get(key) ?? 0;
                 if (retryAt > state.now()) throw new CatalogRetryError(retryAt - state.now());
                 backoff.delete(key);
-                const snapshot = state.activeAccountManager.getAccountsSnapshot().find(a => catalogAccountKey(a) === key);
-                const account = snapshot && state.activeAccountManager.getAccountByIndex(snapshot.index);
-                if (!account || account.enabled === false || account.authInvalidatedAt ||
+				const scope = state.activeAccountManager.getAccountsSnapshot().flatMap(workspaceModelScopes).find(s=>s.id===key && s.enabled);
+    const account = scope ? state.activeAccountManager.getAccountByIndex(scope.accountIndex) : null;
+				if (!account || account.enabled === false || account.authInvalidatedAt ||
                     (account.cooldownReason === "auth-failure" && (account.coolingDownUntil ?? 0) > state.now())) throw new Error("Account unavailable");
 				const fresh = await ensureFreshAccessToken({					accountManager: state.activeAccountManager, account,
 					family: "codex", model: null, now: state.now(), tokenRefreshSkewMs: state.tokenRefreshSkewMs,
 					tokenInvalidationCooldownMs: state.tokenInvalidationCooldownMs				});
 				if (!fresh.ok) throw new Error("Account authentication unavailable");
-				const accountId = resolveAccountId(fresh.account, fresh.accessToken);
+				const accountId = scope?.accountId;
 				if (!accountId) throw new Error("Account identity unavailable");
 				const url = new URL(state.upstreamBaseUrl);
 				url.pathname = url.pathname.replace(/\/+$/, "") + "/codex/models";
+				const clientVersion = catalogClientVersion;
 				if (clientVersion && /^[0-9A-Za-z.+_-]{1,80}$/.test(clientVersion)) url.searchParams.set("client_version", clientVersion);
 				const response = await state.fetchImpl(url.toString(), {					method: "GET", redirect: "error",
 					headers: createOutboundHeaders(new Headers(), fresh.account, fresh.accessToken, accountId),
@@ -1469,7 +1733,7 @@ async function handleRequestInner(
 				if (!response.ok) {
                     await response.body?.cancel();
                     if (response.status === 429) {
-                        const retryMs = Math.max(60_000, parseRetryAfterHeaderMs(response.headers, state.now()) ?? 60_000);
+                        const retryMs = clampCatalogRetryMs(parseRetryAfterHeaderMs(response.headers, state.now()));
                         if (backoff.size >= 100) backoff.delete(backoff.keys().next().value ?? "");
                         backoff.set(key, state.now() + retryMs);
                         throw new CatalogRetryError(retryMs);
@@ -1484,33 +1748,191 @@ async function handleRequestInner(
 				finally { await reader.cancel(); }
 				return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 			}, state.now);
-            if (!versions.has(versionKey)) {
-                if (versions.size >= 4) versions.delete(versions.keys().next().value ?? "");
-                versions.set(versionKey, state.modelCatalog);
-            }
+			const modelCatalog = state.modelCatalog;
+			if (catalogsByVersion.size >= 4 && !catalogsByVersion.has(versionKey)) catalogsByVersion.delete(catalogsByVersion.keys().next().value ?? "");
+			catalogsByVersion.set(versionKey, modelCatalog);
 			const eligible = accountManager.getAccountsSnapshot().filter(a => a.enabled !== false &&
 				(!isPinned || a.index === pinnedIndex) && !policyDecision?.blockedAccountIndexes.has(a.index));
 			if (isModelsRequest) {
 				const reference = state.catalogAccount;
-				const discovery = reference ? accountManager.getAccountsSnapshot().filter(a => a.enabled !== false && a.email === reference.email && a.accountId === reference.accountId) : eligible;
-				const catalog = state.modelCatalog;
-				const models = reference && discovery[0] ? await catalog.list(eligible.map(catalogAccountKey), catalogAccountKey(discovery[0])) : reference ? [] : await catalog.list(eligible.map(catalogAccountKey));
-				writeJson(res, models.length ? 200 : 503, models.length ? { models } : { error: { code: "account_catalog_unavailable", message: "No eligible account catalog is available." } });
+				const discovery = accountManager
+					.getAccountsSnapshot()
+					.filter((a) => a.enabled !== false)
+					.sort(
+						(a, b) =>
+							Number(
+								Boolean(
+									reference &&
+										b.email === reference.email &&
+										b.accountId === reference.accountId,
+								),
+							) -
+							Number(
+								Boolean(
+									reference &&
+										a.email === reference.email &&
+										a.accountId === reference.accountId,
+								),
+							),
+					);
+				const scopes = discovery.flatMap(workspaceModelScopes);
+				const enabledKeys = scopes.filter(scope => scope.enabled).map(scope => scope.id);
+				const routableKeys = scopes.filter(scope => scope.routable).map(scope => scope.id);
+				const oauthRefresh = modelCatalog.list(enabledKeys);
+				// Explicit check waits for all workspaces; picker discovery runs API and OAuth in parallel.
+				if (forceCatalogRefresh) await oauthRefresh;
+				const apiRuntime = getApiModelRuntime(state);
+				let apiConfigurationUnavailable = false;
+                const configuredRoutes = await state.readApiRoutes?.().catch(() => {
+                    apiConfigurationUnavailable = true;
+                    state.status.lastError = "api_configuration_unavailable";
+                    return [];
+                }) ?? [];
+				if (!apiConfigurationUnavailable && state.status.lastError === "api_configuration_unavailable") state.status.lastError = null;
+                state.catalogApiRoutes = configuredRoutes;
+				// Paid API probes respect the 15-minute cache unless `check capabilities` forces them.
+				const forceProbes = forceCatalogRefresh && incomingUrl.searchParams.get("force_probes") === "1";
+				const apiRefresh = apiRuntime.catalogs(configuredRoutes, forceCatalogRefresh, forceProbes, forceCatalogRefresh);
+				const pickerSnapshot = () => [
+					...modelCatalog.cachedList(routableKeys).filter(model => !/^(api|zdr)\//.test(model.slug)),
+					...buildVisibleModelUnion(apiRuntime.cachedCatalogs().flatMap(catalog => {
+						const route = configuredRoutes.find(route => route.id === catalog.id && route.enabled);
+						return route ? [{...catalog, visibleModels: route.visibleModels, priority: route.priority}] : [];
+					})),
+				];
+				const refresh = (async () => {
+				await oauthRefresh;
+				const apiCatalogs = await apiRefresh;
+				const oauthModels = modelCatalog.cachedList(routableKeys).filter(model => !/^(api|zdr)\//.test(model.slug));
+				const models = [...oauthModels, ...buildVisibleModelUnion(apiCatalogs)];
+				if (state.modelCatalog === modelCatalog) {
+					state.catalogOAuthModels = oauthModels;
+					setCatalogEtag(state, models);
+				}
+
+				await saveModelInventory(state.catalogInventory = {
+                    ...(apiConfigurationUnavailable ? {apiConfigurationUnavailable:true} : {}),
+					version: 1,
+					checkedAt: state.now(),
+					clientVersion: catalogClientVersion,
+					entries: [
+						...scopes.map((scope) => {
+							const entry = modelCatalog.snapshot(scope.id) ?? {
+								checkedAt: 0,
+								models: [],
+								error: true,
+							};
+							return {
+								...entry,
+								id:scope.id,label:scope.label,routable:scope.routable,bound:scope.bound,selected:scope.selected,
+        kind: "oauth" as const, enabled:scope.enabled,error:scope.enabled && entry.error,
+        visibleModels: scope.routable?entry.models:[],
+							};
+						}),
+						...apiRuntime
+							.statuses(configuredRoutes)
+							.map((a) => ({
+								id:modelScopeId(a.kind,a.id),label: a.label,
+								kind: a.kind,
+								enabled: apiCatalogs.some((c) => c.id === a.id && c.enabled),
+								checkedAt: a.checkedAt,
+								error: a.error,
+								models: a.availableModels,
+								visibleModels: a.visibleModels,
+ entitlements:a.entitlements,
+							})),
+					],
+				}).catch(() => {
+					state.status.lastError = "Model discovery status could not be saved";
+				});
+
+				return models;
+				})();
+				// Observe background failures even after the picker response has finished.
+				void refresh.catch(() => { state.status.lastError = "Background model catalog refresh failed"; });
+				let models: RouteModel[];
+				if (forceCatalogRefresh) models = await refresh;
+				else {
+					const cached = pickerSnapshot();
+					if (cached.length) models = cached;
+					else {
+						let timer: ReturnType<typeof setTimeout> | undefined;
+						try {
+							models = await Promise.race([refresh, new Promise<RouteModel[]>(resolve => {
+								timer = setTimeout(() => resolve(pickerSnapshot()), 2000);
+							})]);
+						} finally { if (timer) clearTimeout(timer); }
+					}
+				}
+				res.setHeader("etag", setCatalogEtag(state, models));
+
+				writeJson(
+					res,
+					models.length ? 200 : 503,
+					models.length
+						? { models }
+						: {
+								error: {
+									code: "account_catalog_unavailable",
+									message: "No eligible account catalog is available.",
+								},
+							},
+				);
 				return;
 			}
+
 			const requestedModel = context.model;
 			if (!requestedModel) throw new Error("Missing requested model");
-			// Concurrent: each cold catalog fetch may take up to 15s.
-			const catalog = state.modelCatalog;
-			const requestedSettings: unknown = JSON.parse(context.body.toString("utf8"));
-            const effort = isRecord(requestedSettings) && isRecord(requestedSettings.reasoning) && typeof requestedSettings.reasoning.effort === "string" ? requestedSettings.reasoning.effort : undefined;
-            const tier = isRecord(requestedSettings) && typeof requestedSettings.service_tier === "string" ? requestedSettings.service_tier : undefined;
-            const support = await mapWithConcurrency(eligible, 3, account => catalog.supports(catalogAccountKey(account), requestedModel, effort, tier));
-			catalogEligibleKeys = new Set(eligible.filter((_account, index) => support[index]).map(catalogAccountKey));
-			if (!support.some(Boolean)) {
-				writeJson(res, 403, { error: { code: "model_not_available_in_account_catalog", message: "Selected model is not advertised by an eligible account. Refresh account access or change the pin." } }); return;
+			const requestedBody = parseRequestBody(requestBody);
+			const effort = isRecord(requestedBody?.reasoning) && typeof requestedBody.reasoning.effort === "string" ? requestedBody.reasoning.effort : undefined;
+			const requestedTier = typeof requestedBody?.service_tier === "string" ? requestedBody.service_tier : undefined;
+			const failures = state.capabilityFailures ??= new RuntimeCapabilityFailures(state.now);
+			await modelCatalog.prepareRouting(
+				eligible.flatMap(workspaceModelScopes).filter(scope => scope.routable).map(scope => scope.id),
+				requestedModel, effort, requestedTier, key => failures.supports(key, requestedModel, effort, requestedTier),
+			);
+			if (res.destroyed || res.writableEnded) return;
+			let supported = 0;
+   catalogEligibleKeys = new Set();
+   for (const account of eligible) {
+    const candidates: ReturnType<typeof workspaceModelScopes> = [];
+    const scopes=workspaceModelScopes(account).filter(scope=>scope.routable).sort((a,b)=>Number(b.selected)-Number(a.selected)||Number(b.bound)-Number(a.bound));
+    for(const scope of scopes) {
+     // Fail open: an unknown catalog (outage/throttle) stays routable; only a fetched one excludes.
+     if(failures.supports(scope.id,requestedModel,effort,requestedTier) && modelCatalog.supportsForRouting(scope.id,requestedModel,effort,requestedTier)) candidates.push(scope);
+    }
+    if(candidates.length){
+     candidates.sort((a,b)=>compareSubscriptionQuota(subscriptionQuotaPreference(quotaForScope(account,a),state.now()),subscriptionQuotaPreference(quotaForScope(account,b),state.now())));
+     const first=candidates[0];
+     subscriptionQuotaByAccount[account.index]=subscriptionQuotaPreference(first?quotaForScope(account,first):null,state.now());
+     workspaceCandidates.set(account.index,candidates);catalogEligibleKeys.add(catalogAccountKey(account));supported++;
+    }
+
+   }
+			if (!supported) {
+				writeJson(res, 403, { error: { code: "model_not_available_in_account_catalog", message: "Selected model is not advertised by an eligible account. Refresh account access or account routing settings." } }); return;
 			}
 		}
+
+
+  if (state.nativeOpenai && isResponsesRequest && context.model && resetCreditState?.lastRedemptionAt !== undefined) {
+   for(const [index,scopes] of workspaceCandidates){const account=accountManager.getAccountByIndex(index);if(!account)continue;
+    for(const scope of scopes)applyConfirmedReset({account,scope,model:context.model,family:context.family,manager:accountManager,snapshot:resetCreditState.snapshots[scope.id],lastRedemptionAt:resetCreditState.lastRedemptionAt,
+     previous:state.subscriptionQuotaObservations?.get(JSON.stringify([scope.id,context.model])) ?? (scope.bound?findQuotaCacheEntryForAccount(subscriptionQuotaCache,account,accountManager.getAccountsSnapshot()):null),
+     observations:state.subscriptionQuotaObservations ??=new Map(),now:state.now(),clearQuotaScheduler:a=>state.preemptiveQuotaScheduler.clear(buildQuotaScheduleKey(a,context.family,context.model))});
+   }
+  }
+  if (state.nativeOpenai && isResponsesRequest && context.model && !isPinned) {
+   try {
+    await recoverResetQuota({model:context.model,family:context.family,native:true,pinned:false,manager:accountManager,
+     scopes:workspaceCandidates,quotaForScope,priorityByAccount:policyDecision?.priorityByAccount,preferredIndex:storageMeta.pinnedAccountIndex,service:createResetCreditService(accountManager),
+     observations:state.subscriptionQuotaObservations ??= new Map(),now:state.now,
+     clearQuotaScheduler:account=>state.preemptiveQuotaScheduler.clear(buildQuotaScheduleKey(account,context.family,context.model)),
+    });
+   } catch { state.status.lastError="Subscription reset recovery could not be confirmed; no further automatic redemption attempted."; }
+   // Recovery may have redeemed and written new reset state; the next request re-reads it.
+   state.readCache?.delete("reset-credits");
+  }
 
 		// The token bucket spreads load across a selectable pool. A pin has no
 		// alternative account, so exhausting that local heuristic can only reject a
@@ -1647,8 +2069,15 @@ async function handleRequestInner(
 			// non-reentrant FIFO queue. In legacy mode the inline `markSwitched`
 			// calls inside `chooseAccount` are used unchanged and no lock is taken,
 			// so default behavior and perf are identical to before.
-			const selectAccount = (): ManagedAccount | null =>
-				chooseAccount({
+			const selectAccount = (): ManagedAccount | null => {
+    for(const [index,scopes] of workspaceCandidates){
+     const account=accountManager.getAccountByIndex(index);
+     if(!account)continue;
+     scopes.sort((a,b)=>compareSubscriptionQuota(subscriptionQuotaPreference(quotaForScope(account,a),state.now()),subscriptionQuotaPreference(quotaForScope(account,b),state.now())));
+     const scope=scopes[0];
+     if(scope)subscriptionQuotaByAccount[index]=subscriptionQuotaPreference(quotaForScope(account,scope),state.now());
+    }
+				const result=chooseAccount({
 					accountManager,
 					sessionAffinityStore: state.sessionAffinityStore,
 					sessionKey: context.sessionKey,
@@ -1658,6 +2087,9 @@ async function handleRequestInner(
 					now: state.now(),
 					policy: policyDecision,
 					pinnedIndex,
+					preferredIndex,
+					subscriptionQuotaByAccount: state.nativeOpenai && isResponsesRequest ? subscriptionQuotaByAccount : undefined,
+					fallbackPinnedIndex: state.nativeOpenai ? storageMeta.pinnedAccountIndex : null,
 					skipReasons: accountSkipReasons,
 					stickyBoostByAccount: rotationStickyBoost,
 					pidOffsetEnabled: state.pidOffsetEnabled,
@@ -1669,6 +2101,8 @@ async function handleRequestInner(
 					// created for itself.
 					allowPinnedCooldown: isPinned && transientAttempts > 0,
 				});
+    return result;
+   };
 			const selected =
 				state.routingMutexMode === "enabled"
 					? await withRoutingMutex(state.routingMutexMode, async () => {
@@ -1717,8 +2151,16 @@ async function handleRequestInner(
 					)
 				) {
 					reloadedAfterNoAccount = true;
+                    const eligibilityIdentity = (manager: AccountManager) => JSON.stringify(manager.getAccountsSnapshot().map(account =>
+                        [account.recordId, account.enabled, account.authInvalidatedAt, workspaceModelScopes(account)]));
+                    const checkedInventory = state.nativeOpenai ? eligibilityIdentity(accountManager) : undefined;
 					const reloadedManager = await recoverStaleRuntimeState(state);
 					if (reloadedManager) {
+                        if (checkedInventory !== undefined && checkedInventory !== eligibilityIdentity(reloadedManager)) {
+                            res.setHeader("retry-after", "1");
+                            writeJson(res,503,{error:{code:"account_catalog_refresh_pending",message:"Account inventory changed; retry with refreshed eligibility."}});
+                            return;
+                        }
 						accountManager = reloadedManager;
 						accountCount = accountManager.getAccountCount();
 						transientAttemptLimit = Math.max(
@@ -1748,6 +2190,7 @@ async function handleRequestInner(
 					preemptiveDeferral.reason ?? "quota-near-exhaustion",
 				);
 				exhaustionReason = "rate-limit";
+				capabilityRejectionIsLatest = false;
 				accountManager.markRateLimitedWithReason(
 					selected,
 					preemptiveDeferral.waitMs,
@@ -1775,6 +2218,7 @@ async function handleRequestInner(
 			if (!admission.ok) {
 				accountSkipReasons.set(selected.index, admission.reason);
 				exhaustionReason = "rate-limit";
+				capabilityRejectionIsLatest = false;
 				// Neither gate can change inside this loop -- nothing here refills the
 				// bucket or closes a circuit -- and a pin has no other account to move
 				// to, so re-selecting would burn the whole 16-iteration ceiling
@@ -1804,6 +2248,7 @@ async function handleRequestInner(
 				// without reading the map at all, and the budget-boundary block
 				// below already records "auth-failure" for a pin out of retries.
 				exhaustionReason = "auth-failure";
+				capabilityRejectionIsLatest = false;
 				if (refreshed.invalidated) {
 					// Refresh endpoint explicitly revoked the token. Stop cascade:
 					// return auth error to client instead of rotating to the next account.
@@ -1829,7 +2274,19 @@ async function handleRequestInner(
 				continue;
 			}
 
-			const accountId = resolveAccountId(refreshed.account, refreshed.accessToken);
+			const pendingScopes = workspaceCandidates.get(refreshed.account.index);
+   // Revalidate enabled scopes after token refresh; never write a per-request choice to the account.
+   const enabledScopes = new Set(workspaceModelScopes(refreshed.account).filter(s=>s.routable).map(s=>s.id));
+   while(pendingScopes?.length && !enabledScopes.has(pendingScopes[0]?.id ?? "")) pendingScopes.shift();
+   if (pendingScopes && !pendingScopes.length) {
+    refundConsumedPoolToken(refreshed.account);
+    accountSkipReasons.set(refreshed.account.index, "workspace-disabled");
+    capabilityRejectionIsLatest = false;
+    if (isPinned) break;
+    continue;
+   }
+   const requestScope = pendingScopes?.[0];
+   const accountId = requestScope?.accountId ?? resolveAccountId(refreshed.account, refreshed.accessToken);
 			if (!accountId) {
 				refundConsumedPoolToken(refreshed.account);
 				accountManager.recordFailure(refreshed.account, context.family, context.model);
@@ -1845,6 +2302,7 @@ async function handleRequestInner(
 				// re-selects the still-broken account.
 				accountManager.saveToDiskDebounced();
 				exhaustionReason = "auth-failure";
+				capabilityRejectionIsLatest = false;
 				transientAttempts += 1;
 				transientExhaustionReason = "auth-failure";
 				state.status.retries += 1;
@@ -1852,8 +2310,41 @@ async function handleRequestInner(
 				continue;
 			}
 
+			if (rejectedWorkspaces.has(accountId)) {
+				// This workspace already rejected the model or setting for this request.
+				refundConsumedPoolToken(refreshed.account);
+				if (pendingScopes && pendingScopes.length > 1) {
+					pendingScopes.shift();
+					attemptedIndexes.delete(refreshed.account.index);
+				} else {
+					policyDecision?.blockedAccountIndexes.add(refreshed.account.index);
+				}
+				continue;
+			}
+
+			if (state.nativeOpenai && state.readNativeAccountStorage) {
+				const latestSnapshot = await state.readNativeAccountStorage();
+                const latest = latestSnapshot.storage;
+                const retained = latestSnapshot.transientFailure && latestSnapshot.routingAvailable === true && (apiKeyClient || await nativeOAuth())
+                    ? state.activeAccountManager.getAccountsSnapshot().find(item => item.recordId === refreshed.account.recordId)
+                    : undefined;
+				const disk = latest?.accounts.find(item => item.recordId && item.recordId === refreshed.account.recordId)
+					?? latest?.accounts.find(item => item.accountId === refreshed.account.accountId && sanitizeEmail(item.email) === sanitizeEmail(refreshed.account.email)) ?? retained;
+				const workspace = disk?.workspaces?.find(item => item.id.trim() === accountId);
+				// Derive the stored binding exactly as workspaceModelScopes does: trimmed,
+				// falling back to the token's workspace claim when no id was stored.
+				// A stored record carries accessToken; the transient-grace fallback is a live account (access).
+				const diskToken = (disk as { accessToken?: string } | undefined)?.accessToken ?? (disk as { access?: string } | undefined)?.access;
+				const diskBoundId = disk ? disk.accountId?.trim() || extractAccountId(diskToken)?.trim() : undefined;
+				const stillEligible = disk && disk.enabled !== false && !disk.authInvalidatedAt &&
+					(workspace ? workspace.enabled !== false : accountId === diskBoundId);
+				if (!stillEligible) {
+					writeJson(res, 503, {error:{code:"routing_configuration_changed",message:"Routing eligibility changed while preparing the request. Retry with the current configuration."}});
+					return;
+				}
+			}
 			const accountIdentity = accountIdentityFromAccount(refreshed.account, state.now());
-			recordLastRuntimeAccount(state.status, accountIdentity);
+			recordLastRuntimeAccount(state.status, accountIdentity, accountId);
 
 			const outboundHeaders = createOutboundHeaders(
 				context.headers,
@@ -1894,6 +2385,7 @@ async function handleRequestInner(
 				const fetchTimeoutMs = isImageRequest
 					? Math.max(state.fetchTimeoutMs, 300_000)
 					: state.fetchTimeoutMs;
+				if (isResponsesRequest || isImageRequest) recordRuntimeInferenceRequest(inferenceAccountKey(refreshed.account), state.now());
 				upstream = await withTimeout(
 					state.fetchImpl(upstreamUrl, upstreamRequestInit),
 					fetchTimeoutMs,
@@ -1901,6 +2393,11 @@ async function handleRequestInner(
 					`upstream fetch timed out after ${fetchTimeoutMs}ms`,
 				);
 			} catch (error) {
+                if (clientGone() || (error instanceof ClientCancellationError)) {
+                    refundConsumedPoolToken(refreshed.account);
+                    if (!res.destroyed) res.destroy();
+                    return;
+                }
 				// errors-logging-08: a custom fetchImpl, a proxy agent, or an undici
 				// cause chain can embed the request URL or credential material in the
 				// raw message, so mask before it reaches any state.status consumer.
@@ -1951,6 +2448,7 @@ async function handleRequestInner(
 				accountManager.saveToDiskDebounced();
 				accountSkipReasons.set(refreshed.account.index, "network-error");
 				exhaustionReason = "network-error";
+				capabilityRejectionIsLatest = false;
 				transientAttempts += 1;
 				transientExhaustionReason = "network-error";
 				state.status.retries += 1;
@@ -1960,15 +2458,49 @@ async function handleRequestInner(
 				res.off("close", onClientClose);
 			}
 			reconcileManualSelection();
-			const quotaSnapshot = readQuotaSchedulerSnapshot(
-				upstream.headers,
-				upstream.status,
-				state.now(),
-			);
-			if (quotaSnapshot) {
-				state.preemptiveQuotaScheduler.update(quotaScheduleKey, quotaSnapshot);
-			}
+			const observeQuota = (snapshot: QuotaSchedulerSnapshot, planType?: string): void => {
+				const previous = requestScope ? quotaForScope(refreshed.account, requestScope) : undefined;
+				const merged = {
+					...snapshot,
+					primary: snapshot.primary.usedPercent === undefined ? previous?.primary ?? snapshot.primary : snapshot.primary,
+					secondary: snapshot.secondary.usedPercent === undefined ? previous?.secondary ?? snapshot.secondary : snapshot.secondary,
+				};
+				state.preemptiveQuotaScheduler.update(quotaScheduleKey, merged);
+				if (state.nativeOpenai && requestScope && isResponsesRequest) {
+					const observations = state.subscriptionQuotaObservations ??= new Map();
+					const key = JSON.stringify([requestScope.id, context.model]);
+					if (observations.size >= 1000 && !observations.has(key)) observations.delete(observations.keys().next().value ?? "");
+					observations.set(key, { ...merged, model: context.model ?? "unknown", planType: planType ?? previous?.planType });
+				}
+			};
+			const quotaSnapshot = readQuotaSchedulerSnapshot(upstream.headers, upstream.status, state.now());
+			if (quotaSnapshot) observeQuota(quotaSnapshot, upstream.headers.get("x-codex-plan-type") ?? undefined);
 
+			if (isResponsesRequest && context.model && [400,403,404].includes(upstream.status)) {
+    const errorBody = await readErrorBody(upstream,state.streamStallTimeoutMs,65536);
+    let data:unknown;try {data=JSON.parse(errorBody);}catch {data=null;}
+    // Learning and rotating on capability rejections is native-only; other
+    // proxies forward the upstream 4xx as they always have.
+    const failure=state.nativeOpenai ? classifyCapabilityFailure(upstream.status,data) : null;
+    upstream=new Response(errorBody,{status:upstream.status,headers:upstream.headers});
+    if(failure){
+     lastCapabilityRejection={status:upstream.status,body:errorBody,headers:responseHeadersForClient(upstream.headers),account:refreshed.account};
+     const body=parseRequestBody(context.body);
+     const effort=isRecord(body?.reasoning)&&typeof body.reasoning.effort==="string"?body.reasoning.effort:undefined;
+     const tier=typeof body?.service_tier==="string"?body.service_tier:undefined;
+     (state.capabilityFailures??=new RuntimeCapabilityFailures(state.now)).record(requestScope?.id ?? catalogAccountKey(refreshed.account),context.model,failure,effort,tier);
+     rejectedWorkspaces.add(accountId);capabilityRejectionIsLatest=true;
+     if(pendingScopes && pendingScopes.length>1){
+      pendingScopes.shift();attemptedIndexes.delete(refreshed.account.index);refundConsumedPoolToken(refreshed.account);state.status.retries++;continue;
+     }
+     policyDecision?.blockedAccountIndexes.add(refreshed.account.index);
+     refundConsumedPoolToken(refreshed.account);
+     if(!isPinned){state.status.retries++;noteRotation();continue;}
+     writeJson(res,upstream.status,{error:{code:"pinned_model_capability_rejected",message:"The pinned account rejected this model or setting; no other account was used."}});
+     await usageRecorder.record({outcome:"failure",statusCode:upstream.status,errorCode:"pinned_model_capability_rejected",account:refreshed.account});
+     return;
+    }
+   }
 			if (upstream.status === HTTP_STATUS.TOO_MANY_REQUESTS) {
 				const bodyText = await readErrorBody(upstream, state.streamStallTimeoutMs);
 				// Keep the upstream HINT separate from the 60s fallback. Passing the
@@ -2017,6 +2549,7 @@ async function handleRequestInner(
 				);
 				accountManager.saveToDiskDebounced();
 				exhaustionReason = "rate-limit";
+				capabilityRejectionIsLatest = false;
 				transientAttempts += 1;
 				transientExhaustionReason = "rate-limit";
 				state.status.retries += 1;
@@ -2028,6 +2561,14 @@ async function handleRequestInner(
 				const bodyText = await readErrorBody(upstream, state.streamStallTimeoutMs);
 				const errorCode = extractErrorCodeFromBody(bodyText);
 				if (isWorkspaceDisabledError(upstream.status, errorCode, bodyText)) {
+     if(requestScope && refreshed.account.workspaces?.length) {
+      if(accountManager.disableWorkspace(refreshed.account,requestScope.accountId)) accountManager.saveToDiskDebounced();
+      pendingScopes?.shift();
+      refundConsumedPoolToken(refreshed.account);
+      if(pendingScopes?.length) attemptedIndexes.delete(refreshed.account.index);
+      else policyDecision?.blockedAccountIndexes.add(refreshed.account.index);
+      state.status.retries++;noteRotation();continue;
+     }
 					const accountWasEnabled =
 						accountManager.getAccountByIndex(refreshed.account.index)?.enabled !==
 						false;
@@ -2043,6 +2584,7 @@ async function handleRequestInner(
 					}
 					state.sessionAffinityStore?.forgetSession(context.sessionKey);
 					exhaustionReason = "deactivated";
+					capabilityRejectionIsLatest = false;
 					state.status.retries += 1;
 					noteRotation();
 					continue;
@@ -2163,6 +2705,7 @@ async function handleRequestInner(
 				);
 				accountManager.saveToDiskDebounced();
 				exhaustionReason = "auth-failure";
+				capabilityRejectionIsLatest = false;
 				transientAttempts += 1;
 				transientExhaustionReason = "auth-failure";
 				state.status.retries += 1;
@@ -2215,6 +2758,7 @@ async function handleRequestInner(
 				);
 				accountManager.saveToDiskDebounced();
 				exhaustionReason = "server-error";
+				capabilityRejectionIsLatest = false;
 				transientAttempts += 1;
 				transientExhaustionReason = "server-error";
 				state.status.retries += 1;
@@ -2249,14 +2793,12 @@ async function handleRequestInner(
 				return;
 			}
 
-			accountManager.recordSuccess(refreshed.account, context.family, context.model);
 			// A successful request proves the account is usable, so clear any
 			// stale runtime skip reason persisted for it on a prior pool
 			// exhaustion. Without this the overlay reason (e.g. "token-exhausted",
 			// "rate-limited") lingers on disk until an explicit runtime reset and
 			// the forecast keeps reporting this working account as unavailable.
 			// No-op when no reason is recorded, so the hot path stays write-free.
-			recordRuntimeAccountRecovery(refreshed.account.index);
 			const quotaDeferral = state.preemptiveQuotaScheduler.getDeferral(
 				quotaScheduleKey,
 				state.now(),
@@ -2299,14 +2841,25 @@ async function handleRequestInner(
 			// evaluateBudgetGuard compares `0 >= limit` for maxTokens/maxCostUsd
 			// and those caps never fire — `budget set --cost 50` would allow
 			// unlimited spend, with only --requests actually enforced.
+			const responseOutcome = new ResponseOutcome(isResponsesRequest && upstream.headers.get("content-type")?.includes("text/event-stream") === true);
 			const usageScanner = createUsageStreamScanner({
 				contentType: upstream.headers.get("content-type"),
+				onEvent: (event) => {
+					responseOutcome.observe(event);
+					const snapshot = readSubscriptionQuotaEvent(event, state.now());
+					if (!snapshot) return;
+					observeQuota(snapshot, snapshot.planType);
+					state.status.streamQuotaUpdates = (state.status.streamQuotaUpdates ?? 0) + 1;
+					state.status.lastStreamQuotaUpdateAt = snapshot.updatedAt;
+				},
 			});
+			let streamErrored = false;
 			const forwarded = await forwardStreamingResponse(
 				upstream,
 				res,
 				state.status,
 				() => {
+					streamErrored = true;
 					// Deliberately NOT the pre-header transport policy above,
 					// which skips recordFailure (#677). By this point the
 					// upstream accepted the request and began responding, so a
@@ -2328,10 +2881,26 @@ async function handleRequestInner(
 				},
 				state.streamStallTimeoutMs,
 				usageScanner.push,
-				budgetAdvisory.level === "soft"
-					? buildContextBudgetHeaders(budgetAdvisory)
-					: undefined,
+				{...(budgetAdvisory.level === "soft" ? buildContextBudgetHeaders(budgetAdvisory) : {}),...(state.catalogEtag ? {"x-models-etag":state.catalogEtag} : {})},
+				() => {usageScanner.result();return responseOutcome.finish();},
 			);
+			// The client went away mid-stream: no upstream error, and the response was
+			// neither completed nor failed. That says nothing about the account.
+			const clientDisconnected = !forwarded && !streamErrored && !res.writableEnded;
+			if (forwarded && upstream.ok) {
+				accountManager.recordSuccess(refreshed.account, context.family, context.model);
+				recordRuntimeAccountRecovery(refreshed.account.index);
+			} else if (!clientDisconnected) {
+				state.sessionAffinityStore?.forgetSession(context.sessionKey);
+				const rejection = classifyCapabilityFailure(400, responseOutcome.rejection);
+				if (rejection && context.model) {
+					const body = parseRequestBody(context.body);
+					const effort = isRecord(body?.reasoning) && typeof body.reasoning.effort === "string" ? body.reasoning.effort : undefined;
+					const tier = typeof body?.service_tier === "string" ? body.service_tier : undefined;
+					const scope = workspaceModelScopes(refreshed.account).find(item => item.accountId === accountId);
+					(state.capabilityFailures ??= new RuntimeCapabilityFailures(state.now)).record(scope?.id ?? catalogAccountKey(refreshed.account), context.model, rejection, effort, tier);
+				}
+			}
 			// A stream that broke mid-flight still bills for whatever the upstream
 			// reported before the break, so record the counts on both outcomes.
 			const usageTokens = usageScanner.result();
@@ -2355,9 +2924,9 @@ async function handleRequestInner(
 				});
 			}
 			await usageRecorder.record({
-				outcome: forwarded ? "success" : "failure",
+				outcome: forwarded && upstream.ok ? "success" : clientDisconnected ? "cancelled" : "failure",
 				statusCode: upstream.status,
-				errorCode: forwarded ? null : "stream_forward_failed",
+				errorCode: clientDisconnected ? "client_disconnected" : responseOutcome.finish().errorCode ?? (forwarded ? null : "stream_forward_failed"),
 				account: refreshed.account,
 				...(usageTokens ?? {}),
 			});
@@ -2515,6 +3084,12 @@ async function handleRequestInner(
 			return;
 		}
 
+		// Forward the upstream capability rejection only when it is what ended the
+		// request; a later 429/5xx/transport failure reports itself instead.
+		if (lastCapabilityRejection && capabilityRejectionIsLatest && !isThreadGoalRequest) {
+			await forwardCapabilityRejection(lastCapabilityRejection);
+			return;
+		}
 		await usageRecorder?.record({
 			outcome: "failure",
 			statusCode: normalizeExhaustionStatus(exhaustionReason),

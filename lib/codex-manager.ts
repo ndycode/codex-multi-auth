@@ -1,3 +1,8 @@
+import { runResetsCommand } from "./codex-manager/commands/resets.js";
+import { loadResetCreditState } from "./runtime/account-reset-credits.js";
+import { loadApiRoutes } from "./api-route-store.js";
+import { loadInferenceRequestTimes } from "./runtime/inference-activity.js";
+import { loadModelInventory, refreshAndPrintModelInventory } from "./runtime/model-discovery-status.js";
 import {
 	AUTH_INVALIDATION_MARKER,
 	AccountManager,
@@ -81,6 +86,7 @@ import {
 	runVerifyFlagged as runRepairVerifyFlagged,
 } from "./codex-manager/repair-commands.js";
 import { runUninstallCommand } from "./codex-manager/commands/uninstall.js";
+import { clearAccountsAndCredentialSidecars } from "./storage/credential-sidecars.js";
 import { runForecastCommand } from "./codex-manager/commands/forecast.js";
 import { runInitConfigCommand } from "./codex-manager/commands/init-config.js";
 import { runReportCommand } from "./codex-manager/commands/report.js";
@@ -495,6 +501,10 @@ type CliCommandHandler = (rest: string[]) => number | Promise<number>;
  */
 const runListOrStatusCommand: CliCommandHandler = (rest) =>
 	runStatusCommand({
+		loadApiRoutes,
+		loadResetCreditState,
+		loadInferenceRequestTimes,
+		loadModelInventory,
 		setStoragePath,
 		getStoragePath,
 		loadAccounts,
@@ -504,7 +514,7 @@ const runListOrStatusCommand: CliCommandHandler = (rest) =>
 		loadRuntimeObservabilitySnapshot: loadPersistedRuntimeObservabilitySnapshot,
 		loadAppBindStatus: async () =>
 			getAppBindStatus()
-				.then((status) => (status.running ? status.router : null))
+				.then((status) => (status.running && status.router ? { ...status.router, nativeOpenai: status.state?.nativeOpenai === true } : null))
 				.catch(() => null),
 		loadAppHelperStatus: readAppRuntimeHelperAccountSignal,
 		loadQuotaCache,
@@ -568,7 +578,11 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 				saveAccounts,
 			}),
 	],
-	["check", () => runCheckCommand({ runHealthCheck })],
+	["check", (rest) => runCheckCommand({
+  runHealthCheck,
+  runResetCheck: () => runResetsCommand(["list", "--refresh"]),
+  runCapabilityCheck: () => refreshAndPrintModelInventory(console.log, { forceProbes: true }),
+ }, rest)],
 	[
 		"features",
 		() => runFeaturesCommand({ implementedFeatures: IMPLEMENTED_FEATURES }),
@@ -628,6 +642,7 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 			}),
 	],
 	["usage", (rest) => runUsageCommand(rest)],
+	["resets", (rest) => runResetsCommand(rest)],
 	[
 		"rotation",
 		(rest) =>
@@ -696,7 +711,9 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 	],
 	["fix", (rest) => runRepairFix(rest, createRepairCommandDeps())],
 	["doctor", (rest) => runRepairDoctor(rest, createRepairCommandDeps())],
-	["uninstall", (rest) => runUninstallCommand(rest, { clearAccounts })],
+	["uninstall", (rest) => runUninstallCommand(rest, {
+		clearAccounts: () => clearAccountsAndCredentialSidecars(clearAccounts),
+	})],
 	[
 		"config",
 		(rest) => {

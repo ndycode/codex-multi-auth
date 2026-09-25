@@ -238,7 +238,7 @@ describe("cli output contracts", () => {
 			"codex-multi-auth workspace <account> [workspace]",
 			"codex-multi-auth best [--live] [--json] [--model <model>]",
 			"codex-multi-auth forecast [--live] [--json] [--explain] [--model <model>] [--no-runtime-overlay]",
-			"codex-multi-auth account tag|untag|weight|pause|unpause|drain|undrain|note|policy list ...",
+			"codex-multi-auth account tag|untag|weight|priority|auto-prime|pause|unpause|drain|undrain|note|policy list ...",
 			"codex-multi-auth uninstall [--dry-run] [--json] [--clear-accounts]",
 			"codex-multi-auth verify-flagged [--dry-run|-n] [--json] [--no-restore]",
 			"codex-multi-auth verify [--paths | --flagged | --all] [--json]",
@@ -302,21 +302,16 @@ describe("cli output contracts", () => {
 
 			expect(result.exitCode).toBe(0);
 			const payload = parseSingleJsonObject(result);
-			expect(sortedKeys(payload)).toEqual([
-				"accountCount",
-				"accounts",
-				"activeIndex",
-				"pinnedAccountIndex",
-				"recommendationReason",
-				"recommendedIndex",
-				"runtimeInUseIndex",
-				"storageHealth",
-				"storagePath",
-			]);
+			expect(sortedKeys(payload)).toEqual(["accountCount", "accounts", "activeIndex", "apiAccounts", "lastRequestedWorkspace", "modelInventory", "pinnedAccountIndex", "recommendationReason", "recommendedIndex", "runtimeInUseIndex", "selectionMode", "storageHealth", "storagePath", "totalAccountCount"]);
 
 			expect(payload.storagePath).toBe(MOCK_STORAGE_PATH);
 			expect(payload.storageHealth).toBe("healthy");
 			expect(payload.accountCount).toBe(2);
+			expect(payload.apiAccounts).toEqual([]);
+			expect(payload.totalAccountCount).toBe(2);
+			expect(payload.selectionMode).toBe("legacy-pin");
+			expect(payload.modelInventory).toBeNull();
+			expect(payload.lastRequestedWorkspace).toBeNull();
 			expect(payload.activeIndex).toBe(0);
 			expect(payload.pinnedAccountIndex).toBeNull();
 			expect(payload.recommendedIndex).toBe(0);
@@ -327,15 +322,10 @@ describe("cli output contracts", () => {
 			expect(Array.isArray(accounts)).toBe(true);
 			expect(accounts).toHaveLength(2);
 			for (const account of accounts) {
-				expect(sortedKeys(account)).toEqual([
-					"current",
-					"enabled",
-					"index",
-					"label",
-					"lastUsed",
-					"markers",
-					"reason",
-				]);
+				expect(sortedKeys(account)).toEqual(["autoPrime", "automaticOrder", "current", "enabled", "forecastQuotaUpdatedAt", "forecastRiskLevel", "forecastRiskScore", "index", "label", "lastInferenceRequestAt", "lastUsed", "markers", "priority", "quotaDrainPerHour", "quotaResetAt", "reason", "resetCreditsAvailable", "resetCreditsCheckedAt", "selectionPreference", "subscriptionReserve"]);
+				expect(account.priority).toBeTypeOf("number");
+				expect(account.autoPrime).toBe(false);
+				expect(account.subscriptionReserve).toBeTypeOf("boolean");
 				expect(account.index).toBeTypeOf("number");
 				expect(account.label).toBeTypeOf("string");
 				expect(account.enabled).toBeTypeOf("boolean");
@@ -766,4 +756,9 @@ describe("cli output contracts", () => {
 			expect(payload.error).toBe("no accounts configured");
 		});
 	});
+});
+
+it("includes API in the login prompt choice hint",async()=>{
+ const {UI_COPY}=await import("../lib/ui/ui-copy.js");
+ expect(JSON.stringify(UI_COPY)).toContain("[api/a/c/b/x/s/d/g/f/q]");
 });

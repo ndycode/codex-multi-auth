@@ -39,6 +39,14 @@ Use it when you need a local Codex CLI multi-account workflow with visible accou
 
 ---
 
+## Optional automatic subscription priming
+
+Run `codex-multi-auth account auto-prime <index> on` to opt an account into
+periodic first-use checks by the running CLI/app router (every 15 minutes).
+It completes a tiny response only for an unused personal subscription and
+consumes subscription quota. The default is off; use `off` to disable it.
+Manual `check` still needs `--prime`. See the [command reference](docs/reference/commands.md).
+
 ## Why Developers Use It
 
 `codex-multi-auth` makes local Codex account state visible and recoverable. Instead of one opaque auth file, you get a named account pool, deterministic account switching, health-aware selection, JSON diagnostics for automation, and safe repair commands for stale or damaged local state. The architecture is designed for personal development workflows: credentials stay local, runtime rotation is loopback-only, and official Codex install paths keep owning the `codex` command.

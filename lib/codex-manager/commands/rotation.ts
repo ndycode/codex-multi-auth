@@ -826,7 +826,7 @@ export async function runRotationCommand(
 			}
 			const previousStoragePath = deps.getStoragePath();
             deps.setStoragePath(null);
-            let catalogStorage;
+            let catalogStorage: Awaited<ReturnType<typeof deps.loadAccounts>>;
             try { catalogStorage = await deps.loadAccounts(); }
             finally { deps.setStoragePath(previousStoragePath); }
             const account = catalogStorage?.accounts[catalogIndex];

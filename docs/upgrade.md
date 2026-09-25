@@ -230,6 +230,46 @@ No remote dashboard or hosted multi-user service is introduced. Data stays under
 
 ---
 
+## Downgrading From 2.17.0
+
+Account priority tiers (`codex-multi-auth account priority <index> <0..9>`) are
+stored as a `priority` field in `account-policies.json`. Versions before 2.17.0
+do not know that field and drop it the next time they write any account policy
+(pause, drain, tag, weight or note). After a downgrade and a policy edit, every
+account is back to the default tier; re-run `account priority` after upgrading
+again. The new `api-routes.json`, `reset-credits.json` and model discovery files
+are ignored by older versions and left in place.
+
+---
+
+## 2.17.0 Command Changes
+
+- `check` accepts one scope: `check accounts`, `check resets` or
+  `check capabilities`. Unknown arguments exit 1. An unscoped `check` also
+  refreshes reset-credit availability and model/capability discovery.
+- `check --prime` (or `check accounts --prime`) additionally sends a tiny
+  first-use request to genuinely unused Personal subscriptions, which starts
+  their quota windows. Manual and dashboard checks do not prime implicitly.
+- `account auto-prime <index> on|off` opts individual accounts into recurring
+  router checks (default off). While running, the CLI/app router checks every
+  15 minutes and can complete first-use probes for unused personal subscriptions.
+  These consume subscription quota. Hashed attempt timestamps in
+  `<accounts-file>.automatic-checks.json` prevent duplicate attempts across
+  router processes. API/ZDR credentials and reset credits are never used.
+  `status --json` and `account policy list --json` expose `autoPrime`.
+- API capability probes stay opt-in per credential. Plain `check` reuses
+  results younger than 15 minutes; `check capabilities` forces them.
+- `resets list|redeem|auto` manages subscription reset credits; redemption is
+  always explicit unless `resets auto last-resort` is set.
+- `login --api` opens the API/ZDR credential menu.
+- An interactive login with several workspaces and no unique Personal one asks
+  which to bind; a noninteractive login keeps the automatic choice and warns
+  with the `--org` remedy.
+- The new `ws` runtime dependency (and `@types/ws` for development) adds no npm
+  scripts, and no manual storage migration is needed.
+
+---
+
 ## Legacy Compatibility
 
 Legacy files may still be discovered during migration-only compatibility checks.

@@ -9,6 +9,7 @@ import { getCodexInstructions } from "./prompts/codex.js";
 import { mutateRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import type { RequestBody } from "./types.js";
 import { isRecord } from "./utils.js";
+import { FirstUseProbeError, finishSubscriptionFirstUse, needsSubscriptionFirstUse } from "./runtime/subscription-first-use.js";
 
 /**
  * Human-readable note shown when a live probe fails solely because the account
@@ -49,6 +50,8 @@ export interface CodexQuotaWindow {
 }
 
 export interface CodexQuotaSnapshot {
+	primingCompleted?: boolean;
+	primingFailure?: FirstUseProbeError["reason"];
 	status: number;
 	planType?: string;
 	activeLimit?: number;
@@ -343,6 +346,8 @@ export function formatQuotaSnapshotLine(snapshot: CodexQuotaSnapshot): string {
 }
 
 export interface ProbeCodexQuotaOptions {
+	signal?: AbortSignal;
+	primeUnusedSubscription?: boolean;
 	accountId: string;
 	accessToken: string;
 	model?: string;
@@ -377,9 +382,11 @@ export async function fetchCodexQuotaSnapshot(
 	let sawOtherFailure = false;
 
 	for (const model of models) {
+		options.signal?.throwIfAborted();
 		attemptedAnyModel = true;
 		try {
 			const instructions = await getCodexInstructions(model);
+			options.signal?.throwIfAborted();
 			const probeBody: RequestBody = {
 				model,
 				stream: true,
@@ -417,7 +424,7 @@ export async function fetchCodexQuotaSnapshot(
 					method: "POST",
 					headers,
 					body: JSON.stringify(probeBody),
-					signal: controller.signal,
+					signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal,
 				});
 			} finally {
 				clearTimeout(timeout);
@@ -425,6 +432,16 @@ export async function fetchCodexQuotaSnapshot(
 
 			const snapshotBase = parseQuotaSnapshotBase(response.headers, response.status);
 			if (snapshotBase) {
+				if (options.primeUnusedSubscription && needsSubscriptionFirstUse(snapshotBase, Date.now())) {
+					try {
+						await finishSubscriptionFirstUse(response, timeoutMs);
+						return { ...snapshotBase, model, primingCompleted: true };
+					} catch (error) {
+						// Keep valid quota data without retrying an accepted inference.
+						if (error instanceof FirstUseProbeError) return { ...snapshotBase, model, primingFailure: error.reason };
+						throw error;
+					}
+				}
 				try {
 					await response.body?.cancel();
 				} catch {
@@ -463,6 +480,8 @@ export async function fetchCodexQuotaSnapshot(
 			sawOtherFailure = true;
 			lastError = new Error("Codex response did not include quota headers");
 		} catch (error) {
+			options.signal?.throwIfAborted();
+			if (error instanceof FirstUseProbeError) throw error;
 			sawOtherFailure = true;
 			lastError = error instanceof Error ? error : new Error(String(error));
 		}

@@ -66,9 +66,10 @@ export function formatQuotaSnapshotForDashboard(
 	settings: DashboardDisplaySettings,
 	now = Date.now(),
 ): string {
-	if (!settings.showQuotaDetails) return "live session OK";
+	const status = snapshot.primingFailure ? `quota read OK; first-use probe unconfirmed (${snapshot.primingFailure})` : snapshot.primingCompleted ? "live session OK; first-use probe completed" : "live session OK";
+	if (!settings.showQuotaDetails) return status;
 	const summary = formatCompactQuotaSnapshot(snapshot, now, { showReset: true });
-	return summary ? `live session OK (${summary})` : "live session OK";
+	return summary ? `${status} (${summary})` : status;
 }
 
 export function quotaCacheEntryToSnapshot(

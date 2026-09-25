@@ -125,7 +125,7 @@ describe("readPinAndGenFromDisk strict mode", () => {
 		// Nothing on disk can be clobbered by the write that follows, and
 		// throwing here would mean storage could never be recreated: the
 		// recreation goes through the same save path. See the regression at
-		// "recreates storage that was deleted after a switch" below.
+		// "does not restore stale account state after an intentional clear" below.
 		const path = join(makeTmpDir("missing"), "accounts.json");
 		expect(readPinAndGenFromDisk(path, { strict: true })).toEqual({
 			pinnedAccountIndex: undefined,
@@ -284,29 +284,28 @@ describe("AccountManager.applyManualSelection", () => {
 });
 
 describe("AccountManager save resilience", () => {
-	it("recreates storage that was deleted after a switch", async () => {
-		// Regression: strict reads previously accepted a missing file only while
-		// affinityGeneration was 0, so any pool that had ever been switched could
-		// never recreate its storage; every later save threw ENOENT forever.
+	it("refuses to recreate deleted storage from a stale manager after a switch", async () => {
+        // A missing primary is authoritative. An in-flight daemon must not
+        // restore credentials removed after its snapshot was loaded.
+        const path = makeTmpStoragePath();
+        const storage = createStorage(2, {pinnedAccountIndex:1,affinityGeneration:5});
+        writeStorageFile(path,storage);setStoragePathDirect(path);
+        const manager = new AccountManager(undefined,storage);
+        rmSync(path,{force:true});
+        await expect(manager.saveToDisk()).rejects.toMatchObject({code:"ESTALE"});
+        expect(existsSync(path)).toBe(false);
+    });
+
+	it("does not restore stale account state after an intentional clear", async () => {
 		const path = makeTmpStoragePath();
-		const storage = createStorage(2, {
-			pinnedAccountIndex: 1,
-			affinityGeneration: 5,
-		});
+		const storage = createStorage(2, {pinnedAccountIndex: 1, affinityGeneration: 5});
 		writeStorageFile(path, storage);
 		setStoragePathDirect(path);
 		const manager = new AccountManager(undefined, storage);
-
-		rmSync(path, { force: true });
+		const { clearAccounts, loadAccounts } = await import("../lib/storage.js");
+		await clearAccounts();
 		await manager.saveToDisk();
-
-		expect(existsSync(path)).toBe(true);
-		const onDisk = JSON.parse(readFileSync(path, "utf8")) as {
-			affinityGeneration?: unknown;
-			pinnedAccountIndex?: unknown;
-		};
-		expect(onDisk.affinityGeneration).toBe(5);
-		expect(onDisk.pinnedAccountIndex).toBe(1);
+		expect((await loadAccounts())?.accounts ?? []).toEqual([]);
 	});
 
 	it("re-arms a debounced save that failed instead of dropping it", async () => {

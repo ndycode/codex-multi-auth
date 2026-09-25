@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { closeSync, existsSync, openSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -45,6 +46,15 @@ async function createTempRoot(prefix: string): Promise<string> {
 
 function sha256(content: string): string {
 	return createHash("sha256").update(content).digest("hex");
+}
+
+/** A loopback port that nothing listens on (bound, then released). */
+async function unusedPort(): Promise<number> {
+	const probe = createServer();
+	await new Promise<void>((r) => probe.listen(0, "127.0.0.1", () => r()));
+	const port = (probe.address() as import("node:net").AddressInfo).port;
+	await new Promise<void>((r) => probe.close(() => r()));
+	return port;
 }
 
 async function seedExistingAppBindState(params: {
@@ -2132,6 +2142,70 @@ describe("reviewed provider transitions",()=>{
   expect((await getAppBindStatus(options)).state?.catalogAccount).toBeUndefined();
   await bindCodexAppRuntimeRotation({...options,nativeOpenai:true});
   expect((await getAppBindStatus(options)).state?.catalogAccount).toBeUndefined();
+ });
+ it("allows a mode change when the recorded router pid now belongs to another process",async()=>{
+  const options=await fixture();
+  const freePort=await unusedPort();
+  await writeFile(resolveAppBindPaths(options).statusPath,JSON.stringify({pid:process.pid,baseUrl:`http://127.0.0.1:${freePort}`,port:freePort,startedAt:1,updatedAt:1}));
+  const verifyProcessIdentity=vi.fn(async()=>false);
+  await bindCodexAppRuntimeRotation({...options,nativeOpenai:true,verifyProcessIdentity});
+  expect((await getAppBindStatus(options)).state?.nativeOpenai).toBe(true);
+ });
+ it("starts a replacement router when the recorded router pid was recycled",async()=>{
+  const root=await createTempRoot("bind-recycled-router-");const codexHome=join(root,"codex-home");
+  const env={CODEX_MULTI_AUTH_DIR:join(root,"multi-auth"),CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME:codexHome};
+  await mkdir(codexHome,{recursive:true});await writeFile(join(codexHome,"config.toml"),'model="example"\n');
+  const routerScriptPath=join(root,"fake-router.mjs");
+  await writeFile(routerScriptPath,[
+   "import { mkdirSync, writeFileSync } from 'node:fs';",
+   "import { dirname } from 'node:path';",
+   "const args = process.argv.slice(2);",
+   "const statusPath = args[args.indexOf('--status') + 1];",
+   "mkdirSync(dirname(statusPath), { recursive: true });",
+   "writeFileSync(statusPath, JSON.stringify({ version: 1, state: 'running', pid: process.pid, startedAt: Date.now(), baseUrl: 'http://127.0.0.1:54323', updatedAt: Date.now() }) + '\\n', 'utf8');",
+   "process.on('SIGTERM', () => process.exit(0));",
+   "setInterval(() => undefined, 1000);",
+   "",
+  ].join("\n"),"utf8");
+  const options={platform:process.platform,home:root,env,nodePath:process.execPath,routerScriptPath};
+  // A port nothing listens on: the old router is gone.
+  const freePort=await unusedPort();
+  const oldUrl=`http://127.0.0.1:${freePort}`;
+  await seedExistingAppBindState({...options,port:freePort,baseUrl:oldUrl});
+  // The recorded router is gone and its pid now belongs to an unrelated live process.
+  await writeFile(resolveAppBindPaths(options).statusPath,JSON.stringify({version:1,state:"running",pid:process.pid,baseUrl:oldUrl,port:freePort,startedAt:1,updatedAt:1}));
+  let routerPid: number | null | undefined;
+  try {
+   const result=await bindCodexAppRuntimeRotation({...options,nativeOpenai:true,verifyProcessIdentity:async()=>false});
+   routerPid=result.status.router?.pid;
+   expect(result.status.state?.nativeOpenai).toBe(true);
+   expect(result.status.state?.baseUrl).toBe("http://127.0.0.1:54323");
+   expect(routerPid).not.toBe(process.pid);
+  } finally {
+   // Binding and cleanup use the same host platform and process-identity probe.
+   await unbindCodexAppRuntimeRotation(options);
+   const alive=(pid:number)=>{try{process.kill(pid,0);return true;}catch{return false;}};
+   if(routerPid&&routerPid!==process.pid){
+    const stopped=await vi.waitFor(()=>{if(alive(routerPid!))throw Error("router still running");return true;},{timeout:5000}).catch(()=>false);
+    if(!stopped)process.kill(routerPid,"SIGKILL");
+    expect(stopped).toBe(true);
+   }
+  }
+ },20_000);
+ it("refuses a mode change when a live router only fails its identity probe",async()=>{
+  const options=await fixture();
+  // Still serving at its recorded address: a false-negative identity probe (e.g. a Windows timeout).
+  const live=createServer((_req,res)=>{res.writeHead(401);res.end();});
+  await new Promise<void>(r=>live.listen(0,"127.0.0.1",()=>r()));
+  const liveUrl=`http://127.0.0.1:${(live.address() as import("node:net").AddressInfo).port}`;
+  const statusPath=resolveAppBindPaths(options).statusPath;
+  const status=JSON.stringify({version:1,state:"running",pid:process.pid,baseUrl:liveUrl,startedAt:1,updatedAt:1});
+  await writeFile(statusPath,status);
+  try {
+   await expect(bindCodexAppRuntimeRotation({...options,nativeOpenai:true,verifyProcessIdentity:async()=>false})).rejects.toThrow(/Could not confirm that the app router/);
+   expect(await readFile(statusPath,"utf8")).toBe(status);
+   expect((await getAppBindStatus(options)).state?.nativeOpenai).not.toBe(true);
+  } finally {live.closeAllConnections();await new Promise<void>(r=>live.close(()=>r()));}
  });
  it("allows a mode change with a dead recorded router",async()=>{
   const options=await fixture();

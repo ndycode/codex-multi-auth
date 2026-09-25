@@ -937,6 +937,15 @@ describe("codex-cli writer", () => {
     });
   });
 
+  it("does not acquire a filesystem lock when active-selection sync is disabled",async()=>{
+    process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI="0";
+    const lock=vi.spyOn(bindingLock,"withNativeBindingLock");
+    try {
+      expect(await setCodexCliActiveSelection({accountId:"fixture",accessToken:"fixture-access",refreshToken:"fixture-refresh"})).toBe(false);
+      expect(lock).not.toHaveBeenCalled();
+    } finally {lock.mockRestore();}
+  });
+
   describe("readTopLevelCodexCliAuthStoreMode", () => {
     it("reads a top-level assignment and ignores trailing comments", () => {
       expect(

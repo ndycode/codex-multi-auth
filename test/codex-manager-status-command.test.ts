@@ -1,3 +1,4 @@
+import { resetTargetForStoredAccount } from "../lib/runtime/account-reset-credits.js";
 import { describe, expect, it, vi } from "vitest";
 import {
 	type FeaturesCommandDeps,
@@ -103,6 +104,34 @@ function createRuntimeSnapshot(
 }
 
 describe("runStatusCommand", () => {
+	it("separates saved workspace selection from the last outgoing request scope", async () => {
+		const storage = createStorage();
+		storage.accounts[0]!.accountId = "stored-org";
+		storage.accounts[0]!.workspaces = [
+			{id:"subscription-id", name:"Subscription", enabled:true},
+			{id:"stored-org", name:"Business", enabled:true},
+		];
+		storage.accounts[0]!.currentWorkspaceIndex = 1;
+		const deps = createStatusDeps({
+			loadAccounts: async () => storage,
+			loadAppHelperStatus: () => ({source:"app-helper",lastAccountIndex:1,lastAccountUpdatedAt:2_000}),
+			loadRuntimeObservabilitySnapshot: async () => createRuntimeSnapshot({
+				lastAccountIndex:0, lastAccountId:"stored-org", lastAccountUpdatedAt:1_999,
+				lastRequestedWorkspaceId:"subscription-id",
+			}),
+		});
+		await runStatusCommand(deps);
+		const output = vi.mocked(deps.logInfo!).mock.calls.flat().join("\n");
+		expect(output).toContain("Business] id:ed-org (saved selection)");
+		expect(output).not.toContain("(active)");
+		expect(output).toContain("Last requested workspace: account 1 / Subscription");
+	});
+
+	it("does not infer an outgoing workspace from a saved selection", async () => {
+		const deps=createStatusDeps({loadRuntimeObservabilitySnapshot: async()=>createRuntimeSnapshot({lastAccountIndex:0,lastAccountUpdatedAt:1_999})});
+		await runStatusCommand(deps);
+		expect(vi.mocked(deps.logInfo!).mock.calls.flat().join("\n")).toContain("Last requested workspace: not recorded");
+	});
 	it("prints empty storage state", async () => {
 		const deps = createStatusDeps({ loadAccounts: vi.fn(async () => null) });
 
@@ -193,7 +222,7 @@ describe("runStatusCommand", () => {
 		expect(deps.logInfo).toHaveBeenCalledWith("Accounts (2)");
 		expect(deps.logInfo).toHaveBeenCalledWith("Storage: /tmp/codex.json");
 		expect(deps.logInfo).toHaveBeenCalledWith(
-			expect.stringContaining("Selection reason: account 1"),
+			expect.stringContaining("Forecast suggestion: account 1"),
 		);
 		expect(deps.logInfo).toHaveBeenCalledWith(
 			expect.stringContaining(
@@ -483,4 +512,132 @@ describe("runFeaturesCommand", () => {
 		expect(deps.logInfo).toHaveBeenCalledWith("1. Alpha");
 		expect(deps.logInfo).toHaveBeenCalledWith("2. Beta");
 	});
+});
+
+it("reports inference timestamps independently from old account activity",async()=>{
+ const {inferenceAccountKey}=await import("../lib/runtime/inference-activity.js");
+ const storage=createStorage();
+ const deps=createStatusDeps({loadRuntimeObservabilitySnapshot:async()=>createRuntimeSnapshot({lastInferenceRequestAtByAccount:{[inferenceAccountKey(storage.accounts[0]!)]:1500}})});
+ await runStatusCommand(deps);
+ expect(deps.logInfo).toHaveBeenCalledWith(expect.stringContaining("last inference request 0s ago"));
+ expect(deps.logInfo).toHaveBeenCalledWith(expect.stringContaining("inference not yet recorded; account activity"));
+ const jsonDeps=createStatusDeps({...deps,json:true,logInfo:vi.fn()});await runStatusCommand(jsonDeps);
+ const body=JSON.parse(vi.mocked(jsonDeps.logInfo!).mock.calls[0]![0]);
+ expect(body.accounts[0].lastInferenceRequestAt).toBe(1500);
+ expect(body.accounts[0].lastUsed).toBe(1);
+});
+
+it.each([true,false])("lists API/ZDR credentials with priority without exposing keys (subscription present: %s)",async subscriptions=>{
+ const routes=[{id:"fixture-api",label:"API fixture",kind:"api" as const,apiKey:"never-show-this-secret",enabled:true,priority:2,visibleModels:["fixture-model"]},{id:"fixture-zdr",label:"ZDR fixture",kind:"zdr" as const,apiKey:"other-private-secret",enabled:false,priority:0,visibleModels:[]}];
+ const deps=createStatusDeps({loadAccounts:async()=>subscriptions?createStorage():null,loadApiRoutes:async()=>routes});
+ await runStatusCommand(deps);
+ const output=vi.mocked(deps.logInfo!).mock.calls.flat().join("\n");
+ expect(output).toContain("API account 1: API fixture");expect(output).toContain("priority tier: 2");expect(output).toContain("ZDR account 2: ZDR fixture [disabled]");
+ expect(output).not.toContain("secret");
+ const jsonDeps={...deps,json:true,logInfo:vi.fn()};await runStatusCommand(jsonDeps);
+ const value=JSON.parse(jsonDeps.logInfo.mock.calls[0]![0]);
+ expect(value.apiAccounts).toHaveLength(2);expect(value.apiAccounts[0].priority).toBe(2);expect(value.apiAccounts[1].kind).toBe("zdr");
+ expect(JSON.stringify(value)).not.toContain("secret");
+});
+
+it("distinguishes configured priority tiers from forecast scores", async () => {
+ const logInfo=vi.fn();
+ await runStatusCommand(createStatusDeps({logInfo,loadAccountPolicies:async()=>({version:1,accounts:{}})}));
+ const output=logInfo.mock.calls.flat().join("\n");
+ expect(output).toContain("priority tier: 1");
+ expect(output).toContain("forecast risk:");
+ expect(output).toContain("lower is better");
+});
+
+it("colors status headings but keeps forced-color JSON clean", async () => {
+ const {setUiRuntimeOptions,resetUiRuntimeOptions}=await import("../lib/ui/runtime.js");
+ const {stripVTControlCharacters}=await import("node:util");
+ vi.stubEnv("FORCE_COLOR","1");setUiRuntimeOptions({});
+ try {
+  const logInfo=vi.fn();
+  const deps=createStatusDeps({logInfo,loadAccountPolicies:async()=>({version:1,accounts:{}})});
+  await runStatusCommand(deps);
+  const colored=logInfo.mock.calls.flat().join("\n");
+  expect(colored).toContain("\x1b[");
+  logInfo.mockClear();vi.stubEnv("FORCE_COLOR","0");
+  await runStatusCommand(deps);
+  expect(stripVTControlCharacters(colored)).toBe(logInfo.mock.calls.flat().join("\n"));
+  logInfo.mockClear();vi.stubEnv("FORCE_COLOR","1");
+  await runStatusCommand({...deps,json:true});
+  const json=logInfo.mock.calls.flat().join("\n");
+  expect(json).not.toContain("\x1b");
+  expect(JSON.parse(json).accounts[0]).toHaveProperty("forecastRiskScore");
+ } finally {vi.unstubAllEnvs();resetUiRuntimeOptions();}
+});
+
+it("reports a native pin as strict, with no fallback order, separately from the configured tier", async () => {
+ const logInfo=vi.fn();
+ const storage={...createStorage(),pinnedAccountIndex:0};
+ storage.accounts=[storage.accounts[0]!,{...storage.accounts[0]!,accountId:"fixture-other",email:"other@example.com",refreshToken:"fixture-other-refresh"}];
+ const deps=createStatusDeps({logInfo,loadAccounts:async()=>storage,loadAppBindStatus:async()=>({nativeOpenai:true,state:"running",pid:123,baseUrl:null,totalRequests:0,lastAccountIndex:null,lastAccountLabel:null,lastAccountEmail:null,lastAccountId:null,updatedAt:2000,lastError:null})});
+ await runStatusCommand(deps);
+ const text=logInfo.mock.calls.flat().join("\n");
+ expect(text).toContain("Pinned: account 1 (strict; set by switch)");
+ expect(text).not.toMatch(/fallback/);
+ expect(text).toContain("priority tier: 1");
+ expect(text).not.toMatch(/automatic order: #2/);
+ logInfo.mockClear();await runStatusCommand({...deps,json:true});
+ const accounts=JSON.parse(logInfo.mock.calls[0]![0]).accounts;
+ expect(accounts[0].selectionPreference).toBe("strict-pin");
+ expect(accounts[1].automaticOrder).toBeNull();
+});
+
+it("includes cached quota pressure in status risk without changing configured tiers", async () => {
+ const accounts=Array.from({length:3},(_,index)=>({accountId:`fixture-${index}`,refreshToken:`fixture-refresh-${index}`,addedAt:1,lastUsed:1}));
+ const entries=Object.fromEntries([65,95,95].map((used,index)=>[`fixture-${index}`,{updatedAt:1000,status:200,model:"fixture-model",primary:{},secondary:{usedPercent:used,resetAtMs:100000,windowMinutes:10080}}]));
+ const logInfo=vi.fn();
+ const deps=createStatusDeps({logInfo,json:true,loadAccounts:async()=>({version:3,activeIndex:2,accounts}),resolveActiveIndex:()=>2,loadAccountPolicies:async()=>({version:1,accounts:{}}),loadQuotaCache:async()=>({byAccountId:entries,byEmail:{}})});
+ await runStatusCommand(deps);
+ const result=JSON.parse(logInfo.mock.calls[0]![0]);
+ expect(result.accounts.map((a:{forecastRiskScore:number})=>a.forecastRiskScore)).toEqual([0,35,30]);
+ expect(result.accounts.map((a:{priority:number})=>a.priority)).toEqual([1,1,1]);
+ expect(result.accounts[1].forecastQuotaUpdatedAt).toBe(1000);
+ logInfo.mockClear();await runStatusCommand({...deps,json:false});
+ expect(logInfo.mock.calls.flat().join("\n")).toContain("cached quota 1s ago");
+});
+
+it("does not score expired quota windows and identifies missing quota inputs", async () => {
+ const logInfo=vi.fn();
+ await runStatusCommand(createStatusDeps({logInfo,loadQuotaCache:async()=>({byAccountId:{},byEmail:{"one@example.com":{updatedAt:1000,status:200,model:"fixture-model",primary:{usedPercent:99,resetAtMs:1500},secondary:{}}}})}));
+ const output=logInfo.mock.calls.flat().join("\n");
+ expect(output).toContain("quota unknown; run check");
+ expect(output).not.toContain("primary quota 99% used");
+});
+
+it("shows reset-aware subscription order separately from configured tiers and marks the five percent reserve",async()=>{
+ const now=2000;
+ const accounts=Array.from({length:3},(_,i)=>({accountId:`rank-${i}`,refreshToken:`fixture-${i}`,addedAt:1,lastUsed:1}));
+ const cache={byEmail:{},byAccountId:Object.fromEntries([[20,24],[40,2],[5,1]].map(([left,hours],i)=>[`rank-${i}`,{updatedAt:now,status:200,model:"fixture",planType:"pro",primary:{},secondary:{usedPercent:100-left!,resetAtMs:now+hours!*3600000}}]))};
+ const logInfo=vi.fn();
+ const deps=createStatusDeps({logInfo,json:true,loadAccounts:async()=>({version:3,activeIndex:0,accounts}),loadQuotaCache:async()=>cache,loadAccountPolicies:async()=>({version:1,accounts:{}}),loadAppBindStatus:async()=>({nativeOpenai:true,state:"running",pid:123,baseUrl:null,totalRequests:0,lastAccountIndex:null,lastAccountLabel:null,lastAccountEmail:null,lastAccountId:null,updatedAt:now,lastError:null})});
+ await runStatusCommand(deps);
+ const result=JSON.parse(logInfo.mock.calls[0]![0]);
+ expect(result.accounts.map((a:{automaticOrder:number})=>a.automaticOrder)).toEqual([2,1,3]);
+ expect(result.accounts[2].subscriptionReserve).toBe(true);
+ logInfo.mockClear();await runStatusCommand({...deps,json:false});
+ expect(logInfo.mock.calls.flat().join("\n")).toContain("automatic order: #1");
+ expect(logInfo.mock.calls.flat().join("\n")).toContain("5% reserve");
+});
+
+it("shows cached reset counts for the saved workspace and distinguishes unknown",async()=>{
+ const storage=createStorage();storage.accounts[0]!.accountId="workspace";
+ const target=resetTargetForStoredAccount(storage.accounts[0]!)!;
+ const deps=createStatusDeps({loadAccounts:async()=>storage,json:true,loadResetCreditState:async()=>({version:1,policy:"manual",snapshots:{[target.key]:{updatedAt:1000,availableCount:3,ordinaryUsageAllowed:false,planType:"pro",primary:{},secondary:{}}}})});
+ await runStatusCommand(deps);const output=JSON.parse(vi.mocked(deps.logInfo!).mock.calls[0]![0]);expect(output.accounts[0].resetCreditsAvailable).toBe(3);expect(output.accounts[0].resetCreditsCheckedAt).toBe(1000);expect(output.accounts[1].resetCreditsAvailable).toBeNull();
+});
+
+it("continues subscription status with a visible warning if API configuration cannot be read",async()=>{
+ const deps=createStatusDeps({loadApiRoutes:async()=>{throw Error('fixture invalid config');}});
+ expect(await runStatusCommand(deps)).toBe(0);
+ expect(JSON.stringify(vi.mocked(deps.logInfo).mock.calls)).toMatch(/API.*unavailable/);
+});
+it("keeps status readable when an injected policy loader fails",async()=>{
+ const deps=createStatusDeps({json:true,loadAccountPolicies:vi.fn().mockRejectedValue(Error("fixture permission"))});
+ await expect(runStatusCommand(deps)).resolves.toBe(0);
+ expect(JSON.parse(vi.mocked(deps.logInfo!).mock.calls.at(-1)![0]).accounts[0].priority).toBe(1);
 });
