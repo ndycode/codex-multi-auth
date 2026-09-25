@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { withFileTransactionLock } from '../storage/file-lock.js';
 import { mapWithConcurrency } from '../concurrency.js';
 import type { QuotaCacheEntry } from '../quota-cache.js';
+import { MAX_RATE_LIMIT_DELAY_MS } from '../constants.js';
 
 export interface ResetTarget { key: string; accountId: string }
 const windowSchema=z.object({usedPercent:z.number().min(0).max(100).optional(),resetsAt:z.number().nonnegative().nullish(),windowDurationMins:z.number().nonnegative().nullish()});
@@ -22,7 +23,9 @@ export function parseResetSnapshot(value:unknown,accountId:string,now:number):Re
  return {updatedAt:now,availableCount:parsed.rateLimitResetCredits?.availableCount??null,ordinaryUsageAllowed:parsed.ordinaryUsageAllowed??null,planType:parsed.rateLimits.planType??null,primary:parsed.rateLimits.primary??{},secondary:parsed.rateLimits.secondary??{}};
 }
 export function resetSnapshotQuota(snapshot:ResetSnapshot):QuotaCacheEntry {
- const window=(w:ResetSnapshot['primary'])=>({usedPercent:w.usedPercent,resetAtMs:typeof w.resetsAt==='number'?w.resetsAt*1000:undefined,windowMinutes:w.windowDurationMins??undefined});
+ // A bogus resetsAt must not read as a window that never resets.
+ const resetAtMs=(s:number|null|undefined)=>typeof s==='number'&&Number.isFinite(s)?Math.min(s*1000,snapshot.updatedAt+MAX_RATE_LIMIT_DELAY_MS):undefined;
+ const window=(w:ResetSnapshot['primary'])=>({usedPercent:w.usedPercent,resetAtMs:resetAtMs(w.resetsAt),windowMinutes:w.windowDurationMins??undefined});
  return {updatedAt:snapshot.updatedAt,status:200,model:'usage-read',planType:snapshot.planType??undefined,primary:window(snapshot.primary),secondary:window(snapshot.secondary)};
 }
 export function isResetSubscription(snapshot:ResetSnapshot):boolean {

@@ -313,6 +313,24 @@ describe("quota-probe", () => {
 		expect(snapshot.secondary.resetAtMs).toBe(secondaryMs);
 	});
 
+	it("clamps absurd reset headers to the rate-limit horizon instead of an endless window", async () => {
+		const { MAX_RATE_LIMIT_DELAY_MS } = await import("../lib/constants.js");
+		const headers = new Headers({
+			"x-codex-primary-used-percent": "100",
+			"x-codex-primary-reset-after-seconds": "1" + "0".repeat(307),
+			"x-codex-secondary-used-percent": "100",
+			"x-codex-secondary-reset-at": "9".repeat(300),
+		});
+		vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200, headers })));
+		const before = Date.now();
+		const snapshot = await fetchCodexQuotaSnapshot({ accountId: "acc-huge-reset", accessToken: "token-huge-reset", model: "gpt-5-codex", fallbackModels: [] });
+		for (const window of [snapshot.primary, snapshot.secondary]) {
+			expect(Number.isFinite(window.resetAtMs)).toBe(true);
+			expect(window.resetAtMs).toBeGreaterThanOrEqual(before + MAX_RATE_LIMIT_DELAY_MS);
+			expect(window.resetAtMs).toBeLessThanOrEqual(Date.now() + MAX_RATE_LIMIT_DELAY_MS);
+		}
+	});
+
 	it("keeps resetAt undefined for invalid reset-at values", async () => {
 		const headers = new Headers({
 			"x-codex-primary-used-percent": "not-a-number",

@@ -1,4 +1,4 @@
-import { CODEX_BASE_URL } from "./constants.js";
+import { CODEX_BASE_URL, MAX_RATE_LIMIT_DELAY_MS } from "./constants.js";
 import { createCodexHeaders, getUnsupportedCodexModelInfo } from "./request/fetch-helpers.js";
 import {
 	QUOTA_PROBE_MODEL_CHAIN,
@@ -108,6 +108,13 @@ function parseFiniteIntHeader(headers: Headers, name: string): number | undefine
  * Security: does not emit or persist header values; callers must redact any sensitive tokens before storing or logging headers.
  */
 function parseResetAtMs(headers: Headers, prefix: string): number | undefined {
+	const raw = parseUnboundedResetAtMs(headers, prefix);
+	// A bogus header (finite, but overflowing once scaled to ms) must not read as
+	// a window that never resets.
+	return raw === undefined || Number.isNaN(raw) ? undefined : Math.min(raw, Date.now() + MAX_RATE_LIMIT_DELAY_MS);
+}
+
+function parseUnboundedResetAtMs(headers: Headers, prefix: string): number | undefined {
 	const resetAfterSeconds = parseFiniteIntHeader(headers, `${prefix}-reset-after-seconds`);
 	if (typeof resetAfterSeconds === "number" && resetAfterSeconds > 0) {
 		return Date.now() + resetAfterSeconds * 1000;

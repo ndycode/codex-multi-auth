@@ -127,3 +127,12 @@ describe('future-dated timestamps after a backwards clock step',()=>{
   await expect(f.service.redeem(target('a'))).rejects.toThrow(/just redeemed/);
  });
 });
+
+it('clamps an absurd resetsAt to the rate-limit horizon and drops a non-finite one',async()=>{
+ const {resetSnapshotQuota}=await import('../lib/runtime/reset-credits.js');
+ const {MAX_RATE_LIMIT_DELAY_MS}=await import('../lib/constants.js');
+ const quota=resetSnapshotQuota({updatedAt:1000,availableCount:0,ordinaryUsageAllowed:false,planType:'pro',primary:{usedPercent:100,resetsAt:1.7976931348623157e308},secondary:{usedPercent:100,resetsAt:Number.POSITIVE_INFINITY}});
+ expect(quota.primary.resetAtMs).toBe(1000+MAX_RATE_LIMIT_DELAY_MS);
+ expect(quota.secondary.resetAtMs).toBeUndefined();
+ expect(resetSnapshotQuota({updatedAt:1000,availableCount:0,ordinaryUsageAllowed:false,planType:'pro',primary:{resetsAt:2000},secondary:{}}).primary.resetAtMs).toBe(2000000);
+});

@@ -172,3 +172,10 @@ describe("account rate-limit helpers", () => {
 		});
 	});
 });
+
+describe("formatWaitTime with non-finite input", () => {
+	it.each([Number.POSITIVE_INFINITY, Number.NaN])("returns a readable string for %s", async (ms) => {
+		const { formatWaitTime } = await import("../lib/accounts/rate-limits.js");
+		expect(formatWaitTime(ms)).not.toMatch(/NaN|Infinity/);
+	});
+});
