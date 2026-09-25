@@ -151,37 +151,59 @@ export async function withDeadPids<T>(
 	// a process-table or fd limit and fail the spawn — which would surface as a
 	// fixture error indistinguishable from the bug under test. Batching keeps the
 	// instantaneous footprint small while still yielding `count` distinct PIDs.
+	//
+	// Windows draws PIDs from a shared pool and hands a just-reaped one straight
+	// back out — to the next batch here, or to any other process on the machine.
+	// So PIDs are collected as a set, and any that come back to life before the
+	// hand-over are dropped and replaced with fresh ones rather than failing
+	// the fixture; only a machine that keeps recycling them round after round
+	// still throws.
 	const batchSize = 32;
-	const deadPids: number[] = [];
-	for (let offset = 0; offset < count; offset += batchSize) {
-		const size = Math.min(batchSize, count - offset);
-		const children = Array.from({ length: size }, () => spawnChild());
-		const pids = children.map((child) => child.pid);
-		// Reap the whole batch first — including any child that failed to spawn,
-		// which `waitForExit` now settles on `error` — and only then decide whether
-		// the batch was usable. Throwing before the cleanup would leak the
-		// siblings that did start.
-		await Promise.all(
-			children.map(async (child) => {
-				killChild(child);
-				await waitForExit(child);
-			}),
-		);
-		if (pids.some((pid) => pid === undefined)) {
-			throw new Error(
-				"owned-pids: failed to spawn a probe process while building a dead-PID batch",
-			);
+	const maxBatches = 10 * Math.ceil(count / batchSize);
+	const deadPids = new Set<number>();
+	let recycled: number[] = [];
+	let batches = 0;
+	for (;;) {
+		while (deadPids.size < count) {
+			batches += 1;
+			if (batches > maxBatches) {
+				throw new Error(
+					`owned-pids: pid(s) ${recycled.join(", ")} were recycled between ` +
+						"reaping them and using them; this fixture needs PIDs that stay dead",
+				);
+			}
+			await spawnAndReapBatch(spawnChild, Math.min(batchSize, count - deadPids.size), deadPids);
 		}
-		deadPids.push(...(pids as number[]));
+		recycled = [...deadPids].filter((pid) => isPidAlive(pid));
+		if (recycled.length === 0) break;
+		for (const pid of recycled) deadPids.delete(pid);
 	}
-	const recycled = deadPids.filter((pid) => isPidAlive(pid));
-	if (recycled.length > 0) {
+	return await run([...deadPids]);
+}
+
+async function spawnAndReapBatch(
+	spawnChild: () => ChildProcess,
+	size: number,
+	into: Set<number>,
+): Promise<void> {
+	const children = Array.from({ length: size }, () => spawnChild());
+	const pids = children.map((child) => child.pid);
+	// Reap the whole batch first — including any child that failed to spawn,
+	// which `waitForExit` now settles on `error` — and only then decide whether
+	// the batch was usable. Throwing before the cleanup would leak the
+	// siblings that did start.
+	await Promise.all(
+		children.map(async (child) => {
+			killChild(child);
+			await waitForExit(child);
+		}),
+	);
+	if (pids.some((pid) => pid === undefined)) {
 		throw new Error(
-			`owned-pids: pid(s) ${recycled.join(", ")} were recycled between ` +
-				"reaping them and using them; this fixture needs PIDs that stay dead",
+			"owned-pids: failed to spawn a probe process while building a dead-PID batch",
 		);
 	}
-	return await run(deadPids);
+	for (const pid of pids as number[]) into.add(pid);
 }
 
 /**
