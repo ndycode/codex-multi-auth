@@ -86,21 +86,35 @@ export async function runAutomaticAccountChecks(options: AutomaticAccountCheckOp
  * The first tick runs shortly after start, off the startup path; the durable
  * per-account attempts in runAutomaticAccountChecks keep it from repeating work
  * this or another router did recently, and it does nothing without an opt-in.
+ *
+ * Each later tick is scheduled one interval after the previous run finishes.
+ * A run records its attempts before it finishes, so the next tick is never
+ * inside the durable per-account limit. A fixed setInterval ticked just inside
+ * it (by the initial delay plus the run's own duration), skipped every
+ * account, and stretched the cadence to two intervals.
  */
 export function startAutomaticAccountChecks(run: (signal: AbortSignal) => Promise<void>) {
     const controller = new AbortController();
     let pending: Promise<void> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = (delayMs: number) => {
+        if (controller.signal.aborted)
+            return;
+        timer = setTimeout(tick, delayMs);
+        timer.unref();
+    };
     const tick = () => {
-        if (pending || controller.signal.aborted)
+        timer = undefined;
+        if (controller.signal.aborted)
             return;
         pending = run(controller.signal).catch(() => {
             if (!controller.signal.aborted)
                 logWarn("Automatic subscription checks unavailable; no unchecked retry was started.");
-        }).finally(() => { pending = undefined; });
+        }).finally(() => {
+            pending = undefined;
+            schedule(AUTOMATIC_CHECK_INTERVAL_MS);
+        });
     };
-    const initial = setTimeout(tick, AUTOMATIC_CHECK_INITIAL_DELAY_MS);
-    initial.unref();
-    const timer = setInterval(tick, AUTOMATIC_CHECK_INTERVAL_MS);
-    timer.unref();
-    return { async stop() { clearTimeout(initial); clearInterval(timer); controller.abort(); await pending; } };
+    schedule(AUTOMATIC_CHECK_INITIAL_DELAY_MS);
+    return { async stop() { clearTimeout(timer); controller.abort(); await pending; } };
 }

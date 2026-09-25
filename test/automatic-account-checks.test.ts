@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAccountPolicyKey, upsertAccountPolicy, type AccountPolicyStore } from "../lib/account-policy.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
@@ -92,6 +93,40 @@ describe("initial automatic check", () => {
         const service = startWith(f);
         await vi.advanceTimersByTimeAsync(AUTOMATIC_CHECK_INITIAL_DELAY_MS);
         await vi.waitFor(() => expect(f.check).toHaveBeenCalledTimes(1));
+        await service.stop();
+    });
+    it("runs the next check one interval after the previous one, not a skipped tick later", async () => {
+        // The initial check records its attempt at +5 s. A fixed 15-minute
+        // interval then ticked 5 s inside the durable 15-minute limit, was
+        // skipped, and the next check landed at +30 minutes. Step the clock a
+        // second at a time and let each run finish before moving on, so every
+        // run sees the time its timer fired at.
+        vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval", "Date"] });
+        const f = fixture();
+        f.enable(0);
+        let running = 0;
+        const service = startAutomaticAccountChecks(async signal => {
+            running += 1;
+            try {
+                await runAutomaticAccountChecks({ ...f.options, now: undefined, signal });
+            }
+            finally {
+                running -= 1;
+            }
+        });
+        const step = async (ms: number) => {
+            for (let elapsed = 0; elapsed < ms; elapsed += 1000) {
+                await vi.advanceTimersByTimeAsync(1000);
+                while (running > 0)
+                    await delay(5);
+            }
+        };
+        await step(AUTOMATIC_CHECK_INITIAL_DELAY_MS);
+        expect(f.check).toHaveBeenCalledTimes(1);
+        for (const expected of [2, 3]) {
+            await step(AUTOMATIC_CHECK_INTERVAL_MS + 60_000);
+            expect(f.check).toHaveBeenCalledTimes(expected);
+        }
         await service.stop();
     });
     it("skips the initial check when another router attempted it recently", async () => {
