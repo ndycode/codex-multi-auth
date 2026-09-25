@@ -5,6 +5,8 @@ import { getCodexMultiAuthDir } from '../runtime-paths.js';
 import { ensureFreshAccessToken } from './rotation-token-refresh.js';
 import { modelScopeId, workspaceModelScopes } from './workspace-model-scopes.js';
 import { nativeRateLimitsRpc } from './native-rate-limits.js';
+import { codexCliAccountIdFor } from '../auth/token-utils.js';
+import { isRecord } from '../utils.js';
 import { ResetCreditService, type ResetTarget } from './reset-credits.js';
 import { withCheckProgress } from '../ui/check-progress.js';
 
@@ -35,7 +37,15 @@ export function createResetCreditService(manager?:AccountManager):ResetCreditSer
  return {accessToken:fresh.accessToken,accountId:target.accountId,expiresAt:fresh.account.expires??0,codexCliMirror:current.codexCliMirror};
  };
  return new ResetCreditService(join(getCodexMultiAuthDir(),'reset-credits.json'),{
-  read:async target=>nativeRateLimitsRpc(await auth(target),'account/rateLimits/read',{excludeResetCreditDetails:true}),
+  read:async target=>{
+   // The backend answers for the id written into its auth.json (the mirror id when one
+   // applies). Verify the reply against that id; the snapshot stays keyed on the target.
+   const freshAuth=await auth(target);
+   const sent=codexCliAccountIdFor(freshAuth,freshAuth.accessToken)??freshAuth.accountId;
+   const reply=await nativeRateLimitsRpc(freshAuth,'account/rateLimits/read',{excludeResetCreditDetails:true});
+   if(!isRecord(reply)||reply.accountId!==sent)throw Error('Reset credit workspace identity mismatch');
+   return {...reply,accountId:target.accountId};
+  },
   consume:async(target,idempotencyKey)=>{
    const freshAuth=await auth(target);
    const disk=await loadAccounts();
