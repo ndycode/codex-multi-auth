@@ -85,7 +85,12 @@ function resolveCandidateExecutableNames(platform) {
 	if (platform !== "win32") {
 		return [resolvePathExecutableName(platform)];
 	}
-	return ["codex.exe", "codex"];
+	// npm on Windows puts `codex.cmd` plus an extensionless `#!/bin/sh` shim in
+	// the prefix dir and the package under `<prefix>\node_modules`. Neither shim
+	// can be spawned without a shell (`.cmd` is EINVAL, the sh script ENOENT),
+	// so launch the package entry the shims point at before falling back to an
+	// extensionless `codex`.
+	return ["codex.exe", win32.join("node_modules", "@openai", "codex", "bin", "codex.js"), "codex"];
 }
 
 function resolveCodexExecutableFromPath(

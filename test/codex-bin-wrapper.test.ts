@@ -7281,6 +7281,42 @@ describe("codex bin wrapper", () => {
 		});
 	});
 
+	it("launches the npm package entry behind Windows codex.cmd shims on PATH", () => {
+		// npm's Windows prefix layout: codex.cmd and an extensionless sh shim, with
+		// the package under node_modules. spawn() can run neither shim without a
+		// shell, so the resolver must return the codex.js they point at.
+		const pathEntry = win32.join("C:\\", "npm-prefix");
+		const shimCmdPath = win32.join(pathEntry, "codex.cmd");
+		const shimShPath = win32.join(pathEntry, "codex");
+		const packageEntryPath = win32.join(
+			pathEntry,
+			"node_modules",
+			"@openai",
+			"codex",
+			"bin",
+			"codex.js",
+		);
+		const resolved = resolveRealCodexBin({
+			env: {
+				PATH: pathEntry,
+			},
+			argv: [process.execPath, join(repoRootDir, "scripts", "codex.js")],
+			platform: "win32",
+			moduleUrl: pathToFileURL(join(repoRootDir, "scripts", "codex.js")).href,
+			resolvePackageBin: () => null,
+			spawnSyncImpl: () => createSpawnSyncSuccess("") as SpawnSyncReturns<string>,
+			existsSyncImpl: (candidate) =>
+				candidate === shimCmdPath ||
+				candidate === shimShPath ||
+				candidate === packageEntryPath,
+		});
+
+		expect(resolved).toEqual({
+			path: packageEntryPath,
+			launchWithNode: true,
+		});
+	});
+
 	it("skips self-referential codex wrapper entries on PATH before native binaries", () => {
 		const wrapperScriptPath = posix.join(
 			"/test-root",
