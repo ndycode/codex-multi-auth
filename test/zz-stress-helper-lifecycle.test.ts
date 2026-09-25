@@ -108,6 +108,36 @@ function ownerRecord(pid: number, token = `token-${pid}`) {
 	})}\n`;
 }
 
+// Windows draws PIDs from a shared pool and hands a just-reaped one straight
+// back out, so any other process on the machine can take a "dead" fixture PID
+// while a test runs. unbind then finds that PID live, keeps its files, and
+// logs that it did. A kept file is excused only by that log line naming the
+// PID; every PID that stayed dead must still be cleaned up.
+function preservedAsLive(warnings: readonly string[], pid: number): boolean {
+	return warnings.some(
+		(w) =>
+			w.includes(`(pid ${pid}) did not stop`) ||
+			w.includes(`(pid ${pid}) has no status record but its PID is live`),
+	);
+}
+
+function remainingHelperFiles(baseDir: string, warnings: readonly string[]): string[] {
+	return readdirSync(baseDir).filter((name) => {
+		if (!name.startsWith("runtime-rotation-app-helper")) return false;
+		const pid = Number(/\.(\d+)\.json$/i.exec(name)?.[1]);
+		return !(Number.isInteger(pid) && preservedAsLive(warnings, pid));
+	});
+}
+
+function isPidAliveNow(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
 describe("stress: unbind at the scale the leak report described", () => {
 	it("reclaims hundreds of dead records and orphaned owner files in one pass", async () => {
 		// The reported machine had 183 live helpers and 701 owner files. The
@@ -159,20 +189,14 @@ describe("stress: unbind at the scale the leak report described", () => {
 				});
 				const elapsedMs = Date.now() - startedAt;
 
-				// Windows can hand one of these PIDs to an unrelated process while
-				// the pass runs. unbind then finds it live and must keep the record,
-				// and it logs that it did; a kept record is allowed only with that
-				// log line naming the PID.
-				const foundLive = (pid: number, preserveWarning: string) =>
-					warnings.some((w) => w.includes(`(pid ${pid}) ${preserveWarning}`));
-				// Everything provably dead is gone...
+				// Everything provably dead is gone (see preservedAsLive)...
 				for (const pid of deadPids) {
-					if (foundLive(pid, "did not stop")) continue;
+					if (preservedAsLive(warnings, pid)) continue;
 					expect(existsSync(statusPathFor(baseDir, pid))).toBe(false);
 					expect(existsSync(ownerPathFor(baseDir, pid))).toBe(false);
 				}
 				for (const pid of orphanPids) {
-					if (foundLive(pid, "has no status record but its PID is live")) continue;
+					if (preservedAsLive(warnings, pid)) continue;
 					expect(existsSync(ownerPathFor(baseDir, pid))).toBe(false);
 				}
 				// ...and every live helper's record survived, because unbind could
@@ -317,8 +341,10 @@ describe("stress: the selector against a directory of many helpers", () => {
 		await mkdir(baseDir, { recursive: true });
 		const now = Date.now();
 
-		await withDeadPids(200, async (deadPids) => {
-			await withLivePids(8, async (livePids) => {
+		// Live PIDs are taken first and held, so none of them can be a reused
+		// dead PID (see the reclaim test above).
+		await withLivePids(8, async (livePids) => {
+			await withDeadPids(200, async (deadPids) => {
 				// Dead records with the freshest timestamps of all, so recency alone
 				// would pick one of them.
 				for (const [index, pid] of deadPids.entries()) {
@@ -354,7 +380,25 @@ describe("stress: the selector against a directory of many helpers", () => {
 				const previousDir = process.env.CODEX_MULTI_AUTH_DIR;
 				process.env.CODEX_MULTI_AUTH_DIR = baseDir;
 				try {
-					const selected = readAppRuntimeHelperStatus(now);
+					let selected = readAppRuntimeHelperStatus(now);
+					// A dead PID that another process has since taken is live, and its
+					// record is the freshest, so the selector rightly prefers it. That
+					// record no longer describes a dead helper: drop it and select
+					// again. The PID must be alive right now, so a selector that picked
+					// a genuinely dead record still fails below.
+					const deadPidSet = new Set(deadPids);
+					for (
+						let attempt = 0;
+						attempt < 20 &&
+						selected !== null &&
+						selected.pid !== null &&
+						deadPidSet.has(selected.pid) &&
+						isPidAliveNow(selected.pid);
+						attempt += 1
+					) {
+						await rm(statusPathFor(baseDir, selected.pid), { force: true });
+						selected = readAppRuntimeHelperStatus(now);
+					}
 					expect(selected?.pid).toBe(expectedPid);
 					expect(selected?.lastAccountId).toBe(
 						`acc_live_${freshPids.length - 1}`,
@@ -523,6 +567,7 @@ describe("stress: readers racing a live unbind", () => {
 			let reads = 0;
 			let stop = false;
 			const failures: unknown[] = [];
+			const warnings: string[] = [];
 			// Hammer the reader while unbind tears the directory down beneath it.
 			const reader = (async () => {
 				while (!stop) {
@@ -543,6 +588,7 @@ describe("stress: readers racing a live unbind", () => {
 					platform: process.platform,
 					home: root,
 					env: envFor(root),
+					log: (message) => warnings.push(message),
 				});
 			} finally {
 				stop = true;
@@ -559,6 +605,7 @@ describe("stress: readers racing a live unbind", () => {
 			// otherwise it proves nothing.
 			expect(reads).toBeGreaterThan(0);
 			for (const pid of deadPids) {
+				if (preservedAsLive(warnings, pid)) continue;
 				expect(existsSync(statusPathFor(baseDir, pid))).toBe(false);
 			}
 		});
@@ -576,19 +623,18 @@ describe("stress: readers racing a live unbind", () => {
 				await writeFile(statusPathFor(baseDir, pid), statusRecord(pid), "utf8");
 				await writeFile(ownerPathFor(baseDir, pid), ownerRecord(pid), "utf8");
 			}
+			const warnings: string[] = [];
 			for (let round = 0; round < 3; round += 1) {
 				await expect(
 					unbindCodexAppRuntimeRotation({
 						platform: process.platform,
 						home: root,
 						env: envFor(root),
+						log: (message) => warnings.push(message),
 					}),
 				).resolves.toBeDefined();
 			}
-			const remaining = readdirSync(baseDir).filter((name) =>
-				name.startsWith("runtime-rotation-app-helper"),
-			);
-			expect(remaining).toEqual([]);
+			expect(remainingHelperFiles(baseDir, warnings)).toEqual([]);
 		});
 	}, 180_000);
 
@@ -604,20 +650,19 @@ describe("stress: readers racing a live unbind", () => {
 				await writeFile(statusPathFor(baseDir, pid), statusRecord(pid), "utf8");
 				await writeFile(ownerPathFor(baseDir, pid), ownerRecord(pid), "utf8");
 			}
+			const warnings: string[] = [];
 			const results = await Promise.allSettled(
 				Array.from({ length: 4 }, () =>
 					unbindCodexAppRuntimeRotation({
 						platform: process.platform,
 						home: root,
 						env: envFor(root),
+						log: (message) => warnings.push(message),
 					}),
 				),
 			);
 			expect(results.every((r) => r.status === "fulfilled")).toBe(true);
-			const remaining = readdirSync(baseDir).filter((name) =>
-				name.startsWith("runtime-rotation-app-helper"),
-			);
-			expect(remaining).toEqual([]);
+			expect(remainingHelperFiles(baseDir, warnings)).toEqual([]);
 		});
 	}, 180_000);
 });
