@@ -7430,7 +7430,7 @@ describe("codex bin wrapper", () => {
 		// codex.js realpath, so the exact-path guard misses it. The directory guard
 		// must still skip any candidate resolving inside the wrapper's own dir and
 		// fall through to the genuine native binary elsewhere on PATH.
-		const wrapperScriptPath = join(
+		const wrapperScriptPath = posix.join(
 			"/test-root",
 			"npm",
 			"lib",
@@ -7440,11 +7440,11 @@ describe("codex bin wrapper", () => {
 			"codex.js",
 		);
 		const wrapperDir = dirname(wrapperScriptPath);
-		const wrapperSiblingCodexPath = join(wrapperDir, "codex");
-		const nativeCodexPath = join("/test-root", "native", "bin", "codex");
+		const wrapperSiblingCodexPath = posix.join(wrapperDir, "codex");
+		const nativeCodexPath = posix.join("/test-root", "native", "bin", "codex");
 		const resolved = resolveRealCodexBin({
 			env: {
-				PATH: [wrapperDir, join("/test-root", "native", "bin")].join(posix.delimiter),
+				PATH: [wrapperDir, posix.join("/test-root", "native", "bin")].join(posix.delimiter),
 			},
 			argv: [process.execPath, wrapperScriptPath],
 			platform: "linux",

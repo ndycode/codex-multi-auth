@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, dirname, extname, isAbsolute, join, relative, win32 } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, posix, relative, win32 } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -125,7 +125,7 @@ function resolveCodexExecutableFromPath(
 ) {
 	for (const entry of pathEntries) {
 		for (const executableName of resolveCandidateExecutableNames(platform)) {
-			const candidate = (platform === "win32" ? win32.join : join)(entry, executableName);
+			const candidate = (platform === "win32" ? win32 : posix).join(entry, executableName);
 			if (!existsSyncImpl(candidate)) {
 				continue;
 			}
