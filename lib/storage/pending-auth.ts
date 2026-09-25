@@ -24,7 +24,10 @@ const entrySchema = z.object({
 	expiresAt: z.number(),
 	at: z.number(),
 });
-const fileSchema = z.object({ version: z.literal(1), entries: z.array(entrySchema).max(1000) });
+/** The writer keeps the journal at this size; the reader accepts any size so an
+ * over-cap file an earlier writer left behind still loads and is trimmed on the next write. */
+const MAX_ENTRIES = 1000;
+const fileSchema = z.object({ version: z.literal(1), entries: z.array(entrySchema) });
 type PendingAuth = z.infer<typeof entrySchema>;
 const retry = { maxAttempts: 6, backoffMs: 25 };
 const log = createLogger("pending-auth");
@@ -85,8 +88,17 @@ export async function recordPendingAuth(
 		// the original spent token, so extend that entry rather than add one that
 		// no disk row can match.
 		const chained = entries.find((entry) => entry.refreshToken === auth.priorRefreshToken);
+		const current = chained ?? { prior, refreshToken: auth.refreshToken, accessToken: auth.accessToken, expiresAt: auth.expiresAt, at: auth.at };
 		if (chained) Object.assign(chained, { refreshToken: auth.refreshToken, accessToken: auth.accessToken, expiresAt: auth.expiresAt, at: auth.at });
-		else entries.push({ prior, refreshToken: auth.refreshToken, accessToken: auth.accessToken, expiresAt: auth.expiresAt, at: auth.at });
+		else entries.push(current);
+		const excess = entries.length - MAX_ENTRIES;
+		if (excess > 0) {
+			// Drop the oldest other entries, never the credential being recorded now.
+			const dropped = new Set(entries.filter((entry) => entry !== current).sort((a, b) => a.at - b.at).slice(0, excess));
+			log.warn("Pending rotated credentials exceeded the journal cap; dropped the oldest entries", { dropped: dropped.size });
+			await write(path, entries.filter((entry) => !dropped.has(entry)));
+			return;
+		}
 		await write(path, entries);
 	});
 }

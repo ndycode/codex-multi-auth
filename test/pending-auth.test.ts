@@ -114,3 +114,30 @@ it.each(["auth-failure","network-error","rate-limit"] as const)("only clears obs
  if(reason==="auth-failure")expect(result?.accounts[0]?.coolingDownUntil).toBeUndefined();
  else expect(result?.accounts[0]?.cooldownReason).toBe(reason);
 });
+
+it("keeps the journal within its cap so a full file never strands every pending token", async () => {
+	const { createHash } = await import("node:crypto");
+	const sha = (token: string) => createHash("sha256").update(token).digest("hex");
+	const path = getPendingAuthPath(storagePath);
+	const seeded = Array.from({ length: 1000 }, (_, i) => ({ prior: sha(`old-${i}`), refreshToken: `new-old-${i}`, accessToken: "a", expiresAt: 1, at: 10 + i }));
+	await fs.writeFile(path, JSON.stringify({ version: 1, entries: seeded }));
+	await recordPendingAuth(storagePath, { ...rotation("spent-a", "new-a"), at: 5000 });
+	const applied = await applyPendingAuth(storagePath, { version: 3, activeIndex: 0, accounts: [{ refreshToken: "spent-a", addedAt: 1, lastUsed: 1 }, { refreshToken: "old-999", addedAt: 1, lastUsed: 1 }] });
+	expect(applied?.accounts.map((a) => a.refreshToken)).toEqual(["new-a", "new-old-999"]);
+	const entries = JSON.parse(await fs.readFile(path, "utf8")).entries as { prior: string }[];
+	expect(entries).toHaveLength(1000);
+	expect(entries.some((entry) => entry.prior === sha("old-0"))).toBe(false);
+	expect(logs.warn).toHaveBeenCalled();
+});
+
+it("still reads and trims an over-cap journal an earlier writer left behind", async () => {
+	const { createHash } = await import("node:crypto");
+	const sha = (token: string) => createHash("sha256").update(token).digest("hex");
+	const path = getPendingAuthPath(storagePath);
+	const seeded = Array.from({ length: 1001 }, (_, i) => ({ prior: sha(`old-${i}`), refreshToken: `new-old-${i}`, accessToken: "a", expiresAt: 1, at: 10 + i }));
+	await fs.writeFile(path, JSON.stringify({ version: 1, entries: seeded }));
+	const applied = await applyPendingAuth(storagePath, { version: 3, activeIndex: 0, accounts: [{ refreshToken: "old-5", addedAt: 1, lastUsed: 1 }] });
+	expect(applied?.accounts[0]?.refreshToken).toBe("new-old-5");
+	await recordPendingAuth(storagePath, { ...rotation("spent-a", "new-a"), at: 5000 });
+	expect(JSON.parse(await fs.readFile(path, "utf8")).entries).toHaveLength(1000);
+});
