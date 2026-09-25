@@ -7318,6 +7318,72 @@ describe("codex bin wrapper", () => {
 		});
 	});
 
+	it.each([["codex.cmd"], ["codex"]])(
+		"resolves a Windows %s override to the npm package entry it shims",
+		(shimName) => {
+			const prefix = win32.join("C:\\", "npm-prefix");
+			const shimPath = win32.join(prefix, shimName);
+			const packageEntryPath = win32.join(
+				prefix,
+				"node_modules",
+				"@openai",
+				"codex",
+				"bin",
+				"codex.js",
+			);
+			const resolve = (entryExists: boolean) =>
+				resolveRealCodexBin({
+					env: { CODEX_MULTI_AUTH_REAL_CODEX_BIN: shimPath },
+					platform: "win32",
+					existsSyncImpl: (candidate) =>
+						candidate === shimPath || (entryExists && candidate === packageEntryPath),
+				});
+
+			expect(resolve(true)).toEqual({
+				path: packageEntryPath,
+				launchWithNode: true,
+			});
+			// Without a package entry there is nothing spawn() can run, so the
+			// override must not be handed to it.
+			expect(resolve(false)).toBeNull();
+		},
+	);
+
+	it.skipIf(process.platform !== "win32")(
+		"forwards through a CODEX_MULTI_AUTH_REAL_CODEX_BIN codex.cmd shim on Windows",
+		() => {
+			const fixtureRoot = createWrapperFixture();
+			const entryPath = createFakeNativeCodexBin(fixtureRoot);
+			const shimPath = join(dirname(entryPath), "..", "..", "..", "..", "codex.cmd");
+			const result = runWrapper(fixtureRoot, ["--version"], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: shimPath,
+			});
+
+			expect(result.status, result.stderr).toBe(0);
+			expect(result.stdout).toContain("FORWARDED_NATIVE:--version");
+		},
+	);
+
+	it.skipIf(process.platform !== "win32")(
+		"rejects a Windows codex.cmd override with no package entry and names what to use",
+		() => {
+			const fixtureRoot = createWrapperFixture();
+			const shimPath = join(fixtureRoot, "bare-shim", "codex.cmd");
+			mkdirSync(dirname(shimPath), { recursive: true });
+			writeFileSync(shimPath, "@ECHO off\r\nexit /b 0\r\n", "utf8");
+			const result = runWrapper(fixtureRoot, ["--version"], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: shimPath,
+			});
+
+			expect(result.status).toBe(1);
+			expect(result.stderr).toContain("cannot be launched directly on Windows");
+			expect(result.stderr).toContain(
+				"CODEX_MULTI_AUTH_REAL_CODEX_BIN to the full path of codex.exe or @openai/codex/bin/codex.js",
+			);
+			expect(result.stderr).not.toContain("Failed to launch real Codex CLI");
+		},
+	);
+
 	it("skips self-referential codex wrapper entries on PATH before native binaries", () => {
 		const wrapperScriptPath = posix.join(
 			"/test-root",

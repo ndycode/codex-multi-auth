@@ -26,7 +26,9 @@ import process from "node:process";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+	isWindowsShimPath,
 	resolveRealCodexBin as resolveRealCodexBinFromEnvironment,
+	resolveWindowsShimPackageEntry,
 	splitPathEntries,
 } from "./codex-bin-resolver.js";
 import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.js";
@@ -1347,6 +1349,17 @@ function resolveRealCodexBin() {
 		if (!existsSync(override)) {
 			console.error(
 				`CODEX_MULTI_AUTH_REAL_CODEX_BIN is set but missing: ${override}`,
+			);
+			return null;
+		}
+		if (
+			process.platform === "win32" &&
+			isWindowsShimPath(override) &&
+			!resolveWindowsShimPackageEntry(override)
+		) {
+			console.error(
+				`CODEX_MULTI_AUTH_REAL_CODEX_BIN points at a script shim that cannot be launched directly on Windows: ${override}\n` +
+					"Point it at codex.exe or @openai/codex/bin/codex.js instead.",
 			);
 			return null;
 		}
@@ -6545,7 +6558,9 @@ async function main() {
 			[
 				"Could not locate the official Codex CLI.",
 				"Install it with npm, Homebrew, or an official native release so `codex` is on PATH.",
-				"Or set CODEX_MULTI_AUTH_REAL_CODEX_BIN to the full path of either codex or @openai/codex/bin/codex.js.",
+				process.platform === "win32"
+					? "Or set CODEX_MULTI_AUTH_REAL_CODEX_BIN to the full path of codex.exe or @openai/codex/bin/codex.js."
+					: "Or set CODEX_MULTI_AUTH_REAL_CODEX_BIN to the full path of either codex or @openai/codex/bin/codex.js.",
 			].join("\n"),
 		);
 		return 1;

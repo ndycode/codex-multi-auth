@@ -55,6 +55,29 @@ function defaultResolvePackageBin(moduleUrl) {
 	}
 }
 
+// spawn() without a shell cannot run these on Windows: `.cmd`/`.bat` are
+// EINVAL, `.ps1` is not an executable image, and an extensionless file
+// (npm's `#!/bin/sh` shim) is ENOENT even when it is a real PE image. Going through cmd.exe instead would put every
+// forwarded argument through cmd's quoting rules.
+export function isWindowsShimPath(candidatePath) {
+	const extension = win32.extname(candidatePath).toLowerCase();
+	return extension === "" || extension === ".cmd" || extension === ".bat" || extension === ".ps1";
+}
+
+// npm's Windows shims sit in the prefix dir and run
+// `<prefix>\node_modules\@openai\codex\bin\codex.js`.
+export function resolveWindowsShimPackageEntry(shimPath, existsSyncImpl = existsSync) {
+	const entry = win32.join(
+		win32.dirname(shimPath),
+		"node_modules",
+		"@openai",
+		"codex",
+		"bin",
+		"codex.js",
+	);
+	return existsSyncImpl(entry) ? entry : null;
+}
+
 function resolveWindowsCmdPath(env) {
 	const comSpec = (env.ComSpec ?? env.COMSPEC ?? "").trim();
 	if (comSpec.length > 0) return comSpec;
@@ -212,8 +235,12 @@ export function resolveRealCodexBin(options = {}) {
 
 	const override = (env.CODEX_MULTI_AUTH_REAL_CODEX_BIN ?? "").trim();
 	if (override.length > 0) {
-		if (existsSyncImpl(override)) return createResolvedCodexBin(override);
-		return null;
+		if (!existsSyncImpl(override)) return null;
+		if (platform === "win32" && isWindowsShimPath(override)) {
+			const entry = resolveWindowsShimPackageEntry(override, existsSyncImpl);
+			return entry ? createResolvedCodexBin(entry) : null;
+		}
+		return createResolvedCodexBin(override);
 	}
 
 	const resolved = resolvePackageBin(moduleUrl);
