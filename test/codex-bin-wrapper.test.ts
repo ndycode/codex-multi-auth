@@ -480,18 +480,41 @@ function writeAccountsFixture(codexHome: string, count: number): void {
 	);
 }
 
+// Windows stand-in for a real Codex install, laid out the way `npm i -g
+// @openai/codex` lays out its prefix: `codex.cmd` and an extensionless sh shim
+// next to `node_modules\@openai\codex\bin\codex.js`. The entry echoes whatever
+// argv it receives, so the wrapper's injected leading `-c key=value` pair is
+// accepted the way real Codex accepts it. Returns the package entry path.
+function createWindowsNpmPrefixCodexFixture(prefixDir: string, marker: string): string {
+	const entryPath = join(prefixDir, "node_modules", "@openai", "codex", "bin", "codex.js");
+	mkdirSync(dirname(entryPath), { recursive: true });
+	writeFileSync(
+		entryPath,
+		[
+			`console.log(\`${marker}:\${process.argv.slice(2).join(" ")}\`);`,
+			"process.exit(0);",
+		].join("\n"),
+		"utf8",
+	);
+	writeFileSync(
+		join(prefixDir, "codex.cmd"),
+		'@ECHO off\r\n"node" "%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n',
+		"utf8",
+	);
+	writeFileSync(
+		join(prefixDir, "codex"),
+		'#!/bin/sh\nexec node "$(dirname "$0")/node_modules/@openai/codex/bin/codex.js" "$@"\n',
+		"utf8",
+	);
+	return entryPath;
+}
+
 function createFakeNativeCodexBin(rootDir: string): string {
 	if (process.platform === "win32") {
-		const fakeBin = join(rootDir, `fake-native-codex-${createdDirs.length}.ps1`);
-		writeFileSync(
-			fakeBin,
-			[
-				'Write-Output ("FORWARDED_NATIVE:" + ($args -join " "))',
-				"exit 0",
-			].join("\r\n"),
-			"utf8",
+		return createWindowsNpmPrefixCodexFixture(
+			join(rootDir, `fake-native-codex-${createdDirs.length}`),
+			"FORWARDED_NATIVE",
 		);
-		return fakeBin;
 	}
 
 	const fakeBin = join(rootDir, `fake-native-codex-${createdDirs.length}`);
@@ -508,11 +531,6 @@ function createFakeNativeCodexBin(rootDir: string): string {
 	return fakeBin;
 }
 
-function resolveWindowsPowerShellPath(): string {
-	const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
-	return join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-}
-
 function createPathDiscoveredNativeCodexFixture(rootDir: string): {
 	args: string[];
 	binDir: string;
@@ -521,23 +539,11 @@ function createPathDiscoveredNativeCodexFixture(rootDir: string): {
 	const binDir = join(rootDir, `native-codex-bin-${createdDirs.length}`);
 	mkdirSync(binDir, { recursive: true });
 	if (process.platform === "win32") {
-		const scriptPath = join(binDir, "native-codex-marker.js");
-		writeFileSync(
-			scriptPath,
-			[
-				'console.log(`FORWARDED_NATIVE_PATH:${process.argv.slice(2).join(" ")}`);',
-				"process.exit(0);",
-			].join("\n"),
-			"utf8",
-		);
-		const nativeExePath = join(binDir, "codex.exe");
-		// A hard link to the test runner's node.exe cannot be removed on Windows
-		// while this process is still running. Use an independent image so the
-		// fixture teardown exercises the resolver without leaking a locked file.
-		copyFileSync(process.execPath, nativeExePath);
+		// The npm-installed codex.cmd a Windows user actually has on PATH.
+		createWindowsNpmPrefixCodexFixture(binDir, "FORWARDED_NATIVE_PATH");
 		return {
 			binDir,
-			args: [scriptPath, "--version"],
+			args: ["--version"],
 			expectedOutput: "FORWARDED_NATIVE_PATH:--version",
 		};
 	}
@@ -1636,13 +1642,8 @@ describe("codex bin wrapper", () => {
 	it("forwards non-auth commands to native codex executables", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeNativeCodexBin(fixtureRoot);
-		const nativeBin = process.platform === "win32" ? resolveWindowsPowerShellPath() : fakeBin;
-		const args =
-			process.platform === "win32"
-				? ["-NoProfile", "-File", fakeBin, "--version"]
-				: ["--version"];
-		const result = runWrapper(fixtureRoot, args, {
-			CODEX_MULTI_AUTH_REAL_CODEX_BIN: nativeBin,
+		const result = runWrapper(fixtureRoot, ["--version"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 		});
 
 		expect(result.status).toBe(0);
@@ -7377,7 +7378,7 @@ describe("codex bin wrapper", () => {
 		const nativeCodexPath = join("/test-root", "native", "bin", "codex");
 		const resolved = resolveRealCodexBin({
 			env: {
-				PATH: [wrapperDir, join("/test-root", "native", "bin")].join(delimiter),
+				PATH: [wrapperDir, join("/test-root", "native", "bin")].join(posix.delimiter),
 			},
 			argv: [process.execPath, wrapperScriptPath],
 			platform: "linux",
