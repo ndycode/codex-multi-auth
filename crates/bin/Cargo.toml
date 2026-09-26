@@ -1,0 +1,25 @@
+[package]
+name = "cma-bin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cma-core = { path = "../core" }
+cma-manager = { path = "../manager" }
+cma-wrapper = { path = "../wrapper" }
+cma-proxy = { path = "../proxy" }
+cma-runtime = { path = "../runtime" }
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serial_test.workspace = true
+proptest.workspace = true
+insta.workspace = true
+cma-testkit = { path = "../testkit" }
+
+[lints.rust]
+unsafe_code = "deny"

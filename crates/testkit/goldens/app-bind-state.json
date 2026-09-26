@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "platform": "linux",
+  "host": "127.0.0.1",
+  "port": 8123,
+  "baseUrl": "http://127.0.0.1:8123",
+  "configPath": "/golden/codex-home/config.toml",
+  "statePath": "/golden/multi-auth/app-bind/runtime-rotation-app-bind.json",
+  "backupPath": "/golden/multi-auth/app-bind/codex-config-backup.json",
+  "statusPath": "/golden/multi-auth/app-bind/runtime-rotation-app-bind-status.json",
+  "logPath": "/golden/multi-auth/app-bind/runtime-rotation-app-router.log",
+  "nodePath": "/usr/bin/node",
+  "routerScriptPath": "/opt/codex-multi-auth/scripts/codex-app-router.js",
+  "clientApiKey": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "startupPath": null,
+  "launchAgentPath": null,
+  "boundConfigHash": "686846a0dcbcf1311a05bb1870b6434748f185c1f738abaa92c23a8dbdebed91",
+  "updatedAt": 1750000000000
+}

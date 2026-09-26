@@ -1,0 +1,39 @@
+[package]
+name = "cma-manager"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cma-core = { path = "../core" }
+cma-config = { path = "../config" }
+cma-storage = { path = "../storage" }
+cma-auth = { path = "../auth" }
+cma-accounts = { path = "../accounts" }
+cma-rotation = { path = "../rotation" }
+cma-request = { path = "../request" }
+cma-quota = { path = "../quota" }
+cma-usage = { path = "../usage" }
+cma-cli-mirror = { path = "../climirror" }
+cma-runtime = { path = "../runtime" }
+cma-tui = { path = "../tui" }
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+reqwest.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serial_test.workspace = true
+proptest.workspace = true
+insta.workspace = true
+cma-testkit = { path = "../testkit" }
+
+[lints.rust]
+unsafe_code = "deny"
