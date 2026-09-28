@@ -1,0 +1,74 @@
+{
+  "version": 3,
+  "accounts": [
+    {
+      "accountId": "acct-user-one",
+      "accountIdSource": "id_token",
+      "accountLabel": "Personal Plus",
+      "email": "user.one@example.com",
+      "refreshToken": "rt-fixture-account-one-0000000001",
+      "accessToken": "at-fixture-account-one-0000000001",
+      "expiresAt": 1750003600000,
+      "enabled": true,
+      "addedAt": 1749900000000,
+      "lastUsed": 1749999000000,
+      "lastSwitchReason": "rotation",
+      "rateLimitResetTimes": {
+        "gpt-5-codex": 1750000600000,
+        "codex": 1750000300000
+      },
+      "workspaces": [
+        {
+          "id": "ws-personal-1",
+          "name": "Personal",
+          "enabled": true,
+          "isDefault": true
+        },
+        {
+          "id": "ws-team-alpha",
+          "name": "Team Alpha",
+          "enabled": false,
+          "disabledAt": 1749950000000
+        }
+      ],
+      "currentWorkspaceIndex": 0
+    },
+    {
+      "accountId": "acct-user-two",
+      "accountIdSource": "token",
+      "accountLabel": "Team Business",
+      "email": "user.two@example.com",
+      "refreshToken": "rt-fixture-account-two-0000000002",
+      "accessToken": "at-fixture-account-two-0000000002",
+      "expiresAt": 1750003600000,
+      "enabled": true,
+      "addedAt": 1749910000000,
+      "lastUsed": 1750000000000,
+      "lastSwitchReason": "manual",
+      "rateLimitResetTimes": {
+        "gpt-5.2": 1750001200000
+      },
+      "coolingDownUntil": 1750000060000,
+      "cooldownReason": "rate-limit",
+      "workspaces": [
+        {
+          "id": "ws-biz-2",
+          "name": "Business",
+          "enabled": true,
+          "isDefault": true
+        }
+      ],
+      "currentWorkspaceIndex": 0
+    }
+  ],
+  "activeIndex": 1,
+  "activeIndexByFamily": {
+    "gpt-5-codex": 0,
+    "codex-max": 1,
+    "codex": 0,
+    "gpt-5.2": 1,
+    "gpt-5.1": 0
+  },
+  "pinnedAccountIndex": 1,
+  "affinityGeneration": 4
+}

@@ -1,0 +1,23 @@
+[package]
+name = "cma-testkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cma-core = { path = "../core" }
+serde_json.workspace = true
+tempfile.workspace = true
+serial_test.workspace = true
+insta.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serial_test.workspace = true
+proptest.workspace = true
+insta.workspace = true
+
+[lints.rust]
+unsafe_code = "deny"
