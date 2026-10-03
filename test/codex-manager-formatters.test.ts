@@ -134,11 +134,13 @@ describe("text-style formatters", () => {
 			"isTTY",
 		);
 		const originalForceColor = process.env.FORCE_COLOR;
+		const originalColorMode = process.env.CODEX_TUI_COLOR_MODE;
 		Object.defineProperty(process.stdout, "isTTY", {
 			configurable: true,
 			value: true,
 		});
 		process.env.FORCE_COLOR = "1";
+		delete process.env.CODEX_TUI_COLOR_MODE;
 		try {
 			setUiRuntimeOptions({
 				v2Enabled: true,
@@ -165,6 +167,11 @@ describe("text-style formatters", () => {
 				delete process.env.FORCE_COLOR;
 			} else {
 				process.env.FORCE_COLOR = originalForceColor;
+			}
+			if (originalColorMode === undefined) {
+				delete process.env.CODEX_TUI_COLOR_MODE;
+			} else {
+				process.env.CODEX_TUI_COLOR_MODE = originalColorMode;
 			}
 			resetUiRuntimeOptions();
 		}

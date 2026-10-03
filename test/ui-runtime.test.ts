@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
 	getUiRuntimeOptions,
 	resetUiRuntimeOptions,
@@ -6,8 +6,17 @@ import {
 } from "../lib/ui/runtime.js";
 
 describe("UI runtime options", () => {
+	const originalColorModeEnv = process.env.CODEX_TUI_COLOR_MODE;
 	beforeEach(() => {
+		delete process.env.CODEX_TUI_COLOR_MODE;
 		resetUiRuntimeOptions();
+	});
+	afterEach(() => {
+		if (originalColorModeEnv === undefined) {
+			delete process.env.CODEX_TUI_COLOR_MODE;
+		} else {
+			process.env.CODEX_TUI_COLOR_MODE = originalColorModeEnv;
+		}
 	});
 
 	it("starts with codex v2 enabled by default", () => {
