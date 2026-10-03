@@ -67,6 +67,7 @@ describe("dashboard settings", () => {
 			menuSortQuickSwitchVisibleRow: true,
 			uiThemePreset: "blue",
 			uiAccentColor: "cyan",
+			uiColorMode: "auto",
 			menuShowStatusBadge: true,
 			menuShowCurrentBadge: true,
 			menuShowLastUsed: true,
@@ -334,6 +335,7 @@ describe("dashboard settings", () => {
 			menuSortQuickSwitchVisibleRow: "nope",
 			uiThemePreset: "invalid",
 			uiAccentColor: "invalid",
+			uiColorMode: "invalid",
 			menuShowStatusBadge: "nope",
 			menuShowCurrentBadge: "nope",
 			menuShowLastUsed: "nope",
@@ -373,6 +375,7 @@ describe("dashboard settings", () => {
 			menuSortQuickSwitchVisibleRow: false,
 			uiThemePreset: "blue",
 			uiAccentColor: "yellow",
+			uiColorMode: "light",
 			menuShowStatusBadge: false,
 			menuShowCurrentBadge: false,
 			menuShowLastUsed: false,
@@ -399,6 +402,7 @@ describe("dashboard settings", () => {
 		expect(normalized.menuSortMode).toBe("manual");
 		expect(normalized.uiThemePreset).toBe("blue");
 		expect(normalized.uiAccentColor).toBe("yellow");
+		expect(normalized.uiColorMode).toBe("light");
 		expect(normalized.menuLayoutMode).toBe("expanded-rows");
 		expect(normalized.menuShowDetailsForUnselectedRows).toBe(true);
 		expect(normalized.menuStatuslineFields).toEqual([

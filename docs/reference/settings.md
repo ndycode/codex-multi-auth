@@ -92,7 +92,14 @@ Controls display style.
 | --- | --- | --- |
 | `uiThemePreset` | `green` | Overall theme preset |
 | `uiAccentColor` | `green` | Accent color for TUI elements |
+| `uiColorMode` | `auto` | Terminal background mode: `auto` detects a light background via `COLORFGBG`, `dark`/`light` pin it explicitly (`CODEX_TUI_COLOR_MODE` overrides per process) |
 | `menuFocusStyle` | `row-invert` | Focus/highlight style in selection menus |
+
+`light` darkens text painted directly on the terminal background (title, row
+labels, section labels, help) while badges and the focused-row chip keep pale
+text on their own dark backgrounds. `CODEX_TUI_COLOR_MODE=auto|dark|light`
+overrides the persisted value for the current process; `auto` falls back to
+`dark` when the terminal does not advertise its background.
 
 ---
 
@@ -248,7 +255,7 @@ Common operator overrides (aligned with
 - `CODEX_MULTI_AUTH_APP_BIND` / `CODEX_MULTI_AUTH_APP_BIND_INSTALL` — app-bind first-run gates (`0` skips, `1` forces the install self-heal)
 - `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL` — `0` skips user-level launcher routing
 - `CODEX_MULTI_AUTH_NATIVE_OPENAI` — `1` makes new app binds default to the native OpenAI provider
-- `CODEX_TUI_V2`, `CODEX_TUI_COLOR_PROFILE`, `CODEX_TUI_GLYPHS`
+- `CODEX_TUI_V2`, `CODEX_TUI_COLOR_PROFILE`, `CODEX_TUI_COLOR_MODE`, `CODEX_TUI_GLYPHS`
 - `CODEX_AUTH_FETCH_TIMEOUT_MS`, `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS`
 - `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS` — default `60000`; `0` disables last-served bias
 - `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS` — default `300000`

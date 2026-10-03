@@ -165,6 +165,7 @@ describe("settings panel helpers", () => {
 			applyUiThemeFromDashboardSettings,
 			THEME_PRESET_OPTIONS: [] as never,
 			ACCENT_COLOR_OPTIONS: [] as never,
+			COLOR_MODE_OPTIONS: [] as never,
 			THEME_PANEL_KEYS: [] as never,
 			UI_COPY: {} as never,
 		});

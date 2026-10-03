@@ -11294,6 +11294,7 @@ describe("codex manager cli commands", () => {
 				glyphMode: string;
 				palette: string;
 				accent: string;
+				colorMode: string;
 			} | null = null;
 			if (panel === "theme") {
 				const runtime = await import("../lib/ui/runtime.js");
@@ -11305,6 +11306,7 @@ describe("codex manager cli commands", () => {
 					glyphMode: snapshot.glyphMode,
 					palette: snapshot.palette,
 					accent: snapshot.accent,
+					colorMode: snapshot.colorMode,
 				};
 			}
 			setupInteractiveSettingsLogin(
@@ -11372,6 +11374,7 @@ describe("codex manager cli commands", () => {
 					glyphMode: restored.glyphMode,
 					palette: restored.palette,
 					accent: restored.accent,
+					colorMode: restored.colorMode,
 				}).toEqual(originalRuntimeTheme);
 			}
 		});

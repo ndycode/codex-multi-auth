@@ -17,6 +17,7 @@ describe("UI runtime options", () => {
 		expect(ui.glyphMode).toBe("ascii");
 		expect(ui.palette).toBe("green");
 		expect(ui.accent).toBe("green");
+		expect(ui.colorMode).toBe("auto");
 	});
 
 	it("updates runtime options and rebuilds theme", () => {
@@ -26,6 +27,7 @@ describe("UI runtime options", () => {
 			glyphMode: "unicode",
 			palette: "blue",
 			accent: "cyan",
+			colorMode: "light",
 		});
 
 		expect(updated.v2Enabled).toBe(false);
@@ -33,8 +35,10 @@ describe("UI runtime options", () => {
 		expect(updated.glyphMode).toBe("unicode");
 		expect(updated.palette).toBe("blue");
 		expect(updated.accent).toBe("cyan");
+		expect(updated.colorMode).toBe("light");
 		expect(updated.theme.profile).toBe("ansi16");
 		expect(updated.theme.glyphMode).toBe("unicode");
+		expect(updated.theme.colorMode).toBe("light");
 	});
 
 	it("supports partial updates", () => {
@@ -45,5 +49,6 @@ describe("UI runtime options", () => {
 		expect(ui.glyphMode).toBe("ascii");
 		expect(ui.palette).toBe("green");
 		expect(ui.accent).toBe("green");
+		expect(ui.colorMode).toBe("auto");
 	});
 });

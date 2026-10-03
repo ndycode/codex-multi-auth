@@ -40,6 +40,7 @@ export function cloneDashboardSettingsData(
 			settings.menuSortQuickSwitchVisibleRow ?? true,
 		uiThemePreset: settings.uiThemePreset ?? "green",
 		uiAccentColor: settings.uiAccentColor ?? "green",
+		uiColorMode: settings.uiColorMode ?? "auto",
 		menuShowStatusBadge: settings.menuShowStatusBadge ?? true,
 		menuShowCurrentBadge: settings.menuShowCurrentBadge ?? true,
 		menuShowLastUsed: settings.menuShowLastUsed ?? true,
@@ -102,6 +103,7 @@ export function dashboardSettingsDataEqual(
 			(right.menuSortQuickSwitchVisibleRow ?? true) &&
 		(left.uiThemePreset ?? "green") === (right.uiThemePreset ?? "green") &&
 		(left.uiAccentColor ?? "green") === (right.uiAccentColor ?? "green") &&
+		(left.uiColorMode ?? "auto") === (right.uiColorMode ?? "auto") &&
 		(left.menuShowStatusBadge ?? true) ===
 			(right.menuShowStatusBadge ?? true) &&
 		(left.menuShowCurrentBadge ?? true) ===

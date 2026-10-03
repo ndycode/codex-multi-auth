@@ -142,8 +142,9 @@ export const UI_COPY = {
 		behaviorHelp:
 			"Enter Select | 1-3 Delay | P Pause | L AutoFetch | F Status | T TTL | S Save | Q Back (No Save)",
 		themeTitle: "Color Theme",
-		themeSubtitle: "Pick base color and accent",
-		themeHelp: "Enter Select | 1-2 Base | S Save | Q Back (No Save)",
+		themeSubtitle: "Pick base color, accent, and background mode",
+		themeHelp:
+			"Enter Select | 1-2 Base | A/D/L Mode | S Save | Q Back (No Save)",
 		backendTitle: "Backend Controls",
 		backendSubtitle: "Tune sync, retry, and limit behavior",
 		backendHelp:
@@ -160,6 +161,7 @@ export const UI_COPY = {
 		backendBackToCategories: "Back to Categories",
 		baseTheme: "Base Color",
 		accentColor: "Accent Color",
+		terminalBackground: "Terminal Background",
 		actionTiming: "Auto Return Delay",
 		moveUp: "Move Focused Field Up",
 		moveDown: "Move Focused Field Down",

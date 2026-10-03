@@ -731,6 +731,33 @@ describe("settings-hub utility coverage", () => {
 			setSpy.mockRestore();
 		});
 
+		it("lists a terminal background section and applies the light hotkey", async () => {
+			const api = await loadSettingsHubTestApi();
+			let sawBackgroundSection = false;
+			let sawModeItems = 0;
+			queueSelectResults(
+				(items: MenuItem<unknown>[], options: unknown) => {
+					const labels = (items as Array<{ label?: string; kind?: string; value?: { type?: string } }>)
+						.filter((item) => item.kind === "heading")
+						.map((item) => item.label ?? "");
+					sawBackgroundSection = labels.includes("Terminal Background");
+					sawModeItems = (items as Array<{ value?: { type?: string } }>).filter(
+						(item) => item.value?.type === "set-color-mode",
+					).length;
+					return triggerSettingsHubHotkey("l")(items, options);
+				},
+				triggerSettingsHubHotkey("s"),
+			);
+			const selected = await api.promptThemeSettings({
+				...DEFAULT_DASHBOARD_DISPLAY_SETTINGS,
+			});
+			const runtimeModule = await import("../lib/ui/runtime.js");
+			expect(sawBackgroundSection).toBe(true);
+			expect(sawModeItems).toBe(3);
+			expect(selected?.uiColorMode).toBe("light");
+			expect(runtimeModule.getUiRuntimeOptions().colorMode).toBe("light");
+		});
+
 		it("retries experimental target reads for retryable filesystem errors", async () => {
 			vi.doMock("../lib/oc-chatgpt-target-detection.js", () => ({
 				detectOcChatgptMultiAuthTarget: () => ({
