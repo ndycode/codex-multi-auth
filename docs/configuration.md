@@ -97,6 +97,7 @@ These are safe for most operators and cover the common day-to-day adjustments.
 | `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL=0/1` | Opt out/in of user-level launcher routing on first durable CLI run or `rotation enable` |
 | `CODEX_TUI_V2=0/1` | Toggle TUI v2 |
 | `CODEX_TUI_COLOR_PROFILE=truecolor\|ansi256\|ansi16` | TUI color profile |
+| `CODEX_TUI_COLOR_MODE=auto\|dark\|light` | TUI background mode; `auto` detects light backgrounds from `COLORFGBG` |
 | `CODEX_TUI_GLYPHS=ascii\|unicode\|auto` | TUI glyph mode (`auto` detects from `WT_SESSION`/`TERM_PROGRAM`/`TERM`) |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | HTTP request timeout (default `60000`, min `1000`) |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=<ms>` | Stream stall timeout (default `45000`, min `1000`) |

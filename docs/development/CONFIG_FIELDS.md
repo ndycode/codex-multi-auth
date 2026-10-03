@@ -360,6 +360,7 @@ These are read, not owned, by this project — they shape behavior but are not c
 | --- | --- |
 | `uiThemePreset` | `green` |
 | `uiAccentColor` | `green` |
+| `uiColorMode` | `auto` |
 | `menuLayoutMode` | `compact-details` |
 | `menuFocusStyle` | `row-invert` |
 | `menuHighlightCurrentRow` | `true` |
