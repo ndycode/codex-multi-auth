@@ -316,7 +316,7 @@ function getColors(
 			return {
 				reset: "\x1b[0m",
 				dim: "\x1b[2m",
-				muted: light ? ansi16(90) : ansi16(37),
+				muted: light ? ansi16(30) : ansi16(37),
 				heading: light ? ansi16(30) : ansi16(97),
 				primary,
 				accent: accentColor,

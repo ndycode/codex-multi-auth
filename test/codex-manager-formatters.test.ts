@@ -8,7 +8,12 @@ import {
 	normalizeFailureDetail,
 	parseStructuredErrorMessage,
 	stringifyLogArgs,
+	stylePromptText,
 } from "../lib/codex-manager/formatters/text-style.js";
+import {
+	resetUiRuntimeOptions,
+	setUiRuntimeOptions,
+} from "../lib/ui/runtime.js";
 import {
 	formatAccountQuotaSummary,
 	formatCompactQuotaSnapshot,
@@ -121,6 +126,48 @@ describe("text-style formatters", () => {
 		expect(stringifyLogArgs(["msg", { a: 1 }, cyclic])).toBe(
 			'msg {"a":1} [object Object]',
 		);
+	});
+
+	it("stylePromptText omits the dim attribute on muted text in light mode", () => {
+		const stdoutDescriptor = Object.getOwnPropertyDescriptor(
+			process.stdout,
+			"isTTY",
+		);
+		const originalForceColor = process.env.FORCE_COLOR;
+		Object.defineProperty(process.stdout, "isTTY", {
+			configurable: true,
+			value: true,
+		});
+		process.env.FORCE_COLOR = "1";
+		try {
+			setUiRuntimeOptions({
+				v2Enabled: true,
+				colorProfile: "truecolor",
+				colorMode: "light",
+			});
+			const lightOut = stylePromptText("note", "muted");
+			expect(lightOut).toContain("\x1b[38;2;71;85;105m");
+			expect(lightOut).not.toContain("\x1b[2m");
+
+			setUiRuntimeOptions({
+				v2Enabled: true,
+				colorProfile: "truecolor",
+				colorMode: "dark",
+			});
+			expect(stylePromptText("note", "muted")).toContain("\x1b[2m");
+		} finally {
+			if (stdoutDescriptor) {
+				Object.defineProperty(process.stdout, "isTTY", stdoutDescriptor);
+			} else {
+				delete (process.stdout as { isTTY?: boolean }).isTTY;
+			}
+			if (originalForceColor === undefined) {
+				delete process.env.FORCE_COLOR;
+			} else {
+				process.env.FORCE_COLOR = originalForceColor;
+			}
+			resetUiRuntimeOptions();
+		}
 	});
 });
 
