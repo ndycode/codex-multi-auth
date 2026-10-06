@@ -5,6 +5,29 @@ Dates use ISO format (`YYYY-MM-DD`).
 
 This repository's current stable release line is `2.x`. Full release notes live in [`docs/releases/`](docs/releases/) — this file is the short version. Pre-`0.1.0` iteration history is archived in [`docs/releases/legacy-pre-0.1-history.md`](docs/releases/legacy-pre-0.1-history.md). Conventions: entry headings are `## [x.y.z] - YYYY-MM-DD`; section headings come from `Added`, `Changed`, `Fixed`, `Removed`, `Security`, `Internal`, `Notes`; issue and pull-request references link as `[#N](https://github.com/ndycode/codex-multi-auth/pull/N)`.
 
+## [2.19.1] - 2026-10-06
+
+Light-terminal readability: the login dashboard and menus gain a terminal
+background mode (`auto`/`dark`/`light`) so text painted directly on the
+terminal background switches to readable dark variants on light themes
+while badges and the focused row keep their own dark backgrounds.
+[Full notes](docs/releases/v2.19.1.md).
+
+### Fixed
+
+- Dashboard title, account labels, section labels, and help text are
+  readable on light terminal themes: a persisted `uiColorMode` dashboard
+  setting (`auto`/`dark`/`light`, default `auto`), a
+  `CODEX_TUI_COLOR_MODE` process override, and `COLORFGBG`
+  auto-detection pick light-mode foreground tokens across truecolor,
+  ansi256, and ansi16 profiles ([#729](https://github.com/ndycode/codex-multi-auth/pull/729))
+- Muted prompt text no longer stacks the `dim` attribute on the muted
+  foreground in light mode, which previously made secondary text faint
+  again ([#729](https://github.com/ndycode/codex-multi-auth/pull/729))
+- Light-mode ansi16 `muted` uses normal black: bright black
+  (`ansi16(90)`) maps to mid-gray in common palettes, which was the
+  original contrast failure ([#729](https://github.com/ndycode/codex-multi-auth/pull/729))
+
 ## [2.19.0] - 2026-10-02
 
 Subscription visibility and launch performance: `status`, `list`, and

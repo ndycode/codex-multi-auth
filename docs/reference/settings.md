@@ -9,7 +9,7 @@ persist through a keyed merge into the settings file).
 
 `pluginConfig` is the persisted compatibility name for runtime settings. It
 covers wrapper/runtime rotation behavior and optional plugin-host behavior.
-Defaults below match `DEFAULT_PLUGIN_CONFIG` in `lib/config.ts` (package `2.19.0`).
+Defaults below match `DEFAULT_PLUGIN_CONFIG` in `lib/config.ts` (package `2.19.1`).
 
 ---
 

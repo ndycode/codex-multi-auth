@@ -1,12 +1,12 @@
 # TEST KNOWLEDGE BASE
 
-Generated: 2026-10-02
-Commit: ed304751 (2.19.0)
+Generated: 2026-10-06
+Commit: 65b9e682 (2.19.1)
 
 ## OVERVIEW
 
 Vitest suites for OAuth flow, request transforms, response handling, rotation logic, storage, CLI management, governance stores, repo hygiene, and more.
-**~7,400 tests** (7,361 collected, 7,352 passed + 9 skipped on this tip) across **421 test files** with 80% coverage thresholds (statements/branches/functions/lines).
+**~7,400 tests** (7,373 collected, 7,364 passed + 9 skipped on this tip) across **421 test files** with 80% coverage thresholds (statements/branches/functions/lines).
 Execution is **single-worker by design**: `pool: 'forks'` + `fileParallelism: false` in `vitest.config.ts` and `--maxWorkers=1` in the npm `test` script, because OAuth callback suites bind the fixed port 1455 and other suites share filesystem fixtures. The forks pool is pinned explicitly (a past worker_threads-pool crash on Windows motivated tests-ci-16).
 
 ## STRUCTURE
