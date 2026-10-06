@@ -78,10 +78,10 @@
 		"url": "https://github.com/ndycode/codex-multi-auth/issues"
 	},
 	"scripts": {
-		"build": "tsc && node scripts/copy-oauth-success.js",
+		"build": "node node_modules/tsgo/bin/tsc && node scripts/copy-oauth-success.js",
 		"generate:schema": "npm run build && node scripts/generate-config-schema.mjs",
-		"typecheck": "tsc --noEmit",
-		"typecheck:scripts": "tsc -p tsconfig.scripts.json",
+		"typecheck": "node node_modules/tsgo/bin/tsc --noEmit",
+		"typecheck:scripts": "node node_modules/tsgo/bin/tsc -p tsconfig.scripts.json",
 		"lint": "npm run lint:ts && npm run lint:scripts",
 		"lint:ts": "eslint . --ext .ts",
 		"lint:scripts": "eslint scripts --ext .js,.mjs",
