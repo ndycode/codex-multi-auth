@@ -619,7 +619,7 @@ describe("Documentation Integrity", () => {
 			"Enter Select | 1-3 Delay | P Pause | L AutoFetch | F Status | T TTL | S Save | Q Back (No Save)",
 		);
 		expect(UI_COPY.settings.themeHelp).toBe(
-			"Enter Select | 1-2 Base | S Save | Q Back (No Save)",
+			"Enter Select | 1-2 Base | A/D/L Mode | S Save | Q Back (No Save)",
 		);
 		expect(UI_COPY.settings.backendHelp).toBe(
 			"Enter Open | 1-4 Category | S Save | R Reset | Q Back (No Save)",

@@ -29,8 +29,11 @@ export {
 export { select, type MenuItem, type SelectOptions } from "./select.js";
 export {
 	createUiTheme,
+	resolveUiColorMode,
 	shouldDisableColor,
+	type ResolvedUiColorMode,
 	type UiAccent,
+	type UiColorMode,
 	type UiColorProfile,
 	type UiGlyphMode,
 	type UiPalette,

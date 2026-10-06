@@ -10,7 +10,10 @@ export function stylePromptText(text: string, tone: PromptTone): string {
 	const ui = getUiRuntimeOptions();
 	if (ui.v2Enabled) {
 		if (tone === "muted") {
-			return `${ui.theme.colors.dim}${paintUiText(ui, text, "muted")}${ui.theme.colors.reset}`;
+			// In light mode the muted foreground is already dark; stacking the
+			// dim attribute on top makes the text faint again on light themes.
+			const dim = ui.theme.colorMode === "light" ? "" : ui.theme.colors.dim;
+			return `${dim}${paintUiText(ui, text, "muted")}${ui.theme.colors.reset}`;
 		}
 		const mapped = tone === "accent" ? "primary" : tone;
 		return paintUiText(ui, text, mapped);
