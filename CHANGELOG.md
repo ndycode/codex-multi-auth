@@ -7,11 +7,29 @@ This repository's current stable release line is `2.x`. Full release notes live 
 
 ## [2.19.1] - 2026-10-06
 
-Light-terminal readability: the login dashboard and menus gain a terminal
-background mode (`auto`/`dark`/`light`) so text painted directly on the
-terminal background switches to readable dark variants on light themes
-while badges and the focused row keep their own dark backgrounds.
+Light-terminal readability plus a full dependency and toolchain refresh:
+the login dashboard gains a terminal background mode
+(`auto`/`dark`/`light`), all five open Dependabot advisories are
+resolved, and the runtime now requires Node.js `22.19.0` or later.
 [Full notes](docs/releases/v2.19.1.md).
+
+### Changed
+
+- **Node.js floor raised to `>=22.19.0`** (was `>=18.17.0`): undici 8
+  and Vitest 5 both require Node 22, and Node 20 is end-of-life. CI now
+  tests on Node 22.x and 24.x ([#730](https://github.com/ndycode/codex-multi-auth/pull/730))
+- Runtime dependencies: `hono` 4.13.9 → 4.13.13, `ws` 8.21.3 → 8.22.0,
+  `zod` 4.4.3 → 4.6.5, `undici` 6.29.0 → 8.11.2 ([#730](https://github.com/ndycode/codex-multi-auth/pull/730))
+- Dev toolchain: Vitest 4 → 5.0.2, ESLint 10.0 → 10.12,
+  typescript-eslint 8.56 → 8.71.1, lint-staged 16 → 17.6, fast-check
+  4.5 → 4.10, `@types/node` 20 → 26. TypeScript is split deliberately:
+  `typescript` 6.0.3 keeps the JS compiler API (eslint, tsserver, tests)
+  while `tsgo` (typescript 7.0.2, native) runs `build` and `typecheck`
+  via an explicit path ([#730](https://github.com/ndycode/codex-multi-auth/pull/730))
+- GitHub Actions pins moved to current SHAs: checkout v7, setup-node v7,
+  upload/download-artifact v7/v8, codeql-action v4.38.2 ([#730](https://github.com/ndycode/codex-multi-auth/pull/730))
+- `ProxyAgent` pins `allowH2: false` so undici 8's H2-by-default ALPN
+  negotiation keeps the upstream wire protocol at HTTP/1.1 ([#730](https://github.com/ndycode/codex-multi-auth/pull/730))
 
 ### Fixed
 
@@ -27,6 +45,18 @@ while badges and the focused row keep their own dark backgrounds.
 - Light-mode ansi16 `muted` uses normal black: bright black
   (`ansi16(90)`) maps to mid-gray in common palettes, which was the
   original contrast failure ([#729](https://github.com/ndycode/codex-multi-auth/pull/729))
+
+### Security
+
+- All five open Dependabot advisories resolved, `npm audit` clean:
+  `source-map-js` <1.2.2 (high, indexed source-map event-loop DoS),
+  `brace-expansion` 4.x <5.0.12 (quadratic-expansion ReDoS),
+  `vitest`/`@vitest/mocker` 2.1.0–4.1.11 (redirect-mock path traversal /
+  arbitrary file read), and `@humanfs/node` <0.16.8 (recursive copy
+  follows symlinks outside the source tree) — all dev-graph only ([#730](https://github.com/ndycode/codex-multi-auth/pull/730))
+- `hono` stays pinned at 4.13.13, `brace-expansion` override at 5.0.12,
+  and `undici` is now the exact-pinned `8.11.2` (see `SECURITY.md` for
+  rationale) ([#730](https://github.com/ndycode/codex-multi-auth/pull/730))
 
 ## [2.19.0] - 2026-10-02
 
