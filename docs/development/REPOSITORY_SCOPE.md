@@ -82,7 +82,7 @@ The **primary product** is the account manager plus the optional forwarding wrap
 | Resilience | `lib/live-account-sync.ts`, `lib/session-affinity.ts`, `lib/refresh-queue.ts`, `lib/refresh-lease.ts`, `lib/refresh-guardian.ts`, `lib/proactive-refresh.ts`, `lib/circuit-breaker.ts`, `lib/auth-rate-limit.ts` |
 | Context budget + overflow | `lib/context-budget-guard.ts`, `lib/context-budget/`, `lib/context-budget-response.ts`, `lib/context-overflow.ts`, `lib/synthetic-response.ts` |
 | Inference activity | `lib/runtime/inference-activity.ts` |
-| Signal utilities | `lib/utils.ts` (`combineSignals` — `AbortSignal.any` replacement for Node ≥ 18.17) |
+| Signal utilities | `lib/utils.ts` (`combineSignals` — `AbortSignal.any` replacement for Node ≥ 22.19) |
 | Integration snippets | `lib/integration-generators.ts`, `lib/codex-manager/commands/integrations.ts` |
 | Experimental chat-history sync | `lib/oc-chatgpt-import-adapter.ts`, `lib/oc-chatgpt-orchestrator.ts`, `lib/oc-chatgpt-target-detection.ts` |
 | Named backups / update notice | `lib/named-backup-export.ts`, `lib/update-notice.ts` |

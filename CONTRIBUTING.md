@@ -30,7 +30,7 @@ npm test
 npm run build
 ```
 
-Node requirement: `>=18.17` to run the published package; use Node `20.19+` (or `22.13+`) for development — the dev toolchain (vitest, eslint) does not support Node 18, which is why CI tests on 20.x and 22.x.
+Node requirement: `>=22.19` to run the published package; use Node `22.19+` (or `24.x`) for development — CI tests on 22.x and 24.x.
 
 ---
 

@@ -16,7 +16,7 @@ lib/
 ├── index.ts                       # internal barrel re-exporting every module (not a package subpath)
 ├── errors.ts                      # CodexError hierarchy (typed error contracts)
 ├── env-parsing.ts                 # boolean/integer env coercion
-├── utils.ts                       # combineSignals (AbortSignal.any replacement for Node ≥18.17), misc
+├── utils.ts                       # combineSignals (AbortSignal.any replacement for Node ≥22.19), misc
 ├── concurrency.ts                 # mapWithConcurrency
 ├── fs-retry.ts                    # shared withRetry/withRetrySync policies
 ├── temp-path.ts                   # crypto-random temp/staging path helper
@@ -283,7 +283,7 @@ lib/
 - Settings writes use queued retry for `EBUSY`/`EPERM`/`EAGAIN`.
 - Email dedup uses `normalizeEmailKey()`: trim + lowercase.
 - Worktree storage uses `resolveProjectStorageIdentityRoot`; never derive project pools from raw worktree paths.
-- `combineSignals` (`utils.ts`) replaces `AbortSignal.any` so the Node ≥18.17 floor is safe.
+- `combineSignals` (`utils.ts`) replaces `AbortSignal.any` so the Node ≥22.19 floor is safe.
 - State lives in a class when multiple independent instances or dependency injection are needed
   (`AccountManager` per pool, `CircuitBreaker` per account, `SessionAffinityStore` per proxy, `AccountModelCatalog`,
   `ResetCreditService`, `ResponseOutputHistory`) and for the `CodexError` hierarchy. Module-level state + plain

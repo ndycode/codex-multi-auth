@@ -155,7 +155,9 @@ function getSharedProxyDispatcher(proxyUrl: string): ProxyDispatcher {
 		return existing;
 	}
 
-	const dispatcher = new ProxyAgent(proxyUrl) as unknown as ProxyDispatcher;
+	// undici 8 enables H2 on TLS ALPN; keep HTTP/1.1 so upstream protocol
+	// behavior matches the 6.x line this pin replaces.
+	const dispatcher = new ProxyAgent({ uri: proxyUrl, allowH2: false }) as unknown as ProxyDispatcher;
 	sharedProxyDispatchers.set(proxyUrl, dispatcher);
 	return dispatcher;
 }

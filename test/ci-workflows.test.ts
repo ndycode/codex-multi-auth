@@ -241,18 +241,18 @@ describe("CI workflow parity", () => {
 		).toBeGreaterThanOrEqual(3);
 	});
 
-	// Issue #523: validate the engines floor (node >=18) with a runtime smoke
-	// job that installs the packed tarball on Node 18 without devDependencies.
-	it("smoke-tests the packed CLI on the Node 18 engines floor", () => {
+	// Issue #523: validate the engines floor (node >=22.19) with a runtime smoke
+	// job that installs the packed tarball on Node 22 without devDependencies.
+	it("smoke-tests the packed CLI on the Node 22 engines floor", () => {
 		const ci = readWorkflow("ci.yml");
 		const builderJob = extractJobBlock(ci, "build-package");
-		const smokeJob = extractJobBlock(ci, "node18-smoke");
+		const smokeJob = extractJobBlock(ci, "node22-smoke");
 
 		expect(builderJob).toContain("npm pack");
 		expect(builderJob).toContain("actions/upload-artifact@");
 
 		expect(smokeJob).toContain("needs: build-package");
-		expect(smokeJob).toContain("node-version: 18.17.x");
+		expect(smokeJob).toContain("node-version: 22.19.x");
 		expect(smokeJob).toContain("actions/download-artifact@");
 		expect(smokeJob).toContain("npm install -g ./codex-multi-auth-*.tgz");
 		expect(smokeJob).toContain("codex-multi-auth --help");
