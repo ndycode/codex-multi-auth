@@ -18,7 +18,7 @@ How to move an older install to the canonical `codex-multi-auth` package on the 
 
 ## Upgrade
 
-This release requires Node.js `22.19.0` or later. If you run Node.js 18 or 20, upgrade Node.js first — the package will not install on older runtimes.
+This release requires Node.js `22.19.0` or later. If you run Node.js 18 or 20, upgrade Node.js first — those runtimes are unsupported, and while npm may still install the package when engine checks are not enforced, it cannot run there.
 
 ```bash
 npm i -g @openai/codex        # if the official CLI isn't installed yet
