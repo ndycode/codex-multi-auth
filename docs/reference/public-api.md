@@ -6,7 +6,7 @@ Public API contract for `codex-multi-auth` (package `2.19.1`).
 
 ## Package surface
 
-`codex-multi-auth` is an ESM package (`"type": "module"`, Node >= 18.17). Its
+`codex-multi-auth` is an ESM package (`"type": "module"`, Node >= 22.19). Its
 `exports` map exposes exactly these specifiers:
 
 | Subpath | Target | Surface |

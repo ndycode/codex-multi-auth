@@ -24,7 +24,7 @@ Maintainer map for the Codex CLI wrapper, local OAuth account manager, default-o
 types/constants → storage → accounts → runtime → manager/CLI
 ```
 
-- **types/constants** — leaf utilities with no project imports: `errors.ts`, `schemas.ts`, `runtime-constants.ts`, `runtime-paths.ts`, `temp-path.ts`, `fs-retry.ts` (every retry loop declares its policy here), `utils.ts` (`combineSignals` — the `AbortSignal.any` replacement for the Node >= 18.17 floor), `storage/json-store-lock.ts` (shared CAS machinery for the governance JSON stores).
+- **types/constants** — leaf utilities with no project imports: `errors.ts`, `schemas.ts`, `runtime-constants.ts`, `runtime-paths.ts`, `temp-path.ts`, `fs-retry.ts` (every retry loop declares its policy here), `utils.ts` (`combineSignals` — the `AbortSignal.any` replacement for the Node >= 22.19 floor), `storage/json-store-lock.ts` (shared CAS machinery for the governance JSON stores).
 - **storage** — `lib/storage.ts` facade + `lib/storage/` modules: V3 load/normalize/merge/save, WAL + `.bak` rotation + named backups, path and worktree-identity resolution (`storage/paths.ts`), flagged pool, pending-auth journal.
 - **accounts** — pool semantics on top of storage: `accounts.ts`, `rotation.ts` (hybrid selector), `account-policy.ts`, `routing-profiles.ts`, `budget-guard.ts`, `usage/` ledger, `quota-*.ts`, `refresh-queue.ts`, `refresh-lease.ts`, `capability-policy.ts`, `model-capability-matrix.ts`.
 - **runtime** — request-path machinery: `runtime-rotation-proxy.ts` + `lib/runtime/` (rotation-account-selection, app-bind, first-run, live-sync, refresh-guardian, runtime-observability, native-* app-server pieces), `request/` (transformer, fetch-helpers, response-handler, stream-failover, failure-policy, rate-limit-backoff), `policy/runtime-policy.ts` + `policy/runtime-policy-cache.ts` (governance composition + hot-path caches), `auth/` OAuth.
@@ -294,7 +294,7 @@ The marker is versioned (`FIRST_RUN_MARKER_VERSION = 2`). A v1 or unreadable mar
 | Request pipeline | `lib/request/*` (`request-transformer.ts`, `fetch-helpers.ts`, `response-handler.ts`, `stream-failover.ts`, `failure-policy.ts`, `rate-limit-backoff.ts`) | Plugin-host transform, headers, SSE→JSON, failover, retry policy |
 | Runtime observability | `lib/runtime/runtime-observability.ts` | Persisted counters for status/report/monitor/rotation-status/why-selected |
 | Settings hub | `lib/codex-manager/settings-hub/` (`settings-hub.ts` stub re-exports) | Six panels; Q = cancel without save; theme live-preview restores baseline |
-| Signal utilities | `lib/utils.ts` | `combineSignals` (`AbortSignal.any` replacement for Node ≥ 18.17) |
+| Signal utilities | `lib/utils.ts` | `combineSignals` (`AbortSignal.any` replacement for Node ≥ 22.19) |
 | Repo hygiene | `scripts/repo-hygiene.js` | Deterministic cleanup + CI-gated check |
 
 * * *

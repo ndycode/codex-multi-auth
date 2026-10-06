@@ -8,7 +8,7 @@
 
 | Requirement | Notes |
 | --- | --- |
-| Node.js `18.17+` | Any current LTS works |
+| Node.js `22.19+` | Any current LTS works |
 | Official Codex CLI | `npm i -g @openai/codex`, or another install that puts `codex` on `PATH` |
 | A ChatGPT plan | Each account you add signs in with its own ChatGPT credentials |
 

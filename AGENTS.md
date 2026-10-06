@@ -128,7 +128,7 @@ Package version: 2.19.1
 | Update notice | `lib/update-notice.ts` | npm version check with startup budget |
 | Audit log | `lib/audit.ts` | rotating file audit log |
 | Forecast/best | `lib/forecast.ts`, `lib/codex-manager/commands/forecast.ts`, `lib/codex-manager/commands/best.ts` | forecast-pick; `best` also switches |
-| Shared helpers | `lib/utils.ts`, `lib/fs-retry.ts`, `lib/temp-path.ts`, `lib/concurrency.ts`, `lib/env-parsing.ts`, `lib/errors.ts`, `lib/logger.ts`, `lib/shutdown.ts`, `lib/table-formatter.ts` | `combineSignals` (AbortSignal.any replacement for Node ≥18.17), retry policies, crypto temp paths, mapWithConcurrency, env coercion, CodexError hierarchy |
+| Shared helpers | `lib/utils.ts`, `lib/fs-retry.ts`, `lib/temp-path.ts`, `lib/concurrency.ts`, `lib/env-parsing.ts`, `lib/errors.ts`, `lib/logger.ts`, `lib/shutdown.ts`, `lib/table-formatter.ts` | `combineSignals` (AbortSignal.any replacement for Node ≥22.19), retry policies, crypto temp paths, mapWithConcurrency, env coercion, CodexError hierarchy |
 | UI components | `lib/ui/` | ansi, auth-menu(+builder), check-progress, confirm, display-width, format, runtime, select, theme, ui-copy |
 | Hashline tools | `lib/tools/hashline-tools.ts` | plugin-host edit/apply_patch/hashline_read tool impl |
 | Repo hygiene | `scripts/repo-hygiene.js` | `clean --mode aggressive`, `check`, Windows retry helpers |
@@ -137,7 +137,7 @@ Package version: 2.19.1
 ## CONVENTIONS
 
 - Source lives in root `index.ts`, `lib/`, and `scripts/`; `dist/` is generated output.
-- ESM only (`"type": "module"`), Node >= 18.17.
+- ESM only (`"type": "module"`), Node >= 22.19.
 - Canonical package name is `codex-multi-auth`; canonical command family is `codex-multi-auth ...`.
 - The package does not publish a global `codex` bin; `codex-multi-auth-codex` is the explicit wrapper: auth commands run locally, non-auth commands forward to official Codex.
 - The `auth` prefix is optional on both bins for all 31 manager commands (`codex-multi-auth login` ≡ `codex-multi-auth auth login`).
@@ -170,7 +170,7 @@ Package version: 2.19.1
 - Do not key project storage by worktree path; use `resolveProjectStorageIdentityRoot`.
 - Do not `structuredClone`/spread loaded account storage — that silently drops the merge baseline; use `cloneTrackedAccountStorage`.
 - Do not write the governance JSON stores with raw `fs` writes; go through the `json-store-lock` queue + lockfile + CAS helpers.
-- Do not use `AbortSignal.any` (Node floor is 18.17); use `combineSignals` from `lib/utils.ts`.
+- Do not use `AbortSignal.any` (Node floor is 22.19); use `combineSignals` from `lib/utils.ts`.
 - Do not add module-level mutable state without a `reset*ForTests`-style helper.
 
 ## COMMANDS

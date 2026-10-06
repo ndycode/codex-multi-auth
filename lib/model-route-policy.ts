@@ -139,7 +139,7 @@ export function buildVisibleModelUnion(catalogs: RouteCatalog[]): RouteModel[] {
             group.push({...model, ...(Array.isArray(model.service_tiers) ? {service_tiers: modelServiceTiers(model)} : {})});
             sources.set(slug, group);
 			const existing = models.get(slug);
-			const entry =
+			const entry: RouteModel =
 				(existing ? mergeCatalogModel(existing, model) : undefined) ??
 				(catalog.kind === "oauth"
 					? { ...model }

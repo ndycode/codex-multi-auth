@@ -33,7 +33,7 @@ Using OpenCode rather than the Codex CLI? The sibling project [`oc-codex-multi-a
 
 ## Install
 
-Requirements: Node.js >= 18.17, and the official Codex CLI on `PATH` (`npm i -g @openai/codex`, Homebrew, or a release binary).
+Requirements: Node.js >= 22.19, and the official Codex CLI on `PATH` (`npm i -g @openai/codex`, Homebrew, or a release binary).
 
 ```bash
 npm i -g codex-multi-auth
