@@ -1684,7 +1684,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											let response: Response;
 											const fetchStart = performance.now();
 
-											// Merge user AbortSignal with timeout (Node 18 compatible - no AbortSignal.any)
+											// Merge user AbortSignal with timeout without AbortSignal.any (keeps listeners bounded)
 											const fetchController = new AbortController();
 											const requestTimeoutMs = fetchTimeoutMs;
 											let requestTimedOut = false;

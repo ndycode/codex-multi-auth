@@ -27,7 +27,7 @@ export function isAbortError(error: unknown): boolean {
  * Combines two abort signals into one that aborts when the FIRST input does.
  *
  * This is a thin null-tolerant wrapper over `AbortSignal.any` — available
- * since Node 18.17.0, which the engines floor already requires. Using the
+ * on every Node version the engines floor (`>=22.19`) permits. Using the
  * native composite matters beyond brevity: a manual addEventListener pair
  * stays registered on BOTH inputs until one fires, so a caller that combines
  * a long-lived signal (e.g. a proxy-lifetime abort) once per request would

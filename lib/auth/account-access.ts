@@ -84,8 +84,8 @@ export async function fetchAuthorizedAccounts(
 
 	const doFetch = options.fetch ?? globalThis.fetch;
 	const timeout = AbortSignal.timeout(ACCOUNTS_CHECK_TIMEOUT_MS);
-	// combineSignals wraps AbortSignal.any (available since Node 18.17, the
-	// engines floor) with null-tolerance; the native composite also detaches
+	// combineSignals wraps AbortSignal.any (available on every Node the
+	// engines floor, `>=22.19`, permits) with null-tolerance; the native composite also detaches
 	// from a long-lived caller signal once this request completes.
 	const signal = options.signal
 		? combineSignals(options.signal, timeout)

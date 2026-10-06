@@ -64,7 +64,7 @@ describe('Utils Module', () => {
 	});
 
 	describe('combineSignals', () => {
-		// AbortSignal.any is available since Node 18.17 (the engines floor); the
+		// AbortSignal.any is available on every Node the engines floor (`>=22.19`) permits; the
 		// helper adds the null-tolerance the call sites need plus — via the
 		// native composite — no listener accumulation on long-lived signals.
 		it('aborts with the first signal that fires and forwards its reason', () => {
