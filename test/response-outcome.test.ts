@@ -1,5 +1,14 @@
 import {expect,it} from "vitest";
 import {ResponseOutcome} from "../lib/request/response-outcome.js";
+it("uses the scanner's format decision when checking completion", () => {
+	let sse = false;
+	const outcome = new ResponseOutcome(() => sse);
+	expect(outcome.finish().success).toBe(true);
+	sse = true;
+	expect(outcome.finish()).toEqual({ success: false, missingTerminal: true, errorCode: "upstream_missing_terminal" });
+	outcome.observe({ type: "response.completed" });
+	expect(outcome.finish().success).toBe(true);
+});
 it.each(["failed","cancelled"])("rejects non-streaming response status %s",status=>{
  const outcome=new ResponseOutcome(false);outcome.observe({object:"response",status,error:{code:"model_not_found",message:"must not retain"}});
  expect(outcome.finish().success).toBe(false);

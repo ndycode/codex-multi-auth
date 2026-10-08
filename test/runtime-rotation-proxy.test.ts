@@ -29,6 +29,7 @@ import {
 } from "../lib/routing-mutex.js";
 import * as storageMetaModule from "../lib/runtime/rotation-storage-meta.js";
 import * as runtimePolicy from "../lib/policy/runtime-policy.js";
+import { readUsageLedgerRows } from "../lib/usage/ledger.js";
 import { resetRefreshQueue } from "../lib/refresh-queue.js";
 import {
 	DEFAULT_TOKEN_BUCKET_CONFIG,
@@ -4358,6 +4359,41 @@ describe("chooseAccount sequential mode (issue #509)", () => {
 			totalTokens: 1500,
 		});
 	});
+
+	it.each([null, "text/plain", "application/json", "text/event-stream"])("records real ledger counts for SSE with Content-Type %s", async contentType => {
+		const startedAt = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(startedAt, 1));
+		const body = 'event: response.completed\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":16,"output_tokens":5,"total_tokens":21}}}\n\n';
+		const { fetchImpl } = createRecordingFetch(() => new Response(new TextEncoder().encode(body), {
+			headers: contentType ? { "content-type": contentType } : {},
+		}));
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const response = await postResponses(proxy, { model: "gpt-5-codex", stream: true });
+		expect(response.status).toBe(200);
+		expect(await response.text()).toBe(body);
+		await vi.waitFor(async () => {
+			const rows = await readUsageLedgerRows({ since: startedAt });
+			expect(rows.filter(row => row.operation === "responses" && row.model === "gpt-5-codex").at(-1)).toMatchObject({ outcome: "success", tokens: { inputTokens: 16, outputTokens: 5, totalTokens: 21 } });
+		});
+	});
+
+	it.each([null, "text/plain", "text/event-stream"])("requires the terminal event for SSE with Content-Type %s", async contentType => {
+		const startedAt = Date.now();
+		const accountManager = new AccountManager(undefined, createStorage(startedAt, 1));
+		const success = vi.spyOn(accountManager, "recordSuccess");
+		const body = 'data: {"type":"response.created"}\n\n';
+		const { fetchImpl } = createRecordingFetch(() => new Response(new TextEncoder().encode(body), {
+			headers: contentType ? { "content-type": contentType } : {},
+		}));
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const response = await postResponses(proxy, { model: "gpt-5-codex", stream: true });
+		expect(await response.text()).toContain("upstream_missing_terminal");
+		expect(success).not.toHaveBeenCalled();
+		await vi.waitFor(async () => {
+			const rows = await readUsageLedgerRows({ since: startedAt });
+			expect(rows.filter(row => row.operation === "responses" && row.model === "gpt-5-codex").at(-1)).toMatchObject({ outcome: "failure", errorCode: "upstream_missing_terminal" });
+		});
+	});
 });
 
 describe("native OpenAI catalog routing", () => {
@@ -4830,6 +4866,32 @@ it("clamps a reference catalog's context to the serving pool",async()=>{
 });
 
 describe("explicit API model routes",()=>{
+	it.each([
+		["api", "response.completed"], ["api", "response.created"],
+		["zdr", "response.completed"], ["zdr", "response.created"],
+	] as const)("uses sniffed SSE for %s usage and completion (%s)", async (kind, type) => {
+		const startedAt = Date.now();
+		const manager = new AccountManager(undefined, createStorage(startedAt));
+		const routes = [{ id: "fixture", label: "Fixture", kind, apiKey: "fixture-api-key", enabled: true, priority: 0, visibleModels: ["exclusive"] }];
+		const body = `data: ${JSON.stringify({ type, response: { usage: { input_tokens: 16, output_tokens: 5, total_tokens: 21 } } })}\n\n`;
+		const { fetchImpl } = createRecordingFetch(call => call.url.endsWith("/models")
+			? Response.json({ data: [{ id: "exclusive" }] })
+			: new Response(new TextEncoder().encode(body)));
+		const proxy = await startProxy({ accountManager: manager, fetchImpl, options: { readApiRoutes: async () => routes } });
+		const response = await postResponses(proxy, { model: `${kind}/exclusive`, input: "test", stream: true });
+		expect(response.status).toBe(200);
+		const text = await response.text();
+		if (type === "response.created") expect(text).toContain("upstream_missing_terminal");
+		else expect(text).toBe(body);
+		await vi.waitFor(async () => {
+			const rows = await readUsageLedgerRows({ since: startedAt });
+			expect(rows.filter(row => row.operation === "responses" && row.model === `${kind}/exclusive`).at(-1)).toMatchObject({
+				outcome: type === "response.completed" ? "success" : "failure",
+				errorCode: type === "response.completed" ? null : "upstream_missing_terminal",
+				tokens: { inputTokens: 16, outputTokens: 5, totalTokens: 21 },
+			});
+		});
+	});
  it.each([
   ["gzip",gzipSync(Buffer.from('{"model":"zdr/exclusive","input":"test","stream":true}'))],
   ["deflate",deflateSync(Buffer.from('{"model":"zdr/exclusive","input":"test","stream":true}'))],

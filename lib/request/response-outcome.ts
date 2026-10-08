@@ -11,7 +11,7 @@ export class ResponseOutcome {
 	private terminal: "completed" | "failed" | "incomplete" | "cancelled" | undefined;
 	rejection: { error: { code?: string; param?: string } } | undefined;
 
-	constructor(private readonly requireTerminal: boolean) {}
+	constructor(private readonly requireTerminal: boolean | (() => boolean)) {}
 
 	observe(value: unknown): void {
 		if (!isRecord(value)) return;
@@ -42,7 +42,10 @@ export class ResponseOutcome {
 	 * type survives only as the usage annotation in `errorCode`.
 	 */
 	finish(): StreamCompletion {
-		const missingTerminal = this.requireTerminal && !this.terminal;
+		const requireTerminal = typeof this.requireTerminal === "function"
+			? this.requireTerminal()
+			: this.requireTerminal;
+		const missingTerminal = requireTerminal && !this.terminal;
 		const success = !missingTerminal && (!this.terminal || this.terminal === "completed" || this.terminal === "incomplete");
 		return {
 			success,

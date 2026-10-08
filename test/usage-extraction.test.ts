@@ -91,6 +91,47 @@ describe("extractUsageTokenCounts", () => {
 });
 
 describe("createUsageStreamScanner", () => {
+	it.each([null, "text/plain", "application/json"])("sniffs SSE usage with an untrusted Content-Type (%s)", contentType => {
+		const events: unknown[] = [];
+		const scanner = createUsageStreamScanner({ contentType, onEvent: event => events.push(event) });
+		const raw = sseEvent("response.completed", { response: { usage: COMPLETED_USAGE } });
+		for (const byte of encoder.encode(raw)) scanner.push(Uint8Array.of(byte));
+		// Events must be consumed while forwarding, rather than buffering until EOF.
+		expect(events).toHaveLength(1);
+		expect(scanner.result()).toMatchObject({ inputTokens: 1_000, totalTokens: 1_500 });
+	});
+
+	it("sniffs data-only SSE after a split UTF-8 BOM and CRLF comment", () => {
+		const scanner = createUsageStreamScanner({});
+		const raw = '\uFEFF\r\n: keepalive\r\ndata: ' + JSON.stringify({ type: "response.completed", response: { usage: COMPLETED_USAGE } }) + '\r\n\r\n';
+		for (const byte of encoder.encode(raw)) scanner.push(Uint8Array.of(byte));
+		expect(scanner.result()?.totalTokens).toBe(1_500);
+	});
+
+	it("streams headerless SSE beyond the JSON retention cap", () => {
+		const scanner = createUsageStreamScanner({ contentType: null });
+		const delta = encoder.encode(sseEvent("response.output_text.delta", { delta: "x".repeat(8_192) }));
+		for (let index = 0; index < 256; index++) scanner.push(delta);
+		scanner.push(encoder.encode(sseEvent("response.completed", { response: { usage: COMPLETED_USAGE } })));
+		expect(scanner.result()?.totalTokens).toBe(1_500);
+	});
+
+	it.each([null, "text/plain", "application/json"])("keeps JSON usage with Content-Type %s", contentType => {
+		const scanner = createUsageStreamScanner({ contentType });
+		const raw = JSON.stringify({ usage: COMPLETED_USAGE, output: "data: is only text inside JSON" });
+		for (const byte of encoder.encode(raw)) scanner.push(Uint8Array.of(byte));
+		expect(scanner.result()?.totalTokens).toBe(1_500);
+	});
+
+	it.each([false, true])("limits body sniffing to the initial prefix (split=%s)", split => {
+		const scanner = createUsageStreamScanner({ contentType: null });
+		const bytes = encoder.encode('\n'.repeat(4_096) + sseEvent("response.completed", { response: { usage: COMPLETED_USAGE } }));
+		if (split) {
+			scanner.push(bytes.subarray(0, 4_096));
+			scanner.push(bytes.subarray(4_096));
+		} else scanner.push(bytes);
+		expect(scanner.result()).toBeNull();
+	});
 	it("observes multiline terminal frames split across CRLF chunks exactly once", () => {
 		const events: unknown[] = [];
 		const scanner = createUsageStreamScanner({contentType: "text/event-stream", onEvent: event => events.push(event)});

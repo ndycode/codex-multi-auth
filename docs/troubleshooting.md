@@ -119,6 +119,20 @@ Each wrapper-launched agent is a separate process with its own rotation state, s
 
 ---
 
+### Successful Requests With Zero Usage
+
+Responses streams can omit or mislabel `Content-Type`. The usage scanner checks
+up to the first 4 KiB for SSE field/comment prefixes, then processes events
+incrementally. The proxy uses that same format decision to require a terminal
+event. Normal JSON responses still use the bounded JSON parser.
+
+To investigate a successful Responses request with zero or missing usage, enable
+`DEBUG_CODEX_PLUGIN=1`, `CODEX_PLUGIN_LOG_LEVEL=debug`, and `CODEX_CONSOLE_LOG=1`
+in the proxy process environment. The debug diagnostic records only source and
+operation, without account identities, credentials, or response content. It also
+covers genuinely empty responses, so inspect the upstream usage before treating
+the diagnostic as proof of a parsing failure.
+
 ## macOS Keychain Prompts
 
 `codex-multi-auth` never uses the keychain — its state is plain JSON under `~/.codex/multi-auth`. Repeated "unlock login keychain" prompts come from the *official* CLI when `~/.codex/config.toml` still has `cli_auth_credentials_store = "keychain"`.

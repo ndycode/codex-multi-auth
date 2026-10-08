@@ -12,6 +12,8 @@ import type { UsageServiceTier, UsageTokenCounts } from "./types.js";
 
 /** Cap on retained bytes so a hostile or unterminated body cannot grow forever. */
 const MAX_BUFFERED_BYTES = 1_048_576;
+/** Only inspect this many leading bytes when the media type does not identify SSE. */
+const MAX_SNIFF_BYTES = 4_096;
 /** Terminal Responses stream events that carry the final `usage` object. */
 const TERMINAL_EVENT_TYPES = new Set([
 	"response.completed",
@@ -134,6 +136,8 @@ export function extractResponsesUsage(payload: unknown): UsageTokenCounts | null
 }
 
 export interface UsageStreamScanner {
+	/** The shared format decision, updated as the bounded body prefix arrives. */
+	isSse: () => boolean;
 	/** Feed one forwarded chunk. Never throws. */
 	push: (chunk: Uint8Array) => void;
 	/** Flush any trailing partial data and return the final counts, if any. */
@@ -155,7 +159,11 @@ export function createUsageStreamScanner(options: {
 	/** Observe parsed upstream events without reparsing the stream. */
 	onEvent?: (event: unknown) => void;
 }): UsageStreamScanner {
-	const sse = (options.contentType ?? "").toLowerCase().includes("text/event-stream");
+	let sse = (options.contentType ?? "").toLowerCase().includes("text/event-stream");
+	let sniffing = !sse;
+	let sniffedBytes = 0;
+	let sniffPrefix = "";
+	const sniffDecoder = new TextDecoder("utf-8");
 	const decoder = new TextDecoder("utf-8");
 	let pending = "";
 	let bufferedBytes = 0;
@@ -202,10 +210,28 @@ export function createUsageStreamScanner(options: {
 		eventData.push(value);
 	};
 
+	const sniffFormat = (chunk: Uint8Array): void => {
+		if (!sniffing) return;
+		const prefix = chunk.subarray(0, MAX_SNIFF_BYTES - sniffedBytes);
+		sniffedBytes += prefix.byteLength;
+		sniffPrefix += sniffDecoder.decode(prefix, { stream: true });
+		// Match only at the start (after blank lines/BOM), never a data: string
+		// inside JSON. A field or comment identifies SSE before a possibly huge
+		// event arrives, so streaming never depends on buffering its whole frame.
+		sse = /^(?:\r?\n)*(?::|(?:data|event|id|retry):)/.test(sniffPrefix);
+		const first = sniffPrefix.trimStart()[0];
+		if (sse || first === "{" || first === "[" || sniffedBytes >= MAX_SNIFF_BYTES) {
+			sniffing = false;
+			sniffPrefix = "";
+		}
+	};
+
 	return {
+		isSse: () => sse,
 		push: (chunk) => {
 			try {
 				if (overflowed || chunk.byteLength === 0) return;
+				sniffFormat(chunk);
 				bufferedBytes += chunk.byteLength;
 				pending += decoder.decode(chunk, { stream: true });
 				if (!sse) {
