@@ -1661,11 +1661,11 @@ async function handleRequestInner(
 						});
 					},
 				);
-				const responseOutcome = new ResponseOutcome(upstream.headers.get("content-type")?.includes("text/event-stream") === true);
 				const scanner = createUsageStreamScanner({
 					contentType: upstream.headers.get("content-type"),
 					onEvent: event => responseOutcome.observe(event),
 				});
+				const responseOutcome = new ResponseOutcome(() => scanner.isSse());
 				const forwarded = await forwardStreamingResponse(
 					upstream,
 					res,
@@ -2991,7 +2991,6 @@ async function handleRequestInner(
 			// evaluateBudgetGuard compares `0 >= limit` for maxTokens/maxCostUsd
 			// and those caps never fire — `budget set --cost 50` would allow
 			// unlimited spend, with only --requests actually enforced.
-			const responseOutcome = new ResponseOutcome(isResponsesRequest && upstream.headers.get("content-type")?.includes("text/event-stream") === true);
 			const usageScanner = createUsageStreamScanner({
 				contentType: upstream.headers.get("content-type"),
 				onEvent: (event) => {
@@ -3003,6 +3002,7 @@ async function handleRequestInner(
 					state.status.lastStreamQuotaUpdateAt = snapshot.updatedAt;
 				},
 			});
+			const responseOutcome = new ResponseOutcome(() => isResponsesRequest && usageScanner.isSse());
 			let streamErrored = false;
 			const forwarded = await forwardStreamingResponse(
 				upstream,

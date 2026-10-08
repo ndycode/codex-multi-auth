@@ -1,4 +1,5 @@
 import type { CapabilityPolicyStore } from "../capability-policy.js";
+import { logDebug } from "../logger.js";
 import { resolveEntitlementAccountKey } from "../entitlement-cache.js";
 import {
 	getAccountPolicyKey,
@@ -322,6 +323,19 @@ export function createRuntimeUsageRecorder(input: {
 		record: async (recordInput) => {
 			if (recorded) return;
 			recorded = true;
+			if (input.operation === "responses" && recordInput.outcome === "success" && ![
+				recordInput.inputTokens,
+				recordInput.outputTokens,
+				recordInput.cachedInputTokens,
+				recordInput.reasoningTokens,
+				recordInput.totalTokens,
+			].some(count => typeof count === "number" && count > 0)) {
+				// Keep diagnostics free of account identities, credentials and body data.
+				logDebug("Successful Responses request has zero or missing token usage", {
+					source: input.source,
+					operation: input.operation,
+				});
+			}
 			const account = recordInput.account;
 			const row: UsageLedgerAppendInput = {
 				source: input.source,

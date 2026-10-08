@@ -1,4 +1,6 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as codexPrompts from '../lib/prompts/codex.js';
+import * as hostPrompts from '../lib/prompts/host-codex-prompt.js';
 import * as refreshQueueModule from '../lib/refresh-queue.js';
 import {
     shouldRefreshToken,
@@ -1651,6 +1653,11 @@ describe('createEntitlementErrorResponse', () => {
 	});
 
 	describe('transformRequestForCodex', () => {
+		beforeEach(() => {
+			// Exercise request transformation, not availability of GitHub prompt files.
+			vi.spyOn(codexPrompts, 'getCodexInstructions').mockResolvedValue('Synthetic Codex instructions');
+			vi.spyOn(hostPrompts, 'getHostCodexPrompt').mockResolvedValue('Synthetic host instructions');
+		});
 		it('returns undefined when init is undefined (line 166 coverage)', async () => {
 			const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
 			const result = await transformRequestForCodex(undefined, 'https://example.com', { global: {}, models: {} });

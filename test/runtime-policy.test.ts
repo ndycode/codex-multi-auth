@@ -10,6 +10,7 @@ import {
 } from "../lib/policy/runtime-policy.js";
 import { appendUsageLedgerRow, rotateUsageLedger } from "../lib/usage/index.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
+import * as logger from "../lib/logger.js";
 
 function state(): RuntimePolicyState {
 	return {
@@ -278,6 +279,22 @@ describe("runtime policy", () => {
 			accountIndex: 0,
 		});
 		expect(recorder.hasRecorded()).toBe(true);
+	});
+
+	it.each([undefined, 0])("logs successful zero or missing usage once without request or account data (total=%s)", async totalTokens => {
+		const debug = vi.spyOn(logger, "logDebug").mockImplementation(() => undefined);
+		const recorder = createRuntimeUsageRecorder({ source: "runtime-proxy", operation: "responses", model: "private-model", projectKey: "private-project", requestId: "private-request" });
+		await recorder.record({ outcome: "success", totalTokens, account: { index: 0, accountId: "private-account" } });
+		await recorder.record({ outcome: "success", totalTokens });
+		expect(debug).toHaveBeenCalledTimes(1);
+		expect(debug.mock.calls[0]).toEqual([expect.any(String), { source: "runtime-proxy", operation: "responses" }]);
+	});
+
+	it.each(["nonzero", "cancelled", "models"])("does not flag %s as a successful Responses usage regression", async variant => {
+		const debug = vi.spyOn(logger, "logDebug").mockImplementation(() => undefined);
+		const recorder = createRuntimeUsageRecorder({ source: "runtime-proxy", operation: variant === "models" ? "models" : "responses", model: null, projectKey: null, requestId: null });
+		await recorder.record({ outcome: variant === "cancelled" ? "cancelled" : "success", inputTokens: variant === "nonzero" ? 1 : 0 });
+		expect(debug).not.toHaveBeenCalled();
 	});
 
 	it("records thread goal usage as a distinct operation", async () => {
