@@ -946,6 +946,14 @@ function switchRequestToLunaReserve(context: RequestContext): boolean {
 	return true;
 }
 
+/** True only for 429s that identify subscription usage/quota exhaustion. */
+function isSubscriptionQuota429(status: number, bodyText: string): boolean {
+	if (status !== HTTP_STATUS.TOO_MANY_REQUESTS) return false;
+	const code = extractErrorCodeFromBody(bodyText)?.toLowerCase() ?? "";
+	if (code.includes("usage_limit") || code.includes("quota")) return true;
+	return /\busage[ _-]+limit[ _-]+(?:reached|exceeded|exhausted)\b|\bquota[ _-]+(?:reached|exceeded|exhausted)\b/i.test(bodyText);
+}
+
 function buildImageRequestContext(
 	req: IncomingMessage,
 	body: Buffer,
@@ -2725,6 +2733,7 @@ async function handleRequestInner(
 				// limited would take a healthy account out of the pool for the
 				// retry-after window on an outage that affects every account.
 				const modelAtCapacity = isModelAtCapacityError(upstream.status, bodyText);
+				const subscriptionQuotaExceeded = isSubscriptionQuota429(upstream.status, bodyText);
 				if (modelAtCapacity) {
 					const outcome = await waitOutModelCapacity(
 						retryAfterHintMs,
@@ -2741,25 +2750,25 @@ async function handleRequestInner(
 					}
 					if (outcome === "retry") continue;
 				}
-				if (context.model !== LUNA_RESERVE_MODEL) {
+				if (context.model !== LUNA_RESERVE_MODEL && subscriptionQuotaExceeded) {
 					state.preemptiveQuotaScheduler.markRateLimited(
 						quotaScheduleKey,
 						retryAfterMs,
 						state.now(),
 					);
 				}
-				// A 429 is the upstream quota signal for the attempted account, so
-				// keep the consumed runtime token drained.
+				// Every 429 still drains this account for its retry window, but only an
+				// explicit subscription-usage signal is persisted as quota exhaustion.
 				accountManager.recordRateLimit(refreshed.account, context.family, context.model);
 				accountManager.markRateLimitedWithReason(
 					refreshed.account,
 					retryAfterMs,
 					context.family,
-					"quota",
+					subscriptionQuotaExceeded ? "quota" : "unknown",
 					context.model,
 				);
 				accountManager.saveToDiskDebounced();
-				if (!modelAtCapacity && switchRequestToLunaReserve(context)) {
+				if (!modelAtCapacity && subscriptionQuotaExceeded && switchRequestToLunaReserve(context)) {
 					usageRecorder = createUsageRecorderForModel(context.model);
 					if (runtimePolicyState) {
 						try {

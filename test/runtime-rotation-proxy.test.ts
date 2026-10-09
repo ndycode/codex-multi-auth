@@ -5877,6 +5877,22 @@ describe("Luna Reserve fallback", () => {
 		expect(proxy.getStatus().streamQuotaUpdates ?? 0).toBe(0);
 	});
 
+	it("does not fall back to Reserve for a non-quota Luna 429", async () => {
+		const accountManager = new AccountManager(undefined, createStorage(Date.now(), 1));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response('{"error":{"code":"requests_too_fast","message":"slow down"}}', {
+				status: 429,
+				headers: { "content-type": "application/json", "retry-after": "1" },
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl, options: { forcedAccountIndex: 0 } });
+		const response = await postResponses(proxy, { model: "gpt-6-luna", stream: true, input: "hi" });
+		await response.text();
+		expect(calls.length).toBeGreaterThan(0);
+		expect(calls.every((call) => (JSON.parse(call.bodyText) as { model?: string }).model === "gpt-6-luna")).toBe(true);
+		expect(proxy.getStatus().lunaReserveFallbacks ?? 0).toBe(0);
+	});
+
 	it("does not fall back to Reserve for a Luna model-capacity 429", async () => {
 		const accountManager = new AccountManager(undefined, createStorage(Date.now(), 1));
 		const { calls, fetchImpl } = createRecordingFetch(() =>
