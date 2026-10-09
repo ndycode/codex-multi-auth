@@ -344,7 +344,6 @@ export function recordRuntimeReset(reason: string): void {
 		snapshot.accountSkipReasons = {};
 		snapshot.policyBlockedIndexes = [];
 		snapshot.policyBlockedReasons = {};
-		snapshot.lunaReserveFallbacks = 0;
 	});
 }
 

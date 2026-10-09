@@ -1844,7 +1844,8 @@ async function handleRequestInner(
 			const body = parseRequestBody(context.body);
 			const effort = isRecord(body?.reasoning) && typeof body.reasoning.effort === "string" ? body.reasoning.effort : undefined;
 			const tier = typeof body?.service_tier === "string" ? body.service_tier : undefined;
-			const failures = state.capabilityFailures ??= new RuntimeCapabilityFailures(state.now);
+			if (!state.capabilityFailures) state.capabilityFailures = new RuntimeCapabilityFailures(state.now);
+			const failures = state.capabilityFailures;
 			const eligibleAccounts = accountManager.getAccountsSnapshot().filter((account) =>
 				account.enabled !== false && (!isPinned || account.index === pinnedIndex) && !policyDecision?.blockedAccountIndexes.has(account.index));
 			const routableScopes = eligibleAccounts.flatMap(workspaceModelScopes).filter((scope) => scope.routable);
