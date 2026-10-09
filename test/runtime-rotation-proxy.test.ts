@@ -5733,6 +5733,49 @@ describe("Luna Reserve fallback", () => {
 		expect(proxy.getStatus().lunaReserveFallbacks).toBe(2);
 	});
 
+	it("preserves confirmed pinned Luna exhaustion across a serialized AccountManager reload", async () => {
+		const firstManager = new AccountManager(undefined, createStorage(Date.now(), 1));
+		const firstFetch = createRecordingFetch((call) => {
+			const model = (JSON.parse(call.bodyText) as { model?: string }).model;
+			return model === "gpt-6-luna"
+				? new Response('{"error":{"code":"usage_limit_reached"}}', {
+					status: 429,
+					headers: { "content-type": "application/json", "retry-after": "60" },
+				})
+				: textEventStream('data: {"type":"response.completed","response":{}}\n\n');
+		});
+		const firstProxy = await startProxy({
+			accountManager: firstManager,
+			fetchImpl: firstFetch.fetchImpl,
+			options: { forcedAccountIndex: 0 },
+		});
+		const first = await postResponses(firstProxy, { model: "gpt-6-luna", stream: true, input: "first" });
+		expect(first.status).toBe(200);
+		await first.text();
+
+		const snapshot = (firstManager as unknown as { buildStorageSnapshot(): AccountStorageV3 }).buildStorageSnapshot();
+		const persisted = JSON.parse(JSON.stringify(snapshot)) as AccountStorageV3;
+		expect(Object.keys(persisted.accounts[0]?.rateLimitResetTimes ?? {})).toContainEqual(
+			expect.stringMatching(/^__confirmed-quota-exhaustion:/),
+		);
+
+		const reloadedManager = new AccountManager(undefined, persisted);
+		const secondFetch = createRecordingFetch(() =>
+			textEventStream('data: {"type":"response.completed","response":{}}\n\n'),
+		);
+		const secondProxy = await startProxy({
+			accountManager: reloadedManager,
+			fetchImpl: secondFetch.fetchImpl,
+			options: { forcedAccountIndex: 0 },
+		});
+		const second = await postResponses(secondProxy, { model: "gpt-6-luna", stream: true, input: "second" });
+		expect(second.status).toBe(200);
+		await second.text();
+		expect(secondFetch.calls.map((call) => (JSON.parse(call.bodyText) as { model?: string }).model)).toEqual([
+			"gpt-reserve",
+		]);
+	});
+
 	it("does not spend Reserve for a pinned preemptive Luna pause without a quota 429", async () => {
 		const accountManager = new AccountManager(undefined, createStorage(Date.now(), 1));
 		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
