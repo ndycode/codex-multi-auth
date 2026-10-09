@@ -5710,6 +5710,29 @@ describe("Luna Reserve fallback", () => {
 		]);
 	});
 
+	it("routes later pinned Luna turns through Reserve while ordinary quota remains exhausted", async () => {
+		const accountManager = new AccountManager(undefined, createStorage(Date.now(), 1));
+		let lunaAttempts = 0;
+		const { calls, fetchImpl } = createRecordingFetch((call) => {
+			const model = (JSON.parse(call.bodyText) as { model?: string }).model;
+			if (model === "gpt-6-luna") {
+				lunaAttempts += 1;
+				return new Response('{"error":{"code":"usage_limit_reached"}}', { status: 429, headers: { "content-type": "application/json", "retry-after": "60" } });
+			}
+			return textEventStream('data: {"type":"response.completed","response":{}}\n\n');
+		});
+		const proxy = await startProxy({ accountManager, fetchImpl, options: { forcedAccountIndex: 0 } });
+		for (let turn = 0; turn < 2; turn += 1) {
+			const response = await postResponses(proxy, { model: "gpt-6-luna", stream: true, input: `turn-${turn}` });
+			expect(response.status).toBe(200);
+			await response.text();
+		}
+		const models = calls.map((call) => (JSON.parse(call.bodyText) as { model?: string }).model);
+		expect(models).toEqual(["gpt-6-luna", "gpt-reserve", "gpt-reserve"]);
+		expect(lunaAttempts).toBe(1);
+		expect(proxy.getStatus().lunaReserveFallbacks).toBe(2);
+	});
+
 	it("does not let a Reserve 429 poison ordinary Luna quota", async () => {
 		const accountManager = new AccountManager(undefined, createStorage(Date.now(), 1));
 		let reserveAttempts = 0;

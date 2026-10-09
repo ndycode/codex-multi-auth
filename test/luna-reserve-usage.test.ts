@@ -45,6 +45,27 @@ afterEach(() => {
 });
 
 describe("refreshLunaReserveUsage", () => {
+	it("reads Reserve usage for the explicitly selected routable workspace", async () => {
+		const storage = storageFixture();
+		storage.accounts = [
+			{ ...storage.accounts[0], accountId: "workspace-bound", currentWorkspaceIndex: 1, workspaces: [
+				{ id: "workspace-bound", enabled: true },
+				{ id: "workspace-selected", enabled: true },
+			] },
+		];
+		mocks.ensureFreshAccessToken.mockImplementation(async ({ account }) => ({ ok: true, account, accessToken: "fresh-selected" }));
+		mocks.nativeRateLimitsRpc.mockImplementation(async (auth) => ({
+			accountId: auth.accountId,
+			rateLimitsByLimitId: { reserve: { limitName: "gpt-reserve", primary: { usedPercent: 10 } } },
+		}));
+
+		const result = await refreshLunaReserveUsage(storage, () => NOW);
+
+		expect(mocks.nativeRateLimitsRpc).toHaveBeenCalledTimes(1);
+		expect(mocks.nativeRateLimitsRpc.mock.calls[0]?.[0]).toMatchObject({ accountId: "workspace-selected" });
+		expect(result[0]).toMatchObject({ offered: true, primary: { usedPercent: 10, remainingPercent: 90 } });
+	});
+
 	it("uses refreshed credentials, matches replies to accounts, isolates failures, and skips disabled accounts", async () => {
 		const storage = storageFixture();
 		mocks.ensureFreshAccessToken.mockImplementation(async ({ account }) => ({

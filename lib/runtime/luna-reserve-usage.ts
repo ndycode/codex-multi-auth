@@ -7,7 +7,7 @@ import {
 import type { AccountStorageV3 } from "../storage.js";
 import { codexCliAccountIdFor } from "../auth/token-utils.js";
 import { isRecord } from "../utils.js";
-import { resetTargetForStoredAccount } from "./account-reset-credits.js";
+import { workspaceModelScopes } from "./workspace-model-scopes.js";
 import { nativeRateLimitsRpc } from "./native-rate-limits.js";
 import { ensureFreshAccessToken } from "./rotation-token-refresh.js";
 
@@ -27,9 +27,13 @@ export async function refreshLunaReserveUsage(
 	try {
 		for (let index = 0; index < storage.accounts.length; index += 1) {
 			const stored = storage.accounts[index];
-			const target = stored ? resetTargetForStoredAccount(stored) : null;
 			const account = manager.getAccountByIndex(index);
-			if (!stored || !target || !account || account.enabled === false) continue;
+			if (!stored || !account || account.enabled === false) continue;
+			const scopes = workspaceModelScopes(account);
+			const targetScope = account.workspaces?.length
+				? scopes.find((scope) => scope.selected && scope.routable)
+				: scopes.find((scope) => scope.bound && scope.routable);
+			if (!targetScope) continue;
 			try {
 				const fresh = await ensureFreshAccessToken({
 					accountManager: manager,
@@ -43,11 +47,11 @@ export async function refreshLunaReserveUsage(
 				if (!fresh.ok) continue;
 				const auth = {
 					accessToken: fresh.accessToken,
-					accountId: target.accountId,
+					accountId: targetScope.accountId,
 					expiresAt: fresh.account.expires ?? 0,
 					codexCliMirror: account.codexCliMirror,
 				};
-				const sentAccountId = codexCliAccountIdFor(auth, fresh.accessToken) ?? target.accountId;
+				const sentAccountId = codexCliAccountIdFor(auth, fresh.accessToken) ?? targetScope.accountId;
 				const reply = await nativeRateLimitsRpc(auth, "account/rateLimits/read", {
 					supportsLunaReserve: true,
 					excludeResetCreditDetails: true,

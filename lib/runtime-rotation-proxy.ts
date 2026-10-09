@@ -34,6 +34,7 @@ import {
 	type ManagedAccount,
 } from "./accounts.js";
 import { withRoutingMutex } from "./routing-mutex.js";
+import { getQuotaKey } from "./accounts/rate-limits.js";
 import {
 	getFetchTimeoutMs,
 	getNetworkErrorCooldownMs,
@@ -2111,6 +2112,52 @@ async function handleRequestInner(
    // Recovery may have redeemed and written new reset state; the next request re-reads it.
    state.readCache?.delete("reset-credits");
   }
+
+		// A pinned Luna request can arrive after an earlier turn already proved
+		// ordinary subscription quota exhausted. That persisted family marker
+		// would make chooseAccount reject the hard pin before any upstream call,
+		// so move the request to the independently metered Reserve model first.
+		if (
+			isPinned &&
+			(context.model === "gpt-6-luna" || context.model === "gpt-5.6-luna")
+		) {
+			const pinnedAccount = accountManager.getAccountByIndex(pinnedIndex);
+			const now = state.now();
+			const familyResetAt = pinnedAccount?.rateLimitResetTimes[getQuotaKey(context.family)];
+			const modelResetAt = pinnedAccount?.rateLimitResetTimes[getQuotaKey(context.family, context.model)];
+			const persistedQuotaExhausted =
+				typeof familyResetAt === "number" &&
+				familyResetAt > now &&
+				!(typeof modelResetAt === "number" && modelResetAt > now);
+			if (persistedQuotaExhausted && switchRequestToLunaReserve(context)) {
+				usageRecorder = createUsageRecorderForModel(context.model);
+				if (runtimePolicyState) {
+					try {
+						const reservePolicy = await evaluateRuntimePolicy({ state: runtimePolicyState, accounts: accountManager.getAccountsSnapshot(), model: context.model, now });
+						policyDecision = reservePolicy;
+						mutateRuntimeObservabilitySnapshot((snapshot) => {
+							snapshot.policyBlockedIndexes = [...reservePolicy.blockedAccountIndexes];
+							snapshot.policyBlockedReasons = Object.fromEntries([...reservePolicy.blockedAccountIndexes].map((index) => [String(index), "policy-blocked"]));
+						});
+						if (!reservePolicy.allowed) {
+							await usageRecorder.record({ outcome: "blocked", statusCode: reservePolicy.statusCode, errorCode: reservePolicy.errorCode });
+							writeJson(res, reservePolicy.statusCode, { error: { message: "Runtime policy blocked Luna Reserve fallback.", code: reservePolicy.errorCode ?? "policy_blocked", reasons: reservePolicy.reasons } });
+							return;
+						}
+					} catch {
+						await usageRecorder.record({ outcome: "failure", statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE, errorCode: "runtime_policy_unavailable" });
+						writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, { error: { message: "Runtime policy could not be loaded for Luna Reserve fallback.", code: "runtime_policy_unavailable" } });
+						return;
+					}
+				}
+				attemptedIndexes.clear();
+				accountSkipReasons.clear();
+				await rebuildReserveWorkspaceCandidates();
+				state.status.lunaReserveFallbacks = (state.status.lunaReserveFallbacks ?? 0) + 1;
+				mutateRuntimeObservabilitySnapshot((snapshot) => { snapshot.lunaReserveFallbacks = (snapshot.lunaReserveFallbacks ?? 0) + 1; });
+				proxyLog.info("persisted Luna quota exhausted; routing pinned request through Luna Reserve", { traceId });
+			}
+		}
 
 		// The token bucket spreads load across a selectable pool. A pin has no
 		// alternative account, so exhausting that local heuristic can only reject a
