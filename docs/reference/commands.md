@@ -241,8 +241,9 @@ includes `index`, `label` (email masked as in `forecast --json`), `enabled`,
 field. Ordinary quota objects contain `updatedAt`, HTTP `status`, `planType`,
 and `primary`/`secondary` windows with `usedPercent`, `windowMinutes`, and
 `resetAtMs`. On `--refresh`, `lunaReserve` reports the separately metered
-`gpt-reserve` bucket when the backend exposes it: `offered`, `available`,
-`limitId`, `normalModelSlug`, and primary/secondary windows with `usedPercent`,
+`gpt-reserve` bucket when the backend exposes it: `observedAt`, `offered`,
+`available`, `limitId`, `limitName`, `normalModelSlug`, and primary/secondary
+windows with `usedPercent`,
 `remainingPercent`, `windowMinutes`, and `resetAtMs`. If the backend explicitly
 returns no Reserve bucket, `offered` is `false` and availability/percentages are
 not invented; cached mode leaves `lunaReserve` as `null`. Unavailable values are

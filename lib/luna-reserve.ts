@@ -19,15 +19,18 @@ export interface LunaReserveSnapshot {
 	secondary: LunaReserveWindow | null;
 }
 
+/** Return a finite numeric value or null for malformed backend data. */
 function finiteNumber(value: unknown): number | null {
 	return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/** Normalize backend percentages into the inclusive 0-100 range. */
 function clampPercent(value: unknown): number | null {
 	const number = finiteNumber(value);
 	return number === null ? null : Math.max(0, Math.min(100, number));
 }
 
+/** Parse one Reserve usage window without inventing missing values. */
 function parseWindow(value: unknown): LunaReserveWindow | null {
 	if (!isRecord(value)) return null;
 	const usedPercent = clampPercent(value.usedPercent);

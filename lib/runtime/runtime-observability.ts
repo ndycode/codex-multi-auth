@@ -42,6 +42,8 @@ export interface RuntimeObservabilitySnapshot {
 	responsesRequests: number;
 	authRefreshRequests: number;
 	diagnosticProbeRequests: number;
+	/** Number of ordinary Luna requests that switched to the separately metered Reserve model. */
+	lunaReserveFallbacks: number;
 	poolExhaustionCooldownUntil: number | null;
 	serverBurstCooldownUntil: number | null;
 	lastAccountIndex?: number | null;
@@ -95,6 +97,7 @@ function createDefaultSnapshot(): RuntimeObservabilitySnapshot {
 		responsesRequests: 0,
 		authRefreshRequests: 0,
 		diagnosticProbeRequests: 0,
+		lunaReserveFallbacks: 0,
 		poolExhaustionCooldownUntil: null,
 		serverBurstCooldownUntil: null,
 		lastAccountIndex: null,
@@ -341,6 +344,7 @@ export function recordRuntimeReset(reason: string): void {
 		snapshot.accountSkipReasons = {};
 		snapshot.policyBlockedIndexes = [];
 		snapshot.policyBlockedReasons = {};
+		snapshot.lunaReserveFallbacks = 0;
 	});
 }
 

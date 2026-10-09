@@ -5758,4 +5758,120 @@ describe("Luna Reserve fallback", () => {
 		}
 		expect(calls).toHaveLength(2);
 	});
+
+	it("does not use ordinary cached quota to reject a direct Reserve request", async () => {
+		const now = Date.now();
+		const storage = createStorage(now, 2);
+		const accountManager = new AccountManager(undefined, storage);
+		const exhausted = { updatedAt: now, status: 200, model: "gpt-6-luna", primary: { usedPercent: 100, resetAtMs: now + 3_600_000 }, secondary: {} };
+		const quotaCache = { byAccountId: { acc_1: exhausted, acc_2: exhausted }, byEmail: {} };
+		const { calls, fetchImpl } = createRecordingFetch((call) =>
+			call.url.includes("/codex/models")
+				? Response.json({ models: [{ slug: "gpt-reserve" }] })
+				: textEventStream('data: {"type":"response.completed","response":{}}\n\n'),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl, options: { nativeOpenai: true, readSubscriptionQuota: async () => quotaCache } });
+		const response = await postResponses(proxy, { model: "gpt-reserve", stream: true, input: "hi" });
+		expect(response.status).toBe(200);
+		await response.text();
+		expect(calls.some((call) => call.url.endsWith("/responses"))).toBe(true);
+	});
+
+	it("ignores ordinary codex.rate_limits stream events on Reserve", async () => {
+		const accountManager = new AccountManager(undefined, createStorage(Date.now(), 1));
+		const reserveStream = [
+			'data: {"type":"codex.rate_limits","metered_limit_name":"codex","rate_limits":{"primary":{"used_percent":100}}}',
+			'data: {"type":"response.completed","response":{}}',
+			"",
+		].join("\n\n");
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream(reserveStream));
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		for (let i = 0; i < 2; i += 1) {
+			const response = await postResponses(proxy, { model: "gpt-reserve", stream: true, input: "hi" });
+			expect(response.status).toBe(200);
+			await response.text();
+		}
+		expect(calls).toHaveLength(2);
+		expect(proxy.getStatus().streamQuotaUpdates ?? 0).toBe(0);
+	});
+
+	it("does not fall back to Reserve for a Luna model-capacity 429", async () => {
+		const accountManager = new AccountManager(undefined, createStorage(Date.now(), 1));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response('{"error":{"code":"model_capacity_exceeded"}}', { status: 429, headers: { "content-type": "application/json" } }),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl, options: { forcedAccountIndex: 0, modelCapacityRetryMs: 0 } });
+		const response = await postResponses(proxy, { model: "gpt-6-luna", stream: true, input: "hi" });
+		await response.text();
+		expect(calls.length).toBeGreaterThan(0);
+		expect(calls.every((call) => (JSON.parse(call.bodyText) as { model?: string }).model === "gpt-6-luna")).toBe(true);
+		expect(proxy.getStatus().lunaReserveFallbacks ?? 0).toBe(0);
+	});
+
+	it("re-evaluates model policy before sending the Reserve fallback", async () => {
+		const accountManager = new AccountManager(undefined, createStorage(Date.now(), 1));
+		const policySpy = vi.spyOn(runtimePolicy, "evaluateRuntimePolicy").mockImplementation(async ({ model }) => ({
+			allowed: model !== "gpt-reserve",
+			statusCode: 403,
+			errorCode: model === "gpt-reserve" ? "policy_blocked" : null,
+			reasons: model === "gpt-reserve" ? ["routing profile denies requested model"] : [],
+			projectKey: null,
+			blockedAccountIndexes: new Set<number>(),
+			scoreBoostByAccount: {},
+			priorityByAccount: {},
+			budgetEvaluations: [],
+		}));
+		const { calls, fetchImpl } = createRecordingFetch((call) =>
+			new Response('{"error":{"code":"usage_limit_reached"}}', { status: 429, headers: { "content-type": "application/json" } }),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl, options: { forcedAccountIndex: 0 } });
+		const response = await postResponses(proxy, { model: "gpt-6-luna", stream: true, input: "hi" });
+		expect(response.status).toBe(403);
+		const body = await response.json();
+		expect(body.error.code).toBe("policy_blocked");
+		expect(policySpy.mock.calls.map(([input]) => input.model)).toContain("gpt-reserve");
+		expect(calls.some((call) => (JSON.parse(call.bodyText) as { model?: string }).model === "gpt-reserve")).toBe(false);
+	});
+
+	it("rebuilds native catalog candidates so a Reserve-only account can serve fallback", async () => {
+		const storage = createStorage(Date.now(), 2);
+		const accountManager = new AccountManager(undefined, storage);
+		const { calls, fetchImpl } = createRecordingFetch((call) => {
+			if (call.url.includes("/codex/models")) {
+				const accountId = call.headers.get("chatgpt-account-id");
+				return Response.json({ models: accountId === "acc_1"
+					? [{ slug: "gpt-6-luna" }, { slug: "gpt-reserve" }]
+					: [{ slug: "gpt-reserve" }] });
+			}
+			const model = (JSON.parse(call.bodyText) as { model?: string }).model;
+			const accountId = call.headers.get("chatgpt-account-id");
+			if (model === "gpt-6-luna" || (model === "gpt-reserve" && accountId === "acc_1")) {
+				return new Response('{"error":{"code":"usage_limit_reached"}}', { status: 429, headers: { "content-type": "application/json" } });
+			}
+			return textEventStream('data: {"type":"response.completed","response":{}}\n\n');
+		});
+		const proxy = await startProxy({ accountManager, fetchImpl, options: { nativeOpenai: true } });
+		const response = await postResponses(proxy, { model: "gpt-6-luna", stream: true, input: "hi" });
+		expect(response.status).toBe(200);
+		await response.text();
+		const responseCalls = calls.filter((call) => call.url.endsWith("/responses"));
+		expect(responseCalls.some((call) => call.headers.get("chatgpt-account-id") === "acc_2" && (JSON.parse(call.bodyText) as { model?: string }).model === "gpt-reserve")).toBe(true);
+	});
+
+	it("attributes fallback usage to the effective Reserve model", async () => {
+		const accountManager = new AccountManager(undefined, createStorage(Date.now(), 1));
+		const recorder = vi.spyOn(runtimePolicy, "createRuntimeUsageRecorder");
+		const { fetchImpl } = createRecordingFetch((call) => {
+			const model = (JSON.parse(call.bodyText) as { model?: string }).model;
+			return model === "gpt-6-luna"
+				? new Response('{"error":{"code":"usage_limit_reached"}}', { status: 429, headers: { "content-type": "application/json" } })
+				: textEventStream('data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n');
+		});
+		const proxy = await startProxy({ accountManager, fetchImpl, options: { forcedAccountIndex: 0 } });
+		const response = await postResponses(proxy, { model: "gpt-6-luna", stream: true, input: "hi" });
+		expect(response.status).toBe(200);
+		await response.text();
+		expect(recorder.mock.calls.map(([input]) => input.model)).toEqual(expect.arrayContaining(["gpt-6-luna", "gpt-reserve"]));
+	});
+
 });

@@ -82,6 +82,7 @@ function publicQuotaEntry(entry: QuotaCacheEntry) {
 }
 
 
+/** Convert one Reserve window to the stable public JSON shape. */
 function publicReserveWindow(window: LunaReserveSnapshot["primary"]) {
 	return window
 		? {
@@ -93,6 +94,7 @@ function publicReserveWindow(window: LunaReserveSnapshot["primary"]) {
 		: null;
 }
 
+/** Convert a Reserve snapshot to public JSON while preserving explicit unknowns. */
 function publicLunaReserve(snapshot: LunaReserveSnapshot | undefined) {
 	if (!snapshot) return null;
 	return {

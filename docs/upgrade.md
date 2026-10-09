@@ -1,5 +1,13 @@
 # Upgrade Guide
 
+## Luna Reserve fallback and limits
+
+`gpt-6-luna` and `gpt-5.6-luna` can retry genuine quota 429 responses through
+`gpt-reserve`. Model-capacity errors keep the existing capacity path and do not
+consume Reserve. `limits --json --refresh` reports the separately metered
+Reserve bucket when the backend exposes it; an absent bucket means unknown/not
+currently offered, not 0% remaining.
+
 How to move an older install to the canonical `codex-multi-auth` package on the current `2.x` release line, and what changed along the way that you need to know about.
 
 ---
