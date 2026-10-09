@@ -5733,6 +5733,27 @@ describe("Luna Reserve fallback", () => {
 		expect(proxy.getStatus().lunaReserveFallbacks).toBe(2);
 	});
 
+	it("does not spend Reserve for a pinned preemptive Luna pause without a quota 429", async () => {
+		const accountManager = new AccountManager(undefined, createStorage(Date.now(), 1));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			textEventStream(`data: attempt-${attempt}\n\n`, {
+				"x-codex-primary-used-percent": attempt === 1 ? "100" : "10",
+			}),
+		);
+		const proxy = await startProxy({ accountManager, fetchImpl, options: { forcedAccountIndex: 0 } });
+
+		const first = await postResponses(proxy, { model: "gpt-6-luna", stream: true, input: "first" });
+		expect(first.status).toBe(200);
+		await first.text();
+		expect(accountManager.getAccountByIndex(0)?.rateLimitResetTimes["gpt-5.2"]).toBeTypeOf("number");
+
+		const second = await postResponses(proxy, { model: "gpt-6-luna", stream: true, input: "second" });
+		expect(second.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+		const models = calls.map((call) => (JSON.parse(call.bodyText) as { model?: string }).model);
+		expect(models).toEqual(["gpt-6-luna"]);
+		expect(proxy.getStatus().lunaReserveFallbacks ?? 0).toBe(0);
+	});
+
 	it("does not let a Reserve 429 poison ordinary Luna quota", async () => {
 		const accountManager = new AccountManager(undefined, createStorage(Date.now(), 1));
 		let reserveAttempts = 0;

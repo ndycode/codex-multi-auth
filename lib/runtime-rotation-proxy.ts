@@ -64,6 +64,7 @@ import {
 	CODEX_BASE_URL,
 	HTTP_STATUS,
 	LUNA_RESERVE_MODEL,
+	MAX_RATE_LIMIT_DELAY_MS,
 	OPENAI_HEADERS,
 	OPENAI_HEADER_VALUES,
 	URL_PATHS,
@@ -929,6 +930,12 @@ function buildResponsesRequestContext(
 		sessionKey: resolveSessionKey(headers, parsedBody),
 		stableSessionKey: resolveStableSessionKey(headers, parsedBody),
 	};
+}
+
+const CONFIRMED_QUOTA_EXHAUSTION_PREFIX = "__confirmed-quota-exhaustion:";
+
+function confirmedQuotaExhaustionKey(family: ModelFamily, model: string): string {
+	return `${CONFIRMED_QUOTA_EXHAUSTION_PREFIX}${getQuotaKey(family, model)}`;
 }
 
 /** Rewrite one ordinary Luna request to the separately metered Reserve model. */
@@ -2125,9 +2132,13 @@ async function handleRequestInner(
 			const now = state.now();
 			const familyResetAt = pinnedAccount?.rateLimitResetTimes[getQuotaKey(context.family)];
 			const modelResetAt = pinnedAccount?.rateLimitResetTimes[getQuotaKey(context.family, context.model)];
+			const confirmedQuotaResetAt =
+				pinnedAccount?.rateLimitResetTimes[confirmedQuotaExhaustionKey(context.family, context.model)];
 			const persistedQuotaExhausted =
 				typeof familyResetAt === "number" &&
 				familyResetAt > now &&
+				typeof confirmedQuotaResetAt === "number" &&
+				confirmedQuotaResetAt > now &&
 				!(typeof modelResetAt === "number" && modelResetAt > now);
 			if (persistedQuotaExhausted && switchRequestToLunaReserve(context)) {
 				usageRecorder = createUsageRecorderForModel(context.model);
@@ -2814,6 +2825,19 @@ async function handleRequestInner(
 					subscriptionQuotaExceeded ? "quota" : "unknown",
 					context.model,
 				);
+				if (
+					subscriptionQuotaExceeded &&
+					(context.model === "gpt-6-luna" || context.model === "gpt-5.6-luna")
+				) {
+					const confirmedKey = confirmedQuotaExhaustionKey(context.family, context.model);
+					const confirmedResetAt =
+						state.now() +
+						Math.min(Math.max(0, Math.floor(retryAfterMs)), MAX_RATE_LIMIT_DELAY_MS);
+					refreshed.account.rateLimitResetTimes[confirmedKey] = Math.max(
+						refreshed.account.rateLimitResetTimes[confirmedKey] ?? 0,
+						confirmedResetAt,
+					);
+				}
 				accountManager.saveToDiskDebounced();
 				if (!modelAtCapacity && subscriptionQuotaExceeded && switchRequestToLunaReserve(context)) {
 					usageRecorder = createUsageRecorderForModel(context.model);
