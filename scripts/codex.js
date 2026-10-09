@@ -5017,6 +5017,7 @@ function createRuntimeRotationAppHelperStatus({
 		totalRequests: proxyStatus.totalRequests ?? 0,
 		upstreamRequests: proxyStatus.upstreamRequests ?? 0,
 		retries: proxyStatus.retries ?? 0,
+		lunaReserveFallbacks: proxyStatus.lunaReserveFallbacks ?? 0,
 		rotations: proxyStatus.rotations ?? 0,
 		lastAccountIndex,
 		lastAccountLabel,

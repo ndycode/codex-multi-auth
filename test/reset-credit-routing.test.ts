@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { recoverResetQuota } from '../lib/runtime/reset-credit-routing.js';
+import { applyConfirmedReset, recoverResetQuota } from '../lib/runtime/reset-credit-routing.js';
 import { AccountManager } from '../lib/accounts.js';
 import { workspaceModelScopes } from '../lib/runtime/workspace-model-scopes.js';
 function fixture(){
@@ -14,6 +14,15 @@ function fixture(){
 it.each(['api/chat-test','zdr/chat-test'])('never redeems across the %s privacy pool',async model=>{const f=fixture();await recoverResetQuota({...f.args,model});expect(f.service.automatic).not.toHaveBeenCalled();});
 it.each([5,50,94,99])('uses remaining subscription quota at %s%% used without spending a reset',async used=>{const f=fixture();await recoverResetQuota({...f.args,quotaForScope:()=>({...f.args.quotaForScope(),primary:{usedPercent:used}})});expect(f.service.automatic).not.toHaveBeenCalled();});
 it('does not redeem for an explicit pin or non-native route',async()=>{const f=fixture();await recoverResetQuota({...f.args,pinned:true});await recoverResetQuota({...f.args,native:false});expect(f.service.automatic).not.toHaveBeenCalled();});
+it('never spends or applies ordinary reset credits to Luna Reserve',async()=>{
+ const f=fixture();const now=Date.now();
+ f.account.lastRateLimitReason='quota';f.account.rateLimitResetTimes={codex:now+120000,'codex:gpt-reserve':now+30000};
+ expect(await recoverResetQuota({...f.args,model:'gpt-reserve'})).toBe(false);
+ expect(f.service.automatic).not.toHaveBeenCalled();expect(f.service.status).not.toHaveBeenCalled();
+ const snapshot={updatedAt:now,ordinaryUsageAllowed:true,availableCount:1,planType:'pro',primary:{usedPercent:0},secondary:{usedPercent:0}};
+ expect(applyConfirmedReset({account:f.account,scope:f.scope,model:'gpt-reserve',family:'codex',manager:f.manager,snapshot,lastRedemptionAt:now-1000,previous:undefined,observations:f.observations,clearQuotaScheduler:f.clear,now})).toBe(false);
+ expect(f.account.rateLimitResetTimes).toEqual({codex:now+120000,'codex:gpt-reserve':now+30000});expect(f.clear).not.toHaveBeenCalled();
+});
 it('applies confirmed scheduled recovery even when no credit was consumed',async()=>{const f=fixture();f.account.lastRateLimitReason='quota';f.account.rateLimitResetTimes={codex:Date.now()+90000};expect(await recoverResetQuota(f.args)).toBe(true);expect(f.save).toHaveBeenCalled();expect(f.clear).toHaveBeenCalledWith(f.account);expect(f.account.rateLimitResetTimes).toEqual({});expect(f.observations.size).toBe(1);});
 it('does not erase authentication cooldowns or policy-blocked candidates',async()=>{const f=fixture();f.account.cooldownReason='auth-failure';f.account.coolingDownUntil=Date.now()+100000;await recoverResetQuota(f.args);expect(f.service.automatic).not.toHaveBeenCalled();expect(f.account.cooldownReason).toBe('auth-failure');});
 it('requires positive native permission before clearing blockers',async()=>{const f=fixture();const until=Date.now()+90000;f.service.status.mockResolvedValue({snapshots:{}});f.account.rateLimitResetTimes={codex:until};expect(await recoverResetQuota(f.args)).toBe(false);expect(f.account.rateLimitResetTimes).toEqual({codex:until});});

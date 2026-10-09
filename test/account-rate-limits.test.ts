@@ -142,6 +142,19 @@ describe("account rate-limit helpers", () => {
 			);
 		});
 
+		it("keeps Luna Reserve independent from a family-wide ordinary quota limit", () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(NOW);
+			const ordinaryBlocked = entityWith({ "gpt-5.2": NOW + 60_000 });
+			expect(isRateLimitedForFamily(ordinaryBlocked, "gpt-5.2", "gpt-reserve")).toBe(false);
+
+			const reserveBlocked = entityWith({
+				"gpt-5.2": NOW + 60_000,
+				"gpt-5.2:gpt-reserve": NOW + 30_000,
+			});
+			expect(isRateLimitedForFamily(reserveBlocked, "gpt-5.2", "gpt-reserve")).toBe(true);
+		});
+
 		it("prunes expired entries as a side effect before answering", () => {
 			vi.useFakeTimers();
 			vi.setSystemTime(NOW);

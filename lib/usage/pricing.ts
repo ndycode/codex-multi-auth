@@ -208,6 +208,10 @@ const MODEL_PRICING: Record<string, UsageModelPricing> = {
  * in neither list.
  */
 export const UNPRICED_ROUTABLE_MODELS = [
+	// Luna Reserve is a separately metered subscription allowance. The backend
+	// exposes usage percentage, not a public per-token dollar rate; cost budgets
+	// therefore remain fail-closed instead of borrowing Luna API pricing.
+	"gpt-reserve",
 	// The Daybreak cyber models are sold under a separate controlled-access
 	// agreement with no public per-token rate.
 	"gpt-daybreak-blue-latest",

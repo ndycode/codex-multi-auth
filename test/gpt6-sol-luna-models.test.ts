@@ -93,6 +93,16 @@ describe("GPT-6 Sol and Luna", () => {
 		});
 	});
 
+		it("recognizes Luna Reserve as a first-class Luna-compatible model", () => {
+			expect(getNormalizedModel("gpt-reserve")).toBe("gpt-reserve");
+			expect(getNormalizedModel("gpt-reserve-xhigh")).toBe("gpt-reserve");
+			expect(isKnownModel("gpt-reserve")).toBe(true);
+			expect(getModelProfile("gpt-reserve").supportedReasoningEfforts).toEqual([
+				"low", "medium", "high", "xhigh", "max",
+			]);
+			expect(getModelProfile("gpt-reserve").promptFamily).toBe("gpt-5.2");
+		});
+
 	describe("reasoning effort", () => {
 		it("uses the catalog default of `medium` for both tiers", () => {
 			expect(getReasoningConfig("gpt-6-sol", {}).effort).toBe("medium");

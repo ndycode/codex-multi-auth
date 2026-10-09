@@ -34,6 +34,7 @@ import {
 	type ManagedAccount,
 } from "./accounts.js";
 import { withRoutingMutex } from "./routing-mutex.js";
+import { getQuotaKey } from "./accounts/rate-limits.js";
 import {
 	getFetchTimeoutMs,
 	getNetworkErrorCooldownMs,
@@ -62,6 +63,8 @@ import {
 import {
 	CODEX_BASE_URL,
 	HTTP_STATUS,
+	LUNA_RESERVE_MODEL,
+	MAX_RATE_LIMIT_DELAY_MS,
 	OPENAI_HEADERS,
 	OPENAI_HEADER_VALUES,
 	URL_PATHS,
@@ -929,6 +932,37 @@ function buildResponsesRequestContext(
 	};
 }
 
+const CONFIRMED_QUOTA_EXHAUSTION_PREFIX = "__confirmed-quota-exhaustion:";
+
+function confirmedQuotaExhaustionKey(family: ModelFamily, model: string): string {
+	return `${CONFIRMED_QUOTA_EXHAUSTION_PREFIX}${getQuotaKey(family, model)}`;
+}
+
+/** Rewrite one ordinary Luna request to the separately metered Reserve model. */
+function switchRequestToLunaReserve(context: RequestContext): boolean {
+	if (context.model !== "gpt-6-luna" && context.model !== "gpt-5.6-luna") return false;
+	const body = parseRequestBody(context.body);
+	if (!body) return false;
+	body.model = LUNA_RESERVE_MODEL;
+	// Reserve availability is independent from paid Fast service-tier access.
+	// Let the backend choose its supported tier instead of carrying a Luna-only
+	// preference into the fallback request.
+	delete body.service_tier;
+	context.body = Buffer.from(JSON.stringify(body));
+	context.model = LUNA_RESERVE_MODEL;
+	context.family = getModelFamily(LUNA_RESERVE_MODEL);
+	return true;
+}
+
+/** True only for 429s that identify subscription usage/quota exhaustion. */
+function isSubscriptionQuota429(status: number, bodyText: string): boolean {
+	if (status !== HTTP_STATUS.TOO_MANY_REQUESTS) return false;
+	const code = extractErrorCodeFromBody(bodyText)?.toLowerCase() ?? "";
+	if (code.includes("usage_limit") || code.includes("quota")) return true;
+	if (code) return false;
+	return /\busage[ _-]+limit[ _-]+(?:reached|exceeded|exhausted)\b|\bquota[ _-]+(?:reached|exceeded|exhausted)\b/i.test(bodyText);
+}
+
 function buildImageRequestContext(
 	req: IncomingMessage,
 	body: Buffer,
@@ -1502,13 +1536,14 @@ async function handleRequestInner(
 		}
 		const requestStartedAt = state.now();
 		let policyDecision: RuntimePolicyDecision | null = null;
+		let runtimePolicyState: Awaited<ReturnType<typeof loadRuntimePolicyState>> | null = null;
 		let projectKey: string | null = null;
 		let policyError: string | null = null;
 		try {
-			const policyState = await loadRuntimePolicyState();
-			projectKey = policyState.project.projectKey;
+			runtimePolicyState = await loadRuntimePolicyState();
+			projectKey = runtimePolicyState.project.projectKey;
 			policyDecision = await evaluateRuntimePolicy({
-				state: policyState,
+				state: runtimePolicyState,
 				accounts: accountManager.getAccountsSnapshot(),
 				model: context.model,
 				now: requestStartedAt,
@@ -1527,7 +1562,8 @@ async function handleRequestInner(
 			policyError = error instanceof Error ? error.message : String(error);
 			state.status.lastError = policyError;
 		}
-		usageRecorder = createRuntimeUsageRecorder({
+		/** Build a recorder for the model that actually serves this request. */
+		const createUsageRecorderForModel = (model: string | null) => createRuntimeUsageRecorder({
 			source: "runtime-proxy",
 			operation: isModelsRequest
 				? "models"
@@ -1536,11 +1572,12 @@ async function handleRequestInner(
 					: isImageRequest
 						? "images"
 						: "responses",
-			model: context.model,
+			model,
 			projectKey,
 			requestId: traceId,
 			startedAt: requestStartedAt,
 		});
+		usageRecorder = createUsageRecorderForModel(context.model);
 		if (policyError) {
 			await usageRecorder.record({
 				outcome: "failure",
@@ -1817,6 +1854,33 @@ async function handleRequestInner(
   // silently serving from another account.
   const pinnedIndex = state.forcedAccountIndex ?? storageMeta.pinnedAccountIndex;
 		const isPinned = typeof pinnedIndex === "number";
+		let requestModelCatalog: AccountModelCatalog | undefined;
+		/** Rebuild native routing scopes after Luna is rewritten to separately metered Reserve. */
+		const rebuildReserveWorkspaceCandidates = async (): Promise<void> => {
+			const modelCatalog = requestModelCatalog;
+			if (!(state.nativeOpenai && isResponsesRequest && context.model === LUNA_RESERVE_MODEL && modelCatalog)) return;
+			const body = parseRequestBody(context.body);
+			const effort = isRecord(body?.reasoning) && typeof body.reasoning.effort === "string" ? body.reasoning.effort : undefined;
+			const tier = typeof body?.service_tier === "string" ? body.service_tier : undefined;
+			if (!state.capabilityFailures) state.capabilityFailures = new RuntimeCapabilityFailures(state.now);
+			const failures = state.capabilityFailures;
+			const eligibleAccounts = accountManager.getAccountsSnapshot().filter((account) =>
+				account.enabled !== false && (!isPinned || account.index === pinnedIndex) && !policyDecision?.blockedAccountIndexes.has(account.index));
+			const routableScopes = eligibleAccounts.flatMap(workspaceModelScopes).filter((scope) => scope.routable);
+			await modelCatalog.prepareRouting(routableScopes.map((scope) => scope.id), context.model, effort, tier,
+				(key) => failures.supports(key, context.model ?? LUNA_RESERVE_MODEL, effort, tier));
+			workspaceCandidates.clear();
+			catalogEligibleKeys = new Set();
+			for (const key of Object.keys(subscriptionQuotaByAccount)) delete subscriptionQuotaByAccount[Number(key)];
+			for (const account of eligibleAccounts) {
+				const candidates = workspaceModelScopes(account).filter((scope) => scope.routable)
+					.sort((a, b) => Number(b.selected) - Number(a.selected) || Number(b.bound) - Number(a.bound))
+					.filter((scope) => failures.supports(scope.id, context.model ?? LUNA_RESERVE_MODEL, effort, tier) && modelCatalog.supportsForRouting(scope.id, context.model ?? LUNA_RESERVE_MODEL, effort, tier));
+				if (!candidates.length) continue;
+				workspaceCandidates.set(account.index, candidates);
+				catalogEligibleKeys.add(catalogAccountKey(account));
+			}
+		};
 		if (state.nativeOpenai && (isModelsRequest || (isResponsesRequest && context.model))) {
 			const requestedVersion = incomingUrl.searchParams.get("client_version") ?? incomingHeaders.get("version");
             const catalogClientVersion = requestedVersion && /^[0-9A-Za-z.+_-]{1,80}$/.test(requestedVersion) ? requestedVersion : undefined;
@@ -1869,6 +1933,7 @@ async function handleRequestInner(
 				return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 			}, state.now);
 			const modelCatalog = state.modelCatalog;
+			requestModelCatalog = modelCatalog;
 			if (catalogsByVersion.size >= 4 && !catalogsByVersion.has(versionKey)) catalogsByVersion.delete(catalogsByVersion.keys().next().value ?? "");
 			catalogsByVersion.set(versionKey, modelCatalog);
 			const eligible = accountManager.getAccountsSnapshot().filter(a => a.enabled !== false &&
@@ -2022,9 +2087,11 @@ async function handleRequestInner(
      if(failures.supports(scope.id,requestedModel,effort,requestedTier) && modelCatalog.supportsForRouting(scope.id,requestedModel,effort,requestedTier)) candidates.push(scope);
     }
     if(candidates.length){
-     candidates.sort((a,b)=>compareSubscriptionQuota(subscriptionQuotaPreference(quotaForScope(account,a),state.now()),subscriptionQuotaPreference(quotaForScope(account,b),state.now())));
-     const first=candidates[0];
-     subscriptionQuotaByAccount[account.index]=subscriptionQuotaPreference(first?quotaForScope(account,first):null,state.now());
+     if (requestedModel !== LUNA_RESERVE_MODEL) {
+      candidates.sort((a,b)=>compareSubscriptionQuota(subscriptionQuotaPreference(quotaForScope(account,a),state.now()),subscriptionQuotaPreference(quotaForScope(account,b),state.now())));
+      const first=candidates[0];
+      subscriptionQuotaByAccount[account.index]=subscriptionQuotaPreference(first?quotaForScope(account,first):null,state.now());
+     }
      workspaceCandidates.set(account.index,candidates);catalogEligibleKeys.add(catalogAccountKey(account));supported++;
     }
 
@@ -2035,14 +2102,14 @@ async function handleRequestInner(
 		}
 
 
-  if (state.nativeOpenai && isResponsesRequest && context.model && resetCreditState?.lastRedemptionAt !== undefined) {
+  if (state.nativeOpenai && isResponsesRequest && context.model && context.model !== LUNA_RESERVE_MODEL && resetCreditState?.lastRedemptionAt !== undefined) {
    for(const [index,scopes] of workspaceCandidates){const account=accountManager.getAccountByIndex(index);if(!account)continue;
     for(const scope of scopes)applyConfirmedReset({account,scope,model:context.model,family:context.family,manager:accountManager,snapshot:resetCreditState.snapshots[scope.id],lastRedemptionAt:resetCreditState.lastRedemptionAt,
      previous:state.subscriptionQuotaObservations?.get(JSON.stringify([scope.id,context.model])) ?? findQuotaCacheEntryForAccount(subscriptionQuotaCache,account,accountManager.getAccountsSnapshot(),undefined,scope.accountId),
      observations:state.subscriptionQuotaObservations ??=new Map(),now:state.now(),clearQuotaScheduler:a=>state.preemptiveQuotaScheduler.clear(buildQuotaScheduleKey(a,context.family,context.model))});
    }
   }
-  if (state.nativeOpenai && isResponsesRequest && context.model && !isPinned) {
+  if (state.nativeOpenai && isResponsesRequest && context.model && context.model !== LUNA_RESERVE_MODEL && !isPinned) {
    try {
     await recoverResetQuota({model:context.model,family:context.family,native:true,pinned:false,manager:accountManager,
      scopes:workspaceCandidates,quotaForScope,priorityByAccount:policyDecision?.priorityByAccount,preferredIndex:storageMeta.pinnedAccountIndex,service:createResetCreditService(accountManager),
@@ -2053,6 +2120,56 @@ async function handleRequestInner(
    // Recovery may have redeemed and written new reset state; the next request re-reads it.
    state.readCache?.delete("reset-credits");
   }
+
+		// A pinned Luna request can arrive after an earlier turn already proved
+		// ordinary subscription quota exhausted. That persisted family marker
+		// would make chooseAccount reject the hard pin before any upstream call,
+		// so move the request to the independently metered Reserve model first.
+		if (
+			isPinned &&
+			(context.model === "gpt-6-luna" || context.model === "gpt-5.6-luna")
+		) {
+			const pinnedAccount = accountManager.getAccountByIndex(pinnedIndex);
+			const now = state.now();
+			const familyResetAt = pinnedAccount?.rateLimitResetTimes[getQuotaKey(context.family)];
+			const modelResetAt = pinnedAccount?.rateLimitResetTimes[getQuotaKey(context.family, context.model)];
+			const confirmedQuotaResetAt =
+				pinnedAccount?.rateLimitResetTimes[confirmedQuotaExhaustionKey(context.family, context.model)];
+			const persistedQuotaExhausted =
+				typeof familyResetAt === "number" &&
+				familyResetAt > now &&
+				typeof confirmedQuotaResetAt === "number" &&
+				confirmedQuotaResetAt > now &&
+				!(typeof modelResetAt === "number" && modelResetAt > now);
+			if (persistedQuotaExhausted && switchRequestToLunaReserve(context)) {
+				usageRecorder = createUsageRecorderForModel(context.model);
+				if (runtimePolicyState) {
+					try {
+						const reservePolicy = await evaluateRuntimePolicy({ state: runtimePolicyState, accounts: accountManager.getAccountsSnapshot(), model: context.model, now });
+						policyDecision = reservePolicy;
+						mutateRuntimeObservabilitySnapshot((snapshot) => {
+							snapshot.policyBlockedIndexes = [...reservePolicy.blockedAccountIndexes];
+							snapshot.policyBlockedReasons = Object.fromEntries([...reservePolicy.blockedAccountIndexes].map((index) => [String(index), "policy-blocked"]));
+						});
+						if (!reservePolicy.allowed) {
+							await usageRecorder.record({ outcome: "blocked", statusCode: reservePolicy.statusCode, errorCode: reservePolicy.errorCode });
+							writeJson(res, reservePolicy.statusCode, { error: { message: "Runtime policy blocked Luna Reserve fallback.", code: reservePolicy.errorCode ?? "policy_blocked", reasons: reservePolicy.reasons } });
+							return;
+						}
+					} catch {
+						await usageRecorder.record({ outcome: "failure", statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE, errorCode: "runtime_policy_unavailable" });
+						writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, { error: { message: "Runtime policy could not be loaded for Luna Reserve fallback.", code: "runtime_policy_unavailable" } });
+						return;
+					}
+				}
+				attemptedIndexes.clear();
+				accountSkipReasons.clear();
+				await rebuildReserveWorkspaceCandidates();
+				state.status.lunaReserveFallbacks = (state.status.lunaReserveFallbacks ?? 0) + 1;
+				mutateRuntimeObservabilitySnapshot((snapshot) => { snapshot.lunaReserveFallbacks = (snapshot.lunaReserveFallbacks ?? 0) + 1; });
+				proxyLog.info("persisted Luna quota exhausted; routing pinned request through Luna Reserve", { traceId });
+			}
+		}
 
 		// The token bucket spreads load across a selectable pool. A pin has no
 		// alternative account, so exhausting that local heuristic can only reject a
@@ -2190,12 +2307,14 @@ async function handleRequestInner(
 			// calls inside `chooseAccount` are used unchanged and no lock is taken,
 			// so default behavior and perf are identical to before.
 			const selectAccount = (): ManagedAccount | null => {
-    for(const [index,scopes] of workspaceCandidates){
-     const account=accountManager.getAccountByIndex(index);
-     if(!account)continue;
-     scopes.sort((a,b)=>compareSubscriptionQuota(subscriptionQuotaPreference(quotaForScope(account,a),state.now()),subscriptionQuotaPreference(quotaForScope(account,b),state.now())));
-     const scope=scopes[0];
-     if(scope)subscriptionQuotaByAccount[index]=subscriptionQuotaPreference(quotaForScope(account,scope),state.now());
+    if (context.model !== LUNA_RESERVE_MODEL) {
+     for(const [index,scopes] of workspaceCandidates){
+      const account=accountManager.getAccountByIndex(index);
+      if(!account)continue;
+      scopes.sort((a,b)=>compareSubscriptionQuota(subscriptionQuotaPreference(quotaForScope(account,a),state.now()),subscriptionQuotaPreference(quotaForScope(account,b),state.now())));
+      const scope=scopes[0];
+      if(scope)subscriptionQuotaByAccount[index]=subscriptionQuotaPreference(quotaForScope(account,scope),state.now());
+     }
     }
 				const result=chooseAccount({
 					accountManager,
@@ -2208,7 +2327,7 @@ async function handleRequestInner(
 					policy: policyDecision,
 					pinnedIndex,
 					preferredIndex,
-					subscriptionQuotaByAccount: state.nativeOpenai && isResponsesRequest ? subscriptionQuotaByAccount : undefined,
+					subscriptionQuotaByAccount: state.nativeOpenai && isResponsesRequest && context.model !== LUNA_RESERVE_MODEL ? subscriptionQuotaByAccount : undefined,
 					fallbackPinnedIndex: state.nativeOpenai ? storageMeta.pinnedAccountIndex : null,
 					skipReasons: accountSkipReasons,
 					stickyBoostByAccount: rotationStickyBoost,
@@ -2304,7 +2423,11 @@ async function handleRequestInner(
 				quotaScheduleKey,
 				state.now(),
 			);
-			if (preemptiveDeferral.defer && preemptiveDeferral.waitMs > 0) {
+			if (
+				context.model !== LUNA_RESERVE_MODEL &&
+				preemptiveDeferral.defer &&
+				preemptiveDeferral.waitMs > 0
+			) {
 				accountSkipReasons.set(
 					selected.index,
 					preemptiveDeferral.reason ?? "quota-near-exhaustion",
@@ -2624,7 +2747,9 @@ async function handleRequestInner(
 				}
 			};
 			const quotaSnapshot = readQuotaSchedulerSnapshot(upstream.headers, upstream.status, state.now());
-			if (quotaSnapshot) observeQuota(quotaSnapshot, upstream.headers.get("x-codex-plan-type") ?? undefined);
+			if (quotaSnapshot && context.model !== LUNA_RESERVE_MODEL) {
+				observeQuota(quotaSnapshot, upstream.headers.get("x-codex-plan-type") ?? undefined);
+			}
 
 			if (isResponsesRequest && context.model && [400,403,404].includes(upstream.status)) {
     const errorBody = await readErrorBody(upstream,state.streamStallTimeoutMs,65536);
@@ -2666,7 +2791,9 @@ async function handleRequestInner(
 				// A capacity 429 is not this account's quota. Marking it rate
 				// limited would take a healthy account out of the pool for the
 				// retry-after window on an outage that affects every account.
-				if (isModelAtCapacityError(upstream.status, bodyText)) {
+				const modelAtCapacity = isModelAtCapacityError(upstream.status, bodyText);
+				const subscriptionQuotaExceeded = isSubscriptionQuota429(upstream.status, bodyText);
+				if (modelAtCapacity) {
 					const outcome = await waitOutModelCapacity(
 						retryAfterHintMs,
 						refreshed.account,
@@ -2682,22 +2809,66 @@ async function handleRequestInner(
 					}
 					if (outcome === "retry") continue;
 				}
-				state.preemptiveQuotaScheduler.markRateLimited(
-					quotaScheduleKey,
-					retryAfterMs,
-					state.now(),
-				);
-				// A 429 is the upstream quota signal for the attempted account, so
-				// keep the consumed runtime token drained.
+				if (context.model !== LUNA_RESERVE_MODEL && subscriptionQuotaExceeded) {
+					state.preemptiveQuotaScheduler.markRateLimited(
+						quotaScheduleKey,
+						retryAfterMs,
+						state.now(),
+					);
+				}
+				// Every 429 still drains this account for its retry window, but only an
+				// explicit subscription-usage signal is persisted as quota exhaustion.
 				accountManager.recordRateLimit(refreshed.account, context.family, context.model);
 				accountManager.markRateLimitedWithReason(
 					refreshed.account,
 					retryAfterMs,
 					context.family,
-					"quota",
+					subscriptionQuotaExceeded ? "quota" : "unknown",
 					context.model,
 				);
+				if (
+					subscriptionQuotaExceeded &&
+					(context.model === "gpt-6-luna" || context.model === "gpt-5.6-luna")
+				) {
+					const confirmedKey = confirmedQuotaExhaustionKey(context.family, context.model);
+					const confirmedResetAt =
+						state.now() +
+						Math.min(Math.max(0, Math.floor(retryAfterMs)), MAX_RATE_LIMIT_DELAY_MS);
+					refreshed.account.rateLimitResetTimes[confirmedKey] = Math.max(
+						refreshed.account.rateLimitResetTimes[confirmedKey] ?? 0,
+						confirmedResetAt,
+					);
+				}
 				accountManager.saveToDiskDebounced();
+				if (!modelAtCapacity && subscriptionQuotaExceeded && switchRequestToLunaReserve(context)) {
+					usageRecorder = createUsageRecorderForModel(context.model);
+					if (runtimePolicyState) {
+						try {
+							const reservePolicy = await evaluateRuntimePolicy({ state: runtimePolicyState, accounts: accountManager.getAccountsSnapshot(), model: context.model, now: state.now() });
+							policyDecision = reservePolicy;
+							mutateRuntimeObservabilitySnapshot((snapshot) => { snapshot.policyBlockedIndexes = [...reservePolicy.blockedAccountIndexes]; snapshot.policyBlockedReasons = Object.fromEntries([...reservePolicy.blockedAccountIndexes].map((index) => [String(index), "policy-blocked"])); });
+							if (!reservePolicy.allowed) {
+								await usageRecorder.record({ outcome: "blocked", statusCode: reservePolicy.statusCode, errorCode: reservePolicy.errorCode });
+								writeJson(res, reservePolicy.statusCode, { error: { message: "Runtime policy blocked Luna Reserve fallback.", code: reservePolicy.errorCode ?? "policy_blocked", reasons: reservePolicy.reasons } }); return;
+							}
+						} catch {
+							await usageRecorder.record({ outcome: "failure", statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE, errorCode: "runtime_policy_unavailable" });
+							writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, { error: { message: "Runtime policy could not be loaded for Luna Reserve fallback.", code: "runtime_policy_unavailable" } }); return;
+						}
+					}
+					attemptedIndexes.clear(); accountSkipReasons.clear(); rejectedWorkspaces.clear();
+					await rebuildReserveWorkspaceCandidates();
+					state.status.lunaReserveFallbacks = (state.status.lunaReserveFallbacks ?? 0) + 1;
+					mutateRuntimeObservabilitySnapshot((snapshot) => { snapshot.lunaReserveFallbacks = (snapshot.lunaReserveFallbacks ?? 0) + 1; });
+					proxyLog.info("ordinary Luna quota exhausted; retrying with Luna Reserve", {
+						traceId,
+						pinned: isPinned,
+					});
+					capabilityRejectionIsLatest = false;
+					exhaustionReason = "no-account";
+					state.status.retries += 1;
+					continue;
+				}
 				exhaustionReason = "rate-limit";
 				capabilityRejectionIsLatest = false;
 				transientAttempts += 1;
@@ -2953,9 +3124,12 @@ async function handleRequestInner(
 				quotaScheduleKey,
 				state.now(),
 			);
-			const nearExhaustionWaitMs = quotaDeferral.defer
-				? quotaDeferral.waitMs
-				: 0;
+			const nearExhaustionWaitMs =
+				context.model === LUNA_RESERVE_MODEL
+					? 0
+					: quotaDeferral.defer
+						? quotaDeferral.waitMs
+						: 0;
 			if (nearExhaustionWaitMs > 0) {
 				accountManager.markRateLimitedWithReason(
 					refreshed.account,
@@ -2996,6 +3170,7 @@ async function handleRequestInner(
 				contentType: upstream.headers.get("content-type"),
 				onEvent: (event) => {
 					responseOutcome.observe(event);
+					if (context.model === LUNA_RESERVE_MODEL) return;
 					const snapshot = readSubscriptionQuotaEvent(event, state.now());
 					if (!snapshot) return;
 					observeQuota(snapshot, snapshot.planType);

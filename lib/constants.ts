@@ -9,6 +9,9 @@ export const PLUGIN_NAME = "codex-multi-auth";
 /** Base URL for ChatGPT backend API */
 export const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 
+/** Backend model used for the separately metered Luna Reserve allowance. */
+export const LUNA_RESERVE_MODEL = "gpt-reserve" as const;
+
 /** Dummy API key used for OpenAI SDK (actual auth via OAuth) */
 export const DUMMY_API_KEY = "chatgpt-oauth";
 

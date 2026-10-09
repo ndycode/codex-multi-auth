@@ -12,6 +12,7 @@ What `codex-multi-auth` gives you, grouped by job. Everything listed is a `codex
 | Re-authenticate one account in place | `codex-multi-auth login --account <index\|email\|id>` |
 | Bind a login to a specific org/workspace | `codex-multi-auth login --org <id>` |
 | List the pool, quota windows, and runtime markers | `codex-multi-auth list`, `status`, `limits --json` |
+| Luna Reserve | First-class `gpt-reserve`, automatic Luna quota fallback, independent cooldowns, and live Reserve percentage via `limits --json --refresh` |
 | Pin the active account | `codex-multi-auth switch <index>` (`unpin` clears it) |
 | Pick a workspace under an account | `codex-multi-auth workspace <account> [workspace]` |
 | Health and quota checks | `codex-multi-auth check` |
@@ -32,6 +33,8 @@ Email dedup is case-insensitive, so the same account can't land in the pool twic
 | Full diagnostic report | `codex-multi-auth report --live --json` |
 
 `--live` reads real quota headers. Probes lead with `gpt-5.6-sol` and fall through a model chain for accounts without entitlement; general routing defaults to `gpt-6.1-sol`.
+
+Luna Reserve is a backend-controlled, separately metered allowance, not the normal Codex quota and not the router's internal 5% quota-reserve threshold. When `gpt-6-luna` or `gpt-5.6-luna` receives a genuine quota 429, routing retries the request as `gpt-reserve`; a manual account pin remains a hard account constraint. Reserve 429s are stored only on the Reserve model key, and ordinary quota headers do not preemptively exhaust Reserve. `limits --json --refresh` asks the native Codex app-server for `account/rateLimits/read` with Luna Reserve support and reports its own used/remaining percentage when the backend exposes the bucket. An absent bucket means "not currently offered/unknown", not 0% remaining. Luna Reserve is not unlimited.
 
 ---
 

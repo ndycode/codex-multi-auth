@@ -3,6 +3,7 @@
  * Extracted from accounts.ts to reduce module size and improve cohesion.
  */
 
+import { LUNA_RESERVE_MODEL } from "../constants.js";
 import { nowMs } from "../utils.js";
 import type { ModelFamily } from "../prompts/codex.js";
 
@@ -84,6 +85,9 @@ export function isRateLimitedForFamily(
 		if (isRateLimitedForQuotaKey(entity, modelKey)) {
 			return true;
 		}
+		// Luna Reserve is independently metered. Ordinary Luna/Codex family
+		// exhaustion must not suppress a separately available reserve allowance.
+		if (model === LUNA_RESERVE_MODEL) return false;
 	}
 
 	const baseKey = getQuotaKey(family);

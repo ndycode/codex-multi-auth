@@ -58,6 +58,7 @@ function createDeps(cache = quotaCache()) {
 		loadAccounts: vi.fn().mockResolvedValue(storage),
 		loadQuotaCache: vi.fn().mockResolvedValue(cache),
 		refreshQuotaCache: vi.fn().mockResolvedValue(cache),
+		refreshLunaReserveUsage: vi.fn().mockResolvedValue({}),
 		resolveActiveIndex: vi.fn(() => 0),
 		getNow: vi.fn(() => NOW),
 		logInfo: vi.fn(),
@@ -110,6 +111,7 @@ describe("runLimitsCommand", () => {
 						resetAtMs: NOW + 86_400_000,
 					},
 				},
+				lunaReserve: null,
 			},
 			{
 				index: 1,
@@ -117,6 +119,7 @@ describe("runLimitsCommand", () => {
 				enabled: false,
 				current: false,
 				quota: null,
+				lunaReserve: null,
 			},
 		]);
 		const serialized = JSON.stringify(payload);
@@ -216,6 +219,47 @@ describe("runLimitsCommand", () => {
 		const accounts = payload.accounts as Array<Record<string, unknown>>;
 		expect(accounts[0]).toMatchObject({
 			quota: { updatedAt: NOW, primary: { usedPercent: 20 } },
+		});
+	});
+
+	it("emits a separately metered Luna Reserve percentage on refresh", async () => {
+		const deps = createDeps();
+		deps.refreshLunaReserveUsage.mockResolvedValueOnce({
+			0: {
+				observedAt: NOW,
+				offered: true,
+				available: true,
+				limitId: "base_model_inference",
+				limitName: "gpt-reserve",
+				normalModelSlug: "gpt-6-luna",
+				primary: {
+					usedPercent: 6,
+					remainingPercent: 94,
+					windowMinutes: 10_080,
+					resetAtMs: NOW + 86_400_000,
+				},
+				secondary: null,
+			},
+		});
+
+		expect(await runLimitsCommand(["--refresh", "--json"], deps)).toBe(0);
+
+		expect(deps.refreshLunaReserveUsage).toHaveBeenCalledTimes(1);
+		const accounts = emittedJson(deps).accounts as Array<Record<string, unknown>>;
+		expect(accounts[0]?.lunaReserve).toEqual({
+			observedAt: NOW,
+			offered: true,
+			available: true,
+			limitId: "base_model_inference",
+			limitName: "gpt-reserve",
+			normalModelSlug: "gpt-6-luna",
+			primary: {
+				usedPercent: 6,
+				remainingPercent: 94,
+				windowMinutes: 10_080,
+				resetAtMs: NOW + 86_400_000,
+			},
+			secondary: null,
 		});
 	});
 

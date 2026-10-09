@@ -182,6 +182,7 @@ function createStatusPayload({
 		streamQuotaUpdates: proxyStatus.streamQuotaUpdates ?? 0,
 		lastStreamQuotaUpdateAt: proxyStatus.lastStreamQuotaUpdateAt ?? null,
 		retries: proxyStatus.retries ?? 0,
+		lunaReserveFallbacks: proxyStatus.lunaReserveFallbacks ?? 0,
 		rotations: proxyStatus.rotations ?? 0,
 		lastAccountIndex,
 		lastAccountLabel,

@@ -10,9 +10,10 @@
 // The effort union lives in the leaf constants module so the base types layer
 // (`lib/types.ts`) can depend on it without importing this file, which would
 // close a cycle through `lib/schemas.ts`. Re-exported here for existing callers.
-import type {
-	ModelReasoningEffort,
-	WireReasoningEffort,
+import {
+	LUNA_RESERVE_MODEL,
+	type ModelReasoningEffort,
+	type WireReasoningEffort,
 } from "../../constants.js";
 
 export type { ModelReasoningEffort, WireReasoningEffort };
@@ -374,6 +375,13 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
 		supportedReasoningEfforts: GPT_6_LUNA_EFFORTS,
 		capabilities: TOOL_CAPABILITIES.full,
 	},
+	[LUNA_RESERVE_MODEL]: {
+		normalizedModel: LUNA_RESERVE_MODEL,
+		promptFamily: "gpt-5.2",
+		defaultReasoningEffort: "medium",
+		supportedReasoningEfforts: GPT_6_LUNA_EFFORTS,
+		capabilities: TOOL_CAPABILITIES.full,
+	},
 	[DAYBREAK_BLUE_MODEL]: {
 		normalizedModel: DAYBREAK_BLUE_MODEL,
 		promptFamily: "gpt-5.2",
@@ -487,6 +495,7 @@ function addGpt6Aliases(): void {
 	// user's model generation without asking.
 	addEffortAliases(GPT_6_SOL_MODEL, GPT_6_SOL_MODEL, GPT_6_SOL_EFFORTS);
 	addEffortAliases(GPT_6_LUNA_MODEL, GPT_6_LUNA_MODEL, GPT_6_LUNA_EFFORTS);
+	addEffortAliases(LUNA_RESERVE_MODEL, LUNA_RESERVE_MODEL, GPT_6_LUNA_EFFORTS);
 	addEffortAliases(GPT_6_1_SOL_MODEL, GPT_6_1_SOL_MODEL, GPT_6_1_SOL_EFFORTS);
 	addEffortAliases(
 		GPT_6_1_FLAGSHIP_ALIAS,

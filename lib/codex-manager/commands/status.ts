@@ -387,7 +387,7 @@ export async function runStatusCommand(
 				? formatWaitTime(runtimeSnapshot.serverBurstCooldownUntil - now)
 				: null;
 		logInfo(
-			`Runtime: responses=${runtimeSnapshot.responsesRequests}, refresh=${runtimeSnapshot.authRefreshRequests}, probes=${runtimeSnapshot.diagnosticProbeRequests}, budgetExhaustions=${runtimeMetrics.requestAttemptBudgetExhaustions}`,
+			`Runtime: responses=${runtimeSnapshot.responsesRequests}, refresh=${runtimeSnapshot.authRefreshRequests}, probes=${runtimeSnapshot.diagnosticProbeRequests}, reserveFallbacks=${runtimeSnapshot.lunaReserveFallbacks ?? 0}, budgetExhaustions=${runtimeMetrics.requestAttemptBudgetExhaustions}`,
 		);
 		const lastRuntimeAccount = formatRuntimeLastAccount(runtimeSnapshot);
 		if (lastRuntimeAccount) {

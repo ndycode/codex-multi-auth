@@ -1765,6 +1765,27 @@ describe("AccountManager", () => {
 			expect(waitTime).toBeGreaterThan(0);
 			expect(waitTime).toBeLessThanOrEqual(45000);
 		});
+
+		it("uses only the Reserve-specific reset when ordinary family quota resets later", () => {
+			vi.useFakeTimers();
+			try {
+				const now = 1_790_000_000_000;
+				vi.setSystemTime(now);
+				const stored = {
+					version: 3 as const,
+					activeIndex: 0,
+					accounts: [{ refreshToken: "token-reserve", addedAt: now, lastUsed: now }],
+				};
+				const manager = new AccountManager(undefined, stored);
+				const account = manager.getAccountByIndex(0)!;
+				account.rateLimitResetTimes = { codex: now + 120_000, "codex:gpt-reserve": now + 30_000 };
+
+				const waitTime = manager.getMinWaitTimeForFamily("codex", "gpt-reserve");
+				expect(waitTime).toBe(30_000);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
 	});
 
 	describe("updateFromAuth", () => {

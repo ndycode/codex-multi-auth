@@ -252,6 +252,24 @@ describe("runtime observability snapshot versioning", () => {
 		expect(after.lastPoolExhaustionSkipReasons).toEqual({ "1": "rate-limited" });
 	});
 
+	it("preserves cumulative Luna Reserve fallback history across runtime recovery resets", async () => {
+		process.env.VITEST = "";
+		const mod = await import("../lib/runtime/runtime-observability.js");
+		mod.mutateRuntimeObservabilitySnapshot((snapshot) => {
+			snapshot.responsesRequests = 4;
+			snapshot.lunaReserveFallbacks = 3;
+			snapshot.accountSkipReasons = { "0": "rate-limited" };
+		});
+
+		mod.recordRuntimeReset("pool-recovered");
+
+		const after = mod.getRuntimeObservabilitySnapshot();
+		expect(after.responsesRequests).toBe(4);
+		expect(after.lunaReserveFallbacks).toBe(3);
+		expect(after.accountSkipReasons).toEqual({});
+		expect(after.lastRuntimeResetReason).toBe("pool-recovered");
+	});
+
 	it("is a no-op when the recovered account has no recorded skip reason", async () => {
 		process.env.VITEST = "";
 		const mod = await import("../lib/runtime/runtime-observability.js");
