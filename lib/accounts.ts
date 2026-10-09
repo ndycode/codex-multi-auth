@@ -1987,7 +1987,7 @@ export class AccountManager {
 		for (const account of enabledAccounts) {
 			const perAccountWaitTimes: number[] = [];
 			const baseResetAt = account.rateLimitResetTimes[baseKey];
-			if (typeof baseResetAt === "number") {
+			if (model !== LUNA_RESERVE_MODEL && typeof baseResetAt === "number") {
 				perAccountWaitTimes.push(Math.max(0, baseResetAt - now));
 			}
 

@@ -1,4 +1,5 @@
 import { extractAccountId, type AccountManager, type ManagedAccount } from '../accounts.js';
+import { LUNA_RESERVE_MODEL } from '../constants.js';
 import type { ModelFamily } from '../prompts/codex.js';
 import type { QuotaCacheEntry } from '../quota-cache.js';
 import { parseModelRoute } from '../model-route-policy.js';
@@ -12,7 +13,7 @@ export async function recoverResetQuota(options:{
  service:Pick<ResetCreditService,'automatic'> & {status:()=>Promise<{snapshots:Awaited<ReturnType<ResetCreditService['status']>>['snapshots']}>};
  observations:Map<string,QuotaCacheEntry>;clearQuotaScheduler:(account:ManagedAccount)=>void;now:()=>number;
 }):Promise<boolean>{
- if(!options.native||options.pinned||parseModelRoute(options.model).kind!=='oauth')return false;
+ if(options.model===LUNA_RESERVE_MODEL||!options.native||options.pinned||parseModelRoute(options.model).kind!=='oauth')return false;
  const family=options.family??'codex';
  const candidates=[...options.scopes].flatMap(([index,scopes])=>{const account=options.manager.getAccountByIndex(index);return account&&!account.authInvalidatedAt?scopes.map(scope=>({account,scope})):[];});
  if(!candidates.length)return false;
@@ -48,6 +49,7 @@ export async function recoverResetQuota(options:{
 
 /** Apply a confirmed earned reset once per workspace/model observation. */
 export function applyConfirmedReset(options:{account:ManagedAccount;scope:Scope;model:string;family:ModelFamily;manager:AccountManager;snapshot:Awaited<ReturnType<ResetCreditService['status']>>['snapshots'][string]|undefined;lastRedemptionAt:number|undefined;previous:QuotaCacheEntry|null|undefined;observations:Map<string,QuotaCacheEntry>;clearQuotaScheduler:(account:ManagedAccount)=>void;now:number}):boolean{
+ if(options.model===LUNA_RESERVE_MODEL)return false;
  const s=options.snapshot;
  if(!s||options.lastRedemptionAt===undefined||s.updatedAt<options.lastRedemptionAt||s.ordinaryUsageAllowed!==true||s.updatedAt<=(options.previous?.updatedAt??0)||options.now-s.updatedAt>60000||s.updatedAt>options.now)return false;
  options.observations.set(JSON.stringify([options.scope.id,options.model]),resetSnapshotQuota(s));

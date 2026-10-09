@@ -1,4 +1,5 @@
 import { getQuotaKey } from "../accounts/rate-limits.js";
+import { LUNA_RESERVE_MODEL } from "../constants.js";
 import type { ModelFamily } from "../prompts/codex.js";
 
 export function resolveActiveIndex(
@@ -97,7 +98,7 @@ export function getAccountRecoveryBoundsForFamily(
 	const times = account.rateLimitResetTimes;
 	const rateLimitAtMs = times
 		? laterBound(
-				activeBound(times[getQuotaKey(family)], now),
+				model === LUNA_RESERVE_MODEL ? null : activeBound(times[getQuotaKey(family)], now),
 				model ? activeBound(times[getQuotaKey(family, model)], now) : null,
 			)
 		: null;

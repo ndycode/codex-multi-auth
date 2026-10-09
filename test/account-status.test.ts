@@ -123,6 +123,17 @@ describe("getAccountRecoveryTimeForFamily", () => {
 		).toBe(9_000);
 	});
 
+	it("ignores ordinary family quota when computing Luna Reserve recovery", () => {
+		expect(
+			getAccountRecoveryTimeForFamily(
+				{ rateLimitResetTimes: { codex: 9_000, "codex:gpt-reserve": 3_000 } },
+				1_000,
+				"codex",
+				"gpt-reserve",
+			),
+		).toBe(3_000);
+	});
+
 	it("ignores records that do not gate the request", () => {
 		// Another model's record in the same family does not block this
 		// request (selection checks only the family key and the requested

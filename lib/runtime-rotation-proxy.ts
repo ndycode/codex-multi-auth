@@ -1837,9 +1837,10 @@ async function handleRequestInner(
   // silently serving from another account.
   const pinnedIndex = state.forcedAccountIndex ?? storageMeta.pinnedAccountIndex;
 		const isPinned = typeof pinnedIndex === "number";
+		let requestModelCatalog: AccountModelCatalog | undefined;
 		/** Rebuild native routing scopes after Luna is rewritten to separately metered Reserve. */
 		const rebuildReserveWorkspaceCandidates = async (): Promise<void> => {
-			const modelCatalog = state.modelCatalog;
+			const modelCatalog = requestModelCatalog;
 			if (!(state.nativeOpenai && isResponsesRequest && context.model === LUNA_RESERVE_MODEL && modelCatalog)) return;
 			const body = parseRequestBody(context.body);
 			const effort = isRecord(body?.reasoning) && typeof body.reasoning.effort === "string" ? body.reasoning.effort : undefined;
@@ -1915,6 +1916,7 @@ async function handleRequestInner(
 				return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 			}, state.now);
 			const modelCatalog = state.modelCatalog;
+			requestModelCatalog = modelCatalog;
 			if (catalogsByVersion.size >= 4 && !catalogsByVersion.has(versionKey)) catalogsByVersion.delete(catalogsByVersion.keys().next().value ?? "");
 			catalogsByVersion.set(versionKey, modelCatalog);
 			const eligible = accountManager.getAccountsSnapshot().filter(a => a.enabled !== false &&
@@ -2083,14 +2085,14 @@ async function handleRequestInner(
 		}
 
 
-  if (state.nativeOpenai && isResponsesRequest && context.model && resetCreditState?.lastRedemptionAt !== undefined) {
+  if (state.nativeOpenai && isResponsesRequest && context.model && context.model !== LUNA_RESERVE_MODEL && resetCreditState?.lastRedemptionAt !== undefined) {
    for(const [index,scopes] of workspaceCandidates){const account=accountManager.getAccountByIndex(index);if(!account)continue;
     for(const scope of scopes)applyConfirmedReset({account,scope,model:context.model,family:context.family,manager:accountManager,snapshot:resetCreditState.snapshots[scope.id],lastRedemptionAt:resetCreditState.lastRedemptionAt,
      previous:state.subscriptionQuotaObservations?.get(JSON.stringify([scope.id,context.model])) ?? findQuotaCacheEntryForAccount(subscriptionQuotaCache,account,accountManager.getAccountsSnapshot(),undefined,scope.accountId),
      observations:state.subscriptionQuotaObservations ??=new Map(),now:state.now(),clearQuotaScheduler:a=>state.preemptiveQuotaScheduler.clear(buildQuotaScheduleKey(a,context.family,context.model))});
    }
   }
-  if (state.nativeOpenai && isResponsesRequest && context.model && !isPinned) {
+  if (state.nativeOpenai && isResponsesRequest && context.model && context.model !== LUNA_RESERVE_MODEL && !isPinned) {
    try {
     await recoverResetQuota({model:context.model,family:context.family,native:true,pinned:false,manager:accountManager,
      scopes:workspaceCandidates,quotaForScope,priorityByAccount:policyDecision?.priorityByAccount,preferredIndex:storageMeta.pinnedAccountIndex,service:createResetCreditService(accountManager),

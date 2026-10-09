@@ -5778,6 +5778,46 @@ describe("Luna Reserve fallback", () => {
 		expect(calls.some((call) => call.url.endsWith("/responses"))).toBe(true);
 	});
 
+	it("keeps the request-local catalog when another client version arrives during Luna fallback", async () => {
+		const accountManager = new AccountManager(undefined, createStorage(Date.now(), 1));
+		let releaseFirst!: () => void;
+		let firstLunaStarted!: () => void;
+		const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+		const firstStarted = new Promise<void>((resolve) => { firstLunaStarted = resolve; });
+		let lunaCalls = 0;
+		const { calls, fetchImpl } = createRecordingFetch(async (call) => {
+			if (call.url.includes("/codex/models")) {
+				const version = new URL(call.url).searchParams.get("client_version");
+				return Response.json({ models: version === "1.0"
+					? [{ slug: "gpt-6-luna" }, { slug: "gpt-reserve" }]
+					: [{ slug: "gpt-6-luna" }] });
+			}
+			const model = (JSON.parse(call.bodyText) as { model?: string }).model;
+			if (model === "gpt-6-luna") {
+				lunaCalls += 1;
+				if (lunaCalls === 1) {
+					firstLunaStarted();
+					await firstGate;
+					return new Response('{"error":{"code":"usage_limit_reached"}}', { status: 429, headers: { "content-type": "application/json" } });
+				}
+			}
+			return textEventStream('data: {"type":"response.completed","response":{}}\n\n');
+		});
+		const proxy = await startProxy({ accountManager, fetchImpl, options: { nativeOpenai: true } });
+		const first = postResponses(proxy, { model: "gpt-6-luna", stream: true, input: "first" }, "/responses?client_version=1.0");
+		await firstStarted;
+		const second = await postResponses(proxy, { model: "gpt-6-luna", stream: true, input: "second" }, "/responses?client_version=2.0");
+		expect(second.status).toBe(200);
+		await second.text();
+		releaseFirst();
+		const firstResponse = await first;
+		expect(firstResponse.status).toBe(200);
+		await firstResponse.text();
+		const responseModels = calls.filter((call) => call.url.includes("/responses")).map((call) => (JSON.parse(call.bodyText) as { model?: string }).model);
+		expect(responseModels).toContain("gpt-reserve");
+		expect(proxy.getStatus().lunaReserveFallbacks).toBe(1);
+	});
+
 	it("routes a direct Reserve request only to an account whose native catalog supports it", async () => {
 		const accountManager = new AccountManager(undefined, createStorage(Date.now(), 2));
 		const { calls, fetchImpl } = createRecordingFetch((call) => {
