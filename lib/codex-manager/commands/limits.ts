@@ -4,6 +4,7 @@ import { findQuotaCacheEntryForAccount } from "../../quota-readiness.js";
 import type { QuotaCacheData, QuotaCacheEntry } from "../../quota-cache.js";
 import { redactEmails } from "../../redaction.js";
 import type { AccountStorageV3 } from "../../storage.js";
+import type { LunaReserveSnapshot } from "../../luna-reserve.js";
 
 const LIMITS_SCHEMA_VERSION = 1;
 const LIMITS_REFRESH_MAX_AGE_MS = 5 * 60_000;
@@ -18,6 +19,7 @@ export interface LimitsCommandDeps {
 		cache: QuotaCacheData,
 		maxAgeMs: number,
 	) => Promise<QuotaCacheData>;
+	refreshLunaReserveUsage?: (storage: AccountStorageV3) => Promise<Record<number, LunaReserveSnapshot>>;
 	resolveActiveIndex: (
 		storage: AccountStorageV3,
 		family?: ModelFamily,
@@ -79,6 +81,32 @@ function publicQuotaEntry(entry: QuotaCacheEntry) {
 	};
 }
 
+
+function publicReserveWindow(window: LunaReserveSnapshot["primary"]) {
+	return window
+		? {
+			usedPercent: window.usedPercent,
+			remainingPercent: window.remainingPercent,
+			windowMinutes: window.windowMinutes,
+			resetAtMs: window.resetAtMs,
+		}
+		: null;
+}
+
+function publicLunaReserve(snapshot: LunaReserveSnapshot | undefined) {
+	if (!snapshot) return null;
+	return {
+		observedAt: snapshot.observedAt,
+		offered: snapshot.offered,
+		available: snapshot.available,
+		limitId: snapshot.limitId,
+		limitName: snapshot.limitName,
+		normalModelSlug: snapshot.normalModelSlug,
+		primary: publicReserveWindow(snapshot.primary),
+		secondary: publicReserveWindow(snapshot.secondary),
+	};
+}
+
 /**
  * Emit configured accounts joined to safe cached quota records.
  *
@@ -130,12 +158,16 @@ export async function runLimitsCommand(
 	}
 
 	let cache = await deps.loadQuotaCache();
+	let lunaReserveByAccount: Record<number, LunaReserveSnapshot> = {};
 	if (parsed.options.refresh) {
 		cache = await deps.refreshQuotaCache(
 			storage,
 			cache,
 			LIMITS_REFRESH_MAX_AGE_MS,
 		);
+		if (deps.refreshLunaReserveUsage) {
+			lunaReserveByAccount = await deps.refreshLunaReserveUsage(storage);
+		}
 	}
 
 	const generatedAt = deps.getNow?.() ?? Date.now();
@@ -155,6 +187,7 @@ export async function runLimitsCommand(
 			enabled: account.enabled !== false,
 			current: index === selection.routedIndex,
 			quota: quota ? publicQuotaEntry(quota) : null,
+			lunaReserve: publicLunaReserve(lunaReserveByAccount[index]),
 		};
 	});
 

@@ -62,6 +62,7 @@ import {
 import {
 	CODEX_BASE_URL,
 	HTTP_STATUS,
+	LUNA_RESERVE_MODEL,
 	OPENAI_HEADERS,
 	OPENAI_HEADER_VALUES,
 	URL_PATHS,
@@ -927,6 +928,22 @@ function buildResponsesRequestContext(
 		sessionKey: resolveSessionKey(headers, parsedBody),
 		stableSessionKey: resolveStableSessionKey(headers, parsedBody),
 	};
+}
+
+/** Rewrite one ordinary Luna request to the separately metered Reserve model. */
+function switchRequestToLunaReserve(context: RequestContext): boolean {
+	if (context.model !== "gpt-6-luna" && context.model !== "gpt-5.6-luna") return false;
+	const body = parseRequestBody(context.body);
+	if (!body) return false;
+	body.model = LUNA_RESERVE_MODEL;
+	// Reserve availability is independent from paid Fast service-tier access.
+	// Let the backend choose its supported tier instead of carrying a Luna-only
+	// preference into the fallback request.
+	delete body.service_tier;
+	context.body = Buffer.from(JSON.stringify(body));
+	context.model = LUNA_RESERVE_MODEL;
+	context.family = getModelFamily(LUNA_RESERVE_MODEL);
+	return true;
 }
 
 function buildImageRequestContext(
@@ -2304,7 +2321,11 @@ async function handleRequestInner(
 				quotaScheduleKey,
 				state.now(),
 			);
-			if (preemptiveDeferral.defer && preemptiveDeferral.waitMs > 0) {
+			if (
+				context.model !== LUNA_RESERVE_MODEL &&
+				preemptiveDeferral.defer &&
+				preemptiveDeferral.waitMs > 0
+			) {
 				accountSkipReasons.set(
 					selected.index,
 					preemptiveDeferral.reason ?? "quota-near-exhaustion",
@@ -2624,7 +2645,9 @@ async function handleRequestInner(
 				}
 			};
 			const quotaSnapshot = readQuotaSchedulerSnapshot(upstream.headers, upstream.status, state.now());
-			if (quotaSnapshot) observeQuota(quotaSnapshot, upstream.headers.get("x-codex-plan-type") ?? undefined);
+			if (quotaSnapshot && context.model !== LUNA_RESERVE_MODEL) {
+				observeQuota(quotaSnapshot, upstream.headers.get("x-codex-plan-type") ?? undefined);
+			}
 
 			if (isResponsesRequest && context.model && [400,403,404].includes(upstream.status)) {
     const errorBody = await readErrorBody(upstream,state.streamStallTimeoutMs,65536);
@@ -2682,11 +2705,13 @@ async function handleRequestInner(
 					}
 					if (outcome === "retry") continue;
 				}
-				state.preemptiveQuotaScheduler.markRateLimited(
-					quotaScheduleKey,
-					retryAfterMs,
-					state.now(),
-				);
+				if (context.model !== LUNA_RESERVE_MODEL) {
+					state.preemptiveQuotaScheduler.markRateLimited(
+						quotaScheduleKey,
+						retryAfterMs,
+						state.now(),
+					);
+				}
 				// A 429 is the upstream quota signal for the attempted account, so
 				// keep the consumed runtime token drained.
 				accountManager.recordRateLimit(refreshed.account, context.family, context.model);
@@ -2698,6 +2723,32 @@ async function handleRequestInner(
 					context.model,
 				);
 				accountManager.saveToDiskDebounced();
+				if (switchRequestToLunaReserve(context)) {
+					// The ordinary Luna bucket and Luna Reserve are independently metered.
+					// Re-open the pool: accounts skipped for ordinary quota may still have
+					// Reserve allowance. A manual pin remains a hard account constraint.
+					attemptedIndexes.clear();
+					accountSkipReasons.clear();
+					if (state.nativeOpenai && state.modelCatalog) {
+						for (const [index, scopes] of [...workspaceCandidates]) {
+							const reserveScopes = scopes.filter((scope) => {
+								const snapshot = state.modelCatalog?.snapshot(scope.id);
+								return !snapshot || snapshot.error || snapshot.models.includes(LUNA_RESERVE_MODEL);
+							});
+							if (reserveScopes.length) workspaceCandidates.set(index, reserveScopes);
+							else workspaceCandidates.delete(index);
+						}
+					}
+					state.status.lunaReserveFallbacks = (state.status.lunaReserveFallbacks ?? 0) + 1;
+					proxyLog.info("ordinary Luna quota exhausted; retrying with Luna Reserve", {
+						traceId,
+						pinned: isPinned,
+					});
+					capabilityRejectionIsLatest = false;
+					exhaustionReason = "no-account";
+					state.status.retries += 1;
+					continue;
+				}
 				exhaustionReason = "rate-limit";
 				capabilityRejectionIsLatest = false;
 				transientAttempts += 1;
@@ -2953,9 +3004,12 @@ async function handleRequestInner(
 				quotaScheduleKey,
 				state.now(),
 			);
-			const nearExhaustionWaitMs = quotaDeferral.defer
-				? quotaDeferral.waitMs
-				: 0;
+			const nearExhaustionWaitMs =
+				context.model === LUNA_RESERVE_MODEL
+					? 0
+					: quotaDeferral.defer
+						? quotaDeferral.waitMs
+						: 0;
 			if (nearExhaustionWaitMs > 0) {
 				accountManager.markRateLimitedWithReason(
 					refreshed.account,

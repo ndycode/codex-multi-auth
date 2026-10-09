@@ -56,6 +56,10 @@ export const UNESTIMATED_ROUTABLE_MODELS = [
 	// upstream catalog as Astra, so the same reasoning keeps them unestimated.
 	"gpt-6-sol",
 	"gpt-6-luna",
+	// Luna Reserve is a quota alias of Luna, but the backend does not publish
+	// a distinct transport context ceiling for the alias. Keep it fail-closed
+	// alongside Luna rather than copying an unverified API/catalog number.
+	"gpt-reserve",
 	"gpt-6.1-sol",
 	"gpt-daybreak-blue-latest",
 	"gpt-daybreak-red-latest",

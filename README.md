@@ -19,6 +19,7 @@ Using OpenCode rather than the Codex CLI? The sibling project [`oc-codex-multi-a
 - **Switching and selection** — pin an account, pick the forecast-best one, or let health- and quota-aware hybrid selection rotate for you.
 - **Runtime rotation** — a default-on, loopback-only proxy that forwards Responses API and model-discovery traffic through the best available account during wrapper-launched Codex sessions.
 - **Diagnostics and repair** — status, live health checks, quota forecasts, JSON reports, and `fix`/`doctor`/`verify` commands that recover stale or damaged local state.
+- **Luna Reserve fallback** ? treats `gpt-reserve` as a separately metered Luna allowance, automatically falls back after a genuine Luna quota 429, and exposes the Reserve percentage through `limits --json --refresh`.
 - **Local governance** — file-backed usage ledger, budget guards, account tags/weights/pause/drain policies, routing profiles, and an optional loopback bridge with bearer tokens for local OpenAI-compatible clients.
 - **Desktop routing (optional)** — a reversible bind of the packaged Codex app plus user-level launcher helpers; official app binaries are never patched.
 

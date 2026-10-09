@@ -228,19 +228,34 @@ codex-multi-auth auth limits --json          # supported namespaced alias
 ```
 
 The default command reads the local quota cache only. `--refresh` reuses the
-dashboard's sequential quota refresh and its five-minute freshness floor: only
-enabled accounts with usable credentials and missing/stale cache entries are
-probed.
+dashboard's sequential quota refresh and its five-minute freshness floor for
+ordinary quota, then asks the native Codex app-server for
+`account/rateLimits/read` with Luna Reserve support for each usable account.
+Reserve reads reuse the existing isolated native-usage bridge; credentials are
+not added to the JSON output.
 
 The top-level object has `schemaVersion: 1`, a millisecond `generatedAt`, a
 `mode` of `cached` or `refresh`, `selection`, and `accounts`. Each account
 includes `index`, `label` (email masked as in `forecast --json`), `enabled`,
-`current`, and either a `quota` object or `null`. Quota objects contain
-`updatedAt`, HTTP `status`, `planType`, and `primary`/`secondary` windows with
-`usedPercent`, `windowMinutes`, and `resetAtMs`. Unavailable values are explicit
-JSON `null`; internal probe-model names, credentials, and orphan cache entries
-are never emitted. Compute countdowns from `resetAtMs`; no locale-formatted
-dates are emitted.
+`current`, either a `quota` object or `null`, and an additive `lunaReserve`
+field. Ordinary quota objects contain `updatedAt`, HTTP `status`, `planType`,
+and `primary`/`secondary` windows with `usedPercent`, `windowMinutes`, and
+`resetAtMs`. On `--refresh`, `lunaReserve` reports the separately metered
+`gpt-reserve` bucket when the backend exposes it: `offered`, `available`,
+`limitId`, `normalModelSlug`, and primary/secondary windows with `usedPercent`,
+`remainingPercent`, `windowMinutes`, and `resetAtMs`. If the backend explicitly
+returns no Reserve bucket, `offered` is `false` and availability/percentages are
+not invented; cached mode leaves `lunaReserve` as `null`. Unavailable values are
+explicit JSON `null`; internal credentials and orphan cache entries are never
+emitted. Compute countdowns from `resetAtMs`; no locale-formatted dates are
+emitted.
+
+Luna Reserve is backend-controlled and is **not unlimited**. Runtime routing
+recognizes `gpt-reserve` as a first-class Luna-compatible model. A genuine quota
+429 from `gpt-6-luna` or `gpt-5.6-luna` may retry as `gpt-reserve`; model
+capacity errors keep their existing retry path. Reserve cooldowns are tracked
+independently from ordinary Luna/Codex quota, and a manual account pin remains
+a hard account constraint during fallback.
 
 `selection` reports the configured routing target: `pinnedIndex` (the `switch`
 pin or `null`), `activeIndexByFamily`, and `routedIndex` (`pinnedIndex` when

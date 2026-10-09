@@ -28,6 +28,8 @@ export interface RuntimeRotationProxyStatus {
 	totalRequests: number;
 	upstreamRequests: number;
 	retries: number;
+	/** Number of ordinary GPT-6 Luna requests retried through Luna Reserve. */
+	lunaReserveFallbacks?: number;
 	rotations: number;
 	streamsStarted: number;
 	lastError: string | null;

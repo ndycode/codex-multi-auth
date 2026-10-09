@@ -35,7 +35,7 @@ import {
 	type SelectionRecord,
 } from "./routing-mutex.js";
 import { nowMs } from "./utils.js";
-import { ERROR_MESSAGES, HTTP_STATUS, MAX_RATE_LIMIT_DELAY_MS } from "./constants.js";
+import { ERROR_MESSAGES, HTTP_STATUS, LUNA_RESERVE_MODEL, MAX_RATE_LIMIT_DELAY_MS } from "./constants.js";
 import { CodexAuthError } from "./errors.js";
 import {
 	loadCodexCliState,
@@ -1421,7 +1421,8 @@ export class AccountManager {
 		const newLimits: RateLimitStateV3 = { ...carried?.limits };
 
 		const baseKey = getQuotaKey(family);
-		if (!model || reason === "quota" || reason === "unknown") {
+		const independentReserve = model === LUNA_RESERVE_MODEL;
+		if (!independentReserve && (!model || reason === "quota" || reason === "unknown")) {
 			const currentResetAt = account.rateLimitResetTimes[baseKey] ?? 0;
 			account.rateLimitResetTimes[baseKey] = Math.max(currentResetAt, resetAt);
 			newLimits[baseKey] = Math.max(newLimits[baseKey] ?? 0, resetAt);
@@ -1429,7 +1430,7 @@ export class AccountManager {
 
 		if (
 			model &&
-			(reason === "tokens" || reason === "concurrent" || reason === "unknown")
+			(independentReserve || reason === "tokens" || reason === "concurrent" || reason === "unknown")
 		) {
 			const modelKey = getQuotaKey(family, model);
 			const currentResetAt = account.rateLimitResetTimes[modelKey] ?? 0;

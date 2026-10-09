@@ -101,6 +101,7 @@ import { runUnpinCommand } from "./codex-manager/commands/unpin.js";
 import { runWorkspaceCommand } from "./codex-manager/commands/workspace.js";
 import { runUsageCommand } from "./codex-manager/commands/usage.js";
 import { refreshQuotaCacheForMenu } from "./codex-manager/login-menu-data.js";
+import { refreshLunaReserveUsage } from "./runtime/luna-reserve-usage.js";
 import { printUsage } from "./codex-manager/help.js";
 import {
 	availabilityTone,
@@ -441,6 +442,7 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 				loadAccounts,
 				loadQuotaCache,
 				refreshQuotaCache: refreshQuotaCacheForMenu,
+				refreshLunaReserveUsage,
 				resolveActiveIndex,
 			}),
 	],
