@@ -959,6 +959,7 @@ function isSubscriptionQuota429(status: number, bodyText: string): boolean {
 	if (status !== HTTP_STATUS.TOO_MANY_REQUESTS) return false;
 	const code = extractErrorCodeFromBody(bodyText)?.toLowerCase() ?? "";
 	if (code.includes("usage_limit") || code.includes("quota")) return true;
+	if (code) return false;
 	return /\busage[ _-]+limit[ _-]+(?:reached|exceeded|exhausted)\b|\bquota[ _-]+(?:reached|exceeded|exhausted)\b/i.test(bodyText);
 }
 
@@ -2855,7 +2856,7 @@ async function handleRequestInner(
 							writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, { error: { message: "Runtime policy could not be loaded for Luna Reserve fallback.", code: "runtime_policy_unavailable" } }); return;
 						}
 					}
-					attemptedIndexes.clear(); accountSkipReasons.clear();
+					attemptedIndexes.clear(); accountSkipReasons.clear(); rejectedWorkspaces.clear();
 					await rebuildReserveWorkspaceCandidates();
 					state.status.lunaReserveFallbacks = (state.status.lunaReserveFallbacks ?? 0) + 1;
 					mutateRuntimeObservabilitySnapshot((snapshot) => { snapshot.lunaReserveFallbacks = (snapshot.lunaReserveFallbacks ?? 0) + 1; });

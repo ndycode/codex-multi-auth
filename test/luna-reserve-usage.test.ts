@@ -66,6 +66,22 @@ describe("refreshLunaReserveUsage", () => {
 		expect(result[0]).toMatchObject({ offered: true, primary: { usedPercent: 10, remainingPercent: 90 } });
 	});
 
+	it("leaves Reserve usage unknown when the explicitly selected workspace is disabled", async () => {
+		const storage = storageFixture();
+		storage.accounts = [
+			{ ...storage.accounts[0], accountId: "workspace-bound", currentWorkspaceIndex: 1, workspaces: [
+				{ id: "workspace-bound", enabled: true },
+				{ id: "workspace-selected", enabled: false },
+			] },
+		];
+
+		const result = await refreshLunaReserveUsage(storage, () => NOW);
+
+		expect(result).toEqual({});
+		expect(mocks.ensureFreshAccessToken).not.toHaveBeenCalled();
+		expect(mocks.nativeRateLimitsRpc).not.toHaveBeenCalled();
+	});
+
 	it("uses refreshed credentials, matches replies to accounts, isolates failures, and skips disabled accounts", async () => {
 		const storage = storageFixture();
 		mocks.ensureFreshAccessToken.mockImplementation(async ({ account }) => ({
