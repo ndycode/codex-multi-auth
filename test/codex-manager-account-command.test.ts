@@ -138,3 +138,19 @@ it("configures per-account automatic priming without enabling it for other accou
  expect(await runAccountCommand(["auto-prime","1","yes"],deps)).toBe(1);
  expect(await runAccountCommand(["auto-prime","1","on","extra"],deps)).toBe(1);
 });
+
+ it("toggles and reports emergency-only without changing pause or priority", async()=>{
+  const store:AccountPolicyStore={version:1,accounts:{}};const deps=makeDeps(store);
+  await runAccountCommand(["priority","1","3"],deps);
+  await runAccountCommand(["pause","1"],deps);
+  expect(await runAccountCommand(["emergency-only","1","on"],deps)).toBe(0);
+  const key=getAccountPolicyKey(makeStorage().accounts[0]!,0);
+  expect(store.accounts[key]).toMatchObject({emergencyOnly:true,paused:true,priority:3});
+  deps.logInfo.mockClear();await runAccountCommand(["policy","list","--json"],deps);
+  expect(JSON.parse(String(deps.logInfo.mock.calls[0]?.[0])).accounts[0].emergencyOnly).toBe(true);
+  expect(await runAccountCommand(["emergency-only","1","off"],deps)).toBe(0);
+  expect(store.accounts[key]?.emergencyOnly).toBe(false);
+  const writes=deps.updatePolicyStore.mock.calls.length;
+  expect(await runAccountCommand(["emergency-only","1","yes"],deps)).toBe(1);
+  expect(deps.updatePolicyStore).toHaveBeenCalledTimes(writes);
+ });

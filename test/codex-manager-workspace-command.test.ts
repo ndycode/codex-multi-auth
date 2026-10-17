@@ -47,6 +47,26 @@ function createDeps(
 }
 
 describe("runWorkspaceCommand", () => {
+ it("disables the selected workspace without switching to a sibling", async () => {
+  const storage=createStorage(); const deps=createDeps({loadAccounts:async()=>storage});
+  expect(await runWorkspaceCommand(["1","1","disable"],deps)).toBe(0);
+  expect(storage.accounts[0]?.workspaces?.[0]?.enabled).toBe(false);
+  expect(storage.accounts[0]?.currentWorkspaceIndex).toBe(0);
+  expect(deps.saveAccounts).toHaveBeenCalled();
+ });
+ it("enables a workspace without changing selection", async () => {
+  const storage=createStorage(); storage.accounts[0]!.workspaces![1]!.enabled=false;
+  const deps=createDeps({loadAccounts:async()=>storage});
+  expect(await runWorkspaceCommand(["1","2","enable"],deps)).toBe(0);
+  expect(storage.accounts[0]?.workspaces?.[1]?.enabled).toBe(true);
+  expect(storage.accounts[0]?.currentWorkspaceIndex).toBe(0);
+ });
+ it("rejects an unknown workspace action without saving", async () => {
+  const deps=createDeps();
+  expect(await runWorkspaceCommand(["1","2","typo"],deps)).toBe(1);
+  expect(deps.saveAccounts).not.toHaveBeenCalled();
+ });
+
 	it("errors when no accounts are configured", async () => {
 		const deps = createDeps({ loadAccounts: vi.fn(async () => null) });
 		const result = await runWorkspaceCommand(["1"], deps);
@@ -192,4 +212,30 @@ describe("runWorkspaceCommand", () => {
 		);
 		expect(deps.saveAccounts).not.toHaveBeenCalled();
 	});
+});
+
+it('persists a disabled selection and preserves it through account re-enablement',async()=>{
+ const {mkdtemp}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+ const {removeWithRetry}=await import('./helpers/remove-with-retry.js');
+ const storageApi=await import('../lib/storage.js');const {AccountManager}=await import('../lib/accounts.js');
+ const dir=await mkdtemp(join(tmpdir(),'workspace-disable-'));
+ storageApi.setStoragePathDirect(join(dir,'accounts.json'));
+ try{
+  await storageApi.saveAccounts(createStorage());
+  const deps=createDeps({setStoragePath:()=>{},loadAccounts:storageApi.loadAccounts,saveAccounts:storageApi.saveAccounts});
+  expect(await runWorkspaceCommand(['1','1','disable'],deps)).toBe(0);
+  const saved=(await storageApi.loadAccounts())!;
+  expect(saved.accounts[0]?.currentWorkspaceIndex??0).toBe(0);
+  expect(saved.accounts[0]?.workspaces?.[0]?.enabled).toBe(false);
+  const manager=new AccountManager(undefined,saved);manager.setAccountEnabled(0,false);manager.setAccountEnabled(0,true);
+  expect(manager.getAccountByIndex(0)?.workspaces?.[0]?.enabled).toBe(false);
+  expect(manager.getAccountByIndex(0)?.currentWorkspaceIndex??0).toBe(0);
+ }finally{storageApi.setStoragePathDirect(null);await removeWithRetry(dir,{recursive:true,force:true});}
+});
+it('does not re-enable an operator-disabled workspace when its account is toggled',async()=>{
+ const storage=createStorage();const deps=createDeps({loadAccounts:async()=>storage});
+ expect(await runWorkspaceCommand(['1','1','disable'],deps)).toBe(0);
+ const {AccountManager}=await import('../lib/accounts.js');const manager=new AccountManager(undefined,storage);
+ manager.setAccountEnabled(0,false);manager.setAccountEnabled(0,true);
+ expect(manager.getAccountByIndex(0)?.workspaces?.[0]?.enabled).toBe(false);
 });

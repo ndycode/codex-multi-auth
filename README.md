@@ -76,7 +76,7 @@ mcodex                          # same wrapper, shorter name
 
 | Group | Commands | Purpose |
 | --- | --- | --- |
-| Accounts | `login`, `list`, `status`, `switch <i>`, `unpin`, `workspace` | sign in, inspect the pool, pin or switch the active account, pick workspaces |
+| Accounts | `login`, `list`, `status`, `switch <i>`, `unpin`, `workspace` | sign in, inspect the pool, pin or switch the active account, select or enable/disable workspaces |
 | Selection | `forecast`, `best`, `why-selected`, `check`, `limits`, `models` | preview, explain, and probe which account serves the next request |
 | Runtime | `rotation status` `enable` `disable` `bind-app` `unbind-app` `reset-runtime` `reset-rate-limits` | inspect and control live rotation and the app bind |
 | Repair | `fix`, `doctor`, `report`, `verify`, `verify-flagged`, `uninstall` | diagnose and repair storage, flagged accounts, and install residue; machine-readable health report |

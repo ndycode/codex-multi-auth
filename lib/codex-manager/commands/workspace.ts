@@ -18,9 +18,10 @@ export interface WorkspaceCommandDeps {
 /**
  * `codex-multi-auth workspace <account> [workspace]`
  *
- * With only an account index, lists the workspaces that account can rotate
+ * With only an account index, lists the workspaces that account can select
  * between (personal Plus vs business/team under one email, issue #491). With a
  * workspace index too, sets it as the active workspace for that account.
+ * A final enable/disable action changes availability without changing selection.
  */
 export async function runWorkspaceCommand(
 	args: string[],
@@ -118,6 +119,20 @@ export async function runWorkspaceCommand(
 	}
 
 	const targetName = target.name?.trim() || "(unnamed)";
+ const action=args[2];
+ if (args.length > 3 || (action && action !== "enable" && action !== "disable")) {
+  logError("Invalid workspace action. Use enable or disable.");
+  return 1;
+ }
+ if (action) {
+  target.enabled=action === "enable";
+  // Absence of disabledAt distinguishes an operator exclusion from runtime health.
+  delete target.disabledAt;
+  await saveAccountsWithRetry(storage,deps.saveAccounts);
+  logInfo(`Workspace ${parsedWorkspace} [${targetName}] ${target.enabled ? "enabled" : "disabled"}. Selected workspace unchanged.`);
+  return 0;
+ }
+
 	if (target.enabled === false) {
 		logError(
 			`Workspace ${parsedWorkspace} ([${targetName}]) is disabled and cannot be selected.`,

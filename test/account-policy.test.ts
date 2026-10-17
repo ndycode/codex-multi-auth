@@ -33,6 +33,12 @@ describe("account policy store", () => {
 		await removeWithRetry(tempDir, { recursive: true, force: true });
 	});
 
+	it("persists an emergency-only policy without converting it into a pause", async () => {
+		const {loadAccountPolicyStore,updateAccountPolicyStore,upsertAccountPolicy}=await import("../lib/account-policy.js");
+		await updateAccountPolicyStore(store=>{upsertAccountPolicy(store,"sha256:fixture",policy=>{policy.emergencyOnly=true;policy.paused=false;});return {result:undefined,dirty:true};});
+		expect((await loadAccountPolicyStore({strict:true})).accounts["sha256:fixture"]).toMatchObject({emergencyOnly:true,paused:false});
+	});
+
 	it("distinguishes missing policies from malformed policies in strict reads", async () => {
 		const {loadAccountPolicyStore, getAccountPolicyPath} = await import("../lib/account-policy.js");
 		await expect(loadAccountPolicyStore({strict:true})).resolves.toEqual({version:1,accounts:{}});
@@ -43,7 +49,7 @@ describe("account policy store", () => {
 		}
 	});
 
-	it.each([null, [], "invalid", {autoPrime:"true"}, {autoPrime:0}, {autoPrime:null}, {paused:"true"}, {paused:0}, {drained:"false"}, {drained:null}])("rejects malformed account policy rows in strict mode: %j", async row => {
+	it.each([null, [], "invalid", {emergencyOnly:"true"}, {autoPrime:"true"}, {autoPrime:0}, {autoPrime:null}, {paused:"true"}, {paused:0}, {drained:"false"}, {drained:null}])("rejects malformed account policy rows in strict mode: %j", async row => {
 		const {loadAccountPolicyStore, getAccountPolicyPath} = await import("../lib/account-policy.js");
 		await fs.writeFile(getAccountPolicyPath(), JSON.stringify({version:1,accounts:{"sha256:fixture":row}}));
 		await expect(loadAccountPolicyStore({strict:true})).rejects.toThrow("Invalid account policy");

@@ -23,6 +23,8 @@ export interface AccountPolicy {
 	priority?: number;
 	/** Opt in to periodic first-use completion for unused personal subscriptions. */
 	autoPrime?: boolean;
+	/** Pool backup only, after primary subscriptions and reset credits are exhausted. */
+	emergencyOnly?: boolean;
 	paused: boolean;
 	drained: boolean;
 	note: string | null;
@@ -72,6 +74,7 @@ function normalizePolicy(key: string, value: unknown): AccountPolicy {
 		weight: normalizeWeight(record.weight),
 		priority: normalizePriority(record.priority),
 		autoPrime: record.autoPrime === true,
+		emergencyOnly: record.emergencyOnly === true,
 		paused: record.paused === true,
 		drained: record.drained === true,
 		note: note.length > 0 ? note.slice(0, 500) : null,
@@ -156,7 +159,7 @@ export async function loadAccountPolicyStore(options: { strict?: boolean } = {})
 			for (const [key, row] of Object.entries(parsed.accounts)) {
 				if (!key.startsWith("sha256:")) continue;
 				// Legacy rows may omit flags; explicit malformed values are not OFF.
-				if (!isRecord(row) || ["autoPrime", "paused", "drained"].some(
+				if (!isRecord(row) || ["autoPrime", "emergencyOnly", "paused", "drained"].some(
 					flag => flag in row && typeof row[flag] !== "boolean",
 				)) {
 					throw new Error("Invalid account policy row");
@@ -321,6 +324,7 @@ export function upsertAccountPolicy(
 	next.weight = normalizeWeight(next.weight);
 	next.priority = normalizePriority(next.priority);
 	next.autoPrime = next.autoPrime === true;
+	next.emergencyOnly = next.emergencyOnly === true;
 	next.updatedAt = stampUpdatedAt(now, store.accounts[accountKey]?.updatedAt);
 	store.accounts[accountKey] = next;
 	return next;

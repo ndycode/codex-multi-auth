@@ -38,7 +38,7 @@ export function createAutomaticSubscriptionCheck(observe?: Observer) {
                 const disk = await read();
                 const current = disk.verified ? disk.storage?.accounts.find(row => resolveAccountRecordId(row) === resolveAccountRecordId(fresh.account)) : undefined;
                 const policy = current ? (await loadAccountPolicyStore()).accounts[getAccountPolicyKey(current)] : undefined;
-                if (!disk.storage || !current || current.refreshToken !== fresh.account.refreshToken || current.accessToken !== fresh.accessToken || !policy?.autoPrime || policy.paused || policy.drained || current.enabled === false || current.authInvalidatedAt || (current.coolingDownUntil ?? 0) > Date.now())
+                if (!disk.storage || !current || current.refreshToken !== fresh.account.refreshToken || current.accessToken !== fresh.accessToken || !policy?.autoPrime || policy.paused || policy.drained || policy.emergencyOnly || current.enabled === false || current.authInvalidatedAt || (current.coolingDownUntil ?? 0) > Date.now())
                     return;
                 if (automaticCheckWorkspaceId(current) !== targetId || signal.aborted)
                     return;

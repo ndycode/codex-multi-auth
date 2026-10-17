@@ -53,7 +53,7 @@ function mergeWorkspaces(base: AccountMetadataV3, disk: AccountMetadataV3, local
     const currentId = (row: AccountMetadataV3) => row.workspaces?.[row.currentWorkspaceIndex ?? 0]?.id;
     const chosen = currentId(local) !== currentId(base) ? currentId(local) : currentId(disk);
     let index = workspaces.findIndex(row => row.id === chosen);
-    if (index < 0 || workspaces[index]?.enabled === false) {
+    if (index < 0) {
         const enabled = workspaces.findIndex(row => row.enabled !== false);
         index = enabled >= 0 ? enabled : Math.max(index, 0);
     }

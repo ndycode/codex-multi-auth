@@ -33,6 +33,7 @@ function printAccountUsage(logInfo: (message: string) => void): void {
 			"  codex-multi-auth account weight <index> <0..10>",
 			"  codex-multi-auth account priority <index> <0..9>",
 			"  codex-multi-auth account auto-prime <index> on|off",
+			"  codex-multi-auth account emergency-only <index> on|off",
 			"  codex-multi-auth account pause|unpause|drain|undrain <index>",
 			"  codex-multi-auth account note <index> <text>",
 			"  codex-multi-auth account policy list [--json]",
@@ -69,6 +70,7 @@ function policySummary(store: AccountPolicyStore, storage: AccountStorageV3 | nu
 			weight: policy?.weight ?? 1,
 			priority: policy?.priority ?? 1,
 			autoPrime: policy?.autoPrime ?? false,
+			emergencyOnly: policy?.emergencyOnly ?? false,
 			paused: policy?.paused ?? false,
 			drained: policy?.drained ?? false,
 			note: policy?.note ?? null,
@@ -122,6 +124,7 @@ export async function runAccountCommand(
 				`weight=${entry.weight}`,
 				`priority=${entry.priority}`,
 				`auto-prime=${entry.autoPrime ? "on" : "off"}`,
+				entry.emergencyOnly ? "emergency-only" : null,
 				entry.paused ? "paused" : null,
 				entry.drained ? "drained" : null,
 				entry.tags.length > 0 ? `tags=${entry.tags.join(",")}` : null,
@@ -167,6 +170,17 @@ export async function runAccountCommand(
 		return 0;
 	}
 
+	if (command === "emergency-only") {
+        if (rest.length !== 2 || !["on", "off"].includes(rest[1] ?? "")) {
+            logError("emergency-only requires on or off."); return 1;
+        }
+        await updateStore(store => ({
+            result: upsertAccountPolicy(store, accountKey, next => { next.emergencyOnly = rest[1] === "on"; }, now),
+            dirty: true,
+        }));
+        logInfo(`Emergency-only ${rest[1]} for account ${resolved.index + 1}.`);
+        return 0;
+    }
 	if (command === "auto-prime") {
         if (rest.length !== 2 || !["on", "off"].includes(rest[1] ?? "")) {
             logError("auto-prime requires on or off."); return 1;

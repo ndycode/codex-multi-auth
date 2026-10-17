@@ -4,7 +4,7 @@ import type { ModelFamily } from '../prompts/codex.js';
 import type { QuotaCacheEntry } from '../quota-cache.js';
 import { parseModelRoute } from '../model-route-policy.js';
 import { subscriptionQuotaPreference } from './subscription-quota-order.js';
-import { resetSnapshotQuota, type ResetCreditService } from './reset-credits.js';
+import { resetSnapshotQuota, isResetSubscription, type ResetSnapshot, type ResetCreditService } from './reset-credits.js';
 import type { workspaceModelScopes } from './workspace-model-scopes.js';
 type Scope=ReturnType<typeof workspaceModelScopes>[number];
 export async function recoverResetQuota(options:{
@@ -60,4 +60,25 @@ export function applyConfirmedReset(options:{account:ManagedAccount;scope:Scope;
   options.manager.saveToDiskDebounced();
  }
  return true;
+}
+
+
+/** Unknown, stale, or pending reset state must never authorize backup traffic. */
+export function primaryPoolFullyExhausted(
+ scopes: Map<number, Scope[]>,
+ state: { snapshots: Record<string, ResetSnapshot>; pending?: { key: string } } | null,
+ now: number,
+ latestQuota?: (index: number, scope: Scope) => QuotaCacheEntry | null | undefined,
+): boolean {
+ const primary = [...scopes].flatMap(([index, rows]) => rows.map(scope => ({ index, scope })));
+ return primary.length > 0 && !!state && !state.pending && primary.every(({ index, scope }) => {
+  const snapshot = state.snapshots[scope.id];
+  const latest = latestQuota?.(index, scope);
+  if (snapshot && latest && latest.updatedAt >= snapshot.updatedAt &&
+      !subscriptionQuotaPreference(latest, now).exhausted) return false;
+  return scope.routable && !!snapshot && Number.isFinite(snapshot.updatedAt) &&
+   snapshot.updatedAt <= now && now - snapshot.updatedAt <= 60_000 &&
+   isResetSubscription(snapshot) && snapshot.ordinaryUsageAllowed === false &&
+   snapshot.availableCount === 0;
+ });
 }

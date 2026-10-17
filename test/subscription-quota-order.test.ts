@@ -45,3 +45,19 @@ const unusedQuota = () => ({...quota(100,24), secondary:{usedPercent:0}});
 it("does not prioritize an unused subscription over an established earlier reset",()=>{
  expect(compareSubscriptionQuota(subscriptionQuotaPreference(unusedQuota(),now),subscriptionQuotaPreference(quota(30,1),now))).toBeGreaterThan(0);
 });
+
+
+it('uses fresh authoritative permission despite rounded 100 percent usage',()=>{
+ const entry={...quota(0,24,'promax'),ordinaryUsageAllowed:true};
+ expect(subscriptionQuotaPreference(entry,now)).toMatchObject({plan:'subscription',exhausted:false,remainingPercent:0});
+ expect(subscriptionQuotaPreference({...entry,updatedAt:now-60001},now).exhausted).toBe(true);
+ expect(subscriptionQuotaPreference({...entry,updatedAt:now+1},now).exhausted).toBe(true);
+ expect(subscriptionQuotaPreference({...entry,ordinaryUsageAllowed:null},now).exhausted).toBe(true);
+});
+
+it('does not renew native permission when newer quota headers arrive',()=>{
+ const entry={...quota(0,24),ordinaryUsageAllowed:true,ordinaryUsageCheckedAt:now-60001};
+ expect(subscriptionQuotaPreference(entry,now).exhausted).toBe(true);
+ expect(subscriptionQuotaPreference({...entry,ordinaryUsageCheckedAt:now-1000},now).exhausted).toBe(false);
+ expect(subscriptionQuotaPreference({...entry,status:429,ordinaryUsageCheckedAt:now},now).exhausted).toBe(true);
+});

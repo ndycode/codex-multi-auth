@@ -544,7 +544,7 @@ describe("runtime transcription proxy", () => {
 		expect(proxy.getStatus().rotations).toBe(0);
 	});
 
-	it("uses request-local enabled workspace scope without mutating the saved selection", async () => {
+	it("refuses a disabled selected transcription workspace without using a sibling", async () => {
 		const manager = new AccountManager(undefined, createStorage(Date.now(), 1));
 		const account = manager.getAccountByIndex(0);
 		if (!account) throw new Error("missing test account");
@@ -569,8 +569,8 @@ describe("runtime transcription proxy", () => {
 
 		account.workspaces[1]!.enabled = false;
 		const fallback = await postTranscribe(proxy, Buffer.from("--fallback--\r\n"));
-		expect(fallback.status).toBe(HTTP_STATUS.OK);
-		expect(calls[1]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("workspace-bound");
+		expect(fallback.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+		expect(calls).toHaveLength(1);
 		expect(account.currentWorkspaceIndex).toBe(1);
 	});
 

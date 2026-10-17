@@ -96,7 +96,7 @@ export async function discoverModelInventory(
 	const scopes = manager.getAccountsSnapshot().flatMap(workspaceModelScopes);
  const catalog = new AccountModelCatalog(async (key) => {
   const scope = scopes.find(item=>item.id===key);
-		const account = scope?.enabled ? manager.getAccountByIndex(scope.accountIndex) : null;
+		const account = scope?.routable ? manager.getAccountByIndex(scope.accountIndex) : null;
 		if (!account || account.enabled === false) throw Error("Disabled");
 		const fresh = await ensureFreshAccessToken({
 			accountManager: manager,
@@ -130,7 +130,7 @@ export async function discoverModelInventory(
 	}, now);
 	try {
   entries.push(...await mapWithConcurrency(scopes, 3, async scope=>{
-    if(scope.enabled) await catalog.list([scope.id]);
+    if(scope.routable) await catalog.list([scope.id]);
     const snapshot = catalog.snapshot(scope.id);
     return {id:scope.id,label:scope.label,kind:"oauth" as const,enabled:scope.enabled,routable:scope.routable,bound:scope.bound,selected:scope.selected,
      ...snapshot,error:scope.enabled && snapshot.error,checkedAt:now(),visibleModels:scope.routable?snapshot.models:[]};

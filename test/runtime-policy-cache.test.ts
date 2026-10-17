@@ -25,11 +25,11 @@ vi.mock("../lib/account-policy.js", async (importOriginal) => {
 	const { promises: fsPromises } = await import("node:fs");
 	return {
 		...actual,
-		loadAccountPolicyStore: async () => {
+		loadAccountPolicyStore: async (options?: {strict?: boolean}) => {
 			if (accountPolicyReadFaults.returnEmptyStore) {
 				return { version: 1 as const, accounts: {} };
 			}
-			const value = await actual.loadAccountPolicyStore();
+			const value = await actual.loadAccountPolicyStore(options);
 			const write = accountPolicyReadFaults.writeAfterRead;
 			if (write) {
 				accountPolicyReadFaults.writeAfterRead = null;
@@ -104,6 +104,12 @@ describe("runtime policy cache", () => {
 		await removeWithRetry(tempDir, { recursive: true, force: true });
 	});
 
+ it("rejects malformed emergency policy in the production cache loader",async()=>{
+  const {getAccountPolicyPath}=await import('../lib/account-policy.js');
+  const {loadAccountPolicyStoreCached}=await import('../lib/policy/runtime-policy-cache.js');
+  await fs.writeFile(getAccountPolicyPath(),writeAccountPolicies({'sha256:a':{emergencyOnly:'true'}}));
+  await expect(loadAccountPolicyStoreCached()).rejects.toThrow('Invalid account policy row');
+ });
 	it("serves the parsed store and re-reads it after a rewrite", async () => {
 		const { loadAccountPolicyStoreCached } = await import(
 			"../lib/policy/runtime-policy-cache.js"

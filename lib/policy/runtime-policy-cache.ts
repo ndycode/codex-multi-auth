@@ -236,7 +236,7 @@ export function loadAccountPolicyStoreCached(): Promise<AccountPolicyStore> {
 	return loadStoreCached({
 		path: getAccountPolicyPath(),
 		cache: ACCOUNT_POLICY_CACHE,
-		load: loadAccountPolicyStore,
+		load: () => loadAccountPolicyStore({strict:true}),
 		isEmptyStore: (store) => Object.keys(store.accounts).length === 0,
 	});
 }

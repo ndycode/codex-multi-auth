@@ -1,3 +1,4 @@
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 import * as modelInventory from "../lib/runtime/model-discovery-status.js";
 import { once } from "node:events";
 import { createServer } from "node:http";
@@ -1530,6 +1531,28 @@ describe("runtime rotation proxy", () => {
 		expect(consumeTokenSpy).toHaveBeenCalledTimes(1);
 		expect(calls).toHaveLength(0);
 	});
+ it("does not let local token scoring reject available native subscription capacity", async()=>{
+  const manager=new AccountManager(undefined,createStorage(Date.now(),1));
+  const account=manager.getAccountByIndex(0)!;
+  getTokenTracker().drain(getRuntimeTrackerKey(account),`${getModelFamily('gpt-5-codex')}:gpt-5-codex`,DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens);
+  const {calls,fetchImpl}=createRecordingFetch(c=>c.url.includes('/models')?Response.json({models:[{slug:'gpt-5-codex'}]}):textEventStream());
+  const proxy=await startProxy({accountManager:manager,fetchImpl,options:{nativeOpenai:true}});
+  const result=await postResponses(proxy,{model:'gpt-5-codex',input:'fixture'});
+  expect(result.status).toBe(200);await result.text();
+  expect(calls.filter(c=>c.url.endsWith('/responses'))).toHaveLength(1);
+ });
+ it("rotates accounts after native quota rejection without using sibling workspaces",async()=>{
+  const disk=createStorage(Date.now(),2);disk.accounts[0]!.workspaces=[{id:'acc_1',enabled:true},{id:'alternate',enabled:true}];
+  const manager=new AccountManager(undefined,disk);const used:string[]=[];
+  const {fetchImpl}=createRecordingFetch(c=>{
+   if(c.url.includes('/models'))return Response.json({models:[{slug:'workspace-model'}]});
+   const id=c.headers.get(OPENAI_HEADERS.ACCOUNT_ID)!;used.push(id);
+   return id==='acc_1'?Response.json({error:{code:'usage_limit_reached'}},{status:429}):textEventStream();
+  });
+  const proxy=await startProxy({accountManager:manager,fetchImpl,options:{nativeOpenai:true}});
+  for(let i=0;i<2;i++){const r=await postResponses(proxy,{model:'workspace-model',input:'fixture'});expect(r.status).toBe(200);await r.text();}
+  expect(used).toEqual(['acc_1','acc_2','acc_2']);
+ });
 	it("does not let the pool token bucket starve a forced pin", async () => {
 		const now = Date.now();
 		const accountManager = new AccountManager(undefined, createStorage(now, 2));
@@ -3430,7 +3453,7 @@ describe("runtime rotation proxy", () => {
 			{ id: "fallback-workspace", enabled: true },
 			{ id: "approved-workspace", enabled: true },
 		];
-		moving.currentWorkspaceIndex = 0;
+		moving.currentWorkspaceIndex = 1;
 		const previous = new AccountManager(undefined, storage);
 		const replacementStorage: AccountStorageV3 = {
 			version: 3,
@@ -3984,6 +4007,34 @@ describe("runtime rotation proxy", () => {
 			skipReasonSpy.mockRestore();
 			loadSpy.mockRestore();
 		}
+	});
+
+	it("reaches a usable fifth account after four account quota rejections", async () => {
+		const accountManager = new AccountManager(undefined, createStorage(Date.now(), 6));
+		const { calls, fetchImpl } = createRecordingFetch((_call, attempt) =>
+			attempt <= 4
+				? new Response(JSON.stringify({error:{code:"usage_limit_reached",message:"Usage limit reached"}}), {status:429})
+				: textEventStream(),
+		);
+		const proxy = await startProxy({accountManager,fetchImpl});
+		const response = await postResponses(proxy,{model:"gpt-5-codex"});
+		await response.text();
+		expect(response.status).toBe(200);
+		expect(calls).toHaveLength(5);
+		expect(new Set(calls.map(call=>call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).size).toBe(5);
+	});
+
+	it("visits each exhausted account once before returning a quota failure", async () => {
+		const accountManager = new AccountManager(undefined, createStorage(Date.now(), 6));
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			new Response(JSON.stringify({error:{code:"usage_limit_reached",message:"Usage limit reached"}}), {status:429}),
+		);
+		const proxy = await startProxy({accountManager,fetchImpl});
+		const response = await postResponses(proxy,{model:"gpt-5-codex"});
+		await response.text();
+		expect(response.status).toBe(429);
+		expect(calls).toHaveLength(6);
+		expect(new Set(calls.map(call=>call.headers.get(OPENAI_HEADERS.ACCOUNT_ID))).size).toBe(6);
 	});
 
 	it("caps per-request upstream attempts instead of walking a large pool", async () => {
@@ -5517,7 +5568,7 @@ it.each(["1.0.0", "2.0.0"])("preserves completed discovery snapshots during over
  }
 });
 
-it("checks and advertises enabled workspaces through the proxy", async () => {
+it("checks and advertises only the selected enabled workspace through the proxy", async () => {
  const now=Date.now(), storage=createStorage(now,1);
  storage.accounts[0]!.workspaces=[{id:"acc_1",enabled:true},{id:"alternate",enabled:true},{id:"disabled",enabled:false}];
  storage.accounts[0]!.currentWorkspaceIndex=1;
@@ -5530,15 +5581,15 @@ it("checks and advertises enabled workspaces through the proxy", async () => {
  const proxy=await startProxy({accountManager,fetchImpl,options:{nativeOpenai:true,now:()=>now}});
  const response=await fetch(`${proxy.baseUrl}/models?refresh_capabilities=1`,{headers:{authorization:`Bearer ${DEFAULT_CLIENT_API_KEY}`}});
  expect(response.status).toBe(200);
- expect((await response.json()).models.map((m:{slug:string})=>m.slug)).toEqual(["bound-model", "alternate-model"]);
- expect(seen.sort()).toEqual(["acc_1","alternate"]);
+ expect((await response.json()).models.map((m:{slug:string})=>m.slug)).toEqual(["alternate-model"]);
+ expect(seen).toEqual(["alternate"]);
  const {loadModelInventory}=await import("../lib/runtime/model-discovery-status.js");
  const inventory=await loadModelInventory();
  expect(inventory?.entries.find(e=>e.models.includes("alternate-model"))).toMatchObject({routable:true,selected:true});
  expect(accountManager.getAccountByIndex(0)?.accountId).toBe("acc_1");
 });
 
-it("routes by workspace capabilities and learns a rejection without excluding sibling workspaces", async () => {
+it("learns selected workspace rejection without silently using siblings", async () => {
  const now=Date.now(), storage=createStorage(now,1);
  storage.accounts[0]!.workspaces=[{id:"acc_1",enabled:true},{id:"alternate",enabled:true}];
  const accountManager=new AccountManager(undefined,storage);
@@ -5553,15 +5604,14 @@ it("routes by workspace capabilities and learns a rejection without excluding si
  const proxy=await startProxy({accountManager,fetchImpl,options:{nativeOpenai:true,now:()=>now}});
  for(let i=0;i<2;i++){
   const result=await fetch(`${proxy.baseUrl}/responses`,{method:"POST",headers:{authorization:`Bearer ${DEFAULT_CLIENT_API_KEY}`,"content-type":"application/json"},body:JSON.stringify({model:"workspace-model",reasoning:{effort:"high"},input:"fixture"})});
-  expect(result.status).toBe(200); await result.text();
+  expect(result.status).toBe(403); await result.text();
  }
- expect(requests).toEqual(["acc_1","alternate","alternate"]);
- expect(proxy.getStatus()).toMatchObject({lastAccountId:"acc_1",lastRequestedWorkspaceId:"alternate"});
+ expect(requests).toEqual(["acc_1"]);
  expect(accountManager.getAccountByIndex(0)?.accountId).toBe("acc_1");
  expect(accountManager.getAccountByIndex(0)?.currentWorkspaceIndex??0).toBe(0);
 });
 
-it("uses different workspace headers for concurrent model requests without changing selection", async () => {
+it("rejects concurrent requests requiring an unselected workspace", async () => {
  const storage=createStorage(Date.now(),1);
  storage.accounts[0]!.workspaces=[{id:"acc_1",enabled:true},{id:"alternate",enabled:true},{id:"disabled",enabled:false}];
  const accountManager=new AccountManager(undefined,storage);
@@ -5575,12 +5625,13 @@ it("uses different workspace headers for concurrent model requests without chang
  });
  const proxy=await startProxy({accountManager,fetchImpl,options:{nativeOpenai:true}});
  const results=await Promise.all(["acc_1","alternate"].map(id=>fetch(`${proxy.baseUrl}/responses`,{method:"POST",headers:{authorization:`Bearer ${DEFAULT_CLIENT_API_KEY}`,"content-type":"application/json"},body:JSON.stringify({model:`model-${id}`,reasoning:{effort:"ultra"},service_tier:"priority",input:"fixture"})})));
- for(const result of results){expect(result.status).toBe(200);await result.text();}
- expect(requests.sort()).toEqual(["acc_1","alternate"]);
+ expect(results.map(result=>result.status)).toEqual([200,403]);
+ for(const result of results)await result.text();
+ expect(requests).toEqual(["acc_1"]);
  expect(accountManager.getAccountByIndex(0)?.accountId).toBe("acc_1");
 });
 
-it("disables only the rejected workspace and preserves the credential and sibling access", async () => {
+it("disables only the rejected workspace and preserves the credential without switching selection", async () => {
  const storage=createStorage(Date.now(),1);
  storage.accounts[0]!.workspaces=[{id:"acc_1",enabled:true},{id:"alternate",enabled:true}];
  const accountManager=new AccountManager(undefined,storage);
@@ -5592,8 +5643,8 @@ it("disables only the rejected workspace and preserves the credential and siblin
  });
  const proxy=await startProxy({accountManager,fetchImpl,options:{nativeOpenai:true}});
  const response=await fetch(`${proxy.baseUrl}/responses`,{method:"POST",headers:{authorization:`Bearer ${DEFAULT_CLIENT_API_KEY}`,"content-type":"application/json"},body:JSON.stringify({model:"workspace-model",input:"fixture"})});
- expect(response.status).toBe(200);await response.text();
- expect(requests).toEqual(["acc_1","alternate"]);
+ expect(response.status).toBe(503);await response.text();
+ expect(requests).toEqual(["acc_1"]);
  expect(accountManager.getAccountByIndex(0)?.enabled).not.toBe(false);
  expect(accountManager.getAccountByIndex(0)?.workspaces?.map(w=>w.enabled)).toEqual([false,true]);
 });
@@ -5832,6 +5883,33 @@ describe("pre-dispatch eligibility re-read",()=>{
   const part=(value:unknown)=>Buffer.from(JSON.stringify(value)).toString("base64url");
   return `${part({alg:"none"})}.${part({"https://api.openai.com/auth":{chatgpt_account_id:workspace}})}.sig`;
  };
+
+
+ it('rejects a changed Personal selection immediately before dispatch',async()=>{
+  const storage=createStorage(Date.now(),1);const row=storage.accounts[0]!;
+  row.accessToken=tokenFor('native-personal');row.accountId='native-personal';
+  row.workspaces=[{id:'sibling',enabled:true},{id:'org-personal',enabled:true}];row.currentWorkspaceIndex=1;
+  const manager=new AccountManager(undefined,structuredClone(storage));
+  const {calls,fetchImpl}=createRecordingFetch(call=>{
+   if(call.url.includes('/models')){storage.accounts[0]!.currentWorkspaceIndex=0;return Response.json({models:[{slug:'common'}]});}
+   return textEventStream();
+  });
+  const proxy=await startProxy({accountManager:manager,fetchImpl,options:{nativeOpenai:true,readNativeAccountStorage:async()=>structuredClone(storage)}});
+  const r=await postResponses(proxy,{model:'common',input:'fixture'});expect(r.status).toBe(503);await r.text();
+  expect(calls.filter(c=>c.url.endsWith('/responses'))).toHaveLength(0);
+ });
+ it('uses the native identity of selected Personal across catalog, Responses and images',async()=>{
+  const storage=createStorage(Date.now(),1);const row=storage.accounts[0]!;
+  row.accessToken=tokenFor('native-personal');row.accountId='native-personal';
+  row.workspaces=[{id:'native-personal',enabled:true},{id:'org-personal',name:'Personal',enabled:true}];row.currentWorkspaceIndex=1;
+  const manager=new AccountManager(undefined,structuredClone(storage));
+  const {calls,fetchImpl}=createRecordingFetch(call=>call.url.includes('/models')?Response.json({models:[{slug:'common'}]}):call.url.includes('/images/')?Response.json({data:[]}):textEventStream());
+  const proxy=await startProxy({accountManager:manager,fetchImpl,options:{nativeOpenai:true,readNativeAccountStorage:async()=>structuredClone(storage)}});
+  for(const [path,body] of [['/responses',{model:'common',input:'fixture'}],['/images/generations',{model:'gpt-image-2',prompt:'fixture'}]] as const){const r=await postResponses(proxy,body,path);expect(r.status).toBe(200);await r.text();}
+  expect(calls.length).toBeGreaterThanOrEqual(3);
+  expect(calls.every(c=>c.headers.get(OPENAI_HEADERS.ACCOUNT_ID)==='native-personal')).toBe(true);
+  expect(manager.getAccountByIndex(0)?.currentWorkspaceIndex).toBe(1);
+ });
  it.each([["no stored account id",undefined],["a padded account id"," acc_token "]])("routes an account with %s through Responses and images",async(_label,stored)=>{
   const storage=createStorage(Date.now(),1);const account=storage.accounts[0]!;
   account.accessToken=tokenFor("acc_token");
@@ -5898,6 +5976,42 @@ describe("request-level capability rejections",()=>{
 });
 
 describe('earned reset last-resort integration',()=>{
+ it.each(['usable','reset','no-credit','unknown','discover-exhaustion','discover-still-limited','usable-headers','reset-read-failure'] as const)('holds emergency accounts behind primary capacity and credits (%s)',async mode=>{
+  const discovered=mode.startsWith('discover-')||mode==='reset-read-failure';
+  const resetMode=mode==='reset'||mode==='reset-read-failure';
+  vi.spyOn(runtimePolicy,'evaluateRuntimePolicy').mockResolvedValue({allowed:true,statusCode:200,errorCode:null,reasons:[],projectKey:null,blockedAccountIndexes:new Set(),emergencyAccountIndexes:new Set([0]),scoreBoostByAccount:{},priorityByAccount:{0:1,1:2},budgetEvaluations:[]});
+  const {createResetCreditService}=await import('../lib/runtime/account-reset-credits.js');
+  const native=await import('../lib/runtime/native-rate-limits.js');
+  let redeemed=false;let recoveryReadFailed=false;const spent:string[]=[];const read:string[]=[];
+  const rpc=vi.spyOn(native,'nativeRateLimitsRpc').mockImplementation(async(auth,method)=>{
+   if(method==='account/rateLimitResetCredit/consume'){redeemed=true;spent.push(auth.accountId);return {outcome:'reset'};}
+   read.push(auth.accountId);
+   const allowed=auth.accountId==='acc_1'||mode.startsWith('usable')||redeemed;
+   return {accountId:auth.accountId,ordinaryUsageAllowed:mode==='unknown'&&auth.accountId==='acc_2'?null:allowed,rateLimitResetCredits:{availableCount:(resetMode||discovered)&&!redeemed?1:0},rateLimits:{planType:'promax',primary:{usedPercent:mode.startsWith('usable')?100:allowed?0:100,resetsAt:Math.floor(Date.now()/1000)+3600},secondary:{}}};
+  });
+  const fs=await import('node:fs/promises');const os=await import('node:os');const path=await import('node:path');
+  const originalDir=process.env.CODEX_MULTI_AUTH_DIR;const dir=await fs.mkdtemp(path.join(os.tmpdir(),'emergency-pool-'));process.env.CODEX_MULTI_AUTH_DIR=dir;
+  const service=createResetCreditService();await service.setPolicy('last-resort');
+  const resetModule=await import('../lib/runtime/account-reset-credits.js');
+  const actualLoad=resetModule.loadResetCreditState;
+  const reload=mode==='reset-read-failure'?vi.spyOn(resetModule,'loadResetCreditState').mockImplementation(async()=>{if(redeemed){recoveryReadFailed=true;throw Object.assign(new Error('fixture read failure'),{code:'EBUSY'});}return actualLoad();}):undefined;
+  try{
+   const disk=createStorage(Date.now());const stored=await import('../lib/storage.js');vi.spyOn(stored,'loadAccounts').mockResolvedValue(disk);
+   const manager=new AccountManager(undefined,disk);
+   const {calls,fetchImpl}=createRecordingFetch(call=>call.url.includes('/models')?Response.json({models:[{slug:'chat-fixture'}]}):discovered&&(!redeemed||mode==='discover-still-limited')?Response.json({error:{code:'usage_limit_reached',message:'Usage limit reached'}},{status:429}):mode==='usable-headers'?new Response(COMPLETED_FRAME,{headers:{'content-type':'text/event-stream','x-codex-primary-used-percent':'100','x-codex-primary-reset-after-seconds':'3600'}}):textEventStream());
+   const q={updatedAt:Date.now(),status:200,model:'chat-fixture',planType:'promax',primary:{usedPercent:100},secondary:{}};
+   const proxy=await startProxy({accountManager:manager,fetchImpl,options:{nativeOpenai:true,readSubscriptionQuota:async()=>({byAccountId:{acc_1:{...q,primary:{usedPercent:0}},acc_2:discovered?{...q,primary:{usedPercent:50}}:q},byEmail:{}})}});
+   const response=await postResponses(proxy,{model:'chat-fixture',input:'fixture'});await response.text();
+   if(mode==='usable-headers'){const second=await postResponses(proxy,{model:'chat-fixture',input:'fixture'});expect(second.status).toBe(200);await second.text();}
+   const used=calls.filter(c=>c.url.endsWith('/responses')).map(c=>c.headers.get('chatgpt-account-id'));
+   expect(used).toEqual(mode==='unknown'?[]:discovered||mode==='usable-headers'?['acc_2','acc_2']:[mode==='no-credit'?'acc_1':'acc_2']);
+   expect(response.status).toBe(mode==='unknown'?503:mode==='discover-still-limited'?429:200);
+   expect(spent).toEqual(resetMode||discovered?['acc_2']:[]);
+   expect(read).not.toContain('acc_1');
+   if(mode==='reset-read-failure')expect(recoveryReadFailed).toBe(true);
+  }finally{reload?.mockRestore();rpc.mockRestore();if(originalDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=originalDir;await removeWithRetry(dir,{recursive:true,force:true});}
+ });
+
  it('never redeems or moves traffic off a stored native pin',async()=>{
   vi.spyOn(storageMetaModule,"readStorageMetaFromDisk").mockReturnValue({pinnedAccountIndex:0,affinityGeneration:1});
   const {createResetCreditService}=await import('../lib/runtime/account-reset-credits.js');

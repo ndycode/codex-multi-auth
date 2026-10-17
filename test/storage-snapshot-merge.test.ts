@@ -128,12 +128,12 @@ it("resolves the current workspace by identity across a reorder", () => {
     expect(row!.workspaces!.map(w => w.id)).toEqual(["business", "personal"]);
     expect(row!.workspaces![row!.currentWorkspaceIndex!]!.id).toBe("business");
 });
-it("moves the current workspace off one the other side disabled", () => {
+it("preserves a selected workspace even when the other side disabled it", () => {
     const base = fixture(), disk = structuredClone(base), local = structuredClone(base);
     Object.assign(disk.accounts[0]!.workspaces![1]!, { enabled: false, disabledAt: 10 });
     local.accounts[0]!.currentWorkspaceIndex = 1;
     const [row] = mergeAccountSnapshot(base, disk, local).accounts;
-    expect(row!.workspaces![row!.currentWorkspaceIndex!]!.id).toBe("personal");
+    expect(row!.workspaces![row!.currentWorkspaceIndex!]!.id).toBe("business");
 });
 
 it("keeps an auth-failure cooldown recorded against the refresh token that is kept", () => {

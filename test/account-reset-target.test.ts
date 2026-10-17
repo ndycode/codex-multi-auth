@@ -1,13 +1,13 @@
 import { expect,it } from 'vitest';
 import { resetTargetForStoredAccount, resetAccountLabel } from '../lib/runtime/account-reset-credits.js';
-it('uses the native credential binding, not an organization display alias',()=>{
+it('does not reset a sibling when the selected organization alias is not a native reset target',()=>{
  const account={recordId:'r',accountId:'native-workspace',refreshToken:'secret',addedAt:1,lastUsed:1,workspaces:[{id:'native-workspace',name:'Token account'},{id:'org-personal',name:'Personal'}],currentWorkspaceIndex:1};
- expect(resetTargetForStoredAccount(account)?.accountId).toBe('native-workspace');expect(account.currentWorkspaceIndex).toBe(1);
+ expect(resetTargetForStoredAccount(account)).toBeNull();expect(account.currentWorkspaceIndex).toBe(1);
 });
 it('does not redeem a disabled native workspace or an organization ID',()=>{
  const account={accountId:'native-workspace',refreshToken:'secret',addedAt:1,lastUsed:1,workspaces:[{id:'native-workspace',enabled:false}]};expect(resetTargetForStoredAccount(account)).toBeNull();expect(resetTargetForStoredAccount({...account,accountId:'org-fixture'})).toBeNull();
 });
-it('resolves an organization-only binding from the native token claim without changing preferences',()=>{
+it('resolves selected Personal to its native identity without changing preferences',()=>{
  const token='header.'+Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:'native-workspace'}})).toString('base64url')+'.signature';
  const account={recordId:'r',accountId:'org-personal',accessToken:token,refreshToken:'secret',addedAt:1,lastUsed:1,currentWorkspaceIndex:1,workspaces:[{id:'native-workspace'},{id:'org-personal',name:'Personal'}]};
  expect(resetTargetForStoredAccount(account)?.accountId).toBe('native-workspace');expect(account.accountId).toBe('org-personal');expect(account.currentWorkspaceIndex).toBe(1);
@@ -55,4 +55,13 @@ it.each([
   // The reset state stays keyed on the stored target, not the mirror id.
   expect(Object.keys((await service.status()).snapshots)).toEqual(expected===undefined?[]:[target.key]);
  }finally{rpc.mockRestore();if(previous===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previous;await rm(dir,{recursive:true,force:true,maxRetries:5});}
+});
+
+it('targets only the selected enabled native workspace for resets',async()=>{
+ const {isResetTargetEnabled}=await import('../lib/runtime/account-reset-credits.js');
+ const row={recordId:'selected',accountId:'bound',refreshToken:'fixture',addedAt:1,lastUsed:1,currentWorkspaceIndex:1,workspaces:[{id:'bound',enabled:true},{id:'chosen',enabled:true}]};
+ const target=resetTargetForStoredAccount(row)!;
+ expect(target.accountId).toBe('chosen');
+ expect(isResetTargetEnabled({...row,currentWorkspaceIndex:0},target)).toBe(false);
+ expect(resetTargetForStoredAccount({...row,workspaces:[{id:'bound',enabled:true},{id:'chosen',enabled:false}]})).toBeNull();
 });

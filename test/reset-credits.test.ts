@@ -16,6 +16,13 @@ function fixture(){
  return {service,read,consume};
 }
 describe('reset credits',()=>{
+ it('redeems a promax credit when ordinary usage is authoritatively exhausted',async()=>{
+  const f=fixture();await f.service.setPolicy('last-resort');
+  f.read.mockImplementation(async t=>({...payload(t.accountId),rateLimits:{...payload(t.accountId).rateLimits,planType:'promax'}}));
+  await f.service.automatic([target('a')]);
+  expect(f.consume).toHaveBeenCalledTimes(1);
+ });
+
  it('trusts the count, not a capped detail list; preserves unknown',()=>{
   expect(parseResetSnapshot(payload('a'), 'a',1).availableCount).toBe(2);
   expect(parseResetSnapshot(payload('a',null,null),'a',1).availableCount).toBeNull();

@@ -62,3 +62,27 @@ it("keys a workspace scope and its reset target the same way when no recordId is
  expect(target).toEqual({key:scope.id,accountId:'workspace'});
  expect(isResetTargetEnabled(row,{key:scope.id,accountId:scope.accountId})).toBe(true);
 });
+
+
+it('opens emergency accounts only after every primary workspace has no ordinary usage or reset credits',async()=>{
+ const {primaryPoolFullyExhausted}=await import('../lib/runtime/reset-credit-routing.js');
+ const f=fixture();const snapshot={updatedAt:1000,ordinaryUsageAllowed:false,availableCount:0,planType:'promax',primary:{usedPercent:100},secondary:{}};
+ const scopes=new Map([[0,[f.scope]]]);
+ expect(primaryPoolFullyExhausted(scopes,{snapshots:{[f.scope.id]:snapshot}},1000)).toBe(true);
+ for(const patch of [{ordinaryUsageAllowed:true},{ordinaryUsageAllowed:null},{availableCount:1},{availableCount:null},{updatedAt:1001},{updatedAt:-60000},{planType:'unknown'}]){
+  expect(primaryPoolFullyExhausted(scopes,{snapshots:{[f.scope.id]:{...snapshot,...patch}}},1000)).toBe(false);
+ }
+ expect(primaryPoolFullyExhausted(scopes,{snapshots:{}},1000)).toBe(false);
+ expect(primaryPoolFullyExhausted(scopes,{snapshots:{[f.scope.id]:snapshot},pending:{key:'pending'}},1000)).toBe(false);
+ expect(primaryPoolFullyExhausted(new Map(),{snapshots:{}},1000)).toBe(false);
+ expect(primaryPoolFullyExhausted(new Map([[0,[f.scope,{...f.scope,id:'sibling'}]]]),{snapshots:{[f.scope.id]:snapshot}},1000)).toBe(false);
+});
+
+it('keeps backups reserved when a newer quota observation restores primary capacity',async()=>{
+ const {primaryPoolFullyExhausted}=await import('../lib/runtime/reset-credit-routing.js');
+ const f=fixture();const snapshot={updatedAt:1000,ordinaryUsageAllowed:false,availableCount:0,planType:'promax',primary:{usedPercent:100},secondary:{}};
+ const state={snapshots:{[f.scope.id]:snapshot}};
+ const scopes=new Map([[0,[f.scope]]]);
+ expect(primaryPoolFullyExhausted(scopes,state,1100,()=>({updatedAt:1050,status:200,model:"fixture",primary:{usedPercent:10},secondary:{}}))).toBe(false);
+ expect(primaryPoolFullyExhausted(scopes,state,1100,()=>({updatedAt:1050,status:429,model:"fixture",primary:{usedPercent:100},secondary:{}}))).toBe(true);
+});

@@ -223,3 +223,10 @@ it("retains a workspace throttle when selection switches away and back", async (
     await runAutomaticAccountChecks(f.options);
     expect(f.check).toHaveBeenCalledTimes(2);
 });
+
+it("reserves emergency accounts even if automatic priming was enabled",async()=>{
+ const f=fixture();f.enable(0);f.enable(1);
+ f.policies.accounts[getAccountPolicyKey(f.storage.accounts[0]!)]!.emergencyOnly=true;
+ await runAutomaticAccountChecks(f.options);
+ expect(f.check.mock.calls.map(call=>call[1])).toEqual([1]);
+});

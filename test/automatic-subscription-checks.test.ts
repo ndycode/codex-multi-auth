@@ -150,3 +150,18 @@ it("preserves exhausted organization quota when a Personal check is followed by 
         expect(findQuotaCacheEntryForAccount(cache, account, storage.accounts)?.primary.usedPercent).toBe(100);
     }
 });
+
+it("revalidates emergency reservation after token refresh before consuming quota", async()=>{
+ const account={recordId:"fixture",accountId:"personal",refreshToken:"fixture-refresh",accessToken:"fixture-access",expiresAt:Date.now()+3600000,addedAt:1,lastUsed:1};
+ await saveAccounts({version:3,activeIndex:0,accounts:[account]});
+ const policies:AccountPolicyStore={version:1,accounts:{}};
+ upsertAccountPolicy(policies,getAccountPolicyKey(account),p=>{p.autoPrime=true;});
+ await saveAccountPolicyStore(policies);
+ vi.spyOn(tokenRefresh,"ensureFreshAccessToken").mockImplementationOnce(async({account:live})=>{
+  upsertAccountPolicy(policies,getAccountPolicyKey(account),p=>{p.emergencyOnly=true;});
+  await saveAccountPolicyStore(policies);
+  return {ok:true,account:live,accessToken:"fixture-access"};
+ });
+ await createAutomaticSubscriptionCheck(vi.fn())(new AbortController().signal);
+ expect(probe).not.toHaveBeenCalled();
+});

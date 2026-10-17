@@ -96,7 +96,7 @@ export async function runAutomaticAccountChecks(options: AutomaticAccountCheckOp
             if (!account)
                 continue;
             const key = automaticAccountCheckKey(account), policy = policies.accounts[getAccountPolicyKey(account)], now = options.now?.() ?? Date.now();
-            if (!policy?.autoPrime || policy.paused || policy.drained || account.enabled === false || account.authInvalidatedAt || (account.coolingDownUntil ?? 0) > now)
+            if (!policy?.autoPrime || policy.paused || policy.drained || policy.emergencyOnly || account.enabled === false || account.authInvalidatedAt || (account.coolingDownUntil ?? 0) > now)
                 continue;
             const lastAttempt = attempts[key];
             if (lastAttempt !== undefined && lastAttempt <= now + FUTURE_SKEW_MS && now - lastAttempt < AUTOMATIC_CHECK_INTERVAL_MS)

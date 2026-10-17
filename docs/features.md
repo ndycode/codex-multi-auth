@@ -14,7 +14,7 @@ What `codex-multi-auth` gives you, grouped by job. Everything listed is a `codex
 | List the pool, quota windows, and runtime markers | `codex-multi-auth list`, `status`, `limits --json` |
 | Luna Reserve | First-class `gpt-reserve`, automatic Luna quota fallback, independent cooldowns, and live Reserve percentage via `limits --json --refresh` |
 | Pin the active account | `codex-multi-auth switch <index>` (`unpin` clears it) |
-| Pick a workspace under an account | `codex-multi-auth workspace <account> [workspace]` |
+| Select or enable/disable a workspace under an account | `codex-multi-auth workspace <account> [workspace]` with optional `enable` or `disable` |
 | Health and quota checks | `codex-multi-auth check` |
 | Recover flagged (sidelined) accounts | `codex-multi-auth verify-flagged` |
 | Restore a named backup into an empty pool | `codex-multi-auth login` → restore menu |

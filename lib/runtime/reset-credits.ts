@@ -26,10 +26,10 @@ export function resetSnapshotQuota(snapshot:ResetSnapshot):QuotaCacheEntry {
  // A bogus resetsAt must not read as a window that never resets.
  const resetAtMs=(s:number|null|undefined)=>typeof s==='number'&&Number.isFinite(s)?Math.min(s*1000,snapshot.updatedAt+MAX_RATE_LIMIT_DELAY_MS):undefined;
  const window=(w:ResetSnapshot['primary'])=>({usedPercent:w.usedPercent,resetAtMs:resetAtMs(w.resetsAt),windowMinutes:w.windowDurationMins??undefined});
- return {updatedAt:snapshot.updatedAt,status:200,model:'usage-read',planType:snapshot.planType??undefined,primary:window(snapshot.primary),secondary:window(snapshot.secondary)};
+ return {updatedAt:snapshot.updatedAt,status:200,model:'usage-read',ordinaryUsageAllowed:snapshot.ordinaryUsageAllowed,planType:snapshot.planType??undefined,primary:window(snapshot.primary),secondary:window(snapshot.secondary)};
 }
 export function isResetSubscription(snapshot:ResetSnapshot):boolean {
- return ['plus','pro','prolite','team','business','self_serve_business_prolite','enterprise','edu','edu_plus','edu_pro'].includes(snapshot.planType??'');
+ return ['plus','pro','promax','prolite','team','business','self_serve_business_prolite','enterprise','edu','edu_plus','edu_pro'].includes(snapshot.planType??'');
 }
 export interface ResetCreditIO {
  read:(target:ResetTarget)=>Promise<unknown>;

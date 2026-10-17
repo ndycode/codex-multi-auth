@@ -280,7 +280,7 @@ it("serializes status writes so a slow older snapshot cannot replace fresh probe
 	}
 });
 
-it("discovers each enabled workspace independently without changing the stored binding", async () => {
+it("discovers only the selected enabled workspace without changing the stored binding", async () => {
  const storage = { version: 3 as const, activeIndex: 0, accounts: [{
   recordId: "fixture-record", accountId: "primary", refreshToken: "fixture-refresh", accessToken: "fixture-access", expiresAt: Date.now()+3600000, addedAt: 1, lastUsed: 1,
   currentWorkspaceIndex: 1, workspaces: [{id:"primary",enabled:true},{id:"secondary",enabled:true},{id:"disabled",enabled:false}],
@@ -290,9 +290,9 @@ it("discovers each enabled workspace independently without changing the stored b
   const id = new Headers(init?.headers).get("chatgpt-account-id")!; seen.push(id);
   return Response.json({models:[{slug:`model-${id}`} ]});
  }) as typeof fetch});
- expect(seen.sort()).toEqual(["primary","secondary"]);
+ expect(seen).toEqual(["secondary"]);
  expect(inventory.entries).toHaveLength(3);
- expect(inventory.entries[0]).toMatchObject({models:["model-primary"],routable:true});
+ expect(inventory.entries[0]).toMatchObject({models:[],routable:false});
  expect(inventory.entries[1]).toMatchObject({models:["model-secondary"],routable:true});
  expect(inventory.entries[2]).toMatchObject({enabled:false,models:[]});
  expect(storage.accounts[0].accountId).toBe("primary");

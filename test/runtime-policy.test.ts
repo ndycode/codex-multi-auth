@@ -45,6 +45,14 @@ describe("runtime policy", () => {
 		await removeWithRetry(tempDir, { recursive: true, force: true });
 	});
 
+	it("carries emergency-only accounts separately from hard exclusions",async()=>{
+		const policyState=state();const key=getAccountPolicyKey({accountId:"acct_1"},0);
+		policyState.accountPolicies.accounts[key]={accountKey:key,tags:[],weight:1,paused:false,drained:false,note:null,updatedAt:1,emergencyOnly:true};
+		const decision=await evaluateRuntimePolicy({state:policyState,accounts:[{index:0,accountId:"acct_1"}],model:"gpt-5.3-codex",now:100});
+		expect(decision.emergencyAccountIndexes).toEqual(new Set([0]));
+		expect(decision.blockedAccountIndexes.has(0)).toBe(false);
+	});
+
 	it("blocks paused accounts and adds profile score boosts", async () => {
 		const policyState = state();
 		const accountKey = getAccountPolicyKey({ accountId: "acct_1" }, 0);
