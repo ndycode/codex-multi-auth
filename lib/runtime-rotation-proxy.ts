@@ -1750,23 +1750,25 @@ async function handleRequestInner(
 					onEvent: event => responseOutcome.observe(event),
 				});
 				const responseOutcome = new ResponseOutcome(() => scanner.isSse());
+				let streamErrored = false;
 				const forwarded = await forwardStreamingResponse(
 					upstream,
 					res,
 					state.status,
-					() => controller.abort(),
+					() => { streamErrored = true; controller.abort(); },
 					state.streamStallTimeoutMs,
 					scanner.push,
  state.catalogEtag ? {"x-models-etag":state.catalogEtag} : undefined,
 					() => {scanner.result();return responseOutcome.finish();},
 				);
+				const clientDisconnected = !forwarded && !streamErrored && !res.writableEnded;
 				const attemptedCredential = attemptedCredentialIndex === undefined ? undefined : apiRoutes[attemptedCredentialIndex];
-				if (!forwarded && attemptedCredential) apiRuntime.recordStreamFailure(attemptedCredential, context.model, body, responseOutcome.rejection);
+				if (!forwarded && !clientDisconnected && attemptedCredential) apiRuntime.recordStreamFailure(attemptedCredential, context.model, body, responseOutcome.rejection);
 				if (apiRuntime.lastPersistenceError) state.status.lastError = apiRuntime.lastPersistenceError;
 				await usageRecorder.record({
-					outcome: forwarded && upstream.ok ? "success" : "failure",
+					outcome: forwarded && upstream.ok ? "success" : clientDisconnected ? "cancelled" : "failure",
 					statusCode: upstream.status,
-					errorCode: responseOutcome.finish().errorCode ?? (forwarded ? null : "stream_forward_failed"),
+					errorCode: clientDisconnected ? "client_disconnected" : responseOutcome.finish().errorCode ?? (forwarded ? null : "stream_forward_failed"),
 					...(scanner.result() ?? {}),
 				});
             } catch (error) {

@@ -254,3 +254,9 @@ it.each(["oauth", "api", "zdr"] as const)("only exposes settings pairs with a wi
  const covered = buildVisibleModelUnion([...split,make("high-fast","high",true)]).find(m=>m.slug===slug);
  expect(covered?.service_tiers).toEqual([fast]);
 });
+
+it("keeps API credentials eligible when reasoning metadata is unknown", () => {
+ const catalog={id:"fixture",kind:"api" as const,enabled:true,priority:9,visibleModels:["future"],models:[{slug:"future",reasoning_levels_known:false,supported_reasoning_levels:[]}]};
+ expect(resolveModelRoute("api/future",[catalog],{reasoningEffort:"medium"}).candidates).toHaveLength(1);
+ expect(resolveModelRoute("api/future",[{...catalog,models:[{slug:"future",reasoning_levels_known:true,supported_reasoning_levels:[]}]}],{reasoningEffort:"medium"}).candidates).toHaveLength(0);
+});

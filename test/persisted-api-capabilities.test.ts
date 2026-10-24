@@ -883,3 +883,80 @@ it("discards cache-only evidence when credentials are wiped while documentation 
 		}
 	}
 });
+
+it("does not retain paid evidence when a credential changes regions during a probe", async () => {
+ const {enrichPersistedApiCapabilities}=await import("../lib/runtime/persisted-api-capabilities.js");
+ const {loadApiRoutes}=await import("../lib/api-route-store.js");
+ const root=await mkdtemp(join(tmpdir(),"regional-probe-ownership-")), previous=process.env.CODEX_MULTI_AUTH_DIR;
+ process.env.CODEX_MULTI_AUTH_DIR=root; let release!:()=>void, entered!:()=>void, posts=0, now=1000;
+ const started=new Promise<void>(resolve=>entered=resolve), continueProbe=new Promise<void>(resolve=>release=resolve);
+ const fetcher:typeof fetch=async(input,init)=>{if(init?.method!=="POST")return Response.json({data:[{id:"fixture"}]});posts++;entered();await continueProbe;const body=JSON.parse(String(init.body));return Response.json({status:"completed",reasoning:body.reasoning,access_programs:body.access_programs,output:[{type:"function_call",name:"capability_probe"}]});};
+ try {
+  const route={id:"fixture",label:"fixture",kind:"api" as const,apiKey:"fixture",enabled:true,priority:9,probeCapabilities:true,visibleModels:["fixture"],accessPrograms:{cyber:["standard"]}};
+  await saveApiRoutes([route]);const [owned]=await loadApiRoutes();
+  const pending=enrichPersistedApiCapabilities([{slug:"fixture"}],false,owned,false,{fetchImpl:fetcher,now:()=>now,requireStoredRoute:true});
+  await started;await saveApiRoutes([{...owned,region:"us"}],undefined,[owned]);release();
+  expect((await pending)[0]?.program_checked_at).toBeUndefined();
+  now++;const [us]=await loadApiRoutes();await enrichPersistedApiCapabilities([{slug:"fixture"}],false,us,false,{fetchImpl:async(input,init)=>{posts++;return Response.json({error:{code:"rate_limit_exceeded"}},{status:429});},now:()=>now,requireStoredRoute:true});
+  expect(posts).toBeGreaterThan(1);
+ } finally {if(previous===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previous;await removeWithRetry(root,{recursive:true,force:true});}
+});
+
+it("does not reuse global paid evidence or daily claims after switching to US", async () => {
+	const { enrichPersistedApiCapabilities } = await import("../lib/runtime/persisted-api-capabilities.js");
+	const { loadApiRoutes } = await import("../lib/api-route-store.js");
+	const root = await mkdtemp(join(tmpdir(), "regional-paid-evidence-"));
+	const previous = process.env.CODEX_MULTI_AUTH_DIR;
+	process.env.CODEX_MULTI_AUTH_DIR = root;
+	let now = 1000;
+	const posts: string[] = [];
+	const fetcher: typeof fetch = async (input, init) => {
+		if (init?.method !== "POST") return new Response("missing", { status: 404 });
+		posts.push(String(input));
+		const body = JSON.parse(String(init.body));
+		return Response.json({
+			status: "completed",
+			reasoning: body.reasoning,
+			access_programs: body.access_programs,
+			output: [{ type: "function_call", name: "capability_probe" }],
+		});
+	};
+	try {
+		const route = {
+			id: "fixture",
+			label: "fixture",
+			kind: "api" as const,
+			apiKey: "fixture",
+			enabled: true,
+			priority: 9,
+			probeCapabilities: true,
+			visibleModels: ["fixture"],
+			accessPrograms: { cyber: ["standard"] },
+		};
+		await saveApiRoutes([route]);
+		const [global] = await loadApiRoutes();
+		await enrichPersistedApiCapabilities([{ slug: "fixture" }], false, global, false, {
+			fetchImpl: fetcher,
+			now: () => now,
+			programRefreshBefore: now + 86_400_000,
+			requireStoredRoute: true,
+		});
+		const globalPosts = posts.length;
+		await saveApiRoutes([{ ...global, region: "us" }], undefined, [global]);
+		now++;
+		const [us] = await loadApiRoutes();
+		const [refreshed] = await enrichPersistedApiCapabilities([{ slug: "fixture" }], false, us, false, {
+			fetchImpl: fetcher,
+			now: () => now,
+			programRefreshBefore: now + 86_400_000,
+			requireStoredRoute: true,
+		});
+		expect(posts.length).toBeGreaterThan(globalPosts);
+		expect(posts.slice(globalPosts).every((url) => url === "https://us.api.openai.com/v1/responses")).toBe(true);
+		expect(refreshed.program_checked_at).toBe(now);
+	} finally {
+		if (previous === undefined) delete process.env.CODEX_MULTI_AUTH_DIR;
+		else process.env.CODEX_MULTI_AUTH_DIR = previous;
+		await removeWithRetry(root, { recursive: true, force: true });
+	}
+});

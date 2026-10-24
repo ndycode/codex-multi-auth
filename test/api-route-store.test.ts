@@ -288,3 +288,36 @@ it("keeps ownership when a menu sorts discovered visibility without changing the
  const [removed]=await saveApiRoutesSnapshot([{...added,visibleModels:["gpt-a"]}],file,[added]);
  expect(removed.capabilityEpoch).not.toBe(added.capabilityEpoch);
 });
+
+it("persists US region using a store version that old readers reject",async()=>{
+ const file=join(await tempDir(),"routes.json");
+ const route={id:"regional",label:"US",kind:"api" as const,apiKey:"fixture",enabled:true,priority:9,visibleModels:[],region:"us" as const};
+ await saveApiRoutes([route],file);
+ expect((await loadApiRoutes(file))[0]).toMatchObject({region:"us"});
+ expect(JSON.parse(await readFile(file,"utf8")).version).toBe(2);
+});
+
+it("persists operator metadata using a store version that old readers reject",async()=>{
+ const file=join(await tempDir(),"routes.json");
+ const route={id:"declared",label:"Declared",kind:"api" as const,apiKey:"fixture",enabled:true,priority:9,visibleModels:["astra"],modelReasoningLevels:{astra:["medium" as const]},modelAccessPrograms:{astra:{cyber:["daybreak_red"]}}};
+ await saveApiRoutes([route],file);
+ expect(JSON.parse(await readFile(file,"utf8")).version).toBe(3);
+ expect((await loadApiRoutes(file))[0]).toMatchObject({modelReasoningLevels:{astra:["medium"]},modelAccessPrograms:{astra:{cyber:["daybreak_red"]}}});
+});
+
+it("invalidates regional capability ownership and rejects stale discovery",async()=>{
+ const {updateApiModelDiscovery}=await import("../lib/api-route-store.js");
+ const file=join(await tempDir(),"routes.json");
+ const route={id:"regional",label:"Region",kind:"api" as const,apiKey:"fixture",enabled:true,priority:9,visibleModels:[]};
+ await saveApiRoutes([route],file);const [old]=await loadApiRoutes(file);
+ await saveApiRoutes([{...old,region:"us"}],file,[old]);
+ const [current]=await loadApiRoutes(file);
+ expect(current.capabilityEpoch).not.toBe(old.capabilityEpoch);
+ expect(await updateApiModelDiscovery(old,["gpt-fixture"],file)).toMatchObject({enabled:false});
+ expect((await loadApiRoutes(file))[0].visibleModels).toEqual([]);
+});
+it("rejects arbitrary regional hosts at the storage boundary",async()=>{
+ const file=join(await tempDir(),"routes.json");
+ await writeFile(file,JSON.stringify({version:2,routes:[{id:"bad",label:"Bad",kind:"api",apiKey:"fixture",enabled:true,priority:9,visibleModels:[],region:"attacker.example"}]}));
+ await expect(loadApiRoutes(file)).rejects.toThrow("Invalid API route configuration");
+});

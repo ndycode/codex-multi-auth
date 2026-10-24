@@ -16,7 +16,7 @@ async function listen(server: Server) {
 	if (!address || typeof address === "string") throw Error("listen failed");
 	return `http://127.0.0.1:${address.port}`;
 }
-async function fixture(respond?: (ws: WebSocket, body: Record<string, unknown>, id: string) => boolean, options: {signal?: AbortSignal; sendFailure?: boolean; cancelBody?: () => void} = {}) {
+async function fixture(respond?: (ws: WebSocket, body: Record<string, unknown>, id: string) => boolean, options: {signal?: AbortSignal; sendFailure?: boolean; cancelBody?: () => void; bridgeKeepAliveMs?: number; bodyReadTimeoutMs?: number; upstreamSilenceMs?: number} = {}) {
 	const upstream = createServer();
 	const wss = new WebSocketServer({ server: upstream });
 	const calls: Record<string, unknown>[] = [];
@@ -89,6 +89,8 @@ async function fixture(respond?: (ws: WebSocket, body: Record<string, unknown>, 
 	});
 	const gateway = new ResponsesWebSocketGateway(fetch, {
 		maxPayloadBytes: 16384,
+		bridgeKeepAliveMs: options.bridgeKeepAliveMs,
+		upstreamSilenceMs: options.upstreamSilenceMs,
 	});
 	const server = createServer((req, res) => {
 		gateway.handle(req, async () => {
@@ -123,7 +125,20 @@ async function fixture(respond?: (ws: WebSocket, body: Record<string, unknown>, 
                 return;
             }
 			try {
-				if (response.body)
+				if (response.body && options.bodyReadTimeoutMs) {
+					const reader = response.body.getReader();
+					for (;;) {
+						let timer: NodeJS.Timeout | undefined;
+						const result = await Promise.race([
+							reader.read(),
+							new Promise<never>((_resolve, reject) => {
+								timer = setTimeout(() => reject(Error("bridge body read timeout")), options.bodyReadTimeoutMs);
+							}),
+						]).finally(() => clearTimeout(timer));
+						if (result.done) break;
+						res.write(result.value);
+					}
+				} else if (response.body)
 					for await (const chunk of response.body) res.write(chunk);
 				res.end();
 			} catch {
@@ -193,6 +208,30 @@ it("uses real upstream WebSockets and reuses the socket for a continuation", asy
 		store: false,
 	});
 	expect(f.calls[0]).not.toHaveProperty("stream");
+});
+it("replaces an upstream socket before its five-minute lease expires", async () => {
+	const f = await fixture();
+	const ws = await f.connect();
+	await turn(ws, {
+		model: "api/shared",
+		input: [{ role: "user", content: "hello" }],
+	});
+	const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 4 * 60_000 + 1);
+	try {
+		await turn(ws, {
+			model: "api/shared",
+			previous_response_id: "resp_1",
+			input: [{ role: "user", content: "again" }],
+		});
+	} finally {
+		clock.mockRestore();
+	}
+	expect(f.connections()).toBe(2);
+	expect(f.calls[1]).not.toHaveProperty("previous_response_id");
+	expect(f.calls[1]?.input).toEqual(expect.arrayContaining([
+		{ role: "user", content: "hello" },
+		{ role: "user", content: "again" },
+	]));
 });
 it.each([undefined, false, true])("preserves caller permission metadata over WebSocket (%s)", async (enabled) => {
 	const f = await fixture();
@@ -271,13 +310,86 @@ it("fails explicitly for unsupported control events", async () => {
 	});
 	expect(f.calls).toHaveLength(0);
 });
+it("forwards steering to the active upstream response", async () => {
+	const f = await fixture((_ws, body) => body.model === "steer-target" || body.type === "response.steer");
+	const ws = await f.connect();
+	const created = once(ws, "message");
+	ws.send(JSON.stringify({ type: "response.create", model: "steer-target", input: [] }));
+	await created;
+	ws.send(JSON.stringify({ type: "response.steer", previous_response_id: "resp_1", input: "narrow scope" }));
+	await vi.waitFor(() => expect(f.calls).toHaveLength(2));
+	expect(f.calls[1]).toEqual({ type: "response.steer", previous_response_id: "resp_1", input: "narrow scope" });
+});
+it("rejects steering owned by another authenticated local session", async () => {
+	const f = await fixture((_ws, body) => body.model === "steer-target");
+	const owner = await f.connect();
+	const other = await f.connect();
+	const created = once(owner, "message");
+	owner.send(JSON.stringify({ type: "response.create", model: "steer-target", input: [] }));
+	await created;
+	const rejected = once(other, "message");
+	other.send(JSON.stringify({ type: "response.steer", previous_response_id: "resp_1", input: "not mine" }));
+	expect(JSON.parse((await rejected)[0].toString())).toMatchObject({
+		type: "error",
+		error: { code: "previous_response_not_found" },
+	});
+	expect(f.calls).toHaveLength(1);
+});
+it("keeps the local bridge readable during a quiet upstream response", async () => {
+	const f = await fixture((ws, body, id) => {
+		if (body.model !== "quiet") return false;
+		setTimeout(() => ws.send(JSON.stringify({ type: "response.completed", response: { id, output: [] } })), 80);
+		return true;
+	}, { bridgeKeepAliveMs: 5, bodyReadTimeoutMs: 20 });
+	const ws = await f.connect();
+	let pinged = false;
+	ws.once("ping", () => { pinged = true; });
+	expect((await turn(ws, { model: "quiet", input: [] })).at(-1)?.type).toBe("response.completed");
+	expect(pinged).toBe(true);
+});
+it("times out a genuinely silent upstream independently of bridge keepalives", async () => {
+	const f = await fixture((_ws, body) => body.model === "silent", {
+		bridgeKeepAliveMs: 5,
+		bodyReadTimeoutMs: 20,
+		upstreamSilenceMs: 40,
+	});
+	const ws = await f.connect();
+	const events = await turn(ws, { model: "silent", input: [] });
+	expect(events[0]?.type).toBe("response.created");
+	expect(events.at(-1)).toMatchObject({ type: "error", error: { code: "upstream_websocket_disconnected" } });
+	expect(f.calls).toHaveLength(1);
+});
+
+it("does not let a completed turn's silence timer terminate a later active turn", async () => {
+	const f = await fixture((upstream, body, id) => {
+		if (body.model !== "active-continuation") return false;
+		let pulses = 0;
+		const timer = setInterval(() => {
+			if (upstream.readyState !== WebSocket.OPEN) { clearInterval(timer); return; }
+			if (++pulses < 20) {
+				upstream.send(JSON.stringify({ type: "response.output_text.delta", delta: "x" }));
+			} else {
+				clearInterval(timer);
+				upstream.send(JSON.stringify({ type: "response.completed", response: { id, output: [] } }));
+			}
+		}, 20);
+		upstream.once("close", () => clearInterval(timer));
+		return true;
+	}, { bridgeKeepAliveMs: 10, upstreamSilenceMs: 150 });
+	const ws = await f.connect();
+	expect((await turn(ws, { model: "first", input: [] })).at(-1)?.type).toBe("response.completed");
+	expect((await turn(ws, { model: "active-continuation", input: [], previous_response_id: "resp_1" })).at(-1)?.type).toBe("response.completed");
+	expect(f.connections()).toBe(1);
+	expect(f.calls).toHaveLength(2);
+});
 
 it("does not replay after generation starts and the upstream disconnects", async () => {
 	const f = await fixture();
 	const ws = await f.connect();
 	const events = await turn(ws, { model: "disconnect", input: [] });
 	expect(events[0]?.type).toBe("response.created");
-	expect(events.at(-1)?.type).toBe("error");
+	expect(events.at(-1)).toMatchObject({ type: "error", status: 502, error: { code: "upstream_websocket_disconnected" } });
+	expect(events.at(-1)?.error).toMatchObject({ message: expect.stringContaining("Upstream WebSocket") });
 	expect(f.calls).toHaveLength(1);
 });
 it.each(["oauth", "api", "zdr"] as const)("records sanitized %s close context without replaying generation", async (routeKind) => {
@@ -628,6 +740,31 @@ it("falls back to HTTP for an API credential whose WebSocket handshake is refuse
 	expect((await turn(ws, { model: "api/fixture", input: [] })).at(-1)).toMatchObject({ type: "response.completed" });
 	expect(posts).toHaveLength(2);
 	expect(JSON.parse(posts[0]!)).toMatchObject({ model: "api/fixture", stream: true });
+});
+
+it("uses HTTP for the next API create after an unexpected upstream close", async () => {
+	const posts: string[] = [];
+	const upstream = createServer(async (req, res) => {
+		const chunks: Buffer[] = [];
+		for await (const chunk of req) chunks.push(Buffer.from(chunk));
+		posts.push(Buffer.concat(chunks).toString("utf8"));
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		res.end(`data: ${JSON.stringify({ type: "response.completed", response: { id: "resp_http", output: [] } })}\n\n`);
+	});
+	const wss = new WebSocketServer({ server: upstream });
+	let websocketCreates = 0;
+	wss.on("connection", (socket) => socket.on("message", () => {
+		websocketCreates++;
+		socket.send(JSON.stringify({ type: "response.created", response: { id: "resp_ws" } }));
+		socket.terminate();
+	}));
+	cleanups.push(async () => { for (const socket of wss.clients) socket.terminate(); wss.close(); });
+	const g = await customGateway({ upstream });
+	const ws = await g.connect();
+	expect((await turn(ws, { model: "api/fixture", input: [] })).at(-1)).toMatchObject({ type: "error", status: 502 });
+	expect((await turn(ws, { model: "api/fixture", input: [] })).at(-1)?.type).toBe("response.completed");
+	expect(websocketCreates).toBe(1);
+	expect(posts).toHaveLength(1);
 });
 
 it.each([undefined, false, true])("preserves caller permission metadata during HTTP recovery (%s)", async (enabled) => {

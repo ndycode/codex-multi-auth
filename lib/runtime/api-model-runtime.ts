@@ -1,3 +1,4 @@
+import { apiBaseUrl } from "../api-region.js";
 import { ClientCancellationError } from "../request/client-cancellation.js";
 import { mapWithConcurrency } from "../concurrency.js";
 import {
@@ -36,6 +37,7 @@ export function apiPickerModel(id: string): RouteModel {
 		description:
 			"API model; optional capabilities are not advertised by model discovery.",
 		supported_reasoning_levels: [],
+		reasoning_levels_known: false,
 		default_reasoning_level: null,
 		shell_type: "shell_command",
 		visibility: "list",
@@ -58,14 +60,50 @@ export function apiPickerModel(id: string): RouteModel {
 	};
 }
 /** Apply current credential policy, never metadata inherited from another credential or old config. */
-function withAccessPrograms(model: RouteModel, route: ApiRouteCredential): RouteModel {
- const result = {...model};
- delete result.available_access_programs;
- const override = route.modelAccessPrograms && Object.hasOwn(route.modelAccessPrograms, model.slug)
-  ? route.modelAccessPrograms[model.slug] : undefined;
- const programs = override ?? route.accessPrograms;
- if (programs) result.available_access_programs = structuredClone(programs);
- return result;
+function withRouteMetadata(model: RouteModel, route: ApiRouteCredential): RouteModel {
+	const profile = route.modelProfiles?.[model.slug];
+	const result: RouteModel = profile
+		? { ...model, ...structuredClone(profile), slug: model.slug, capability_metadata_source: "operator" }
+		: { ...model };
+	const inputModalities = route.modelInputModalities?.[model.slug];
+	if (inputModalities) {
+		result.input_modalities = [...new Set(inputModalities)];
+		result.capability_metadata_source = "operator";
+	}
+	delete result.available_access_programs;
+	const override =
+		route.modelAccessPrograms &&
+		Object.hasOwn(route.modelAccessPrograms, model.slug)
+			? route.modelAccessPrograms[model.slug]
+			: undefined;
+	const programs = override ?? route.accessPrograms;
+	if (programs) result.available_access_programs = structuredClone(programs);
+	const declared = route.modelReasoningLevels?.[model.slug];
+	if (declared) {
+		const levels = [...new Set(declared)];
+		const literalUltra = levels.includes("ultra");
+		const multiAgent =
+			literalUltra ? null : (["max", "xhigh", "high"] as const).find((level) =>
+				levels.includes(level),
+			) ?? null;
+		result.reasoning_levels_known = true;
+		result.capability_metadata_source = "operator";
+		result.multi_agent_reasoning_effort = multiAgent;
+		result.supported_reasoning_levels = [
+			...levels,
+			...(multiAgent && !literalUltra ? ["ultra"] : []),
+		].map((effort) => ({
+			effort,
+			description:
+				effort === "ultra"
+					? "Operator-declared multi-agent mode using a supported API reasoning effort"
+					: `Operator-declared ${effort} reasoning effort`,
+		}));
+		result.default_reasoning_level = levels.includes("medium")
+			? "medium"
+			: (levels[0] ?? null);
+	}
+	return result;
 }
 export async function boundedJson(
 	response: Response,
@@ -88,6 +126,10 @@ export async function boundedJson(
 	}
 	return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
+export interface ApiCatalogFailure {
+ kind: "http" | "timeout" | "network" | "invalid_catalog";
+ status?: number;
+}
 export interface ApiCatalogStatus {
 	id: string;
 	kind: "api" | "zdr";
@@ -95,6 +137,7 @@ export interface ApiCatalogStatus {
 	priority: number;
 	checkedAt: number;
 	error: boolean;
+ failure?: ApiCatalogFailure;
 	availableModels: string[];
 	visibleModels: string[];
 	entitlements: ReturnType<typeof modelEntitlements>[];
@@ -113,7 +156,7 @@ export class ApiModelRuntime {
 	}
 	private readonly cache = new Map<
 		string,
-		{ at: number; models: RouteModel[]; error: boolean }
+		{ at: number; models: RouteModel[]; error: boolean; failure?: ApiCatalogFailure }
 	>();
 	constructor(
 		private readonly fetchImpl: typeof fetch = fetch,
@@ -134,7 +177,7 @@ export class ApiModelRuntime {
 		return createHash("sha256")
 			.update(route.id)
 			.update("\0")
-			.update(route.apiKey)
+			.update(route.apiKey + (route.region === "us" ? "\0" + apiBaseUrl(route) : ""))
 			.digest("hex");
 	}
 	async catalogs(
@@ -157,9 +200,11 @@ export class ApiModelRuntime {
 					) {
 						let models: RouteModel[] = [];
 						let error = false;
+ let failure: ApiCatalogFailure | undefined;
+ let receivedResponse = false;
 						try {
 							const response = await this.fetchImpl(
-								"https://api.openai.com/v1/models",
+								`${apiBaseUrl(route)}/models`,
 								{
 									method: "GET",
 									headers: { authorization: `Bearer ${route.apiKey}` },
@@ -167,7 +212,9 @@ export class ApiModelRuntime {
 									signal: AbortSignal.timeout(15000),
 								},
 							);
+							receivedResponse = true;
 							if (!response.ok) {
+ failure = {kind: "http", status: response.status};
 								await response.body?.cancel();
 								throw Error("API catalog unavailable");
 							}
@@ -191,12 +238,13 @@ export class ApiModelRuntime {
 										]
 									: [],
 							);
-						} catch {
+						} catch (cause) {
+ failure ??= {kind: cause instanceof Error && (cause.name === "TimeoutError" || cause.name === "AbortError") ? "timeout" : receivedResponse ? "invalid_catalog" : "network"};
 							error = true;
 						}
 						if (this.cache.size >= 100)
 							this.cache.delete(this.cache.keys().next().value ?? "");
-						this.cache.set(key, { at: this.now(), models, error });
+						this.cache.set(key, { at: this.now(), models, error, failure });
 					}
 					const entry = this.cache.get(key);
 					if (route.enabled && entry && !entry.error && this.updateDiscovery) {
@@ -217,7 +265,7 @@ export class ApiModelRuntime {
 						kind: route.kind,
 						enabled: route.enabled,
 						priority: route.priority,
-						models: (entry?.models ?? []).map(model => withAccessPrograms(model, route)),
+						models: (entry?.models ?? []).map(model => withRouteMetadata(model, route)),
 						visibleModels: route.visibleModels,
 					};
 					this.snapshots.set(key, snapshot);
@@ -229,7 +277,10 @@ export class ApiModelRuntime {
 							forceProbes,
 						).then((enriched) => {
 							const byId = new Map(enriched.map((m) => [m.slug, m]));
-							snapshot.models = entry.models.map((m) => withAccessPrograms(byId.get(m.slug) ?? m, route));
+							const discoveredModels = entry.models.map((m) => byId.get(m.slug) ?? m);
+							snapshot.models = discoveredModels.map((m) =>
+								withRouteMetadata(m, route),
+							);
 							// The caller receives its own completed result; only the newest refresh may replace the shared cache.
 							if (
 								this.cache.get(key) !== entry ||
@@ -237,7 +288,7 @@ export class ApiModelRuntime {
 								!this.activeKeys.has(key)
 							)
 								return;
-							entry.models = snapshot.models;
+							entry.models = discoveredModels;
 							this.onCatalogUpdated?.();
 						});
 						if (waitForCapabilities) await pending;
@@ -259,6 +310,7 @@ export class ApiModelRuntime {
 				priority: r.priority,
 				checkedAt: c?.at ?? 0,
 				error: c?.error ?? true,
+ failure: c?.failure,
 				availableModels: c?.models.map((m) => m.slug) ?? [],
 				entitlements: (c?.models ?? [])
 					.filter((m) =>
@@ -266,7 +318,7 @@ export class ApiModelRuntime {
 							m.slug,
 						),
 					)
-					.map(model => modelEntitlements(withAccessPrograms(model, r))),
+					.map(model => modelEntitlements(withRouteMetadata(model, r))),
 				visibleModels: (
 					this.visibility.get(this.key(r)) ?? r.visibleModels
 				).filter((id) => c?.models.some((m) => m.slug === id)),
@@ -315,6 +367,7 @@ export class ApiModelRuntime {
 		delete payload.client_metadata;
 		let lastStatus = 503;
 		let lastRejection: Response | undefined;
+		let selectedRegion: "global" | "us" | undefined;
 		for (const candidate of route.candidates) {
 			const credential = routes.find((r) => r.id === candidate.id);
 			if (!credential) continue;
@@ -331,6 +384,10 @@ export class ApiModelRuntime {
 				)
 			)
 				continue;
+			const candidateRegion = credential.region ?? "global";
+			if (selectedRegion !== undefined && selectedRegion !== candidateRegion)
+				continue;
+			selectedRegion ??= candidateRegion;
 			if (signal?.aborted) throw new ClientCancellationError();
 			const controller = new AbortController();
 			const abort = () => controller.abort();
@@ -339,7 +396,7 @@ export class ApiModelRuntime {
 			try {
 				onAttempt?.(routes.indexOf(credential));
 				const response = await this.fetchImpl(
-					"https://api.openai.com/v1/responses",
+					`${apiBaseUrl(credential)}/responses`,
 					{
 						method: "POST",
 						headers: {

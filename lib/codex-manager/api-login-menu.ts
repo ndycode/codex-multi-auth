@@ -1,3 +1,4 @@
+import { apiBaseUrl } from "../api-region.js";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
@@ -8,6 +9,8 @@ import {
 } from "../api-route-store.js";
 import { ApiModelRuntime } from "../runtime/api-model-runtime.js";
 import { select, type MenuItem } from "../ui/select.js";
+
+class ApiSetupDiscoveryError extends Error {}
 
 interface MenuDeps {
 	load: () => Promise<ApiRouteCredential[]>;
@@ -59,14 +62,27 @@ const defaults: MenuDeps = {
 	discover: async (route) => {
 		const runtime = new ApiModelRuntime();
 		const catalogs = await runtime.catalogs([route], true);
-		if (runtime.statuses([route])[0]?.error)
-			throw Error(
-				"Model discovery failed. Check the credential and its API permissions.",
-			);
+		const status = runtime.statuses([route])[0];
+        if (status?.error) {
+            const failure = status.failure;
+            const reason = failure?.kind === "http"
+                ? "Model discovery returned HTTP " + failure.status + "." + (failure.status === 401 ? " Check the API key and selected API region." : failure.status === 403 ? " Check the key's model-list permissions." : failure.status === 429 ? " The API rate limit was reached; retry later." : " Retry when the API is available.")
+                : failure?.kind === "timeout" ? `Model discovery timed out after 15 seconds. Check network access to ${apiBaseUrl(route)} and retry.`
+                : failure?.kind === "network" ? `Model discovery failed before receiving a response. Check network access, DNS, and TLS for ${apiBaseUrl(route)}.`
+                : "The API returned an invalid model catalog.";
+            throw new ApiSetupDiscoveryError(reason);
+        }
 		return catalogs[0]?.models.map((m) => m.slug) ?? [];
 	},
 	log: console.log,
 };
+async function chooseRegion(d: MenuDeps): Promise<"global" | "us" | null> {
+ const region = await d.select([
+  {label: "Global (api.openai.com)", value: "global"},
+  {label: "US (us.api.openai.com)", value: "us"},
+ ], "Choose the API region required by this project");
+ return region === "global" || region === "us" ? region : null;
+}
 async function chooseModels(
 	route: ApiRouteCredential,
 	d: MenuDeps,
@@ -113,6 +129,87 @@ async function chooseModels(
 		}
 	}
 }
+const reasoningLevels = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+async function configureModelMetadata(
+	route: ApiRouteCredential,
+	d: MenuDeps,
+): Promise<ApiRouteCredential | null> {
+	const modelChoice = await d.select(
+		route.visibleModels.map((model) => ({ label: model, value: `model:${model}` })),
+		"Choose a model for operator-declared metadata",
+	);
+	if (!modelChoice?.startsWith("model:")) return null;
+	const model = modelChoice.slice(6);
+	const selected = new Set(route.modelReasoningLevels?.[model] ?? []);
+	const initialImageInput = route.modelInputModalities?.[model]?.includes("image") ?? false;
+	let imageInput = initialImageInput;
+	const inherited = route.modelAccessPrograms?.[model] ?? route.accessPrograms ?? {};
+	let daybreakRed = inherited.cyber?.includes("daybreak_red") ?? false;
+	for (;;) {
+		const choice = await d.select(
+			[
+				{ label: `Save metadata for ${model}`, value: "save" },
+				...reasoningLevels.map((level) => ({
+					label: `${selected.has(level) ? "[x]" : "[ ]"} Reasoning: ${level}`,
+					value: `toggle:${level}`,
+				})),
+				{ label: `${imageInput ? "[x]" : "[ ]"} Image inputs`, value: "image_input" },
+				{ label: `${daybreakRed ? "[x]" : "[ ]"} Daybreak Red access`, value: "daybreak_red" },
+				{ label: "Clear operator-declared metadata", value: "clear" },
+				{ label: "Cancel without saving", value: "cancel" },
+			],
+			`Configure ${model} (operator-declared, separate from API verification)`,
+		);
+		if (!choice || choice === "cancel") return null;
+		const modelReasoningLevels = { ...(route.modelReasoningLevels ?? {}) };
+		const modelInputModalities = structuredClone(route.modelInputModalities ?? {});
+		const modelAccessPrograms = structuredClone(route.modelAccessPrograms ?? {});
+		if (choice === "clear") {
+			delete modelReasoningLevels[model];
+			delete modelInputModalities[model];
+			delete modelAccessPrograms[model];
+			return {
+				...route,
+				modelReasoningLevels: Object.keys(modelReasoningLevels).length ? modelReasoningLevels : undefined,
+				modelInputModalities: Object.keys(modelInputModalities).length ? modelInputModalities : undefined,
+				modelAccessPrograms: Object.keys(modelAccessPrograms).length ? modelAccessPrograms : undefined,
+			};
+		}
+		if (choice === "image_input") {
+			imageInput = !imageInput;
+			continue;
+		}
+		if (choice === "daybreak_red") {
+			daybreakRed = !daybreakRed;
+			continue;
+		}
+		if (choice.startsWith("toggle:")) {
+			const level = choice.slice(7) as typeof reasoningLevels[number];
+			if (!reasoningLevels.includes(level)) continue;
+			if (selected.has(level)) selected.delete(level);
+			else selected.add(level);
+			continue;
+		}
+		const ordered = reasoningLevels.filter((level) => selected.has(level));
+		if (ordered.length) modelReasoningLevels[model] = ordered;
+		else delete modelReasoningLevels[model];
+		if (Object.hasOwn(modelInputModalities, model) || imageInput !== initialImageInput)
+			modelInputModalities[model] = imageInput ? ["text", "image"] : ["text"];
+		const programs = structuredClone(modelAccessPrograms[model] ?? inherited);
+		const cyber = new Set(programs.cyber ?? []);
+		if (daybreakRed) cyber.add("daybreak_red");
+		else cyber.delete("daybreak_red");
+		if (cyber.size) programs.cyber = [...cyber];
+		else delete programs.cyber;
+		modelAccessPrograms[model] = programs;
+		return {
+			...route,
+			modelReasoningLevels: Object.keys(modelReasoningLevels).length ? modelReasoningLevels : undefined,
+			modelInputModalities: Object.keys(modelInputModalities).length ? modelInputModalities : undefined,
+			modelAccessPrograms,
+		};
+	}
+}
 export async function runApiLoginMenu(
 	overrides: Partial<MenuDeps> = {},
 ): Promise<number> {
@@ -137,7 +234,7 @@ export async function runApiLoginMenu(
 			[
 				{ label: "Add API credential", value: "add" },
 				...routes.map((r) => ({
-					label: `${r.label} · ${r.kind.toUpperCase()} · priority ${r.priority} · ${r.visibleModels.length} models${r.enabled ? "" : " · disabled"}`,
+					label: `${r.label} · ${r.kind.toUpperCase()}${r.region === "us" ? " · US" : ""} · priority ${r.priority} · ${r.visibleModels.length} models${r.enabled ? "" : " · disabled"}`,
 					value: r.id,
 				})),
 				{ label: "Back", value: "back" },
@@ -163,7 +260,9 @@ export async function runApiLoginMenu(
 					"Choose the routing pool (ZDR is operator-declared)",
 				);
 				if (kind !== "api" && kind !== "zdr") continue;
-				const apiKey = await d.secret();
+				const region = await chooseRegion(d);
+ if (!region) continue;
+ const apiKey = await d.secret();
 				if (!apiKey) continue;
 				const priority = await d.select(
 					Array.from({ length: 9 }, (_, offset) => {
@@ -178,6 +277,7 @@ export async function runApiLoginMenu(
 					label,
 					kind,
 					apiKey,
+ region,
 					priority: Number(priority),
 					enabled: true,
 					visibleModels: [],
@@ -186,7 +286,9 @@ export async function runApiLoginMenu(
 				const action = await d.select(
 					[
 						{ label: "Choose visible models", value: "models" },
+						{ label: "Configure operator-declared model metadata", value: "metadata" },
 						{ label: "Change priority", value: "priority" },
+ { label: "Change API region", value: "region" },
 						{
 							label: route.probeCapabilities
 								? "Disable billable capability probes"
@@ -199,6 +301,11 @@ export async function runApiLoginMenu(
 					route.label,
 				);
 				if (!action || action === "back") continue;
+				if (action === "metadata") {
+ const configured = await configureModelMetadata(route, d);
+ if (configured === null) continue;
+ route = configured;
+ }
 				if (action === "probes")
 					route = { ...route, probeCapabilities: !route.probeCapabilities };
 				if (action === "toggle") route = { ...route, enabled: !route.enabled };
@@ -213,7 +320,12 @@ export async function runApiLoginMenu(
 					if (value === null) continue;
 					route = { ...route, priority: Number(value) };
 				}
-				if (action !== "models") {
+				if (action === "region") {
+ const region = await chooseRegion(d);
+ if (!region) continue;
+ route = {...route, region, visibleModels: [], knownModels: []};
+ }
+ if (action !== "models" && action !== "region") {
 					const next = routes.map((r) => (r.id === route?.id ? route : r));
 					routes = await d.save(next, routes);
 					continue;
@@ -234,7 +346,7 @@ export async function runApiLoginMenu(
             const changed = error instanceof Error && error.message.startsWith("API route configuration changed");
             let reloaded = false;
             try {routes = await d.load();reloaded = true;} catch { /* Keep the last readable configuration. */ }
-			d.log(changed ? (reloaded
+			d.log(error instanceof ApiSetupDiscoveryError ? error.message + " No credential was saved." : changed ? (reloaded
                 ? "API routes changed in another process; the latest configuration was reloaded. Repeat the edit."
                 : "API routes changed in another process and could not be reloaded. Reopen the menu before editing.") :
 				"API setup did not complete. No partial credential was saved; check the key, permissions, and configuration.",

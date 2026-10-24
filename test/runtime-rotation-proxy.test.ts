@@ -5698,6 +5698,32 @@ it("clamps a reference catalog's context to the serving pool",async()=>{
 });
 
 describe("explicit API model routes",()=>{
+	it.each(["api", "zdr"] as const)("records interrupted %s streams as cancellation", async kind => {
+		const recorded: Record<string, unknown>[] = [];
+		vi.spyOn(runtimePolicy, "createRuntimeUsageRecorder").mockImplementation(() => ({
+			hasRecorded: () => recorded.length > 0,
+			record: async input => { recorded.push(input as unknown as Record<string, unknown>); },
+		}));
+		const { ApiModelRuntime } = await import("../lib/runtime/api-model-runtime.js");
+		const recordFailure = vi.spyOn(ApiModelRuntime.prototype, "recordStreamFailure");
+		const cancel = vi.fn();
+		const routes = [{ id: "fixture", label: "Fixture", kind, apiKey: "fixture-api-key", enabled: true, priority: 0, visibleModels: ["exclusive"] }];
+		const { fetchImpl } = createRecordingFetch(call => call.url.endsWith("/models")
+			? Response.json({ data: [{ id: "exclusive" }] })
+			: new Response(new ReadableStream<Uint8Array>({
+				start(controller) { controller.enqueue(new TextEncoder().encode('data: {"type":"response.created"}\n\n')); },
+				cancel,
+			}), { headers: { "content-type": "text/event-stream" } }));
+		const proxy = await startProxy({ accountManager: new AccountManager(undefined, createStorage(Date.now(), 1)), fetchImpl, options: { readApiRoutes: async () => routes } });
+		const response = await postResponses(proxy, { model: `${kind}/exclusive`, input: "test", stream: true });
+		const reader = response.body!.getReader();
+		expect((await reader.read()).done).toBe(false);
+		await reader.cancel();
+		await vi.waitFor(() => expect(recorded.at(-1)).toMatchObject({ outcome: "cancelled", errorCode: "client_disconnected" }));
+		expect(cancel).toHaveBeenCalledTimes(1);
+		expect(recordFailure).not.toHaveBeenCalled();
+		expect(proxy.getStatus().lastError).toBeNull();
+	});
 	it.each([
 		["api", "response.completed"], ["api", "response.created"],
 		["zdr", "response.completed"], ["zdr", "response.created"],

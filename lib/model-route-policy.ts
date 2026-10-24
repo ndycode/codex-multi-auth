@@ -70,12 +70,17 @@ export function supportsModelSettings(
 	reasoningEffort?: string,
 	serviceTier?: string,
 ): boolean {
+	const effortStatus = isRecord(model.capability_probe_status) && reasoningEffort
+		? model.capability_probe_status[`effort:${reasoningEffort}`]
+		: undefined;
 	return (
 		(!reasoningEffort ||
-			Array.isArray(model.supported_reasoning_levels) &&
-			model.supported_reasoning_levels.some(
-				(l) => isRecord(l) && l.effort === reasoningEffort,
-			)) &&
+			(!["unsupported", "downgraded"].includes(String(effortStatus)) &&
+				(model.reasoning_levels_known === false ||
+					(Array.isArray(model.supported_reasoning_levels) &&
+						model.supported_reasoning_levels.some(
+							(l) => isRecord(l) && l.effort === reasoningEffort,
+						))))) &&
 		(!serviceTier ||
 			serviceTier === "default" ||
 			serviceTier === "auto" ||
@@ -87,7 +92,8 @@ export function supportsModelSettings(
 function visible(catalog: RouteCatalog, model: RouteModel): boolean {
 	if (
 		(isRecord(model.capability_probe_status) &&
-			model.capability_probe_status.responses === "unsupported") ||
+			(model.capability_probe_status.responses === "unsupported" ||
+				model.capability_probe_status.credential === "unavailable")) ||
 		!catalog.enabled ||
 		!model.slug ||
 		/^(api|zdr|speed)\//.test(model.slug)

@@ -484,3 +484,65 @@ it("preserves the final sanitized setting rejection after trying every ZDR crede
  expect(await response.json()).toEqual({error:{code:"invalid_value",param:"reasoning.effort",message:"Upstream rejected the API request."}});
  expect(fetcher.mock.calls.filter(call=>call[1]?.method==="POST")).toHaveLength(2);
 });
+
+it("uses the selected US endpoint for discovery and inference, with separate regional caches", async () => {
+ const urls:string[]=[];
+ const runtime=new ApiModelRuntime(async(url,init)=>{urls.push(String(url));return init?.method==="POST"?new Response("ok"):Response.json({data:[{id:"exclusive"}]});});
+ const global=credential("same");
+ await runtime.catalogs([global]);
+ const us={...global,region:"us" as const};
+ expect((await runtime.request("zdr/exclusive",{},[us])).status).toBe(200);
+ expect(urls).toEqual(["https://api.openai.com/v1/models","https://us.api.openai.com/v1/models","https://us.api.openai.com/v1/responses"]);
+});
+
+
+it("keeps responses failover within the selected credential region", async () => {
+	const urls: string[] = [];
+	const runtime = new ApiModelRuntime(async (url, init) => {
+		urls.push(String(url));
+		return init?.method === "POST"
+			? new Response("busy", { status: 429 })
+			: Response.json({ data: [{ id: "exclusive" }] });
+	});
+	const global = credential("global", "api", 8);
+	const us = { ...credential("us", "api", 9), region: "us" as const };
+	const response = await runtime.request("api/exclusive", {}, [global, us]);
+	expect(response.status).toBe(429);
+	expect(urls.filter((url) => url.endsWith("/responses"))).toEqual([
+		"https://api.openai.com/v1/responses",
+	]);
+});
+
+it("applies operator-declared reasoning levels and Daybreak access to API metadata", async () => {
+ const fetcher=vi.fn(async()=>Response.json({data:[{id:"future-cyber"}]}));
+ const runtime=new ApiModelRuntime(fetcher as typeof fetch);
+ const route={...credential("declared","api",9),visibleModels:["future-cyber"],modelReasoningLevels:{"future-cyber":["low","medium","high","xhigh","max"]},modelAccessPrograms:{"future-cyber":{cyber:["daybreak_red"]}}};
+ const [catalog]=await runtime.catalogs([route]);
+ const [model]=catalog?.models ?? [];
+ expect(model).toMatchObject({slug:"future-cyber",reasoning_levels_known:true,default_reasoning_level:"medium",available_access_programs:{cyber:["daybreak_red"]}});
+ expect(model?.supported_reasoning_levels).toEqual(expect.arrayContaining([expect.objectContaining({effort:"medium"}),expect.objectContaining({effort:"ultra"})]));
+});
+
+it("does not retain operator metadata after it is cleared on the route", async () => {
+	const runtime = new ApiModelRuntime(
+		async () => Response.json({ data: [{ id: "exclusive" }] }),
+		Date.now,
+		undefined,
+		async (models) => models,
+	);
+	const declared = {
+		...credential("declared", "api", 9),
+		modelReasoningLevels: { exclusive: ["medium", "max"] },
+		modelAccessPrograms: { exclusive: { cyber: ["daybreak_red"] } },
+	} satisfies ApiRouteCredential;
+	expect((await runtime.catalogs([declared]))[0]?.models[0]).toMatchObject({
+		capability_metadata_source: "operator",
+		reasoning_levels_known: true,
+		available_access_programs: { cyber: ["daybreak_red"] },
+	});
+	const cleared = { ...declared, modelReasoningLevels: undefined, modelAccessPrograms: undefined };
+	const model = (await runtime.catalogs([cleared]))[0]?.models[0];
+	expect(model).toMatchObject({ reasoning_levels_known: false, supported_reasoning_levels: [] });
+	expect(model).not.toHaveProperty("capability_metadata_source");
+	expect(model).not.toHaveProperty("available_access_programs");
+});

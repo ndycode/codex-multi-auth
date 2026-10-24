@@ -56,6 +56,12 @@ const MAX_CLIENT_SESSIONS = 64;
 // Conservative request ceiling below observed upstream 1009 rejections. This
 // is a local routing guard, not a claim about the upstream's undocumented cap.
 const MAX_UPSTREAM_WEBSOCKET_REQUEST_BYTES = 8 * 1024 * 1024;
+const DEFAULT_BRIDGE_KEEPALIVE_MS = 10_000;
+const DEFAULT_UPSTREAM_SILENCE_MS = 5 * 60_000;
+// Retire pooled API channels before the upstream's observed five-minute lease can
+// expire during a newly submitted turn. Continuations reconstruct their full
+// input on the fresh channel; a sent create is still never replayed.
+const DEFAULT_UPSTREAM_REUSE_MS = 4 * 60_000;
 const terminal = new Set([
 	"response.completed",
 	"response.failed",
@@ -116,6 +122,8 @@ function wireError(code: string, status = 400): Json {
 			message:
 				code === "previous_response_not_found"
 					? "Retry with complete input and no previous_response_id."
+					: code === "upstream_websocket_disconnected"
+						? "Upstream WebSocket closed before completing the response."
 					: "The local WebSocket request could not be served.",
 		},
 	};
@@ -159,6 +167,9 @@ class SocketSession {
 		private readonly onComplete?: () => void,
 		private readonly needsHttpRecovery: () => boolean = () => false,
 		private readonly httpOnly: Map<string, number> = new Map(),
+		private readonly bridgeKeepAliveMs = DEFAULT_BRIDGE_KEEPALIVE_MS,
+		private readonly upstreamSilenceMs = DEFAULT_UPSTREAM_SILENCE_MS,
+		private readonly upstreamReuseMs = DEFAULT_UPSTREAM_REUSE_MS,
 	) {}
 	close() {
 		this.closed = true;
@@ -201,6 +212,20 @@ class SocketSession {
 		// over a WebSocket; its generation outcome can be ambiguous.
 		return this.httpFetch(input, init);
 	}
+	private rememberHttpRecovery(key: string): void {
+		if (!this.httpOnly.has(key) && this.httpOnly.size >= MAX_API_ROUTES) {
+			const oldest = this.httpOnly.keys().next().value;
+			if (oldest) this.httpOnly.delete(oldest);
+		}
+		this.httpOnly.delete(key);
+		this.httpOnly.set(key, Date.now() + HTTP_FALLBACK_COOLDOWN_MS);
+	}
+	private retireChannel(key: string, socket: WebSocket): void {
+		socket.terminate();
+		this.channels.delete(key);
+		for (const [responseId, owner] of this.owners)
+			if (owner === socket) this.owners.delete(responseId);
+	}
 	async fetch(
 		input: string | URL | Request,
 		init: RequestInit,
@@ -237,8 +262,14 @@ class SocketSession {
 		body.type = "response.create";
 		let socket = this.channels.get(key);
 		if (socket?.readyState !== WebSocket.OPEN) {
-			socket?.terminate();
-			this.channels.delete(key);
+			if (socket) this.retireChannel(key, socket);
+			socket = undefined;
+		}
+		if (
+			apiCredential && socket &&
+			Date.now() - (this.openedAt.get(socket) ?? Date.now()) >= this.upstreamReuseMs
+		) {
+			this.retireChannel(key, socket);
 			socket = undefined;
 		}
 		if (
@@ -356,11 +387,7 @@ class SocketSession {
 			);
 			if (rejected) {
 				if (!apiCredential) return rejected;
-				if (!this.httpOnly.has(key) && this.httpOnly.size >= MAX_API_ROUTES) {
-					const oldest = this.httpOnly.keys().next().value;
-					if (oldest) this.httpOnly.delete(oldest);
-				}
-				this.httpOnly.set(key, Date.now() + HTTP_FALLBACK_COOLDOWN_MS);
+				this.rememberHttpRecovery(key);
 				return this.httpRecovery(input, init, body);
 			}
 			this.openedAt.set(socket, Date.now());
@@ -374,6 +401,7 @@ class SocketSession {
 			let eventCount = 0;
 			let sendCompleted = false;
 			let requestTransportErrorCode: TransportErrorCode | undefined;
+			let upstreamSilence: NodeJS.Timeout | undefined;
 			let streamController: ReadableStreamDefaultController<Uint8Array>;
 			const stream = new ReadableStream<Uint8Array>(
 				{
@@ -387,7 +415,15 @@ class SocketSession {
 				},
 				{ highWaterMark: this.maxBytes, size: (chunk) => chunk.byteLength },
 			);
+			const keepalive = setInterval(() => {
+				if (!finished && !bodyCancelled)
+					streamController.enqueue(Buffer.from(": keepalive\n\n"));
+			}, this.bridgeKeepAliveMs);
+			keepalive.unref();
 			const cleanup = () => {
+				clearInterval(keepalive);
+				clearTimeout(upstreamSilence);
+				active.off("message", resetUpstreamSilence);
 				active.off("message", onMessage);
 				active.off("close", onSocketClose);
 				active.off("error", onError);
@@ -401,6 +437,7 @@ class SocketSession {
 				this.channels.delete(key);
                 const cancelled = bodyCancelled || init.signal?.aborted || context.signal.aborted || this.closed;
                 if (!cancelled) {
+					if (apiCredential) this.rememberHttpRecovery(key);
                     this.onDisconnect?.();
                     const at = Date.now();
                     const transport = this.transportEvidence.get(active);
@@ -427,7 +464,13 @@ class SocketSession {
                 const error = cancelled
                     ? new ClientCancellationError()
                     : Error("Upstream WebSocket disconnected");
-                if (accepted) streamController.error(error);
+                if (accepted && !cancelled) {
+                    // Preserve a protocol error through the loopback SSE bridge.
+                    // Destroying its HTTP stream loses the cause at the local WS.
+                    streamController.enqueue(Buffer.from(`data: ${JSON.stringify(wireError("upstream_websocket_disconnected", 502))}\n\n`));
+                    streamController.close();
+                }
+                else if (accepted) streamController.error(error);
                 else if (cancelled) reject(error);
                 else {
                     // A sent create has an ambiguous outcome. Return a terminal
@@ -503,11 +546,19 @@ class SocketSession {
 					active.terminate();
 				}
 			};
+			const resetUpstreamSilence = () => {
+				clearTimeout(upstreamSilence);
+				if (finished) return;
+				upstreamSilence = setTimeout(() => active.terminate(), this.upstreamSilenceMs);
+				upstreamSilence.unref();
+			};
 			active.on("message", onMessage);
 			active.once("close", onSocketClose);
 			active.once("error", onError);
 			init.signal?.addEventListener("abort", abort, { once: true });
 			context.signal.addEventListener("abort", abort, {once:true});
+			active.on("message", resetUpstreamSilence);
+			resetUpstreamSilence();
             if (init.signal?.aborted || context.signal.aborted) {
 				abort();
 				return;
@@ -549,6 +600,9 @@ export class ResponsesWebSocketGateway {
 		private readonly upstreamFetch: typeof fetch,
 		private readonly options: {
 			maxPayloadBytes: number;
+			bridgeKeepAliveMs?: number;
+			upstreamSilenceMs?: number;
+			upstreamReuseMs?: number;
 			upgrade?: (
 				req: IncomingMessage,
 				socket: Duplex,
@@ -558,6 +612,12 @@ export class ResponsesWebSocketGateway {
 		},
 	) {
 		this.maxBytes = options.maxPayloadBytes;
+		if (options.bridgeKeepAliveMs !== undefined && options.bridgeKeepAliveMs < 1)
+			throw Error("bridgeKeepAliveMs must be positive");
+		if (options.upstreamSilenceMs !== undefined && options.upstreamSilenceMs < 1)
+			throw Error("upstreamSilenceMs must be positive");
+		if (options.upstreamReuseMs !== undefined && options.upstreamReuseMs < 1)
+			throw Error("upstreamReuseMs must be positive");
 		this.wss = new WebSocketServer({
 			noServer: true,
 			maxPayload: this.maxBytes,
@@ -714,6 +774,9 @@ export class ResponsesWebSocketGateway {
 			() => { if (scope) this.websocketFailures.delete(scope); },
 			() => this.needsHttpFallback(req),
 			this.apiHandshakeBackoff,
+			this.options.bridgeKeepAliveMs ?? DEFAULT_BRIDGE_KEEPALIVE_MS,
+			this.options.upstreamSilenceMs ?? DEFAULT_UPSTREAM_SILENCE_MS,
+			this.options.upstreamReuseMs ?? DEFAULT_UPSTREAM_REUSE_MS,
 		);
 		let queue = Promise.resolve(),
 			queued = 0,
@@ -740,6 +803,11 @@ export class ResponsesWebSocketGateway {
 			this.sessions.delete(session);
 			this.stats.activeConnections = this.sessions.size;
 		});
+		const bridgeKeepalive = setInterval(() => {
+			if (session.controller && ws.readyState === WebSocket.OPEN) ws.ping();
+		}, this.options.bridgeKeepAliveMs ?? DEFAULT_BRIDGE_KEEPALIVE_MS);
+		bridgeKeepalive.unref();
+		ws.once("close", () => clearInterval(bridgeKeepalive));
 		ws.on("message", (raw, isBinary) => {
 			let event: Json;
 			try {
@@ -755,6 +823,20 @@ export class ResponsesWebSocketGateway {
 				generation++;
 				session.controller?.abort();
 				for (const channel of session.channels.values()) channel.terminate();
+				return;
+			}
+			if (event.type === "response.steer") {
+				const previousId = typeof event.previous_response_id === "string"
+					? event.previous_response_id
+					: undefined;
+				const owner = previousId ? session.owners.get(previousId) : undefined;
+				if (!owner || owner.readyState !== WebSocket.OPEN) {
+					send(wireError("previous_response_not_found"));
+					return;
+				}
+				owner.send(raw.toString(), (error) => {
+					if (error) send(wireError("websocket_steer_failed", 502));
+				});
 				return;
 			}
 			if (event.type !== "response.create") {
