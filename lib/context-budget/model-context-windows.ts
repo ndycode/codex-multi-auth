@@ -61,6 +61,9 @@ export const UNESTIMATED_ROUTABLE_MODELS = [
 	// alongside Luna rather than copying an unverified API/catalog number.
 	"gpt-reserve",
 	"gpt-6.1-sol",
+	// 6.1 Terra has the widest split yet: 500K Codex, 872K max, and 1.05M on
+	// the API page. Same reasoning, so it stays unestimated.
+	"gpt-6.1-terra",
 	"gpt-daybreak-blue-latest",
 	"gpt-daybreak-red-latest",
 ] as const;

@@ -17,7 +17,7 @@ These files are optional model/provider templates for host/plugin configurations
 
 ## Defaults Included
 
-- Current documented OpenAI/Codex model families: GPT-6.1 Sol (`gpt-6.1-sol`, the default), GPT-6 Astra (`gpt-6-astra`), GPT-6 Sol (`gpt-6-sol`) and GPT-6 Luna (`gpt-6-luna`), then `gpt-5.6-sol`/`terra`/`luna`. Retired models (`gpt-5.5`/`gpt-5.5-pro`, `gpt-5.4*`, `gpt-5.3-codex` and older, plus the leaked `gpt-6-astra-aeon` slug) were removed from the picker; their ids still resolve to a replacement, see `docs/configuration.md`
+- Current documented OpenAI/Codex model families: GPT-6.1 Sol (`gpt-6.1-sol`, the default), GPT-6.1 Terra (`gpt-6.1-terra`), GPT-6 Astra (`gpt-6-astra`), GPT-6 Sol (`gpt-6-sol`) and GPT-6 Luna (`gpt-6-luna`), then `gpt-5.6-sol`/`terra`/`luna`. Retired models (`gpt-5.5`/`gpt-5.5-pro`, `gpt-5.4*`, `gpt-5.3-codex` and older, plus the leaked `gpt-6-astra-aeon` slug) were removed from the picker; their ids still resolve to a replacement, see `docs/configuration.md`
 - The GPT-6 entries carry `limit.context: 272000`, the `context_window` in the upstream Codex catalog. The GPT-5.6 entries still carry the pre-cut `372000` and were left alone here; change them only alongside a deliberate review, since the value feeds a picker rather than the context budget guard (which refuses to estimate either family)
 - The Daybreak cyber models resolve at the code level but are deliberately absent from these templates, matching their hidden visibility in the upstream Codex picker
 - `store: false`

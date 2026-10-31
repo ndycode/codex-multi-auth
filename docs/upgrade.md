@@ -1,5 +1,21 @@
 # Upgrade Guide
 
+## GPT-6.1 Terra and Ultrafast pricing
+
+`gpt-6.1-terra` (released 2026-10-26, in the Codex catalog since CLI 0.165.0) is
+now a first-class model: `low`…`ultra` efforts with a `low` default, picker
+entries in both config templates, and a $1 / $5 per 1M token pricing card
+(cached input $0.05, Fast 2x, long context above 272K input at 2x input and
+1.5x output). Before this, any `gpt-6.1-terra` request silently ran
+`gpt-6.1-sol`. An account without Terra retries `gpt-5.6-terra` and then the
+usual staircase. The default model stays `gpt-6.1-sol`.
+
+Responses billed at the `ultrafast` service tier (`gpt-6.1-sol` with
+`service_tier: "ultrafast"`) are now priced at OpenAI's published 6x Standard
+rate instead of being recorded without a cost. Ultrafast requests over 272K
+input stay unpriced because OpenAI does not say whether the long-context
+surcharge stacks with it.
+
 ## Luna Reserve fallback and limits
 
 `gpt-6-luna` and `gpt-5.6-luna` can retry genuine quota 429 responses through

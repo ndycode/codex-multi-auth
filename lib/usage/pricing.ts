@@ -91,7 +91,10 @@ const MODEL_PRICING: Record<string, UsageModelPricing> = {
 	// as 6 Sol but a cheaper cached-input rate ($0.10 vs $0.20) and a separate
 	// cache-write rate this table has no field for — cache writes bill as input
 	// here. Long-context (>272K input) doubles input and cache rates and
-	// multiplies output 1.5x; the Fast tier is the usual 2x.
+	// multiplies output 1.5x; the Fast tier is the usual 2x. Ultrafast
+	// (2026-10-08) is published as "6x Standard". The page does not say whether
+	// the long-context surcharge stacks with it, so Ultrafast has no
+	// long-context row: such a request stays unpriced instead of guessed.
 	"gpt-6.1-sol": {
 		inputUsdPerMillion: 2,
 		outputUsdPerMillion: 10,
@@ -114,6 +117,42 @@ const MODEL_PRICING: Record<string, UsageModelPricing> = {
 					outputUsdPerMillion: 30,
 					cachedInputUsdPerMillion: 0.4,
 					reasoningUsdPerMillion: 30,
+				},
+			},
+			ultrafast: {
+				inputUsdPerMillion: 12,
+				outputUsdPerMillion: 60,
+				cachedInputUsdPerMillion: 0.6,
+				reasoningUsdPerMillion: 60,
+			},
+		},
+	},
+	// GPT-6.1 Terra, from its API model page (read 2026-10-31): $1 / $5 with
+	// cached input at 5% ($0.05). Long-context (>272K input) doubles input and
+	// cache rates and multiplies output 1.5x for the full request; Fast mode is
+	// 2x Standard. The separate cache-write rate bills as input here.
+	"gpt-6.1-terra": {
+		inputUsdPerMillion: 1,
+		outputUsdPerMillion: 5,
+		cachedInputUsdPerMillion: 0.05,
+		reasoningUsdPerMillion: 5,
+		longContext: {
+			inputUsdPerMillion: 2,
+			outputUsdPerMillion: 7.5,
+			cachedInputUsdPerMillion: 0.1,
+			reasoningUsdPerMillion: 7.5,
+		},
+		serviceTiers: {
+			priority: {
+				inputUsdPerMillion: 2,
+				outputUsdPerMillion: 10,
+				cachedInputUsdPerMillion: 0.1,
+				reasoningUsdPerMillion: 10,
+				longContext: {
+					inputUsdPerMillion: 4,
+					outputUsdPerMillion: 15,
+					cachedInputUsdPerMillion: 0.2,
+					reasoningUsdPerMillion: 15,
 				},
 			},
 		},

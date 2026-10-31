@@ -174,6 +174,12 @@ describe("GPT-6.1 Sol", () => {
 							reasoningUsdPerMillion: 30,
 						},
 					},
+					ultrafast: {
+						inputUsdPerMillion: 12,
+						outputUsdPerMillion: 60,
+						cachedInputUsdPerMillion: 0.6,
+						reasoningUsdPerMillion: 60,
+					},
 				},
 			});
 		});
@@ -187,6 +193,34 @@ describe("GPT-6.1 Sol", () => {
 					reasoningTokens: 0,
 				}),
 			).toBeCloseTo(0.01, 10);
+		});
+
+		it("prices the published Ultrafast tier at 6x", () => {
+			// 0.1 x $12 input + 1 x $60 output.
+			expect(
+				estimateUsageCostUsd("gpt-6.1-sol", { ...TOKENS, serviceTier: "ultrafast" }),
+			).toBeCloseTo(61.2, 10);
+			expect(
+				estimateUsageCostUsd("gpt-6.1-sol", {
+					inputTokens: 100_000,
+					cachedInputTokens: 100_000,
+					outputTokens: 0,
+					reasoningTokens: 0,
+					serviceTier: "ultrafast",
+				}),
+			).toBeCloseTo(0.06, 10);
+		});
+
+		it("leaves Ultrafast long context unpriced rather than guessing a stack", () => {
+			expect(
+				estimateUsageCostUsd("gpt-6.1-sol", {
+					inputTokens: 272_001,
+					cachedInputTokens: 0,
+					outputTokens: 0,
+					reasoningTokens: 0,
+					serviceTier: "ultrafast",
+				}),
+			).toBeNull();
 		});
 
 		it("prices the published Fast tier at 2x", () => {

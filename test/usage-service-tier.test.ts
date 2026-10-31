@@ -58,6 +58,15 @@ describe("service tier extraction", () => {
 		expect(usage?.serviceTier).toBe("standard");
 	});
 
+	it("recognises the Ultrafast tier", () => {
+		const usage = extractResponsesUsage({
+			service_tier: "Ultrafast",
+			usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+		});
+		expect(usage?.serviceTier).toBe("ultrafast");
+		expect(isKnownServiceTier("ultrafast")).toBe(true);
+	});
+
 	it("keeps an unrecognised tier as `unknown` rather than dropping it", () => {
 		// Dropping it would silently price the row at standard rates, which is
 		// the under-count this whole change exists to stop.
@@ -96,7 +105,7 @@ describe("service tier pricing", () => {
 	it("reports unknown cost for a tier it has no published rate for", () => {
 		// Not a guess, and not the standard rate. `evaluateBudgetGuard` refuses a
 		// cost budget on null, so this fails closed.
-		for (const tier of ["flex", "batch", "scale", "unknown"] as const) {
+		for (const tier of ["flex", "batch", "scale", "ultrafast", "unknown"] as const) {
 			expect(
 				estimateUsageCostUsd("gpt-6-astra", { ...TOKENS, serviceTier: tier }),
 				`gpt-6-astra @ ${tier}`,
