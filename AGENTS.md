@@ -3,7 +3,7 @@
 Generated: 2026-10-11
 Commit: 40c1e2e7
 Branch: main
-Package version: 2.24.0
+Package version: 2.25.0
 
 ## OVERVIEW
 
