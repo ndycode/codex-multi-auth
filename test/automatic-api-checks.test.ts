@@ -423,9 +423,15 @@ it.each([2,3])("still rejects a true visibility change at route read %s",async c
 it.each([false,true])("revalidates production POST and inventory by visibility membership (remove=%s)",async remove=>{
  const api=await import("../lib/api-route-store.js"),discovery=await import("../lib/runtime/model-discovery-status.js");const {createAutomaticApiCheck}=await import("../lib/runtime/automatic-api-checks.js");
  const history=await fixture(),previous=process.env.CODEX_MULTI_AUTH_DIR;process.env.CODEX_MULTI_AUTH_DIR=join(history,"..");
- let changed=false,posts=0;
+ let change:Promise<void>|undefined,posts=0;
  const transport:typeof fetch=async(input,init)=>{
-  if(String(input).startsWith("https://developers.openai.com/")&&!changed){changed=true;const current=await api.loadApiRoutes();await api.saveApiRoutes(current.map(r=>({...r,visibleModels:remove?["gpt-a"]:[...r.visibleModels].sort()})),undefined,current);}
+  // Every model's documentation fetch waits for the same saved edit. Docs for
+  // both models load concurrently; without this, the second could return while
+  // the first is still saving, and its probe would POST against the old routes.
+  if(String(input).startsWith("https://developers.openai.com/")){
+   change??=(async()=>{const current=await api.loadApiRoutes();await api.saveApiRoutes(current.map(r=>({...r,visibleModels:remove?["gpt-a"]:[...r.visibleModels].sort()})),undefined,current);})();
+   await change;
+  }
   if(init?.method==="POST"){posts++;const body=JSON.parse(String(init.body));return Response.json({reasoning:body.reasoning,service_tier:body.service_tier});}
   if(String(input).endsWith("/models"))return Response.json({data:[{id:"gpt-z"},{id:"gpt-a"}]});return new Response("missing",{status:404});
  };
