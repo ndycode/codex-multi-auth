@@ -287,6 +287,14 @@ describe("realtime voice sideband URL (#750)", () => {
 		expect(configHasTopLevelRealtimeSidebandBaseUrl('[x]\nexperimental_realtime_ws_base_url = "y"\n')).toBe(false);
 	});
 
+	it("does not count its own marked line as a user setting", () => {
+		const marked = `experimental_realtime_ws_base_url = "http://127.0.0.1:1" ${marker}\nmodel = "gpt-5"\n`;
+		expect(configHasTopLevelRealtimeSidebandBaseUrl(marked)).toBe(false);
+		const rebound = rewriteConfigTomlForRuntimeRotationProvider(marked, "http://127.0.0.1:9999");
+		expect(rebound).toContain('experimental_realtime_ws_base_url = "http://127.0.0.1:9999"');
+		expect(rebound).not.toContain("127.0.0.1:1\"");
+	});
+
 	it("strips the sideband line during no-backup recovery", () => {
 		const bound = rewriteConfigTomlForRuntimeRotationProvider('model = "gpt-5"\n', "http://127.0.0.1:9999");
 		expect(restoreConfigTomlFromRuntimeRotationProviderWithoutBackup(bound)).not.toContain("experimental_realtime_ws_base_url");

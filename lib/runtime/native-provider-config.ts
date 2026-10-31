@@ -1,6 +1,7 @@
 import {
 	configHasTopLevelRealtimeSidebandBaseUrl,
 	createRealtimeSidebandConfigLine,
+	removeRealtimeSidebandBaseUrl,
 	tomlStringLiteral,
 } from "./config-toml.js";
 
@@ -45,7 +46,9 @@ export function rewriteNativeProviderConfig(
 		url.pathname !== "/"
 	)
 		throw new Error("Native provider requires a loopback proxy origin");
-	const unbound = withoutNativeBlock(content);
+	// A marked line a custom-provider bind left outside this block is stale;
+	// keeping it beside the block's own line would duplicate the key.
+	const unbound = removeRealtimeSidebandBaseUrl(withoutNativeBlock(content));
 	const lines = rootLines(unbound, false);
 	// The native block is removed wholesale on unbind; a user's own sideband
 	// URL stays outside it and wins.

@@ -2378,6 +2378,9 @@ describe("app bind upstream proxy (#753)", () => {
 		expect(normalizeAppBindUpstreamBaseUrl("http://127.0.0.1:8787/")).toBe("http://127.0.0.1:8787");
 		expect(normalizeAppBindUpstreamBaseUrl(" http://127.0.0.1:8787/backend-api ")).toBe("http://127.0.0.1:8787/backend-api");
 		expect(normalizeAppBindUpstreamBaseUrl("http://[::1]:8787")).toBe("http://[::1]:8787");
+		// WHATWG URL drops a default port; the result must still pass its own check.
+		expect(normalizeAppBindUpstreamBaseUrl("http://127.0.0.1:80")).toBe("http://127.0.0.1:80");
+		expect(normalizeAppBindUpstreamBaseUrl(normalizeAppBindUpstreamBaseUrl("http://127.0.0.1:80/x/"))).toBe("http://127.0.0.1:80/x");
 		for (const url of [
 			"http://localhost:8787",
 			"https://127.0.0.1:8787",
@@ -2577,9 +2580,28 @@ describe("macOS LaunchAgent lifecycle (#748)", () => {
 		});
 	});
 
+	it("unloads the job and removes its plist when the router never comes up", async () => {
+		const f = await macFixture("codex-app-bind-launchd-error-");
+		const failing: LaunchctlRunner = async (args) => {
+			f.calls.push(args);
+			if (args[0] === "bootstrap") {
+				await writeFile(f.paths.statusPath, `${JSON.stringify({ state: "error", pid: process.pid, lastError: "proxy boom" })}\n`);
+				return { code: 0, stderr: "" };
+			}
+			return { code: 3, stderr: "" };
+		};
+
+		await expect(bindCodexAppRuntimeRotation({ ...f.options, runLaunchctl: failing })).rejects.toThrow(/proxy boom/);
+
+		expect(f.calls.map((args) => args[0])).toEqual(["bootout", "bootstrap", "bootout"]);
+		expect(existsSync(f.paths.launchAgentPath ?? "")).toBe(false);
+	});
+
 	it("never calls launchctl when the router is not spawned", async () => {
 		const f = await macFixture("codex-app-bind-launchd-nospawn-");
-		await bindCodexAppRuntimeRotation({ ...f.options, spawnDetached: false }).catch(() => undefined);
+		await expect(
+			bindCodexAppRuntimeRotation({ ...f.options, spawnDetached: false }),
+		).rejects.toThrow(/runtime router port/);
 		await unbindCodexAppRuntimeRotation({ ...f.options, spawnDetached: false });
 		expect(f.calls).toEqual([]);
 	});

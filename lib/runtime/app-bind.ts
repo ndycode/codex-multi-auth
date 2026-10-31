@@ -729,7 +729,11 @@ export function normalizeAppBindUpstreamBaseUrl(raw: string): string {
 			"App bind upstream must use HTTP with a numeric loopback host (127.0.0.0/8 or [::1]), an explicit port, and no credentials, query, or fragment.",
 		);
 	}
-	return parsed.toString().replace(/\/$/, "");
+	// WHATWG URL drops a default `:80`, which would make the result fail this
+	// same check when it is read back (reset-runtime, the router). Rebuild it
+	// with the port spelled out so normalization is idempotent.
+	const path = parsed.pathname.replace(/\/+$/, "");
+	return `http://${parsed.hostname}:${parsed.port || "80"}${path}`;
 }
 
 /**
@@ -1813,12 +1817,23 @@ async function bindCodexAppRuntimeRotationLocked(
 	// Write bootstrap state before spawning so router can read --state on startup
 	await atomicWriteFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`);
 	const startedRouter = await maybeStartRouter(state, options);
-	const router = startedRouter
-		? await waitForRouterStatus(
-				state.statusPath,
-				resolveRouterReadyTimeoutMs(options),
-			)
-		: await readRouterStatus(state.statusPath);
+	let router: AppBindRouterStatus | null;
+	try {
+		router = startedRouter
+			? await waitForRouterStatus(
+					state.statusPath,
+					resolveRouterReadyTimeoutMs(options),
+				)
+			: await readRouterStatus(state.statusPath);
+	} catch (error) {
+		// A KeepAlive job whose router cannot start would crash-loop now and
+		// again at every login. Unload it and drop its plist before failing.
+		if (startedRouter && launchd) {
+			await bootoutLaunchAgent(options).catch(() => undefined);
+			await removeAppBindStartup({ startupPath: null, launchAgentPath: state.launchAgentPath });
+		}
+		throw error;
+	}
 	const routerBaseUrl = router?.baseUrl ?? null;
 	const routerIsUsable =
 		!!routerBaseUrl &&

@@ -71,9 +71,15 @@ function isOwnRealtimeSidebandLine(line: string): boolean {
 	);
 }
 
-/** Whether the root table already sets the realtime sideband URL. */
+/**
+ * Whether the user set the realtime sideband URL in the root table. A marked
+ * line an earlier bind wrote is ours, not a user setting, so it never blocks
+ * writing the current proxy's URL.
+ */
 export function configHasTopLevelRealtimeSidebandBaseUrl(rawConfig: string): boolean {
-	return extractTopLevelLine(rawConfig, REALTIME_SIDEBAND_KEY) !== null;
+	return (
+		extractTopLevelLine(removeRealtimeSidebandBaseUrl(rawConfig), REALTIME_SIDEBAND_KEY) !== null
+	);
 }
 
 export function removeRealtimeSidebandBaseUrl(rawConfig: string): string {

@@ -1064,3 +1064,35 @@ it.each([
 	expect(f.calls[1]).not.toHaveProperty("previous_response_id");
 	expect(f.calls[1]?.input).toEqual([...initial, kept, followUp]);
 });
+
+it("answers a Responses upgrade with 426 when the gateway does not serve Responses sockets", async () => {
+	const gateway = new ResponsesWebSocketGateway(fetch, { maxPayloadBytes: 16384 });
+	const server = createServer((req, res) => {
+		gateway.handle(req, async () => {
+			// Authenticated unknown paths are 404; anything else is unauthorized.
+			res.writeHead(req.headers.authorization === "Bearer fixture-local" ? 404 : 401);
+			res.end();
+		});
+	});
+	const baseUrl = await listen(server);
+	gateway.attach(server, baseUrl, { responses: false });
+	cleanups.push(async () => {
+		gateway.close();
+		server.closeAllConnections();
+		await new Promise<void>((r) => server.close(() => r()));
+	});
+	const ws = new WebSocket(baseUrl.replace("http:", "ws:") + "/responses", {
+		headers: { authorization: "Bearer fixture-local" },
+	});
+	// A rejected handshake leaves the client CONNECTING; terminating it then
+	// emits an error that is expected here.
+	ws.on("error", () => undefined);
+	cleanups.push(async () => ws.terminate());
+	const [, response] = (await once(ws, "unexpected-response")) as [unknown, IncomingMessage];
+	expect(response.statusCode).toBe(426);
+	expect(response.headers.connection).toBe("close");
+	expect(response.headers["content-type"]).toBe("application/json; charset=utf-8");
+	const chunks: Buffer[] = [];
+	for await (const chunk of response) chunks.push(Buffer.from(chunk));
+	expect(JSON.parse(Buffer.concat(chunks).toString("utf8")).error.code).toBe("runtime_rotation_proxy_http_required");
+});

@@ -34,6 +34,10 @@ const CALL_ID_PATTERN = /^(?:rtc_[A-Za-z0-9_-]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]
 const DEFAULT_CALL_TTL_MS = 10 * 60_000;
 const DEFAULT_MAX_CALLS = 64;
 const SIDEBAND_HANDSHAKE_TIMEOUT_MS = 15_000;
+/** Bytes queued toward a slow peer before the relay stops reading the other side. */
+export const RELAY_HIGH_WATER_BYTES = 4 * 1024 * 1024;
+/** Reading resumes once the queue has drained below this. */
+export const RELAY_LOW_WATER_BYTES = 1024 * 1024;
 /** Request headers that describe the local hop, or carry local credentials. */
 const SIDEBAND_DROPPED_HEADERS = new Set([
 	"host",
@@ -159,8 +163,9 @@ export interface RealtimeCallCredential {
 
 /**
  * Remembers which managed account created each call, so the sideband socket
- * joins with that account. Bounded in size and age: Codex attaches the
- * sideband right after creating the call.
+ * joins with that account. Bounded in size and age: an entry lives ten
+ * minutes from the call's creation or its last sideband connect/disconnect,
+ * so a sideband that reconnects within that window keeps its account.
  */
 export class RealtimeCallRegistry {
 	private readonly calls = new Map<string, { credential: RealtimeCallCredential; expiresAt: number }>();
@@ -305,6 +310,62 @@ function closeQuietly(socket: WebSocket, code: number, reason: Buffer): void {
 	}
 }
 
+function rawDataBytes(data: WebSocket.RawData): number {
+	if (Array.isArray(data)) return data.reduce((total, chunk) => total + chunk.byteLength, 0);
+	return data.byteLength;
+}
+
+/** The parts of a WebSocket the backpressured forwarder needs. */
+export interface RelaySocket {
+	readonly readyState: number;
+	send(data: WebSocket.RawData, options: { binary: boolean }, callback: (error?: Error) => void): void;
+	pause(): void;
+	resume(): void;
+}
+
+/**
+ * Forward frames from `source` to `target` without unbounded buffering.
+ * `maxPayload` bounds a single frame, not the total waiting for a slow
+ * reader, so count bytes until `send` reports them flushed and stop reading
+ * `source` while too much is queued.
+ */
+export function createBackpressuredForwarder(
+	source: RelaySocket,
+	target: RelaySocket,
+	limits: { highWaterBytes: number; lowWaterBytes: number } = {
+		highWaterBytes: RELAY_HIGH_WATER_BYTES,
+		lowWaterBytes: RELAY_LOW_WATER_BYTES,
+	},
+): { forward: (data: WebSocket.RawData, isBinary: boolean) => void; readonly pendingBytes: number; readonly paused: boolean } {
+	let pending = 0;
+	let paused = false;
+	const forward = (data: WebSocket.RawData, isBinary: boolean) => {
+		if (target.readyState !== WebSocket.OPEN) return;
+		const size = rawDataBytes(data);
+		pending += size;
+		target.send(data, { binary: isBinary }, () => {
+			pending -= size;
+			if (paused && pending <= limits.lowWaterBytes) {
+				paused = false;
+				source.resume();
+			}
+		});
+		if (!paused && pending > limits.highWaterBytes) {
+			paused = true;
+			source.pause();
+		}
+	};
+	return {
+		forward,
+		get pendingBytes() {
+			return pending;
+		},
+		get paused() {
+			return paused;
+		},
+	};
+}
+
 export interface RealtimeSidebandRelayOptions {
 	registry: RealtimeCallRegistry;
 	upstreamBaseUrl?: string;
@@ -335,22 +396,33 @@ export function createRealtimeSidebandRelay(options: RealtimeSidebandRelayOption
 	const pairs = new Set<{ client: WebSocket; upstream: WebSocket }>();
 	let closed = false;
 
-	const pipe = (client: WebSocket, upstream: WebSocket, early: Array<[WebSocket.RawData, boolean]>) => {
+	const pipe = (
+		client: WebSocket,
+		upstream: WebSocket,
+		early: Array<[WebSocket.RawData, boolean]>,
+		refresh: () => void,
+	) => {
 		const pair = { client, upstream };
 		pairs.add(pair);
-		const forward = (target: WebSocket) => (data: WebSocket.RawData, isBinary: boolean) => {
-			if (target.readyState === WebSocket.OPEN) target.send(data, { binary: isBinary });
-		};
-		const toClient = forward(client);
+		const toClient = createBackpressuredForwarder(upstream, client).forward;
+		const toUpstream = createBackpressuredForwarder(client, upstream).forward;
 		for (const [data, isBinary] of early.splice(0)) toClient(data, isBinary);
-		client.on("message", forward(upstream));
+		client.on("message", toUpstream);
 		upstream.on("message", toClient);
-		client.on("close", (code, reason) => {
+		let ended = false;
+		const end = () => {
+			if (ended) return;
+			ended = true;
 			pairs.delete(pair);
+			// Keep the call joinable for a reconnect after this socket drops.
+			refresh();
+		};
+		client.on("close", (code, reason) => {
+			end();
 			closeQuietly(upstream, code, reason);
 		});
 		upstream.on("close", (code, reason) => {
-			pairs.delete(pair);
+			end();
 			closeQuietly(client, code, reason);
 		});
 		client.on("error", () => upstream.terminate());
@@ -431,9 +503,15 @@ export function createRealtimeSidebandRelay(options: RealtimeSidebandRelayOption
 			upstream.terminate();
 			return true;
 		}
+		// The call is in use: restart its lifetime so a later reconnect still
+		// finds the account that created it.
+		const refresh = () => {
+			if (!closed) options.registry.remember(target.callId, credential);
+		};
+		refresh();
 		wss.handleUpgrade(req, socket, head, (client) => {
 			upstream.off("message", holdEarly);
-			pipe(client, upstream, early);
+			pipe(client, upstream, early, refresh);
 		});
 		return true;
 	};

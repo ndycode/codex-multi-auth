@@ -1225,6 +1225,23 @@ describe("app bind upstream proxy (#753)", () => {
 		expect(bindCodexAppMock).not.toHaveBeenCalled();
 	});
 
+	it("keeps the upstream through a native reset-runtime", async () => {
+		const { deps, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		const status = (await bindCodexAppMock()).status;
+		if (!status.state) throw Error("Missing fixture state");
+		status.state.nativeOpenai = true;
+		status.state.catalogAccount = { email: "reference@example.com", accountId: "reference" };
+		status.state.upstreamBaseUrl = "http://127.0.0.1:8787";
+		deps.getCodexAppBindStatus = async () => status;
+		bindCodexAppMock.mockClear();
+		expect(await runRotationCommand(["reset-runtime"], deps)).toBe(0);
+		expect(bindCodexAppMock).toHaveBeenCalledWith({
+			nativeOpenai: true,
+			catalogAccount: status.state.catalogAccount,
+			upstreamBaseUrl: "http://127.0.0.1:8787",
+		});
+	});
+
 	it("keeps the upstream through reset-runtime", async () => {
 		const { deps, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
 		const status = (await bindCodexAppMock()).status;
@@ -1272,6 +1289,27 @@ describe("app bind restart warnings (#748)", () => {
 			appBindRestarted: true,
 			warnings: ["launchctl bootout failed (exit 5)"],
 		});
+	});
+
+	it("prints warnings from rotation enable and disable", async () => {
+		const previous = process.env.CODEX_MULTI_AUTH_APP_BIND_INSTALL;
+		process.env.CODEX_MULTI_AUTH_APP_BIND_INSTALL = "1";
+		const { deps, errors, bindCodexAppMock, unbindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		const bound = await bindCodexAppMock();
+		const unbound = await unbindCodexAppMock();
+		bindCodexAppMock.mockResolvedValueOnce({ ...bound, warnings: ["launchctl bootout failed (exit 5)"] });
+		unbindCodexAppMock.mockResolvedValueOnce({ ...unbound, warnings: ["runtime router (pid 9) did not stop; continuing cleanup"] });
+		try {
+			expect(await runRotationCommand(["enable"], deps)).toBe(0);
+			expect(await runRotationCommand(["disable"], deps)).toBe(0);
+		} finally {
+			if (previous === undefined) delete process.env.CODEX_MULTI_AUTH_APP_BIND_INSTALL;
+			else process.env.CODEX_MULTI_AUTH_APP_BIND_INSTALL = previous;
+		}
+		expect(errors).toContain("Codex app unbind completed with warnings:");
+		expect(errors).toContain("  - runtime router (pid 9) did not stop; continuing cleanup");
+		expect(errors).toContain("Codex app bind completed with warnings:");
+		expect(errors).toContain("  - launchctl bootout failed (exit 5)");
 	});
 
 	it("prints unbind-app warnings", async () => {

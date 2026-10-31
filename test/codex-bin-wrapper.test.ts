@@ -2872,6 +2872,46 @@ describe("codex bin wrapper", () => {
 
 	// Reproduction 1 and 2 from #659, from the server's own point of view: the two
 	// canonical-home entries that the shadow mirror destroyed.
+
+	it.each([
+		["keeps a sideband URL the user configured", 'experimental_realtime_ws_base_url = "https://example.test/voice"\nmodel_provider = "openai"\n', false],
+		["replaces a sideband line an earlier bind wrote", 'experimental_realtime_ws_base_url = "http://127.0.0.1:1" # codex-multi-auth realtime sideband\nmodel_provider = "openai"\n', true],
+	])("%s on the canonical Codex home (#750)", async (_label, config, expectOverride) => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		// The stub config-toml module has no sideband helper; use the real one.
+		const distLib = join(fixtureRoot, "dist", "lib");
+		copyFileSync(join(repoRootDir, "dist", "lib", "runtime", "config-toml.js"), join(distLib, "runtime", "config-toml.js"));
+		copyFileSync(join(repoRootDir, "dist", "lib", "runtime-constants.js"), join(distLib, "runtime-constants.js"));
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), config, "utf8");
+
+		const result = runWrapper(fixtureRoot, ["app-server", "--listen", "stdio://"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "proxy-marker.txt"),
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER_PID: "1",
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		if (result.status !== 0) throw new Error(output);
+		const forwarded = output.split(/\r?\n/).find((line) => line.startsWith("FORWARDED:")) ?? "";
+		if (expectOverride) {
+			expect(forwarded).toMatch(/experimental_realtime_ws_base_url="http:\/\/127\.0\.0\.1:\d+"/);
+			expect(forwarded).not.toContain("127.0.0.1:1\"");
+		} else {
+			expect(forwarded).not.toContain("experimental_realtime_ws_base_url");
+		}
+	});
 	it("gives app-server a real app-server-control directory and the live thread index (#659)", async () => {
 		const fixtureRoot = createWrapperFixture();
 		createRuntimeRotationProxyFixtureModule(fixtureRoot);

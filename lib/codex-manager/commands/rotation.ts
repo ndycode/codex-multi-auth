@@ -899,6 +899,10 @@ export async function runRotationCommand(
 				const result = await deps.bindCodexApp();
 				logInfo(result.message);
 				logInfo(formatAppBindStatus(result.status));
+				if (result.warnings?.length) {
+					logError("Codex app bind completed with warnings:");
+					reportAppBindWarnings(result.warnings, logError);
+				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				logError(`Codex app bind failed: ${message}`);
@@ -915,6 +919,10 @@ export async function runRotationCommand(
 				const result = await deps.unbindCodexApp();
 				logInfo(result.message);
 				logInfo(formatAppBindStatus(result.status));
+				if (result.warnings?.length) {
+					logError("Codex app unbind completed with warnings:");
+					reportAppBindWarnings(result.warnings, logError);
+				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				logError(`Codex app unbind failed: ${message}`);

@@ -3250,10 +3250,23 @@ async function handleRequestInner(
 				}
 				// A timeout may occur after generation; do not retry within this request.
 				// A realtime call may already exist upstream; never create a second one.
-				if (isImageRequest || isTranscribeRequest || isRealtimeCallRequest) {
-					const operation = isImageRequest ? "image" : isTranscribeRequest ? "transcribe" : "realtime";
+				// A web search outage is not a reason to cool inference accounts.
+				if (isImageRequest || isTranscribeRequest || isRealtimeCallRequest || isSearchRequest) {
+					const operation = isImageRequest
+						? "image"
+						: isTranscribeRequest
+							? "transcribe"
+							: isRealtimeCallRequest
+								? "realtime"
+								: "search";
 					const errorCode = `${operation}_upstream_transport_error`;
-					const label = isImageRequest ? "Image" : isTranscribeRequest ? "Transcription" : "Realtime call";
+					const label = isImageRequest
+						? "Image"
+						: isTranscribeRequest
+							? "Transcription"
+							: isRealtimeCallRequest
+								? "Realtime call"
+								: "Web search";
 					writeJson(res, 502, {
 						error: {
 							code: errorCode,
@@ -3346,6 +3359,23 @@ async function handleRequestInner(
    }
 			if (upstream.status === HTTP_STATUS.TOO_MANY_REQUESTS) {
 				const bodyText = await readErrorBody(upstream, state.streamStallTimeoutMs);
+				// Web search and voice limits belong to those endpoints. Rate-limiting
+				// the shared `codex` family would take the account out of the
+				// Responses pool, and replaying would only spread the limit across
+				// every account. A rejected call creation also never created a call.
+				if (isSearchRequest || isRealtimeCallRequest) {
+					res.writeHead(upstream.status, responseHeadersForClient(upstream.headers));
+					res.end(bodyText);
+					await usageRecorder.record({
+						outcome: "failure",
+						statusCode: upstream.status,
+						errorCode:
+							extractErrorCodeFromBody(bodyText) ??
+							(isSearchRequest ? "search_rate_limited" : "realtime_rate_limited"),
+						account: refreshed.account,
+					});
+					return;
+				}
 				if (isTranscribeRequest) {
 					const now = state.now();
 					const retryAfterMs =

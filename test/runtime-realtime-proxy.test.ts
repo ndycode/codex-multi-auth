@@ -8,8 +8,12 @@ import { HTTP_STATUS, OPENAI_HEADERS } from "../lib/constants.js";
 import * as runtimePolicy from "../lib/policy/runtime-policy.js";
 import { resetRefreshQueue } from "../lib/refresh-queue.js";
 import {
+	RELAY_HIGH_WATER_BYTES,
+	RELAY_LOW_WATER_BYTES,
 	RealtimeCallRegistry,
 	RealtimeCallRequestError,
+	createBackpressuredForwarder,
+	type RelaySocket,
 	isRealtimeCallPath,
 	parseRealtimeCallId,
 	resolveRealtimeSidebandTarget,
@@ -330,6 +334,35 @@ describe("runtime proxy voice calls (#750)", () => {
 		for (const account of accountManager.getAccountsSnapshot()) expect(account.coolingDownUntil).toBeUndefined();
 	});
 
+	it("passes a voice 429 through without rate-limiting the account for inference", async () => {
+		const { calls, fetchImpl } = createRecordingFetch(() =>
+			Response.json({ error: { code: "realtime_rate_limited" } }, { status: 429 }),
+		);
+		const { proxy, accountManager } = await startProxy(fetchImpl);
+
+		const response = await createCall(proxy);
+
+		expect(response.status).toBe(429);
+		expect(calls).toHaveLength(1);
+		for (const account of accountManager.getAccountsSnapshot()) {
+			expect(account.coolingDownUntil).toBeUndefined();
+			expect(account.rateLimitResetTimes ?? {}).toEqual({});
+		}
+	});
+
+	it("does not replay a call creation whose transport failed", async () => {
+		const { calls, fetchImpl } = createRecordingFetch(() => {
+			throw new TypeError("fetch failed");
+		});
+		const { proxy } = await startProxy(fetchImpl);
+
+		const response = await createCall(proxy);
+
+		expect(response.status).toBe(502);
+		expect((await response.json()).error.code).toBe("realtime_upstream_transport_error");
+		expect(calls).toHaveLength(1);
+	});
+
 	it("rejects a malformed call upload before contacting upstream", async () => {
 		const { calls, fetchImpl } = createRecordingFetch(() => callCreated());
 		const { proxy } = await startProxy(fetchImpl);
@@ -419,6 +452,44 @@ describe("runtime proxy voice calls (#750)", () => {
 		expect(await connectSideband(proxy, `/v1/live/${CALL_ID}`)).toBe(localStatus);
 	});
 
+	it("refuses a sideband after the call's registry entry expires", async () => {
+		const upstream = await startSidebandUpstream();
+		let clock = Date.now();
+		const { fetchImpl } = createRecordingFetch(() => callCreated());
+		const { proxy } = await startProxy(fetchImpl, {
+			realtimeSidebandUpstreamBaseUrl: upstream.baseUrl,
+			now: () => clock,
+		});
+		await createCall(proxy);
+		clock += 10 * 60_000;
+
+		expect(await connectSideband(proxy, `/v1/live/${CALL_ID}`)).toBe(404);
+		expect(upstream.handshakes).toHaveLength(0);
+	});
+
+	it("keeps a call joinable for a reconnect after its sideband was in use", async () => {
+		const upstream = await startSidebandUpstream();
+		let clock = Date.now();
+		const { fetchImpl } = createRecordingFetch(() => callCreated());
+		const { proxy } = await startProxy(fetchImpl, {
+			realtimeSidebandUpstreamBaseUrl: upstream.baseUrl,
+			now: () => clock,
+		});
+		await createCall(proxy);
+		clock += 9 * 60_000;
+		const first = await connectSideband(proxy, `/v1/live/${CALL_ID}`);
+		if (typeof first === "number") throw new Error(`sideband rejected with ${first}`);
+		const closed = once(upstream.peers[0] as WebSocket, "close");
+		first.close(1000);
+		await closed;
+
+		// Past the original ten minutes, but within ten of the last disconnect.
+		clock += 6 * 60_000;
+		const second = await connectSideband(proxy, `/v1/live/${CALL_ID}`);
+		expect(typeof second).not.toBe("number");
+		expect(upstream.handshakes).toHaveLength(2);
+	});
+
 	it("keeps Responses on HTTP streaming outside native binds", async () => {
 		const { fetchImpl } = createRecordingFetch(() => callCreated());
 		const { proxy } = await startProxy(fetchImpl);
@@ -430,5 +501,60 @@ describe("runtime proxy voice calls (#750)", () => {
 	it("rejects a non-loopback http sideband upstream", async () => {
 		const { fetchImpl } = createRecordingFetch(() => callCreated());
 		await expect(startProxy(fetchImpl, { realtimeSidebandUpstreamBaseUrl: "http://example.test/v1" })).rejects.toThrow();
+	});
+});
+
+describe("sideband backpressure", () => {
+	function fakeSocket() {
+		const pendingCallbacks: Array<() => void> = [];
+		const socket = {
+			readyState: WebSocket.OPEN,
+			paused: false,
+			sent: 0,
+			send(_data: WebSocket.RawData, _options: { binary: boolean }, callback: (error?: Error) => void) {
+				socket.sent += 1;
+				pendingCallbacks.push(() => callback());
+			},
+			pause() {
+				socket.paused = true;
+			},
+			resume() {
+				socket.paused = false;
+			},
+			flush(count = pendingCallbacks.length) {
+				for (const callback of pendingCallbacks.splice(0, count)) callback();
+			},
+		};
+		return socket satisfies RelaySocket & Record<string, unknown>;
+	}
+
+	it("stops reading a peer while the other side cannot keep up, and resumes when it drains", () => {
+		const source = fakeSocket();
+		const stalled = fakeSocket();
+		const forwarder = createBackpressuredForwarder(source, stalled);
+		const chunk = Buffer.alloc(1024 * 1024);
+
+		for (let index = 0; index <= RELAY_HIGH_WATER_BYTES / chunk.byteLength; index += 1) {
+			forwarder.forward(chunk, true);
+		}
+		expect(forwarder.pendingBytes).toBeGreaterThan(RELAY_HIGH_WATER_BYTES);
+		expect(source.paused).toBe(true);
+
+		// Draining to just above the low-water mark keeps it paused.
+		const aboveLow = Math.floor((forwarder.pendingBytes - RELAY_LOW_WATER_BYTES) / chunk.byteLength) - 1;
+		stalled.flush(aboveLow);
+		expect(source.paused).toBe(true);
+		stalled.flush();
+		expect(forwarder.pendingBytes).toBe(0);
+		expect(source.paused).toBe(false);
+	});
+
+	it("never queues frames toward a socket that is no longer open", () => {
+		const source = fakeSocket();
+		const closedTarget = { ...fakeSocket(), readyState: WebSocket.CLOSED };
+		const forwarder = createBackpressuredForwarder(source, closedTarget);
+		forwarder.forward(Buffer.alloc(16), false);
+		expect(forwarder.pendingBytes).toBe(0);
+		expect(closedTarget.sent).toBe(0);
 	});
 });
