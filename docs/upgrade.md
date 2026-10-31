@@ -7,8 +7,10 @@ now a first-class model: `low`…`ultra` efforts with a `low` default, picker
 entries in both config templates, and a $1 / $5 per 1M token pricing card
 (cached input $0.05, Fast 2x, long context above 272K input at 2x input and
 1.5x output). Before this, any `gpt-6.1-terra` request silently ran
-`gpt-6.1-sol`. An account without Terra retries `gpt-5.6-terra` and then the
-usual staircase. The default model stays `gpt-6.1-sol`.
+`gpt-6.1-sol`. With `fallbackOnUnsupportedCodexModel` enabled (off by
+default), an account without Terra retries `gpt-5.6-terra` and then the usual
+staircase; with the default setting the unsupported-model error is returned.
+The default model stays `gpt-6.1-sol`.
 
 Responses billed at the `ultrafast` service tier (`gpt-6.1-sol` with
 `service_tier: "ultrafast"`) are now priced at OpenAI's published 6x Standard
