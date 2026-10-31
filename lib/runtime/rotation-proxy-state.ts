@@ -56,6 +56,7 @@ export interface RotationProxyStateInit {
 	 * the pool and returning the exhaustion 503.
 	 */
 	modelCapacityRetryMs: number;
+	apiAdmissionWaitMs?: number;
 	tokenInvalidationCooldownMs: number;
 	minRotationIntervalMs: number;
 	pidOffsetEnabled: boolean;

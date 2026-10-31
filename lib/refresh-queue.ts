@@ -174,7 +174,7 @@ export class RefreshQueue {
       try {
         lease = await this.leaseCoordinator.acquire(refreshToken);
       } catch (error) {
-        log.warn("Refresh lease acquire failed; falling back to local refresh", {
+        log.warn("Refresh lease acquire failed; refresh blocked", {
           tokenSuffix: tokenFingerprint(refreshToken),
           error: (error as Error)?.message ?? String(error),
         });
@@ -182,8 +182,10 @@ export class RefreshQueue {
         if (supersedingPromise) {
           return supersedingPromise;
         }
-        markStage("refresh");
-        return this.executeRefreshWithRotationTracking(refreshToken);
+        return { type: "failed", reason: "coordination_error", message: "Refresh lease acquisition failed." };
+      }
+      if (lease.role === "blocked" || (lease.role === "follower" && !lease.result)) {
+        return { type: "failed", reason: "coordination_error", message: "Refresh blocked by lease coordination." };
       }
       if (lease.role === "follower" && lease.result) {
         log.info("Using refresh result from cross-process lease", {

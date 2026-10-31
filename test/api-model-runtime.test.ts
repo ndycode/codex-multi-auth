@@ -3,7 +3,7 @@ import { ApiModelRuntime } from "../lib/runtime/api-model-runtime.js";
 import type { ApiRouteCredential } from "../lib/api-route-store.js";
 const credential = (
 	id: string,
-	kind: "api" | "zdr" = "zdr",
+	kind: "api" | "zdr" | "psp" = "zdr",
 	priority = 0,
 ): ApiRouteCredential => ({
 	id,
@@ -444,7 +444,7 @@ it("enriches capability metadata when a failed cold catalog recovers",async()=>{
  const enrich=vi.fn(async(models:import('../lib/model-route-policy.js').RouteModel[])=>models.map(m=>({...m,supported_reasoning_levels:[{effort:'high'}]})));
  const runtime=new ApiModelRuntime(fetcher as typeof fetch,()=>now,undefined,enrich);
  await runtime.request('zdr/exclusive',{reasoning:{effort:'high'}},[credential('private')]);
- now+=6000;healthy=true;
+ now+=30_000;healthy=true;
  expect((await runtime.request('zdr/exclusive',{reasoning:{effort:'high'}},[credential('private')])).status).toBe(200);
 });
 
@@ -483,4 +483,87 @@ it("preserves the final sanitized setting rejection after trying every ZDR crede
  expect(response.status).toBe(400);
  expect(await response.json()).toEqual({error:{code:"invalid_value",param:"reasoning.effort",message:"Upstream rejected the API request."}});
  expect(fetcher.mock.calls.filter(call=>call[1]?.method==="POST")).toHaveLength(2);
+});
+
+it("uses the selected US endpoint for discovery and inference, with separate regional caches", async () => {
+ const urls:string[]=[];
+ const runtime=new ApiModelRuntime(async(url,init)=>{urls.push(String(url));return init?.method==="POST"?new Response("ok"):Response.json({data:[{id:"exclusive"}]});});
+ const global=credential("same");
+ await runtime.catalogs([global]);
+ const us={...global,region:"us" as const};
+ expect((await runtime.request("zdr/exclusive",{},[us])).status).toBe(200);
+ expect(urls).toEqual(["https://api.openai.com/v1/models","https://us.api.openai.com/v1/models","https://us.api.openai.com/v1/responses"]);
+});
+
+
+it("keeps responses failover within the selected credential region", async () => {
+	const urls: string[] = [];
+	const runtime = new ApiModelRuntime(async (url, init) => {
+		urls.push(String(url));
+		return init?.method === "POST"
+			? new Response("busy", { status: 429, headers: { "retry-after": "120" } })
+			: Response.json({ data: [{ id: "exclusive" }] });
+	});
+	const global = credential("global", "api", 8);
+	const us = { ...credential("us", "api", 9), region: "us" as const };
+	const response = await runtime.request("api/exclusive", {}, [global, us]);
+	expect(response.status).toBe(429);
+	expect(urls.filter((url) => url.endsWith("/responses"))).toEqual([
+		"https://api.openai.com/v1/responses",
+	]);
+});
+
+it("applies operator-declared reasoning levels and Daybreak access to API metadata", async () => {
+ const fetcher=vi.fn(async()=>Response.json({data:[{id:"future-cyber"}]}));
+ const runtime=new ApiModelRuntime(fetcher as typeof fetch);
+ const route={...credential("declared","api",9),visibleModels:["future-cyber"],modelReasoningLevels:{"future-cyber":["low","medium","high","xhigh","max"]},modelAccessPrograms:{"future-cyber":{cyber:["daybreak_red"]}}};
+ const [catalog]=await runtime.catalogs([route]);
+ const [model]=catalog?.models ?? [];
+ expect(model).toMatchObject({slug:"future-cyber",reasoning_levels_known:true,default_reasoning_level:"medium",available_access_programs:{cyber:["daybreak_red"]}});
+ expect(model?.supported_reasoning_levels).toEqual(expect.arrayContaining([expect.objectContaining({effort:"medium"}),expect.objectContaining({effort:"ultra"})]));
+});
+
+it("does not retain operator metadata after it is cleared on the route", async () => {
+	const runtime = new ApiModelRuntime(
+		async () => Response.json({ data: [{ id: "exclusive" }] }),
+		Date.now,
+		undefined,
+		async (models) => models,
+	);
+	const declared = {
+		...credential("declared", "api", 9),
+		modelReasoningLevels: { exclusive: ["medium", "max"] },
+		modelAccessPrograms: { exclusive: { cyber: ["daybreak_red"] } },
+	} satisfies ApiRouteCredential;
+	expect((await runtime.catalogs([declared]))[0]?.models[0]).toMatchObject({
+		capability_metadata_source: "operator",
+		reasoning_levels_known: true,
+		available_access_programs: { cyber: ["daybreak_red"] },
+	});
+	const cleared = { ...declared, modelReasoningLevels: undefined, modelAccessPrograms: undefined };
+	const model = (await runtime.catalogs([cleared]))[0]?.models[0];
+	expect(model).toMatchObject({ reasoning_levels_known: false, supported_reasoning_levels: [] });
+	expect(model).not.toHaveProperty("capability_metadata_source");
+	expect(model).not.toHaveProperty("available_access_programs");
+});
+
+it.each(["api","zdr","psp"] as const)("keeps %s failover within the selected pool and region",async kind=>{
+ const posts:string[]=[];
+ const fetcher=vi.fn(async(_url:unknown,init?:RequestInit)=>{
+  if(init?.method!=="POST")return Response.json({data:[{id:"exclusive"}]});
+  const auth=new Headers(init.headers).get("authorization")!;posts.push(auth);
+  return auth==="Bearer test-backup"?Response.json({ok:true}):new Response(null,{status:503});
+ });
+ const routes=[{...credential("first",kind,0),region:"us" as const},{...credential("global",kind,1),region:"global" as const},{...credential("backup",kind,9),region:"us" as const},...(["api","zdr","psp"] as const).filter(k=>k!==kind).map(k=>credential(k,k,0))];
+ const runtime=new ApiModelRuntime(fetcher as typeof fetch);
+ const response=await runtime.request(`${kind}/exclusive`,{},routes);
+ expect(response.status).toBe(200);expect(posts).toEqual(["Bearer test-first","Bearer test-backup"]);
+});
+
+it("keeps a PSP operator profile and literal ultra effort without inferring enrollment",async()=>{
+ const runtime=new ApiModelRuntime(async()=>Response.json({data:[{id:"exclusive"}]}));
+ const route={...credential("profile","psp"),modelProfiles:{exclusive:{slug:"exclusive",display_name:"Fixture",input_modalities:["text","image"],supports_parallel_tool_calls:true}},modelReasoningLevels:{exclusive:["low","ultra"]}};
+ const [catalog]=await runtime.catalogs([route]);
+ expect(catalog?.models[0]).toMatchObject({input_modalities:["text","image"],supports_parallel_tool_calls:true,supported_reasoning_levels:expect.arrayContaining([expect.objectContaining({effort:"ultra"})])});
+ expect(catalog?.models[0]).not.toHaveProperty("available_access_programs");
 });

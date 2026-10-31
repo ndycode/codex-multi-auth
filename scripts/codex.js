@@ -1457,6 +1457,7 @@ const RETIRED_MODEL_REPLACEMENTS = {
 // because it ships on the most plans of any catalog model.
 const WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN = {
 	"gpt-6.1-sol": ["gpt-6-sol"],
+	"gpt-6.1-terra": ["gpt-5.6-terra"],
 	"gpt-6-astra": ["gpt-6-sol"],
 	"gpt-6-sol": ["gpt-5.6-sol"],
 	"gpt-6-luna": ["gpt-5.6-luna"],
@@ -2188,6 +2189,7 @@ function hasCliAuthCredentialsStoreOverride(args) {
 const SUPPORTED_REASONING_EFFORTS_BY_MODEL = {
 	"gpt-6-astra": ["low", "medium", "high", "xhigh", "max", "ultra"],
 	"gpt-6.1-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
+	"gpt-6.1-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
 	"gpt-6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
 	"gpt-6-luna": ["low", "medium", "high", "xhigh", "max"],
 	"gpt-daybreak-blue-latest": ["low", "medium", "high", "xhigh", "max", "ultra"],
@@ -2250,11 +2252,15 @@ const GPT_6_LUNA_MODEL = "gpt-6-luna";
 const GPT_6_SOL_EFFORTS = GPT_6_ASTRA_EFFORTS;
 const GPT_6_LUNA_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 // GPT-6.1 Sol (upstream catalog, 2026-09-29): the first 6.1 release, added as
-// the catalog's default model. Sol is the only 6.1 tier yet, so bare `gpt-6.1`
-// aliases to it, matching the bare-alias convention.
+// the catalog's default model. Bare `gpt-6.1` aliases to it, matching the
+// bare-alias convention.
 const GPT_6_1_SOL_MODEL = "gpt-6.1-sol";
 const GPT_6_1_FLAGSHIP_ALIAS = "gpt-6.1";
 const GPT_6_1_SOL_EFFORTS = GPT_6_ASTRA_EFFORTS;
+// GPT-6.1 Terra (upstream catalog, Codex CLI 0.165.0, 2026-10-27): low..ultra,
+// `low` default. Mirrors lib/request/helpers/model-map.ts.
+const GPT_6_1_TERRA_MODEL = "gpt-6.1-terra";
+const GPT_6_1_TERRA_EFFORTS = GPT_6_ASTRA_EFFORTS;
 // Daybreak cyber models from the upstream Codex catalog. `red` is the
 // cyber-permissive variant, `blue` the defensive one.
 const DAYBREAK_BLUE_MODEL = "gpt-daybreak-blue-latest";
@@ -2478,6 +2484,11 @@ function seedRequestedModelAliases() {
 		GPT_6_1_SOL_EFFORTS,
 	);
 	addRequestedModelEffortAliases(
+		GPT_6_1_TERRA_MODEL,
+		GPT_6_1_TERRA_MODEL,
+		GPT_6_1_TERRA_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
 		DAYBREAK_BLUE_MODEL,
 		DAYBREAK_BLUE_MODEL,
 		DAYBREAK_EFFORTS,
@@ -2601,8 +2612,8 @@ function resolveGpt6RequestedModel(stripped) {
 	}
 	if (tokens.includes("aeon")) return GPT_6_ASTRA_MODEL;
 	if (isAstra) return GPT_6_ASTRA_MODEL;
-	// Every unrecognised 6.1 id resolves to the generation's only tier, Sol.
-	if (isGpt61) return GPT_6_1_SOL_MODEL;
+	// A `terra` token picks 6.1 Terra; every other unrecognised 6.1 id is Sol.
+	if (isGpt61) return tokens.includes("terra") ? GPT_6_1_TERRA_MODEL : GPT_6_1_SOL_MODEL;
 	// `terra` goes to Sol: there is no GPT-6 Terra, and upstream migrates
 	// `gpt-5.6-terra` users to Sol.
 	if (tokens.includes("luna")) return GPT_6_LUNA_MODEL;

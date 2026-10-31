@@ -105,12 +105,12 @@ describe('Fetch Helpers Module', () => {
 			expect(refreshSpy).not.toHaveBeenCalled();
 		});
 
-		it('throws retryable auth errors for transient refresh failures', async () => {
+		it.each(['network_error', 'coordination_error'] as const)('throws retryable auth errors for transient refresh failures: %s', async (reason) => {
 			const auth: Auth = { type: 'oauth', access: 'old', refresh: 'bad', expires: 0 };
 			const client = { auth: { set: vi.fn() } } as any;
 			vi.spyOn(refreshQueueModule, 'queuedRefresh').mockResolvedValue({
 				type: 'failed',
-				reason: 'network_error',
+				reason,
 				message: 'temporary network issue',
 			} as any);
 

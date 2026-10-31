@@ -24,8 +24,7 @@ interface LeaseFilePayload {
 	acquiredAt: number;
 	expiresAt: number;
 	// Per-owner identity. release() only unlinks a lock whose on-disk nonce still
-	// matches this handle, so a slow owner whose lease expired and was stolen
-	// cannot delete the new owner's lock (stress audit H2).
+	// matches this handle, so release cannot delete a replacement owner's lock.
 	nonce: string;
 }
 
@@ -52,7 +51,7 @@ export interface RefreshLeaseCoordinatorOptions {
 }
 
 export interface RefreshLeaseHandle {
-	role: "owner" | "follower" | "bypass";
+	role: "owner" | "follower" | "bypass" | "blocked";
 	result?: TokenResult;
 	release: (result?: TokenResult) => Promise<void>;
 }
@@ -151,15 +150,6 @@ async function safeUnlink(
 	return false;
 }
 
-type LockStalenessAssessment =
-	| { state: "stale"; reason: string }
-	| { state: "active"; reason: string }
-	| { state: "unknown"; reason: string };
-
-function isRetryableFsCode(code: string | undefined): boolean {
-	return RETRYABLE_IO_ERRORS.has(code ?? "");
-}
-
 export class RefreshLeaseCoordinator {
 	private readonly enabled: boolean;
 	private readonly leaseDir: string;
@@ -214,7 +204,7 @@ export class RefreshLeaseCoordinator {
 			return this.createBypassHandle("disabled");
 		}
 		if (refreshToken.trim().length === 0) {
-			return this.createBypassHandle("empty-token");
+			return this.createBlockedHandle("empty-token");
 		}
 
 		const tokenHash = hashRefreshToken(refreshToken);
@@ -252,8 +242,10 @@ export class RefreshLeaseCoordinator {
 				};
 			}
 
+			let createdLock = false;
 			try {
 				const handle = await this.fsOps.open(lockPath, "wx", 0o600);
+				createdLock = true;
 				const nonce = randomUUID();
 				try {
 					const now = Date.now();
@@ -269,39 +261,47 @@ export class RefreshLeaseCoordinator {
 					await handle.close();
 				}
 
-				return this.createOwnerHandle(tokenHash, lockPath, resultPath, nonce);
+				const owner = this.createOwnerHandle(tokenHash, lockPath, resultPath, nonce);
+				// The previous owner may have published between our first cache read
+				// and successful open. Recheck while holding the lock before any HTTP.
+				const published = await this.readFreshResult(resultPath, tokenHash);
+				if (published) {
+					await owner.release();
+					return { role: "follower", result: published, release: async () => {} };
+				}
+				return owner;
 			} catch (error) {
 				const code = (error as NodeJS.ErrnoException).code;
 				if (code !== "EEXIST") {
-					log.warn("Refresh lease acquisition failed; proceeding without lease", {
+					log.warn("Refresh lease acquisition failed; refresh blocked", {
 						error: error instanceof Error ? error.message : String(error),
 					});
-					return this.createBypassHandle("acquire-error");
+					// We created this lock exclusively and sent no OAuth request, so
+					// removing it is safe. Nothing else would: locks are never stolen
+					// or pruned, so an orphan would block this token's refresh until
+					// the next login.
+					if (createdLock) await safeUnlink(lockPath, undefined, this.fsOps);
+					return this.createBlockedHandle("acquire-error");
 				}
 
-				const stale = await this.assessLockStaleness(lockPath, tokenHash);
-				if (stale.state === "stale") {
-					const removed = await safeUnlink(lockPath, undefined, this.fsOps);
-					if (removed) continue;
-					if (Date.now() >= deadline) {
-						log.warn("Refresh lease wait timeout while stale lock could not be removed", {
-							waitTimeoutMs: this.waitTimeoutMs,
-						});
-						return this.createBypassHandle("wait-timeout");
-					}
-					await sleep(this.pollIntervalMs);
-					continue;
-				}
+				// An expired lease does not prove the owner stopped refreshing. Even a
+				// dead owner may have consumed the token before losing its response.
+				// Never steal or prune a lock to reuse that potentially spent token.
 
 				if (Date.now() >= deadline) {
-					log.warn("Refresh lease wait timeout; proceeding without lease", {
+					log.warn("Refresh lease wait timeout; refresh blocked", {
 						waitTimeoutMs: this.waitTimeoutMs,
 					});
-					return this.createBypassHandle("wait-timeout");
+					return this.createBlockedHandle("wait-timeout");
 				}
 				await sleep(this.pollIntervalMs);
 			}
 		}
+	}
+
+	private createBlockedHandle(reason: string): RefreshLeaseHandle {
+		log.warn("Refresh blocked by lease coordination", { reason });
+		return { role: "blocked", release: async () => {} };
 	}
 
 	private createBypassHandle(reason: string): RefreshLeaseHandle {
@@ -326,6 +326,7 @@ export class RefreshLeaseCoordinator {
 			release: async (result?: TokenResult) => {
 				if (released) return;
 				released = true;
+				let published = result?.type !== "success";
 				try {
 					// Only ever cache a SUCCESSFUL refresh in the cross-process lease.
 					// A `failed` result carries no token material to share; caching it
@@ -336,6 +337,7 @@ export class RefreshLeaseCoordinator {
 					// becomes owner and retries immediately.
 					if (result?.type === "success") {
 						await this.writeResult(resultPath, tokenHash, result);
+						published = true;
 					}
 				} finally {
 					// Only unlink the lock if it is still OURS. If our lease expired
@@ -343,11 +345,11 @@ export class RefreshLeaseCoordinator {
 					// matches and unlinking would delete the new owner's lock mid
 					// refresh (stress audit H2). A lock written before nonces existed
 					// (empty on-disk nonce) falls back to a best-effort unlink.
-					if (await this.ownsLock(lockPath, tokenHash, nonce)) {
+					if (published && await this.ownsLock(lockPath, tokenHash, nonce)) {
 						await safeUnlink(lockPath, undefined, this.fsOps);
 					} else {
 						log.warn(
-							"Refresh lease no longer owned at release; leaving lock for current owner",
+							"Refresh lease retained: result unpublished or ownership changed",
 							{ lockPath },
 						);
 					}
@@ -415,45 +417,6 @@ export class RefreshLeaseCoordinator {
 		return parsed.result;
 	}
 
-	private async assessLockStaleness(
-		lockPath: string,
-		tokenHash: string,
-	): Promise<LockStalenessAssessment> {
-		const raw = await readJson(lockPath, this.fsOps);
-		if (raw === null) {
-			if (!existsSync(lockPath)) {
-				return { state: "stale", reason: "missing" };
-			}
-			return { state: "unknown", reason: "unreadable" };
-		}
-
-		const parsed = parseLeasePayload(raw);
-		if (!parsed) {
-			return { state: "unknown", reason: "invalid-payload" };
-		}
-		if (parsed.tokenHash !== tokenHash) {
-			return { state: "unknown", reason: "token-mismatch" };
-		}
-		if (parsed.expiresAt <= Date.now()) {
-			return { state: "stale", reason: "expired" };
-		}
-
-		try {
-			const stat = await this.fsOps.stat(lockPath);
-			if (Date.now() - stat.mtimeMs > this.leaseTtlMs) {
-				return { state: "stale", reason: "mtime-expired" };
-			}
-			return { state: "active", reason: "fresh" };
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") return { state: "stale", reason: "missing" };
-			if (isRetryableFsCode(code) || code === "EACCES") {
-				return { state: "unknown", reason: `stat-${String(code).toLowerCase()}` };
-			}
-			return { state: "unknown", reason: "stat-error" };
-		}
-	}
-
 	private async pruneExpiredArtifacts(): Promise<void> {
 		try {
 			const entries = await this.fsOps.readdir(this.leaseDir, { withFileTypes: true });
@@ -461,7 +424,7 @@ export class RefreshLeaseCoordinator {
 			const maxAgeMs = Math.max(this.leaseTtlMs, this.resultTtlMs) * 2;
 			for (const entry of entries) {
 				if (!entry.isFile()) continue;
-				if (!entry.name.endsWith(".lock") && !entry.name.endsWith(".result.json")) continue;
+				if (!entry.name.endsWith(".result.json")) continue;
 				const fullPath = join(this.leaseDir, entry.name);
 				try {
 					const stat = await this.fsOps.stat(fullPath);

@@ -31,6 +31,11 @@ Upgrading from the old prerelease package? See [the legacy note in upgrade.md](u
 
 ---
 
+Restart an already-running router once after installing this update; from then
+on it adopts saved re-logins without another restart.
+Refresh coordination errors are reported separately from invalid credentials; see
+[the upgrade notes](upgrade.md#live-credential-reload-and-refresh-coordination).
+
 ## The Commands
 
 | Command | What it does |

@@ -246,10 +246,24 @@ const GPT_6_LUNA_EFFORTS = [
  */
 const GPT_6_1_SOL_MODEL = "gpt-6.1-sol";
 
-/** Bare `gpt-6.1` resolves to Sol — the only tier OpenAI ships at 6.1. */
+/** Bare `gpt-6.1` resolves to Sol, the 6.1 workhorse and catalog default. */
 const GPT_6_1_FLAGSHIP_ALIAS = "gpt-6.1";
 
 const GPT_6_1_SOL_EFFORTS = GPT_6_ASTRA_EFFORTS;
+
+/**
+ * GPT-6.1 Terra, released 2026-10-26 ("a fast, efficient model for visual
+ * reasoning, precise computer use, and clear, natural writing") and added to
+ * the upstream catalog in Codex CLI 0.165.0 at priority 7, between 6.1 Sol and
+ * 6 Sol. The catalog ships the low..ultra ladder with a `low` default and a
+ * Fast (`priority`) tier. The API model page also lists `none` and a `medium`
+ * default for direct-API callers; the Codex catalog this wrapper mirrors does
+ * not, so `none` is not accepted here. It is the 6.1 successor to
+ * `gpt-5.6-terra` (there is still no 6.0 Terra).
+ */
+const GPT_6_1_TERRA_MODEL = "gpt-6.1-terra";
+
+const GPT_6_1_TERRA_EFFORTS = GPT_6_ASTRA_EFFORTS;
 
 /**
  * Cyber-specialty models from the upstream Codex catalog
@@ -359,6 +373,13 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
 		promptFamily: "gpt-5.2",
 		defaultReasoningEffort: "low",
 		supportedReasoningEfforts: GPT_6_1_SOL_EFFORTS,
+		capabilities: TOOL_CAPABILITIES.full,
+	},
+	[GPT_6_1_TERRA_MODEL]: {
+		normalizedModel: GPT_6_1_TERRA_MODEL,
+		promptFamily: "gpt-5.2",
+		defaultReasoningEffort: "low",
+		supportedReasoningEfforts: GPT_6_1_TERRA_EFFORTS,
 		capabilities: TOOL_CAPABILITIES.full,
 	},
 	[GPT_6_SOL_MODEL]: {
@@ -502,6 +523,9 @@ function addGpt6Aliases(): void {
 		GPT_6_1_SOL_MODEL,
 		GPT_6_1_SOL_EFFORTS,
 	);
+	// No bare `terra` alias, as with `sol`/`luna`: a name without a generation
+	// would have to guess between 5.6 Terra and 6.1 Terra.
+	addEffortAliases(GPT_6_1_TERRA_MODEL, GPT_6_1_TERRA_MODEL, GPT_6_1_TERRA_EFFORTS);
 }
 
 function addDaybreakAliases(): void {
@@ -727,10 +751,12 @@ function resolveGpt6CatalogModel(modelId: string): string | undefined {
 	// behaviourally different model, not a rename of the Sol workhorse.
 	if (tokens.includes("aeon")) return GPT_6_ASTRA_MODEL;
 	if (isAstra) return GPT_6_ASTRA_MODEL;
-	// Every unrecognised 6.1 id resolves to the generation's only tier, Sol —
-	// the same in-minor flagship rule the 5.6 resolver applies, kept behind
-	// `astra` so `gpt-6.1-astra` names the frontier model it actually means.
-	if (isGpt61) return GPT_6_1_SOL_MODEL;
+	// A `terra` token picks 6.1 Terra. Before Terra existed this branch sent
+	// every 6.1 id to Sol, so `gpt-6.1-terra` silently ran Sol at twice
+	// Terra's price. Any other unrecognised 6.1 id still resolves to Sol — the
+	// same in-minor flagship rule the 5.6 resolver applies, kept behind `astra`
+	// so `gpt-6.1-astra` names the frontier model it actually means.
+	if (isGpt61) return tokens.includes("terra") ? GPT_6_1_TERRA_MODEL : GPT_6_1_SOL_MODEL;
 	// Before Sol and Luna existed every non-Astra GPT-6 id fell to the line
 	// below, so `gpt-6-luna` silently ran Astra at 100x Luna's price. `terra`
 	// goes to Sol because there is no GPT-6 Terra and upstream migrates

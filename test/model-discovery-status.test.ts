@@ -58,7 +58,7 @@ afterEach(async () => {
 	await removeWithRetry(multiAuthDir, { recursive: true, force: true });
 });
 describe("model discovery reporting", () => {
-	it.each(["api", "zdr"] as const)("labels %s programs as local configuration", async (kind) => {
+	it.each(["api", "zdr", "psp"] as const)("labels %s programs as local configuration", async (kind) => {
 		const inventory = await discoverModelInventory(null, [{
 			id: "fixture", label: "API fixture", kind, apiKey: "fixture-secret",
 			enabled: true, priority: 0, visibleModels: ["configured", "unconfigured"],

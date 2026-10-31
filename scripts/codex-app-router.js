@@ -165,7 +165,7 @@ function readDisconnect(value) {
 	if (typeof at !== "number" || !Number.isFinite(at) || at < 0 || at > 8.64e15) return null;
 	if (!["close", "transport_error", "invalid_event", "buffer_limit", "send_error"].includes(cause)) return null;
 	if (!["awaiting_first_event", "streaming"].includes(stage)) return null;
-	if (routeKind !== undefined && !["oauth", "api", "zdr"].includes(routeKind)) return null;
+	if (routeKind !== undefined && !["oauth", "api", "zdr", "psp"].includes(routeKind)) return null;
 	if (closeCode !== undefined && (!Number.isInteger(closeCode) || closeCode < 1000 || closeCode > 4999)) return null;
 	for (const count of [connectionAgeMs, eventCount]) {
 		if (count !== undefined && (!Number.isSafeInteger(count) || count < 0)) return null;

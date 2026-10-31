@@ -108,7 +108,8 @@ function extractServiceTier(payload: Record<string, unknown>): UsageServiceTier 
 		normalized === "priority" ||
 		normalized === "flex" ||
 		normalized === "batch" ||
-		normalized === "scale"
+		normalized === "scale" ||
+		normalized === "ultrafast"
 	) {
 		return normalized;
 	}

@@ -463,13 +463,13 @@ function readWebsocketDisconnect(value: unknown): WebSocketDisconnectDiagnostic 
   if (errorCode !== "ECONNRESET" && errorCode !== "EPIPE" && errorCode !== "ETIMEDOUT" && errorCode !== "OTHER") return null;
   transport.transportErrorCode = errorCode;
  }
- if (routeKind !== undefined && routeKind !== "oauth" && routeKind !== "api" && routeKind !== "zdr") return null;
+ if (routeKind !== undefined && routeKind !== "oauth" && routeKind !== "api" && routeKind !== "zdr" && routeKind !== "psp") return null;
  for (const count of [connectionAgeMs, eventCount]) if (count !== undefined && (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0)) return null;
  if (cause !== "close" && cause !== "transport_error" && cause !== "invalid_event" && cause !== "buffer_limit" && cause !== "send_error") return null;
  if (stage !== "awaiting_first_event" && stage !== "streaming") return null;
  if (closeCode !== undefined && (typeof closeCode !== "number" || !Number.isInteger(closeCode) || closeCode < 1000 || closeCode > 4999)) return null;
  return {at:value.at,cause,stage,...(typeof closeCode === "number" ? {closeCode} : {}),
- ...(routeKind === "oauth" || routeKind === "api" || routeKind === "zdr" ? {routeKind} : {}),
+ ...(routeKind === "oauth" || routeKind === "api" || routeKind === "zdr" || routeKind === "psp" ? {routeKind} : {}),
  ...(typeof connectionAgeMs === "number" ? {connectionAgeMs} : {}),
  ...(typeof eventCount === "number" ? {eventCount} : {}), ...transport};
 }

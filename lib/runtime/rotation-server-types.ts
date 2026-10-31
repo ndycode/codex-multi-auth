@@ -49,7 +49,7 @@ export interface RuntimeRotationProxyStatus {
 
 export interface RuntimeRotationProxyOptions {
 	nativeOpenai?: boolean;
-	/** Override the native credential reader for embedded hosts and tests. */
+	/** Override the credential reader for native or provider-bound hosts and tests. */
 	readNativeAccountStorage?: () => Promise<AccountStorageV3 | null>;
 	readApiRoutes?: () => Promise<ApiRouteCredential[]>;
 	readSubscriptionQuota?: () => Promise<QuotaCacheData | null>;
@@ -86,6 +86,8 @@ export interface RuntimeRotationProxyOptions {
 	 * `CODEX_MULTI_AUTH_MODEL_CAPACITY_RETRY_MS`, then to a 10 minute default.
 	 */
 	modelCapacityRetryMs?: number;
+	/** Maximum wait for an unsent API create to acquire cooldown admission. */
+	apiAdmissionWaitMs?: number;
 }
 
 export interface RequestContext {

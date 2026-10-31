@@ -300,7 +300,7 @@ it("preserves sanitized disconnect history across daemon restarts and replaces i
 	const statePath = join(root, "state.json");
 	const statusPath = join(root, "status.json");
 	await writeState(statePath, { clientApiKey: "fixture-token", host: "127.0.0.1", port: 0, statusPath });
-	const prior = { at: 123, cause: "close", stage: "streaming", closeCode: 1011, routeKind: "zdr", eventCount: 4, connectionAgeMs: 100, requestBytes: 1234, inputItemCount: 2, isPrewarm: false, hasPreviousResponse: true, reusedConnection: true, sendCompleted: true, compressionNegotiated: false, transportErrorCode: "ECONNRESET", tcpEndReceived: false, tcpCloseHadError: true };
+	const prior = { at: 123, cause: "close", stage: "streaming", closeCode: 1011, routeKind: "psp", eventCount: 4, connectionAgeMs: 100, requestBytes: 1234, inputItemCount: 2, isPrewarm: false, hasPreviousResponse: true, reusedConnection: true, sendCompleted: true, compressionNegotiated: false, transportErrorCode: "ECONNRESET", tcpEndReceived: false, tcpCloseHadError: true };
 	writeFileSync(statusPath, JSON.stringify({
 		state: "stopped",
 		lastWebsocketDisconnect: { ...prior, reason: "private-reason", authorization: "private-token" },

@@ -1,4 +1,5 @@
 import { isRecord } from "../utils.js";
+import { apiRetryDelayMs } from "./api-retry-delay.js";
 
 export interface StreamCompletion {
 	success: boolean;
@@ -9,7 +10,7 @@ export interface StreamCompletion {
 /** Protocol completion, separate from socket delivery. Never retain output or error messages. */
 export class ResponseOutcome {
 	private terminal: "completed" | "failed" | "incomplete" | "cancelled" | undefined;
-	rejection: { error: { code?: string; param?: string } } | undefined;
+	rejection: { error: { code?: string; param?: string; retry_after_ms?: number } } | undefined;
 
 	constructor(private readonly requireTerminal: boolean | (() => boolean)) {}
 
@@ -33,6 +34,10 @@ export class ResponseOutcome {
 		if (error) {
 			const safe = (v: unknown) => typeof v === "string" && /^[A-Za-z0-9._-]{1,100}$/.test(v) ? v : undefined;
 			this.rejection = { error: { code: safe(error.code), param: safe(error.param) } };
+			if (error.code === "rate_limit_exceeded") {
+				const delay = apiRetryDelayMs({error}, Date.now());
+				if (delay > 0) this.rejection.error.retry_after_ms = delay;
+			}
 		}
 	}
 

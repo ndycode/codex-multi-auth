@@ -22,6 +22,7 @@ export function isTokenInvalidationError(bodyText: string): boolean {
 }
 
 export function isTokenRefreshRetryable(result: Extract<TokenResult, { type: "failed" }>): boolean {
+	if (result.reason === "coordination_error") return true;
 	if (result.reason === "network_error" || result.reason === "unknown") return true;
 	if (result.reason === "invalid_response") return true;
 	if (result.reason === "http_error") {

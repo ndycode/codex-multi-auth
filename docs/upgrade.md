@@ -1,5 +1,23 @@
 # Upgrade Guide
 
+## GPT-6.1 Terra and Ultrafast pricing
+
+`gpt-6.1-terra` (released 2026-10-26, in the Codex catalog since CLI 0.165.0) is
+now a first-class model: `low`…`ultra` efforts with a `low` default, picker
+entries in both config templates, and a $1 / $5 per 1M token pricing card
+(cached input $0.05, Fast 2x, long context above 272K input at 2x input and
+1.5x output). Before this, any `gpt-6.1-terra` request silently ran
+`gpt-6.1-sol`. With `fallbackOnUnsupportedCodexModel` enabled (off by
+default), an account without Terra retries `gpt-5.6-terra` and then the usual
+staircase; with the default setting the unsupported-model error is returned.
+The default model stays `gpt-6.1-sol`.
+
+Responses billed at the `ultrafast` service tier (`gpt-6.1-sol` with
+`service_tier: "ultrafast"`) are now priced at OpenAI's published 6x Standard
+rate instead of being recorded without a cost. Ultrafast requests over 272K
+input stay unpriced because OpenAI does not say whether the long-context
+surcharge stacks with it.
+
 ## Luna Reserve fallback and limits
 
 `gpt-6-luna` and `gpt-5.6-luna` can retry genuine quota 429 responses through
@@ -85,6 +103,28 @@ versions could leave a launchd-respawned router running with an outdated
 identity token. The first `reset-runtime` after upgrading unloads that job by
 label and starts a single router. If a router still cannot be stopped, the
 command now prints a warning instead of reporting a clean restart.
+
+### Live credential reload and refresh coordination
+
+Restart existing routers once after installing this update. Subsequent saved
+re-logins take effect in both native and provider mode without another restart.
+Credential reload waits for refresh commits to finish, preserving the rotated
+token while its disk write is pending. Local client authentication, strict pins,
+account disablement, and independent quota limits remain enforced. Explicit
+`api/` and `zdr/` requests remain available during OAuth-store lock failures.
+
+With refresh leases enabled (the default outside tests), acquisition errors and
+wait timeouts now block refresh instead of sending an uncoordinated request.
+Expired locks are retained: neither elapsed time nor a dead process proves that
+the provider did not consume the refresh token. A failed publication of rotated
+credentials also retains the lock. Provider requests report
+`refresh_coordination_unavailable` without invalidating the account or rotating
+to another login. Resolve filesystem access problems or wait for a live owner;
+if an owner died without publishing its result, sign in again to obtain fresh
+credentials. Do not delete the lock to retry the old token. The explicit
+`CODEX_AUTH_REFRESH_LEASE=0` opt-out remains available but disables this protection.
+
+No account-storage migration or new npm script is required.
 
 ### Hourly rate-limit cache revalidation
 

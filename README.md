@@ -13,11 +13,18 @@ Use it when one Codex account is not enough: you hit rate limits or quota window
 
 Using OpenCode rather than the Codex CLI? The sibling project [`oc-codex-multi-auth`](https://github.com/ndycode/oc-codex-multi-auth) is the plugin that manages the same kind of account pool there.
 
+Refresh leases block uncoordinated OAuth refresh on lock errors or timeouts.
+For live re-login behavior and interrupted-refresh recovery, see the
+[upgrade notes](docs/upgrade.md#live-credential-reload-and-refresh-coordination).
+
 ## What it does
 
 - **Account pool** — OAuth login for multiple ChatGPT accounts, stored locally under `~/.codex/multi-auth` (files `0600`, directories `0700`), with per-project pools under `projects/<project-key>/`.
 - **Switching and selection** — pin an account, pick the forecast-best one, follow saved account order within customized priority tiers with sequential scheduling, or let health- and quota-aware hybrid selection rotate for you.
 - **Runtime rotation** — a default-on, loopback-only proxy that forwards Responses API, model-discovery, image, thread-goal, web search, Codex dictation/transcription, and native voice traffic through managed accounts during wrapper-launched Codex sessions.
+- **API regions** — `codex-multi-auth login --api` supports Global and US endpoints per credential. Choose **US (us.api.openai.com)** for a US-regional project; existing credentials remain Global. Each credential stays on its chosen endpoint, and Responses failover remains within the first eligible credential’s region. Regional routes use store version 2, so older builds reject them rather than silently discard their region.
+- **PSP API pool** — `login --api` offers Regular API, ZDR, and PSP (Private Safety Processing). ZDR approval and PSP project enrollment are operator-confirmed, never inferred from a key or successful discovery. Select `api/<model>`, `zdr/<model>`, or `psp/<model>` explicitly; failover stays within that pool and the selected region on HTTP and WebSocket connections. Global/US region selection remains separate. Choosing PSP does not enroll a project or modify provider privacy settings.
+- **API model metadata** — `login --api` can attach operator-declared Daybreak Red access and reasoning efforts to a selected model when discovery omits them. These declarations enable matching routes without claiming probe verification. Reasoning declarations use store version 3, so older builds cannot silently strip them.
 - **API capability evidence** — opted-in API/ZDR routes receive daily billable checks while the router runs; status distinguishes configured access programs from verified responses. See [check behavior and controls](docs/reference/commands.md#codex-multi-auth-check).
 - **Diagnostics and repair** — status, live health checks, quota forecasts, JSON reports, and `fix`/`doctor`/`verify` commands that recover stale or damaged local state.
 - **Luna Reserve fallback** — treats `gpt-reserve` as a separately metered Luna allowance, automatically falls back after a genuine Luna quota 429, and exposes the Reserve percentage through `limits --json --refresh`.
@@ -126,6 +133,8 @@ codex-multi-auth forecast --live
 ```
 
 Common symptoms — wrong active account, OAuth callback port `1455` already bound, Windows/WSL port contention, `EBUSY`/`EPERM` on Windows — are covered in [docs/troubleshooting.md](docs/troubleshooting.md).
+
+After signing in again, a running native or custom-provider router adopts the saved replacement credentials on the next authenticated request. Replacing rejected credentials clears their stale authentication block without restarting the router; account pins and independent quota limits still apply. Unchanged revoked credentials still require a new sign-in.
 
 ## Documentation
 

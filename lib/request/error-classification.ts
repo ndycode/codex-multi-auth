@@ -47,6 +47,9 @@ export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> 
 	// add a hop to a GPT-6 row without re-checking that budget;
 	// `test/gpt6-astra-models.test.ts` asserts it.
 	"gpt-6.1-sol": ["gpt-6-sol"],
+	// 6.1 Terra steps to the tier it replaces, `gpt-5.6-terra`, whose own row
+	// continues to Sol and then Luna: four hops, inside the budget above.
+	"gpt-6.1-terra": ["gpt-5.6-terra"],
 	// Astra steps to the workhorse rather than to a smaller tier: an account
 	// without the flagship is still likelier than not to hold the standard
 	// GPT-6 tier, and `gpt-6-sol` keeps the walk inside the generation.

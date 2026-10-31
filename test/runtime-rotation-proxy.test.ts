@@ -5404,6 +5404,261 @@ describe("native login isolation", () => {
 	});
 });
 
+/**
+ * Resolves once a proxy request asks for the credential lock after `arm()`.
+ * Arm it while another request holds the lock: the next entry is then the
+ * request under test, provably parked behind that lock, with no sleep.
+ */
+function watchCredentialLock() {
+  const original = tokenRefreshRuntime.withRuntimeCredentialLock;
+  let armed = false;
+  let reached!: () => void;
+  const parked = new Promise<void>(resolve => { reached = resolve; });
+  vi.spyOn(tokenRefreshRuntime, "withRuntimeCredentialLock").mockImplementation((target, operation) => {
+    if (armed) reached();
+    return original(target, operation);
+  });
+  return {arm: () => { armed = true; }, parked};
+}
+
+/** Lets every already-queued microtask run, without assuming any duration. */
+const drainMicrotasks = () => new Promise<void>(resolve => setImmediate(resolve));
+
+describe("provider re-login while router is running", () => {
+  it("never installs an old disk snapshot while a refresh commit is saving", async () => {
+    const storage = createStorage(Date.now(), 1);
+    storage.accounts[0]!.expiresAt = Date.now() - 1000;
+    const manager = new AccountManager(undefined, storage);
+    const disk = structuredClone(storage);
+    let release!: () => void, started!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    const read = vi.fn(async () => structuredClone(disk));
+    const commit = vi.spyOn(manager, "commitRefreshedAuth").mockImplementation(async (account, auth) => {
+      Object.assign(account, {access: auth.access, refreshToken: auth.refresh, expires: auth.expires});
+      started(); await gate;
+      Object.assign(disk.accounts[0]!, {accessToken: auth.access, refreshToken: auth.refresh, expiresAt: auth.expires});
+      return account;
+    });
+    refreshAccessTokenMock.mockResolvedValue({type: "success", access: "rotated-access", refresh: "rotated-refresh", expires: Date.now() + 3600000});
+    const {calls, fetchImpl} = createRecordingFetch(() => textEventStream());
+    const proxy = await startProxy({accountManager: manager, fetchImpl, options: {
+      nativeOpenai: false, forcedAccountIndex: 0, readNativeAccountStorage: read,
+    }});
+    const lock = watchCredentialLock();
+    const first = postResponses(proxy, {model: "gpt-5.6-sol", stream: true});
+    await entered;
+    lock.arm();
+    const readCount = read.mock.calls.length;
+    const second = postResponses(proxy, {model: "gpt-5.6-sol", stream: true});
+    let responses: Response[] = [];
+    try {
+      // The second request has reached the credential lock the commit holds.
+      await lock.parked;
+      await drainMicrotasks();
+      expect(read).toHaveBeenCalledTimes(readCount);
+      expect(manager.getAccountByIndex(0)?.refreshToken).toBe("rotated-refresh");
+    } finally {
+      release();
+      responses = await Promise.all([first, second]);
+      await Promise.all(responses.map(response => response.text()));
+    }
+    expect(responses.map(response => response.status)).toEqual([200, 200]);
+    expect(calls).toHaveLength(2);
+    expect(calls.every(call => call.headers.get("authorization") === "Bearer rotated-access")).toBe(true);
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports coordination failures without retrying or switching accounts", async () => {
+    const manager = new AccountManager(undefined, createStorage(Date.now(), 2));
+    const {calls, fetchImpl} = createRecordingFetch(() => textEventStream());
+    const proxy = await startProxy({accountManager: manager, fetchImpl});
+    const refresh = vi.spyOn(tokenRefreshRuntime, "ensureFreshAccessToken").mockImplementation(async params => ({
+      ok: false, retryable: true, coordinationFailed: true, account: params.account, accountManager: params.accountManager,
+    }));
+    const before = proxy.getStatus().retries;
+    const response = await postResponses(proxy, {model: "gpt-5.6-sol", stream: true});
+    expect(response.status).toBe(503);
+    expect((await response.json()).error.code).toBe("refresh_coordination_unavailable");
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(0);
+    expect(proxy.getStatus().retries).toBe(before);
+    expect(manager.getAccountsSnapshot().every(account => !account.authInvalidatedAt && !account.cooldownReason)).toBe(true);
+  });
+
+  it.each(["EBUSY", "EPERM", "EACCES"])("keeps API/ZDR routes available when the OAuth store fails cold: %s", async code => {
+    const manager = new AccountManager(undefined, createStorage(Date.now()));
+    const read = vi.fn(async () => { throw Object.assign(new Error("store unavailable"), {code}); });
+    const {calls, fetchImpl} = createRecordingFetch(call => call.url.endsWith("/models")
+      ? Response.json({data: [{id: "exclusive"}]}) : textEventStream());
+    const proxy = await startProxy({accountManager: manager, fetchImpl, options: {
+      nativeOpenai: false, readNativeAccountStorage: read,
+      readApiRoutes: async () => (["api", "zdr"] as const).map(kind => ({id: kind, label: kind, kind, apiKey: "fixture-key", enabled: true, priority: 0, visibleModels: ["exclusive"]})),
+    }});
+    const unauthorized = await postResponses(proxy, {model: "api/exclusive"}, "/responses", {authorization: "Bearer unknown"});
+    expect(unauthorized.status).toBe(401); await unauthorized.text();
+    expect(read).not.toHaveBeenCalled();
+    for (const kind of ["api", "zdr"]) {
+      const response = await postResponses(proxy, {model: `${kind}/exclusive`, input: "test", stream: true});
+      expect(response.status).toBe(200); await response.text();
+    }
+    const oauth = await postResponses(proxy, {model: "gpt-5.6-sol", stream: true});
+    expect(oauth.status).toBe(503);
+    expect((await oauth.json()).error.code).toBe("native_account_storage_unavailable");
+    expect(calls.every(call => call.url.startsWith("https://api.openai.com/"))).toBe(true);
+  });
+
+	it("does not let a late rejection of the old token invalidate a new login", async () => {
+		const storage = createStorage(Date.now(), 1);
+		const manager = new AccountManager(undefined, storage);
+		const disk = structuredClone(storage);
+		let releaseOld!: (response: Response) => void;
+		const oldResponse = new Promise<Response>(resolve => { releaseOld = resolve; });
+		let oldSent!: () => void;
+		const sent = new Promise<void>(resolve => { oldSent = resolve; });
+		const { calls, fetchImpl } = createRecordingFetch(call => {
+			if (call.headers.get("authorization") === "Bearer access-1") {
+				oldSent(); return oldResponse;
+			}
+			return textEventStream();
+		});
+		const proxy = await startProxy({ accountManager: manager, fetchImpl, options: {
+			nativeOpenai: false, forcedAccountIndex: 0,
+			readNativeAccountStorage: async () => structuredClone(disk),
+		} });
+		const first = postResponses(proxy, { model: "gpt-5.6-sol", stream: true });
+		await sent;
+		Object.assign(disk.accounts[0]!, { accessToken: "new-login", refreshToken: "new-refresh" });
+		try {
+			const fresh = await postResponses(proxy, { model: "gpt-5.6-sol", stream: true });
+			expect(fresh.status).toBe(200); await fresh.text();
+		} finally {
+			releaseOld(Response.json({ error: { code: "token_revoked", message: "Token has been invalidated" } }, { status: 401 }));
+			await (await first).text();
+		}
+		const next = await postResponses(proxy, { model: "gpt-5.6-sol", stream: true });
+		expect(next.status).toBe(200); await next.text();
+		expect(manager.getAccountByIndex(0)?.authInvalidatedAt).toBeUndefined();
+		expect(calls.slice(1).every(call => call.headers.get("authorization") === "Bearer new-login")).toBe(true);
+	});
+
+	it("recovers a strict pin after re-login without restarting or resetting other state", async () => {
+		const storage = createStorage(Date.now());
+		const manager = new AccountManager(undefined, storage);
+		const disk = structuredClone(storage);
+		const pinned = manager.getAccountByIndex(0)!;
+		const other = manager.getAccountByIndex(1)!;
+		manager.markAuthInvalidated(other);
+		const unrelatedLimit = Date.now() + 600_000;
+		pinned.rateLimitResetTimes["codex:unrelated-model"] = unrelatedLimit;
+		const { calls, fetchImpl } = createRecordingFetch(call =>
+			call.headers.get("authorization") === "Bearer access-1"
+				? Response.json({ error: { code: "token_invalidated", message: "Token has been invalidated" } }, { status: 401 })
+				: textEventStream());
+		const proxy = await startProxy({ accountManager: manager, fetchImpl, options: {
+			nativeOpenai: false, forcedAccountIndex: 0,
+			readNativeAccountStorage: async () => structuredClone(disk),
+		} });
+		const startedAt = proxy.getStatus().startedAt;
+		const first = await postResponses(proxy, { model: "gpt-5.6-sol", stream: true });
+		expect(first.status).toBe(401); await first.text();
+		expect(pinned.authInvalidatedAt).toBeDefined();
+		const blocked = await postResponses(proxy, { model: "gpt-5.6-sol", stream: true });
+		expect(blocked.status).toBe(503);
+		expect((await blocked.json()).error.code).toBe("codex_pinned_account_unavailable");
+		expect(calls).toHaveLength(1);
+		Object.assign(disk.accounts[0]!, {
+			accessToken: "relogin-access", refreshToken: "relogin-refresh",
+			expiresAt: Date.now() + 7_200_000,
+		});
+		for (let i = 0; i < 2; i++) {
+			const recovered = await postResponses(proxy, { model: "gpt-5.6-sol", stream: true });
+			expect(recovered.status).toBe(200); await recovered.text();
+		}
+		expect(proxy.getStatus().startedAt).toBe(startedAt);
+		expect(proxy.getStatus().lastAccountIndex).toBe(0);
+		expect(calls.slice(1).map(c => c.headers.get("authorization"))).toEqual(["Bearer relogin-access", "Bearer relogin-access"]);
+		expect(calls.every(c => c.headers.get("chatgpt-account-id") === "acc_1")).toBe(true);
+		expect(pinned.authInvalidatedAt).toBeUndefined();
+		expect(pinned.cooldownReason).toBeUndefined();
+		expect(pinned.rateLimitResetTimes["codex:unrelated-model"]).toBe(unrelatedLimit);
+		expect(other.authInvalidatedAt).toBeDefined();
+		expect(other.access).toBe("access-2");
+	});
+
+	it.each([undefined, "unknown", "access-1"])("requires the local client key before reading storage: %s", async token => {
+		const manager = new AccountManager(undefined, createStorage(Date.now()));
+		const read = vi.fn(async () => createStorage(Date.now()));
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream());
+		const proxy = await startProxy({ accountManager: manager, fetchImpl, options: {
+			nativeOpenai: false, readNativeAccountStorage: read,
+		} });
+		const response = await fetch(`${proxy.baseUrl}/models`, {
+			headers: token ? { authorization: `Bearer ${token}` } : {},
+		});
+		expect(response.status).toBe(401); await response.text();
+		expect(read).not.toHaveBeenCalled();
+		expect(calls).toHaveLength(0);
+	});
+
+	it("keeps a rate-limit block after credential replacement", async () => {
+		const storage = createStorage(Date.now());
+		const manager = new AccountManager(undefined, storage);
+		const disk = structuredClone(storage);
+		const account = manager.getAccountByIndex(0)!;
+		const until = Date.now() + 600_000;
+		account.rateLimitResetTimes[getModelFamily("gpt-5.6-sol")] = until;
+		Object.assign(disk.accounts[0]!, { accessToken: "relogin-access", refreshToken: "relogin-refresh" });
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream());
+		const proxy = await startProxy({ accountManager: manager, fetchImpl, options: {
+			nativeOpenai: false, forcedAccountIndex: 0, readNativeAccountStorage: async () => disk,
+		} });
+		const response = await postResponses(proxy, { model: "gpt-5.6-sol", stream: true });
+		expect(response.status).toBe(503); await response.text();
+		expect(account.access).toBe("relogin-access");
+		expect(calls).toHaveLength(0);
+		expect(account.rateLimitResetTimes[getModelFamily("gpt-5.6-sol")]).toBe(until);
+	});
+
+	it("does not route from a missing store and recovers when the store returns", async () => {
+		const storage = createStorage(Date.now(), 1);
+		const manager = new AccountManager(undefined, storage);
+		let disk: AccountStorageV3 | null = null;
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream());
+		const proxy = await startProxy({ accountManager: manager, fetchImpl, options: {
+			nativeOpenai: false, forcedAccountIndex: 0, readNativeAccountStorage: async () => disk,
+		} });
+		const missing = await postResponses(proxy, { model: "gpt-5.6-sol", stream: true });
+		expect(missing.status).toBe(503);
+		expect((await missing.json()).error.code).toBe("native_account_storage_unavailable");
+		expect(calls).toHaveLength(0);
+		disk = storage;
+		const recovered = await postResponses(proxy, { model: "gpt-5.6-sol", stream: true });
+		expect(recovered.status).toBe(200); await recovered.text();
+	});
+
+	it("honors disk disablement before dispatch even if credentials were refreshed", async () => {
+		const storage = createStorage(Date.now());
+		const manager = new AccountManager(undefined, storage);
+		const disk = structuredClone(storage);
+		const { calls, fetchImpl } = createRecordingFetch(() => textEventStream());
+		const proxy = await startProxy({ accountManager: manager, fetchImpl, options: {
+			nativeOpenai: false, forcedAccountIndex: 0, readNativeAccountStorage: async () => disk,
+		} });
+		const refresh = vi.spyOn(tokenRefreshRuntime, "ensureFreshAccessToken");
+		refresh.mockImplementationOnce(async params => {
+			disk.accounts[0]!.enabled = false;
+			return { ok: true, accessToken: params.account.access!, account: params.account, accountManager: params.accountManager };
+		});
+		const response = await postResponses(proxy, { model: "gpt-5.6-sol", stream: true });
+		expect(response.status).toBe(503);
+		expect((await response.json()).error.code).toBe("routing_configuration_changed");
+		expect(calls).toHaveLength(0);
+		refresh.mockRestore();
+	});
+});
+
 describe("native re-login while router is running", () => {
 	it("accepts the newly saved credential and drops the obsolete auth cooldown", async () => {
 		const storage = createStorage(Date.now()); const accountManager = new AccountManager(undefined, storage);
@@ -5743,7 +5998,7 @@ describe("native inventory read resilience",()=>{
   for(let i=0;i<2;i++){const response=await getModels(proxy,undefined,{authorization:'Bearer access-1'});await response.text();expect(response.status).toBe(401);}
   expect(calls).toHaveLength(1);
  });
- it("coalesces concurrent inventory reads and replaces the manager only once",async()=>{
+ it("serializes concurrent inventory reads and replaces the manager only once",async()=>{
   const storage=createStorage(Date.now(),1),manager=new AccountManager(undefined,storage);
   let release!:()=>void,started!:()=>void;
   const gate=new Promise<void>(r=>release=r),entered=new Promise<void>(r=>started=r);
@@ -5756,10 +6011,13 @@ describe("native inventory read resilience",()=>{
   const mode=vi.spyOn(AccountManager.prototype,'setRoutingMutexMode');
   const {fetchImpl}=createRecordingFetch(()=>Response.json({models:[{slug:'model-test'}]}));
   const proxy=await startProxy({accountManager:manager,fetchImpl,options:{nativeOpenai:true,readNativeAccountStorage:read}});mode.mockClear();
-  const first=getModels(proxy);await entered;const second=getModels(proxy);
-  await vi.waitFor(()=>expect(readerCalls).toHaveBeenCalledTimes(2));
+  const lock=watchCredentialLock();
+  const first=getModels(proxy);await entered;lock.arm();const second=getModels(proxy);
+  // The second request has reached the lock the first read holds.
+  await lock.parked;await drainMicrotasks();
+  expect(readerCalls).toHaveBeenCalledTimes(1);
   release();await Promise.all([first.then(r=>r.text()),second.then(r=>r.text())]);
-  expect(read).toHaveBeenCalledTimes(1);expect(mode).toHaveBeenCalledTimes(1);
+  expect(read).toHaveBeenCalledTimes(2);expect(mode).toHaveBeenCalledTimes(1);
  });
  it("preserves unexpired 429 state across inventory changes",async()=>{
   const now=Date.now(),manager=new AccountManager(undefined,createStorage(now,1));
@@ -5781,6 +6039,58 @@ it("clamps a reference catalog's context to the serving pool",async()=>{
 });
 
 describe("explicit API model routes",()=>{
+	it("releases API recovery admission only after the forwarded stream completes", async () => {
+		let now = 1_800_000_000_000, posts = 0;
+		let stream!: ReadableStreamDefaultController<Uint8Array>;
+		const routes = [{id:"fixture",label:"Fixture",kind:"api" as const,apiKey:"fixture-key",enabled:true,priority:0,visibleModels:["exclusive"]}];
+		const {fetchImpl} = createRecordingFetch(call => {
+			if (call.url.endsWith("/models")) return Response.json({data:[{id:"exclusive"}]});
+			posts++;
+			if (posts === 1) return Response.json({error:{code:"rate_limit_exceeded"}}, {status:429,headers:{"retry-after":"1"}});
+			if (posts > 2) return textEventStream('data: {"type":"response.completed","response":{}}\n\n');
+			return new Response(new ReadableStream<Uint8Array>({start(controller) {stream=controller;controller.enqueue(new TextEncoder().encode('data: {"type":"response.created"}\n\n'));}}),{headers:{"content-type":"text/event-stream"}});
+		});
+		const proxy=await startProxy({accountManager:new AccountManager(undefined,createStorage(now,1)),fetchImpl,options:{now:()=>now,apiAdmissionWaitMs:0,readApiRoutes:async()=>routes}});
+		const body={model:"api/exclusive",input:"fixture",stream:true};
+		const limited=await postResponses(proxy,body); expect(limited.status).toBe(429); await limited.text();
+		now+=2000;
+		const recovery=await postResponses(proxy,body);
+		expect(recovery.status).toBe(200);
+		const blocked=await postResponses(proxy,body); expect(blocked.status).toBe(429); await blocked.text();
+		expect(posts).toBe(2);
+		stream.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{}}\n\n'));stream.close();
+		await recovery.text();
+		await vi.waitFor(async()=>{
+			const next=await postResponses(proxy,body); expect(next.status).toBe(200); await next.text();
+		});
+		expect(posts).toBe(3);
+	});
+	it.each(["api", "zdr", "psp"] as const)("records interrupted %s streams as cancellation", async kind => {
+		const recorded: Record<string, unknown>[] = [];
+		vi.spyOn(runtimePolicy, "createRuntimeUsageRecorder").mockImplementation(() => ({
+			hasRecorded: () => recorded.length > 0,
+			record: async input => { recorded.push(input as unknown as Record<string, unknown>); },
+		}));
+		const { ApiModelRuntime } = await import("../lib/runtime/api-model-runtime.js");
+		const recordFailure = vi.spyOn(ApiModelRuntime.prototype, "recordStreamFailure");
+		const cancel = vi.fn();
+		const routes = [{ id: "fixture", label: "Fixture", kind, apiKey: "fixture-api-key", enabled: true, priority: 0, visibleModels: ["exclusive"] }];
+		const { fetchImpl } = createRecordingFetch(call => call.url.endsWith("/models")
+			? Response.json({ data: [{ id: "exclusive" }] })
+			: new Response(new ReadableStream<Uint8Array>({
+				start(controller) { controller.enqueue(new TextEncoder().encode('data: {"type":"response.created"}\n\n')); },
+				cancel,
+			}), { headers: { "content-type": "text/event-stream" } }));
+		const proxy = await startProxy({ accountManager: new AccountManager(undefined, createStorage(Date.now(), 1)), fetchImpl, options: { readApiRoutes: async () => routes } });
+		const response = await postResponses(proxy, { model: `${kind}/exclusive`, input: "test", stream: true });
+		const reader = response.body!.getReader();
+		expect((await reader.read()).done).toBe(false);
+		await reader.cancel();
+		await vi.waitFor(() => expect(recorded.at(-1)).toMatchObject({ outcome: "cancelled", errorCode: "client_disconnected" }));
+		expect(cancel).toHaveBeenCalledTimes(1);
+		expect(recordFailure).not.toHaveBeenCalled();
+		expect(proxy.getStatus().lastError).toBeNull();
+	});
 	it.each([
 		["api", "response.completed"], ["api", "response.created"],
 		["zdr", "response.completed"], ["zdr", "response.created"],
@@ -5940,14 +6250,14 @@ describe("native picker refresh",()=>{
 });
 
 describe("API-only credential inventory",()=>{
- it("serves explicit API models with local authentication when no OAuth pool is stored",async()=>{
+ it.each(["api","zdr","psp"] as const)("serves explicit %s models with local authentication when no OAuth pool is stored",async kind=>{
   const manager=new AccountManager(undefined,createStorage(Date.now()));
   const {calls,fetchImpl}=createRecordingFetch(call=>call.url.endsWith("/models")?Response.json({data:[{id:"exclusive"}]}):textEventStream('data: {"type":"response.completed","response":{}}\n\n'));
-  const proxy=await startProxy({accountManager:manager,fetchImpl,options:{nativeOpenai:true,readNativeAccountStorage:async()=>null,readApiRoutes:async()=>[{id:"fixture",label:"API fixture",kind:"api",apiKey:"fixture-key",enabled:true,priority:0,visibleModels:["exclusive"]}]}});
-  const result=await postResponses(proxy,{model:"api/exclusive",input:"test"});
+  const proxy=await startProxy({accountManager:manager,fetchImpl,options:{nativeOpenai:true,readNativeAccountStorage:async()=>null,readApiRoutes:async()=>[{id:"fixture",label:"API fixture",kind,apiKey:"fixture-key",enabled:true,priority:0,visibleModels:["exclusive"]}]}});
+  const result=await postResponses(proxy,{model:`${kind}/exclusive`,input:"test"});
   expect(result.status).toBe(200);await result.text();
   expect(calls.every(c=>c.url.startsWith("https://api.openai.com/"))).toBe(true);
-  const stale=await postResponses(proxy,{model:"api/exclusive",input:"test"},"/responses",{authorization:"Bearer access-1"});
+  const stale=await postResponses(proxy,{model:`${kind}/exclusive`,input:"test"},"/responses",{authorization:"Bearer access-1"});
   expect(stale.status).toBe(401);await stale.text();
  });
 });

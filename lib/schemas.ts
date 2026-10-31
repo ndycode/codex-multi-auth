@@ -343,6 +343,7 @@ export type AccountsJournalEntryFromSchema = z.infer<
  * Token failure reason codes.
  */
 const TokenFailureReasonSchema = z.enum([
+	"coordination_error",
 	"http_error",
 	"invalid_response",
 	"network_error",

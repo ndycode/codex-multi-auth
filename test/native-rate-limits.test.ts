@@ -26,6 +26,27 @@ it('writes the Codex CLI mirror id, never a refused explicit binding, into the t
  expect(JSON.parse(await readFile(join(dir,'seen.json'),'utf8')).account).toBe('native-default');
 });
 
+it('defines the required provider without routing an isolated account through the shared proxy', async () => {
+ const script = join(dir, 'required-provider.mjs');
+ await writeFile(script, `
+  import { readFileSync } from 'node:fs';
+  import { createInterface } from 'node:readline';
+  const config = readFileSync(process.env.CODEX_HOME + '/config.toml', 'utf8');
+  if (!config.includes('[model_providers.codex-multi-auth-runtime-proxy]')) process.exit(2);
+  createInterface({input: process.stdin}).on('line', line => {
+   const m = JSON.parse(line);
+   if (m.id === undefined) return;
+   console.log(JSON.stringify({id: m.id, result: m.method === 'initialize' ? {} : {config}}));
+  });
+ `);
+ const result = await nativeRateLimitsRpc(auth, 'account/rateLimits/read', {}, {
+  command: [process.execPath, script], tempRoot: dir,
+ });
+ expect(result).toEqual({config: expect.stringContaining('base_url = "https://chatgpt.com/backend-api/codex"')});
+ expect(result).toEqual({config: expect.stringContaining('requires_openai_auth = true')});
+ expect(JSON.stringify(result)).not.toMatch(/127\.0\.0\.1|45523|env_key/);
+});
+
 it('keeps the token-bearing home under the user-private multi-auth directory and sweeps stale ones',async()=>{
  const {mkdir,utimes,stat}=await import('node:fs/promises');
  const script=await fixture();

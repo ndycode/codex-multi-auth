@@ -6,6 +6,8 @@ import { codexCliAccountIdFor } from '../auth/token-utils.js';
 import type { CodexCliMirror } from '../storage/public-types.js';
 import { getCodexMultiAuthDir } from '../runtime-paths.js';
 import { isRecord } from '../utils.js';
+import { CODEX_BASE_URL } from '../constants.js';
+import { RUNTIME_ROTATION_PROXY_PROVIDER_ID } from '../runtime-constants.js';
 
 export interface NativeUsageAuth {accessToken:string;accountId:string;expiresAt:number;idToken?:string;codexCliMirror?:CodexCliMirror}
 /** Longer than any live session (15s timeout), so only crash leftovers are swept. */
@@ -52,7 +54,19 @@ export async function nativeRateLimitsRpc(auth:NativeUsageAuth,method:Method,par
  try{
   await fs.chmod(dir,0o700);
   await fs.writeFile(join(dir,'auth.json'),JSON.stringify({auth_mode:'chatgpt',OPENAI_API_KEY:null,tokens:{access_token:auth.accessToken,id_token:auth.idToken??auth.accessToken,refresh_token:'',account_id:codexCliAccountIdFor(auth,auth.accessToken,auth.idToken)},last_refresh:new Date().toISOString()}),{mode:0o600});
-  await fs.writeFile(join(dir,'config.toml'),'cli_auth_credentials_store = "file"\n',{mode:0o600});
+  // System requirements can force our provider even in an isolated CODEX_HOME.
+  // Define that name here, but route directly with this session's account token:
+  // routing through the shared proxy could query or redeem another pinned account.
+  const config = [
+   'cli_auth_credentials_store = "file"',
+   `[model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}]`,
+   'name = "OpenAI"',
+   `base_url = "${CODEX_BASE_URL}/codex"`,
+   'wire_api = "responses"',
+   'requires_openai_auth = true',
+   '',
+  ].join('\n');
+  await fs.writeFile(join(dir,'config.toml'),config,{mode:0o600});
   const env:NodeJS.ProcessEnv={...process.env,CODEX_HOME:dir};
   // A native backend must not inherit API authentication or our own proxy route.
   for(const key of ['NODE_OPTIONS','OPENAI_API_KEY','OPENAI_BASE_URL','CODEX_API_KEY'])delete env[key];

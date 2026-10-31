@@ -160,32 +160,14 @@ describe("RefreshLeaseCoordinator", () => {
     platformSpy.mockRestore();
   });
 
-  it("recovers from stale lock payload", async () => {
-    const coordinator = new RefreshLeaseCoordinator({
-      enabled: true,
-      leaseDir,
-      leaseTtlMs: 2_000,
-      waitTimeoutMs: 300,
-      pollIntervalMs: 20,
-    });
-
-    const tokenHash =
-      "7f4a7c15f6f8c0f98d95c58f18f6f31e4f55cc4c52f8f4de4fd4d95a88e4866c";
-    await mkdir(leaseDir, { recursive: true });
-    await writeFile(
-      join(leaseDir, `${tokenHash}.lock`),
-      JSON.stringify({
-        tokenHash,
-        pid: 9999,
-        acquiredAt: Date.now() - 10_000,
-        expiresAt: Date.now() - 1_000,
-      }),
-      "utf8",
-    );
-
-    const handle = await coordinator.acquire("token-stale");
-    expect(handle.role).toBe("owner");
-    await handle.release(sampleSuccessResult);
+  it.each([process.pid, 99999999])("does not reclaim an expired lock, even after owner exit: %s", async pid => {
+    const token = "expired-owner";
+    const lockPath = join(leaseDir, `${hashToken(token)}.lock`);
+    const payload = JSON.stringify({tokenHash: hashToken(token), pid, acquiredAt: 1, expiresAt: 2, nonce: "owner"});
+    await writeFile(lockPath, payload);
+    const coordinator = new RefreshLeaseCoordinator({leaseDir, waitTimeoutMs: 0});
+    expect((await coordinator.acquire(token)).role).toBe("blocked");
+    expect(await readFile(lockPath, "utf8")).toBe(payload);
   });
 
   it("supports bypass mode", async () => {
@@ -214,123 +196,19 @@ describe("RefreshLeaseCoordinator", () => {
     await writeFile(lockPath, "{", "utf8");
 
     const handle = await coordinator.acquire(refreshToken);
-    expect(handle.role).toBe("bypass");
+    expect(handle.role).toBe("blocked");
     const lockContent = await readFile(lockPath, "utf8");
     expect(lockContent).toBe("{");
   });
 
-  it("retries stale lock cleanup when unlink is temporarily busy", async () => {
-    const refreshToken = "token-retry";
-    const tokenHash = hashToken(refreshToken);
-    let busyCount = 0;
-    const originalUnlink = fsPromises.unlink.bind(fsPromises);
-    const fsOps = {
-      mkdir: fsPromises.mkdir.bind(fsPromises),
-      open: fsPromises.open.bind(fsPromises),
-      writeFile: fsPromises.writeFile.bind(fsPromises),
-      rename: fsPromises.rename.bind(fsPromises),
-      unlink: vi.fn(async (path: Parameters<typeof fsPromises.unlink>[0]) => {
-        if (String(path).endsWith(".lock") && busyCount < 2) {
-          busyCount += 1;
-          const error = new Error("busy") as NodeJS.ErrnoException;
-          error.code = "EBUSY";
-          throw error;
-        }
-        return originalUnlink(path);
-      }),
-      readFile: fsPromises.readFile.bind(fsPromises),
-      stat: fsPromises.stat.bind(fsPromises),
-      readdir: fsPromises.readdir.bind(fsPromises),
-    };
-
-    const coordinator = new RefreshLeaseCoordinator({
-      enabled: true,
-      leaseDir,
-      leaseTtlMs: 2_000,
-      waitTimeoutMs: 400,
-      pollIntervalMs: 20,
-      resultTtlMs: 2_000,
-      fsOps,
-    });
-
-    await mkdir(leaseDir, { recursive: true });
-    const lockPath = join(leaseDir, `${tokenHash}.lock`);
-    await writeFile(
-      lockPath,
-      JSON.stringify({
-        tokenHash,
-        pid: 1111,
-        acquiredAt: Date.now() - 10_000,
-        expiresAt: Date.now() - 5_000,
-      }),
-      "utf8",
-    );
-
-    const handle = await coordinator.acquire(refreshToken);
-    expect(handle.role).toBe("owner");
-    expect(fsOps.unlink).toHaveBeenCalled();
-    expect(busyCount).toBe(2);
-    await handle.release(sampleSuccessResult);
-  });
-
-  it("times out to bypass when stale lock cannot be deleted", async () => {
-    const refreshToken = "token-timeout";
-    const tokenHash = hashToken(refreshToken);
-    const originalUnlink = fsPromises.unlink.bind(fsPromises);
-    const fsOps = {
-      mkdir: fsPromises.mkdir.bind(fsPromises),
-      open: fsPromises.open.bind(fsPromises),
-      writeFile: fsPromises.writeFile.bind(fsPromises),
-      rename: fsPromises.rename.bind(fsPromises),
-      unlink: vi.fn(async (path: Parameters<typeof fsPromises.unlink>[0]) => {
-        if (String(path).endsWith(".lock")) {
-          const error = new Error("busy") as NodeJS.ErrnoException;
-          error.code = "EBUSY";
-          throw error;
-        }
-        return originalUnlink(path);
-      }),
-      readFile: fsPromises.readFile.bind(fsPromises),
-      stat: fsPromises.stat.bind(fsPromises),
-      readdir: fsPromises.readdir.bind(fsPromises),
-    };
-
-    const coordinator = new RefreshLeaseCoordinator({
-      enabled: true,
-      leaseDir,
-      leaseTtlMs: 2_000,
-      waitTimeoutMs: 140,
-      pollIntervalMs: 25,
-      resultTtlMs: 2_000,
-      fsOps,
-    });
-
-    await mkdir(leaseDir, { recursive: true });
-    const lockPath = join(leaseDir, `${tokenHash}.lock`);
-    await writeFile(
-      lockPath,
-      JSON.stringify({
-        tokenHash,
-        pid: 2222,
-        acquiredAt: Date.now() - 10_000,
-        expiresAt: Date.now() - 5_000,
-      }),
-      "utf8",
-    );
-
-    const handle = await coordinator.acquire(refreshToken);
-    expect(handle.role).toBe("bypass");
-    expect(fsOps.unlink).toHaveBeenCalled();
-    await handle.release(sampleSuccessResult);
-  });
-  it("treats empty refresh token as bypass", async () => {
+  it("blocks an empty refresh token", async () => {
     const coordinator = new RefreshLeaseCoordinator({
       enabled: true,
       leaseDir,
     });
 
     const handle = await coordinator.acquire("   ");
-    expect(handle.role).toBe("bypass");
+    expect(handle.role).toBe("blocked");
     await handle.release(sampleSuccessResult);
   });
 
@@ -390,7 +268,7 @@ describe("RefreshLeaseCoordinator", () => {
     }
   });
 
-  it("bypasses when lock open fails with non-EEXIST error", async () => {
+  it("blocks when lock open fails with non-EEXIST error", async () => {
     const fsOps = {
       mkdir: fsPromises.mkdir.bind(fsPromises),
       open: vi.fn(async () => {
@@ -414,8 +292,52 @@ describe("RefreshLeaseCoordinator", () => {
     });
 
     const handle = await coordinator.acquire("token-open-error");
-    expect(handle.role).toBe("bypass");
+    expect(handle.role).toBe("blocked");
     expect(fsOps.open).toHaveBeenCalled();
+  });
+
+  it.each([
+    ["write", "EIO"],
+    ["close", "EPERM"],
+  ])("removes its own lock when the %s after an exclusive open fails (%s)", async (step, code) => {
+    const fail = () => Object.assign(new Error(`${step} failed`), { code });
+    const fsOps = {
+      mkdir: fsPromises.mkdir.bind(fsPromises),
+      open: vi.fn(async (path: string, flags: string, mode: number) => {
+        const handle = await fsPromises.open(path, flags, mode);
+        return {
+          writeFile: async (...args: Parameters<typeof handle.writeFile>) => {
+            if (step === "write") throw fail();
+            return handle.writeFile(...args);
+          },
+          close: async () => {
+            await handle.close();
+            if (step === "close") throw fail();
+          },
+        };
+      }) as unknown as typeof fsPromises.open,
+      writeFile: fsPromises.writeFile.bind(fsPromises),
+      rename: fsPromises.rename.bind(fsPromises),
+      unlink: vi.fn(fsPromises.unlink.bind(fsPromises)),
+      readFile: fsPromises.readFile.bind(fsPromises),
+      stat: fsPromises.stat.bind(fsPromises),
+      readdir: fsPromises.readdir.bind(fsPromises),
+    };
+    const refreshToken = `token-orphan-${step}`;
+    const lockPath = join(leaseDir, `${hashToken(refreshToken)}.lock`);
+    const failing = new RefreshLeaseCoordinator({ enabled: true, leaseDir, waitTimeoutMs: 80, pollIntervalMs: 20, fsOps });
+
+    const handle = await failing.acquire(refreshToken);
+
+    expect(handle.role).toBe("blocked");
+    expect(fsOps.unlink).toHaveBeenCalledWith(lockPath);
+    await expect(fsPromises.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+    // Once the filesystem recovers, the token can be refreshed again instead
+    // of waiting out a lock nobody will ever release.
+    const healthy = new RefreshLeaseCoordinator({ enabled: true, leaseDir, waitTimeoutMs: 80, pollIntervalMs: 20 });
+    const owner = await healthy.acquire(refreshToken);
+    expect(owner.role).toBe("owner");
+    await owner.release();
   });
 
   it("ignores mismatched result payload and stale results", async () => {
@@ -469,94 +391,16 @@ describe("RefreshLeaseCoordinator", () => {
     });
   });
 
-  it("handles lock staleness edge cases from stat and payload validation", async () => {
-    const refreshToken = "token-staleness-cases";
-    const tokenHash = hashToken(refreshToken);
-    const lockPath = join(leaseDir, `${tokenHash}.lock`);
-    await mkdir(leaseDir, { recursive: true });
-
-    await writeFile(
-      lockPath,
-      JSON.stringify({ tokenHash, pid: "bad" }),
-      "utf8",
-    );
-    let coordinator = new RefreshLeaseCoordinator({
-      enabled: true,
-      leaseDir,
-      leaseTtlMs: 2_000,
-      waitTimeoutMs: 120,
-      pollIntervalMs: 20,
-    });
-    let handle = await coordinator.acquire(refreshToken);
-    expect(handle.role).toBe("bypass");
-
-    await writeFile(
-      lockPath,
-      JSON.stringify({
-        tokenHash,
-        pid: process.pid,
-        acquiredAt: Date.now(),
-        expiresAt: Date.now() + 5_000,
-      }),
-      "utf8",
-    );
-    await fsPromises.utimes(
-      lockPath,
-      new Date(Date.now() - 10_000),
-      new Date(Date.now() - 10_000),
-    );
-    coordinator = new RefreshLeaseCoordinator({
-      enabled: true,
-      leaseDir,
-      leaseTtlMs: 1_000,
-      waitTimeoutMs: 160,
-      pollIntervalMs: 20,
-    });
-    handle = await coordinator.acquire(refreshToken);
-    expect(handle.role).toBe("owner");
-    await handle.release(sampleSuccessResult);
-    await fsPromises.rm(join(leaseDir, `${tokenHash}.result.json`), {
-      force: true,
-    });
-
-    await writeFile(
-      lockPath,
-      JSON.stringify({
-        tokenHash,
-        pid: process.pid,
-        acquiredAt: Date.now(),
-        expiresAt: Date.now() + 5_000,
-      }),
-      "utf8",
-    );
-    const fsOps = {
-      mkdir: fsPromises.mkdir.bind(fsPromises),
-      open: fsPromises.open.bind(fsPromises),
-      writeFile: fsPromises.writeFile.bind(fsPromises),
-      rename: fsPromises.rename.bind(fsPromises),
-      unlink: fsPromises.unlink.bind(fsPromises),
-      readFile: fsPromises.readFile.bind(fsPromises),
-      stat: vi.fn(async (...args: Parameters<typeof fsPromises.stat>) => {
-        if (String(args[0]) === lockPath) {
-          const error = new Error("access denied") as NodeJS.ErrnoException;
-          error.code = "EACCES";
-          throw error;
-        }
-        return fsPromises.stat(...args);
-      }),
-      readdir: fsPromises.readdir.bind(fsPromises),
-    };
-
-    coordinator = new RefreshLeaseCoordinator({
-      enabled: true,
-      leaseDir,
-      leaseTtlMs: 5_000,
-      waitTimeoutMs: 120,
-      pollIntervalMs: 20,
-      fsOps,
-    });
-    handle = await coordinator.acquire(refreshToken);
-    expect(handle.role).toBe("bypass");
+  it("does not use old mtime to steal a live lock", async () => {
+    const token = "old-mtime";
+    const coordinator = new RefreshLeaseCoordinator({leaseDir, waitTimeoutMs: 0});
+    const owner = await coordinator.acquire(token);
+    const lockPath = join(leaseDir, `${hashToken(token)}.lock`);
+    const oldTime = new Date(0);
+    await fsPromises.utimes(lockPath, oldTime, oldTime);
+    expect((await coordinator.acquire(token)).role).toBe("blocked");
+    await owner.release(sampleSuccessResult);
+    expect((await coordinator.acquire(token)).role).toBe("follower");
   });
 
   it("rejects array JSON payloads in result and lock files", async () => {
@@ -584,10 +428,10 @@ describe("RefreshLeaseCoordinator", () => {
     await owner.release();
 
     // An array lock file is an invalid payload: never owned, never stale, so
-    // the acquire times out and bypasses instead of stealing the lock.
+    // the acquire times out and blocks instead of stealing the lock.
     await writeFile(lockPath, "[]\n", "utf8");
     const blocked = await coordinator.acquire(refreshToken);
-    expect(blocked.role).toBe("bypass");
+    expect(blocked.role).toBe("blocked");
     await blocked.release();
     await expect(readFile(lockPath, "utf8")).resolves.toBe("[]\n");
   });
@@ -617,9 +461,7 @@ describe("RefreshLeaseCoordinator", () => {
     };
     await privateApi.pruneExpiredArtifacts();
 
-    await expect(fsPromises.stat(staleLock)).rejects.toMatchObject({
-      code: "ENOENT",
-    });
+    await expect(readFile(staleLock, "utf8")).resolves.toBe("{}");
     await expect(fsPromises.stat(staleResult)).rejects.toMatchObject({
       code: "ENOENT",
     });
@@ -736,38 +578,33 @@ describe("RefreshLeaseCoordinator", () => {
       ),
     ).toBe(true);
   });
-  it("H2: a slow owner's release does not delete a lock stolen after its lease expired", async () => {
-    // Owner A acquires with a very short TTL. Its lease expires; owner B steals
-    // the lock and becomes the new owner. When A finally releases, it must NOT
-    // unlink B's lock (stress audit H2): cross-process mutual exclusion must not
-    // silently degrade to none.
-    const coordinator = new RefreshLeaseCoordinator({
-      enabled: true,
-      leaseDir,
-      leaseTtlMs: 30,
-      waitTimeoutMs: 2_000,
-      pollIntervalMs: 10,
-      resultTtlMs: 2_000,
-    });
-
-    const ownerA = await coordinator.acquire("token-steal");
-    expect(ownerA.role).toBe("owner");
-
-    // Let A's lease go stale (TTL 30ms), then B steals it.
-    await new Promise((r) => setTimeout(r, 120));
-    const ownerB = await coordinator.acquire("token-steal");
-    expect(ownerB.role).toBe("owner");
-
-    const tokenHash = createHash("sha256").update("token-steal").digest("hex");
-    const lockPath = join(leaseDir, `${tokenHash}.lock`);
-    const bPayload = JSON.parse(await readFile(lockPath, "utf8"));
-
-    // A releases late — must leave B's lock intact.
-    await ownerA.release(sampleSuccessResult);
-
-    const afterPayload = JSON.parse(await readFile(lockPath, "utf8"));
-    // Same lock B holds, with B's nonce — A did not delete it.
-    expect(afterPayload.nonce).toBe(bPayload.nonce);
+  it("rechecks a result published between cache lookup and lock acquisition", async () => {
+    const token = "publish-race";
+    const tokenHash = hashToken(token);
+    let published = false;
+    const coordinator = new RefreshLeaseCoordinator({leaseDir, waitTimeoutMs: 0, fsOps: {
+      ...fsPromises,
+      open: async (...args: Parameters<typeof fsPromises.open>) => {
+        if (!published) {
+          published = true;
+          await writeFile(join(leaseDir, `${tokenHash}.result.json`), JSON.stringify({tokenHash, createdAt: Date.now(), result: sampleSuccessResult}));
+        }
+        return fsPromises.open(...args);
+      },
+    }});
+    const handle = await coordinator.acquire(token);
+    expect(handle.role).toBe("follower");
+    expect(handle.result).toEqual(sampleSuccessResult);
   });
 
+  it("retains the lock if rotated credentials cannot be published", async () => {
+    const token = "publish-failure";
+    const coordinator = new RefreshLeaseCoordinator({leaseDir, waitTimeoutMs: 0, fsOps: {
+      ...fsPromises, rename: async () => { throw Object.assign(new Error("busy"), {code: "EBUSY"}); },
+    }});
+    const owner = await coordinator.acquire(token);
+    await expect(owner.release(sampleSuccessResult)).rejects.toThrow("busy");
+    await owner.release();
+    expect((await coordinator.acquire(token)).role).toBe("blocked");
+  });
 });

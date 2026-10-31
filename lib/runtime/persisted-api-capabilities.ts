@@ -1,3 +1,4 @@
+import { apiBaseUrl } from "../api-region.js";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
@@ -133,10 +134,10 @@ async function storedGeneration(route: ApiRouteCredential, model: string): Promi
 	const before = await fs.stat(path).catch(() => undefined);
 	if (!before) return undefined;
 	const current = (await loadApiRoutes()).find(value =>
-		value.id === route.id && value.kind === route.kind && value.apiKey === route.apiKey &&
+		value.id === route.id && value.kind === route.kind && value.apiKey === route.apiKey && apiBaseUrl(value) === apiBaseUrl(route) &&
 		value.enabled && value.probeCapabilities && value.visibleModels?.includes(model),
 	);
-	if (!current || JSON.stringify(current.accessPrograms) !== JSON.stringify(route.accessPrograms) || JSON.stringify(current.modelAccessPrograms) !== JSON.stringify(route.modelAccessPrograms)) return undefined;
+	if (!current || JSON.stringify(current.accessPrograms) !== JSON.stringify(route.accessPrograms) || JSON.stringify(current.modelAccessPrograms) !== JSON.stringify(route.modelAccessPrograms) || JSON.stringify(current.modelReasoningLevels) !== JSON.stringify(route.modelReasoningLevels)) return undefined;
 	if (route.capabilityEpoch && route.capabilityEpoch !== current.capabilityEpoch) return undefined;
 	if (current.capabilityEpoch) return current.capabilityEpoch;
 	const after = await fs.stat(path).catch(() => undefined);
@@ -215,7 +216,7 @@ async function enrichPersistedApiCapabilitiesImpl(
 	}
 	return mapWithConcurrency(models, 3, async (model) => {
 		const path = probeCachePath();
-		const key = createHash("sha256").update(route.id).update("\0").update(route.apiKey).update("\0").update(model.slug).digest("hex");
+		const key = createHash("sha256").update(route.id).update("\0").update(route.apiKey + (route.region === "us" ? "\0" + apiBaseUrl(route) : "")).update("\0").update(model.slug).digest("hex");
 		const memoryKey = `${path}\0${key}`;
 		let ownershipRoute = route;
 		let capturedOwnership = false;
@@ -234,7 +235,7 @@ async function enrichPersistedApiCapabilitiesImpl(
 				readOnlyOwner = true;
 				if (!capturedOwnership) {
 					const current = (await loadApiRoutes().catch(() => [])).find(value =>
-						value.id === route.id && value.kind === route.kind && value.apiKey === route.apiKey &&
+						value.id === route.id && value.kind === route.kind && value.apiKey === route.apiKey && apiBaseUrl(value) === apiBaseUrl(route) &&
 						(!route.capabilityEpoch || route.capabilityEpoch === value.capabilityEpoch),
 					);
 					if (current) {

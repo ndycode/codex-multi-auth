@@ -38,6 +38,8 @@ export const USAGE_SERVICE_TIERS = [
 	"flex",
 	"batch",
 	"scale",
+	// `gpt-6.1-sol` with `service_tier: "ultrafast"` (2026-10-08), 6x Standard.
+	"ultrafast",
 	"unknown",
 ] as const;
 

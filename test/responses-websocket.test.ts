@@ -5,6 +5,7 @@ import { createServer, type Server } from "node:http";
 import { once } from "node:events";
 import WebSocket, { WebSocketServer } from "ws";
 import { ResponsesWebSocketGateway } from "../lib/runtime/responses-websocket.js";
+import { ApiModelRuntime } from "../lib/runtime/api-model-runtime.js";
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
 	for (const close of cleanups.splice(0).reverse()) await close();
@@ -16,7 +17,7 @@ async function listen(server: Server) {
 	if (!address || typeof address === "string") throw Error("listen failed");
 	return `http://127.0.0.1:${address.port}`;
 }
-async function fixture(respond?: (ws: WebSocket, body: Record<string, unknown>, id: string) => boolean, options: {signal?: AbortSignal; sendFailure?: boolean; cancelBody?: () => void} = {}) {
+async function fixture(respond?: (ws: WebSocket, body: Record<string, unknown>, id: string) => boolean, options: {signal?: AbortSignal; sendFailure?: boolean; cancelBody?: () => void; bridgeKeepAliveMs?: number; bodyReadTimeoutMs?: number; upstreamSilenceMs?: number} = {}) {
 	const upstream = createServer();
 	const wss = new WebSocketServer({ server: upstream });
 	const calls: Record<string, unknown>[] = [];
@@ -89,6 +90,8 @@ async function fixture(respond?: (ws: WebSocket, body: Record<string, unknown>, 
 	});
 	const gateway = new ResponsesWebSocketGateway(fetch, {
 		maxPayloadBytes: 16384,
+		bridgeKeepAliveMs: options.bridgeKeepAliveMs,
+		upstreamSilenceMs: options.upstreamSilenceMs,
 	});
 	const server = createServer((req, res) => {
 		gateway.handle(req, async () => {
@@ -123,7 +126,20 @@ async function fixture(respond?: (ws: WebSocket, body: Record<string, unknown>, 
                 return;
             }
 			try {
-				if (response.body)
+				if (response.body && options.bodyReadTimeoutMs) {
+					const reader = response.body.getReader();
+					for (;;) {
+						let timer: NodeJS.Timeout | undefined;
+						const result = await Promise.race([
+							reader.read(),
+							new Promise<never>((_resolve, reject) => {
+								timer = setTimeout(() => reject(Error("bridge body read timeout")), options.bodyReadTimeoutMs);
+							}),
+						]).finally(() => clearTimeout(timer));
+						if (result.done) break;
+						res.write(result.value);
+					}
+				} else if (response.body)
 					for await (const chunk of response.body) res.write(chunk);
 				res.end();
 			} catch {
@@ -194,6 +210,30 @@ it("uses real upstream WebSockets and reuses the socket for a continuation", asy
 	});
 	expect(f.calls[0]).not.toHaveProperty("stream");
 });
+it("replaces an upstream socket before its five-minute lease expires", async () => {
+	const f = await fixture();
+	const ws = await f.connect();
+	await turn(ws, {
+		model: "api/shared",
+		input: [{ role: "user", content: "hello" }],
+	});
+	const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 4 * 60_000 + 1);
+	try {
+		await turn(ws, {
+			model: "api/shared",
+			previous_response_id: "resp_1",
+			input: [{ role: "user", content: "again" }],
+		});
+	} finally {
+		clock.mockRestore();
+	}
+	expect(f.connections()).toBe(2);
+	expect(f.calls[1]).not.toHaveProperty("previous_response_id");
+	expect(f.calls[1]?.input).toEqual(expect.arrayContaining([
+		{ role: "user", content: "hello" },
+		{ role: "user", content: "again" },
+	]));
+});
 it.each([undefined, false, true])("preserves caller permission metadata over WebSocket (%s)", async (enabled) => {
 	const f = await fixture();
 	const ws = await f.connect();
@@ -215,13 +255,13 @@ it.each([undefined, false, true])("preserves caller permission metadata over Web
 	expect(f.calls[0]?.client_metadata).toEqual(clientMetadata);
 });
 
-it("rejects unknown or cross-pool continuations without sending them upstream", async () => {
+it.each(["api","zdr","psp"] as const)("rejects unknown or cross-pool %s continuations without sending them upstream", async kind => {
 	const f = await fixture();
 	const ws = await f.connect();
 	expect(
 		(
 			await turn(ws, {
-				model: "zdr/shared",
+				model: `${kind}/shared`,
 				previous_response_id: "unknown",
 				input: [],
 			})
@@ -230,7 +270,7 @@ it("rejects unknown or cross-pool continuations without sending them upstream", 
 		type: "error",
 		error: { code: "previous_response_not_found" },
 	});
-	await turn(ws, { model: "zdr/shared", input: [] });
+	await turn(ws, { model: `${kind}/shared`, input: [] });
 	expect(
 		(
 			await turn(ws, {
@@ -271,16 +311,116 @@ it("fails explicitly for unsupported control events", async () => {
 	});
 	expect(f.calls).toHaveLength(0);
 });
+it("forwards steering to the active upstream response", async () => {
+	const f = await fixture((_ws, body) => body.model === "steer-target" || body.type === "response.steer");
+	const ws = await f.connect();
+	const created = once(ws, "message");
+	ws.send(JSON.stringify({ type: "response.create", model: "steer-target", input: [] }));
+	await created;
+	ws.send(JSON.stringify({ type: "response.steer", previous_response_id: "resp_1", input: "narrow scope" }));
+	await vi.waitFor(() => expect(f.calls).toHaveLength(2));
+	expect(f.calls[1]).toEqual({ type: "response.steer", previous_response_id: "resp_1", input: "narrow scope" });
+});
+it("rejects steering owned by another authenticated local session", async () => {
+	const f = await fixture((_ws, body) => body.model === "steer-target");
+	const owner = await f.connect();
+	const other = await f.connect();
+	const created = once(owner, "message");
+	owner.send(JSON.stringify({ type: "response.create", model: "steer-target", input: [] }));
+	await created;
+	const rejected = once(other, "message");
+	other.send(JSON.stringify({ type: "response.steer", previous_response_id: "resp_1", input: "not mine" }));
+	expect(JSON.parse((await rejected)[0].toString())).toMatchObject({
+		type: "error",
+		error: { code: "previous_response_not_found" },
+	});
+	expect(f.calls).toHaveLength(1);
+});
+it("keeps the local bridge readable during a quiet upstream response", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+	try {
+	const f = await fixture((ws, body, id) => {
+		if (body.model !== "quiet") return false;
+		setTimeout(() => ws.send(JSON.stringify({ type: "response.completed", response: { id, output: [] } })), 80);
+		return true;
+	}, { bridgeKeepAliveMs: 5, bodyReadTimeoutMs: 20 });
+	const ws = await f.connect();
+	const created = once(ws, "message");
+	const ping = once(ws, "ping");
+	const result = turn(ws, { model: "quiet", input: [] });
+	await created;
+	await vi.advanceTimersByTimeAsync(5);
+	await ping;
+	for (let elapsed = 5; elapsed < 80; elapsed += 5) {
+		await vi.advanceTimersByTimeAsync(5);
+		await new Promise<void>(resolve => setImmediate(resolve));
+	}
+	expect((await result).at(-1)?.type).toBe("response.completed");
+	} finally { vi.useRealTimers(); }
+});
+it("times out a genuinely silent upstream independently of bridge keepalives", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+	try {
+	const f = await fixture((_ws, body) => body.model === "silent", {
+		bridgeKeepAliveMs: 5,
+		bodyReadTimeoutMs: 20,
+		upstreamSilenceMs: 40,
+	});
+	const ws = await f.connect();
+	const created = once(ws, "message");
+	const result = turn(ws, { model: "silent", input: [] });
+	await created;
+	for (let elapsed = 0; elapsed < 40; elapsed += 5) {
+		await vi.advanceTimersByTimeAsync(5);
+		await new Promise<void>(resolve => setImmediate(resolve));
+	}
+	const events = await result;
+	expect(events[0]?.type).toBe("response.created");
+	expect(events.at(-1)).toMatchObject({ type: "error", error: { code: "upstream_websocket_disconnected" } });
+	expect(f.calls).toHaveLength(1);
+	} finally { vi.useRealTimers(); }
+});
+
+it("does not let a completed turn's silence timer terminate a later active turn", async () => {
+	let active: { socket: WebSocket; id: string } | undefined;
+	const f = await fixture((upstream, body, id) => {
+		if (body.model !== "active-continuation") return false;
+		active = { socket: upstream, id };
+		return true;
+	}, { bridgeKeepAliveMs: 10_000, upstreamSilenceMs: 1000 });
+	const ws = await f.connect();
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		expect((await turn(ws, { model: "first", input: [] })).at(-1)?.type).toBe("response.completed");
+		const created = once(ws, "message");
+		const continuation = turn(ws, { model: "active-continuation", input: [], previous_response_id: "resp_1" });
+		await created;
+		expect(active).toBeDefined();
+		await vi.advanceTimersByTimeAsync(600);
+		const delta = once(ws, "message");
+		active!.socket.send(JSON.stringify({ type: "response.output_text.delta", delta: "x" }));
+		await delta;
+		await vi.advanceTimersByTimeAsync(600);
+		if (active!.socket.readyState === WebSocket.OPEN)
+			active!.socket.send(JSON.stringify({ type: "response.completed", response: { id: active!.id, output: [] } }));
+		expect((await continuation).at(-1)?.type).toBe("response.completed");
+		expect(f.connections()).toBe(1);
+		expect(f.calls).toHaveLength(2);
+	} finally {
+		vi.useRealTimers();
+	}
+});
 
 it("does not replay after generation starts and the upstream disconnects", async () => {
 	const f = await fixture();
 	const ws = await f.connect();
 	const events = await turn(ws, { model: "disconnect", input: [] });
 	expect(events[0]?.type).toBe("response.created");
-	expect(events.at(-1)?.type).toBe("error");
+	expect(events.at(-1)).toMatchObject({ type: "error", status: 502, error: { code: "upstream_websocket_disconnected" } });
+	expect(events.at(-1)?.error).toMatchObject({ message: expect.stringContaining("Upstream WebSocket") });
 	expect(f.calls).toHaveLength(1);
 });
-it.each(["oauth", "api", "zdr"] as const)("records sanitized %s close context without replaying generation", async (routeKind) => {
+it.each(["oauth", "api", "zdr", "psp"] as const)("records sanitized %s close context without replaying generation", async (routeKind) => {
  const f = await fixture(ws => { ws.close(1011, "secret fixture reason"); return true; });
  const ws = await f.connect();
  const before = Date.now();
@@ -458,6 +598,8 @@ it("cancels queued creates as well as the streaming turn without blocking new wo
 /** Gateway in front of an arbitrary upstream; records the Response each routed turn produced. */
 async function customGateway(options: {
 	upstream: Server;
+	apiRetry?: boolean;
+ apiKind?: "api" | "zdr" | "psp";
 	auth?: (req: IncomingMessage) => number | null;
 	outboundHeaders?: Record<string, string>;
 	maxPayloadBytes?: number;
@@ -468,6 +610,9 @@ async function customGateway(options: {
 		await new Promise<void>((r) => options.upstream.close(() => r()));
 	});
 	const gateway = new ResponsesWebSocketGateway(fetch, { maxPayloadBytes: options.maxPayloadBytes ?? 16384 });
+	const runtime = new ApiModelRuntime(async (_url, init) => init?.method === "POST"
+		? gateway.fetch(`${upstreamUrl}/responses`, init)
+		: Response.json({data:[{id:"shared"}]}), () => Date.now());
 	const responses: Response[] = [];
 	const server = createServer((req, res) => {
 		gateway.handle(req, async () => {
@@ -484,7 +629,9 @@ async function customGateway(options: {
 			}
 			const chunks: Buffer[] = [];
 			for await (const chunk of req) chunks.push(Buffer.from(chunk));
-			const response = await gateway.fetch(`${upstreamUrl}/responses`, {
+			const response = options.apiRetry
+				? await runtime.request(`${options.apiKind ?? "api"}/shared`, JSON.parse(Buffer.concat(chunks).toString()), [{id:"fixture",label:"Fixture",kind:options.apiKind ?? "api",priority:0,enabled:true,apiKey:"fixture-upstream",visibleModels:["shared"]}])
+				: await gateway.fetch(`${upstreamUrl}/responses`, {
 				method: "POST",
 				headers: { authorization: "Bearer fixture-upstream", "content-type": "application/json", ...options.outboundHeaders },
 				body: Buffer.concat(chunks),
@@ -494,8 +641,10 @@ async function customGateway(options: {
 			try {
 				if (response.body) for await (const chunk of response.body) res.write(chunk);
 				res.end();
+				if (options.apiRetry) runtime.completeRequest(response, true);
 			} catch {
 				res.destroy();
+				if (options.apiRetry) runtime.completeRequest(response, false);
 			}
 		});
 	});
@@ -536,13 +685,42 @@ function rejectingUpstream(status: number, headers: Record<string, string>, onPo
 	return upstream;
 }
 
+it.each(["api","zdr","psp"] as const)("keeps the local %s socket open while retrying a rejected upstream create", async kind => {
+	const upstream=createServer(); const wss=new WebSocketServer({server:upstream});
+	let creates=0; const received:Record<string,unknown>[]=[];
+	wss.on("connection",ws=>ws.on("message",raw=>{
+		received.push(JSON.parse(raw.toString())); creates++;
+		ws.send(JSON.stringify(creates===1
+			? {type:"error",status:429,headers:{"retry-after":"2"},error:{code:"rate_limit_exceeded"}}
+			: {type:"response.completed",response:{id:"resp_recovered",output:[]}}));
+	}));
+	const g=await customGateway({upstream,apiRetry:true,apiKind:kind});
+	cleanups.push(async()=>{for(const ws of wss.clients)ws.terminate();wss.close();});
+	const ws=await g.connect();
+	vi.useFakeTimers({toFake:["Date","setTimeout","clearTimeout"]});
+	const jitter=vi.spyOn(Math,"random").mockReturnValue(0);
+	let parked!:()=>void;const waiting=new Promise<void>(resolve=>{parked=resolve;});
+	const fakeTimeout=globalThis.setTimeout;
+	const timer=vi.spyOn(globalThis,"setTimeout").mockImplementation(((...args:Parameters<typeof setTimeout>)=>{
+		const result=fakeTimeout(...args);if(args[1]===2000)parked();return result;
+	}) as typeof setTimeout);
+	try {
+		const result=turn(ws,{model:`${kind}/shared`,input:[],reasoning:{effort:"ultra"}});
+		expect(await Promise.race([waiting.then(()=>"parked"),result])).toBe("parked");
+		await vi.advanceTimersByTimeAsync(1999);expect(creates).toBe(1);expect(ws.readyState).toBe(WebSocket.OPEN);
+		await vi.advanceTimersByTimeAsync(1);
+		expect((await result).map(event=>event.type)).toEqual(["response.completed"]);
+		expect(creates).toBe(2);expect(received[1]).toMatchObject({reasoning:{effort:"ultra"}});
+	} finally {timer.mockRestore();jitter.mockRestore();vi.useRealTimers();}
+});
+
 it("keeps Retry-After and quota headers from a rejected upstream handshake", async () => {
 	const g = await customGateway({
 		upstream: rejectingUpstream(429, { "retry-after": "120", "x-codex-primary-used-percent": "100" }),
 		outboundHeaders: { "chatgpt-account-id": "acc_fixture" },
 	});
 	const ws = await g.connect();
-	expect((await turn(ws, { model: "shared", input: [] })).at(-1)).toMatchObject({ type: "error", status: 429 });
+	expect((await turn(ws, { model: "shared", input: [] })).at(-1)).toMatchObject({ type: "error", status: 429, headers: {"retry-after":"120"} });
 	expect(g.responses[0]?.headers.get("retry-after")).toBe("120");
 	expect(g.responses[0]?.headers.get("x-codex-primary-used-percent")).toBe("100");
 });
@@ -628,6 +806,31 @@ it("falls back to HTTP for an API credential whose WebSocket handshake is refuse
 	expect((await turn(ws, { model: "api/fixture", input: [] })).at(-1)).toMatchObject({ type: "response.completed" });
 	expect(posts).toHaveLength(2);
 	expect(JSON.parse(posts[0]!)).toMatchObject({ model: "api/fixture", stream: true });
+});
+
+it("uses HTTP for the next API create after an unexpected upstream close", async () => {
+	const posts: string[] = [];
+	const upstream = createServer(async (req, res) => {
+		const chunks: Buffer[] = [];
+		for await (const chunk of req) chunks.push(Buffer.from(chunk));
+		posts.push(Buffer.concat(chunks).toString("utf8"));
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		res.end(`data: ${JSON.stringify({ type: "response.completed", response: { id: "resp_http", output: [] } })}\n\n`);
+	});
+	const wss = new WebSocketServer({ server: upstream });
+	let websocketCreates = 0;
+	wss.on("connection", (socket) => socket.on("message", () => {
+		websocketCreates++;
+		socket.send(JSON.stringify({ type: "response.created", response: { id: "resp_ws" } }));
+		socket.terminate();
+	}));
+	cleanups.push(async () => { for (const socket of wss.clients) socket.terminate(); wss.close(); });
+	const g = await customGateway({ upstream });
+	const ws = await g.connect();
+	expect((await turn(ws, { model: "api/fixture", input: [] })).at(-1)).toMatchObject({ type: "error", status: 502 });
+	expect((await turn(ws, { model: "api/fixture", input: [] })).at(-1)?.type).toBe("response.completed");
+	expect(websocketCreates).toBe(1);
+	expect(posts).toHaveLength(1);
 });
 
 it.each([undefined, false, true])("preserves caller permission metadata during HTTP recovery (%s)", async (enabled) => {
