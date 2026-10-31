@@ -10,6 +10,10 @@ export class ResponseOutputHistory {
 	constructor(private readonly maxBytes: number) {}
 
 	observe(event: Item): void {
+		if (event.type === "response.output_item.interrupted") {
+			this.discard(event);
+			return;
+		}
 		if (event.type !== "response.output_item.added" && event.type !== "response.output_item.done") return;
 		const index = event.output_index;
 		if (typeof index !== "number" || !Number.isSafeInteger(index) || index < 0 || !isRecord(event.item)) {
@@ -40,6 +44,29 @@ export class ResponseOutputHistory {
 		}
 		if (this.invalid || [...this.items.values()].some(entry => !entry.complete)) return undefined;
 		return [...this.items].sort(([a], [b]) => a - b).map(([, entry]) => entry.item);
+	}
+
+	/**
+	 * An interrupt with `discard_partial_items` drops the in-progress item from
+	 * the server's history. Drop it here too, or the chain looks incomplete and
+	 * the next `previous_response_id` continuation cannot be reconstructed.
+	 */
+	private discard(event: Item): void {
+		const index = event.output_index;
+		if (typeof index !== "number" || !Number.isSafeInteger(index) || index < 0) {
+			this.invalidate();
+			return;
+		}
+		const entry = this.items.get(index);
+		if (!entry) return;
+		const itemId = event.item_id;
+		// A mismatched id means our view of the stream diverged from upstream.
+		if (typeof itemId === "string" && typeof entry.item.id === "string" && entry.item.id !== itemId) {
+			this.invalidate();
+			return;
+		}
+		this.bytes -= entry.bytes;
+		this.items.delete(index);
 	}
 
 	private invalidate(): void {

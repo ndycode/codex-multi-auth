@@ -34,11 +34,21 @@ describe("native provider binding", () => {
 	});
 });
 
-it("does not enable experimental voice endpoints in the text release",()=>{
+it("routes only the voice sideband through the loopback proxy and removes it on unbind (#750)",()=>{
  const original='model = "fixture-model"\n';
  const bound=rewriteNativeProviderConfig(original,"http://127.0.0.1:43210");
- expect(bound).not.toContain("experimental_realtime_");
+ // Call creation already follows openai_base_url; only the sideband socket
+ // needs redirecting, and never to anything but the loopback proxy.
+ expect(bound).toContain('experimental_realtime_ws_base_url = "http://127.0.0.1:43210" # codex-multi-auth realtime sideband');
+ expect(bound).not.toContain("experimental_realtime_webrtc_call_base_url");
+ expect(rewriteNativeProviderConfig(bound,"http://127.0.0.1:43210")).toBe(bound);
  expect(restoreNativeProviderConfig(bound,original)).not.toContain("experimental_realtime_");
+});
+it("replaces a marked sideband line left outside the native block",()=>{
+ const original='experimental_realtime_ws_base_url = "http://127.0.0.1:1" # codex-multi-auth realtime sideband\nmodel = "x"\n';
+ const bound=rewriteNativeProviderConfig(original,"http://127.0.0.1:43210");
+ expect(bound).toContain('experimental_realtime_ws_base_url = "http://127.0.0.1:43210"');
+ expect(bound.match(/experimental_realtime_ws_base_url/g)).toHaveLength(1);
 });
 it("preserves explicit voice endpoint overrides through bind and unbind",()=>{
  const original='experimental_realtime_ws_base_url = "https://example.test/voice"\n';

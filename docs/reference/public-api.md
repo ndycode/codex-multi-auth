@@ -158,7 +158,9 @@ Runtime rotation is a CLI/runtime feature, not a library transport API.
   current process without changing settings.
 - The local provider id is `codex-multi-auth-runtime-proxy`.
 - The proxy accepts only authenticated loopback requests for Responses API,
-  model discovery, image routes, `POST /transcribe`, and thread-goal paths.
+  model discovery, image routes, `POST /transcribe`, `POST /alpha/search`,
+  voice call creation (`POST /live`, `/realtime/calls`), voice sideband
+  WebSockets for calls it created, and thread-goal paths.
 - `POST /transcribe` preserves the caller's multipart audio bytes and original
   `Content-Type` boundary while replacing local client credentials with managed
   ChatGPT OAuth. Transcription uses endpoint-specific backoff and does not replay

@@ -2,11 +2,11 @@ import type { WebSocketDisconnectDiagnostic, WebSocketUpgradeRejectionDiagnostic
 import { withNativeBindingLock } from "./native-binding-lock.js";
 import { isRecord } from "../utils.js";
 import { hasNativeProviderConfig, rewriteNativeProviderConfig, restoreNativeProviderConfig } from "./native-provider-config.js";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { mkdir, open, readFile, readdir, rename, rm, unlink } from "node:fs/promises";
-import { connect } from "node:net";
+import { connect, createServer as createNetServer } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import process from "node:process";
@@ -40,6 +40,9 @@ const MACOS_LAUNCH_AGENT_ID = "com.ndycode.codex-multi-auth.runtime-router";
 const DEFAULT_ROUTER_READY_TIMEOUT_MS = 15_000;
 const ROUTER_STATUS_POLL_INTERVAL_MS = 100;
 const APP_ROUTER_MAX_LOG_BYTES = 1024 * 1024;
+const LAUNCHCTL_TIMEOUT_MS = 15_000;
+const LAUNCHD_BOOTSTRAP_ATTEMPTS = 3;
+const LAUNCHD_BOOTSTRAP_RETRY_MS = 500;
 const appBindLocks = new Map<string, Promise<void>>();
 
 export interface AppBindPaths {
@@ -66,6 +69,11 @@ interface AppBindBackup {
 export interface AppBindState {
 	nativeOpenai?: boolean;
 	catalogAccount?: { email: string; accountId: string; };
+	/**
+	 * Optional local proxy the router forwards to instead of the ChatGPT
+	 * backend, e.g. Codex -> codex-multi-auth -> Headroom -> OpenAI (#753).
+	 */
+	upstreamBaseUrl?: string;
 	version: 1;
 	platform: NodeJS.Platform;
 	host: string;
@@ -130,7 +138,17 @@ export interface AppBindStatus {
 export interface AppBindResult {
 	status: AppBindStatus;
 	message: string;
+	/**
+	 * Problems that did not stop the operation but leave something the user
+	 * must deal with, such as a router that would not stop (#748).
+	 */
+	warnings?: string[];
 }
+
+/** Runs `launchctl`; injectable so the launchd lifecycle is testable off macOS. */
+export type LaunchctlRunner = (
+	args: string[],
+) => Promise<{ code: number; stderr: string }>;
 
 export type ProcessIdentityVerifier = (
 	pid: number,
@@ -142,6 +160,13 @@ export type ProcessIdentityVerifier = (
 export interface AppBindOptions {
 	nativeOpenai?: boolean;
 	catalogAccount?: { email: string; accountId: string; };
+	/**
+	 * Local upstream proxy for the router. A string sets it, `null` clears it,
+	 * and `undefined` keeps whatever the current bind uses.
+	 */
+	upstreamBaseUrl?: string | null;
+	/** Test seam for the macOS launchd lifecycle. */
+	runLaunchctl?: LaunchctlRunner;
 	env?: NodeJS.ProcessEnv;
 	platform?: NodeJS.Platform;
 	home?: string;
@@ -377,6 +402,7 @@ function readAppBindStateRecord(record: Record<string, unknown>): AppBindState |
 		nativeOpenai: record.nativeOpenai === true,
 		catalogAccount: isRecord(record.catalogAccount) && typeof record.catalogAccount.email === "string" && typeof record.catalogAccount.accountId === "string" ? { email: record.catalogAccount.email, accountId: record.catalogAccount.accountId } : undefined,
 		identityToken: identityToken ?? undefined,
+		...(readString(record, "upstreamBaseUrl") ? { upstreamBaseUrl: readString(record, "upstreamBaseUrl") as string } : {}),
 		startupPath: readString(record, "startupPath"),
 		launchAgentPath: readString(record, "launchAgentPath"),
 		boundConfigHash,
@@ -673,6 +699,156 @@ async function removeAppBindStartup(
 	}
 }
 
+/**
+ * Validate an app bind upstream. Same policy as the wrapper's
+ * CODEX_MULTI_AUTH_RUNTIME_PROXY_UPSTREAM_BASE_URL: managed OAuth tokens are
+ * forwarded to it, so only a numeric loopback HTTP origin with an explicit
+ * port is accepted (a name such as "localhost" can resolve off-host).
+ */
+export function normalizeAppBindUpstreamBaseUrl(raw: string): string {
+	const value = raw.trim();
+	let parsed: URL;
+	try {
+		parsed = new URL(value);
+	} catch {
+		throw new Error("App bind upstream must be an absolute loopback HTTP URL, such as http://127.0.0.1:8787.");
+	}
+	const host = parsed.hostname;
+	const numericLoopback = host === "[::1]" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+	const explicitPort = /^http:\/\/(?:\[[^\]]*\]|[^/?#@:]+):\d+(?:[/?#]|$)/i.test(value);
+	if (
+		parsed.protocol !== "http:" ||
+		!numericLoopback ||
+		!explicitPort ||
+		parsed.username ||
+		parsed.password ||
+		parsed.search ||
+		parsed.hash
+	) {
+		throw new Error(
+			"App bind upstream must use HTTP with a numeric loopback host (127.0.0.0/8 or [::1]), an explicit port, and no credentials, query, or fragment.",
+		);
+	}
+	// WHATWG URL drops a default `:80`, which would make the result fail this
+	// same check when it is read back (reset-runtime, the router). Rebuild it
+	// with the port spelled out so normalization is idempotent.
+	const path = parsed.pathname.replace(/\/+$/, "");
+	return `http://${parsed.hostname}:${parsed.port || "80"}${path}`;
+}
+
+/**
+ * On macOS the LaunchAgent owns the router: with KeepAlive, launchd respawns
+ * whatever job it has loaded, so the router must be started and stopped
+ * through launchd rather than beside it (#748).
+ */
+function usesLaunchd(
+	platform: NodeJS.Platform,
+	launchAgentPath: string | null | undefined,
+	options: AppBindOptions,
+): boolean {
+	if (
+		platform !== "darwin" ||
+		typeof launchAgentPath !== "string" ||
+		launchAgentPath.length === 0 ||
+		options.spawnDetached === false
+	) {
+		return false;
+	}
+	if (options.runLaunchctl !== undefined) return true;
+	// The job label is global to the login session. Only the real LaunchAgent
+	// may drive launchd, so a bind under another home (tests, sandboxes) can
+	// never unload the user's actual router.
+	return (
+		process.platform === "darwin" &&
+		launchAgentPath === resolveMacLaunchAgentPath(homedir())
+	);
+}
+
+const runLaunchctlDefault: LaunchctlRunner = (args) =>
+	new Promise((resolve) => {
+		execFile(
+			"launchctl",
+			args,
+			{ timeout: LAUNCHCTL_TIMEOUT_MS, windowsHide: true },
+			(error, _stdout, stderr) => {
+				const code = error ? (typeof error.code === "number" ? error.code : 1) : 0;
+				resolve({ code, stderr: String(stderr ?? "") || (error && code === 1 ? error.message : "") });
+			},
+		);
+	});
+
+function launchdDomain(): string {
+	return `gui/${typeof process.getuid === "function" ? process.getuid() : 0}`;
+}
+
+async function bootoutLaunchAgent(options: AppBindOptions): Promise<{ ok: true } | { ok: false; message: string }> {
+	const run = options.runLaunchctl ?? runLaunchctlDefault;
+	const result = await run(["bootout", `${launchdDomain()}/${MACOS_LAUNCH_AGENT_ID}`]);
+	// "Not loaded" is the normal state for a first bind or an already-stopped job.
+	if (
+		result.code === 0 ||
+		result.code === 3 ||
+		result.code === 113 ||
+		/no such process|could not find/i.test(result.stderr)
+	) {
+		return { ok: true };
+	}
+	return {
+		ok: false,
+		message: `launchctl bootout ${MACOS_LAUNCH_AGENT_ID} failed (exit ${result.code})${result.stderr.trim() ? `: ${result.stderr.trim()}` : ""}`,
+	};
+}
+
+async function bootstrapLaunchAgent(
+	launchAgentPath: string,
+	options: AppBindOptions,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+	const run = options.runLaunchctl ?? runLaunchctlDefault;
+	let last = { code: 0, stderr: "" };
+	// launchd can briefly refuse a bootstrap while the previous job tears down.
+	for (let attempt = 1; attempt <= LAUNCHD_BOOTSTRAP_ATTEMPTS; attempt += 1) {
+		last = await run(["bootstrap", launchdDomain(), launchAgentPath]);
+		if (last.code === 0) return { ok: true };
+		if (attempt < LAUNCHD_BOOTSTRAP_ATTEMPTS) {
+			await new Promise((resolve) => setTimeout(resolve, LAUNCHD_BOOTSTRAP_RETRY_MS));
+		}
+	}
+	return {
+		ok: false,
+		message: `launchctl bootstrap ${launchAgentPath} failed (exit ${last.code})${last.stderr.trim() ? `: ${last.stderr.trim()}` : ""}`,
+	};
+}
+
+/** Pick the router port up front so the loaded LaunchAgent and the state agree. */
+async function reserveLoopbackPort(host: string): Promise<number> {
+	const bindHost = host === "localhost" ? "127.0.0.1" : host.replace(/^\[|\]$/g, "");
+	return new Promise((resolve, reject) => {
+		const server = createNetServer();
+		server.unref();
+		server.once("error", reject);
+		server.listen(0, bindHost, () => {
+			const address = server.address();
+			const port = typeof address === "object" && address ? address.port : 0;
+			server.close(() => resolve(port));
+		});
+	});
+}
+
+/** Route every "Warning: ..." log line into the operation's result as well. */
+function collectWarnings(options: AppBindOptions): { options: AppBindOptions; warnings: string[] } {
+	const warnings: string[] = [];
+	return {
+		warnings,
+		options: {
+			...options,
+			log: (message: string) => {
+				if (message.startsWith("Warning: ")) warnings.push(message.slice("Warning: ".length));
+				options.log?.(message);
+			},
+		},
+	};
+}
+
 function spawnRouter(state: AppBindState): void {
 	mkdirSync(dirname(state.logPath), { recursive: true });
 	const logFd = openSync(state.logPath, "a", 0o600);
@@ -725,10 +901,26 @@ export async function probeRouterAddress(baseUrl: string | null | undefined, pla
 	});
 }
 
+async function routerIsRunning(statusPath: string): Promise<boolean> {
+	const router = await readRouterStatus(statusPath);
+	return !!router && isProcessAlive(router.pid) && router.state === "running";
+}
+
 async function maybeStartRouter(state: AppBindState, options: AppBindOptions): Promise<boolean> {
 	if (options.spawnDetached === false) return false;
-	const router = await readRouterStatus(state.statusPath);
-	if (router && isProcessAlive(router.pid) && router.state === "running") return false;
+	if (await routerIsRunning(state.statusPath)) return false;
+	if (usesLaunchd(state.platform, state.launchAgentPath, options) && state.launchAgentPath) {
+		// Load the job from a plist that matches this bind, replacing any stale
+		// job, instead of spawning a second router beside it (#748).
+		await writeAppBindStartup(state);
+		const bootout = await bootoutLaunchAgent(options);
+		if (!bootout.ok) options.log?.(`Warning: ${bootout.message}`);
+		const bootstrap = await bootstrapLaunchAgent(state.launchAgentPath, options);
+		if (bootstrap.ok) return true;
+		options.log?.(
+			`Warning: ${bootstrap.message}; started the router directly, so it will not restart automatically until the next bind`,
+		);
+	}
 	spawnRouter(state);
 	return true;
 }
@@ -1508,9 +1700,11 @@ export async function bindCodexAppRuntimeRotation(
 	options: AppBindOptions = {},
 ): Promise<AppBindResult> {
 	const paths = resolveAppBindPaths(options);
-	return withAppBindLock(paths.bindDir, () =>
-		withNativeBindingLock(paths.configPath, () => bindCodexAppRuntimeRotationLocked(options, paths)),
+	const collected = collectWarnings(options);
+	const result = await withAppBindLock(paths.bindDir, () =>
+		withNativeBindingLock(paths.configPath, () => bindCodexAppRuntimeRotationLocked(collected.options, paths)),
 	);
+	return collected.warnings.length ? { ...result, warnings: collected.warnings } : result;
 }
 
 async function bindCodexAppRuntimeRotationLocked(
@@ -1523,7 +1717,25 @@ async function bindCodexAppRuntimeRotationLocked(
 	const nativeOpenai = options.nativeOpenai ?? existingState?.nativeOpenai ??
 		((options.env ?? process.env).CODEX_MULTI_AUTH_NATIVE_OPENAI === "1");
 	const catalogAccount = options.nativeOpenai === false ? undefined : options.catalogAccount ?? existingState?.catalogAccount;
-	if (existingState && (!!existingState.nativeOpenai !== nativeOpenai || JSON.stringify(catalogAccount) !== JSON.stringify(existingState.catalogAccount))) {
+	const upstreamBaseUrl =
+		options.upstreamBaseUrl === undefined
+			? existingState?.upstreamBaseUrl
+			: options.upstreamBaseUrl === null
+				? undefined
+				: normalizeAppBindUpstreamBaseUrl(options.upstreamBaseUrl);
+	const launchd = usesLaunchd(platform, paths.launchAgentPath, options);
+	if (
+		existingState &&
+		(!!existingState.nativeOpenai !== nativeOpenai ||
+			JSON.stringify(catalogAccount) !== JSON.stringify(existingState.catalogAccount) ||
+			existingState.upstreamBaseUrl !== upstreamBaseUrl)
+	) {
+		// With KeepAlive, killing the process would only make launchd respawn
+		// it from the old state; unload the job first.
+		if (launchd) {
+			const bootout = await bootoutLaunchAgent(options);
+			if (!bootout.ok) options.log?.(`Warning: ${bootout.message}`);
+		}
 		const router = await readRouterStatus(paths.statusPath);
 		let ownRouter = false;
 		await stopRouter(router, platform, existingState.routerScriptPath, {
@@ -1571,9 +1783,14 @@ async function bindCodexAppRuntimeRotationLocked(
 		? restoreConfigTomlFromAppBind(content, backup.content)
 		: restoreNativeProviderConfig(content, backup.content);
 	let boundConfig = rewriteConfigTomlForAppBind(bindingContent, baseUrl, clientApiKey, nativeOpenai);
+	if (launchd && port <= 0 && !(await routerIsRunning(paths.statusPath))) {
+		port = await reserveLoopbackPort(host);
+		baseUrl = formatBaseUrl(host, port);
+	}
 	let state: AppBindState = {
 		nativeOpenai,
 		catalogAccount,
+		...(upstreamBaseUrl ? { upstreamBaseUrl } : {}),
 		version: 1,
 		platform,
 		host,
@@ -1600,12 +1817,23 @@ async function bindCodexAppRuntimeRotationLocked(
 	// Write bootstrap state before spawning so router can read --state on startup
 	await atomicWriteFile(paths.statePath, `${JSON.stringify(state, null, 2)}\n`);
 	const startedRouter = await maybeStartRouter(state, options);
-	const router = startedRouter
-		? await waitForRouterStatus(
-				state.statusPath,
-				resolveRouterReadyTimeoutMs(options),
-			)
-		: await readRouterStatus(state.statusPath);
+	let router: AppBindRouterStatus | null;
+	try {
+		router = startedRouter
+			? await waitForRouterStatus(
+					state.statusPath,
+					resolveRouterReadyTimeoutMs(options),
+				)
+			: await readRouterStatus(state.statusPath);
+	} catch (error) {
+		// A KeepAlive job whose router cannot start would crash-loop now and
+		// again at every login. Unload it and drop its plist before failing.
+		if (startedRouter && launchd) {
+			await bootoutLaunchAgent(options).catch(() => undefined);
+			await removeAppBindStartup({ startupPath: null, launchAgentPath: state.launchAgentPath });
+		}
+		throw error;
+	}
 	const routerBaseUrl = router?.baseUrl ?? null;
 	const routerIsUsable =
 		!!routerBaseUrl &&
@@ -1632,6 +1860,7 @@ async function bindCodexAppRuntimeRotationLocked(
 	if (port <= 0) {
 		if (startedRouter) {
 			// Best-effort stop of the router we just spawned
+			if (launchd) await bootoutLaunchAgent(options).catch(() => undefined);
 			const orphan = await readRouterStatus(state.statusPath).catch(() => null);
 			await stopRouter(orphan, platform, state.routerScriptPath, {
 				log: options.log,
@@ -1670,9 +1899,11 @@ export async function unbindCodexAppRuntimeRotation(
 	options: AppBindOptions = {},
 ): Promise<AppBindResult> {
 	const paths = resolveAppBindPaths(options);
-	return withAppBindLock(paths.bindDir, () =>
-		withNativeBindingLock(paths.configPath, () => unbindCodexAppRuntimeRotationLocked(options, paths)),
+	const collected = collectWarnings(options);
+	const result = await withAppBindLock(paths.bindDir, () =>
+		withNativeBindingLock(paths.configPath, () => unbindCodexAppRuntimeRotationLocked(collected.options, paths)),
 	);
+	return collected.warnings.length ? { ...result, warnings: collected.warnings } : result;
 }
 
 async function unbindCodexAppRuntimeRotationLocked(
@@ -1680,18 +1911,28 @@ async function unbindCodexAppRuntimeRotationLocked(
 	paths: AppBindPaths,
 ): Promise<AppBindResult> {
 	const state = await readAppBindState(paths.statePath);
-	const router = await readRouterStatus(paths.statusPath);
 	const platform = options.platform ?? process.platform;
-	const routerStopped = await stopRouter(
-		router,
-		platform,
-		state?.routerScriptPath ?? paths.routerScriptPath,
-		{
-			log: options.log,
-			identityToken: state?.identityToken,
-			verifyProcessIdentity: options.verifyProcessIdentity,
-		},
-	);
+	// Unload the LaunchAgent before stopping the process: with KeepAlive,
+	// launchd would otherwise respawn the router it has loaded, which may carry
+	// an older identity token that no later stop can verify (#748).
+	if (usesLaunchd(platform, state?.launchAgentPath ?? paths.launchAgentPath, options)) {
+		const bootout = await bootoutLaunchAgent(options);
+		if (!bootout.ok) options.log?.(`Warning: ${bootout.message}`);
+	}
+	const router = await readRouterStatus(paths.statusPath);
+	const routerStopped =
+		router?.pid && isProcessAlive(router.pid)
+			? await stopRouter(
+					router,
+					platform,
+					state?.routerScriptPath ?? paths.routerScriptPath,
+					{
+						log: options.log,
+						identityToken: state?.identityToken,
+						verifyProcessIdentity: options.verifyProcessIdentity,
+					},
+				)
+			: true;
 	if (router?.pid && (!routerStopped || isProcessAlive(router.pid))) {
 		options.log?.(
 			`Warning: runtime router (pid ${router.pid}) did not stop; continuing cleanup`,
@@ -1974,6 +2215,7 @@ export function formatAppBindStatus(status: AppBindStatus): string {
 		`port=${status.state.port}`,
 		`config=${status.state.configPath}`,
 	];
+	if (status.state.upstreamBaseUrl) parts.push(`upstream=${status.state.upstreamBaseUrl}`);
 	if (status.router?.lastAccountLabel && !status.router.lastAccountLabel.includes("@")) {
 		parts.push(`lastAccount=${status.router.lastAccountLabel}`);
 	} else if (status.router?.lastAccountIndex !== null && status.router?.lastAccountIndex !== undefined) {

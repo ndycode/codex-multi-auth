@@ -27,6 +27,7 @@ function redactedResetRateLimitsLabel(
 }
 import {
 	formatAppBindStatus,
+	normalizeAppBindUpstreamBaseUrl,
 	type AppBindOptions,
 	type AppBindResult,
 	type AppBindStatus,
@@ -103,7 +104,7 @@ function printRotationUsage(logInfo: (message: string) => void): void {
 			"  codex-multi-auth rotation enable",
 			"  codex-multi-auth rotation disable",
 			"  codex-multi-auth rotation status",
-			"  codex-multi-auth rotation bind-app [--native [--catalog-account <idx>] | --custom-provider]",
+			"  codex-multi-auth rotation bind-app [--native [--catalog-account <idx>] | --custom-provider] [--upstream <url> | --no-upstream]",
 			"  codex-multi-auth rotation unbind-app",
 			"  codex-multi-auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]",
 			"  codex-multi-auth rotation reset-runtime [--json]",
@@ -114,8 +115,24 @@ function printRotationUsage(logInfo: (message: string) => void): void {
 			"  - Use CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0 to disable the proxy for the current process without changing persistent settings",
 			"  - reset-rate-limits clears stored rateLimitResetTimes and active coolingDownUntil entries; use when `fix --live` confirms quota is available but the proxy still returns 503 pool-exhausted",
 			"  - reset-runtime clears process-local runtime trackers and re-applies the Codex app bind when available",
+			"  - bind-app --upstream http://127.0.0.1:<port> sends the app router's upstream traffic through one more local proxy; --no-upstream removes it",
 		].join("\n"),
 	);
+}
+
+const ROUTER_STILL_RUNNING_HINT =
+	process.platform === "darwin"
+		? "If an old router is still listening, run `launchctl bootout gui/$UID/com.ndycode.codex-multi-auth.runtime-router`, stop the leftover codex-app-router process, then run `codex-multi-auth rotation bind-app`."
+		: "If an old router is still listening, stop the leftover codex-app-router process, then run `codex-multi-auth rotation bind-app`.";
+
+function reportAppBindWarnings(
+	warnings: readonly string[],
+	logError: (message: string) => void,
+): void {
+	for (const warning of warnings) logError(`  - ${warning}`);
+	if (warnings.some((warning) => /did not stop|launchctl/.test(warning))) {
+		logError(ROUTER_STILL_RUNNING_HINT);
+	}
 }
 
 async function runResetRuntime(
@@ -144,13 +161,17 @@ async function runResetRuntime(
 	if (deps.unbindCodexApp && deps.bindCodexApp) {
 		try {
 			const previous = await deps.getCodexAppBindStatus?.();
+			const upstream = previous?.state?.upstreamBaseUrl
+				? { upstreamBaseUrl: previous.state.upstreamBaseUrl }
+				: {};
 			unbind = await deps.unbindCodexApp();
 			bind = previous?.state?.nativeOpenai
 				? await deps.bindCodexApp({
 					nativeOpenai: true,
 					catalogAccount: previous.state.catalogAccount,
+					...upstream,
 				})
-				: await deps.bindCodexApp(...(previous?.state ? [{ nativeOpenai: false }] : []));
+				: await deps.bindCodexApp(...(previous?.state ? [{ nativeOpenai: false, ...upstream }] : []));
 			appBindRestarted = true;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -172,6 +193,7 @@ async function runResetRuntime(
 	}
 	AccountManager.resetVolatileRuntimeState();
 	recordRuntimeReset("rotation-reset-runtime");
+	const warnings = [...(unbind?.warnings ?? []), ...(bind?.warnings ?? [])];
 	const payload = {
 		ok: true,
 		command: "rotation reset-runtime",
@@ -179,12 +201,17 @@ async function runResetRuntime(
 		appBindRestarted,
 		unbindStatus: unbind?.status.state ?? null,
 		bindStatus: bind?.status.state ?? null,
+		...(warnings.length ? { warnings } : {}),
 	};
 	if (json) {
 		logInfo(JSON.stringify(payload));
 	} else {
 		logInfo("Runtime rotation volatile state reset.");
-		if (appBindRestarted) logInfo("Codex app bind restarted.");
+		if (appBindRestarted && warnings.length) {
+			// Do not claim a clean restart while an old router may still serve (#748).
+			logError("Codex app bind restarted with warnings:");
+			reportAppBindWarnings(warnings, logError);
+		} else if (appBindRestarted) logInfo("Codex app bind restarted.");
 		else logInfo("Codex app bind helpers unavailable; new wrapper sessions will use the reset state.");
 	}
 	return 0;
@@ -801,7 +828,21 @@ export async function runRotationCommand(
 		let catalogIndex: number | undefined;
 		for (let i = 0;i < rest.length;i += 1) {
 			const arg = rest[i];
-			if (arg === "--native" || arg === "--custom-provider") {
+			if ((arg === "--upstream" || arg === "--no-upstream") && options.upstreamBaseUrl !== undefined) {
+				logError("Choose one app bind upstream.");
+				return 1;
+			}
+			if (arg === "--upstream") {
+				const value = rest[++i] ?? "";
+				try {
+					options.upstreamBaseUrl = normalizeAppBindUpstreamBaseUrl(value);
+				} catch (error) {
+					logError(error instanceof Error ? error.message : String(error));
+					return 1;
+				}
+			} else if (arg === "--no-upstream") {
+				options.upstreamBaseUrl = null;
+			} else if (arg === "--native" || arg === "--custom-provider") {
 				if (options.nativeOpenai !== undefined) {
 					logError("Choose one app bind mode.");
 					return 1;
@@ -839,6 +880,10 @@ export async function runRotationCommand(
 		const result = rest.length ? await deps.bindCodexApp(options) : await deps.bindCodexApp();
 		logInfo(result.message);
 		logInfo(formatAppBindStatus(result.status));
+		if (result.warnings?.length) {
+			logError("Codex app bind completed with warnings:");
+			reportAppBindWarnings(result.warnings, logError);
+		}
 		return 0;
 	}
 	if (rest.length > 0) {
@@ -854,6 +899,10 @@ export async function runRotationCommand(
 				const result = await deps.bindCodexApp();
 				logInfo(result.message);
 				logInfo(formatAppBindStatus(result.status));
+				if (result.warnings?.length) {
+					logError("Codex app bind completed with warnings:");
+					reportAppBindWarnings(result.warnings, logError);
+				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				logError(`Codex app bind failed: ${message}`);
@@ -870,6 +919,10 @@ export async function runRotationCommand(
 				const result = await deps.unbindCodexApp();
 				logInfo(result.message);
 				logInfo(formatAppBindStatus(result.status));
+				if (result.warnings?.length) {
+					logError("Codex app unbind completed with warnings:");
+					reportAppBindWarnings(result.warnings, logError);
+				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				logError(`Codex app unbind failed: ${message}`);
@@ -886,6 +939,10 @@ export async function runRotationCommand(
 		const result = await deps.unbindCodexApp();
 		logInfo(result.message);
 		logInfo(formatAppBindStatus(result.status));
+		if (result.warnings?.length) {
+			logError("Codex app unbind completed with warnings:");
+			reportAppBindWarnings(result.warnings, logError);
+		}
 		return 0;
 	}
 

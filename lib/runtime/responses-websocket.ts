@@ -71,6 +71,17 @@ const terminal = new Set([
 	"error",
 ]);
 type Json = Record<string, unknown>;
+/**
+ * Native clients continue an interrupted response with `previous_response_id`,
+ * exactly like a completed one, so both must be remembered for reconstruction.
+ * Other incomplete reasons (length, content filter) end the turn instead.
+ */
+export function isChainableTerminal(event: Json): boolean {
+	if (event.type === "response.completed") return true;
+	if (event.type !== "response.incomplete" || !isRecord(event.response)) return false;
+	const details = event.response.incomplete_details;
+	return isRecord(details) && details.reason === "interrupted";
+}
 type Chain = { body: Json; output: unknown[]; pool: string; bytes: number };
 type Context = { routeKind: "oauth" | "api" | "zdr" | "psp"; signal: AbortSignal; session: SocketSession; previousId?: string; delta?: unknown; clientBeta?: string };
 /** A thread-scoped hint only; authentication is checked separately before use. */
@@ -748,7 +759,13 @@ export class ResponsesWebSocketGateway {
 			});
 		else void handler();
 	}
-	attach(server: Server, baseUrl: string): void {
+	/**
+	 * Authenticate WebSocket upgrades, offer them to `options.upgrade`, then
+	 * serve native Responses sockets. With `responses: false` the Responses
+	 * path keeps answering 426 so the client stays on HTTP streaming.
+	 */
+	attach(server: Server, baseUrl: string, attachOptions: { responses?: boolean } = {}): void {
+		const servesResponses = attachOptions.responses ?? true;
 		server.on("upgrade", (req, socket, head) => {
             // Node relinquishes its socket error handler before emitting upgrade.
             socket.on("error", () => socket.destroy());
@@ -787,13 +804,20 @@ export class ResponsesWebSocketGateway {
 				}
 				if (await this.options.upgrade?.(req, socket, head)) return;
 				const path = new URL(req.url ?? "/", baseUrl).pathname;
-				if (
-					![
-						"/responses",
-						"/v1/responses",
-						"/backend-api/codex/responses",
-					].includes(path)
-				) {
+				const isResponses = [
+					"/responses",
+					"/v1/responses",
+					"/backend-api/codex/responses",
+				].includes(path);
+				if (isResponses && !servesResponses) {
+					if (socket.destroyed) return;
+					const body = `${JSON.stringify({ error: { message: "Use HTTP streaming for Responses API requests.", code: "runtime_rotation_proxy_http_required" } })}\n`;
+					socket.end(
+						`HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+					);
+					return;
+				}
+				if (!isResponses) {
 					reject(404);
 					return;
 				}
@@ -1011,7 +1035,7 @@ export class ResponsesWebSocketGateway {
 									if (!isRecord(parsed)) throw Error("invalid_response_event");
 									outputHistory.observe(parsed);
 									if (
-										parsed.type === "response.completed" &&
+										isChainableTerminal(parsed) &&
 										isRecord(parsed.response) &&
 										typeof parsed.response.id === "string"
 									) {

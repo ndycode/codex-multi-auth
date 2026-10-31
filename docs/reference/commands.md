@@ -97,7 +97,7 @@ All governance state is file-backed under `~/.codex/multi-auth`.
 
 | Command | Description |
 | --- | --- |
-| `codex-multi-auth rotation` | Manage the default-on runtime Responses proxy: `enable`, `disable`, `status`, `bind-app [--native [--catalog-account <idx>] \| --custom-provider]`, `unbind-app`, `reset-runtime`, `reset-rate-limits [--all \| --account <idx>] [--dry-run] [--json]` |
+| `codex-multi-auth rotation` | Manage the default-on runtime Responses proxy: `enable`, `disable`, `status`, `bind-app [--native [--catalog-account <idx>] \| --custom-provider] [--upstream <url> \| --no-upstream]`, `unbind-app`, `reset-runtime`, `reset-rate-limits [--all \| --account <idx>] [--dry-run] [--json]` |
 
 ### Configuration and maintenance
 
@@ -544,7 +544,7 @@ between backend Responses requests while a Codex session stays open.
 codex-multi-auth rotation enable
 codex-multi-auth rotation disable
 codex-multi-auth rotation status
-codex-multi-auth rotation bind-app [--native [--catalog-account <idx>] | --custom-provider]
+codex-multi-auth rotation bind-app [--native [--catalog-account <idx>] | --custom-provider] [--upstream <url> | --no-upstream]
 codex-multi-auth rotation unbind-app
 codex-multi-auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]
 codex-multi-auth rotation reset-runtime [--json]
@@ -561,6 +561,19 @@ codex-multi-auth rotation reset-runtime [--json]
 - `bind-app` repairs or installs the persistent packaged-app bind without
   changing the stored rotation setting; `unbind-app` removes it and restores
   the backed-up Codex config.
+- `bind-app --upstream http://127.0.0.1:<port>[/path]` chains one more local
+  proxy behind the app router (for example Codex → codex-multi-auth →
+  Headroom → OpenAI). The router sends the requests it would send to
+  `https://chatgpt.com/backend-api` to that base URL instead, with managed
+  OAuth credentials, so only a numeric loopback HTTP URL with an explicit port
+  is accepted. The setting persists across rebinds and `reset-runtime`;
+  `--no-upstream` removes it. This is the app-bind counterpart of
+  `CODEX_MULTI_AUTH_RUNTIME_PROXY_UPSTREAM_BASE_URL`, which only reaches
+  wrapper sessions. Voice sideband sockets still go to the OpenAI realtime API.
+- On macOS the router runs as the `com.ndycode.codex-multi-auth.runtime-router`
+  LaunchAgent. Bind and `reset-runtime` load it with `launchctl bootstrap`, and
+  unbind unloads it with `launchctl bootout` before stopping the process, so
+  launchd never respawns a router from an outdated plist.
 - `reset-rate-limits` clears local rate-limit cooldowns for every account
   (`--all`) or one 1-based index (`--account`).
 - `reset-runtime` clears volatile rotation state and restarts the packaged app bind when helpers are available — it (1) unbinds and rebinds the
@@ -570,7 +583,10 @@ codex-multi-auth rotation reset-runtime [--json]
   reason, per-account skip reasons, policy-blocked entries — stamping a reset
   timestamp and reason. When app-bind helpers are unavailable it still performs
   (2) and (3) and reports that new wrapper sessions pick up the reset state; a
-  failed bind restart exits non-zero.
+  failed bind restart exits non-zero. If the previous router could not be
+  stopped, it prints `Codex app bind restarted with warnings:` with the
+  details and a cleanup hint instead of a clean restart message (`--json`
+  adds a `warnings` array).
 - `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` disables the proxy for the
   current process without changing settings.
 

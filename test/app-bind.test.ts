@@ -12,6 +12,7 @@ import {
 	formatAppBindStatus,
 	formatWebsocketDisconnect,
 	getAppBindStatus,
+	normalizeAppBindUpstreamBaseUrl,
 	parsePosixProcessStartTime,
 	resolveAppBindPaths,
 	restoreConfigTomlFromAppBind,
@@ -21,6 +22,7 @@ import {
 	stopRuntimeRotationRouterProcess,
 	UNBIND_HELPER_CONCURRENCY,
 	unbindCodexAppRuntimeRotation,
+	type LaunchctlRunner,
 } from "../lib/runtime/app-bind.js";
 import { tomlStringLiteral } from "../lib/runtime/config-toml.js";
 import { withFileOperationRetry } from "../lib/fs-retry.js";
@@ -2370,4 +2372,238 @@ it("formats safe WebSocket transport evidence and keeps old records compatible",
 	const base = { at: 1000, cause: "close", stage: "awaiting_first_event", closeCode: 1006 };
 	expect(formatWebsocketDisconnect(base)).toBe("Last WebSocket disconnect: 1970-01-01T00:00:01.000Z; cause=close; stage=awaiting_first_event; closeCode=1006");
 	expect(formatWebsocketDisconnect({ ...base, requestBytes: 120, inputItemCount: 2, isPrewarm: false, hasPreviousResponse: true, reusedConnection: true, sendCompleted: true, compressionNegotiated: false, transportErrorCode: "ECONNRESET", tcpEndReceived: false, tcpCloseHadError: true })).toContain("requestBytes=120; inputItemCount=2; isPrewarm=false; hasPreviousResponse=true; reusedConnection=true; sendCompleted=true; compressionNegotiated=false; transportErrorCode=ECONNRESET; tcpEndReceived=false; tcpCloseHadError=true");
+});
+
+describe("app bind upstream proxy (#753)", () => {
+	it("accepts only numeric loopback HTTP upstreams with an explicit port", () => {
+		expect(normalizeAppBindUpstreamBaseUrl("http://127.0.0.1:8787/")).toBe("http://127.0.0.1:8787");
+		expect(normalizeAppBindUpstreamBaseUrl(" http://127.0.0.1:8787/backend-api ")).toBe("http://127.0.0.1:8787/backend-api");
+		expect(normalizeAppBindUpstreamBaseUrl("http://[::1]:8787")).toBe("http://[::1]:8787");
+		// WHATWG URL drops a default port; the result must still pass its own check.
+		expect(normalizeAppBindUpstreamBaseUrl("http://127.0.0.1:80")).toBe("http://127.0.0.1:80");
+		expect(normalizeAppBindUpstreamBaseUrl(normalizeAppBindUpstreamBaseUrl("http://127.0.0.1:80/x/"))).toBe("http://127.0.0.1:80/x");
+		for (const url of [
+			"http://localhost:8787",
+			"https://127.0.0.1:8787",
+			"http://127.0.0.1",
+			"http://127.0.0.1/backend-api",
+			"http://a:b@127.0.0.1:8787",
+			"http://127.0.0.1:8787/?x=1",
+			"http://127.0.0.1:8787/#x",
+			"http://192.168.1.2:8787",
+			"not a url",
+		]) {
+			expect(() => normalizeAppBindUpstreamBaseUrl(url), url).toThrow(/upstream/i);
+		}
+	});
+
+	it("persists, keeps, and clears the upstream across binds", async () => {
+		const root = await createTempRoot("codex-app-bind-upstream-");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: join(root, "multi-auth"),
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: join(root, ".codex"),
+		};
+		await seedExistingAppBindState({
+			platform: "linux",
+			home: root,
+			env,
+			port: 4569,
+			baseUrl: "http://127.0.0.1:4569",
+			nodePath: process.execPath,
+			routerScriptPath: join(root, "codex-app-router.js"),
+		});
+		const options = {
+			platform: "linux" as const,
+			home: root,
+			env,
+			spawnDetached: false,
+			routerScriptPath: join(root, "codex-app-router.js"),
+		};
+
+		const bound = await bindCodexAppRuntimeRotation({ ...options, upstreamBaseUrl: "http://127.0.0.1:8787/" });
+		expect(bound.status.state?.upstreamBaseUrl).toBe("http://127.0.0.1:8787");
+		expect(formatAppBindStatus(bound.status)).toContain("upstream=http://127.0.0.1:8787");
+		const persisted = JSON.parse(await readFile(bound.status.paths.statePath, "utf8"));
+		expect(persisted.upstreamBaseUrl).toBe("http://127.0.0.1:8787");
+
+		const kept = await bindCodexAppRuntimeRotation(options);
+		expect(kept.status.state?.upstreamBaseUrl).toBe("http://127.0.0.1:8787");
+
+		const cleared = await bindCodexAppRuntimeRotation({ ...options, upstreamBaseUrl: null });
+		expect(cleared.status.state?.upstreamBaseUrl).toBeUndefined();
+		expect(formatAppBindStatus(cleared.status)).not.toContain("upstream=");
+	});
+
+	it("refuses an unsafe upstream before touching config", async () => {
+		const root = await createTempRoot("codex-app-bind-upstream-bad-");
+		const env = {
+			CODEX_MULTI_AUTH_DIR: join(root, "multi-auth"),
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: join(root, ".codex"),
+		};
+		await expect(
+			bindCodexAppRuntimeRotation({
+				platform: "linux",
+				home: root,
+				env,
+				spawnDetached: false,
+				upstreamBaseUrl: "https://example.test",
+			}),
+		).rejects.toThrow(/upstream/i);
+		expect(existsSync(join(root, ".codex", "config.toml"))).toBe(false);
+	});
+});
+
+describe("macOS LaunchAgent lifecycle (#748)", () => {
+	async function macFixture(prefix: string) {
+		const root = await createTempRoot(prefix);
+		const env = {
+			CODEX_MULTI_AUTH_DIR: join(root, "multi-auth"),
+			CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME: join(root, ".codex"),
+		};
+		const paths = resolveAppBindPaths({ platform: "darwin", home: root, env });
+		const calls: string[][] = [];
+		let bootstrapCode = 0;
+		/** Stands in for launchd starting the job: the router reports itself running. */
+		const runLaunchctl: LaunchctlRunner = async (args) => {
+			calls.push(args);
+			if (args[0] !== "bootstrap") return { code: args[0] === "bootout" ? 3 : 0, stderr: "" };
+			const state = JSON.parse(await readFile(paths.statePath, "utf8"));
+			await writeFile(
+				paths.statusPath,
+				`${JSON.stringify({
+					state: "running",
+					pid: process.pid,
+					startedAt: Date.now(),
+					baseUrl: `http://127.0.0.1:${state.port}`,
+					identityToken: state.identityToken,
+					updatedAt: Date.now(),
+				})}\n`,
+			);
+			return {
+				code: bootstrapCode,
+				stderr: bootstrapCode ? "Bootstrap failed: 5: Input/output error" : "",
+			};
+		};
+		return {
+			root,
+			paths,
+			calls,
+			failBootstrap: () => {
+				bootstrapCode = 5;
+			},
+			options: {
+				platform: "darwin" as const,
+				home: root,
+				env,
+				nodePath: process.execPath,
+				routerScriptPath: join(root, "codex-app-router.js"),
+				routerReadyTimeoutMs: 2_000,
+				runLaunchctl,
+			},
+		};
+	}
+
+	async function markRouterDead(statusPath: string, pid: number): Promise<void> {
+		const status = JSON.parse(await readFile(statusPath, "utf8"));
+		await writeFile(statusPath, `${JSON.stringify({ ...status, pid })}\n`);
+	}
+
+	it("starts the router through launchd with a plist that matches the bound port", async () => {
+		const f = await macFixture("codex-app-bind-launchd-");
+
+		const result = await bindCodexAppRuntimeRotation(f.options);
+
+		expect(f.calls.map((args) => args[0])).toEqual(["bootout", "bootstrap"]);
+		expect(f.calls[0]?.[1]).toMatch(/^gui\/\d+\/com\.ndycode\.codex-multi-auth\.runtime-router$/);
+		expect(f.calls[1]?.[2]).toBe(f.paths.launchAgentPath);
+		const port = result.status.state?.port ?? 0;
+		expect(port).toBeGreaterThan(0);
+		const plist = await readFile(f.paths.launchAgentPath ?? "", "utf8");
+		expect(plist).toContain(`<string>--port</string>\n    <string>${port}</string>`);
+		expect(plist).toContain(`<string>${result.status.state?.identityToken}</string>`);
+		expect(await readFile(join(f.root, ".codex", "config.toml"), "utf8")).toContain(`http://127.0.0.1:${port}`);
+		expect(result.warnings).toBeUndefined();
+	});
+
+	it("falls back to a direct router and says so when launchd refuses the job", async () => {
+		const f = await macFixture("codex-app-bind-launchd-fail-");
+		f.failBootstrap();
+
+		const result = await bindCodexAppRuntimeRotation(f.options);
+
+		expect(f.calls.filter((args) => args[0] === "bootstrap")).toHaveLength(3);
+		expect(result.warnings?.join("\n")).toMatch(
+			/launchctl bootstrap .* failed \(exit 5\).*started the router directly/,
+		);
+	});
+
+	it("unloads the job before stopping the router, and reports a router that survives", async () => {
+		const f = await macFixture("codex-app-bind-launchd-unbind-");
+		await bindCodexAppRuntimeRotation(f.options);
+		f.calls.length = 0;
+
+		// The recorded PID is alive but cannot be proven to be this router.
+		const result = await unbindCodexAppRuntimeRotation({
+			...f.options,
+			verifyProcessIdentity: () => false,
+		});
+
+		expect(f.calls[0]?.[0]).toBe("bootout");
+		expect(result.warnings).toContain(
+			`runtime router (pid ${process.pid}) did not stop; continuing cleanup`,
+		);
+		expect(existsSync(f.paths.launchAgentPath ?? "")).toBe(false);
+	});
+
+	it("reports nothing when the router is already gone after bootout", async () => {
+		const f = await macFixture("codex-app-bind-launchd-clean-");
+		await bindCodexAppRuntimeRotation(f.options);
+		await withDeadPid(async (pid) => {
+			await markRouterDead(f.paths.statusPath, pid);
+			const result = await unbindCodexAppRuntimeRotation(f.options);
+			expect(result.warnings).toBeUndefined();
+		});
+	});
+
+	it("unloads the job before restarting the router for a new upstream", async () => {
+		const f = await macFixture("codex-app-bind-launchd-upstream-");
+		await bindCodexAppRuntimeRotation(f.options);
+		await withDeadPid(async (pid) => {
+			await markRouterDead(f.paths.statusPath, pid);
+			f.calls.length = 0;
+			const result = await bindCodexAppRuntimeRotation({
+				...f.options,
+				upstreamBaseUrl: "http://127.0.0.1:8787",
+			});
+			// Unload for the mode change, then replace any stale job and load.
+			expect(f.calls.map((args) => args[0])).toEqual(["bootout", "bootout", "bootstrap"]);
+			expect(result.status.state?.upstreamBaseUrl).toBe("http://127.0.0.1:8787");
+		});
+	});
+
+	it("unloads the job and removes its plist when the router never comes up", async () => {
+		const f = await macFixture("codex-app-bind-launchd-error-");
+		const failing: LaunchctlRunner = async (args) => {
+			f.calls.push(args);
+			if (args[0] === "bootstrap") {
+				await writeFile(f.paths.statusPath, `${JSON.stringify({ state: "error", pid: process.pid, lastError: "proxy boom" })}\n`);
+				return { code: 0, stderr: "" };
+			}
+			return { code: 3, stderr: "" };
+		};
+
+		await expect(bindCodexAppRuntimeRotation({ ...f.options, runLaunchctl: failing })).rejects.toThrow(/proxy boom/);
+
+		expect(f.calls.map((args) => args[0])).toEqual(["bootout", "bootstrap", "bootout"]);
+		expect(existsSync(f.paths.launchAgentPath ?? "")).toBe(false);
+	});
+
+	it("never calls launchctl when the router is not spawned", async () => {
+		const f = await macFixture("codex-app-bind-launchd-nospawn-");
+		await expect(
+			bindCodexAppRuntimeRotation({ ...f.options, spawnDetached: false }),
+		).rejects.toThrow(/runtime router port/);
+		await unbindCodexAppRuntimeRotation({ ...f.options, spawnDetached: false });
+		expect(f.calls).toEqual([]);
+	});
 });

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
 	rewriteConfigTomlForRuntimeRotationProvider,
 	configHasRuntimeRotationProvider,
+	configHasTopLevelRealtimeSidebandBaseUrl,
+	restoreConfigTomlFromRuntimeRotationProvider,
 	restoreConfigTomlFromRuntimeRotationProviderWithoutBackup,
 	restoreTopLevelModelProvider,
 	restoreTopLevelResponseStorage,
@@ -250,5 +252,58 @@ describe("restoreConfigTomlFromRuntimeRotationProviderWithoutBackup", () => {
 		expect(restored).toContain('model_provider = "openai"');
 		expect(restored).not.toContain("disable_response_storage");
 		expect(restored).not.toContain("codex-multi-auth-runtime-proxy");
+	});
+});
+
+describe("realtime voice sideband URL (#750)", () => {
+	const marker = "# codex-multi-auth realtime sideband";
+	it("points the sideband at the proxy in the root table and removes it on restore", () => {
+		const original = 'model = "gpt-5"\n[features]\nfoo = true\n';
+		const bound = rewriteConfigTomlForRuntimeRotationProvider(original, "http://127.0.0.1:9999", "local-test-secret");
+		const lines = bound.split("\n");
+		const sideband = lines.findIndex((line) => line.startsWith("experimental_realtime_ws_base_url"));
+		expect(lines[sideband]).toBe(`experimental_realtime_ws_base_url = "http://127.0.0.1:9999" ${marker}`);
+		expect(sideband).toBeLessThan(lines.findIndex((line) => line.startsWith("[")));
+		expect(bound).not.toContain("experimental_realtime_webrtc_call_base_url");
+		expect(restoreConfigTomlFromRuntimeRotationProvider(bound, original)).toBe(original);
+	});
+
+	it("replaces its own line on rebind instead of duplicating it", () => {
+		const first = rewriteConfigTomlForRuntimeRotationProvider("", "http://127.0.0.1:9999");
+		const second = rewriteConfigTomlForRuntimeRotationProvider(first, "http://127.0.0.1:8888");
+		expect(second.match(/experimental_realtime_ws_base_url/g)).toHaveLength(1);
+		expect(second).toContain('experimental_realtime_ws_base_url = "http://127.0.0.1:8888"');
+	});
+
+	it("keeps a sideband URL the user configured and leaves it after restore", () => {
+		const original = 'experimental_realtime_ws_base_url = "https://example.test/voice"\nmodel = "gpt-5"\n';
+		const bound = rewriteConfigTomlForRuntimeRotationProvider(original, "http://127.0.0.1:9999");
+		expect(bound.match(/experimental_realtime_ws_base_url/g)).toHaveLength(1);
+		expect(bound).not.toContain(marker);
+		expect(restoreConfigTomlFromRuntimeRotationProvider(bound, original)).toContain(
+			'experimental_realtime_ws_base_url = "https://example.test/voice"',
+		);
+		expect(configHasTopLevelRealtimeSidebandBaseUrl(original)).toBe(true);
+		expect(configHasTopLevelRealtimeSidebandBaseUrl('[x]\nexperimental_realtime_ws_base_url = "y"\n')).toBe(false);
+	});
+
+	it("does not count its own marked line as a user setting", () => {
+		const marked = `experimental_realtime_ws_base_url = "http://127.0.0.1:1" ${marker}\nmodel = "gpt-5"\n`;
+		expect(configHasTopLevelRealtimeSidebandBaseUrl(marked)).toBe(false);
+		const rebound = rewriteConfigTomlForRuntimeRotationProvider(marked, "http://127.0.0.1:9999");
+		expect(rebound).toContain('experimental_realtime_ws_base_url = "http://127.0.0.1:9999"');
+		expect(rebound).not.toContain("127.0.0.1:1\"");
+	});
+
+	it("strips the sideband line during no-backup recovery", () => {
+		const bound = rewriteConfigTomlForRuntimeRotationProvider('model = "gpt-5"\n', "http://127.0.0.1:9999");
+		expect(restoreConfigTomlFromRuntimeRotationProviderWithoutBackup(bound)).not.toContain("experimental_realtime_ws_base_url");
+	});
+
+	it("preserves CRLF line endings", () => {
+		const original = 'model = "gpt-5"\r\n[features]\r\nfoo = true\r\n';
+		const bound = rewriteConfigTomlForRuntimeRotationProvider(original, "http://127.0.0.1:9999");
+		expect(bound).toContain(`experimental_realtime_ws_base_url = "http://127.0.0.1:9999" ${marker}\r\n`);
+		expect(bound.replace(/\r\n/g, "")).not.toContain("\n");
 	});
 });

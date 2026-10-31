@@ -11,6 +11,8 @@ export type UsageLedgerOperation =
 	| "models"
 	| "thread-goal"
 	| "transcribe"
+	| "search"
+	| "realtime"
 	| "auth-refresh"
 	| "diagnostic"
 	| "unknown";

@@ -130,6 +130,14 @@ import {
 	reloadRuntimeCredentials,
 	type RotationProxyState,
 } from "./runtime/rotation-proxy-state.js";
+import {
+	REALTIME_CALL_UPSTREAM_PATH,
+	RealtimeCallRequestError,
+	createRealtimeSidebandRelay,
+	isRealtimeCallPath,
+	parseRealtimeCallId,
+	translateRealtimeCallRequest,
+} from "./runtime/realtime-calls.js";
 import type {
 	ExhaustionReason,
 	RequestContext,
@@ -547,6 +555,17 @@ const ALLOWED_THREAD_GOAL_PATHS = new Set([
 	"/codex/thread/goal/get",
 	"/codex/thread/goal/set",
 ]);
+
+/**
+ * Codex standalone web search (`web.run`) posts to `<provider base>/alpha/search`.
+ * Against ChatGPT the provider base is `/backend-api/codex`, so the upstream
+ * path is `/codex/alpha/search` (#752).
+ */
+const ALLOWED_SEARCH_PATHS = new Set([
+	"/alpha/search",
+	"/codex/alpha/search",
+]);
+const SEARCH_UPSTREAM_PATH = "/codex/alpha/search";
 
 function isResponsesPath(pathname: string): boolean {
 	return ALLOWED_RESPONSES_PATHS.has(pathname);
@@ -1004,6 +1023,62 @@ function buildTranscribeRequestContext(
 	};
 }
 
+function buildSearchRequestContext(
+	req: IncomingMessage,
+	body: Buffer,
+): RequestContext {
+	const headers = headersFromIncoming(req);
+	const parsedBody = parseRequestBody(body);
+	return {
+		body,
+		headers,
+		method: "POST",
+		upstreamPath: SEARCH_UPSTREAM_PATH,
+		model: null,
+		family: "codex",
+		stream: false,
+		sessionKey: resolveSessionKey(headers, parsedBody),
+		stableSessionKey: resolveStableSessionKey(headers, parsedBody),
+	};
+}
+
+/**
+ * Codex voice call creation (#750). The body is translated from the API
+ * multipart shape Codex uses against a loopback base URL into the ChatGPT
+ * backend shape; see lib/runtime/realtime-calls.ts.
+ */
+function buildRealtimeCallRequestContext(
+	req: IncomingMessage,
+	body: Buffer,
+	pathname: string,
+): RequestContext {
+	const headers = headersFromIncoming(req);
+	const incomingUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+	let translated: ReturnType<typeof translateRealtimeCallRequest>;
+	try {
+		translated = translateRealtimeCallRequest(pathname, incomingUrl.search, headers.get("content-type"), body);
+	} catch (error) {
+		if (error instanceof RealtimeCallRequestError) {
+			throw createRuntimeProxyHttpError(error.message, 400, "invalid_realtime_call");
+		}
+		throw error;
+	}
+	if (translated.contentType) headers.set("content-type", translated.contentType);
+	headers.delete("content-length");
+	return {
+		body: translated.body,
+		headers,
+		method: "POST",
+		upstreamPath: REALTIME_CALL_UPSTREAM_PATH,
+		upstreamSearch: translated.search,
+		model: null,
+		family: "codex",
+		stream: false,
+		sessionKey: resolveSessionKey(headers, null),
+		stableSessionKey: resolveStableSessionKey(headers, null),
+	};
+}
+
 function buildModelsRequestContext(req: IncomingMessage): RequestContext {
 	return {
 		body: Buffer.alloc(0),
@@ -1052,12 +1127,13 @@ function buildUpstreamUrl(
 	req: IncomingMessage,
 	upstreamBaseUrl: string,
 	upstreamPath: string,
+	upstreamSearch?: string,
 ): string {
 	const incomingUrl = new URL(req.url ?? "/", "http://127.0.0.1");
 	const upstream = new URL(upstreamBaseUrl);
 	const basePath = upstream.pathname.replace(/\/+$/, "");
 	upstream.pathname = `${basePath}${upstreamPath}`;
-	upstream.search = incomingUrl.search;
+	upstream.search = upstreamSearch ?? incomingUrl.search;
 	return upstream.toString();
 }
 
@@ -1076,7 +1152,7 @@ function writeMethodOrPathError(res: ServerResponse): void {
 	writeJson(res, 404, {
 		error: {
 			message:
-				"Runtime rotation proxy only accepts Responses API, images, transcription, model discovery, and Codex thread goal requests.",
+				"Runtime rotation proxy only accepts Responses API, images, transcription, web search, voice calls, model discovery, and Codex thread goal requests.",
 			code: "runtime_rotation_proxy_not_found",
 		},
 	});
@@ -1188,6 +1264,9 @@ export async function startRuntimeRotationProxy(
 	// is allowed only for the documented numeric-loopback dev path.
 	if (options.upstreamBaseUrl !== undefined) {
 		assertAllowedUpstreamBaseUrl(options.upstreamBaseUrl);
+	}
+	if (options.realtimeSidebandUpstreamBaseUrl !== undefined) {
+		assertAllowedUpstreamBaseUrl(options.realtimeSidebandUpstreamBaseUrl);
 	}
 	const upstreamBaseUrl = options.upstreamBaseUrl ?? CODEX_BASE_URL;
 	const clientApiKey =
@@ -1303,7 +1382,18 @@ export async function startRuntimeRotationProxy(
 		forcedAccountIndex,
 	});
 
-	const websocketGateway = new ResponsesWebSocketGateway(fetchImpl, {maxPayloadBytes: state.maxRequestBodyBytes});
+	const realtimeSidebandRelay = createRealtimeSidebandRelay({
+		registry: state.realtimeCalls,
+		upstreamBaseUrl: options.realtimeSidebandUpstreamBaseUrl,
+		maxPayloadBytes: state.maxRequestBodyBytes,
+		onError: (message) => {
+			state.status.lastError = message;
+		},
+	});
+	const websocketGateway = new ResponsesWebSocketGateway(fetchImpl, {
+		maxPayloadBytes: state.maxRequestBodyBytes,
+		upgrade: (req, socket, head) => realtimeSidebandRelay.handleUpgrade(req, socket, head),
+	});
 	state.fetchImpl = websocketGateway.fetch;
 	const server = createServer((req, res) => {
 		websocketGateway.handle(req, () => handleRequest(state, req, res));
@@ -1338,7 +1428,9 @@ export async function startRuntimeRotationProxy(
 	const resolvedPort =
 		typeof address === "object" && address ? address.port : port;
 
-	if (state.nativeOpenai) websocketGateway.attach(server, `http://${urlHost}:${resolvedPort}`);
+	// Every mode authenticates upgrades and relays realtime voice sidebands;
+	// only native OpenAI binds serve Responses over WebSocket.
+	websocketGateway.attach(server, `http://${urlHost}:${resolvedPort}`, { responses: state.nativeOpenai === true });
 	// Embedded managers own their own lifecycle; ordinary CLI/app routers check opted-in accounts periodically.
 	const automaticChecks = options.accountManager ? undefined : startAutomaticAccountChecks(createAutomaticSubscriptionCheck());
 	const automaticApiChecks = options.accountManager || options.readApiRoutes ? undefined : startAutomaticApiChecks(createAutomaticApiCheck(fetchImpl));
@@ -1349,6 +1441,8 @@ export async function startRuntimeRotationProxy(
 		close: async () => {
 			await Promise.all([automaticChecks?.stop(), automaticApiChecks?.stop()]);
 			websocketGateway.close();
+			realtimeSidebandRelay.close();
+			state.realtimeCalls.clear();
 			await closeServer(server, sockets);
             state.subscriptionQuotaRejections?.clear();
 			await flushRuntimeInferenceActivity();
@@ -1534,8 +1628,12 @@ async function handleRequestInner(
 		const isThreadGoalRequest =
 			(req.method === "GET" || req.method === "POST") &&
 			isThreadGoalPath(incomingUrl.pathname);
+		const isSearchRequest =
+			req.method === "POST" && ALLOWED_SEARCH_PATHS.has(incomingUrl.pathname);
+		const isRealtimeCallRequest =
+			req.method === "POST" && isRealtimeCallPath(incomingUrl.pathname);
 		if (
-			!isResponsesRequest && !isModelsRequest &&
+			!isResponsesRequest && !isModelsRequest && !isSearchRequest && !isRealtimeCallRequest &&
 			!isThreadGoalRequest && !isImageRequest && !isTranscribeRequest
 		) {
 			writeMethodOrPathError(res);
@@ -1544,7 +1642,7 @@ async function handleRequestInner(
 
 		state.status.totalRequests += 1;
 		let requestBody =
-			isResponsesRequest || isImageRequest || isTranscribeRequest ||
+			isResponsesRequest || isImageRequest || isTranscribeRequest || isSearchRequest || isRealtimeCallRequest ||
 			(isThreadGoalRequest && req.method === "POST")
 				? await readRequestBody(req, state.maxRequestBodyBytes)
 				: Buffer.alloc(0);
@@ -1570,7 +1668,11 @@ async function handleRequestInner(
 					? buildImageRequestContext(req, requestBody, incomingUrl.pathname)
 					: isTranscribeRequest
 						? buildTranscribeRequestContext(req, requestBody)
-							: buildResponsesRequestContext(req, requestBody);
+						: isSearchRequest
+							? buildSearchRequestContext(req, requestBody)
+							: isRealtimeCallRequest
+								? buildRealtimeCallRequestContext(req, requestBody, incomingUrl.pathname)
+								: buildResponsesRequestContext(req, requestBody);
 		if (isResponsesRequest) {
 			context.headers.delete("content-encoding");
 			context.headers.delete("content-length");
@@ -1629,7 +1731,11 @@ async function handleRequestInner(
 						? "images"
 						: isTranscribeRequest
 							? "transcribe"
-							: "responses",
+							: isSearchRequest
+								? "search"
+								: isRealtimeCallRequest
+									? "realtime"
+									: "responses",
 			model,
 			projectKey,
 			requestId: traceId,
@@ -1803,6 +1909,7 @@ async function handleRequestInner(
 			req,
 			state.upstreamBaseUrl,
 			context.upstreamPath,
+			context.upstreamSearch,
 		);
 		const attemptedIndexes = new Set<number>();
 		// The upstream's own capability 400/403/404, forwarded instead of a
@@ -2976,7 +3083,7 @@ async function handleRequestInner(
 
 			let pendingScopes = workspaceCandidates.get(refreshed.account.index);
 			// Routes without model-catalog preparation still use the selected enabled workspace.
-			if (isImageRequest || isTranscribeRequest || isThreadGoalRequest) {
+			if (isImageRequest || isTranscribeRequest || isThreadGoalRequest || isSearchRequest || isRealtimeCallRequest) {
 				pendingScopes = workspaceModelScopes(refreshed.account)
 					.filter((scope) => scope.routable)
 					.sort((a, b) => Number(b.selected) - Number(a.selected) || Number(b.bound) - Number(a.bound));
@@ -3170,13 +3277,28 @@ async function handleRequestInner(
 					return;
 				}
 				// A timeout may occur after generation; do not retry within this request.
-				if (isImageRequest || isTranscribeRequest) {
-					const operation = isImageRequest ? "image" : "transcribe";
+				// A realtime call may already exist upstream; never create a second one.
+				// A web search outage is not a reason to cool inference accounts.
+				if (isImageRequest || isTranscribeRequest || isRealtimeCallRequest || isSearchRequest) {
+					const operation = isImageRequest
+						? "image"
+						: isTranscribeRequest
+							? "transcribe"
+							: isRealtimeCallRequest
+								? "realtime"
+								: "search";
 					const errorCode = `${operation}_upstream_transport_error`;
+					const label = isImageRequest
+						? "Image"
+						: isTranscribeRequest
+							? "Transcription"
+							: isRealtimeCallRequest
+								? "Realtime call"
+								: "Web search";
 					writeJson(res, 502, {
 						error: {
 							code: errorCode,
-							message: `${isImageRequest ? "Image" : "Transcription"} upstream transport failed; not retried by the proxy.`,
+							message: `${label} upstream transport failed; not retried by the proxy.`,
 						},
 					});
 					await usageRecorder.record({
@@ -3265,6 +3387,23 @@ async function handleRequestInner(
    }
 			if (upstream.status === HTTP_STATUS.TOO_MANY_REQUESTS) {
 				const bodyText = await readErrorBody(upstream, state.streamStallTimeoutMs);
+				// Web search and voice limits belong to those endpoints. Rate-limiting
+				// the shared `codex` family would take the account out of the
+				// Responses pool, and replaying would only spread the limit across
+				// every account. A rejected call creation also never created a call.
+				if (isSearchRequest || isRealtimeCallRequest) {
+					res.writeHead(upstream.status, responseHeadersForClient(upstream.headers));
+					res.end(bodyText);
+					await usageRecorder.record({
+						outcome: "failure",
+						statusCode: upstream.status,
+						errorCode:
+							extractErrorCodeFromBody(bodyText) ??
+							(isSearchRequest ? "search_rate_limited" : "realtime_rate_limited"),
+						account: refreshed.account,
+					});
+					return;
+				}
 				if (isTranscribeRequest) {
 					const now = state.now();
 					const retryAfterMs =
@@ -3604,13 +3743,18 @@ async function handleRequestInner(
 
 			// Forward image validation/moderation/5xx errors without cross-account replay.
 			// Explicit 429 quota and 401 auth handling above still use the existing pool.
-			if (isImageRequest && upstream.status >= 400) {
+			// Web search errors pass through the same way: a search outage is not an
+			// inference failure and must not cool down the account for Responses.
+			// Realtime eligibility/validation errors are the voice endpoint's answer,
+			// not an account-health signal, and a call is not replayed elsewhere.
+			if ((isImageRequest || isSearchRequest || isRealtimeCallRequest) && upstream.status >= 400) {
 				const forwarded = await forwardStreamingResponse(
 					upstream, res, state.status, () => undefined, state.streamStallTimeoutMs,
 				);
+				const operation = isImageRequest ? "image" : isSearchRequest ? "search" : "realtime";
 				await usageRecorder.record({
 					outcome: "failure", statusCode: upstream.status,
-					errorCode: forwarded ? "image_upstream_error" : "stream_forward_failed",
+					errorCode: forwarded ? `${operation}_upstream_error` : "stream_forward_failed",
 					account: refreshed.account,
 				});
 				return;
@@ -3737,6 +3881,18 @@ async function handleRequestInner(
 			// evaluateBudgetGuard compares `0 >= limit` for maxTokens/maxCostUsd
 			// and those caps never fire — `budget set --cost 50` would allow
 			// unlimited spend, with only --requests actually enforced.
+			// Record the creating account before the answer reaches Codex, which
+			// joins the call's sideband socket as soon as it reads the Location.
+			if (isRealtimeCallRequest && upstream.ok) {
+				const callId = parseRealtimeCallId(upstream.headers.get("location"));
+				if (callId) {
+					state.realtimeCalls.remember(callId, {
+						accessToken: refreshed.accessToken,
+						accountId,
+						accountIndex: refreshed.account.index,
+					});
+				}
+			}
 			const usageScanner = createUsageStreamScanner({
 				contentType: upstream.headers.get("content-type"),
 				onEvent: (event) => {

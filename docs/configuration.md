@@ -126,7 +126,7 @@ Use these only for debugging, controlled benchmarking, sandboxed tests, or maint
 | `CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE=0` | Skip the wrapper-injected `-c cli_auth_credentials_store="file"` and the startup `config.toml` reconcile |
 | `CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE=0` | Opt out of every persisted `cli_auth_credentials_store = "file"` rewrite in `~/.codex/config.toml` |
 | `CODEX_MULTI_AUTH_DEBUG=1` | Verbose wrapper/debug notices |
-| `CODEX_MULTI_AUTH_RUNTIME_PROXY_UPSTREAM_BASE_URL` | Pin the proxy upstream to an explicit-port `http://127.0.0.1:<port>` URL (numeric loopback only; fails closed when set but the command does not route) |
+| `CODEX_MULTI_AUTH_RUNTIME_PROXY_UPSTREAM_BASE_URL` | Pin the proxy upstream to an explicit-port `http://127.0.0.1:<port>` URL (numeric loopback only; fails closed when set but the command does not route). Wrapper sessions only; for the packaged-app router use `codex-multi-auth rotation bind-app --upstream <url>` |
 | `CODEX_CLI_AUTH_PATH` / `CODEX_CLI_ACCOUNTS_PATH` / `CODEX_CLI_CONFIG_PATH` | Override official Codex `auth.json` / `accounts.json` / `config.toml` paths (sandboxes and tests) |
 | `CODEX_AUTH_*` per-field names | Every `pluginConfig` field has an env accessor — see the [full matrix](development/CONFIG_FIELDS.md#pluginconfig-fields) |
 | `CODEX_AUTH_REFRESH_LEASE*` | Cross-process refresh coordination knobs |
