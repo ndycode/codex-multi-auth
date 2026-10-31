@@ -64,6 +64,17 @@ const terminal = new Set([
 	"error",
 ]);
 type Json = Record<string, unknown>;
+/**
+ * Native clients continue an interrupted response with `previous_response_id`,
+ * exactly like a completed one, so both must be remembered for reconstruction.
+ * Other incomplete reasons (length, content filter) end the turn instead.
+ */
+export function isChainableTerminal(event: Json): boolean {
+	if (event.type === "response.completed") return true;
+	if (event.type !== "response.incomplete" || !isRecord(event.response)) return false;
+	const details = event.response.incomplete_details;
+	return isRecord(details) && details.reason === "interrupted";
+}
 type Chain = { body: Json; output: unknown[]; pool: string; bytes: number };
 type Context = { routeKind: "oauth" | "api" | "zdr"; signal: AbortSignal; session: SocketSession; previousId?: string; delta?: unknown; clientBeta?: string };
 /** A thread-scoped hint only; authentication is checked separately before use. */
@@ -877,7 +888,7 @@ export class ResponsesWebSocketGateway {
 									if (!isRecord(parsed)) throw Error("invalid_response_event");
 									outputHistory.observe(parsed);
 									if (
-										parsed.type === "response.completed" &&
+										isChainableTerminal(parsed) &&
 										isRecord(parsed.response) &&
 										typeof parsed.response.id === "string"
 									) {

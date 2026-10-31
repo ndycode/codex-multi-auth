@@ -162,7 +162,7 @@ function turn(
 			const event = JSON.parse(raw.toString());
 			events.push(event);
 			if (
-				["response.completed", "response.failed", "error"].includes(event.type)
+				["response.completed", "response.failed", "response.incomplete", "error"].includes(event.type)
 			) {
 				clearTimeout(timer);
 				ws.off("message", onMessage);
@@ -1030,4 +1030,37 @@ it("retains API handshake backoff for all 100 supported route credentials", asyn
   await turn(replacement, {model: "api/fixture", input: []});
  }
  expect(upgrades).toBe(100);
+});
+
+it.each([
+	["interrupted", true],
+	["max_output_tokens", false],
+])("remembers a response.incomplete chain only when it was interrupted (%s)", async (reason, chainable) => {
+	const kept = { id: "kept", type: "message", role: "assistant", content: [{ type: "output_text", text: "partial answer" }] };
+	const f = await fixture((ws, body, id) => {
+		if (body.previous_response_id !== undefined || id !== "resp_1") return false;
+		ws.send(JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { ...kept, content: [] } }));
+		ws.send(JSON.stringify({ type: "response.output_item.done", output_index: 0, item: kept }));
+		ws.send(JSON.stringify({ type: "response.output_item.added", output_index: 1, item: { id: "discarded", type: "reasoning", summary: [] } }));
+		ws.send(JSON.stringify({ type: "response.output_item.interrupted", item_id: "discarded", output_index: 1 }));
+		ws.send(JSON.stringify({ type: "response.incomplete", response: { id, status: "incomplete", incomplete_details: { reason }, output: [kept] } }));
+		return true;
+	});
+	const ws = await f.connect();
+	const initial = [{ role: "user", content: "start" }];
+	expect((await turn(ws, { model: "shared", input: initial })).at(-1)?.type).toBe("response.incomplete");
+	// A different account cannot see resp_1 upstream, so the gateway must
+	// rebuild the continuation from the chain it remembered locally.
+	f.useCredential("another-account");
+	const followUp = { role: "user", content: "continue" };
+	const events = await turn(ws, { model: "shared", previous_response_id: "resp_1", input: [followUp] });
+	if (!chainable) {
+		expect(events.at(-1)).toMatchObject({ type: "error", error: { code: "previous_response_not_found" } });
+		expect(f.calls).toHaveLength(1);
+		return;
+	}
+	expect(events.at(-1)?.type).toBe("response.completed");
+	expect(f.calls).toHaveLength(2);
+	expect(f.calls[1]).not.toHaveProperty("previous_response_id");
+	expect(f.calls[1]?.input).toEqual([...initial, kept, followUp]);
 });

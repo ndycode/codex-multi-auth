@@ -23,3 +23,28 @@ it.each(['custom_tool_call','function_call'])('requires a preceding matching %s 
  expect(hasOrphanToolResult([{...call,call_id:'other'},result])).toBe(true);
  expect(hasOrphanToolResult([{...call,type:'other'},result])).toBe(true);
 });
+it('drops an item discarded by a native interrupt so the chain stays replayable',()=>{
+ const history=new ResponseOutputHistory(10_000);
+ const kept={id:'kept',type:'message',role:'assistant',content:[{type:'output_text',text:'done'}]};
+ history.observe({type:'response.output_item.added',output_index:0,item:{...kept,content:[]}});
+ history.observe({type:'response.output_item.done',output_index:0,item:kept});
+ history.observe({type:'response.output_item.added',output_index:1,item:{id:'partial',type:'reasoning',summary:[]}});
+ history.observe({type:'response.output_item.interrupted',item_id:'partial',output_index:1});
+ expect(history.finish([kept])).toEqual([kept]);
+});
+it('ignores an interrupt for an index it never saw',()=>{
+ const history=new ResponseOutputHistory(10_000);
+ const kept={id:'kept',type:'message'};
+ history.observe({type:'response.output_item.done',output_index:0,item:kept});
+ history.observe({type:'response.output_item.interrupted',item_id:'gone',output_index:5});
+ expect(history.finish(undefined)).toEqual([kept]);
+});
+it.each([
+ ['a malformed index',{type:'response.output_item.interrupted',item_id:'partial',output_index:-1}],
+ ['an item id that disagrees with the stream',{type:'response.output_item.interrupted',item_id:'other',output_index:0}],
+])('refuses to reconstruct history after %s',(_label,event)=>{
+ const history=new ResponseOutputHistory(10_000);
+ history.observe({type:'response.output_item.added',output_index:0,item:{id:'partial',type:'reasoning'}});
+ history.observe(event);
+ expect(history.finish([])).toBeUndefined();
+});
