@@ -84,10 +84,11 @@ Snapshot material kept for provenance — prefer current `development/` and `ref
 
 ## Release History
 
-Current stable: [v2.24.0](releases/v2.24.0.md) (`npm i -g codex-multi-auth`). The `2.x` line is the current release line; earlier lines are kept as archives.
+Current stable: [v2.25.0](releases/v2.25.0.md) (`npm i -g codex-multi-auth`). The `2.x` line is the current release line; earlier lines are kept as archives.
 
 ### 2.x
 
+- **2.25.x** — [v2.25.0](releases/v2.25.0.md)
 - **2.24.x** — [v2.24.0](releases/v2.24.0.md)
 - **2.23.x** — [v2.23.0](releases/v2.23.0.md)
 - **2.22.x** — [v2.22.0](releases/v2.22.0.md)
