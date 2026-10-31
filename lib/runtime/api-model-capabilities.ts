@@ -1,3 +1,4 @@
+import { apiBaseUrl } from "../api-region.js";
 import { mapWithConcurrency } from "../concurrency.js";
 import { classifyCapabilityFailure } from "./runtime-capability-failures.js";
 import { createHash } from "node:crypto";
@@ -70,9 +71,9 @@ function programsFresh(result: ProbeResult, programs: string[], now: number): bo
   result.programCheckedAt <= now && result.programCheckedAt + 86400_000 > now &&
   programs.every(program => ["verified", "unsupported"].includes(result.status[`program:cyber:${program}`] ?? ""));
 }
-type DocumentedCapabilities = { levels: string[]; reasoningAvailable?: boolean; inputModalities?: string[] };
+type DocumentedCapabilities = { levels: string[]; reasoningAvailable?: boolean; inputModalities?: string[]; stale?: boolean };
 function probeKey(route: ApiRouteCredential, id: string): string {
-	return createHash("sha256").update(route.id).update("\0").update(route.apiKey).update("\0").update(id).digest("hex");
+	return createHash("sha256").update(route.id).update("\0").update(route.apiKey + (route.region === "us" ? "\0" + apiBaseUrl(route) : "")).update("\0").update(id).digest("hex");
 }
 
 /** Only the exact model's input declaration can enable native image attachments. */
@@ -192,8 +193,16 @@ export class ApiModelCapabilities {
 				inputModalities: parseInputModalities(id, text),
 			};
 		} catch {
-			// An outage is not a capability revocation. Keep last successful evidence.
-			metadata = { ...(cached ?? metadata), reasoningAvailable: false };
+			// An outage is not a capability revocation. Keep the entire last
+			// successful declaration, including that its levels were authoritative.
+			if (cached) {
+				metadata = {
+					levels: [...cached.levels],
+					reasoningAvailable: cached.reasoningAvailable,
+					inputModalities: cached.inputModalities,
+					stale: true,
+				};
+			}
 		}
 		if (this.cache.size >= 1000)
 			this.cache.delete(this.cache.keys().next().value ?? "");
@@ -257,6 +266,7 @@ export class ApiModelCapabilities {
 			status: {} as Record<string, string>,
 		};
 		let credentialUnavailable = false;
+		let needsRetry = false;
 		// 401/403 means this credential lost access: nothing it verified before
 		// may still be advertised. A throttle (429) or transport failure is only
 		// inconclusive and keeps what an earlier probe verified. Only
@@ -266,8 +276,13 @@ export class ApiModelCapabilities {
 		// A model-level denial hides the model on this credential: no efforts, no tiers.
 		let modelDenied = false;
 		const previous = this.probes.get(key);
-		const keep = (name: string, status: string): string =>
-			status === "unverified" && !lostAccess && !modelDenied && previous?.status[name] === "verified" ? "verified" : status;
+		const keep = (name: string, status: string): string => {
+			const prior = previous?.status[name];
+			return status === "unverified" && !lostAccess && !modelDenied &&
+				prior !== undefined && ["verified", "unsupported", "downgraded"].includes(prior)
+				? prior
+				: status;
+		};
 		const attempt = async (setting: {
 			effort?: string;
 			tier?: string;
@@ -287,10 +302,13 @@ export class ApiModelCapabilities {
 				return "unverified";
 			};
 			return this.withProbeSlot(async () => {
-				if (credentialUnavailable || modelDenied) return "unverified";
+				if (credentialUnavailable || modelDenied) {
+					if (!modelDenied) needsRetry = true;
+					return "unverified";
+				}
 				try {
 					const response = await this.fetchImpl(
-						"https://api.openai.com/v1/responses",
+						`${apiBaseUrl(route)}/responses`,
 						{
 							method: "POST",
 							headers: {
@@ -335,6 +353,7 @@ export class ApiModelCapabilities {
 					);
 					if ([401, 429].includes(response.status))
 						credentialUnavailable = true;
+					if (response.status === 429) needsRetry = true;
 					if (response.status === 401) lostAccess = true;
 					// Probe bodies are tiny, but an upstream error must not grow local memory unboundedly.
 					const reader = response.body?.getReader();
@@ -419,6 +438,7 @@ export class ApiModelCapabilities {
 						? "verified"
 						: "downgraded";
 				} catch {
+					needsRetry = true;
 					return "unverified";
 				}
 			});
@@ -439,6 +459,22 @@ export class ApiModelCapabilities {
 				// verified effort probe. Keep that scoped evidence through an
 				// inconclusive retry only while current documentation is unavailable.
 				if (effective === "verified" || (status === "unverified" && !reasoningAvailable && !lostAccess && !modelDenied && previous?.levels.includes(effort))) result.levels.push(effort);
+			}
+			const probeEstablishedReasoning = checked.some(({ status }) =>
+				["verified", "unsupported", "downgraded"].includes(status),
+			);
+			if (!reasoningAvailable && needsRetry && probeEstablishedReasoning) {
+				// Partial evidence says only that explicitly rejected efforts fail. A
+				// timeout or throttle must not turn unchecked settings into denials.
+				for (const { effort, status } of checked) {
+					const prior = previous?.status[`effort:${effort}`];
+					if (
+						status === "unverified" &&
+						(!previous || previous.status.retry === "transient" || prior === "unverified") &&
+						!["unsupported", "downgraded"].includes(prior ?? "") &&
+						!result.levels.includes(effort)
+					) result.levels.push(effort);
+				}
 			}
 		}
 		const effort = result.levels.includes("low") ? "low" : result.levels[0];
@@ -492,8 +528,9 @@ export class ApiModelCapabilities {
 			result.levels = [];
 			result.tiers = [];
 			for (const name of Object.keys(result.status)) result.status[name] = "unverified";
+			result.status.credential = "unavailable";
 		}
-		if (credentialUnavailable && !modelDenied) result.status.retry = "transient";
+		if ((credentialUnavailable || needsRetry) && !modelDenied) result.status.retry = "transient";
 		result.at = this.now();
 		if (this.probes.size >= 1000)
 			this.probes.delete(this.probes.keys().next().value ?? "");
@@ -512,16 +549,17 @@ export class ApiModelCapabilities {
 		return mapWithConcurrency(models, 3, async (model) => {
 						const documented = await this.documentation(model.slug, refresh);
 						let levels = documented.levels;
+						let probed: ProbeResult | undefined;
 						let extra: Record<string, unknown> = {};
 						if (route?.enabled && route.probeCapabilities) {
-							let probed = cached ? this.freshProbe(route, model.slug, cached.get(probeKey(route, model.slug))) : await this.probe(
+							probed = cached ? this.freshProbe(route, model.slug, cached.get(probeKey(route, model.slug))) : await this.probe(
 								route,
 								model.slug,
 								levels,
 								forceProbes,
-								documented.reasoningAvailable === true,
+								documented.reasoningAvailable === true && documented.stale !== true,
 							);
-							if (probed && cached) probed = this.reconcileReasoning(probed, levels, documented.reasoningAvailable === true);
+							if (probed && cached) probed = this.reconcileReasoning(probed, levels, documented.reasoningAvailable === true && documented.stale !== true);
 							if (probed) levels = probed.levels;
 							extra = probed ? {
 								service_tiers: probed.tiers.map((id) => ({
@@ -546,6 +584,14 @@ export class ApiModelCapabilities {
 								program_checked_at: undefined,
 							};
 						}
+						const effortStatuses = Object.entries(probed?.status ?? {}).filter(([name]) =>
+							name.startsWith("effort:"),
+						);
+						const probeEstablishedReasoning =
+							effortStatuses.length > 0 &&
+							effortStatuses.every(([, status]) =>
+								["verified", "unsupported", "downgraded"].includes(status),
+							);
 						// Ultra is a native orchestration mode. Codex resolves it to this
 						// supported wire effort; it is not an API entitlement named "ultra".
 						const multiAgentEffort =
@@ -558,6 +604,8 @@ export class ApiModelCapabilities {
 						return {
 							...model,
 							...extra,
+							reasoning_levels_known:
+								documented.reasoningAvailable === true || probeEstablishedReasoning,
 							...(documented.inputModalities ? { input_modalities: documented.inputModalities } : {}),
 							multi_agent_reasoning_effort: multiAgentEffort,
 							supported_reasoning_levels: nativeLevels.map((effort) => ({

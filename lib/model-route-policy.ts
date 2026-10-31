@@ -1,7 +1,7 @@
 import { mergeCatalogModel, mergeCatalogModels } from "./runtime/catalog-capabilities.js";
 import { isRecord } from "./utils.js";
 /** Model selection is the explicit routing signal; never infer a privacy route from prompt text. */
-export type ModelRouteKind = "oauth" | "api" | "zdr";
+export type ModelRouteKind = "oauth" | "api" | "zdr" | "psp";
 export type RouteModel = Record<string, unknown> & { slug: string };
 export interface RouteCatalog {
 	id: string;
@@ -26,7 +26,7 @@ export function parseModelRoute(model: string): {
 	if (!model || model.length > 256 || /[\u0000-\u0020\u007f]/.test(model))
 		throw new Error("Invalid route model");
 	let kind: ModelRouteKind = "oauth";
-	for (const candidate of ["api", "zdr"] as const)
+	for (const candidate of ["api", "zdr", "psp"] as const)
 		if (model.startsWith(`${candidate}/`)) {
 			kind = candidate;
 			model = model.slice(candidate.length + 1);
@@ -39,7 +39,7 @@ export function parseModelRoute(model: string): {
 		serviceTier = match[1];
 		model = match[2];
 	}
-	if (!model || /^(api|zdr|speed)\//.test(model))
+	if (!model || /^(api|zdr|psp|speed)\//.test(model))
 		throw new Error("Invalid route model");
 	return {
 		kind,
@@ -70,12 +70,17 @@ export function supportsModelSettings(
 	reasoningEffort?: string,
 	serviceTier?: string,
 ): boolean {
+	const effortStatus = isRecord(model.capability_probe_status) && reasoningEffort
+		? model.capability_probe_status[`effort:${reasoningEffort}`]
+		: undefined;
 	return (
 		(!reasoningEffort ||
-			Array.isArray(model.supported_reasoning_levels) &&
-			model.supported_reasoning_levels.some(
-				(l) => isRecord(l) && l.effort === reasoningEffort,
-			)) &&
+			(!["unsupported", "downgraded"].includes(String(effortStatus)) &&
+				(model.reasoning_levels_known === false ||
+					(Array.isArray(model.supported_reasoning_levels) &&
+						model.supported_reasoning_levels.some(
+							(l) => isRecord(l) && l.effort === reasoningEffort,
+						))))) &&
 		(!serviceTier ||
 			serviceTier === "default" ||
 			serviceTier === "auto" ||
@@ -87,10 +92,11 @@ export function supportsModelSettings(
 function visible(catalog: RouteCatalog, model: RouteModel): boolean {
 	if (
 		(isRecord(model.capability_probe_status) &&
-			model.capability_probe_status.responses === "unsupported") ||
+			(model.capability_probe_status.responses === "unsupported" ||
+				model.capability_probe_status.credential === "unavailable")) ||
 		!catalog.enabled ||
 		!model.slug ||
-		/^(api|zdr|speed)\//.test(model.slug)
+		/^(api|zdr|psp|speed)\//.test(model.slug)
 	)
 		return false;
 	return (

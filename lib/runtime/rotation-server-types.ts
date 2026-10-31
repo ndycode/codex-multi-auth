@@ -81,6 +81,8 @@ export interface RuntimeRotationProxyOptions {
 	 * `CODEX_MULTI_AUTH_MODEL_CAPACITY_RETRY_MS`, then to a 10 minute default.
 	 */
 	modelCapacityRetryMs?: number;
+	/** Maximum wait for an unsent API create to acquire cooldown admission. */
+	apiAdmissionWaitMs?: number;
 }
 
 export interface RequestContext {

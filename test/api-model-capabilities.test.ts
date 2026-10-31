@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { resolveModelRoute } from "../lib/model-route-policy.js";
 import {
 	ApiModelCapabilities,
 	parseApiReasoningDocumentation,
@@ -140,6 +141,72 @@ it("never runs paid probes without opt-in and never calls an authentication fail
 	});
 });
 
+it.each(["429", "network"])(
+	"keeps inconclusive efforts routable after an undocumented model partially probes then hits %s",
+	async (failure) => {
+		const reader = new ApiModelCapabilities(
+			vi.fn(async (_u: unknown, init?: RequestInit) => {
+				if (init?.method !== "POST") return new Response("missing", { status: 404 });
+				const body = JSON.parse(String(init.body));
+				if (body.reasoning?.effort === "low")
+					return Response.json({ reasoning: { effort: "low" } });
+				if (body.reasoning?.effort === "medium") {
+					if (failure === "network") throw Error("timeout");
+					return Response.json({ error: { code: "rate_limit_exceeded" } }, { status: 429 });
+				}
+				return Response.json(
+					{ error: { param: body.service_tier ? "service_tier" : "reasoning.effort" } },
+					{ status: 400 },
+				);
+			}) as typeof fetch,
+		);
+		const [model] = await reader.enrich([{ slug: "fixture" }], true, route, true);
+		expect(model).toMatchObject({ reasoning_levels_known: false });
+		expect(model?.supported_reasoning_levels?.map((value) => value.effort)).toEqual(
+			expect.arrayContaining(["low", "medium"]),
+		);
+		expect(model?.supported_reasoning_levels?.map((value) => value.effort)).not.toContain("minimal");
+		expect(
+			resolveModelRoute("zdr/fixture", [{ ...route, models: [model!] }], {
+				reasoningEffort: "medium",
+			}).candidates,
+		).toHaveLength(1);
+		expect(
+			resolveModelRoute("zdr/fixture", [{ ...route, models: [model!] }], {
+				reasoningEffort: "minimal",
+			}).candidates,
+		).toHaveLength(0);
+	},
+);
+
+it("keeps an explicitly rejected effort denied across a transient retry", async () => {
+	let round = 0;
+	const reader = new ApiModelCapabilities(
+		vi.fn(async (_u: unknown, init?: RequestInit) => {
+			if (init?.method !== "POST") return new Response("missing", { status: 404 });
+			const body = JSON.parse(String(init.body));
+			if (body.reasoning?.effort === "minimal") {
+				if (round === 0)
+					return Response.json({ error: { param: "reasoning.effort" } }, { status: 400 });
+				throw Error("timeout");
+			}
+			if (body.reasoning?.effort === "medium")
+				return Response.json({ error: { code: "rate_limit_exceeded" } }, { status: 429 });
+			return Response.json({ reasoning: { effort: body.reasoning?.effort } });
+		}) as typeof fetch,
+	);
+	const [first] = await reader.enrich([{ slug: "fixture" }], true, route, true);
+	expect(first?.capability_probe_status?.["effort:minimal"]).toBe("unsupported");
+	round = 1;
+	const [second] = await reader.enrich([{ slug: "fixture" }], true, route, true);
+	expect(second).toMatchObject({ reasoning_levels_known: false });
+	expect(second?.capability_probe_status?.["effort:minimal"]).toBe("unsupported");
+	expect(second?.supported_reasoning_levels?.map((value) => value.effort)).not.toContain("minimal");
+	expect(resolveModelRoute("zdr/fixture", [{ ...route, models: [second!] }], {
+		reasoningEffort: "minimal",
+	}).candidates).toHaveLength(0);
+});
+
 it("coalesces concurrent paid probes for the same credential and model", async () => {
 	let posts = 0;
 	const reader = new ApiModelCapabilities(
@@ -229,7 +296,13 @@ it("discovers newly entitled effort levels absent from documentation and exclude
 			);
 		}) as typeof fetch,
 	);
-	const [model] = await reader.enrich([{ slug: "fixture" }], true, route, true);
+	const [model] = await reader.enrich(
+		[{ slug: "fixture", reasoning_levels_known: false, supported_reasoning_levels: [] }],
+		true,
+		route,
+		true,
+	);
+	expect(model).toMatchObject({ reasoning_levels_known: true });
 	expect(model?.supported_reasoning_levels).toEqual(
 		["low", "medium", "high", "xhigh", "ultra"].map((effort) => ({
 			effort,
@@ -240,6 +313,13 @@ it("discovers newly entitled effort levels absent from documentation and exclude
 		"effort:xhigh": "verified",
 		"effort:max": "unsupported",
 	});
+	expect(
+		resolveModelRoute(
+			"zdr/fixture",
+			[{ ...route, models: [model!] }],
+			{ reasoningEffort: "max" },
+		).candidates,
+	).toHaveLength(0);
 });
 
 it("keeps native Ultra separate from API effort probes and maps it to a supported maximum", async () => {
@@ -361,9 +441,15 @@ it("preserves established efforts across a documentation outage",async()=>{
  let now=1000;
  const fetcher=vi.fn(async()=>new Response("Model ID: `fixture`\nReasoning.effort supports: low, medium, high."));
  const reader=new ApiModelCapabilities(fetcher as typeof fetch,()=>now);
- expect(await reader.reasoning("fixture")).toContain("medium");
+ const [before] = await reader.enrich([{slug:"fixture"}], false, {...route, probeCapabilities:false});
+ expect(before).toMatchObject({reasoning_levels_known:true});
+ expect(before?.supported_reasoning_levels).not.toContainEqual(expect.objectContaining({effort:"max"}));
+ expect(resolveModelRoute("zdr/fixture", [{...route, probeCapabilities:false, models:[before!]}], {reasoningEffort:"max"}).candidates).toHaveLength(0);
  now+=61000;fetcher.mockResolvedValue(new Response("unavailable",{status:503}));
- expect(await reader.reasoning("fixture")).toContain("medium");
+ const [after] = await reader.enrich([{slug:"fixture"}], true, {...route, probeCapabilities:false});
+ expect(after).toMatchObject({reasoning_levels_known:true});
+ expect(after?.supported_reasoning_levels).toEqual(before?.supported_reasoning_levels);
+ expect(resolveModelRoute("zdr/fixture", [{...route, probeCapabilities:false, models:[after!]}], {reasoningEffort:"max"}).candidates).toHaveLength(0);
 });
 it("probes the exact priority tier exposed by the native picker",async()=>{
  const tiers:string[]=[];
@@ -887,4 +973,17 @@ it("does not use an unavailable cached document to remove newer persisted doc-on
 	const [model] = await service.enrich([{ slug: "fixture" }], true, { id: "fixture", label: "fixture", kind: "api", apiKey: "fixture-key", enabled: true, priority: 0, probeCapabilities: true });
 	expect(model.supported_reasoning_levels).toContainEqual(expect.objectContaining({ effort: "high" }));
 	expect(service.exportProbes()[0][1].levels).toEqual(["low", "high"]);
+});
+
+it("keeps authenticated capability probes on their selected region and separates the cache",async()=>{
+ const urls:string[]=[];
+ const reader=new ApiModelCapabilities(async(url,init)=>{
+  if(init?.method!=="POST")return new Response("missing",{status:404});
+  urls.push(String(url));return Response.json({});
+ });
+ await reader.enrich([{slug:"fixture"}],false,route);
+ const count=urls.length;expect(count).toBeGreaterThan(0);
+ await reader.enrich([{slug:"fixture"}],false,{...route,region:"us"});
+ expect(urls.length).toBeGreaterThan(count);
+ expect(urls.slice(count).every(url=>url==="https://us.api.openai.com/v1/responses")).toBe(true);
 });

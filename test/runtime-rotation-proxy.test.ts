@@ -5956,6 +5956,58 @@ it("clamps a reference catalog's context to the serving pool",async()=>{
 });
 
 describe("explicit API model routes",()=>{
+	it("releases API recovery admission only after the forwarded stream completes", async () => {
+		let now = 1_800_000_000_000, posts = 0;
+		let stream!: ReadableStreamDefaultController<Uint8Array>;
+		const routes = [{id:"fixture",label:"Fixture",kind:"api" as const,apiKey:"fixture-key",enabled:true,priority:0,visibleModels:["exclusive"]}];
+		const {fetchImpl} = createRecordingFetch(call => {
+			if (call.url.endsWith("/models")) return Response.json({data:[{id:"exclusive"}]});
+			posts++;
+			if (posts === 1) return Response.json({error:{code:"rate_limit_exceeded"}}, {status:429,headers:{"retry-after":"1"}});
+			if (posts > 2) return textEventStream('data: {"type":"response.completed","response":{}}\n\n');
+			return new Response(new ReadableStream<Uint8Array>({start(controller) {stream=controller;controller.enqueue(new TextEncoder().encode('data: {"type":"response.created"}\n\n'));}}),{headers:{"content-type":"text/event-stream"}});
+		});
+		const proxy=await startProxy({accountManager:new AccountManager(undefined,createStorage(now,1)),fetchImpl,options:{now:()=>now,apiAdmissionWaitMs:0,readApiRoutes:async()=>routes}});
+		const body={model:"api/exclusive",input:"fixture",stream:true};
+		const limited=await postResponses(proxy,body); expect(limited.status).toBe(429); await limited.text();
+		now+=2000;
+		const recovery=await postResponses(proxy,body);
+		expect(recovery.status).toBe(200);
+		const blocked=await postResponses(proxy,body); expect(blocked.status).toBe(429); await blocked.text();
+		expect(posts).toBe(2);
+		stream.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{}}\n\n'));stream.close();
+		await recovery.text();
+		await vi.waitFor(async()=>{
+			const next=await postResponses(proxy,body); expect(next.status).toBe(200); await next.text();
+		});
+		expect(posts).toBe(3);
+	});
+	it.each(["api", "zdr", "psp"] as const)("records interrupted %s streams as cancellation", async kind => {
+		const recorded: Record<string, unknown>[] = [];
+		vi.spyOn(runtimePolicy, "createRuntimeUsageRecorder").mockImplementation(() => ({
+			hasRecorded: () => recorded.length > 0,
+			record: async input => { recorded.push(input as unknown as Record<string, unknown>); },
+		}));
+		const { ApiModelRuntime } = await import("../lib/runtime/api-model-runtime.js");
+		const recordFailure = vi.spyOn(ApiModelRuntime.prototype, "recordStreamFailure");
+		const cancel = vi.fn();
+		const routes = [{ id: "fixture", label: "Fixture", kind, apiKey: "fixture-api-key", enabled: true, priority: 0, visibleModels: ["exclusive"] }];
+		const { fetchImpl } = createRecordingFetch(call => call.url.endsWith("/models")
+			? Response.json({ data: [{ id: "exclusive" }] })
+			: new Response(new ReadableStream<Uint8Array>({
+				start(controller) { controller.enqueue(new TextEncoder().encode('data: {"type":"response.created"}\n\n')); },
+				cancel,
+			}), { headers: { "content-type": "text/event-stream" } }));
+		const proxy = await startProxy({ accountManager: new AccountManager(undefined, createStorage(Date.now(), 1)), fetchImpl, options: { readApiRoutes: async () => routes } });
+		const response = await postResponses(proxy, { model: `${kind}/exclusive`, input: "test", stream: true });
+		const reader = response.body!.getReader();
+		expect((await reader.read()).done).toBe(false);
+		await reader.cancel();
+		await vi.waitFor(() => expect(recorded.at(-1)).toMatchObject({ outcome: "cancelled", errorCode: "client_disconnected" }));
+		expect(cancel).toHaveBeenCalledTimes(1);
+		expect(recordFailure).not.toHaveBeenCalled();
+		expect(proxy.getStatus().lastError).toBeNull();
+	});
 	it.each([
 		["api", "response.completed"], ["api", "response.created"],
 		["zdr", "response.completed"], ["zdr", "response.created"],
@@ -6115,14 +6167,14 @@ describe("native picker refresh",()=>{
 });
 
 describe("API-only credential inventory",()=>{
- it("serves explicit API models with local authentication when no OAuth pool is stored",async()=>{
+ it.each(["api","zdr","psp"] as const)("serves explicit %s models with local authentication when no OAuth pool is stored",async kind=>{
   const manager=new AccountManager(undefined,createStorage(Date.now()));
   const {calls,fetchImpl}=createRecordingFetch(call=>call.url.endsWith("/models")?Response.json({data:[{id:"exclusive"}]}):textEventStream('data: {"type":"response.completed","response":{}}\n\n'));
-  const proxy=await startProxy({accountManager:manager,fetchImpl,options:{nativeOpenai:true,readNativeAccountStorage:async()=>null,readApiRoutes:async()=>[{id:"fixture",label:"API fixture",kind:"api",apiKey:"fixture-key",enabled:true,priority:0,visibleModels:["exclusive"]}]}});
-  const result=await postResponses(proxy,{model:"api/exclusive",input:"test"});
+  const proxy=await startProxy({accountManager:manager,fetchImpl,options:{nativeOpenai:true,readNativeAccountStorage:async()=>null,readApiRoutes:async()=>[{id:"fixture",label:"API fixture",kind,apiKey:"fixture-key",enabled:true,priority:0,visibleModels:["exclusive"]}]}});
+  const result=await postResponses(proxy,{model:`${kind}/exclusive`,input:"test"});
   expect(result.status).toBe(200);await result.text();
   expect(calls.every(c=>c.url.startsWith("https://api.openai.com/"))).toBe(true);
-  const stale=await postResponses(proxy,{model:"api/exclusive",input:"test"},"/responses",{authorization:"Bearer access-1"});
+  const stale=await postResponses(proxy,{model:`${kind}/exclusive`,input:"test"},"/responses",{authorization:"Bearer access-1"});
   expect(stale.status).toBe(401);await stale.text();
  });
 });

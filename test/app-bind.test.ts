@@ -2234,6 +2234,7 @@ describe("reviewed provider transitions",()=>{
 
 it.each([
  {stored:{at:123,cause:"close",stage:"streaming",routeKind:"zdr",connectionAgeMs:42,eventCount:3},expected:{at:123,cause:"close",stage:"streaming",routeKind:"zdr",connectionAgeMs:42,eventCount:3}},
+ {stored:{at:123,cause:"close",stage:"streaming",routeKind:"psp",connectionAgeMs:42,eventCount:3},expected:{at:123,cause:"close",stage:"streaming",routeKind:"psp",connectionAgeMs:42,eventCount:3}},
  {stored:{at:123,cause:"close",stage:"streaming",routeKind:"secret"},expected:null},
  {stored:{at:123,cause:"close",stage:"streaming",eventCount:-1},expected:null},
  {stored:{at:123,cause:"close",stage:"streaming",closeCode:1011,reason:"secret"},expected:{at:123,cause:"close",stage:"streaming",closeCode:1011}},

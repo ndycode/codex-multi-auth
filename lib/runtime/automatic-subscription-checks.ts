@@ -10,7 +10,7 @@ import { ensureFreshAccessToken } from "./rotation-token-refresh.js";
 import { automaticCheckWorkspaceId, runAutomaticAccountChecks } from "./automatic-account-checks.js";
 import { logWarn } from "../logger.js";
 type Observer = (account: AccountMetadataV3, snapshot: CodexQuotaSnapshot, accounts: AccountMetadataV3[], workspaceId: string) => Promise<void> | void;
-/** Captures this router's pool; reads only verified primary credentials, never API/ZDR entries. */
+/** Captures this router's pool; reads only verified primary credentials, never API/ZDR/PSP entries. */
 export function createAutomaticSubscriptionCheck(observe?: Observer) {
     const path = getStoragePath(), storageState = getStoragePathState();
     const read = createNativeAccountStorageReader(undefined, path);

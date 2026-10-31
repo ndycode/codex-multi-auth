@@ -40,11 +40,13 @@ const entitlementSchema = z.object({
  reasoningLevels:z.array(printable).max(100),accessPrograms:z.array(printable).max(100),
 });
 const entrySchema = z.object({
+ failure: z.object({kind:z.enum(["http","timeout","network","invalid_catalog"]),status:z.number().int().min(100).max(599).optional(),retryAt:z.number().finite().min(0).max(8.64e15).optional()}).optional(),
+ lastSuccessfulAt:z.number().finite().min(0).max(8.64e15).optional(),
  id: printable.optional(), routable:z.boolean().optional(), bound:z.boolean().optional(), selected:z.boolean().optional(),
  changes:z.object({observedAt:z.number(),added:z.array(printable).max(10000),removed:z.array(printable).max(10000),capabilities:z.array(printable).max(10000)}).optional(),
  lastSuccessful:z.object({models:z.array(printable).max(10000),entitlements:z.array(entitlementSchema).max(1000).optional()}).optional(),
 	label: printable,
-	kind: z.enum(["oauth", "api", "zdr"]),
+	kind: z.enum(["oauth", "api", "zdr", "psp"]),
 	enabled: z.boolean(),
 	checkedAt: z.number(),
 	error: z.boolean(),
@@ -160,6 +162,7 @@ export async function discoverModelInventory(
 			enabled: routes[i]?.enabled ?? false,
 			checkedAt: s.checkedAt,
 			error: s.error,
+ failure:s.failure,lastSuccessfulAt:s.lastSuccessfulAt,
 			models: s.availableModels,
 			visibleModels: s.visibleModels,
 			entitlements: s.entitlements,
@@ -279,7 +282,9 @@ export function formatModelInventory(
   ...inventoryHighlights(inventory),
 		...inventory.entries.flatMap((e) => [
 			`  ${paint(e.label, "heading")}${e.routable===true?" [routing eligible]":e.routable===false?" [discovery only]":""}${e.bound?" [stored binding]":""}${e.selected?" [preferred workspace]":""} [${e.kind.toUpperCase()}]: ${!e.enabled ? paint("disabled", "muted") : e.error ? paint("discovery failed", "danger") : paint(`${e.models.length} available`, "success")}; ${e.checkedAt ? new Date(e.checkedAt).toISOString() : "never checked"}${now - e.checkedAt > 60000 ? paint(" (stale; run check)", "warning") : ""}`,
-			`    ${paint("Available:", "muted")} ${e.models.join(", ") || "none"}`,
+			...(e.error ? [`    Failure: ${e.failure?.kind === "http" ? `HTTP ${e.failure.status}` : e.failure?.kind === "timeout" ? "catalog request timed out (15 seconds)" : e.failure?.kind === "network" ? "network connection failed" : e.failure?.kind === "invalid_catalog" ? "invalid catalog response" : "reason unavailable"}${e.failure?.retryAt ? `; next attempt no earlier than ${new Date(e.failure.retryAt).toISOString()}` : ""}`] : []),
+            `    ${paint(e.error ? "Last known catalog (stale):" : "Available:", "muted")} ${(e.error ? (e.lastSuccessful?.models ?? e.models) : e.models).join(", ") || (e.error ? "unavailable" : "none")}`,
+            ...(e.error && e.lastSuccessfulAt !== undefined ? [`    Last successful discovery: ${new Date(e.lastSuccessfulAt).toISOString()}`] : []),
 			...(e.entitlements ?? []).map(
 				(m) =>
 					`    ${paint(m.model, "accent")}: speeds=${m.serviceTiers.map((t) => `${t.name} (${t.id})`).join(", ") || "not advertised"}; reasoning=${m.reasoningLevels.join(", ") || "not advertised"}; ${e.kind === "oauth" ? "programs" : "configured programs"}=${m.accessPrograms.join(", ") || (e.kind === "oauth" ? "not advertised" : "none")}${
@@ -292,7 +297,7 @@ export function formatModelInventory(
 			),
 			...(e.kind !== "oauth"
 				? [
-						`    ${paint("Visible:", "accent")} ${e.visibleModels.map((m) => `${e.kind}/${m}`).join(", ") || "none"}`,
+						`    ${paint(e.error ? "Visible (stale):" : "Visible:", "accent")} ${e.visibleModels.map((m) => `${e.kind}/${m}`).join(", ") || "none"}`,
 					]
 				: []),
 		]),
@@ -352,7 +357,7 @@ export async function refreshAndPrintModelInventory(
 			if (proxyClientVersion)
 				url.searchParams.set("client_version", proxyClientVersion);
    const clientApiKey = binding.state.clientApiKey;
-   const current = await withCheckProgress("Refreshing workspace catalogs and API/ZDR probes", async () => {
+   const current = await withCheckProgress("Refreshing workspace catalogs and API/ZDR/PSP probes", async () => {
 			const response = await (deps.fetchImpl ?? fetch)(url, {
 				headers: { authorization: `Bearer ${clientApiKey}` },
 				redirect: "error",
@@ -376,7 +381,7 @@ export async function refreshAndPrintModelInventory(
 			for (const line of formatModelInventory(withInventoryChanges(current,previous))) log(line);
 			return true;
 		}
-  const value = await withCheckProgress("Discovering workspace models and API/ZDR capabilities", async () => {
+  const value = await withCheckProgress("Discovering workspace models and API/ZDR/PSP capabilities", async () => {
         let apiConfigurationUnavailable = false;
 		const value = await discoverModelInventory(
 			await (deps.loadAccounts ?? loadAccounts)(),
@@ -443,7 +448,7 @@ function inventoryHighlights(inventory: ModelInventory): string[] {
   if(change.removed.length) lines.push(paint(`  No longer advertised on ${entry.label} (${stamp}): ${change.removed.join(", ")}`, "warning"));
   if(change.capabilities.length) lines.push(paint(`  CHANGED capabilities on ${entry.label} (${stamp}): ${change.capabilities.join(", ")}`, "accent"));
  }
- for(const kind of ["oauth","api","zdr"] as const) {
+ for(const kind of ["oauth","api","zdr","psp"] as const) {
   const enabled=inventory.entries.filter(e=>e.kind===kind && e.enabled);
   const successful=enabled.filter(e=>!e.error);
   if(enabled.length<2) continue;

@@ -110,7 +110,7 @@ it("prices explicit API aliases using their actual upstream model without guessi
 	);
 	const [model] = Object.keys(listUsageModelPricing());
 	expect(model).toBeTruthy();
-	for (const pool of ["api", "zdr"])
+	for (const pool of ["api", "zdr", "psp"])
 		expect(getUsageModelPricing(`${pool}/${model}`)).toEqual(
 			getUsageModelPricing(model),
 		);
@@ -240,7 +240,7 @@ it("unions access programs within each model pool without changing credential el
 });
 
 
-it.each(["oauth", "api", "zdr"] as const)("only exposes settings pairs with a witness inside the %s pool", kind => {
+it.each(["oauth", "api", "zdr", "psp"] as const)("only exposes settings pairs with a witness inside the %s pool", kind => {
  const fast = {id:"priority",name:"Fast",description:"Faster processing"};
  const make = (id:string,effort:string,speed:boolean,pool:RouteCatalog["kind"]=kind):RouteCatalog => ({
   id,kind:pool,priority:1,enabled:true,visibleModels:["model-test"],
@@ -253,4 +253,22 @@ it.each(["oauth", "api", "zdr"] as const)("only exposes settings pairs with a wi
  expect(model?.supported_reasoning_levels).toEqual([{effort:"high"},{effort:"low"}]);
  const covered = buildVisibleModelUnion([...split,make("high-fast","high",true)]).find(m=>m.slug===slug);
  expect(covered?.service_tiers).toEqual([fast]);
+});
+
+it("keeps API credentials eligible when reasoning metadata is unknown", () => {
+ const catalog={id:"fixture",kind:"api" as const,enabled:true,priority:9,visibleModels:["future"],models:[{slug:"future",reasoning_levels_known:false,supported_reasoning_levels:[]}]};
+ expect(resolveModelRoute("api/future",[catalog],{reasoningEffort:"medium"}).candidates).toHaveLength(1);
+ expect(resolveModelRoute("api/future",[{...catalog,models:[{slug:"future",reasoning_levels_known:true,supported_reasoning_levels:[]}]}],{reasoningEffort:"medium"}).candidates).toHaveLength(0);
+});
+
+
+describe("PSP routing isolation", () => {
+ it("exposes PSP separately and never falls back to another pool", () => {
+  const catalogs: RouteCatalog[] = (["api", "zdr", "psp"] as const).map(kind => ({
+   id: kind, kind, priority: 0, enabled: true, models: [{slug: "shared"}], visibleModels: ["shared"]
+  }));
+  expect(buildVisibleModelUnion(catalogs).map(model => model.slug)).toContain("psp/shared");
+  expect(resolveModelRoute("psp/shared", catalogs).candidates.map(route => route.id)).toEqual(["psp"]);
+  expect(resolveModelRoute("psp/shared", catalogs.filter(route => route.id !== "psp")).candidates).toEqual([]);
+ });
 });

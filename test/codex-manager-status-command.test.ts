@@ -138,7 +138,7 @@ describe("runStatusCommand", () => {
 		});
 		await runStatusCommand(deps);
 		const output = logInfo.mock.calls.flat().join("\n");
-		expect(output).toContain("API/ZDR accounts");
+		expect(output).toContain("API/ZDR/PSP accounts");
 		expect(output).toContain("Team API");
 		expect(output).toContain("ZDR pool");
 		expect(output).toContain("1 enabled / 1 disabled");

@@ -497,7 +497,7 @@ export async function runStatusCommand(
 	);
 	const recommendation = recommendForecastAccount(forecastResults);
 	if (!deps.json && !deps.compact && locale !== "zh") {
-		logInfo(paint(apiRoutes.length ? `Accounts (${storage.accounts.length + apiRoutes.length}: ${storage.accounts.length} subscription, ${apiRoutes.length} API/ZDR)` : `Accounts (${storage.accounts.length})`, "heading"));
+		logInfo(paint(apiRoutes.length ? `Accounts (${storage.accounts.length + apiRoutes.length}: ${storage.accounts.length} subscription, ${apiRoutes.length} API/ZDR/PSP)` : `Accounts (${storage.accounts.length})`, "heading"));
 		logInfo(paint(`Storage: ${path}`, "muted"));
 		if (recommendation.recommendedIndex !== null) {
 			logInfo(
@@ -542,7 +542,7 @@ export async function runStatusCommand(
  }));
  const printApiAccounts = () => {
   if(!apiAccounts.length)return;
-  logInfo(""); logInfo(paint(`API/ZDR accounts (${apiAccounts.length}; separate privacy pools, lower tier first):`, "heading"));
+  logInfo(""); logInfo(paint(`API/ZDR/PSP accounts (${apiAccounts.length}; separate privacy pools, lower tier first):`, "heading"));
   for(const account of apiAccounts){
    const last = account.lastInferenceRequestAt === null ? "inference not yet recorded" : `last inference request ${formatWaitTime(Math.max(0,now-account.lastInferenceRequestAt))} ago`;
    logInfo(`${paint(`${account.kind.toUpperCase()} account ${account.index+1}: ${account.label}`, "heading")}${account.enabled?"":paint(" [disabled]", "warning")} ${paint(last, "muted")}`);
@@ -633,7 +633,7 @@ export async function runStatusCommand(
 		logInfo(`${localized(locale, "Accounts", "账号")}: ${readyCount} ${localized(locale, "ready", "可用")} / ${needsLoginCount} ${localized(locale, "need login", "需登录")}${blockedCount > 0 ? ` / ${blockedCount} ${localized(locale, "blocked", "受限")}` : ""} / ${disabledCount} ${localized(locale, "disabled", "已禁用")} (${compactRows.length} ${localized(locale, "total", "总计")})`);
 		if (apiRows.length > 0) {
 			const apiDisabled = apiRows.filter((row) => !row.enabled).length;
-			logInfo(`${localized(locale, "API/ZDR accounts", "API/ZDR 账号")}: ${apiRows.length - apiDisabled} ${localized(locale, "enabled", "已启用")} / ${apiDisabled} ${localized(locale, "disabled", "已禁用")}`);
+			logInfo(`${localized(locale, "API/ZDR/PSP accounts", "API/ZDR/PSP 账号")}: ${apiRows.length - apiDisabled} ${localized(locale, "enabled", "已启用")} / ${apiDisabled} ${localized(locale, "disabled", "已禁用")}`);
 		}
 		logInfo(`${localized(locale, "Routing", "路由")}: ${route}; ${localized(locale, "recommended", "推荐")} ${recommendation.recommendedIndex === null ? "—" : `#${recommendation.recommendedIndex + 1}`}`);
 		if (runtimeSnapshot) {
@@ -754,7 +754,7 @@ export async function runStatusCommand(
 		}
 		const totalLabel = apiAccounts.length
 			? storage.accounts.length + apiAccounts.length + "："
-				+ storage.accounts.length + " 个订阅账号，" + apiAccounts.length + " 个 API/ZDR 账号"
+				+ storage.accounts.length + " 个订阅账号，" + apiAccounts.length + " 个 API/ZDR/PSP 账号"
 			: String(storage.accounts.length);
 		logInfo("账号（" + totalLabel + "）");
 		logInfo("存储：" + path);
@@ -868,7 +868,7 @@ export async function runStatusCommand(
 		}
 		if (apiAccounts.length > 0) {
 			logInfo("");
-			logInfo("API/ZDR 账号（" + apiAccounts.length + " 个；独立隐私池，低优先级数字先用）：");
+			logInfo("API/ZDR/PSP 账号（" + apiAccounts.length + " 个；独立隐私池，低优先级数字先用）：");
 			for (const account of apiAccounts) {
 				const last = account.lastInferenceRequestAt === null
 					? "尚未记录推理请求"

@@ -1,3 +1,4 @@
+import { apiBaseUrl } from "../api-region.js";
 import {createHash} from "node:crypto";
 import {promises as fs} from "node:fs";
 import {dirname,join} from "node:path";
@@ -14,10 +15,10 @@ export const AUTOMATIC_API_CHECK_INTERVAL_MS=24*60*60_000;
 const PREPARATION_RETRY_MS=60_000;
 const schema=z.record(z.string().regex(/^[a-f0-9]{64}$/),z.number().finite().nonnegative());
 const retry={maxAttempts:6,backoffMs:25};
-function key(route:ApiRouteCredential){return createHash("sha256").update(JSON.stringify([route.id,route.kind,route.apiKey,route.visibleModels])).digest("hex");}
+function key(route:ApiRouteCredential){return createHash("sha256").update(JSON.stringify([route.id,route.kind,route.apiKey,...(route.region === "us" ? [apiBaseUrl(route)] : []),route.visibleModels])).digest("hex");}
 const eligible=(route:ApiRouteCredential)=>route.enabled&&route.probeCapabilities===true;
 // Visibility can expand during discovery; daily spending remains credential-scoped.
-function claimKey(route:ApiRouteCredential){return createHash("sha256").update(JSON.stringify([route.id,route.kind,route.apiKey])).digest("hex");}
+function claimKey(route:ApiRouteCredential){return createHash("sha256").update(JSON.stringify([route.id,route.kind,route.apiKey,...(route.region === "us" ? [apiBaseUrl(route)] : [])])).digest("hex");}
 // Compare visibility as a set without changing stored order or legacy claim hashes.
 function semanticRoute(route:ApiRouteCredential){return {...route,visibleModels:[...new Set(route.visibleModels)].sort()};}
 function sameRoute(a:ApiRouteCredential,b:ApiRouteCredential){return JSON.stringify(Object.entries(semanticRoute(a)).sort(([x],[y])=>x.localeCompare(y)))===JSON.stringify(Object.entries(semanticRoute(b)).sort(([x],[y])=>x.localeCompare(y)));}

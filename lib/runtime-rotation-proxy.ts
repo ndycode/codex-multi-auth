@@ -473,11 +473,11 @@ function getApiModelRuntime(state:RotationProxyState):ApiModelRuntime {
   if(state.catalogInventory){
    state.catalogInventory={...state.catalogInventory,checkedAt:state.now(),entries:[
     ...state.catalogInventory.entries.filter(entry=>entry.kind==="oauth"),
-    ...runtime.statuses(state.catalogApiRoutes??[]).map(entry=>({id:modelScopeId(entry.kind,entry.id),label:entry.label,kind:entry.kind,enabled:runtime.cachedCatalogs().some(c=>c.id===entry.id&&c.enabled),checkedAt:entry.checkedAt,error:entry.error,models:entry.availableModels,visibleModels:entry.visibleModels,entitlements:entry.entitlements})),
+    ...runtime.statuses(state.catalogApiRoutes??[]).map(entry=>({id:modelScopeId(entry.kind,entry.id),label:entry.label,kind:entry.kind,enabled:runtime.cachedCatalogs().some(c=>c.id===entry.id&&c.enabled),checkedAt:entry.checkedAt,error:entry.error,failure:entry.failure,lastSuccessfulAt:entry.lastSuccessfulAt,models:entry.availableModels,visibleModels:entry.visibleModels,entitlements:entry.entitlements})),
    ]};
    void saveModelInventory(state.catalogInventory).catch(()=>{state.status.lastError="Model discovery status could not be saved";});
   }
- });
+ },state.apiAdmissionWaitMs);
  return state.apiModelRuntime;
 }
 function setCatalogEtag(state:RotationProxyState,models:RouteModel[]):string {
@@ -1287,6 +1287,7 @@ export async function startRuntimeRotationProxy(
 		networkErrorCooldownMs,
 		serverErrorCooldownMs,
 		modelCapacityRetryMs,
+		apiAdmissionWaitMs: options.apiAdmissionWaitMs,
 		tokenInvalidationCooldownMs,
 		minRotationIntervalMs,
 		pidOffsetEnabled,
@@ -1574,11 +1575,11 @@ async function handleRequestInner(
 			context.headers.delete("content-encoding");
 			context.headers.delete("content-length");
 		}
-		// Explicit API/ZDR routes never touch the OAuth pool, so they stay available.
+		// Explicit API/ZDR/PSP routes never touch the OAuth pool, so they stay available.
 		// Everything else would route through a manager the store no longer backs.
 		// A 401 would tell the native client its login is bad when the store is what
 		// is missing, so independently authenticated clients get a 503 (#702).
-		if ((nativeStorageMissing || nativeStorageUnavailable) && !(isResponsesRequest && context.model && /^(api|zdr)\//.test(context.model))) {
+		if ((nativeStorageMissing || nativeStorageUnavailable) && !(isResponsesRequest && context.model && /^(api|zdr|psp)\//.test(context.model))) {
 			writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, {
 				error: {
 					message: nativeStorageUnavailable
@@ -1710,7 +1711,7 @@ async function handleRequestInner(
 
 		// Explicit API aliases are handled before all OAuth selection. An absent
 		// credential or catalog is a hard failure, never an ordinary-model fallback.
-		if (context.model && /^(api|zdr)\//.test(context.model)) {
+		if (context.model && /^(api|zdr|psp)\//.test(context.model)) {
 			if (!isResponsesRequest) {
 				writeJson(res, 400, { error: { code: "api_route_requires_responses" } });
 				return;
@@ -1721,6 +1722,8 @@ async function handleRequestInner(
 				return;
 			}
 			const apiRuntime=getApiModelRuntime(state);
+			let apiResponse: Response | undefined;
+			let apiResponseSucceeded = false;
 			const controller = new AbortController();
 			const abort = () => {
 				if (!res.writableEnded) controller.abort();
@@ -1738,7 +1741,7 @@ async function handleRequestInner(
 						attemptedCredentialIndex = credentialIndex;
       const credential = apiRoutes[credentialIndex];
       if (credential) recordRuntimeInferenceRequest(`sha256:${modelScopeId(credential.kind, credential.id)}`, state.now());
-						const label = `${context.model?.startsWith("zdr/") ? "ZDR" : "API"} credential ${credentialIndex + 1}`;
+						const label = `${context.model?.startsWith("psp/") ? "PSP" : context.model?.startsWith("zdr/") ? "ZDR" : "API"} credential ${credentialIndex + 1}`;
 						state.status.upstreamRequests++;
 						state.status.lastAccountIndex = null;
 						state.status.lastAccountId = null;
@@ -1755,28 +1758,32 @@ async function handleRequestInner(
 						});
 					},
 				);
+				apiResponse = upstream;
 				const scanner = createUsageStreamScanner({
 					contentType: upstream.headers.get("content-type"),
 					onEvent: event => responseOutcome.observe(event),
 				});
 				const responseOutcome = new ResponseOutcome(() => scanner.isSse());
+				let streamErrored = false;
 				const forwarded = await forwardStreamingResponse(
 					upstream,
 					res,
 					state.status,
-					() => controller.abort(),
+					() => { streamErrored = true; controller.abort(); },
 					state.streamStallTimeoutMs,
 					scanner.push,
  state.catalogEtag ? {"x-models-etag":state.catalogEtag} : undefined,
 					() => {scanner.result();return responseOutcome.finish();},
 				);
+				const clientDisconnected = !forwarded && !streamErrored && !res.writableEnded;
 				const attemptedCredential = attemptedCredentialIndex === undefined ? undefined : apiRoutes[attemptedCredentialIndex];
-				if (!forwarded && attemptedCredential) apiRuntime.recordStreamFailure(attemptedCredential, context.model, body, responseOutcome.rejection);
+				if (!forwarded && !clientDisconnected && attemptedCredential) apiRuntime.recordStreamFailure(attemptedCredential, context.model, body, responseOutcome.rejection);
+				apiResponseSucceeded = forwarded && upstream.ok;
 				if (apiRuntime.lastPersistenceError) state.status.lastError = apiRuntime.lastPersistenceError;
 				await usageRecorder.record({
-					outcome: forwarded && upstream.ok ? "success" : "failure",
+					outcome: forwarded && upstream.ok ? "success" : clientDisconnected ? "cancelled" : "failure",
 					statusCode: upstream.status,
-					errorCode: responseOutcome.finish().errorCode ?? (forwarded ? null : "stream_forward_failed"),
+					errorCode: clientDisconnected ? "client_disconnected" : responseOutcome.finish().errorCode ?? (forwarded ? null : "stream_forward_failed"),
 					...(scanner.result() ?? {}),
 				});
             } catch (error) {
@@ -1786,6 +1793,7 @@ async function handleRequestInner(
                 }
                 throw error;
             } finally {
+				if (apiResponse) apiRuntime.completeRequest(apiResponse, apiResponseSucceeded);
 				res.off("close", abort);
 			}
 			return;
@@ -2187,7 +2195,7 @@ async function handleRequestInner(
 				const forceProbes = forceCatalogRefresh && incomingUrl.searchParams.get("force_probes") === "1";
 				const apiRefresh = apiRuntime.catalogs(configuredRoutes, forceCatalogRefresh, forceProbes, forceCatalogRefresh);
 				const pickerSnapshot = () => [
-					...modelCatalog.cachedList(routableKeys).filter(model => !/^(api|zdr)\//.test(model.slug)),
+					...modelCatalog.cachedList(routableKeys).filter(model => !/^(api|zdr|psp)\//.test(model.slug)),
 					...buildVisibleModelUnion(apiRuntime.cachedCatalogs().flatMap(catalog => {
 						const route = configuredRoutes.find(route => route.id === catalog.id && route.enabled);
 						return route ? [{...catalog, visibleModels: route.visibleModels, priority: route.priority}] : [];
@@ -2196,7 +2204,7 @@ async function handleRequestInner(
 				const refresh = (async () => {
 				await oauthRefresh;
 				const apiCatalogs = await apiRefresh;
-				const oauthModels = modelCatalog.cachedList(routableKeys).filter(model => !/^(api|zdr)\//.test(model.slug));
+				const oauthModels = modelCatalog.cachedList(routableKeys).filter(model => !/^(api|zdr|psp)\//.test(model.slug));
 				const models = [...oauthModels, ...buildVisibleModelUnion(apiCatalogs)];
 				if (state.modelCatalog === modelCatalog) {
 					state.catalogOAuthModels = oauthModels;
@@ -2230,6 +2238,7 @@ async function handleRequestInner(
 								enabled: apiCatalogs.some((c) => c.id === a.id && c.enabled),
 								checkedAt: a.checkedAt,
 								error: a.error,
+ failure:a.failure,lastSuccessfulAt:a.lastSuccessfulAt,
 								models: a.availableModels,
 								visibleModels: a.visibleModels,
  entitlements:a.entitlements,
@@ -2270,7 +2279,7 @@ async function handleRequestInner(
                 // A completed failed fetch is still unknown, not a successful
                 // empty catalog. Never replace native subscription entries with
                 // an API-only success while a routable catalog is unknown.
-                if (!forceCatalogRefresh && !models.some(model => !/^(api|zdr)\//.test(model.slug)) &&
+                if (!forceCatalogRefresh && !models.some(model => !/^(api|zdr|psp)\//.test(model.slug)) &&
                     routableKeys.some(key => !modelCatalog.hasUsablePickerSnapshot(key))) models = [];
 				res.setHeader("etag", setCatalogEtag(state, models));
 
@@ -3142,7 +3151,7 @@ async function handleRequestInner(
 				// same redirect — cooling + rotating here would drain the pool on
 				// one endpoint fault. This also covers the WebSocket httpFetch
 				// fallback: SocketSession preserves init, so a refused-upgrade
-				// turn on API/ZDR credentials can reject this way. Fail the
+				// turn on API/ZDR/PSP credentials can reject this way. Fail the
 				// request in place and leave account state untouched.
 				if (isRedirectRejection(error)) {
 					writeJson(res, 502, {
