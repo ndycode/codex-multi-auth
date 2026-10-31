@@ -2835,6 +2835,9 @@ describe("codex bin wrapper", () => {
 			`model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}.wire_api="responses"`,
 		);
 		expect(output).toContain("disable_response_storage=false");
+		// Voice sideband sockets go back through the proxy, not to the OpenAI
+		// realtime API with the local token (#750).
+		expect(output).toMatch(/experimental_realtime_ws_base_url="http:\/\/127\.0\.0\.1:\d+"/);
 		expect(output).toContain(
 			`model_provider="${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
 		);

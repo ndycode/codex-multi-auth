@@ -57,6 +57,11 @@ export interface RuntimeRotationProxyOptions {
 	host?: string;
 	port?: number;
 	upstreamBaseUrl?: string;
+	/**
+	 * Where realtime voice sideband sockets are relayed. Defaults to the OpenAI
+	 * realtime API; overridable for embedded hosts and tests.
+	 */
+	realtimeSidebandUpstreamBaseUrl?: string;
 	clientApiKey: string;
 	accountManager?: AccountManager;
 	fetchImpl?: typeof fetch;
@@ -88,6 +93,11 @@ export interface RequestContext {
 	headers: Headers;
 	method: "GET" | "POST";
 	upstreamPath: string;
+	/**
+	 * Upstream query string (with its leading `?`) when it differs from the
+	 * incoming one, e.g. realtime calls that select a voice architecture.
+	 */
+	upstreamSearch?: string;
 	model: string | null;
 	family: ModelFamily;
 	stream: boolean;

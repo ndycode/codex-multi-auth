@@ -50,6 +50,57 @@ function removeRuntimeRotationProviderBlock(rawConfig: string): string {
 	return output.join(rawConfig.includes("\r\n") ? "\r\n" : "\n");
 }
 
+const REALTIME_SIDEBAND_KEY = "experimental_realtime_ws_base_url";
+/** Marks the realtime sideband line a bind writes, so restore removes only ours. */
+export const REALTIME_SIDEBAND_MARKER = "# codex-multi-auth realtime sideband";
+
+/**
+ * Codex sends the voice sideband socket straight to the OpenAI realtime API
+ * with its provider credential, which here is the local proxy token. Point it
+ * at the proxy instead, which relays it with the account that created the
+ * call (#750).
+ */
+export function createRealtimeSidebandConfigLine(baseUrl: string): string {
+	return `${REALTIME_SIDEBAND_KEY} = ${tomlStringLiteral(baseUrl)} ${REALTIME_SIDEBAND_MARKER}`;
+}
+
+function isOwnRealtimeSidebandLine(line: string): boolean {
+	return (
+		new RegExp(`^\\s*${REALTIME_SIDEBAND_KEY}\\s*=`).test(line) &&
+		line.trimEnd().endsWith(REALTIME_SIDEBAND_MARKER)
+	);
+}
+
+/** Whether the root table already sets the realtime sideband URL. */
+export function configHasTopLevelRealtimeSidebandBaseUrl(rawConfig: string): boolean {
+	return extractTopLevelLine(rawConfig, REALTIME_SIDEBAND_KEY) !== null;
+}
+
+export function removeRealtimeSidebandBaseUrl(rawConfig: string): string {
+	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
+	const output: string[] = [];
+	let inTopLevel = true;
+	for (const line of rawConfig.split(/\r?\n/)) {
+		if (readTomlTableName(line) !== null) inTopLevel = false;
+		if (inTopLevel && isOwnRealtimeSidebandLine(line)) continue;
+		output.push(line);
+	}
+	return output.join(lineEnding);
+}
+
+/** Adds the sideband URL unless the user configured their own. */
+function rewriteTopLevelRealtimeSidebandBaseUrl(rawConfig: string, baseUrl: string): string {
+	const withoutOwn = removeRealtimeSidebandBaseUrl(rawConfig);
+	if (configHasTopLevelRealtimeSidebandBaseUrl(withoutOwn)) return withoutOwn;
+	const lineEnding = withoutOwn.includes("\r\n") ? "\r\n" : "\n";
+	const lines = withoutOwn.length > 0 ? withoutOwn.split(/\r?\n/) : [];
+	const firstSectionIdx = lines.findIndex((line) => readTomlTableName(line) !== null);
+	const line = createRealtimeSidebandConfigLine(baseUrl);
+	if (firstSectionIdx === -1) lines.push(line);
+	else lines.splice(firstSectionIdx, 0, line);
+	return lines.join(lineEnding);
+}
+
 function rewriteTopLevelModelProvider(rawConfig: string): string {
 	const lineEnding = rawConfig.includes("\r\n") ? "\r\n" : "\n";
 	const lines = rawConfig.length > 0 ? rawConfig.split(/\r?\n/) : [];
@@ -262,8 +313,9 @@ export function rewriteConfigTomlForRuntimeRotationProvider(
 		/[\r\n]*$/,
 		"",
 	);
-	const withResponseStorage = enableTopLevelResponseStorage(
-		withModelProvider,
+	const withResponseStorage = rewriteTopLevelRealtimeSidebandBaseUrl(
+		enableTopLevelResponseStorage(withModelProvider),
+		baseUrl,
 	).replace(/[\r\n]*$/, "");
 	const providerBlock = createRuntimeRotationProviderBlock(
 		baseUrl,
@@ -276,7 +328,9 @@ export function restoreConfigTomlFromRuntimeRotationProvider(
 	currentConfig: string,
 	originalConfig: string,
 ): string {
-	const withoutProvider = removeRuntimeRotationProviderBlock(currentConfig);
+	const withoutProvider = removeRealtimeSidebandBaseUrl(
+		removeRuntimeRotationProviderBlock(currentConfig),
+	);
 	const withResponseStorage = restoreTopLevelResponseStorage(
 		withoutProvider,
 		originalConfig,

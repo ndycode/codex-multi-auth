@@ -1,4 +1,8 @@
-import { tomlStringLiteral } from "./config-toml.js";
+import {
+	configHasTopLevelRealtimeSidebandBaseUrl,
+	createRealtimeSidebandConfigLine,
+	tomlStringLiteral,
+} from "./config-toml.js";
 
 import {
 	NATIVE_PROVIDER_BEGIN as BEGIN,
@@ -41,11 +45,18 @@ export function rewriteNativeProviderConfig(
 		url.pathname !== "/"
 	)
 		throw new Error("Native provider requires a loopback proxy origin");
-	const lines = rootLines(withoutNativeBlock(content), false);
+	const unbound = withoutNativeBlock(content);
+	const lines = rootLines(unbound, false);
+	// The native block is removed wholesale on unbind; a user's own sideband
+	// URL stays outside it and wins.
+	const sideband = configHasTopLevelRealtimeSidebandBaseUrl(unbound)
+		? []
+		: [createRealtimeSidebandConfigLine(baseUrl)];
 	return [
 		BEGIN,
 		'model_provider = "openai"',
 		`openai_base_url = ${tomlStringLiteral(baseUrl)}`,
+		...sideband,
 		END,
 		...lines,
 	].join("\n");

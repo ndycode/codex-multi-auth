@@ -4264,6 +4264,20 @@ function createRuntimeRotationProxyCodexHome(
 	};
 }
 
+function canonicalConfigSetsRealtimeSidebandBaseUrl(codexHome, configTomlModule) {
+	if (typeof configTomlModule.configHasTopLevelRealtimeSidebandBaseUrl !== "function") {
+		return false;
+	}
+	try {
+		return configTomlModule.configHasTopLevelRealtimeSidebandBaseUrl(
+			readFileSync(join(codexHome, "config.toml"), "utf8"),
+		);
+	} catch {
+		// No readable config means nothing to preserve.
+		return false;
+	}
+}
+
 function createRuntimeRotationProxyCanonicalCodexHome(
 	baseEnv,
 	proxyBaseUrl,
@@ -4295,6 +4309,14 @@ function createRuntimeRotationProxyCanonicalCodexHome(
 					"disable_response_storage=false",
 				];
 			})();
+	// Voice sideband sockets otherwise go straight to the OpenAI realtime API
+	// with the local proxy token; route them through the proxy (#750). A
+	// sideband URL the user configured themselves wins.
+	if (!canonicalConfigSetsRealtimeSidebandBaseUrl(originalCodexHome, configTomlModule)) {
+		configAssignments.push(
+			`experimental_realtime_ws_base_url=${configTomlModule.tomlStringLiteral(proxyBaseUrl)}`,
+		);
+	}
 	const configArgs = configAssignments.flatMap((assignment) => ["-c", assignment]);
 
 	return {

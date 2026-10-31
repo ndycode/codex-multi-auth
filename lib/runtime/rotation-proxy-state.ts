@@ -1,3 +1,4 @@
+import { RealtimeCallRegistry } from "./realtime-calls.js";
 import type { ResetExhaustionEvidence } from "./reset-credits.js";
 import type { NativeAccountSnapshot } from "./native-account-storage.js";
 import type { QuotaCacheData, QuotaCacheEntry } from "../quota-cache.js";
@@ -103,6 +104,8 @@ export interface RotationProxyState extends RotationProxyStateInit {
  /** Explicit pre-inference quota rejections, scoped to immutable workspace/model identity. */
  subscriptionQuotaRejections?: Map<string, ResetExhaustionEvidence>;
 	readonly threadGoalFallbacks: Map<string, string | null>;
+	/** Which managed account created each realtime voice call (#750). */
+	readonly realtimeCalls: RealtimeCallRegistry;
 	lastGlobalAccountIndex: number | null;
 	lastGlobalSwitchAt: number;
 	staleRuntimeReloadPromise: Promise<AccountManager | null> | null;
@@ -204,6 +207,7 @@ export function createRotationProxyState(
 			lastAccountUpdatedAt: null,
 		},
 		threadGoalFallbacks: new Map<string, string | null>(),
+		realtimeCalls: new RealtimeCallRegistry(init.now),
 		lastGlobalAccountIndex: null,
 		lastGlobalSwitchAt: 0,
 		staleRuntimeReloadPromise: null,
