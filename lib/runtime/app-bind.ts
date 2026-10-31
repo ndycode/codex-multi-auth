@@ -742,12 +742,21 @@ function usesLaunchd(
 	launchAgentPath: string | null | undefined,
 	options: AppBindOptions,
 ): boolean {
+	if (
+		platform !== "darwin" ||
+		typeof launchAgentPath !== "string" ||
+		launchAgentPath.length === 0 ||
+		options.spawnDetached === false
+	) {
+		return false;
+	}
+	if (options.runLaunchctl !== undefined) return true;
+	// The job label is global to the login session. Only the real LaunchAgent
+	// may drive launchd, so a bind under another home (tests, sandboxes) can
+	// never unload the user's actual router.
 	return (
-		platform === "darwin" &&
-		typeof launchAgentPath === "string" &&
-		launchAgentPath.length > 0 &&
-		options.spawnDetached !== false &&
-		(options.runLaunchctl !== undefined || process.platform === "darwin")
+		process.platform === "darwin" &&
+		launchAgentPath === resolveMacLaunchAgentPath(homedir())
 	);
 }
 
