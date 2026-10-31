@@ -146,7 +146,7 @@ lib/
 │   ├── stream-failover.ts + stream-failover-runtime.ts   # SSE failover (plugin host / runtime proxy)
 │   ├── helpers/                   # model-map, input-utils, tool-utils
 │   └── index.ts                   # `./request` subpath barrel
-├── runtime-rotation-proxy.ts      # loopback Responses/model/images/thread-goal proxy (~3.3k lines)
+├── runtime-rotation-proxy.ts      # loopback Responses/model/images/search/voice/thread-goal proxy (~4k lines)
 ├── runtime-constants.ts           # provider id `codex-multi-auth-runtime-proxy`, app-helper filenames
 ├── runtime/                       # Codex CLI/app integration helpers
 │   ├── rotation-account-selection.ts # chooseAccount tiers: soft pin→priority→hard pin→sequential→affinity→hybrid→scan

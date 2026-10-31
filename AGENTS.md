@@ -143,7 +143,7 @@ Package version: 2.24.0
 - The `auth` prefix is optional on both bins for all 31 manager commands (`codex-multi-auth login` ≡ `codex-multi-auth auth login`).
 - `mcodex` is a convenience launcher only (`scripts/mcodex.js`); it forwards to `codex.js` and must not reimplement account-manager logic.
 - Runtime rotation is default-on through `codexRuntimeRotationProxy`; users can opt out with `codex-multi-auth rotation disable` or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`.
-- The runtime proxy is loopback-only and uses a per-process client token. It forwards only Responses API, model discovery, image, and thread-goal requests.
+- The runtime proxy is loopback-only and uses a per-process client token. It forwards only Responses API, model discovery, image, transcription, web search (`/alpha/search`), voice call (`/live`, `/realtime/calls` + sideband WebSocket), and thread-goal requests.
 - Proxy upstream policy: `https` always allowed; `http` only on a numeric loopback host (`127.0.0.0/8` or `[::1]`, never names) with an explicit port; redirects are never followed.
 - OAuth callback listener dual-binds `::1` + `127.0.0.1` on port 1455 for `localhost` redirect URIs; a conflict on either family fails the bind rather than degrading.
 - Account saves merge against an identity-keyed load baseline (`loadedAccountSnapshots` WeakMap → three-way merge); copy account pools only via `cloneTrackedAccountStorage`.

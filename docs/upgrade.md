@@ -59,6 +59,33 @@ The account pool under `~/.codex/multi-auth` carries over.
 
 ## Changes To Know About
 
+### Web search and voice through runtime rotation
+
+Codex web search (`web.run`, `POST /alpha/search`) and native voice (`/voice`)
+now work with runtime rotation on, instead of failing with
+`runtime_rotation_proxy_not_found`. Voice also needs the sideband control socket
+to reach the proxy, so the wrapper and both app-bind modes now set
+`experimental_realtime_ws_base_url` to the local proxy (marked
+`# codex-multi-auth realtime sideband` and removed on unbind). A value you set
+yourself is left alone. Re-run `codex-multi-auth rotation bind-app` (or
+`reset-runtime`) so an existing app bind picks this up.
+
+### App bind upstream proxy
+
+`codex-multi-auth rotation bind-app --upstream http://127.0.0.1:<port>` chains a
+local proxy such as Headroom behind the packaged-app router. Previously only
+wrapper sessions could do this, through
+`CODEX_MULTI_AUTH_RUNTIME_PROXY_UPSTREAM_BASE_URL`.
+
+### macOS app router is managed through launchd
+
+`reset-runtime`, `bind-app`, and `unbind-app` now load and unload the
+LaunchAgent with `launchctl` instead of only rewriting its plist. Earlier
+versions could leave a launchd-respawned router running with an outdated
+identity token. The first `reset-runtime` after upgrading unloads that job by
+label and starts a single router. If a router still cannot be stopped, the
+command now prints a warning instead of reporting a clean restart.
+
 ### Hourly rate-limit cache revalidation
 
 Restart existing routers after installing this change. Legacy persisted routing
