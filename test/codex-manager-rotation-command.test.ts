@@ -1191,3 +1191,94 @@ describe("catalog reference shared storage",()=>{
   expect(scope).toBe("/projects/example");
  });
 });
+
+describe("app bind upstream proxy (#753)", () => {
+	it("passes a validated upstream to bind-app", async () => {
+		const { deps, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		expect(await runRotationCommand(["bind-app", "--upstream", "http://127.0.0.1:8787/"], deps)).toBe(0);
+		expect(bindCodexAppMock).toHaveBeenCalledWith({ upstreamBaseUrl: "http://127.0.0.1:8787" });
+	});
+
+	it("clears the upstream with --no-upstream", async () => {
+		const { deps, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		expect(await runRotationCommand(["bind-app", "--native", "--no-upstream"], deps)).toBe(0);
+		expect(bindCodexAppMock).toHaveBeenCalledWith({ nativeOpenai: true, upstreamBaseUrl: null });
+	});
+
+	it.each([
+		["https://headroom.example:8787"],
+		["http://localhost:8787"],
+		["http://127.0.0.1"],
+		["http://user:pass@127.0.0.1:8787"],
+		["http://10.0.0.5:8787"],
+		[""],
+	])("rejects the upstream %s before binding", async (url) => {
+		const { deps, bindCodexAppMock, errors } = createDeps({ storage: createStorage(Date.now()) });
+		expect(await runRotationCommand(["bind-app", "--upstream", url], deps)).toBe(1);
+		expect(bindCodexAppMock).not.toHaveBeenCalled();
+		expect(errors.at(-1)).toMatch(/upstream/i);
+	});
+
+	it("rejects conflicting upstream flags", async () => {
+		const { deps, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		expect(await runRotationCommand(["bind-app", "--upstream", "http://127.0.0.1:8787", "--no-upstream"], deps)).toBe(1);
+		expect(bindCodexAppMock).not.toHaveBeenCalled();
+	});
+
+	it("keeps the upstream through reset-runtime", async () => {
+		const { deps, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		const status = (await bindCodexAppMock()).status;
+		if (!status.state) throw Error("Missing fixture state");
+		status.state.upstreamBaseUrl = "http://127.0.0.1:8787";
+		deps.getCodexAppBindStatus = async () => status;
+		bindCodexAppMock.mockClear();
+		expect(await runRotationCommand(["reset-runtime"], deps)).toBe(0);
+		expect(bindCodexAppMock).toHaveBeenCalledWith({ nativeOpenai: false, upstreamBaseUrl: "http://127.0.0.1:8787" });
+	});
+});
+
+describe("app bind restart warnings (#748)", () => {
+	it("does not report a clean restart when the old router did not stop", async () => {
+		const { deps, infos, errors, unbindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		const unbound = await unbindCodexAppMock();
+		unbindCodexAppMock.mockResolvedValueOnce({
+			...unbound,
+			warnings: ["runtime router (pid 4242) did not stop; continuing cleanup"],
+		});
+		const resetSpy = vi.spyOn(AccountManager, "resetVolatileRuntimeState");
+		try {
+			expect(await runRotationCommand(["reset-runtime"], deps)).toBe(0);
+		} finally {
+			resetSpy.mockRestore();
+		}
+		expect(infos).not.toContain("Codex app bind restarted.");
+		expect(errors[0]).toBe("Codex app bind restarted with warnings:");
+		expect(errors[1]).toBe("  - runtime router (pid 4242) did not stop; continuing cleanup");
+		expect(errors[2]).toMatch(/codex-app-router/);
+	});
+
+	it("includes warnings in reset-runtime json", async () => {
+		const { deps, infos, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		const bound = await bindCodexAppMock();
+		bindCodexAppMock.mockResolvedValueOnce({ ...bound, warnings: ["launchctl bootout failed (exit 5)"] });
+		const resetSpy = vi.spyOn(AccountManager, "resetVolatileRuntimeState");
+		try {
+			expect(await runRotationCommand(["reset-runtime", "--json"], deps)).toBe(0);
+		} finally {
+			resetSpy.mockRestore();
+		}
+		expect(JSON.parse(infos.at(-1) ?? "{}")).toMatchObject({
+			ok: true,
+			appBindRestarted: true,
+			warnings: ["launchctl bootout failed (exit 5)"],
+		});
+	});
+
+	it("prints unbind-app warnings", async () => {
+		const { deps, errors, unbindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		const unbound = await unbindCodexAppMock();
+		unbindCodexAppMock.mockResolvedValueOnce({ ...unbound, warnings: ["runtime router (pid 7) did not stop; continuing cleanup"] });
+		expect(await runRotationCommand(["unbind-app"], deps)).toBe(0);
+		expect(errors).toContain("Codex app unbind completed with warnings:");
+	});
+});

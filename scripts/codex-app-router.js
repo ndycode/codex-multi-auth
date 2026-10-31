@@ -400,12 +400,16 @@ async function main() {
 
 	try {
 		const proxyModule = await import("../dist/lib/runtime-rotation-proxy.js");
+		// `rotation bind-app --upstream` chains a local proxy behind the router
+		// (#753). The proxy library re-validates it before any token is sent.
+		const upstreamBaseUrl = readTrimmedString(stateRecord, "upstreamBaseUrl");
 		proxyServer = await proxyModule.startRuntimeRotationProxy({
 			nativeOpenai: stateRecord?.nativeOpenai === true,
 			catalogAccount: stateRecord?.catalogAccount,
 			host,
 			port,
 			clientApiKey,
+			...(upstreamBaseUrl ? { upstreamBaseUrl } : {}),
 		});
 		writeCurrentStatus("running");
 		const timer = setInterval(() => writeCurrentStatus("running"), 1000);

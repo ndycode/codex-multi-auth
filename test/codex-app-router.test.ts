@@ -43,7 +43,7 @@ function createRouterFixture(root: string, options: { withProxyModule?: boolean 
 				"}",
 				"export async function startRuntimeRotationProxy(options) {",
 				"  if (process.env.CODEX_APP_ROUTER_TEST_FAIL_PROXY === '1') throw new Error('proxy boom');",
-				"  marker(`start:${options.host}:${options.port}:${options.clientApiKey}`);",
+				"  marker(`start:${options.host}:${options.port}:${options.clientApiKey}${options.upstreamBaseUrl ? `:upstream=${options.upstreamBaseUrl}` : ''}`);",
 				"  return {",
 				"    baseUrl: `http://${options.host}:${options.port || 4567}`,",
 				"    close: async () => marker('close'),",
@@ -156,6 +156,34 @@ describe("codex app router daemon", () => {
 				await readJsonWhen(statusPath, (status) => status.state === "stopped");
 				expect(readFileSync(markerPath, "utf8")).toContain("close\n");
 			}
+		} finally {
+			await stopChild(child);
+		}
+	}, 10_000);
+
+	it("chains the upstream proxy recorded by bind-app (#753)", async () => {
+		const root = await createTempRoot("codex-app-router-upstream-");
+		const scriptPath = createRouterFixture(root);
+		const statePath = join(root, "state.json");
+		const statusPath = join(root, "status.json");
+		const markerPath = join(root, "marker.log");
+		await writeState(statePath, {
+			clientApiKey: "router-secret",
+			host: "127.0.0.1",
+			port: 0,
+			statusPath,
+			upstreamBaseUrl: "http://127.0.0.1:8787",
+		});
+		const child = spawn(process.execPath, [scriptPath, "--status", statusPath, "--state", statePath], {
+			env: { ...process.env, CODEX_APP_ROUTER_TEST_MARKER: markerPath },
+			stdio: ["ignore", "pipe", "pipe"],
+			windowsHide: true,
+		});
+		try {
+			await readJsonWhen(statusPath, (status) => status.state === "running");
+			expect(readFileSync(markerPath, "utf8")).toContain(
+				"start:127.0.0.1:0:router-secret:upstream=http://127.0.0.1:8787\n",
+			);
 		} finally {
 			await stopChild(child);
 		}
