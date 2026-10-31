@@ -1194,7 +1194,7 @@ describe("runtime rotation proxy", () => {
 		expect(await authUnknownPath.json()).toEqual({
 			error: {
 				message:
-					"Runtime rotation proxy only accepts Responses API, images, transcription, model discovery, and Codex thread goal requests.",
+					"Runtime rotation proxy only accepts Responses API, images, transcription, web search, model discovery, and Codex thread goal requests.",
 				code: "runtime_rotation_proxy_not_found",
 			},
 		});
@@ -2366,6 +2366,52 @@ describe("runtime rotation proxy", () => {
 			threadId: "thread-1",
 			turnId: "turn-1",
 		});
+	});
+
+	it.each(["/alpha/search", "/codex/alpha/search"])("forwards Codex web search %s through managed account auth (#752)", async (path) => {
+		const accountManager = new AccountManager(undefined, createStorage(Date.now()));
+		const result = { output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Godot 4.5" }] }] };
+		const { calls, fetchImpl } = createRecordingFetch(() => Response.json(result));
+		const proxy = await startProxy({ accountManager, fetchImpl });
+		const payload = { commands: { search_query: [{ q: "latest stable Godot version" }] } };
+
+		const response = await postThreadGoal(proxy, payload, path, { session_id: "search-session" });
+
+		expect(response.status).toBe(HTTP_STATUS.OK);
+		expect(await response.json()).toEqual(result);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.url).toBe("https://example.test/backend-api/codex/alpha/search");
+		expect(calls[0]?.headers.get("authorization")).toBe("Bearer access-1");
+		expect(calls[0]?.headers.get("x-api-key")).toBeNull();
+		expect(calls[0]?.headers.get(OPENAI_HEADERS.ACCOUNT_ID)).toBe("acc_1");
+		expect(JSON.parse(calls[0]?.bodyText ?? "{}")).toEqual(payload);
+	});
+
+	it.each([HTTP_STATUS.BAD_REQUEST, 500])("passes a web search %s through without replaying it on another account", async (status) => {
+		const accountManager = new AccountManager(undefined, createStorage(Date.now()));
+		const body = { error: { code: "search_failed", message: "fixture" } };
+		const { calls, fetchImpl } = createRecordingFetch(() => Response.json(body, { status }));
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await postThreadGoal(proxy, { commands: {} }, "/alpha/search");
+
+		expect(response.status).toBe(status);
+		expect(await response.json()).toEqual(body);
+		expect(calls).toHaveLength(1);
+		// A search outage is not an inference failure.
+		expect(accountManager.getAccountByIndex(0)?.coolingDownUntil).toBeUndefined();
+	});
+
+	it("still rejects a web search request that is not a POST", async () => {
+		const accountManager = new AccountManager(undefined, createStorage(Date.now()));
+		const { calls, fetchImpl } = createRecordingFetch(() => Response.json({}));
+		const proxy = await startProxy({ accountManager, fetchImpl });
+
+		const response = await getThreadGoal(proxy, "/alpha/search");
+
+		expect(response.status).toBe(404);
+		expect((await response.json()).error.code).toBe("runtime_rotation_proxy_not_found");
+		expect(calls).toHaveLength(0);
 	});
 
 	it.each(

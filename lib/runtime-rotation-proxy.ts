@@ -547,6 +547,17 @@ const ALLOWED_THREAD_GOAL_PATHS = new Set([
 	"/codex/thread/goal/set",
 ]);
 
+/**
+ * Codex standalone web search (`web.run`) posts to `<provider base>/alpha/search`.
+ * Against ChatGPT the provider base is `/backend-api/codex`, so the upstream
+ * path is `/codex/alpha/search` (#752).
+ */
+const ALLOWED_SEARCH_PATHS = new Set([
+	"/alpha/search",
+	"/codex/alpha/search",
+]);
+const SEARCH_UPSTREAM_PATH = "/codex/alpha/search";
+
 function isResponsesPath(pathname: string): boolean {
 	return ALLOWED_RESPONSES_PATHS.has(pathname);
 }
@@ -1003,6 +1014,25 @@ function buildTranscribeRequestContext(
 	};
 }
 
+function buildSearchRequestContext(
+	req: IncomingMessage,
+	body: Buffer,
+): RequestContext {
+	const headers = headersFromIncoming(req);
+	const parsedBody = parseRequestBody(body);
+	return {
+		body,
+		headers,
+		method: "POST",
+		upstreamPath: SEARCH_UPSTREAM_PATH,
+		model: null,
+		family: "codex",
+		stream: false,
+		sessionKey: resolveSessionKey(headers, parsedBody),
+		stableSessionKey: resolveStableSessionKey(headers, parsedBody),
+	};
+}
+
 function buildModelsRequestContext(req: IncomingMessage): RequestContext {
 	return {
 		body: Buffer.alloc(0),
@@ -1075,7 +1105,7 @@ function writeMethodOrPathError(res: ServerResponse): void {
 	writeJson(res, 404, {
 		error: {
 			message:
-				"Runtime rotation proxy only accepts Responses API, images, transcription, model discovery, and Codex thread goal requests.",
+				"Runtime rotation proxy only accepts Responses API, images, transcription, web search, model discovery, and Codex thread goal requests.",
 			code: "runtime_rotation_proxy_not_found",
 		},
 	});
@@ -1525,8 +1555,10 @@ async function handleRequestInner(
 		const isThreadGoalRequest =
 			(req.method === "GET" || req.method === "POST") &&
 			isThreadGoalPath(incomingUrl.pathname);
+		const isSearchRequest =
+			req.method === "POST" && ALLOWED_SEARCH_PATHS.has(incomingUrl.pathname);
 		if (
-			!isResponsesRequest && !isModelsRequest &&
+			!isResponsesRequest && !isModelsRequest && !isSearchRequest &&
 			!isThreadGoalRequest && !isImageRequest && !isTranscribeRequest
 		) {
 			writeMethodOrPathError(res);
@@ -1535,7 +1567,7 @@ async function handleRequestInner(
 
 		state.status.totalRequests += 1;
 		let requestBody =
-			isResponsesRequest || isImageRequest || isTranscribeRequest ||
+			isResponsesRequest || isImageRequest || isTranscribeRequest || isSearchRequest ||
 			(isThreadGoalRequest && req.method === "POST")
 				? await readRequestBody(req, state.maxRequestBodyBytes)
 				: Buffer.alloc(0);
@@ -1561,6 +1593,8 @@ async function handleRequestInner(
 					? buildImageRequestContext(req, requestBody, incomingUrl.pathname)
 					: isTranscribeRequest
 						? buildTranscribeRequestContext(req, requestBody)
+						: isSearchRequest
+							? buildSearchRequestContext(req, requestBody)
 							: buildResponsesRequestContext(req, requestBody);
 		if (isResponsesRequest) {
 			context.headers.delete("content-encoding");
@@ -1618,7 +1652,9 @@ async function handleRequestInner(
 						? "images"
 						: isTranscribeRequest
 							? "transcribe"
-							: "responses",
+							: isSearchRequest
+								? "search"
+								: "responses",
 			model,
 			projectKey,
 			requestId: traceId,
@@ -2949,7 +2985,7 @@ async function handleRequestInner(
 
 			let pendingScopes = workspaceCandidates.get(refreshed.account.index);
 			// Routes without model-catalog preparation still use the selected enabled workspace.
-			if (isImageRequest || isTranscribeRequest || isThreadGoalRequest) {
+			if (isImageRequest || isTranscribeRequest || isThreadGoalRequest || isSearchRequest) {
 				pendingScopes = workspaceModelScopes(refreshed.account)
 					.filter((scope) => scope.routable)
 					.sort((a, b) => Number(b.selected) - Number(a.selected) || Number(b.bound) - Number(a.bound));
@@ -3576,13 +3612,16 @@ async function handleRequestInner(
 
 			// Forward image validation/moderation/5xx errors without cross-account replay.
 			// Explicit 429 quota and 401 auth handling above still use the existing pool.
-			if (isImageRequest && upstream.status >= 400) {
+			// Web search errors pass through the same way: a search outage is not an
+			// inference failure and must not cool down the account for Responses.
+			if ((isImageRequest || isSearchRequest) && upstream.status >= 400) {
 				const forwarded = await forwardStreamingResponse(
 					upstream, res, state.status, () => undefined, state.streamStallTimeoutMs,
 				);
+				const operation = isImageRequest ? "image" : "search";
 				await usageRecorder.record({
 					outcome: "failure", statusCode: upstream.status,
-					errorCode: forwarded ? "image_upstream_error" : "stream_forward_failed",
+					errorCode: forwarded ? `${operation}_upstream_error` : "stream_forward_failed",
 					account: refreshed.account,
 				});
 				return;

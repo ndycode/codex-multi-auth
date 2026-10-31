@@ -24,6 +24,8 @@ const VALID_OPERATIONS = new Set<UsageLedgerOperation>([
 	"models",
 	"thread-goal",
 	"transcribe",
+	"search",
+	"realtime",
 	"auth-refresh",
 	"diagnostic",
 	"unknown",
