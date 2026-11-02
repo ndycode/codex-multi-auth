@@ -1574,10 +1574,15 @@ async function handleRequestInner(
                     const live = current && accountManager.getAccountByIndex(current.index);
                     if (!live) continue;
                     for (const [key, until] of Object.entries(previous.rateLimitResetTimes)) {
-                        if (typeof until === "number" && until > state.now()) live.rateLimitResetTimes[key] = Math.max(live.rateLimitResetTimes[key] ?? 0, until);
+                        if (typeof until === "number" && until > state.now()) {
+                            live.rateLimitResetTimes[key] = Math.max(live.rateLimitResetTimes[key] ?? 0, until);
+                            const observation = previous.rateLimitObservations?.[key];
+                            if (observation) (live.rateLimitObservations ??= {})[key] = { ...observation };
+                        }
                     }
                     if (previous.access === live.access && (previous.coolingDownUntil ?? 0) > (live.coolingDownUntil ?? 0)) {
                         live.coolingDownUntil = previous.coolingDownUntil; live.cooldownReason = previous.cooldownReason;
+                        live.lastRateLimitReason = previous.lastRateLimitReason;
                     }
                 }
                 // Reorders change index-based pins/affinity, so they deliberately reload too.
@@ -2442,7 +2447,7 @@ async function handleRequestInner(
 		}
 
 
-  if (isResponsesRequest && context.model && context.model !== LUNA_RESERVE_MODEL && resetCreditState?.lastRedemption?.outcome === "reset") {
+  if (isResponsesRequest && context.model && context.model !== LUNA_RESERVE_MODEL && (resetCreditState?.lastRedemption?.outcome === "reset" || resetCreditState?.lastRedemption?.outcome === "alreadyRedeemed")) {
    const manager = accountManager;
    const reconciler = state.confirmedResetReconciler ??= new ConfirmedResetReconciler();
    for (const row of manager.getAccountsSnapshot()) {
@@ -2454,6 +2459,7 @@ async function handleRequestInner(
       read:async()=> (await createResetCreditService(manager).refresh([{key:scope.id,accountId:scope.accountId}]))[scope.id],
       isCurrent:()=>state.activeAccountManager === manager && manager.getAccountByIndex(account.index) === account,
       observations:state.subscriptionQuotaObservations ??= new Map(),now:state.now,
+      hasCachedQuotaBlock:()=>state.nativeOpenai === true && subscriptionQuotaPreference(quotaForScope(account,scope),state.now()).exhausted,
       hasQuotaDeferral:()=>state.preemptiveQuotaScheduler.getDeferral(buildQuotaScheduleKey(account,context.family,context.model),state.now()).defer,
       clearQuotaScheduler:()=>state.preemptiveQuotaScheduler.clear(buildQuotaScheduleKey(account,context.family,context.model)),
      });

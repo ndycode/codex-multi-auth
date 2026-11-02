@@ -297,8 +297,7 @@ export interface ManagedAccount {
 		| "manual";
 	lastRateLimitReason?: RateLimitReason;
 	/** Process-local sequence used to order a fresh quota read against a concurrent 429. */
-	rateLimitRevision?: number;
-	rateLimitObservedAt?: number;
+	rateLimitObservations?: Record<string, { revision: number; observedAt: number; reason: RateLimitReason }>;
 	rateLimitResetTimes: RateLimitStateV3;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
@@ -795,6 +794,7 @@ export class AccountManager {
 				_runtimeTrackerKey: trackerKey,
 				circuitKeyId,
 				rateLimitResetTimes: { ...account.rateLimitResetTimes },
+				rateLimitObservations: account.rateLimitObservations && { ...account.rateLimitObservations },
 				workspaces: account.workspaces?.map((workspace) => ({ ...workspace })),
 			};
 		});
@@ -1460,12 +1460,17 @@ export class AccountManager {
 				: undefined;
 		const newLimits: RateLimitStateV3 = { ...carried?.limits };
 
+		const recordRejection = (key: string) => {
+			const observations = account.rateLimitObservations ??= {};
+			observations[key] = { revision: (observations[key]?.revision ?? 0) + 1, observedAt: observedAtMs, reason };
+		};
 		const baseKey = getQuotaKey(family);
 		const independentReserve = model === LUNA_RESERVE_MODEL;
 		if (!independentReserve && (!model || reason === "quota" || reason === "unknown")) {
 			const currentResetAt = account.rateLimitResetTimes[baseKey] ?? 0;
 			account.rateLimitResetTimes[baseKey] = Math.max(currentResetAt, resetAt);
 			newLimits[baseKey] = Math.max(newLimits[baseKey] ?? 0, resetAt);
+			recordRejection(baseKey);
 		}
 
 		if (
@@ -1476,11 +1481,10 @@ export class AccountManager {
 			const currentResetAt = account.rateLimitResetTimes[modelKey] ?? 0;
 			account.rateLimitResetTimes[modelKey] = Math.max(currentResetAt, resetAt);
 			newLimits[modelKey] = Math.max(newLimits[modelKey] ?? 0, resetAt);
+			recordRejection(modelKey);
 		}
 
 		account.lastRateLimitReason = reason;
-		account.rateLimitRevision = (account.rateLimitRevision ?? 0) + 1;
-		account.rateLimitObservedAt = observedAtMs;
 		if (!selectionReadable) {
 			this.unsequencedRateLimits.set(account, {
 				limits: newLimits,

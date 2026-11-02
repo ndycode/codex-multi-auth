@@ -7,7 +7,8 @@ is picked up by the next blocked Responses request in provider or native mode,
 including a hard pin. No further router restart, unpin, or redemption is needed
 for subsequent resets. Receipts survive idle time and account reloads. Recovery
 requires a fresh read-only quota confirmation; failed or unknown checks retain
-the quota block and retry after a five-second delay. Healthy traffic does not
+the quota block and retry after a five-second delay unless a newer rejection of
+the same quota key arrives during the check. That rejection requires a new receipt. Healthy traffic does not
 wait on unnecessary quota checks. Authentication and model-specific blocks remain
 protected. See [the reset design](design/earned-reset-credits.md).
 

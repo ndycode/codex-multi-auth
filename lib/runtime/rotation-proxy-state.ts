@@ -466,6 +466,8 @@ export async function reloadRuntimeCredentials(
 			for (const [key, until] of Object.entries(previous.rateLimitResetTimes)) {
 				if (typeof until === "number" && until > state.now()) {
 					live.rateLimitResetTimes[key] = Math.max(live.rateLimitResetTimes[key] ?? 0, until);
+					const observation = previous.rateLimitObservations?.[key];
+					if (observation) (live.rateLimitObservations ??= {})[key] = { ...observation };
 				}
 			}
 			if ((previous.coolingDownUntil ?? 0) > (live.coolingDownUntil ?? 0)) {
@@ -474,6 +476,7 @@ export async function reloadRuntimeCredentials(
 				if (!repairedAuth) {
 					live.coolingDownUntil = previous.coolingDownUntil;
 					live.cooldownReason = previous.cooldownReason;
+					live.lastRateLimitReason = previous.lastRateLimitReason;
 				}
 			}
 			const sameCredential =

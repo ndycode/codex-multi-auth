@@ -123,7 +123,7 @@ it("reconciles the same receipt in a replacement manager with persisted blockers
 
 it("does not cache a failed read as retryable when a new 429 arrived concurrently", async () => {
 	const f = fixture(); let now = f.args.now(); f.args.now = () => now;
-	f.args.read = vi.fn(async () => { f.account.rateLimitRevision = 1; throw Error("offline"); });
+	f.args.read = vi.fn(async () => { f.account.rateLimitObservations = {codex:{revision:1, observedAt:now, reason:"quota"}}; throw Error("offline"); });
 	expect(await f.run()).toBe(false); now += 10_000;
 	expect(await f.run()).toBe(false); expect(f.args.read).toHaveBeenCalledTimes(1);
 });
@@ -131,7 +131,7 @@ it("does not cache a failed read as retryable when a new 429 arrived concurrentl
 it("accepts a new receipt after a backward clock step", async () => {
 	const f = fixture(); let now = f.args.now(); f.args.now = () => now;
 	expect(await f.run()).toBe(true);
-	f.account.rateLimitObservedAt = now; f.account.rateLimitResetTimes.codex = now + 300_000;
+	f.account.rateLimitObservations = {codex:{revision:1, observedAt:now, reason:"quota"}}; f.account.rateLimitResetTimes.codex = now + 300_000;
 	now -= 600_000;
 	f.args.state!.lastRedemption!.at = now; f.snapshot.updatedAt = now;
 	expect(await f.run()).toBe(true); expect(f.args.read).toHaveBeenCalledTimes(2);
@@ -160,4 +160,33 @@ it.each([false, true])("bounds quota observations without evicting an updated ke
 	expect(f.args.observations.has(key)).toBe(true);
 	expect(f.args.observations.has("old-1")).toBe(true);
 	expect(f.args.observations.has("old-0")).toBe(false);
+});
+
+
+it.each(["before", "during"])("keeps Reserve and model-specific rejections separate from ordinary recovery: %s", async phase => {
+ const f = fixture();
+ const reject = () => {
+  f.manager.markRateLimitedWithReason(f.account, 300_000, "codex", "quota", "gpt-reserve");
+  f.manager.markRateLimitedWithReason(f.account, 300_000, "codex", "tokens", "other-model");
+ };
+ if (phase === "before") reject();
+ else f.args.read = async () => { reject(); return f.snapshot; };
+ expect(await f.run()).toBe(true);
+ expect(f.account.rateLimitResetTimes.codex).toBeUndefined();
+ expect(f.account.rateLimitResetTimes["codex:gpt-reserve"]).toBeDefined();
+ expect(f.account.rateLimitResetTimes["codex:other-model"]).toBeDefined();
+});
+
+it("accepts an idempotently completed redemption only after fresh permission", async () => {
+ const f = fixture(); f.args.state!.lastRedemption!.outcome = "alreadyRedeemed";
+ expect(await f.run()).toBe(true); expect(f.args.read).toHaveBeenCalledTimes(1);
+});
+
+it("handles a clock rollback after the receipt and still applies that receipt once", async () => {
+ const f = fixture(); const receiptAt = f.args.now();
+ f.args.state!.lastRedemption!.at = receiptAt;
+ f.args.now = () => receiptAt - 600_000; f.snapshot.updatedAt = f.args.now();
+ expect(await Promise.all([f.run(), f.run()])).toEqual([true, false]);
+ f.account.rateLimitResetTimes.codex = receiptAt + 300_000;
+ expect(await f.run()).toBe(false); expect(f.args.read).toHaveBeenCalledTimes(1);
 });

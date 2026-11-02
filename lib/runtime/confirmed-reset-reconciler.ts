@@ -29,25 +29,28 @@ export class ConfirmedResetReconciler {
 		observations: Map<string, QuotaCacheEntry>;
 		clearQuotaScheduler: () => void;
 		hasQuotaDeferral?: () => boolean;
+		hasCachedQuotaBlock?: () => boolean;
 	}): Promise<boolean> {
 		const { state, account, scope, model, family, manager } = options;
 		const receipt = state?.lastRedemption;
 		if (model === LUNA_RESERVE_MODEL || state?.pending || !receipt ||
-			receipt.outcome !== "reset" || receipt.key !== scope.id || receipt.at > options.now()) return false;
+			(receipt.outcome !== "reset" && receipt.outcome !== "alreadyRedeemed") || receipt.key !== scope.id) return false;
 		const eligible = () => options.isCurrent() && account.enabled !== false && !account.authInvalidatedAt &&
 			!(account.cooldownReason === "auth-failure" && (account.coolingDownUntil ?? 0) > options.now()) &&
 			workspaceModelScopes(account).some(current => current.id === scope.id && current.routable);
 		const now = options.now();
 		// A wall-clock step backwards must not make an old observation win forever.
-		const rejectedAt = account.rateLimitObservedAt ?? 0;
+		const rejectedAt = account.rateLimitObservations?.[family]?.observedAt ?? 0;
 		if (!eligible() || (rejectedAt <= now && rejectedAt > receipt.at)) return false;
 		if (!((account.rateLimitResetTimes[family] ?? 0) > now ||
 			(account.cooldownReason === "rate-limit" && (account.coolingDownUntil ?? 0) > now) ||
-			options.hasQuotaDeferral?.())) return false;
+			options.hasQuotaDeferral?.() || options.hasCachedQuotaBlock?.())) return false;
+		// Receipt time may be ahead of this process after a clock rollback. Fresh
+		// permission still decides recovery; exact receipt identity prevents replay.
 		const key = JSON.stringify([scope.id, model]);
 		const existing = this.operations.get(key);
 		if (existing && existing.manager === manager && existing.account === account &&
-			existing.at <= now && existing.at >= receipt.at &&
+			(existing.at === receipt.at || (existing.at <= now && existing.at > receipt.at)) &&
 			(existing.retryAfter === undefined || (now >= existing.startedAt && now < existing.retryAfter))) {
 			await existing.promise;
 			return false;
@@ -59,7 +62,7 @@ export class ConfirmedResetReconciler {
 		}
 		this.operations.set(key, operation);
 		operation.promise = (async () => {
-			const revision = account.rateLimitRevision ?? 0;
+			const revision = account.rateLimitObservations?.[family]?.revision ?? 0;
 			const startedAt = options.now();
 			const snapshot = await options.read().catch(() => undefined);
 			if (this.operations.get(key) !== operation) return false;
@@ -68,7 +71,7 @@ export class ConfirmedResetReconciler {
 				return false;
 			}
 			// Keep a newer rejection authoritative, including when the read failed.
-			if ((account.rateLimitRevision ?? 0) !== revision) return false;
+			if ((account.rateLimitObservations?.[family]?.revision ?? 0) !== revision) return false;
 			if (!snapshot || snapshot.updatedAt < startedAt || snapshot.updatedAt > options.now() ||
 				snapshot.ordinaryUsageAllowed !== true) {
 				operation.retryAfter = options.now() + RETRY_DELAY_MS;
@@ -81,7 +84,9 @@ export class ConfirmedResetReconciler {
 			// A cold manager has no reason for its persisted family-level quota block.
 			// Fresh native permission can supersede that block, but not token/concurrency
 			// limits, model-specific windows, auth failures, or separately metered Reserve.
-			if (account.lastRateLimitReason !== undefined && account.lastRateLimitReason !== "quota") return false;
+			const reason = account.rateLimitObservations
+				? account.rateLimitObservations[family]?.reason : account.lastRateLimitReason;
+			if (reason !== undefined && reason !== "quota") return false;
 			delete account.rateLimitResetTimes[family];
 			if (account.cooldownReason === "rate-limit") manager.clearAccountCooldown(account);
 			options.clearQuotaScheduler();

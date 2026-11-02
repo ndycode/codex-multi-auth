@@ -80,7 +80,7 @@ const openServers: RuntimeRotationProxyServer[] = [];
 const openManagers: AccountManager[] = [];
 const DEFAULT_CLIENT_API_KEY = "runtime-secret";
 
-it.each([0, 65_000])("adopts a CLI reset in the same pinned provider proxy after %s ms without consuming again", async delay => {
+it.each([{delay:0,outcome:"reset"},{delay:65_000,outcome:"reset"},{delay:0,outcome:"alreadyRedeemed"}])("adopts a CLI $outcome in the same pinned provider proxy after $delay ms without consuming again", async ({delay,outcome}) => {
  const fs = await import("node:fs/promises");
  const os = await import("node:os");
  const path = await import("node:path");
@@ -94,7 +94,7 @@ it.each([0, 65_000])("adopts a CLI reset in the same pinned provider proxy after
  let readGate: Promise<void> | undefined;
  const native = await import("../lib/runtime/native-rate-limits.js");
  const rpc = vi.spyOn(native, "nativeRateLimitsRpc").mockImplementation(async (auth, method) => {
-  if (method === "account/rateLimitResetCredit/consume") { consumes++; allowed = true; return {outcome:"reset"}; }
+  if (method === "account/rateLimitResetCredit/consume") { consumes++; allowed = true; return {outcome}; }
   await readGate;
   return {accountId:auth.accountId, ordinaryUsageAllowed:allowed, rateLimitResetCredits:{availableCount:2 - consumes},
    rateLimits:{planType:"pro", primary:{usedPercent:allowed ? 0 : 100}, secondary:{}}};
@@ -120,7 +120,7 @@ it.each([0, 65_000])("adopts a CLI reset in the same pinned provider proxy after
   const blocked = await send(); expect(blocked.status).toBe(503); await blocked.text();
   const {createResetCreditService, resetTargetForStoredAccount} = await import("../lib/runtime/account-reset-credits.js");
   const cli = createResetCreditService(new AccountManager(undefined, disk));
-  expect(await cli.redeem(resetTargetForStoredAccount(disk.accounts[0]!)!)).toBe("reset");
+  expect(await cli.redeem(resetTargetForStoredAccount(disk.accounts[0]!)!)).toBe(outcome);
   const readsBefore = rpc.mock.calls.length;
   now += delay;
   const {ConfirmedResetReconciler} = await import("../lib/runtime/confirmed-reset-reconciler.js");
@@ -150,6 +150,42 @@ it.each([0, 65_000])("adopts a CLI reset in the same pinned provider proxy after
   rpc.mockRestore(); clock.mockRestore();
   if (previousDir === undefined) delete process.env.CODEX_MULTI_AUTH_DIR; else process.env.CODEX_MULTI_AUTH_DIR = previousDir;
   await removeWithRetry(dir, {recursive:true, force:true});
+ }
+});
+
+it("rechecks an old CLI receipt in a cold native router blocked only by cached quota", async () => {
+ const fs = await import("node:fs/promises"), os = await import("node:os"), path = await import("node:path");
+ const previousDir = process.env.CODEX_MULTI_AUTH_DIR;
+ const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cold-reset-proxy-")); process.env.CODEX_MULTI_AUTH_DIR = dir;
+ let now = Date.now(); const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+ const native = await import("../lib/runtime/native-rate-limits.js");
+ let consumes = 0, reads = 0;
+ const rpc = vi.spyOn(native, "nativeRateLimitsRpc").mockImplementation(async (auth, method) => {
+  if (method === "account/rateLimitResetCredit/consume") { consumes++; return {outcome:"reset"}; }
+  reads++;
+  return {accountId:auth.accountId, ordinaryUsageAllowed:consumes > 0, rateLimitResetCredits:{availableCount:2-consumes},
+   rateLimits:{planType:"pro",primary:{usedPercent:consumes ? 0 : 100},secondary:{}}};
+ });
+ try {
+  const disk = createStorage(now, 1); const storage = await import("../lib/storage.js");
+  vi.spyOn(storage, "loadAccounts").mockResolvedValue(disk);
+  const {createResetCreditService, resetTargetForStoredAccount} = await import("../lib/runtime/account-reset-credits.js");
+  const cli = createResetCreditService(new AccountManager(undefined,disk));
+  await cli.redeem(resetTargetForStoredAccount(disk.accounts[0]!)!); const readsBefore = reads;
+  const cached = {updatedAt:now-1,status:200,model:"chat-fixture",planType:"pro",primary:{usedPercent:100,resetAtMs:now+3600000},secondary:{}};
+  now += 65000;
+  const manager = new AccountManager(undefined,disk);
+  const {fetchImpl,calls} = createRecordingFetch(call => call.url.includes("/models") ? Response.json({models:[{slug:"chat-fixture"}]}) : textEventStream());
+  const proxy = await startProxy({accountManager:manager,fetchImpl,options:{nativeOpenai:true,now:()=>now,
+   readSubscriptionQuota:async()=>({byAccountId:{acc_1:cached},byEmail:{}})}});
+  expect(manager.getAccountByIndex(0)!.rateLimitResetTimes).toEqual({});
+  const response = await postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic request"});
+  expect(response.status).toBe(200); expect(consumes).toBe(1); expect(reads).toBe(readsBefore+1);
+  expect(calls.filter(c=>c.url.endsWith("/responses"))).toHaveLength(1);
+ } finally {
+  rpc.mockRestore(); clock.mockRestore();
+  if (previousDir === undefined) delete process.env.CODEX_MULTI_AUTH_DIR; else process.env.CODEX_MULTI_AUTH_DIR = previousDir;
+  await removeWithRetry(dir,{recursive:true,force:true});
  }
 });
 
@@ -6094,13 +6130,15 @@ describe("native inventory read resilience",()=>{
  });
  it("preserves unexpired 429 state across inventory changes",async()=>{
   const now=Date.now(),manager=new AccountManager(undefined,createStorage(now,1));
-  manager.getAccountByIndex(0)!.rateLimitResetTimes={codex:now+60000};
+  manager.markRateLimitedWithReason(manager.getAccountByIndex(0)!,60000,"codex","quota");
+  const observation=manager.getAccountByIndex(0)!.rateLimitObservations!.codex!;
   const mode=vi.spyOn(AccountManager.prototype,'setRoutingMutexMode');
   const {fetchImpl}=createRecordingFetch(()=>Response.json({models:[{slug:'model-test'}]}));
   const proxy=await startProxy({accountManager:manager,fetchImpl,options:{nativeOpenai:true,readNativeAccountStorage:async()=>createStorage(now,2)}});mode.mockClear();
   const response=await getModels(proxy);await response.text();
   const replacement=mode.mock.contexts[0] as AccountManager;
-  expect(replacement.getAccountByIndex(0)?.rateLimitResetTimes.codex).toBe(now+60000);
+  expect(replacement.getAccountByIndex(0)?.rateLimitResetTimes.codex).toBeGreaterThanOrEqual(now+60000);
+  expect(replacement.getAccountByIndex(0)?.rateLimitObservations?.codex).toEqual(observation);
  });
 });
 

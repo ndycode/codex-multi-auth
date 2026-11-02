@@ -321,6 +321,30 @@ describe("reloadRuntimeCredentials", () => {
 		expect(active?.rateLimitResetTimes["codex:workspace-a"]).toBeUndefined();
 	});
 
+	it("carries rejection chronology so an old receipt cannot clear a later 429 after reload", async () => {
+  const disk = storageWith(1); const resident = new AccountManager(undefined,disk);
+  const account = resident.getAccountByIndex(0)!;
+  const {workspaceModelScopes} = await import("../lib/runtime/workspace-model-scopes.js");
+  const {ConfirmedResetReconciler} = await import("../lib/runtime/confirmed-reset-reconciler.js");
+  const scope = workspaceModelScopes(account)[0]!;
+  resident.markRateLimitedWithReason(account,60000,"codex","quota");
+  const observedAt = account.rateLimitObservations!.codex!.observedAt;
+  const state = createRotationProxyState({...stateInit(),now:()=>observedAt,activeAccountManager:resident});
+  const replacementDisk = storageWith(2);
+  const replacement = new AccountManager(undefined,replacementDisk); loadFromDisk.mockResolvedValueOnce(replacement);
+  await reloadRuntimeCredentials(state);
+  const current = replacement.getAccountByIndex(0)!;
+  expect(current.rateLimitObservations?.codex).toEqual(account.rateLimitObservations!.codex);
+  expect(current.rateLimitResetTimes.codex).toBe(account.rateLimitResetTimes.codex);
+  const read = vi.fn();
+  expect(await new ConfirmedResetReconciler().reconcile({
+   state:{version:1,policy:"manual",snapshots:{},lastRedemption:{key:scope.id,at:observedAt-1,outcome:"reset",automatic:false}},
+   manager:replacement,account:current,scope,model:"chat-test",family:"codex",now:()=>observedAt,
+   isCurrent:()=>true,read,observations:new Map(),clearQuotaScheduler:vi.fn(),
+  })).toBe(false);
+  expect(read).not.toHaveBeenCalled();
+ });
+
 	it("carries a token rotation that lands while disk loading is pending", async () => {
 		const state = createRotationProxyState(stateInit());
 		const previous = state.activeAccountManager.getAccountByIndex(0);
