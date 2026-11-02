@@ -1,13 +1,15 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AccountManager } from "../lib/accounts.js";
 import { ConfirmedResetReconciler } from "../lib/runtime/confirmed-reset-reconciler.js";
 import { workspaceModelScopes } from "../lib/runtime/workspace-model-scopes.js";
 import type { ResetSnapshot } from "../lib/runtime/reset-credits.js";
 
 beforeEach(() => AccountManager.resetVolatileRuntimeState());
+afterEach(() => vi.restoreAllMocks());
 
 function fixture() {
 	const now = Date.now();
+	vi.spyOn(Date, "now").mockReturnValue(now);
 	const manager = new AccountManager(undefined, {version:3, activeIndex:0, accounts:[
 		{recordId:"first", accountId:"workspace", refreshToken:"r", addedAt:1, lastUsed:1},
 	]});
@@ -89,10 +91,73 @@ it.each(["pending", "wrong-workspace", "failed-outcome", "auth", "reserve", "tok
 	expect(f.args.clearQuotaScheduler).not.toHaveBeenCalled();
 });
 
-it("retries a failed read without spending another credit", async () => {
+it.each(["error", "unknown", "exhausted"])("backs off %s reads, then retries the same receipt", async outcome => {
 	const f = fixture();
-	f.args.read = vi.fn().mockRejectedValueOnce(Error("offline")).mockResolvedValueOnce(f.snapshot);
+	let now = f.args.now(); f.args.now = () => now;
+	const read = vi.fn<() => Promise<ResetSnapshot | undefined>>(); f.args.read = read;
+	if (outcome === "error") read.mockRejectedValueOnce(Error("offline"));
+	else read.mockResolvedValueOnce({...f.snapshot, ordinaryUsageAllowed:outcome === "unknown" ? null : false});
 	expect(await f.run()).toBe(false);
+	for (let i = 0; i < 3; i++) expect(await f.run()).toBe(false);
+	expect(read).toHaveBeenCalledTimes(1);
+	now += 5_000; f.snapshot.updatedAt = now; read.mockResolvedValueOnce(f.snapshot);
 	expect(await f.run()).toBe(true);
-	expect(f.args.read).toHaveBeenCalledTimes(2);
+	expect(read).toHaveBeenCalledTimes(2);
+});
+
+it("retries an aborted read after the manager becomes current again", async () => {
+	const f = fixture();
+	f.args.read = vi.fn(async () => { f.args.isCurrent = () => false; return f.snapshot; });
+	expect(await f.run()).toBe(false);
+	f.args.isCurrent = () => true; f.args.read = vi.fn(async () => f.snapshot);
+	expect(await f.run()).toBe(true);
+	expect(f.args.read).toHaveBeenCalledTimes(1);
+});
+
+it("reconciles the same receipt in a replacement manager with persisted blockers", async () => {
+	const f = fixture(); expect(await f.run()).toBe(true);
+	const replacement = fixture();
+	expect(await f.reconciler.reconcile({...replacement.args, state:f.args.state})).toBe(true);
+	expect(replacement.account.rateLimitResetTimes.codex).toBeUndefined();
+});
+
+it("does not cache a failed read as retryable when a new 429 arrived concurrently", async () => {
+	const f = fixture(); let now = f.args.now(); f.args.now = () => now;
+	f.args.read = vi.fn(async () => { f.account.rateLimitRevision = 1; throw Error("offline"); });
+	expect(await f.run()).toBe(false); now += 10_000;
+	expect(await f.run()).toBe(false); expect(f.args.read).toHaveBeenCalledTimes(1);
+});
+
+it("accepts a new receipt after a backward clock step", async () => {
+	const f = fixture(); let now = f.args.now(); f.args.now = () => now;
+	expect(await f.run()).toBe(true);
+	f.account.rateLimitObservedAt = now; f.account.rateLimitResetTimes.codex = now + 300_000;
+	now -= 600_000;
+	f.args.state!.lastRedemption!.at = now; f.snapshot.updatedAt = now;
+	expect(await f.run()).toBe(true); expect(f.args.read).toHaveBeenCalledTimes(2);
+});
+
+it("ignores an older receipt delivered after a newer one without a clock step", async () => {
+	const f = fixture(); expect(await f.run()).toBe(true);
+	f.account.rateLimitResetTimes.codex = f.args.now() + 300_000;
+	f.args.state!.lastRedemption!.at -= 1;
+	expect(await f.run()).toBe(false); expect(f.args.read).toHaveBeenCalledTimes(1);
+});
+
+it("does not read native quota for a healthy account with an old receipt", async () => {
+	const f = fixture(); f.account.rateLimitResetTimes = {};
+	expect(await f.run()).toBe(false); expect(await f.run()).toBe(false);
+	expect(f.args.read).not.toHaveBeenCalled();
+	f.args.hasQuotaDeferral = () => true;
+	expect(await f.run()).toBe(true);
+});
+
+it.each([false, true])("bounds quota observations without evicting an updated key: %s", async update => {
+	const f = fixture(); const key = JSON.stringify([f.args.scope.id, f.args.model]);
+	for (let i = 0; i < 1000; i++) f.args.observations.set(update && i === 0 ? key : `old-${i}`, {updatedAt:1, status:200, model:"old", primary:{}, secondary:{}});
+	expect(await f.run()).toBe(true);
+	expect(f.args.observations.size).toBe(1000);
+	expect(f.args.observations.has(key)).toBe(true);
+	expect(f.args.observations.has("old-1")).toBe(true);
+	expect(f.args.observations.has("old-0")).toBe(false);
 });

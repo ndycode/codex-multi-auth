@@ -91,9 +91,11 @@ it.each([0, 65_000])("adopts a CLI reset in the same pinned provider proxy after
  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
  let allowed = false;
  let consumes = 0;
+ let readGate: Promise<void> | undefined;
  const native = await import("../lib/runtime/native-rate-limits.js");
  const rpc = vi.spyOn(native, "nativeRateLimitsRpc").mockImplementation(async (auth, method) => {
   if (method === "account/rateLimitResetCredit/consume") { consumes++; allowed = true; return {outcome:"reset"}; }
+  await readGate;
   return {accountId:auth.accountId, ordinaryUsageAllowed:allowed, rateLimitResetCredits:{availableCount:2 - consumes},
    rateLimits:{planType:"pro", primary:{usedPercent:allowed ? 0 : 100}, secondary:{}}};
  });
@@ -106,9 +108,13 @@ it.each([0, 65_000])("adopts a CLI reset in the same pinned provider proxy after
   vi.spyOn(storage, "loadAccounts").mockResolvedValue(disk);
   const manager = new AccountManager(undefined, disk);
   const {calls, fetchImpl} = createRecordingFetch(() => allowed ? textEventStream() : Response.json(
-   {error:{code:"usage_limit_reached", message:"synthetic quota exceeded"}}, {status:429}));
+   {error:{code:"usage_limit_reached", message:"synthetic quota exceeded"}}, {status:429, headers:{"retry-after":"3600"}}));
   const proxy = await startProxy({accountManager:manager, fetchImpl, options:{forcedAccountIndex:0}});
-  const send = () => postResponses(proxy, {model:"chat-fixture", input:"synthetic request"});
+  const send = async () => {
+   // Windows may allocate an ephemeral port forbidden by fetch's browser port list.
+   const response = await postResponsesWithHttp(proxy, {model:"chat-fixture", input:"synthetic request"});
+   return new Response(response.text, {status:response.status});
+  };
   const first = await send(); expect(first.status).toBe(503); await first.text();
   expect(calls).toHaveLength(1);
   const blocked = await send(); expect(blocked.status).toBe(503); await blocked.text();
@@ -117,9 +123,20 @@ it.each([0, 65_000])("adopts a CLI reset in the same pinned provider proxy after
   expect(await cli.redeem(resetTargetForStoredAccount(disk.accounts[0]!)!)).toBe("reset");
   const readsBefore = rpc.mock.calls.length;
   now += delay;
-  for (let i = 0; i < 2; i++) {
-   const recovered = await send(); expect(recovered.status).toBe(200); await recovered.text();
-  }
+  const {ConfirmedResetReconciler} = await import("../lib/runtime/confirmed-reset-reconciler.js");
+  const original = ConfirmedResetReconciler.prototype.reconcile;
+  let releaseRead!: () => void; readGate = new Promise<void>(resolve => { releaseRead = resolve; });
+  let bothEntered!: () => void; const entered = new Promise<void>(resolve => { bothEntered = resolve; });
+  let arrivals = 0;
+  const reconcile = vi.spyOn(ConfirmedResetReconciler.prototype, "reconcile").mockImplementation(function(this: InstanceType<typeof ConfirmedResetReconciler>, args) {
+   const result = original.call(this, args);
+   if (++arrivals === 2) bothEntered();
+   return result;
+  });
+  const concurrent = Promise.all([send(), send()]);
+  await entered; releaseRead();
+  for (const recovered of await concurrent) { expect(recovered.status).toBe(200); await recovered.text(); }
+  reconcile.mockRestore(); readGate = undefined;
   expect(consumes).toBe(1);
   expect(rpc.mock.calls.length).toBe(readsBefore + 1);
   expect(manager.getAccountByIndex(1)!.rateLimitResetTimes[family]).toBe(disk.accounts[1]!.rateLimitResetTimes![family]);

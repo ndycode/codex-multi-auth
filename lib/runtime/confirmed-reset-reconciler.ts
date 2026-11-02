@@ -7,7 +7,15 @@ import { workspaceModelScopes } from "./workspace-model-scopes.js";
 
 type ResetState = Awaited<ReturnType<ResetCreditService["status"]>>;
 type Scope = ReturnType<typeof workspaceModelScopes>[number];
-interface Operation { at: number; promise: Promise<boolean> }
+interface Operation {
+	at: number;
+	startedAt: number;
+	manager: AccountManager;
+	account: ManagedAccount;
+	retryAfter?: number;
+	promise: Promise<boolean>;
+}
+const RETRY_DELAY_MS = 5_000;
 
 /** A redemption is a durable notification, not a permanently healthy quota snapshot. */
 export class ConfirmedResetReconciler {
@@ -20,6 +28,7 @@ export class ConfirmedResetReconciler {
 		isCurrent: () => boolean; now: () => number;
 		observations: Map<string, QuotaCacheEntry>;
 		clearQuotaScheduler: () => void;
+		hasQuotaDeferral?: () => boolean;
 	}): Promise<boolean> {
 		const { state, account, scope, model, family, manager } = options;
 		const receipt = state?.lastRedemption;
@@ -28,15 +37,23 @@ export class ConfirmedResetReconciler {
 		const eligible = () => options.isCurrent() && account.enabled !== false && !account.authInvalidatedAt &&
 			!(account.cooldownReason === "auth-failure" && (account.coolingDownUntil ?? 0) > options.now()) &&
 			workspaceModelScopes(account).some(current => current.id === scope.id && current.routable);
-		if (!eligible() || (account.rateLimitObservedAt ?? 0) > receipt.at) return false;
+		const now = options.now();
+		// A wall-clock step backwards must not make an old observation win forever.
+		const rejectedAt = account.rateLimitObservedAt ?? 0;
+		if (!eligible() || (rejectedAt <= now && rejectedAt > receipt.at)) return false;
+		if (!((account.rateLimitResetTimes[family] ?? 0) > now ||
+			(account.cooldownReason === "rate-limit" && (account.coolingDownUntil ?? 0) > now) ||
+			options.hasQuotaDeferral?.())) return false;
 		const key = JSON.stringify([scope.id, model]);
 		const existing = this.operations.get(key);
-		if (existing && existing.at >= receipt.at) {
+		if (existing && existing.manager === manager && existing.account === account &&
+			existing.at <= now && existing.at >= receipt.at &&
+			(existing.retryAfter === undefined || (now >= existing.startedAt && now < existing.retryAfter))) {
 			await existing.promise;
 			return false;
 		}
 		// Install the operation before starting I/O so concurrent requests share it.
-		const operation: Operation = { at: receipt.at, promise: Promise.resolve(false) };
+		const operation: Operation = { at: receipt.at, startedAt:now, manager, account, promise: Promise.resolve(false) };
 		if (this.operations.size >= 1000 && !this.operations.has(key)) {
 			this.operations.delete(this.operations.keys().next().value ?? "");
 		}
@@ -45,15 +62,21 @@ export class ConfirmedResetReconciler {
 			const revision = account.rateLimitRevision ?? 0;
 			const startedAt = options.now();
 			const snapshot = await options.read().catch(() => undefined);
-			if (!snapshot) {
+			if (this.operations.get(key) !== operation) return false;
+			if (!eligible()) {
 				if (this.operations.get(key) === operation) this.operations.delete(key);
 				return false;
 			}
-			// A new 429, workspace change, or newer redemption wins over a delayed read.
-			if (this.operations.get(key) !== operation || !eligible() ||
-				(account.rateLimitRevision ?? 0) !== revision ||
-				snapshot.updatedAt < startedAt || snapshot.updatedAt > options.now() ||
-				snapshot.ordinaryUsageAllowed !== true) return false;
+			// Keep a newer rejection authoritative, including when the read failed.
+			if ((account.rateLimitRevision ?? 0) !== revision) return false;
+			if (!snapshot || snapshot.updatedAt < startedAt || snapshot.updatedAt > options.now() ||
+				snapshot.ordinaryUsageAllowed !== true) {
+				operation.retryAfter = options.now() + RETRY_DELAY_MS;
+				return false;
+			}
+			if (options.observations.size >= 1000 && !options.observations.has(key)) {
+				options.observations.delete(options.observations.keys().next().value ?? "");
+			}
 			options.observations.set(key, resetSnapshotQuota(snapshot));
 			// A cold manager has no reason for its persisted family-level quota block.
 			// Fresh native permission can supersede that block, but not token/concurrency

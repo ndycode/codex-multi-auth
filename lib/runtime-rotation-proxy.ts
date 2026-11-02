@@ -2454,6 +2454,7 @@ async function handleRequestInner(
       read:async()=> (await createResetCreditService(manager).refresh([{key:scope.id,accountId:scope.accountId}]))[scope.id],
       isCurrent:()=>state.activeAccountManager === manager && manager.getAccountByIndex(account.index) === account,
       observations:state.subscriptionQuotaObservations ??= new Map(),now:state.now,
+      hasQuotaDeferral:()=>state.preemptiveQuotaScheduler.getDeferral(buildQuotaScheduleKey(account,context.family,context.model),state.now()).defer,
       clearQuotaScheduler:()=>state.preemptiveQuotaScheduler.clear(buildQuotaScheduleKey(account,context.family,context.model)),
      });
     }

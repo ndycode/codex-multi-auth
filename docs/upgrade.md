@@ -1,5 +1,16 @@
 # Upgrade Guide
 
+## After 2.25.0: manual reset propagation
+
+Once the updated router is loaded, a successful `codex-multi-auth resets redeem`
+is picked up by the next blocked Responses request in provider or native mode,
+including a hard pin. No further router restart, unpin, or redemption is needed
+for subsequent resets. Receipts survive idle time and account reloads. Recovery
+requires a fresh read-only quota confirmation; failed or unknown checks retain
+the quota block and retry after a five-second delay. Healthy traffic does not
+wait on unnecessary quota checks. Authentication and model-specific blocks remain
+protected. See [the reset design](design/earned-reset-credits.md).
+
 ## GPT-6.1 Terra and Ultrafast pricing
 
 `gpt-6.1-terra` (released 2026-10-26, in the Codex catalog since CLI 0.165.0) is
