@@ -296,6 +296,9 @@ export interface ManagedAccount {
 		| "restore"
 		| "manual";
 	lastRateLimitReason?: RateLimitReason;
+	/** Process-local sequence used to order a fresh quota read against a concurrent 429. */
+	rateLimitRevision?: number;
+	rateLimitObservedAt?: number;
 	rateLimitResetTimes: RateLimitStateV3;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
@@ -1476,6 +1479,8 @@ export class AccountManager {
 		}
 
 		account.lastRateLimitReason = reason;
+		account.rateLimitRevision = (account.rateLimitRevision ?? 0) + 1;
+		account.rateLimitObservedAt = observedAtMs;
 		if (!selectionReadable) {
 			this.unsequencedRateLimits.set(account, {
 				limits: newLimits,

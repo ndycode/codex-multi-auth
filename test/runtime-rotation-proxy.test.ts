@@ -80,6 +80,62 @@ const openServers: RuntimeRotationProxyServer[] = [];
 const openManagers: AccountManager[] = [];
 const DEFAULT_CLIENT_API_KEY = "runtime-secret";
 
+it.each([0, 65_000])("adopts a CLI reset in the same pinned provider proxy after %s ms without consuming again", async delay => {
+ const fs = await import("node:fs/promises");
+ const os = await import("node:os");
+ const path = await import("node:path");
+ const previousDir = process.env.CODEX_MULTI_AUTH_DIR;
+ const dir = await fs.mkdtemp(path.join(os.tmpdir(), "manual-reset-proxy-"));
+ process.env.CODEX_MULTI_AUTH_DIR = dir;
+ let now = Date.now();
+ const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+ let allowed = false;
+ let consumes = 0;
+ const native = await import("../lib/runtime/native-rate-limits.js");
+ const rpc = vi.spyOn(native, "nativeRateLimitsRpc").mockImplementation(async (auth, method) => {
+  if (method === "account/rateLimitResetCredit/consume") { consumes++; allowed = true; return {outcome:"reset"}; }
+  return {accountId:auth.accountId, ordinaryUsageAllowed:allowed, rateLimitResetCredits:{availableCount:2 - consumes},
+   rateLimits:{planType:"pro", primary:{usedPercent:allowed ? 0 : 100}, secondary:{}}};
+ });
+ try {
+  const disk = createStorage(now);
+  disk.pinnedAccountIndex = 0;
+  const family = getModelFamily("chat-fixture");
+  disk.accounts[1]!.rateLimitResetTimes = {[family]:now + 600_000};
+  const storage = await import("../lib/storage.js");
+  vi.spyOn(storage, "loadAccounts").mockResolvedValue(disk);
+  const manager = new AccountManager(undefined, disk);
+  const {calls, fetchImpl} = createRecordingFetch(() => allowed ? textEventStream() : Response.json(
+   {error:{code:"usage_limit_reached", message:"synthetic quota exceeded"}}, {status:429}));
+  const proxy = await startProxy({accountManager:manager, fetchImpl, options:{forcedAccountIndex:0}});
+  const send = () => postResponses(proxy, {model:"chat-fixture", input:"synthetic request"});
+  const first = await send(); expect(first.status).toBe(503); await first.text();
+  expect(calls).toHaveLength(1);
+  const blocked = await send(); expect(blocked.status).toBe(503); await blocked.text();
+  const {createResetCreditService, resetTargetForStoredAccount} = await import("../lib/runtime/account-reset-credits.js");
+  const cli = createResetCreditService(new AccountManager(undefined, disk));
+  expect(await cli.redeem(resetTargetForStoredAccount(disk.accounts[0]!)!)).toBe("reset");
+  const readsBefore = rpc.mock.calls.length;
+  now += delay;
+  for (let i = 0; i < 2; i++) {
+   const recovered = await send(); expect(recovered.status).toBe(200); await recovered.text();
+  }
+  expect(consumes).toBe(1);
+  expect(rpc.mock.calls.length).toBe(readsBefore + 1);
+  expect(manager.getAccountByIndex(1)!.rateLimitResetTimes[family]).toBe(disk.accounts[1]!.rateLimitResetTimes![family]);
+  expect(calls.every(call => call.headers.get("chatgpt-account-id") === "acc_1")).toBe(true);
+  // The old receipt must never turn a later real quota rejection into a retry loop.
+  allowed = false;
+  const later = await send(); expect(later.status).toBe(503); await later.text();
+  const stillBlocked = await send(); expect(stillBlocked.status).toBe(503); await stillBlocked.text();
+  expect(consumes).toBe(1);
+ } finally {
+  rpc.mockRestore(); clock.mockRestore();
+  if (previousDir === undefined) delete process.env.CODEX_MULTI_AUTH_DIR; else process.env.CODEX_MULTI_AUTH_DIR = previousDir;
+  await removeWithRetry(dir, {recursive:true, force:true});
+ }
+});
+
 it.each(["quota headers on 400", "body-only quota 429", "body-only quota 429 with native capacity", "generic 429", "model capacity 429"])("recovers freshly exhausted primary capacity after a healthy native check: %s", async rejection => {
   const fs = await import("node:fs/promises");
   const os = await import("node:os");
