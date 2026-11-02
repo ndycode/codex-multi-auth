@@ -11,7 +11,8 @@ the quota block and retry after a five-second delay unless a newer rejection of
 the same quota key arrives during the check. That rejection requires a new receipt. Healthy traffic does not
 wait on unnecessary quota checks. Authentication and model-specific blocks remain
 protected. Completed receipts are retained per workspace with clock-independent
-generations. New completions upgrade reset-credit state to version 3; older
+generations. A pending redemption in another workspace does not block recovery.
+New completions upgrade reset-credit state to version 3; older
 binaries reject this state to avoid dropping receipts. Upgrade the CLI and router
 together. Existing version 1/2 state remains readable. See [the reset design](design/earned-reset-credits.md).
 

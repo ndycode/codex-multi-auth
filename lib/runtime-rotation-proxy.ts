@@ -1,3 +1,4 @@
+import { carryRuntimeQuotaState } from "./runtime/carry-runtime-quota-state.js";
 import { createAutomaticApiCheck, startAutomaticApiChecks } from "./runtime/automatic-api-checks.js";
 import { startAutomaticAccountChecks } from "./runtime/automatic-account-checks.js";
 import { createAutomaticSubscriptionCheck } from "./runtime/automatic-subscription-checks.js";
@@ -1573,18 +1574,7 @@ async function handleRequestInner(
                     const current = carryTarget(previous);
                     const live = current && accountManager.getAccountByIndex(current.index);
                     if (!live) continue;
-                    live.resetReceiptGenerations = previous.resetReceiptGenerations && { ...previous.resetReceiptGenerations };
-                    for (const [key, until] of Object.entries(previous.rateLimitResetTimes)) {
-                        if (typeof until === "number" && until > state.now()) {
-                            live.rateLimitResetTimes[key] = Math.max(live.rateLimitResetTimes[key] ?? 0, until);
-                            const observation = previous.rateLimitObservations?.[key];
-                            if (observation) (live.rateLimitObservations ??= {})[key] = { ...observation };
-                        }
-                    }
-                    if (previous.access === live.access && (previous.coolingDownUntil ?? 0) > (live.coolingDownUntil ?? 0)) {
-                        live.coolingDownUntil = previous.coolingDownUntil; live.cooldownReason = previous.cooldownReason;
-                        live.lastRateLimitReason = previous.lastRateLimitReason;
-                    }
+                    carryRuntimeQuotaState(previous, live, state.now(), (oldAccount, newAccount) => oldAccount.access === newAccount.access);
                 }
                 // Reorders change index-based pins/affinity, so they deliberately reload too.
                 const generation = disk.affinityGeneration ?? 0;
@@ -2105,13 +2095,12 @@ async function handleRequestInner(
 			}
 		};
   let resetCreditState=isResponsesRequest ? await loadResetCreditState().catch(()=>null):null;
-  const observeResetGenerations = (account: ManagedAccount, receipts: typeof resetCreditState) => {
-   for (const scope of workspaceModelScopes(account)) {
-    const receipt=receipts?.redemptions?.[scope.id] ?? (receipts?.lastRedemption?.key===scope.id ? receipts.lastRedemption : undefined);
-    if(receipt?.generation!==undefined){
-     const generations=account.resetReceiptGenerations??={};
-     generations[scope.id]=Math.max(generations[scope.id]??0,receipt.generation);
-    }
+  const observeResetGenerations = (account: ManagedAccount, receipts: typeof resetCreditState, scopeId: string | undefined) => {
+   if(scopeId === undefined)return;
+   const receipt=receipts?.redemptions?.[scopeId] ?? (receipts?.lastRedemption?.key===scopeId ? receipts.lastRedemption : undefined);
+   if(receipt?.generation!==undefined){
+    const generations=account.resetReceiptGenerations??={};
+    generations[scopeId]=Math.max(generations[scopeId]??0,receipt.generation);
    }
   };
   const quotaForScope = (account: ManagedAccount, scope: ReturnType<typeof workspaceModelScopes>[number]) => {
@@ -2469,6 +2458,7 @@ async function handleRequestInner(
       read:async()=> (await createResetCreditService(manager).refresh([{key:scope.id,accountId:scope.accountId}]))[scope.id],
       isCurrent:()=>state.activeAccountManager === manager && manager.getAccountByIndex(account.index) === account,
       observations:state.subscriptionQuotaObservations ??= new Map(),now:state.now,
+      usesAdmissionBucket:!state.nativeOpenai && !isPinned,
       hasCachedQuotaBlock:()=>state.nativeOpenai === true && subscriptionQuotaPreference(quotaForScope(account,scope),state.now()).exhausted,
       hasQuotaDeferral:()=>state.preemptiveQuotaScheduler.getDeferral(buildQuotaScheduleKey(account,context.family,context.model),state.now()).defer,
       clearQuotaScheduler:()=>state.preemptiveQuotaScheduler.clear(buildQuotaScheduleKey(account,context.family,context.model)),
@@ -2929,6 +2919,7 @@ async function handleRequestInner(
 				context.model,
 			);
 			const selectedScope = workspaceCandidates.get(selected.index)?.[0];
+            const selectedScopeId = selectedScope?.id ?? workspaceModelScopes(selected).find(scope=>scope.routable)?.id;
             const nativePermission = selectedScope && hasFreshOrdinaryUsagePermission(quotaForScope(selected,selectedScope),state.now());
 			const preemptiveDeferral = state.preemptiveQuotaScheduler.getDeferral(
 				quotaScheduleKey,
@@ -2946,13 +2937,14 @@ async function handleRequestInner(
 				);
 				exhaustionReason = "rate-limit";
 				capabilityRejectionIsLatest = false;
-				observeResetGenerations(selected, resetCreditState);
+				observeResetGenerations(selected, resetCreditState, selectedScopeId);
 				accountManager.markRateLimitedWithReason(
 					selected,
 					preemptiveDeferral.waitMs,
 					context.family,
 					"quota",
 					context.model,
+					selectedScopeId,
 				);
 				accountManager.recordRateLimit(selected, context.family, context.model);
 				accountManager.saveToDiskDebounced();
@@ -3129,6 +3121,7 @@ async function handleRequestInner(
    }
    const requestScope = pendingScopes?.[0];
    const accountId = requestScope?.accountId ?? resolveAccountId(refreshed.account, refreshed.accessToken);
+   const requestScopeId = requestScope?.id ?? workspaceModelScopes(refreshed.account).find(scope=>scope.accountId===accountId)?.id;
 			if (!accountId) {
 				refundConsumedPoolToken(refreshed.account);
 				accountManager.recordFailure(refreshed.account, context.family, context.model);
@@ -3520,7 +3513,7 @@ async function handleRequestInner(
 				// manager: a reset may have completed while this request was in flight.
 				const rejectionResetState = await loadResetCreditState().catch(() => resetCreditState);
 				const rateLimitState = responseStateTarget();
-				observeResetGenerations(rateLimitState.account, rejectionResetState);
+				observeResetGenerations(rateLimitState.account, rejectionResetState, requestScopeId);
 				rateLimitState.accountManager.recordRateLimit(rateLimitState.account, context.family, context.model);
 				rateLimitState.accountManager.markRateLimitedWithReason(
 					rateLimitState.account,
@@ -3528,6 +3521,7 @@ async function handleRequestInner(
 					context.family,
 					subscriptionQuotaExceeded ? "quota" : "unknown",
 					context.model,
+					requestScopeId,
 				);
 				if (
 					subscriptionQuotaExceeded &&
@@ -3880,13 +3874,14 @@ async function handleRequestInner(
 				if (nearExhaustionWaitMs > 0) {
 					const rejectionResetState = await loadResetCreditState().catch(() => resetCreditState);
 					const quotaState = responseStateTarget();
-					observeResetGenerations(quotaState.account, rejectionResetState);
+					observeResetGenerations(quotaState.account, rejectionResetState, requestScopeId);
 					quotaState.accountManager.markRateLimitedWithReason(
 						quotaState.account,
 						nearExhaustionWaitMs,
 						context.family,
 						"quota",
 						context.model,
+						requestScopeId,
 					);
 					state.sessionAffinityStore?.forgetSession(context.sessionKey);
 					quotaState.accountManager.saveToDiskDebounced();

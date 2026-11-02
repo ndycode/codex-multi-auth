@@ -1,3 +1,4 @@
+import { carryRuntimeQuotaState } from "./carry-runtime-quota-state.js";
 import { RealtimeCallRegistry } from "./realtime-calls.js";
 import type { ResetExhaustionEvidence } from "./reset-credits.js";
 import type { ConfirmedResetReconciler } from "./confirmed-reset-reconciler.js";
@@ -463,23 +464,8 @@ export async function reloadRuntimeCredentials(
 					live.email = previous.email;
 				}
 			}
-			live.resetReceiptGenerations = previous.resetReceiptGenerations && { ...previous.resetReceiptGenerations };
-			for (const [key, until] of Object.entries(previous.rateLimitResetTimes)) {
-				if (typeof until === "number" && until > state.now()) {
-					live.rateLimitResetTimes[key] = Math.max(live.rateLimitResetTimes[key] ?? 0, until);
-					const observation = previous.rateLimitObservations?.[key];
-					if (observation) (live.rateLimitObservations ??= {})[key] = { ...observation };
-				}
-			}
-			if ((previous.coolingDownUntil ?? 0) > (live.coolingDownUntil ?? 0)) {
-				const repairedAuth =
-					previous.cooldownReason === "auth-failure" && previous.access !== live.access;
-				if (!repairedAuth) {
-					live.coolingDownUntil = previous.coolingDownUntil;
-					live.cooldownReason = previous.cooldownReason;
-					live.lastRateLimitReason = previous.lastRateLimitReason;
-				}
-			}
+			carryRuntimeQuotaState(previous, live, state.now(), (oldAccount, newAccount) =>
+				!(oldAccount.cooldownReason === "auth-failure" && oldAccount.access !== newAccount.access));
 			const sameCredential =
 				live.access === previous.access && live.refreshToken === previous.refreshToken;
 			// Auth-invalidation and workspace-disable markers are written in memory

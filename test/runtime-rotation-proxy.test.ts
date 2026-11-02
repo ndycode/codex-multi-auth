@@ -156,7 +156,7 @@ it.each([{delay:0,outcome:"reset",pinned:true,secondReset:false},{delay:65_000,o
  }
 });
 
-it("keeps a quota rejection that arrives after an in-flight request's receipt was created", async () => {
+it.each([false,true])("scopes a late in-flight quota rejection when a sibling workspace reset is %s", async sibling => {
  const fs = await import("node:fs/promises"), os = await import("node:os"), path = await import("node:path");
  const previousDir = process.env.CODEX_MULTI_AUTH_DIR;
  const dir = await fs.mkdtemp(path.join(os.tmpdir(),"reset-inflight-rejection-")); process.env.CODEX_MULTI_AUTH_DIR=dir;
@@ -170,17 +170,23 @@ it("keeps a quota rejection that arrives after an in-flight request's receipt wa
  });
  try {
   const disk=createStorage(now,1);disk.pinnedAccountIndex=0;
+  disk.accounts[0]!.recordId="stable-workspace-account";
+  disk.accounts[0]!.workspaces=[{id:"acc_1",enabled:true},{id:"acc_sibling",enabled:true}];disk.accounts[0]!.currentWorkspaceIndex=0;
   const storage=await import("../lib/storage.js");vi.spyOn(storage,"loadAccounts").mockResolvedValue(disk);
   const manager=new AccountManager(undefined,disk);let posts=0;
   const proxy=await startProxy({accountManager:manager,fetchImpl:async()=>{
-   posts++;entered();await gate;return Response.json({error:{code:"usage_limit_reached"}},{status:429,headers:{"retry-after":"3600"}});
+   posts++;if(posts>1)return textEventStream();entered();await gate;return Response.json({error:{code:"usage_limit_reached"}},{status:429,headers:{"retry-after":"3600"}});
   },options:{forcedAccountIndex:0}});
   const request=()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic request"});
   const first=request();await started;
   const {createResetCreditService,resetTargetForStoredAccount}=await import("../lib/runtime/account-reset-credits.js");
+  if(sibling)disk.accounts[0]!.currentWorkspaceIndex=1;
   await createResetCreditService(new AccountManager(undefined,disk)).redeem(resetTargetForStoredAccount(disk.accounts[0]!)!);
   const readsBefore=rpc.mock.calls.length;release();expect((await first).status).toBe(503);
-  expect((await request()).status).toBe(503);expect(posts).toBe(1);expect(rpc.mock.calls.length).toBe(readsBefore);
+  if(sibling){
+   const live=manager.getAccountByIndex(0)!;live.currentWorkspaceIndex=1;live.accountId="acc_sibling";
+   expect((await request()).status).toBe(200);expect(posts).toBe(2);expect(rpc.mock.calls.length).toBe(readsBefore+1);
+  }else{expect((await request()).status).toBe(503);expect(posts).toBe(1);expect(rpc.mock.calls.length).toBe(readsBefore);}
  } finally {
   release();rpc.mockRestore();clock.mockRestore();
   if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
@@ -3974,12 +3980,14 @@ describe("runtime rotation proxy", () => {
 
 		expect(previousRateLimit).not.toHaveBeenCalled();
 		expect(replacementRateLimit).toHaveBeenCalledTimes(1);
+		const { modelScopeId } = await import("../lib/runtime/workspace-model-scopes.js");
 		expect(replacementMarkRateLimited).toHaveBeenCalledWith(
 			expect.objectContaining({ recordId: "row-a" }),
 			expect.any(Number),
 			expect.any(String),
 			"unknown",
 			"gpt-5-codex",
+			modelScopeId("oauth", "row-a", "acc_1"),
 		);
 	});
 
@@ -6163,13 +6171,15 @@ describe("native inventory read resilience",()=>{
   release();await Promise.all([first.then(r=>r.text()),second.then(r=>r.text())]);
   expect(read).toHaveBeenCalledTimes(2);expect(mode).toHaveBeenCalledTimes(1);
  });
- it("preserves unexpired 429 state across inventory changes",async()=>{
+ it.each(["future","absent","expired"])("preserves rejection history across inventory changes with %s deadlines",async(deadline)=>{
   const now=Date.now(),manager=new AccountManager(undefined,createStorage(now,1));
   manager.markRateLimitedWithReason(manager.getAccountByIndex(0)!,60000,"codex","quota");
   const observation=manager.getAccountByIndex(0)!.rateLimitObservations!.codex!;
+  if(deadline==="absent")delete manager.getAccountByIndex(0)!.rateLimitResetTimes.codex;
+  if(deadline==="expired")manager.getAccountByIndex(0)!.rateLimitResetTimes.codex=now-1;
   const mode=vi.spyOn(AccountManager.prototype,'setRoutingMutexMode');
   const {fetchImpl}=createRecordingFetch(()=>Response.json({models:[{slug:'model-test'}]}));
-  const proxy=await startProxy({accountManager:manager,fetchImpl,options:{nativeOpenai:true,readNativeAccountStorage:async()=>createStorage(now,2)}});mode.mockClear();
+  const proxy=await startProxy({accountManager:manager,fetchImpl,options:{nativeOpenai:true,readNativeAccountStorage:async()=>{const disk=createStorage(now,2);disk.accounts[0]!.rateLimitResetTimes={codex:now+60000};return disk;}}});mode.mockClear();
   const response=await getModels(proxy);await response.text();
   const replacement=mode.mock.contexts[0] as AccountManager;
   expect(replacement.getAccountByIndex(0)?.rateLimitResetTimes.codex).toBeGreaterThanOrEqual(now+60000);

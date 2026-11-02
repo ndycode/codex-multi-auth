@@ -234,3 +234,42 @@ it("rejects a stale generation even after retry backoff expires", async () => {
  now+=10000; Object.assign(f.args.state!.lastRedemption!,{generation:1});
  expect(await f.run()).toBe(false); expect(f.args.read).toHaveBeenCalledTimes(1);
 });
+
+
+it("reconciles a completed receipt while a different workspace redemption is pending", async () => {
+ const f=fixture();f.args.state!.pending={key:"other-workspace",idempotencyKey:"pending"};
+ expect(await f.run()).toBe(true);expect(f.args.read).toHaveBeenCalledTimes(1);
+});
+
+it("reconciles when the exact admission bucket is the only remaining blocker", async () => {
+ const f=fixture();f.account.rateLimitResetTimes={};
+ const tracker=getTokenTracker(),key=getRuntimeTrackerKey(f.account);
+ tracker.drain(key,"codex:chat-test",1000);
+ expect(await f.run()).toBe(true);
+ expect(tracker.tryConsume(key,"codex:chat-test")).toBe(true);
+});
+
+it.each(["before","during"])("ignores another workspace's rejection chronology: %s", async phase => {
+ const f=fixture();f.account.workspaces=[{id:"workspace",enabled:true},{id:"other-workspace",enabled:true}];f.account.currentWorkspaceIndex=0;
+ const other=workspaceModelScopes(f.account).find(s=>s.accountId==="other-workspace")!;
+ Object.assign(f.args.state!.lastRedemption!,{generation:1});
+ f.account.resetReceiptGenerations={[f.args.scope.id]:1,[other.id]:2};
+ const reject=()=>f.manager.markRateLimitedWithReason(f.account,300000,"codex","quota","chat-test",other.id);
+ if(phase==="before")reject();else f.args.read=async()=>{reject();return f.snapshot;};
+ expect(await f.run()).toBe(true);
+});
+
+
+it("skips bucket-only checks for callers that bypass local admission", async () => {
+ const f=fixture();f.account.rateLimitResetTimes={};f.args.usesAdmissionBucket=false;
+ getTokenTracker().drain(getRuntimeTrackerKey(f.account),"codex:chat-test",1000);
+ expect(await f.run()).toBe(false);expect(f.args.read).not.toHaveBeenCalled();
+});
+
+
+it("retains an unscoped concurrent rejection even when scoped history already exists", async () => {
+ const f=fixture();Object.assign(f.args.state!.lastRedemption!,{generation:2});
+ f.manager.markRateLimitedWithReason(f.account,300000,"codex","quota","chat-test",f.args.scope.id);
+ f.args.read=async()=>{f.manager.markRateLimitedWithReason(f.account,300000,"codex","quota","chat-test");return f.snapshot;};
+ expect(await f.run()).toBe(false);expect(f.args.clearQuotaScheduler).not.toHaveBeenCalled();
+});

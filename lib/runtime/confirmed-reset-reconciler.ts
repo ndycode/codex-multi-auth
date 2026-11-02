@@ -1,4 +1,4 @@
-import { getRuntimeTrackerKey, type AccountManager, type ManagedAccount } from "../accounts.js";
+import { getRateLimitObservationKey, getRuntimeTrackerKey, type AccountManager, type ManagedAccount } from "../accounts.js";
 import { getTokenTracker } from "../rotation.js";
 import { LUNA_RESERVE_MODEL } from "../constants.js";
 import type { ModelFamily } from "../prompts/codex.js";
@@ -32,27 +32,31 @@ export class ConfirmedResetReconciler {
 		clearQuotaScheduler: () => void;
 		hasQuotaDeferral?: () => boolean;
 		hasCachedQuotaBlock?: () => boolean;
+		usesAdmissionBucket?: boolean;
 	}): Promise<boolean> {
 		const { state, account, scope, model, family, manager } = options;
 		const receipt = state?.redemptions?.[scope.id] ?? (state?.lastRedemption?.key === scope.id ? state.lastRedemption : undefined);
-		if (model === LUNA_RESERVE_MODEL || state?.pending || !receipt ||
+		if (model === LUNA_RESERVE_MODEL || state?.pending?.key === scope.id || !receipt ||
 			(receipt.outcome !== "reset" && receipt.outcome !== "alreadyRedeemed") || receipt.key !== scope.id) return false;
 		const eligible = () => options.isCurrent() && account.enabled !== false && !account.authInvalidatedAt &&
 			!(account.cooldownReason === "auth-failure" && (account.coolingDownUntil ?? 0) > options.now()) &&
 			workspaceModelScopes(account).some(current => current.id === scope.id && current.routable);
 		const now = options.now();
 		// A wall-clock step backwards must not make an old observation win forever.
-		const rejection = account.rateLimitObservations?.[family];
-		const rejectedAt = rejection?.observedAt ?? 0;
+		const observationKey = getRateLimitObservationKey(family, scope.id);
+		const rejectionForScope = () => account.rateLimitObservations?.[observationKey] ?? account.rateLimitObservations?.[family];
+		const revision = () => `${account.rateLimitObservations?.[observationKey]?.revision ?? 0}:${account.rateLimitObservations?.[family]?.revision ?? 0}`;
 		// Modern receipts are ordered by durable generation, not wall time. A
 		// rejection after this generation was observed cannot replay that receipt.
-		const rejectedAfterReceipt = receipt.generation !== undefined
-			? (rejection?.receiptGenerations?.[scope.id] ?? 0) >= receipt.generation
-			: rejectedAt <= now && rejectedAt > receipt.at;
+		const rejectedAfterReceipt = [account.rateLimitObservations?.[observationKey], account.rateLimitObservations?.[family]].some(rejection =>
+			receipt.generation !== undefined
+				? (rejection?.receiptGenerations?.[scope.id] ?? 0) >= receipt.generation
+				: (rejection?.observedAt ?? 0) <= now && (rejection?.observedAt ?? 0) > receipt.at);
 		if (!eligible() || rejectedAfterReceipt || (receipt.generation !== undefined && receipt.generation < (account.resetReceiptGenerations?.[scope.id] ?? 0))) return false;
 		if (!((account.rateLimitResetTimes[family] ?? 0) > now ||
 			(account.cooldownReason === "rate-limit" && (account.coolingDownUntil ?? 0) > now) ||
-			options.hasQuotaDeferral?.() || options.hasCachedQuotaBlock?.())) return false;
+			options.hasQuotaDeferral?.() || options.hasCachedQuotaBlock?.() ||
+			(options.usesAdmissionBucket !== false && getTokenTracker().getTokens(getRuntimeTrackerKey(account), `${family}:${model}`) < 1))) return false;
 		// Receipt time may be ahead of this process after a clock rollback. Fresh
 		// permission still decides recovery; exact receipt identity prevents replay.
 		const key = JSON.stringify([scope.id, model]);
@@ -76,7 +80,7 @@ export class ConfirmedResetReconciler {
 		}
 		this.operations.set(key, operation);
 		operation.promise = (async () => {
-			const revision = account.rateLimitObservations?.[family]?.revision ?? 0;
+			const startedRevision = revision();
 			const startedAt = options.now();
 			const snapshot = await options.read().catch(() => undefined);
 			if (this.operations.get(key) !== operation) return false;
@@ -85,7 +89,7 @@ export class ConfirmedResetReconciler {
 				return false;
 			}
 			// Keep a newer rejection authoritative, including when the read failed.
-			if ((account.rateLimitObservations?.[family]?.revision ?? 0) !== revision) return false;
+			if (revision() !== startedRevision) return false;
 			if (!snapshot || snapshot.updatedAt < startedAt || snapshot.updatedAt > options.now() ||
 				snapshot.ordinaryUsageAllowed !== true) {
 				operation.retryAfter = options.now() + RETRY_DELAY_MS;
@@ -99,7 +103,7 @@ export class ConfirmedResetReconciler {
 			// Fresh native permission can supersede that block, but not token/concurrency
 			// limits, model-specific windows, auth failures, or separately metered Reserve.
 			const reason = account.rateLimitObservations
-				? account.rateLimitObservations[family]?.reason : account.lastRateLimitReason;
+				? rejectionForScope()?.reason : account.lastRateLimitReason;
 			if (reason !== undefined && reason !== "quota") return false;
 			delete account.rateLimitResetTimes[family];
 			if (account.cooldownReason === "rate-limit") manager.clearAccountCooldown(account);

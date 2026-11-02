@@ -321,7 +321,7 @@ describe("reloadRuntimeCredentials", () => {
 		expect(active?.rateLimitResetTimes["codex:workspace-a"]).toBeUndefined();
 	});
 
-	it("carries rejection chronology so an old receipt cannot clear a later 429 after reload", async () => {
+	it.each(["future","absent","expired"])("carries rejection chronology with %s deadlines so an old receipt cannot clear a later 429 after reload", async deadline => {
   const disk = storageWith(1); const resident = new AccountManager(undefined,disk);
   const account = resident.getAccountByIndex(0)!;
   const {workspaceModelScopes} = await import("../lib/runtime/workspace-model-scopes.js");
@@ -332,12 +332,15 @@ describe("reloadRuntimeCredentials", () => {
   const observedAt = account.rateLimitObservations!.codex!.observedAt;
   const state = createRotationProxyState({...stateInit(),now:()=>observedAt,activeAccountManager:resident});
   const replacementDisk = storageWith(2);
+  replacementDisk.accounts[0]!.rateLimitResetTimes={codex:observedAt+60000};
+  if(deadline==="absent")delete account.rateLimitResetTimes.codex;
+  if(deadline==="expired")account.rateLimitResetTimes.codex=observedAt-1;
   const replacement = new AccountManager(undefined,replacementDisk); loadFromDisk.mockResolvedValueOnce(replacement);
   await reloadRuntimeCredentials(state);
   const current = replacement.getAccountByIndex(0)!;
   expect(current.rateLimitObservations?.codex).toEqual(account.rateLimitObservations!.codex);
   expect(current.resetReceiptGenerations).toEqual(account.resetReceiptGenerations);
-  expect(current.rateLimitResetTimes.codex).toBe(account.rateLimitResetTimes.codex);
+  expect(current.rateLimitResetTimes.codex).toBe(observedAt+60000);
   const read = vi.fn();
   expect(await new ConfirmedResetReconciler().reconcile({
    state:{version:1,policy:"manual",snapshots:{},lastRedemption:{key:scope.id,at:observedAt-1,outcome:"reset",automatic:false}},

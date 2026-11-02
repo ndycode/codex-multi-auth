@@ -117,6 +117,11 @@ function getAccountCircuitKey(account: ManagedAccount): string {
 	return account.circuitKeyId;
 }
 
+/** Process-local rejection identity; ordinary quota keys remain unchanged on disk. */
+export function getRateLimitObservationKey(quotaKey: string, scopeId?: string): string {
+	return scopeId === undefined ? quotaKey : JSON.stringify([scopeId, quotaKey]);
+}
+
 export function getRuntimeTrackerKey(account: ManagedAccount): string | number {
 	if (account._runtimeTrackerKey !== undefined) {
 		return account._runtimeTrackerKey;
@@ -1426,6 +1431,7 @@ export class AccountManager {
 		family: ModelFamily,
 		reason: RateLimitReason,
 		model?: string | null,
+		scopeId?: string,
 	): void {
 		let selectionReadable = false;
 		try {
@@ -1465,7 +1471,10 @@ export class AccountManager {
 
 		const recordRejection = (key: string) => {
 			const observations = account.rateLimitObservations ??= {};
-			observations[key] = { revision: (observations[key]?.revision ?? 0) + 1, observedAt: observedAtMs, reason, receiptGenerations: { ...account.resetReceiptGenerations } };
+			const observationKey = getRateLimitObservationKey(key, scopeId);
+			const receiptGenerations = scopeId === undefined ? { ...account.resetReceiptGenerations }
+				: { [scopeId]: account.resetReceiptGenerations?.[scopeId] ?? 0 };
+			observations[observationKey] = { revision: (observations[observationKey]?.revision ?? 0) + 1, observedAt: observedAtMs, reason, receiptGenerations };
 		};
 		const baseKey = getQuotaKey(family);
 		const independentReserve = model === LUNA_RESERVE_MODEL;
