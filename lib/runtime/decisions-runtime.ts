@@ -158,157 +158,179 @@ export class DecisionsRuntime {
 				parsed.data.model,
 				catalogs.map((c) => ({
 					...c,
-					models: c.models.filter(
-						(m) =>
-							Array.isArray(m.supported_endpoints) &&
-							m.supported_endpoints.includes("/v1/decisions"),
-					),
+					models: c.models
+						.filter(
+							(m) =>
+								Array.isArray(m.supported_endpoints) &&
+								m.supported_endpoints.includes("/v1/decisions"),
+						)
+						.map((model) => ({
+							...model,
+							// Responses/tools probes say nothing about Decisions support.
+							// Keep credential availability and all other route metadata.
+							capability_probe_status: isRecord(model.capability_probe_status)
+								? { ...model.capability_probe_status, responses: undefined }
+								: model.capability_probe_status,
+						})),
 				})),
 			);
 			let region: string | undefined;
 			let last = failure(503, "decisions_endpoint_unavailable");
-			for (const candidate of resolved.candidates) {
-				const credential = eligible.find((r) => r.id === candidate.id);
-				if (!credential) continue;
-				const key = this.backoff.key(
-					credential,
-					`decisions:${resolved.upstreamModel}`,
-				);
-				if ((this.unsupported.get(key) ?? 0) > this.now()) continue;
-				if (region !== undefined && region !== (credential.region ?? "global"))
-					continue;
-				region ??= credential.region ?? "global";
-				for (let tries = 0; tries < 3; tries++) {
-					if (controller.signal.aborted) throw Error("deadline");
-					const admission = this.backoff.acquire(key);
-					if (admission.waitMs) {
-						if (admission.waitMs >= deadline - this.now())
-							return last.status === 429
-								? last
-								: failure(429, "rate_limit_exceeded");
-						await new Promise<void>((resolve, reject) => {
-							const cancel = () => {
-								clearTimeout(wait);
-								reject(Error("cancelled"));
-							};
-							const wait = setTimeout(() => {
-								controller.signal.removeEventListener("abort", cancel);
-								resolve();
-							}, admission.waitMs);
-							controller.signal.addEventListener("abort", cancel, {
-								once: true,
-							});
-						});
+			const attempts = new Map<string, number>();
+			for (;;) {
+				let minimumWait = Infinity;
+				for (const candidate of resolved.candidates) {
+					const credential = eligible.find((r) => r.id === candidate.id);
+					if (!credential) continue;
+					const key = this.backoff.key(
+						credential,
+						`decisions:${resolved.upstreamModel}`,
+					);
+					if ((this.unsupported.get(key) ?? 0) > this.now()) continue;
+					if (
+						region !== undefined &&
+						region !== (credential.region ?? "global")
+					)
 						continue;
-					}
-					let success = false;
-					try {
-						onAttempt?.(routes.indexOf(credential));
-						const response = await abortable(
-							this.fetchImpl(`${apiBaseUrl(credential)}/decisions`, {
-								method: "POST",
-								headers: {
-									authorization: `Bearer ${credential.apiKey}`,
-									"content-type": "application/json",
-								},
-								body: JSON.stringify({
-									...(body as DecisionsRequest),
-									model: resolved.upstreamModel,
-								}),
-								redirect: "error",
-								signal: controller.signal,
-							}),
-							controller.signal,
-						);
-						const text = await readBody(response, controller.signal);
-						let data: unknown;
-						try {
-							data = JSON.parse(text);
-						} catch {
-							return failure(502, "invalid_decisions_response");
-						}
-						if (response.ok) {
-							if (
-								!isRecord(data) ||
-								!Array.isArray(data.answers) ||
-								!isRecord(data.usage)
-							)
-								return failure(502, "invalid_decisions_response");
-							success = true;
-							const result = new Response(text, {
-								status: response.status,
-								headers: {
-									"content-type": "application/json",
-									...(response.headers.get("x-request-id")
-										? {
-												"x-request-id":
-													response.headers.get("x-request-id") ?? "",
-											}
-										: {}),
-								},
-							});
-							const counts = extractUsageTokenCounts(data.usage);
-							if (counts) this.usage.set(result, counts);
-							return result;
-						}
-						const source =
-							isRecord(data) && isRecord(data.error) ? data.error : {};
-						const error: Record<string, string> = {
-							code: "decisions_request_rejected",
-							message: "Upstream rejected the Decisions request.",
-						};
-						for (const field of ["code", "type", "param"]) {
-							const value = source[field];
-							if (
-								typeof value === "string" &&
-								/^[A-Za-z0-9_.]{1,80}$/.test(value)
-							)
-								error[field] = value;
-						}
-						const retryAfter = response.headers.get("retry-after");
-						last = Response.json(
-							{ error },
-							{
-								status: response.status,
-								headers: retryAfter ? { "retry-after": retryAfter } : {},
-							},
-						);
-						if (
-							response.status === 404 ||
-							response.status === 405 ||
-							response.status === 501
-						) {
-							if (this.unsupported.size >= 512) {
-								const oldest = this.unsupported.keys().next().value;
-								if (oldest) this.unsupported.delete(oldest);
-							}
-							this.unsupported.set(key, this.now() + 300_000);
-							break;
-						}
-						if (
-							response.status === 429 &&
-							(source.code === "rate_limit_exceeded" ||
-								source.type === "rate_limit_exceeded") &&
-							![
-								"insufficient_quota",
-								"billing_hard_limit_reached",
-								"billing_not_active",
-								"usage_limit_reached",
-							].some((code) => source.code === code || source.type === code)
-						) {
-							this.backoff.penalize(
-								key,
-								apiRetryDelayMs(data, this.now(), response.headers),
-							);
+					region ??= credential.region ?? "global";
+					if ((attempts.get(key) ?? 0) >= 3) continue;
+					{
+						if (controller.signal.aborted) throw Error("deadline");
+						const admission = this.backoff.acquire(key);
+						if (admission.waitMs) {
+							minimumWait = Math.min(minimumWait, admission.waitMs);
 							continue;
 						}
-						return last; // No replay for ambiguous 5xx or provider validation errors.
-					} finally {
-						admission.release(success);
+						attempts.set(key, (attempts.get(key) ?? 0) + 1);
+						let success = false;
+						try {
+							onAttempt?.(routes.indexOf(credential));
+							const response = await abortable(
+								this.fetchImpl(`${apiBaseUrl(credential)}/decisions`, {
+									method: "POST",
+									headers: {
+										authorization: `Bearer ${credential.apiKey}`,
+										"content-type": "application/json",
+									},
+									body: JSON.stringify({
+										...(body as DecisionsRequest),
+										model: resolved.upstreamModel,
+									}),
+									redirect: "error",
+									signal: controller.signal,
+								}),
+								controller.signal,
+							);
+							const text = await readBody(response, controller.signal);
+							let data: unknown;
+							try {
+								data = JSON.parse(text);
+							} catch {
+								// Error status is authoritative even for empty or HTML bodies.
+								data = undefined;
+							}
+							if (response.ok) {
+								if (
+									!isRecord(data) ||
+									!Array.isArray(data.answers) ||
+									!isRecord(data.usage)
+								)
+									return failure(502, "invalid_decisions_response");
+								success = true;
+								const result = new Response(text, {
+									status: response.status,
+									headers: {
+										"content-type": "application/json",
+										...(response.headers.get("x-request-id")
+											? {
+													"x-request-id":
+														response.headers.get("x-request-id") ?? "",
+												}
+											: {}),
+									},
+								});
+								const counts = extractUsageTokenCounts(data.usage);
+								if (counts) this.usage.set(result, counts);
+								return result;
+							}
+							const source =
+								isRecord(data) && isRecord(data.error) ? data.error : {};
+							const error: Record<string, string> = {
+								code: "decisions_request_rejected",
+								message: "Upstream rejected the Decisions request.",
+							};
+							for (const field of ["code", "type", "param"]) {
+								const value = source[field];
+								if (
+									typeof value === "string" &&
+									/^[A-Za-z0-9_.]{1,80}$/.test(value)
+								)
+									error[field] = value;
+							}
+							const retryAfter = response.headers.get("retry-after");
+							last = Response.json(
+								{ error },
+								{
+									status: response.status,
+									headers: retryAfter ? { "retry-after": retryAfter } : {},
+								},
+							);
+							if (
+								response.status === 404 ||
+								response.status === 405 ||
+								response.status === 501
+							) {
+								if (this.unsupported.size >= 512) {
+									const oldest = this.unsupported.keys().next().value;
+									if (oldest) this.unsupported.delete(oldest);
+								}
+								this.unsupported.set(key, this.now() + 300_000);
+								continue;
+							}
+							if (
+								response.status === 429 &&
+								(source.code === "rate_limit_exceeded" ||
+									source.type === "rate_limit_exceeded") &&
+								![
+									"insufficient_quota",
+									"billing_hard_limit_reached",
+									"billing_not_active",
+									"usage_limit_reached",
+								].some((code) => source.code === code || source.type === code)
+							) {
+								const waitMs = this.backoff.penalize(
+									key,
+									apiRetryDelayMs(data, this.now(), response.headers),
+								);
+								if ((attempts.get(key) ?? 0) < 3)
+									minimumWait = Math.min(minimumWait, waitMs);
+								continue;
+							}
+							return last; // No replay for ambiguous 5xx or provider validation errors.
+						} finally {
+							admission.release(success);
+						}
 					}
 				}
+				if (!Number.isFinite(minimumWait)) return last;
+				if (minimumWait >= deadline - this.now())
+					return last.status === 429
+						? last
+						: failure(429, "rate_limit_exceeded");
+				// Scan every same-region candidate before waiting; waits consume time,
+				// never the bounded number of actual inference sends.
+				await new Promise<void>((resolve, reject) => {
+					const cancel = () => {
+						clearTimeout(wait);
+						reject(Error("cancelled"));
+					};
+					const wait = setTimeout(() => {
+						controller.signal.removeEventListener("abort", cancel);
+						resolve();
+					}, minimumWait);
+					controller.signal.addEventListener("abort", cancel, { once: true });
+				});
 			}
-			return last;
 		} catch {
 			if (signal?.aborted) throw new ClientCancellationError();
 			return failure(

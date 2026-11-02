@@ -330,3 +330,164 @@ it("does not retry an unclassified 429 rejection", async () => {
 	expect((await pending).status).toBe(429);
 	expect(fetcher).toHaveBeenCalledTimes(1);
 });
+
+describe("review regressions", () => {
+	it.each([
+		[404, "gateway error"],
+		[405, ""],
+		[501, "unsupported"],
+	] as const)(
+		"fails over non-JSON unsupported status %s",
+		async (status, text) => {
+			const fetcher = vi
+				.fn()
+				.mockResolvedValueOnce(new Response(text, { status }))
+				.mockImplementation(async () => Response.json(answer));
+			const runtime = new DecisionsRuntime(fetcher, catalogs);
+			expect(
+				(await runtime.request(body, [route(), route("backup")])).status,
+			).toBe(200);
+			await runtime.request(body, [route(), route("backup")]);
+			expect(
+				fetcher.mock.calls.map((c) =>
+					new Headers(c[1].headers).get("authorization"),
+				),
+			).toEqual(["Bearer key-one", "Bearer key-backup", "Bearer key-backup"]);
+		},
+	);
+	it("preserves plain-text 429 status and Retry-After without replay", async () => {
+		const fetcher = vi.fn(
+			async () =>
+				new Response("private provider text", {
+					status: 429,
+					headers: { "retry-after": "120" },
+				}),
+		);
+		const response = await new DecisionsRuntime(fetcher, catalogs).request(
+			body,
+			[route(), route("backup")],
+		);
+		expect(response.status).toBe(429);
+		expect(response.headers.get("retry-after")).toBe("120");
+		expect(await response.text()).not.toContain("private provider text");
+		expect(fetcher).toHaveBeenCalledTimes(1);
+	});
+	it("ignores Responses probes but keeps credential availability and visibility", async () => {
+		const fetcher = vi.fn(async () => Response.json(answer));
+		const discovery = async (routes: ApiRouteCredential[]) =>
+			(await catalogs(routes)).map((c) => ({
+				...c,
+				models: c.models.map((m) => ({
+					...m,
+					capability_probe_status: {
+						responses: "unsupported",
+						credential: c.id === "unavailable" ? "unavailable" : "available",
+					},
+				})),
+			}));
+		const runtime = new DecisionsRuntime(fetcher, discovery);
+		expect(
+			(
+				await runtime.request(body, [
+					route("unavailable"),
+					{ ...route("hidden"), visibleModels: [] },
+					route(),
+				])
+			).status,
+		).toBe(200);
+		expect((await runtime.request(body, [route("unavailable")])).status).toBe(
+			503,
+		);
+		expect(
+			(await runtime.request(body, [{ ...route(), visibleModels: [] }])).status,
+		).toBe(503);
+		expect(fetcher).toHaveBeenCalledTimes(1);
+		expect(
+			new Headers(
+				(fetcher.mock.calls[0] as unknown as [string, RequestInit])[1].headers,
+			).get("authorization"),
+		).toBe("Bearer key-one");
+	});
+	it("tries ready backups before long primary cooldowns, including cached cooldown", async () => {
+		const fetcher = vi
+			.fn()
+			.mockResolvedValueOnce(
+				Response.json(
+					{ error: { code: "rate_limit_exceeded" } },
+					{ status: 429, headers: { "retry-after": "120" } },
+				),
+			)
+			.mockImplementation(async () => Response.json(answer));
+		const runtime = new DecisionsRuntime(fetcher, catalogs);
+		const routes = [
+			route(),
+			route("foreign", "zdr", "global"),
+			route("api", "api"),
+			route("backup"),
+		];
+		expect((await runtime.request(body, routes)).status).toBe(200);
+		expect((await runtime.request(body, routes)).status).toBe(200);
+		expect(
+			fetcher.mock.calls.map((c) =>
+				new Headers(c[1].headers).get("authorization"),
+			),
+		).toEqual(["Bearer key-one", "Bearer key-backup", "Bearer key-backup"]);
+	});
+	it("does not spend send attempts waiting for another caller's recovery body", async () => {
+		vi.useFakeTimers();
+		let release!: () => void;
+		const fetcher = vi
+			.fn()
+			.mockResolvedValueOnce(
+				Response.json(
+					{ error: { code: "rate_limit_exceeded" } },
+					{ status: 429, headers: { "retry-after": "120" } },
+				),
+			)
+			.mockImplementationOnce(
+				async () =>
+					new Response(
+						new ReadableStream({
+							start(controller) {
+								release = () => {
+									controller.enqueue(
+										new TextEncoder().encode(JSON.stringify(answer)),
+									);
+									controller.close();
+								};
+							},
+						}),
+						{ headers: { "content-type": "application/json" } },
+					),
+			)
+			.mockImplementation(async () => Response.json(answer));
+		const runtime = new DecisionsRuntime(fetcher, catalogs);
+		expect((await runtime.request(body, [route()])).status).toBe(429);
+		await vi.advanceTimersByTimeAsync(121000);
+		const recovery = runtime.request(body, [route()]);
+		await vi.advanceTimersByTimeAsync(1);
+		let completed = false;
+		const waiter = runtime.request(body, [route()]).then((r) => {
+			completed = true;
+			return r;
+		});
+		await vi.advanceTimersByTimeAsync(4100);
+		expect(completed).toBe(false);
+		expect(fetcher).toHaveBeenCalledTimes(2);
+		release();
+		expect((await recovery).status).toBe(200);
+		await vi.advanceTimersByTimeAsync(1000);
+		expect((await waiter).status).toBe(200);
+		expect(fetcher).toHaveBeenCalledTimes(3);
+	});
+});
+
+it("rejects malformed successful Decisions bodies without replay", async () => {
+	const fetcher = vi.fn(async () => new Response("not JSON", { status: 200 }));
+	const response = await new DecisionsRuntime(fetcher, catalogs).request(body, [
+		route(),
+		route("backup"),
+	]);
+	expect(response.status).toBe(502);
+	expect(fetcher).toHaveBeenCalledTimes(1);
+});

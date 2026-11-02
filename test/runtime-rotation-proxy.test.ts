@@ -7779,9 +7779,10 @@ describe("Decisions endpoint routing", () => {
   const result={model:"decision-test",answers:[{type:"choice",name:"typed",choice:true,probabilities:[{value:true,probability:1}],confidence:1},{type:"refusal",name:"x".repeat(1_100_000)}],usage:{input_tokens:15,output_tokens:0,total_tokens:15}};
   const {calls,fetchImpl}=createRecordingFetch(call=>call.url.endsWith("/models")?Response.json({data:[{id:"decision-test"}]}):Response.json(result));
   const proxy=await startProxy({accountManager:new AccountManager(undefined,createStorage(Date.now(),1)),fetchImpl,options:{readApiRoutes:async()=>routes}});
+  const previousRowIds = new Set((await readUsageLedgerRows()).map(row => row.id));
   const response=await postResponses(proxy,{model:"zdr/decision-test",input:"fixture",questions:[{type:"choice",instructions:"pick",choices:[{value:true},{value:"true"}]},{type:"predicate",instructions:"check"}]},path);
   expect(response.status).toBe(200);expect(await response.json()).toEqual(result);
-  await vi.waitFor(async()=>{const rows=await readUsageLedgerRows();expect(rows.some(r=>r.operation==="decisions"&&r.tokens.inputTokens===15&&r.costUsd===null)).toBe(true);});
+  await vi.waitFor(async()=>{const rows=await readUsageLedgerRows();expect(rows.some(r=>!previousRowIds.has(r.id)&&r.operation==="decisions"&&r.tokens.inputTokens===15&&r.costUsd===null)).toBe(true);});
   expect(calls.every(c=>c.url.startsWith("https://us.api.openai.com/v1/"))).toBe(true);
   const post=calls.find(c=>c.url.endsWith("/decisions"))!;expect(JSON.parse(post.bodyText)).not.toHaveProperty("store");expect(post.headers.get("authorization")).toBe("Bearer fixture-key");
  });
