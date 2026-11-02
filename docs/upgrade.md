@@ -16,6 +16,8 @@ New completions upgrade reset-credit state to version 3; older
 binaries reject this state to avoid dropping receipts. Upgrade the CLI and router
 together. Existing version 1/2 state remains readable. See [the reset design](design/earned-reset-credits.md).
 
+Workspace quota deadlines in the manual-reset follow-up use attributed keys in the existing rate-limit map. Upgrade the CLI and router together: earlier binaries do not interpret these keys. Existing unscoped deadlines remain readable; no credential or pin migration is required.
+
 ## GPT-6.1 Terra and Ultrafast pricing
 
 `gpt-6.1-terra` (released 2026-10-26, in the Codex catalog since CLI 0.165.0) is

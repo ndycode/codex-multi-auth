@@ -97,6 +97,8 @@ import {
 } from "./auth/token-utils.js";
 import {
 	boundRateLimitCache,
+	quotaResetTime,
+	workspaceQuotaKey,
 	clampNonNegativeInt,
 	getQuotaKey,
 	clearExpiredRateLimits,
@@ -302,7 +304,7 @@ export interface ManagedAccount {
 		| "manual";
 	lastRateLimitReason?: RateLimitReason;
 	/** Process-local sequence used to order a fresh quota read against a concurrent 429. */
-	rateLimitObservations?: Record<string, { revision: number; observedAt: number; reason: RateLimitReason; receiptGenerations?: Record<string, number> }>;
+	rateLimitObservations?: Record<string, { revision: number; observedAt: number; reason: RateLimitReason; receiptGenerations?: Record<string, number>; receiptReadFailed?: boolean }>;
 	/** Highest durable reset generation observed for each workspace in this process. */
 	resetReceiptGenerations?: Record<string, number>;
 	rateLimitResetTimes: RateLimitStateV3;
@@ -1432,6 +1434,7 @@ export class AccountManager {
 		reason: RateLimitReason,
 		model?: string | null,
 		scopeId?: string,
+		observation?: { workspaceId: string; receiptReadFailed?: boolean },
 	): void {
 		let selectionReadable = false;
 		try {
@@ -1474,26 +1477,27 @@ export class AccountManager {
 			const observationKey = getRateLimitObservationKey(key, scopeId);
 			const receiptGenerations = scopeId === undefined ? { ...account.resetReceiptGenerations }
 				: { [scopeId]: account.resetReceiptGenerations?.[scopeId] ?? 0 };
-			observations[observationKey] = { revision: (observations[observationKey]?.revision ?? 0) + 1, observedAt: observedAtMs, reason, receiptGenerations };
+			observations[observationKey] = { revision: (observations[observationKey]?.revision ?? 0) + 1, observedAt: observedAtMs, reason, receiptGenerations, receiptReadFailed: observation?.receiptReadFailed };
 		};
-		const baseKey = getQuotaKey(family);
+		const deadlineKey = (key: string) => observation ? workspaceQuotaKey(key, observation.workspaceId) : key;
+		const baseKey = deadlineKey(getQuotaKey(family));
 		const independentReserve = model === LUNA_RESERVE_MODEL;
 		if (!independentReserve && (!model || reason === "quota" || reason === "unknown")) {
 			const currentResetAt = account.rateLimitResetTimes[baseKey] ?? 0;
 			account.rateLimitResetTimes[baseKey] = Math.max(currentResetAt, resetAt);
 			newLimits[baseKey] = Math.max(newLimits[baseKey] ?? 0, resetAt);
-			recordRejection(baseKey);
+			recordRejection(getQuotaKey(family));
 		}
 
 		if (
 			model &&
 			(independentReserve || reason === "tokens" || reason === "concurrent" || reason === "unknown")
 		) {
-			const modelKey = getQuotaKey(family, model);
+			const modelKey = deadlineKey(getQuotaKey(family, model));
 			const currentResetAt = account.rateLimitResetTimes[modelKey] ?? 0;
 			account.rateLimitResetTimes[modelKey] = Math.max(currentResetAt, resetAt);
 			newLimits[modelKey] = Math.max(newLimits[modelKey] ?? 0, resetAt);
-			recordRejection(modelKey);
+			recordRejection(getQuotaKey(family, model));
 		}
 
 		account.lastRateLimitReason = reason;
@@ -2068,13 +2072,13 @@ export class AccountManager {
 
 		for (const account of enabledAccounts) {
 			const perAccountWaitTimes: number[] = [];
-			const baseResetAt = account.rateLimitResetTimes[baseKey];
+			const baseResetAt = quotaResetTime(account, baseKey);
 			if (model !== LUNA_RESERVE_MODEL && typeof baseResetAt === "number") {
 				perAccountWaitTimes.push(Math.max(0, baseResetAt - now));
 			}
 
 			if (modelKey) {
-				const modelResetAt = account.rateLimitResetTimes[modelKey];
+				const modelResetAt = quotaResetTime(account, modelKey);
 				if (typeof modelResetAt === "number") {
 					perAccountWaitTimes.push(Math.max(0, modelResetAt - now));
 				}

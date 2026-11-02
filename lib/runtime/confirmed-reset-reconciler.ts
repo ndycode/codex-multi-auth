@@ -1,5 +1,6 @@
 import { getRateLimitObservationKey, getRuntimeTrackerKey, type AccountManager, type ManagedAccount } from "../accounts.js";
 import { getTokenTracker } from "../rotation.js";
+import { quotaResetTime, workspaceQuotaKey } from "../accounts/rate-limits.js";
 import { LUNA_RESERVE_MODEL } from "../constants.js";
 import type { ModelFamily } from "../prompts/codex.js";
 import type { QuotaCacheEntry } from "../quota-cache.js";
@@ -46,6 +47,16 @@ export class ConfirmedResetReconciler {
 		const observationKey = getRateLimitObservationKey(family, scope.id);
 		const rejectionForScope = () => account.rateLimitObservations?.[observationKey] ?? account.rateLimitObservations?.[family];
 		const revision = () => `${account.rateLimitObservations?.[observationKey]?.revision ?? 0}:${account.rateLimitObservations?.[family]?.revision ?? 0}`;
+		// A failed receipt read leaves ordering unknown. The first successful
+		// state read establishes a conservative baseline, never permission to replay it.
+		for (const rejection of [account.rateLimitObservations?.[observationKey], account.rateLimitObservations?.[family]]) {
+			if (!rejection?.receiptReadFailed) continue;
+			if (receipt.generation !== undefined) {
+				(rejection.receiptGenerations ??= {})[scope.id] = Math.max(rejection.receiptGenerations?.[scope.id] ?? 0, receipt.generation);
+				rejection.receiptReadFailed = false;
+			}
+			return false;
+		}
 		// Modern receipts are ordered by durable generation, not wall time. A
 		// rejection after this generation was observed cannot replay that receipt.
 		const rejectedAfterReceipt = [account.rateLimitObservations?.[observationKey], account.rateLimitObservations?.[family]].some(rejection =>
@@ -53,7 +64,7 @@ export class ConfirmedResetReconciler {
 				? (rejection?.receiptGenerations?.[scope.id] ?? 0) >= receipt.generation
 				: (rejection?.observedAt ?? 0) <= now && (rejection?.observedAt ?? 0) > receipt.at);
 		if (!eligible() || rejectedAfterReceipt || (receipt.generation !== undefined && receipt.generation < (account.resetReceiptGenerations?.[scope.id] ?? 0))) return false;
-		if (!((account.rateLimitResetTimes[family] ?? 0) > now ||
+		if (!(quotaResetTime(account, family, scope.accountId) > now ||
 			(account.cooldownReason === "rate-limit" && (account.coolingDownUntil ?? 0) > now) ||
 			options.hasQuotaDeferral?.() || options.hasCachedQuotaBlock?.() ||
 			(options.usesAdmissionBucket !== false && getTokenTracker().getTokens(getRuntimeTrackerKey(account), `${family}:${model}`) < 1))) return false;
@@ -106,6 +117,7 @@ export class ConfirmedResetReconciler {
 				? rejectionForScope()?.reason : account.lastRateLimitReason;
 			if (reason !== undefined && reason !== "quota") return false;
 			delete account.rateLimitResetTimes[family];
+			delete account.rateLimitResetTimes[workspaceQuotaKey(family, scope.accountId)];
 			if (account.cooldownReason === "rate-limit") manager.clearAccountCooldown(account);
 			options.clearQuotaScheduler();
 			getTokenTracker().reset(getRuntimeTrackerKey(account), `${family}:${model}`);

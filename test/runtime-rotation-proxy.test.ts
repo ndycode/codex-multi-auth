@@ -1,3 +1,4 @@
+import { quotaResetTime, workspaceQuotaKey } from "../lib/accounts/rate-limits.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
 import * as modelInventory from "../lib/runtime/model-discovery-status.js";
 import { once } from "node:events";
@@ -172,6 +173,7 @@ it.each([false,true])("scopes a late in-flight quota rejection when a sibling wo
   const disk=createStorage(now,1);disk.pinnedAccountIndex=0;
   disk.accounts[0]!.recordId="stable-workspace-account";
   disk.accounts[0]!.workspaces=[{id:"acc_1",enabled:true},{id:"acc_sibling",enabled:true}];disk.accounts[0]!.currentWorkspaceIndex=0;
+  if(sibling)disk.accounts[0]!.rateLimitResetTimes={[workspaceQuotaKey(getModelFamily("chat-fixture"),"acc_sibling")]:now+600_000};
   const storage=await import("../lib/storage.js");vi.spyOn(storage,"loadAccounts").mockResolvedValue(disk);
   const manager=new AccountManager(undefined,disk);let posts=0;
   const proxy=await startProxy({accountManager:manager,fetchImpl:async()=>{
@@ -186,9 +188,64 @@ it.each([false,true])("scopes a late in-flight quota rejection when a sibling wo
   if(sibling){
    const live=manager.getAccountByIndex(0)!;live.currentWorkspaceIndex=1;live.accountId="acc_sibling";
    expect((await request()).status).toBe(200);expect(posts).toBe(2);expect(rpc.mock.calls.length).toBe(readsBefore+1);
+   live.currentWorkspaceIndex=0;live.accountId="acc_1";
+   expect((await request()).status).toBe(503);expect(posts).toBe(2);
+   const saved=(manager as unknown as {buildStorageSnapshot():AccountStorageV3}).buildStorageSnapshot();
+   const cold=new AccountManager(undefined,JSON.parse(JSON.stringify(saved)));
+   const coldProxy=await startProxy({accountManager:cold,fetchImpl:async()=>{throw Error("blocked workspace must not reach upstream");},options:{forcedAccountIndex:0}});
+   expect((await postResponsesWithHttp(coldProxy,{model:"chat-fixture",input:"cold"})).status).toBe(503);
   }else{expect((await request()).status).toBe(503);expect(posts).toBe(1);expect(rpc.mock.calls.length).toBe(readsBefore);}
  } finally {
   release();rpc.mockRestore();clock.mockRestore();
+  if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
+  await removeWithRetry(dir,{recursive:true,force:true});
+ }
+});
+
+it.each([["reload",false],["receipt-read-failure",false],["reload",true],["receipt-read-failure",true]] as const)("protects a reset from a late rejection after %s (quota headers: %s)", async (mode,headers) => {
+ const fs=await import("node:fs/promises"), os=await import("node:os"), path=await import("node:path");
+ const previousDir=process.env.CODEX_MULTI_AUTH_DIR;
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),"reset-late-ordering-"));process.env.CODEX_MULTI_AUTH_DIR=dir;
+ const now=Date.now();vi.spyOn(Date,"now").mockReturnValue(now);
+ const resets=await import("../lib/runtime/account-reset-credits.js");
+ const native=await import("../lib/runtime/native-rate-limits.js");let consumed=false;
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async(auth,method)=>{
+  if(method==="account/rateLimitResetCredit/consume"){consumed=true;return {outcome:"reset"};}
+  return {accountId:auth.accountId,ordinaryUsageAllowed:consumed,rateLimitResetCredits:{availableCount:1},rateLimits:{planType:"pro",primary:{usedPercent:consumed?0:100},secondary:{}}};
+ });
+ let release!:()=>void,entered!:()=>void;
+ const gate=new Promise<void>(resolve=>{release=resolve;}),started=new Promise<void>(resolve=>{entered=resolve;});
+ try {
+  const disk=createStorage(now,1);disk.pinnedAccountIndex=0;
+  const storage=await import("../lib/storage.js");vi.spyOn(storage,"loadAccounts").mockResolvedValue(disk);
+  const manager=new AccountManager(undefined,disk);vi.spyOn(manager,"saveToDiskDebounced").mockImplementation(()=>{});
+  const originalAccount=manager.getAccountByIndex(0)!;
+  // Legacy managers may be matched by token/workspace after record identity changes.
+  originalAccount.recordId=undefined;
+  const proxy=await startProxy({accountManager:manager,fetchImpl:async()=>{entered();await gate;return headers ? textEventStream(undefined,{"x-codex-primary-used-percent":"100","x-codex-primary-reset-after-seconds":"3600"}) : Response.json({error:{code:"usage_limit_reached"}},{status:429,headers:{"retry-after":"3600"}});},options:{forcedAccountIndex:0}});
+  const pending=postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic request"});await started;
+  if(mode==="reload")disk.accounts[0]!.recordId="persisted-new-record";
+  const replacement=mode==="reload"?new AccountManager(undefined,disk):manager;
+  if(replacement!==manager){openManagers.push(replacement);vi.spyOn(replacement,"saveToDiskDebounced").mockImplementation(()=>{});tokenRefreshRuntime.redirectRuntimeRefreshCommits(manager,replacement);}
+  const target=resets.resetTargetForStoredAccount(disk.accounts[0]!)!;
+  await resets.createResetCreditService(new AccountManager(undefined,disk)).redeem(target);
+  const load=vi.spyOn(resets,"loadResetCreditState");
+  if(mode==="receipt-read-failure")load.mockRejectedValueOnce(Error("synthetic EIO"));
+  release();expect((await pending).status).toBe(headers?200:503);
+  const {ConfirmedResetReconciler}=await import("../lib/runtime/confirmed-reset-reconciler.js");
+  const {workspaceModelScopes}=await import("../lib/runtime/workspace-model-scopes.js");
+  const account=replacement.getAccountByIndex(0)!,scope=workspaceModelScopes(account).find(s=>s.accountId==="acc_1")!;
+  const state=await resets.loadResetCreditState();
+  const read=vi.fn(async()=>({updatedAt:now,availableCount:1,credits:null,ordinaryUsageAllowed:true,planType:"pro",primary:{},secondary:{}}));
+  const reconciler=new ConfirmedResetReconciler();
+  const args={state,account,scope,model:"chat-fixture",family:getModelFamily("chat-fixture"),manager:replacement,read,isCurrent:()=>true,now:()=>now,observations:new Map(),clearQuotaScheduler:()=>{}};
+  expect(await reconciler.reconcile(args)).toBe(false);expect(read).not.toHaveBeenCalled();
+  expect(await reconciler.reconcile(args)).toBe(false);
+  // Once a successfully observed baseline exists, a strictly newer reset can recover.
+  state.lastRedemption={...state.lastRedemption!,generation:state.redemptionGeneration!+1};state.redemptions={[scope.id]:state.lastRedemption};
+  expect(await reconciler.reconcile(args)).toBe(true);expect(read).toHaveBeenCalledTimes(1);
+ } finally {
+  release();rpc.mockRestore();vi.restoreAllMocks();
   if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
   await removeWithRetry(dir,{recursive:true,force:true});
  }
@@ -3196,7 +3253,7 @@ describe("runtime rotation proxy", () => {
 		});
 		expect(proxy.getStatus()).not.toHaveProperty("lastAccountEmail");
 		expect(
-			accountManager.getAccountByIndex(0)?.rateLimitResetTimes["gpt-5.2"],
+			quotaResetTime(accountManager.getAccountByIndex(0)!, "gpt-5.2"),
 		).toBeTypeOf("number");
 	});
 
@@ -3218,7 +3275,7 @@ describe("runtime rotation proxy", () => {
 			"acc_2",
 		]);
 		expect(
-			(accountManager.getAccountByIndex(0)?.rateLimitResetTimes["gpt-5.2"] ?? 0) -
+			(quotaResetTime(accountManager.getAccountByIndex(0)!, "gpt-5.2") ?? 0) -
 				Date.now(),
 		).toBeLessThanOrEqual(RATE_LIMIT_CACHE_TTL_MS);
 	});
@@ -3723,7 +3780,7 @@ describe("runtime rotation proxy", () => {
 		const reloadedStorage = persisted.at(-1);
 		expect(reloadedStorage).toBeDefined();
 		if (!reloadedStorage) throw new Error("expected persisted storage");
-		expect(reloadedStorage?.accounts[0]?.rateLimitResetTimes["gpt-5.2"]).toBeTypeOf(
+		expect(reloadedStorage?.accounts[0]?.rateLimitResetTimes[workspaceQuotaKey("gpt-5.2","acc_1")]).toBeTypeOf(
 			"number",
 		);
 		const secondManager = new AccountManager(undefined, reloadedStorage);
@@ -3988,6 +4045,7 @@ describe("runtime rotation proxy", () => {
 			"unknown",
 			"gpt-5-codex",
 			modelScopeId("oauth", "row-a", "acc_1"),
+            {workspaceId:"acc_1",receiptReadFailed:false},
 		);
 	});
 
@@ -7397,7 +7455,7 @@ describe("Luna Reserve fallback", () => {
 		const snapshot = (firstManager as unknown as { buildStorageSnapshot(): AccountStorageV3 }).buildStorageSnapshot();
 		const persisted = JSON.parse(JSON.stringify(snapshot)) as AccountStorageV3;
 		expect(Object.keys(persisted.accounts[0]?.rateLimitResetTimes ?? {})).toContainEqual(
-			expect.stringMatching(/^__confirmed-quota-exhaustion:/),
+			expect.stringContaining("__confirmed-quota-exhaustion:"),
 		);
 
 		const reloadedManager = new AccountManager(undefined, persisted);
@@ -7429,7 +7487,7 @@ describe("Luna Reserve fallback", () => {
 		const first = await postResponses(proxy, { model: "gpt-6-luna", stream: true, input: "first" });
 		expect(first.status).toBe(200);
 		await first.text();
-		expect(accountManager.getAccountByIndex(0)?.rateLimitResetTimes["gpt-5.2"]).toBeTypeOf("number");
+		expect(quotaResetTime(accountManager.getAccountByIndex(0)!, "gpt-5.2")).toBeTypeOf("number");
 
 		const second = await postResponses(proxy, { model: "gpt-6-luna", stream: true, input: "second" });
 		expect(second.status).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);

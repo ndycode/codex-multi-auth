@@ -7,6 +7,8 @@ import {
 	isRateLimitedForFamily,
 	isRateLimitedForQuotaKey,
 	parseRateLimitReason,
+	workspaceQuotaKey,
+	selectedQuotaLimits,
 	type RateLimitedEntity,
 } from "../lib/accounts/rate-limits.js";
 
@@ -17,6 +19,27 @@ function entityWith(resetTimes: Record<string, number | undefined>): RateLimited
 }
 
 describe("account rate-limit helpers", () => {
+	it("retains workspace deadlines through serialization and selection changes", () => {
+		vi.useFakeTimers(); vi.setSystemTime(NOW);
+		const entity: RateLimitedEntity = JSON.parse(JSON.stringify({accountId:"a", workspaces:[{id:"a"},{id:"b"}],currentWorkspaceIndex:0,
+			rateLimitResetTimes:{[workspaceQuotaKey("codex","b")]:NOW+60_000,[workspaceQuotaKey("codex:model-a","a")]:NOW+10_000}}));
+		expect(isRateLimitedForFamily(entity,"codex","model-b")).toBe(false);
+		expect(isRateLimitedForFamily(entity,"codex","model-a")).toBe(true);
+		expect(selectedQuotaLimits(entity)).toEqual({"codex:model-a":NOW+10_000});
+		entity.currentWorkspaceIndex=1;
+		expect(isRateLimitedForFamily(entity,"codex","model-b")).toBe(true);
+		expect(isRateLimitedForFamily(entity,"codex","gpt-reserve")).toBe(false);
+		expect(selectedQuotaLimits(entity)).toEqual({codex:NOW+60_000});
+		vi.advanceTimersByTime(60_000);
+		expect(isRateLimitedForFamily(entity,"codex","model-b")).toBe(false);
+	});
+	it("resolves selected organization aliases and retains legacy global blockers", () => {
+		vi.useFakeTimers(); vi.setSystemTime(NOW);
+		const entity: RateLimitedEntity={accountId:"org-personal",codexCliMirror:{forAccountId:"org-personal",accountId:"a"},
+			rateLimitResetTimes:{[workspaceQuotaKey("codex","a")]:NOW+10_000,codex:NOW+20_000}};
+		expect(isRateLimitedForFamily(entity,"codex")).toBe(true);
+		expect(selectedQuotaLimits(entity)).toEqual({codex:NOW+20_000});
+	});
 	afterEach(() => {
 		vi.useRealTimers();
 	});

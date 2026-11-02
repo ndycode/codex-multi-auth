@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { workspaceQuotaKey } from "../lib/accounts/rate-limits.js";
 import {
 	formatRateLimitEntry,
 	getAccountRecoveryTimeForFamily,
@@ -12,6 +13,13 @@ import {
 } from "../lib/runtime/account-state.js";
 
 describe("account status helpers", () => {
+	it("reports the selected workspace deadline without a sibling's retry window", () => {
+		const account={accountId:"a",workspaces:[{id:"a"},{id:"b"}],currentWorkspaceIndex:0,rateLimitResetTimes:{[workspaceQuotaKey("codex","b")]:9000}};
+		expect(getAccountRecoveryTimeForFamily(account,1000,"codex","model")).toBeNull();
+		account.currentWorkspaceIndex=1;
+		expect(getAccountRecoveryTimeForFamily(account,1000,"codex","model")).toBe(9000);
+		expect(getRateLimitResetTimeForFamily(account,1000,"codex")).toBe(9000);
+	});
 	it("resolves active index using family overrides and clamps bounds", () => {
 		expect(
 			resolveActiveIndex(

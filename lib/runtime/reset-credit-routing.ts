@@ -1,3 +1,4 @@
+import { selectedQuotaWorkspace, workspaceQuotaKey } from "../accounts/rate-limits.js";
 import type { AccountManager, ManagedAccount } from '../accounts.js';
 import { LUNA_RESERVE_MODEL } from '../constants.js';
 import type { ModelFamily } from '../prompts/codex.js';
@@ -15,6 +16,8 @@ function clearRecoveredScopeQuota(options:{account:ManagedAccount;scope:Scope;fa
  if(account.lastRateLimitReason!=='quota'||!workspaceModelScopes(account).some(current=>
   current.routable&&current.id===scope.id&&current.accountId===scope.accountId))return false;
  delete account.rateLimitResetTimes[family];delete account.rateLimitResetTimes[`${family}:${model}`];
+ const workspace=selectedQuotaWorkspace(account);
+ if(workspace){delete account.rateLimitResetTimes[workspaceQuotaKey(family,workspace)];delete account.rateLimitResetTimes[workspaceQuotaKey(`${family}:${model}`,workspace)];}
  if(account.cooldownReason==='rate-limit')manager.clearAccountCooldown(account);
  clearQuotaScheduler(account);
  return true;
