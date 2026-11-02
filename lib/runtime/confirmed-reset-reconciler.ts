@@ -1,4 +1,5 @@
-import type { AccountManager, ManagedAccount } from "../accounts.js";
+import { getRuntimeTrackerKey, type AccountManager, type ManagedAccount } from "../accounts.js";
+import { getTokenTracker } from "../rotation.js";
 import { LUNA_RESERVE_MODEL } from "../constants.js";
 import type { ModelFamily } from "../prompts/codex.js";
 import type { QuotaCacheEntry } from "../quota-cache.js";
@@ -9,6 +10,7 @@ type ResetState = Awaited<ReturnType<ResetCreditService["status"]>>;
 type Scope = ReturnType<typeof workspaceModelScopes>[number];
 interface Operation {
 	at: number;
+	generation?: number;
 	startedAt: number;
 	manager: AccountManager;
 	account: ManagedAccount;
@@ -32,7 +34,7 @@ export class ConfirmedResetReconciler {
 		hasCachedQuotaBlock?: () => boolean;
 	}): Promise<boolean> {
 		const { state, account, scope, model, family, manager } = options;
-		const receipt = state?.lastRedemption;
+		const receipt = state?.redemptions?.[scope.id] ?? (state?.lastRedemption?.key === scope.id ? state.lastRedemption : undefined);
 		if (model === LUNA_RESERVE_MODEL || state?.pending || !receipt ||
 			(receipt.outcome !== "reset" && receipt.outcome !== "alreadyRedeemed") || receipt.key !== scope.id) return false;
 		const eligible = () => options.isCurrent() && account.enabled !== false && !account.authInvalidatedAt &&
@@ -40,8 +42,14 @@ export class ConfirmedResetReconciler {
 			workspaceModelScopes(account).some(current => current.id === scope.id && current.routable);
 		const now = options.now();
 		// A wall-clock step backwards must not make an old observation win forever.
-		const rejectedAt = account.rateLimitObservations?.[family]?.observedAt ?? 0;
-		if (!eligible() || (rejectedAt <= now && rejectedAt > receipt.at)) return false;
+		const rejection = account.rateLimitObservations?.[family];
+		const rejectedAt = rejection?.observedAt ?? 0;
+		// Modern receipts are ordered by durable generation, not wall time. A
+		// rejection after this generation was observed cannot replay that receipt.
+		const rejectedAfterReceipt = receipt.generation !== undefined
+			? (rejection?.receiptGenerations?.[scope.id] ?? 0) >= receipt.generation
+			: rejectedAt <= now && rejectedAt > receipt.at;
+		if (!eligible() || rejectedAfterReceipt || (receipt.generation !== undefined && receipt.generation < (account.resetReceiptGenerations?.[scope.id] ?? 0))) return false;
 		if (!((account.rateLimitResetTimes[family] ?? 0) > now ||
 			(account.cooldownReason === "rate-limit" && (account.coolingDownUntil ?? 0) > now) ||
 			options.hasQuotaDeferral?.() || options.hasCachedQuotaBlock?.())) return false;
@@ -50,13 +58,19 @@ export class ConfirmedResetReconciler {
 		const key = JSON.stringify([scope.id, model]);
 		const existing = this.operations.get(key);
 		if (existing && existing.manager === manager && existing.account === account &&
-			(existing.at === receipt.at || (existing.at <= now && existing.at > receipt.at)) &&
+			(receipt.generation !== undefined
+				? existing.generation !== undefined && existing.generation >= receipt.generation
+				: existing.generation !== undefined || existing.at === receipt.at || (existing.at <= now && existing.at > receipt.at)) &&
 			(existing.retryAfter === undefined || (now >= existing.startedAt && now < existing.retryAfter))) {
 			await existing.promise;
 			return false;
 		}
 		// Install the operation before starting I/O so concurrent requests share it.
-		const operation: Operation = { at: receipt.at, startedAt:now, manager, account, promise: Promise.resolve(false) };
+		if (receipt.generation !== undefined) {
+			const generations = account.resetReceiptGenerations ??= {};
+			generations[scope.id] = Math.max(generations[scope.id] ?? 0, receipt.generation);
+		}
+		const operation: Operation = { at: receipt.at, generation:receipt.generation, startedAt:now, manager, account, promise: Promise.resolve(false) };
 		if (this.operations.size >= 1000 && !this.operations.has(key)) {
 			this.operations.delete(this.operations.keys().next().value ?? "");
 		}
@@ -90,6 +104,7 @@ export class ConfirmedResetReconciler {
 			delete account.rateLimitResetTimes[family];
 			if (account.cooldownReason === "rate-limit") manager.clearAccountCooldown(account);
 			options.clearQuotaScheduler();
+			getTokenTracker().reset(getRuntimeTrackerKey(account), `${family}:${model}`);
 			manager.saveToDiskDebounced();
 			return true;
 		})();

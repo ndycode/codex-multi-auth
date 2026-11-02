@@ -10,7 +10,10 @@ requires a fresh read-only quota confirmation; failed or unknown checks retain
 the quota block and retry after a five-second delay unless a newer rejection of
 the same quota key arrives during the check. That rejection requires a new receipt. Healthy traffic does not
 wait on unnecessary quota checks. Authentication and model-specific blocks remain
-protected. See [the reset design](design/earned-reset-credits.md).
+protected. Completed receipts are retained per workspace with clock-independent
+generations. New completions upgrade reset-credit state to version 3; older
+binaries reject this state to avoid dropping receipts. Upgrade the CLI and router
+together. Existing version 1/2 state remains readable. See [the reset design](design/earned-reset-credits.md).
 
 ## GPT-6.1 Terra and Ultrafast pricing
 

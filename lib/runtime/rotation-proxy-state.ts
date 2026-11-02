@@ -463,6 +463,7 @@ export async function reloadRuntimeCredentials(
 					live.email = previous.email;
 				}
 			}
+			live.resetReceiptGenerations = previous.resetReceiptGenerations && { ...previous.resetReceiptGenerations };
 			for (const [key, until] of Object.entries(previous.rateLimitResetTimes)) {
 				if (typeof until === "number" && until > state.now()) {
 					live.rateLimitResetTimes[key] = Math.max(live.rateLimitResetTimes[key] ?? 0, until);

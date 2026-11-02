@@ -116,7 +116,7 @@ it.each(['consume', 'follow-up read'])('persists the chosen credit with its idem
  await restarted.redeem(target('a'));
  expect(f.consume.mock.calls[1]).toEqual(f.consume.mock.calls[0]);
  expect((await restarted.status()).pending).toBeUndefined();
- expect((await restarted.status()).version).toBe(1);
+ expect((await restarted.status()).version).toBe(3); // Completed per-scope receipts require the new reader.
  expect(await readFile(join(dir, 'state.json'), 'utf8')).not.toContain('chosen');
 });
 

@@ -297,7 +297,9 @@ export interface ManagedAccount {
 		| "manual";
 	lastRateLimitReason?: RateLimitReason;
 	/** Process-local sequence used to order a fresh quota read against a concurrent 429. */
-	rateLimitObservations?: Record<string, { revision: number; observedAt: number; reason: RateLimitReason }>;
+	rateLimitObservations?: Record<string, { revision: number; observedAt: number; reason: RateLimitReason; receiptGenerations?: Record<string, number> }>;
+	/** Highest durable reset generation observed for each workspace in this process. */
+	resetReceiptGenerations?: Record<string, number>;
 	rateLimitResetTimes: RateLimitStateV3;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
@@ -795,6 +797,7 @@ export class AccountManager {
 				circuitKeyId,
 				rateLimitResetTimes: { ...account.rateLimitResetTimes },
 				rateLimitObservations: account.rateLimitObservations && { ...account.rateLimitObservations },
+				resetReceiptGenerations: account.resetReceiptGenerations && { ...account.resetReceiptGenerations },
 				workspaces: account.workspaces?.map((workspace) => ({ ...workspace })),
 			};
 		});
@@ -1462,7 +1465,7 @@ export class AccountManager {
 
 		const recordRejection = (key: string) => {
 			const observations = account.rateLimitObservations ??= {};
-			observations[key] = { revision: (observations[key]?.revision ?? 0) + 1, observedAt: observedAtMs, reason };
+			observations[key] = { revision: (observations[key]?.revision ?? 0) + 1, observedAt: observedAtMs, reason, receiptGenerations: { ...account.resetReceiptGenerations } };
 		};
 		const baseKey = getQuotaKey(family);
 		const independentReserve = model === LUNA_RESERVE_MODEL;

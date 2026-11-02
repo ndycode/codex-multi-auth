@@ -80,7 +80,7 @@ const openServers: RuntimeRotationProxyServer[] = [];
 const openManagers: AccountManager[] = [];
 const DEFAULT_CLIENT_API_KEY = "runtime-secret";
 
-it.each([{delay:0,outcome:"reset"},{delay:65_000,outcome:"reset"},{delay:0,outcome:"alreadyRedeemed"}])("adopts a CLI $outcome in the same pinned provider proxy after $delay ms without consuming again", async ({delay,outcome}) => {
+it.each([{delay:0,outcome:"reset",pinned:true,secondReset:false},{delay:65_000,outcome:"reset",pinned:true,secondReset:false},{delay:0,outcome:"alreadyRedeemed",pinned:true,secondReset:false},{delay:0,outcome:"reset",pinned:false,secondReset:false},{delay:0,outcome:"reset",pinned:true,secondReset:true}])("adopts CLI $outcome after $delay ms (pinned=$pinned, second reset=$secondReset) without consuming again", async ({delay,outcome,pinned,secondReset}) => {
  const fs = await import("node:fs/promises");
  const os = await import("node:os");
  const path = await import("node:path");
@@ -100,27 +100,30 @@ it.each([{delay:0,outcome:"reset"},{delay:65_000,outcome:"reset"},{delay:0,outco
    rateLimits:{planType:"pro", primary:{usedPercent:allowed ? 0 : 100}, secondary:{}}};
  });
  try {
-  const disk = createStorage(now);
-  disk.pinnedAccountIndex = 0;
+  const disk = createStorage(now,pinned ? 2 : 1);
+  if (pinned) disk.pinnedAccountIndex = 0;
   const family = getModelFamily("chat-fixture");
-  disk.accounts[1]!.rateLimitResetTimes = {[family]:now + 600_000};
+  if (pinned) disk.accounts[1]!.rateLimitResetTimes = {[family]:now + 600_000};
   const storage = await import("../lib/storage.js");
   vi.spyOn(storage, "loadAccounts").mockResolvedValue(disk);
   const manager = new AccountManager(undefined, disk);
   const {calls, fetchImpl} = createRecordingFetch(() => allowed ? textEventStream() : Response.json(
    {error:{code:"usage_limit_reached", message:"synthetic quota exceeded"}}, {status:429, headers:{"retry-after":"3600"}}));
-  const proxy = await startProxy({accountManager:manager, fetchImpl, options:{forcedAccountIndex:0}});
+  if (!pinned) getTokenTracker().drain(getRuntimeTrackerKey(manager.getAccountByIndex(0)!),`${family}:chat-fixture`,DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens-1);
+  const proxy = await startProxy({accountManager:manager, fetchImpl, options:{forcedAccountIndex:pinned ? 0 : undefined}});
   const send = async () => {
    // Windows may allocate an ephemeral port forbidden by fetch's browser port list.
    const response = await postResponsesWithHttp(proxy, {model:"chat-fixture", input:"synthetic request"});
    return new Response(response.text, {status:response.status});
   };
-  const first = await send(); expect(first.status).toBe(503); await first.text();
+  const first = await send(); expect(first.status).toBe(pinned ? 503 : 429); await first.text();
   expect(calls).toHaveLength(1);
-  const blocked = await send(); expect(blocked.status).toBe(503); await blocked.text();
+  const blocked = await send(); expect(blocked.status).toBe(pinned ? 503 : 429); await blocked.text();
   const {createResetCreditService, resetTargetForStoredAccount} = await import("../lib/runtime/account-reset-credits.js");
   const cli = createResetCreditService(new AccountManager(undefined, disk));
   expect(await cli.redeem(resetTargetForStoredAccount(disk.accounts[0]!)!)).toBe(outcome);
+  if (secondReset) { now += 11000; await cli.redeem(resetTargetForStoredAccount(disk.accounts[1]!)!); }
+  const expectedConsumes = secondReset ? 2 : 1;
   const readsBefore = rpc.mock.calls.length;
   now += delay;
   const {ConfirmedResetReconciler} = await import("../lib/runtime/confirmed-reset-reconciler.js");
@@ -137,19 +140,51 @@ it.each([{delay:0,outcome:"reset"},{delay:65_000,outcome:"reset"},{delay:0,outco
   await entered; releaseRead();
   for (const recovered of await concurrent) { expect(recovered.status).toBe(200); await recovered.text(); }
   reconcile.mockRestore(); readGate = undefined;
-  expect(consumes).toBe(1);
+  expect(consumes).toBe(expectedConsumes);
   expect(rpc.mock.calls.length).toBe(readsBefore + 1);
-  expect(manager.getAccountByIndex(1)!.rateLimitResetTimes[family]).toBe(disk.accounts[1]!.rateLimitResetTimes![family]);
+  if (pinned) expect(manager.getAccountByIndex(1)!.rateLimitResetTimes[family]).toBe(disk.accounts[1]!.rateLimitResetTimes![family]);
   expect(calls.every(call => call.headers.get("chatgpt-account-id") === "acc_1")).toBe(true);
   // The old receipt must never turn a later real quota rejection into a retry loop.
   allowed = false;
-  const later = await send(); expect(later.status).toBe(503); await later.text();
+  const later = await send(); expect(later.status).toBe(pinned ? 503 : 429); await later.text();
   const stillBlocked = await send(); expect(stillBlocked.status).toBe(503); await stillBlocked.text();
-  expect(consumes).toBe(1);
+  expect(consumes).toBe(expectedConsumes);
  } finally {
   rpc.mockRestore(); clock.mockRestore();
   if (previousDir === undefined) delete process.env.CODEX_MULTI_AUTH_DIR; else process.env.CODEX_MULTI_AUTH_DIR = previousDir;
   await removeWithRetry(dir, {recursive:true, force:true});
+ }
+});
+
+it("keeps a quota rejection that arrives after an in-flight request's receipt was created", async () => {
+ const fs = await import("node:fs/promises"), os = await import("node:os"), path = await import("node:path");
+ const previousDir = process.env.CODEX_MULTI_AUTH_DIR;
+ const dir = await fs.mkdtemp(path.join(os.tmpdir(),"reset-inflight-rejection-")); process.env.CODEX_MULTI_AUTH_DIR=dir;
+ const now=Date.now(); const clock=vi.spyOn(Date,"now").mockReturnValue(now);
+ let release!:()=>void, entered!:()=>void;
+ const gate=new Promise<void>(resolve=>{release=resolve;}); const started=new Promise<void>(resolve=>{entered=resolve;});
+ const native=await import("../lib/runtime/native-rate-limits.js"); let consumed=false;
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async(auth,method)=>{
+  if(method==="account/rateLimitResetCredit/consume"){consumed=true;return {outcome:"reset"};}
+  return {accountId:auth.accountId,ordinaryUsageAllowed:consumed,rateLimitResetCredits:{availableCount:1},rateLimits:{planType:"pro",primary:{usedPercent:consumed?0:100},secondary:{}}};
+ });
+ try {
+  const disk=createStorage(now,1);disk.pinnedAccountIndex=0;
+  const storage=await import("../lib/storage.js");vi.spyOn(storage,"loadAccounts").mockResolvedValue(disk);
+  const manager=new AccountManager(undefined,disk);let posts=0;
+  const proxy=await startProxy({accountManager:manager,fetchImpl:async()=>{
+   posts++;entered();await gate;return Response.json({error:{code:"usage_limit_reached"}},{status:429,headers:{"retry-after":"3600"}});
+  },options:{forcedAccountIndex:0}});
+  const request=()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic request"});
+  const first=request();await started;
+  const {createResetCreditService,resetTargetForStoredAccount}=await import("../lib/runtime/account-reset-credits.js");
+  await createResetCreditService(new AccountManager(undefined,disk)).redeem(resetTargetForStoredAccount(disk.accounts[0]!)!);
+  const readsBefore=rpc.mock.calls.length;release();expect((await first).status).toBe(503);
+  expect((await request()).status).toBe(503);expect(posts).toBe(1);expect(rpc.mock.calls.length).toBe(readsBefore);
+ } finally {
+  release();rpc.mockRestore();clock.mockRestore();
+  if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
+  await removeWithRetry(dir,{recursive:true,force:true});
  }
 });
 

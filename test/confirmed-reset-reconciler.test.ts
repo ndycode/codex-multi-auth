@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { AccountManager } from "../lib/accounts.js";
+import { getTokenTracker } from "../lib/rotation.js";
+import { getRuntimeTrackerKey, AccountManager } from "../lib/accounts.js";
 import { ConfirmedResetReconciler } from "../lib/runtime/confirmed-reset-reconciler.js";
 import { workspaceModelScopes } from "../lib/runtime/workspace-model-scopes.js";
 import type { ResetSnapshot } from "../lib/runtime/reset-credits.js";
@@ -188,5 +189,48 @@ it("handles a clock rollback after the receipt and still applies that receipt on
  f.args.now = () => receiptAt - 600_000; f.snapshot.updatedAt = f.args.now();
  expect(await Promise.all([f.run(), f.run()])).toEqual([true, false]);
  f.account.rateLimitResetTimes.codex = receiptAt + 300_000;
+ expect(await f.run()).toBe(false); expect(f.args.read).toHaveBeenCalledTimes(1);
+});
+
+
+it("accepts a later durable generation after the clock catches up to an older receipt", async () => {
+ const f = fixture(); const originalNow = f.args.now();
+ Object.assign(f.args.state!.lastRedemption!, {generation:1});
+ f.args.state!.lastRedemption!.at = originalNow;
+ expect(await f.run()).toBe(true);
+ f.manager.markRateLimitedWithReason(f.account, 300_000, "codex", "quota", "chat-test");
+ Object.assign(f.args.state!.lastRedemption!, {generation:2, at:originalNow-600_000});
+ // No request observes the intervening backward-clock period.
+ expect(await f.run()).toBe(true);
+ expect(f.args.read).toHaveBeenCalledTimes(2);
+});
+
+
+it("refills only the confirmed account/model admission bucket", async () => {
+ const f = fixture(); const key = getRuntimeTrackerKey(f.account), tracker = getTokenTracker();
+ tracker.drain(key,"codex:chat-test",1000); tracker.drain(key,"codex:other-model",1000); tracker.drain("other-account","codex:chat-test",1000);
+ expect(tracker.tryConsume(key,"codex:chat-test")).toBe(false);
+ expect(await f.run()).toBe(true);
+ expect(tracker.tryConsume(key,"codex:chat-test")).toBe(true);
+ expect(tracker.tryConsume(key,"codex:other-model")).toBe(false);
+ expect(tracker.tryConsume("other-account","codex:chat-test")).toBe(false);
+});
+
+it("does not replay a generation after a later 429 even following manager replacement", async () => {
+ const f = fixture(); Object.assign(f.args.state!.lastRedemption!,{generation:1});
+ expect(await f.run()).toBe(true);
+ f.manager.markRateLimitedWithReason(f.account,300000,"codex","quota","chat-test");
+ const replacement = fixture(); replacement.account.rateLimitObservations = f.account.rateLimitObservations;
+ replacement.account.resetReceiptGenerations = {...f.account.resetReceiptGenerations};
+ replacement.args.state = f.args.state;
+ expect(await f.reconciler.reconcile(replacement.args)).toBe(false);
+ expect(replacement.args.read).not.toHaveBeenCalled();
+});
+
+it("rejects a stale generation even after retry backoff expires", async () => {
+ const f = fixture(); Object.assign(f.args.state!.lastRedemption!,{generation:2});
+ let now = f.args.now(); f.args.now=()=>now; f.args.read=vi.fn(async()=>undefined);
+ expect(await f.run()).toBe(false);
+ now+=10000; Object.assign(f.args.state!.lastRedemption!,{generation:1});
  expect(await f.run()).toBe(false); expect(f.args.read).toHaveBeenCalledTimes(1);
 });

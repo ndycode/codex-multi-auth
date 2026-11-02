@@ -327,6 +327,7 @@ describe("reloadRuntimeCredentials", () => {
   const {workspaceModelScopes} = await import("../lib/runtime/workspace-model-scopes.js");
   const {ConfirmedResetReconciler} = await import("../lib/runtime/confirmed-reset-reconciler.js");
   const scope = workspaceModelScopes(account)[0]!;
+  account.resetReceiptGenerations = {[scope.id]:7};
   resident.markRateLimitedWithReason(account,60000,"codex","quota");
   const observedAt = account.rateLimitObservations!.codex!.observedAt;
   const state = createRotationProxyState({...stateInit(),now:()=>observedAt,activeAccountManager:resident});
@@ -335,6 +336,7 @@ describe("reloadRuntimeCredentials", () => {
   await reloadRuntimeCredentials(state);
   const current = replacement.getAccountByIndex(0)!;
   expect(current.rateLimitObservations?.codex).toEqual(account.rateLimitObservations!.codex);
+  expect(current.resetReceiptGenerations).toEqual(account.resetReceiptGenerations);
   expect(current.rateLimitResetTimes.codex).toBe(account.rateLimitResetTimes.codex);
   const read = vi.fn();
   expect(await new ConfirmedResetReconciler().reconcile({

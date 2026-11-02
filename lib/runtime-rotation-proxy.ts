@@ -1573,6 +1573,7 @@ async function handleRequestInner(
                     const current = carryTarget(previous);
                     const live = current && accountManager.getAccountByIndex(current.index);
                     if (!live) continue;
+                    live.resetReceiptGenerations = previous.resetReceiptGenerations && { ...previous.resetReceiptGenerations };
                     for (const [key, until] of Object.entries(previous.rateLimitResetTimes)) {
                         if (typeof until === "number" && until > state.now()) {
                             live.rateLimitResetTimes[key] = Math.max(live.rateLimitResetTimes[key] ?? 0, until);
@@ -2104,6 +2105,15 @@ async function handleRequestInner(
 			}
 		};
   let resetCreditState=isResponsesRequest ? await loadResetCreditState().catch(()=>null):null;
+  const observeResetGenerations = (account: ManagedAccount, receipts: typeof resetCreditState) => {
+   for (const scope of workspaceModelScopes(account)) {
+    const receipt=receipts?.redemptions?.[scope.id] ?? (receipts?.lastRedemption?.key===scope.id ? receipts.lastRedemption : undefined);
+    if(receipt?.generation!==undefined){
+     const generations=account.resetReceiptGenerations??={};
+     generations[scope.id]=Math.max(generations[scope.id]??0,receipt.generation);
+    }
+   }
+  };
   const quotaForScope = (account: ManagedAccount, scope: ReturnType<typeof workspaceModelScopes>[number]) => {
    // Scoped observations belong to this credential and workspace; legacy entries only describe the binding.
    const cached = findQuotaCacheEntryForAccount(subscriptionQuotaCache,account,accountManager.getAccountsSnapshot(),undefined,scope.accountId);
@@ -2447,7 +2457,7 @@ async function handleRequestInner(
 		}
 
 
-  if (isResponsesRequest && context.model && context.model !== LUNA_RESERVE_MODEL && (resetCreditState?.lastRedemption?.outcome === "reset" || resetCreditState?.lastRedemption?.outcome === "alreadyRedeemed")) {
+  if (isResponsesRequest && context.model && context.model !== LUNA_RESERVE_MODEL && (resetCreditState?.redemptions || resetCreditState?.lastRedemption?.outcome === "reset" || resetCreditState?.lastRedemption?.outcome === "alreadyRedeemed")) {
    const manager = accountManager;
    const reconciler = state.confirmedResetReconciler ??= new ConfirmedResetReconciler();
    for (const row of manager.getAccountsSnapshot()) {
@@ -2936,6 +2946,7 @@ async function handleRequestInner(
 				);
 				exhaustionReason = "rate-limit";
 				capabilityRejectionIsLatest = false;
+				observeResetGenerations(selected, resetCreditState);
 				accountManager.markRateLimitedWithReason(
 					selected,
 					preemptiveDeferral.waitMs,
@@ -3505,7 +3516,11 @@ async function handleRequestInner(
 				}
 				// Every 429 still drains this account for its retry window, but only an
 				// explicit subscription-usage signal is persisted as quota exhaustion.
+				// Read durable generations before binding the response to the current
+				// manager: a reset may have completed while this request was in flight.
+				const rejectionResetState = await loadResetCreditState().catch(() => resetCreditState);
 				const rateLimitState = responseStateTarget();
+				observeResetGenerations(rateLimitState.account, rejectionResetState);
 				rateLimitState.accountManager.recordRateLimit(rateLimitState.account, context.family, context.model);
 				rateLimitState.accountManager.markRateLimitedWithReason(
 					rateLimitState.account,
@@ -3863,7 +3878,9 @@ async function handleRequestInner(
 							? quotaDeferral.waitMs
 							: 0;
 				if (nearExhaustionWaitMs > 0) {
+					const rejectionResetState = await loadResetCreditState().catch(() => resetCreditState);
 					const quotaState = responseStateTarget();
+					observeResetGenerations(quotaState.account, rejectionResetState);
 					quotaState.accountManager.markRateLimitedWithReason(
 						quotaState.account,
 						nearExhaustionWaitMs,
