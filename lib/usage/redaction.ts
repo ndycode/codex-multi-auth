@@ -19,6 +19,7 @@ const VALID_SOURCES = new Set<UsageLedgerSource>([
 	"unknown",
 ]);
 const VALID_OPERATIONS = new Set<UsageLedgerOperation>([
+	"decisions",
 	"responses",
 	"images",
 	"models",
@@ -172,7 +173,7 @@ export function normalizeUsageLedgerRow(
 		tokens,
 		costUsd:
 			explicitCost === null
-				? estimateUsageCostUsd(model, tokens)
+				? (input.operation === "decisions" ? null : estimateUsageCostUsd(model, tokens))
 				: Math.max(0, explicitCost),
 	};
 }

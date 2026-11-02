@@ -1,3 +1,4 @@
+import { DecisionsRuntime } from "./runtime/decisions-runtime.js";
 import { createAutomaticApiCheck, startAutomaticApiChecks } from "./runtime/automatic-api-checks.js";
 import { startAutomaticAccountChecks } from "./runtime/automatic-account-checks.js";
 import { createAutomaticSubscriptionCheck } from "./runtime/automatic-subscription-checks.js";
@@ -1152,7 +1153,7 @@ function writeMethodOrPathError(res: ServerResponse): void {
 	writeJson(res, 404, {
 		error: {
 			message:
-				"Runtime rotation proxy only accepts Responses API, images, transcription, web search, voice calls, model discovery, and Codex thread goal requests.",
+				"Runtime rotation proxy only accepts Decisions API, Responses API, images, transcription, web search, voice calls, model discovery, and Codex thread goal requests.",
 			code: "runtime_rotation_proxy_not_found",
 		},
 	});
@@ -1617,6 +1618,7 @@ async function handleRequestInner(
 			return;
 		}
 
+		const isDecisionsRequest = req.method === "POST" && ["/decisions", "/v1/decisions"].includes(incomingUrl.pathname);
 		const isResponsesRequest =
 			req.method === "POST" && isResponsesPath(incomingUrl.pathname);
 		const isModelsRequest =
@@ -1633,7 +1635,7 @@ async function handleRequestInner(
 		const isRealtimeCallRequest =
 			req.method === "POST" && isRealtimeCallPath(incomingUrl.pathname);
 		if (
-			!isResponsesRequest && !isModelsRequest && !isSearchRequest && !isRealtimeCallRequest &&
+			!isDecisionsRequest && !isResponsesRequest && !isModelsRequest && !isSearchRequest && !isRealtimeCallRequest &&
 			!isThreadGoalRequest && !isImageRequest && !isTranscribeRequest
 		) {
 			writeMethodOrPathError(res);
@@ -1642,11 +1644,11 @@ async function handleRequestInner(
 
 		state.status.totalRequests += 1;
 		let requestBody =
-			isResponsesRequest || isImageRequest || isTranscribeRequest || isSearchRequest || isRealtimeCallRequest ||
+			isDecisionsRequest || isResponsesRequest || isImageRequest || isTranscribeRequest || isSearchRequest || isRealtimeCallRequest ||
 			(isThreadGoalRequest && req.method === "POST")
 				? await readRequestBody(req, state.maxRequestBodyBytes)
 				: Buffer.alloc(0);
-		if (isResponsesRequest) {
+		if (isResponsesRequest || isDecisionsRequest) {
 			requestBody = await decodeRequestBody(requestBody, incomingHeaders.get("content-encoding"), state.maxRequestBodyBytes);
 			const parsed = parseRequestBody(requestBody);
 			if (!parsed || typeof parsed.model !== "string" || !parsed.model.trim()) {
@@ -1654,7 +1656,7 @@ async function handleRequestInner(
 			}
    let route;
    try { route=parseModelRoute(parsed.model); } catch { throw createRuntimeProxyHttpError("Invalid model route.",400,"invalid_model_route"); }
-   if(route.kind==="oauth"&&route.serviceTier){
+   if(isResponsesRequest&&route.kind==="oauth"&&route.serviceTier){
     if(parsed.service_tier&&canonicalServiceTier(String(parsed.service_tier))!==canonicalServiceTier(route.serviceTier))throw createRuntimeProxyHttpError("Conflicting speed selection.",400,"conflicting_service_tier");
     parsed.model=route.upstreamModel;parsed.service_tier=route.serviceTier;
     requestBody=Buffer.from(JSON.stringify(parsed));
@@ -1673,7 +1675,11 @@ async function handleRequestInner(
 							: isRealtimeCallRequest
 								? buildRealtimeCallRequestContext(req, requestBody, incomingUrl.pathname)
 								: buildResponsesRequestContext(req, requestBody);
-		if (isResponsesRequest) {
+		if (isDecisionsRequest) {
+			context.upstreamPath = "/decisions";
+			if (!context.model || !/^(api|zdr)\//.test(context.model)) {writeJson(res,400,{error:{code:"explicit_decisions_api_route_required"}});return;}
+		}
+		if (isResponsesRequest || isDecisionsRequest) {
 			context.headers.delete("content-encoding");
 			context.headers.delete("content-length");
 		}
@@ -1681,7 +1687,7 @@ async function handleRequestInner(
 		// Everything else would route through a manager the store no longer backs.
 		// A 401 would tell the native client its login is bad when the store is what
 		// is missing, so independently authenticated clients get a 503 (#702).
-		if ((nativeStorageMissing || nativeStorageUnavailable) && !(isResponsesRequest && context.model && /^(api|zdr|psp)\//.test(context.model))) {
+		if ((nativeStorageMissing || nativeStorageUnavailable) && !((isResponsesRequest || isDecisionsRequest) && context.model && /^(api|zdr|psp)\//.test(context.model))) {
 			writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, {
 				error: {
 					message: nativeStorageUnavailable
@@ -1723,7 +1729,7 @@ async function handleRequestInner(
 		/** Build a recorder for the model that actually serves this request. */
 		const createUsageRecorderForModel = (model: string | null) => createRuntimeUsageRecorder({
 			source: "runtime-proxy",
-			operation: isModelsRequest
+			operation: isDecisionsRequest ? "decisions" : isModelsRequest
 				? "models"
 				: isThreadGoalRequest
 					? "thread-goal"
@@ -1818,7 +1824,7 @@ async function handleRequestInner(
 		// Explicit API aliases are handled before all OAuth selection. An absent
 		// credential or catalog is a hard failure, never an ordinary-model fallback.
 		if (context.model && /^(api|zdr|psp)\//.test(context.model)) {
-			if (!isResponsesRequest) {
+			if (!isResponsesRequest && !isDecisionsRequest) {
 				writeJson(res, 400, { error: { code: "api_route_requires_responses" } });
 				return;
 			}
@@ -1838,7 +1844,11 @@ async function handleRequestInner(
 			try {
 				const apiRoutes = (await state.readApiRoutes?.()) ?? [];
 				let attemptedCredentialIndex: number | undefined;
-				const upstream = await apiRuntime.request(
+				const decisionsRuntime = state.decisionsRuntime ??= new DecisionsRuntime(state.upstreamFetchImpl, routes => apiRuntime.catalogs(routes, false, false, false, false, routes[0]?.kind, false), state.now);
+                const request = isDecisionsRequest
+                    ? (_alias: string, payload: Record<string, unknown>, routes: Awaited<ReturnType<typeof loadApiRoutes>>, signal: AbortSignal, onAttempt: (index: number) => void) => decisionsRuntime.request(payload, routes, signal, onAttempt)
+                    : apiRuntime.request.bind(apiRuntime);
+                const upstream = await request(
 					context.model,
 					body,
 					apiRoutes,
@@ -1883,14 +1893,14 @@ async function handleRequestInner(
 				);
 				const clientDisconnected = !forwarded && !streamErrored && !res.writableEnded;
 				const attemptedCredential = attemptedCredentialIndex === undefined ? undefined : apiRoutes[attemptedCredentialIndex];
-				if (!forwarded && !clientDisconnected && attemptedCredential) apiRuntime.recordStreamFailure(attemptedCredential, context.model, body, responseOutcome.rejection);
+				if (!isDecisionsRequest && !forwarded && !clientDisconnected && attemptedCredential) apiRuntime.recordStreamFailure(attemptedCredential, context.model, body, responseOutcome.rejection);
 				apiResponseSucceeded = forwarded && upstream.ok;
 				if (apiRuntime.lastPersistenceError) state.status.lastError = apiRuntime.lastPersistenceError;
 				await usageRecorder.record({
 					outcome: forwarded && upstream.ok ? "success" : clientDisconnected ? "cancelled" : "failure",
 					statusCode: upstream.status,
 					errorCode: clientDisconnected ? "client_disconnected" : responseOutcome.finish().errorCode ?? (forwarded ? null : "stream_forward_failed"),
-					...(scanner.result() ?? {}),
+					...((isDecisionsRequest ? decisionsRuntime.usageFor(upstream) : scanner.result()) ?? {}),
 				});
             } catch (error) {
                 if (error instanceof ClientCancellationError || res.destroyed) {
@@ -1899,7 +1909,7 @@ async function handleRequestInner(
                 }
                 throw error;
             } finally {
-				if (apiResponse) apiRuntime.completeRequest(apiResponse, apiResponseSucceeded);
+				if (apiResponse && !isDecisionsRequest) apiRuntime.completeRequest(apiResponse, apiResponseSucceeded);
 				res.off("close", abort);
 			}
 			return;

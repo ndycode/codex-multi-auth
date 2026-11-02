@@ -6,6 +6,7 @@ export type UsageLedgerSource =
 	| "unknown";
 
 export type UsageLedgerOperation =
+	| "decisions"
 	| "responses"
 	| "images"
 	| "models"

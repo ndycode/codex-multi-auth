@@ -1,0 +1,332 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { DecisionsRuntime } from "../lib/runtime/decisions-runtime.js";
+import type { ApiRouteCredential } from "../lib/api-route-store.js";
+import type { RouteCatalog } from "../lib/model-route-policy.js";
+const route = (
+	id = "one",
+	kind: ApiRouteCredential["kind"] = "zdr",
+	region: "us" | "global" = "us",
+): ApiRouteCredential => ({
+	id,
+	label: id,
+	kind,
+	region,
+	enabled: true,
+	priority: id === "one" ? 0 : 1,
+	apiKey: `key-${id}`,
+	visibleModels: ["decision-test"],
+});
+const catalogs = async (
+	routes: ApiRouteCredential[],
+): Promise<RouteCatalog[]> =>
+	routes.map((r) => ({
+		...r,
+		models: [{ slug: "decision-test", supported_endpoints: ["/v1/decisions"] }],
+	}));
+const body = {
+	model: "zdr/decision-test",
+	input: [
+		{
+			role: "user",
+			content: [{ type: "input_json", data: { enabled: true } }],
+		},
+	],
+	questions: [
+		{ type: "predicate", instructions: "yes?" },
+		{
+			type: "choice",
+			instructions: "pick",
+			choices: [{ value: true }, { value: "true" }],
+		},
+		{
+			type: "score",
+			instructions: "rate",
+			levels: [{ label: "low" }, { label: "high" }],
+		},
+	],
+};
+const answer = {
+	model: "decision-test",
+	answers: [
+		{ type: "predicate", name: null, probability: 0.5 },
+		{
+			type: "choice",
+			name: null,
+			choice: true,
+			confidence: 0.8,
+			probabilities: [
+				{ value: true, probability: 0.9 },
+				{ value: "true", probability: 0.1 },
+			],
+		},
+		{
+			type: "score",
+			name: null,
+			score: 0.4,
+			confidence: 0.6,
+			probabilities: [
+				{ label: "low", value: 0, probability: 0.6 },
+				{ label: "high", value: 1, probability: 0.4 },
+			],
+		},
+		{ type: "refusal", name: null },
+	],
+	usage: {
+		input_tokens: 12,
+		input_tokens_details: { cached_tokens: 2, cache_write_tokens: 3 },
+		output_tokens: 0,
+		total_tokens: 12,
+	},
+};
+afterEach(() => vi.useRealTimers());
+describe("native Decisions boundary", () => {
+	it("forwards typed inputs, answers, refusals and usage without Responses fields", async () => {
+		const fetcher = vi.fn(async () => Response.json(answer));
+		const runtime = new DecisionsRuntime(fetcher, catalogs);
+		expect(await (await runtime.request(body, [route()])).json()).toEqual(
+			answer,
+		);
+		const [url, init] = fetcher.mock.calls[0] as unknown as [
+			string,
+			RequestInit,
+		];
+		expect(url).toBe("https://us.api.openai.com/v1/decisions");
+		expect(JSON.parse(String(init.body))).toEqual({
+			...body,
+			model: "decision-test",
+		});
+		expect(init.redirect).toBe("error");
+	});
+	it.each([
+		"decision-test",
+		"psp/decision-test",
+		"api/speed/priority/decision-test",
+	])(
+		"rejects unauthorized route %s without discovery or inference",
+		async (model) => {
+			const fetcher = vi.fn();
+			const discover = vi.fn(catalogs);
+			const runtime = new DecisionsRuntime(fetcher, discover);
+			expect(
+				(await runtime.request({ ...body, model }, [route()])).status,
+			).toBe(400);
+			expect(fetcher).not.toHaveBeenCalled();
+			expect(discover).not.toHaveBeenCalled();
+		},
+	);
+	it("requires endpoint evidence and visibility, not model ID alone", async () => {
+		const fetcher = vi.fn();
+		const runtime = new DecisionsRuntime(fetcher, async (routes) =>
+			(await catalogs(routes)).map((c) => ({
+				...c,
+				models: [{ slug: "decision-test" }],
+			})),
+		);
+		expect((await runtime.request(body, [route()])).status).toBe(503);
+		expect(fetcher).not.toHaveBeenCalled();
+		const hidden = new DecisionsRuntime(fetcher, catalogs);
+		expect(
+			(await hidden.request(body, [{ ...route(), visibleModels: [] }])).status,
+		).toBe(503);
+	});
+	it("fails over unsupported endpoints only within selected pool and region", async () => {
+		const fetcher = vi
+			.fn()
+			.mockResolvedValueOnce(
+				Response.json(
+					{ error: { code: "unsupported_endpoint" } },
+					{ status: 404 },
+				),
+			)
+			.mockResolvedValueOnce(Response.json(answer));
+		const runtime = new DecisionsRuntime(fetcher, catalogs);
+		expect(
+			(
+				await runtime.request(body, [
+					route(),
+					route("api", "api"),
+					route("other-region", "zdr", "global"),
+					route("backup"),
+				])
+			).status,
+		).toBe(200);
+		expect(
+			fetcher.mock.calls.map((c) =>
+				new Headers(c[1].headers).get("authorization"),
+			),
+		).toEqual(["Bearer key-one", "Bearer key-backup"]);
+	});
+	it("does not replay ambiguous transport failures", async () => {
+		const fetcher = vi.fn().mockRejectedValue(Error("connection lost"));
+		const runtime = new DecisionsRuntime(fetcher, catalogs);
+		expect(
+			(await runtime.request(body, [route(), route("backup")])).status,
+		).toBe(502);
+		expect(fetcher).toHaveBeenCalledTimes(1);
+	});
+	it("preserves provider rejection status and safe structured error fields", async () => {
+		const fetcher = vi.fn(async () =>
+			Response.json(
+				{
+					error: {
+						code: "invalid_question",
+						type: "invalid_request_error",
+						param: "questions",
+						message: "private echo",
+					},
+				},
+				{ status: 400 },
+			),
+		);
+		const result = await new DecisionsRuntime(fetcher, catalogs).request(body, [
+			route(),
+		]);
+		expect(result.status).toBe(400);
+		expect(await result.json()).toMatchObject({
+			error: {
+				code: "invalid_question",
+				type: "invalid_request_error",
+				param: "questions",
+			},
+		});
+	});
+	it("honors cancellation during discovery without sending", async () => {
+		const controller = new AbortController();
+		const fetcher = vi.fn();
+		const runtime = new DecisionsRuntime(fetcher, () => new Promise(() => {}));
+		const pending = runtime.request(body, [route()], controller.signal);
+		controller.abort();
+		await expect(pending).rejects.toThrow();
+		expect(fetcher).not.toHaveBeenCalled();
+	});
+	it("bounds stalled response bodies by the request deadline", async () => {
+		vi.useFakeTimers();
+		const fetcher = vi.fn(
+			async () =>
+				new Response(new ReadableStream({ start() {} }), {
+					headers: { "content-type": "application/json" },
+				}),
+		);
+		const pending = new DecisionsRuntime(
+			fetcher,
+			catalogs,
+			Date.now,
+			100,
+		).request(body, [route()]);
+		await vi.advanceTimersByTimeAsync(101);
+		expect((await pending).status).toBe(504);
+		expect(fetcher).toHaveBeenCalledTimes(1);
+	});
+	it("waits Retry-After only for confirmed temporary 429", async () => {
+		vi.useFakeTimers();
+		const fetcher = vi
+			.fn()
+			.mockResolvedValueOnce(
+				Response.json(
+					{ error: { code: "rate_limit_exceeded" } },
+					{ status: 429, headers: { "retry-after": "2" } },
+				),
+			)
+			.mockResolvedValueOnce(Response.json(answer));
+		const pending = new DecisionsRuntime(
+			fetcher,
+			catalogs,
+			Date.now,
+			10000,
+		).request(body, [route()]);
+		await vi.advanceTimersByTimeAsync(1999);
+		expect(fetcher).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(4000);
+		expect((await pending).status).toBe(200);
+	});
+});
+
+it.each([500, 502, 503, 504, 401, 403])(
+	"does not replay provider status %s",
+	async (status) => {
+		const fetcher = vi.fn(async () =>
+			Response.json({ error: { code: "provider_error" } }, { status }),
+		);
+		expect(
+			(
+				await new DecisionsRuntime(fetcher, catalogs).request(body, [
+					route(),
+					route("backup"),
+				])
+			).status,
+		).toBe(status);
+		expect(fetcher).toHaveBeenCalledTimes(1);
+	},
+);
+it("does not retry permanent quota rejection", async () => {
+	const fetcher = vi.fn(async () =>
+		Response.json({ error: { code: "insufficient_quota" } }, { status: 429 }),
+	);
+	expect(
+		(
+			await new DecisionsRuntime(fetcher, catalogs).request(body, [
+				route(),
+				route("backup"),
+			])
+		).status,
+	).toBe(429);
+	expect(fetcher).toHaveBeenCalledTimes(1);
+});
+it("records unsupported endpoint per credential without losing other routes", async () => {
+	const fetcher = vi
+		.fn()
+		.mockResolvedValueOnce(
+			Response.json(
+				{ error: { code: "unsupported_endpoint" } },
+				{ status: 404 },
+			),
+		)
+		.mockImplementation(async () => Response.json(answer));
+	const runtime = new DecisionsRuntime(fetcher, catalogs);
+	const routes = [route(), route("backup")];
+	await runtime.request(body, routes);
+	await runtime.request(body, routes);
+	expect(
+		fetcher.mock.calls.map((c) =>
+			new Headers(c[1].headers).get("authorization"),
+		),
+	).toEqual(["Bearer key-one", "Bearer key-backup", "Bearer key-backup"]);
+});
+it("cancels a Retry-After wait without a retry", async () => {
+	vi.useFakeTimers();
+	const controller = new AbortController();
+	const fetcher = vi.fn(async () =>
+		Response.json(
+			{ error: { code: "rate_limit_exceeded" } },
+			{ status: 429, headers: { "retry-after": "2" } },
+		),
+	);
+	const pending = new DecisionsRuntime(fetcher, catalogs).request(
+		body,
+		[route()],
+		controller.signal,
+	);
+	const rejected = expect(pending).rejects.toThrow();
+	await vi.advanceTimersByTimeAsync(1);
+	controller.abort();
+	await rejected;
+	await vi.advanceTimersByTimeAsync(3000);
+	expect(fetcher).toHaveBeenCalledTimes(1);
+});
+
+it("does not retry an unclassified 429 rejection", async () => {
+	vi.useFakeTimers();
+	const fetcher = vi.fn(async () =>
+		Response.json(
+			{ error: { code: "unknown_rejection" } },
+			{ status: 429, headers: { "retry-after": "1" } },
+		),
+	);
+	const pending = new DecisionsRuntime(fetcher, catalogs).request(body, [
+		route(),
+		route("backup"),
+	]);
+	await vi.advanceTimersByTimeAsync(10000);
+	expect((await pending).status).toBe(429);
+	expect(fetcher).toHaveBeenCalledTimes(1);
+});
