@@ -1,6 +1,7 @@
 # Native Decisions API routing
 
 The runtime rotation proxy accepts `POST /v1/decisions` and `POST /decisions`.
+The authenticated local bridge also forwards `/v1/decisions` to the runtime.
 Requests go to the selected credential's regional `/v1/decisions` endpoint;
 they are never translated to Responses or chat completions.
 
