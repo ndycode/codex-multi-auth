@@ -754,8 +754,8 @@ account labels and never exposes raw account emails.
 
 ## Local bridge commands
 
-The optional local bridge exposes only `/health`, `/v1/models`, and
-`/v1/responses` on loopback; forwarded requests require a bearer token. When a
+The optional local bridge exposes only `/health`, `/v1/models`,
+`/v1/responses`, and `/v1/decisions` on loopback; forwarded requests require a bearer token. When a
 runtime client API key is configured for the bridge, inbound auth must stay
 enabled (`requireAuth=true`); the bridge rewrites outbound auth for the
 rotation proxy and strips inbound cookie/proxy-auth headers.
