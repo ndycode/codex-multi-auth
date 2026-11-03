@@ -81,6 +81,26 @@ const openServers: RuntimeRotationProxyServer[] = [];
 const openManagers: AccountManager[] = [];
 const DEFAULT_CLIENT_API_KEY = "runtime-secret";
 
+it.each([1,2] as const)("recovers a pinned provider from a distinct legacy v%i receipt after clock catch-up", async version => {
+ const resets=await import("../lib/runtime/account-reset-credits.js");
+ const {workspaceModelScopes}=await import("../lib/runtime/workspace-model-scopes.js");
+ const native=await import("../lib/runtime/native-rate-limits.js");
+ let now=Date.now();vi.spyOn(Date,"now").mockImplementation(()=>now);
+ const manager=new AccountManager(undefined,createStorage(now,1)),account=manager.getAccountByIndex(0)!;
+ const scope=workspaceModelScopes(account)[0]!;
+ const receipt={key:scope.id,at:now-1000,outcome:"reset" as const,automatic:false};
+ vi.spyOn(resets,"loadResetCreditState").mockResolvedValue({version,policy:"manual",snapshots:{},lastRedemption:receipt});
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockResolvedValue({accountId:scope.accountId,ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}});
+ let rejected=false;
+ const {calls,fetchImpl}=createRecordingFetch(()=>{if(rejected)return textEventStream();rejected=true;return Response.json({error:{code:"usage_limit_reached"}},{status:429,headers:{"retry-after":"60"}});});
+ const proxy=await startProxy({accountManager:manager,fetchImpl,options:{forcedAccountIndex:0}});
+ const send=()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"});
+ expect((await send()).status).toBe(503);
+ receipt.at=now-10000;now+=1000;
+ expect((await send()).status).toBe(200);expect(calls).toHaveLength(2);
+ expect(rpc).toHaveBeenCalledTimes(1);
+});
+
 it.each([1,2] as const)("does not replay a legacy v%i receipt after rollback precedes provider rejection", async version => {
  const resets=await import("../lib/runtime/account-reset-credits.js");
  const {workspaceModelScopes}=await import("../lib/runtime/workspace-model-scopes.js");

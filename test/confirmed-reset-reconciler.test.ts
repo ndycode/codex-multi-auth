@@ -158,6 +158,25 @@ it.each([1,2] as const)("retains a visible legacy v%i receipt identity when roll
  expect(await f.run()).toBe(true);
 });
 
+it.each([1,2] as const)("accepts a distinct sequenced legacy v%i receipt after clock catch-up", async version => {
+ for (const appliedPrevious of [false,true]) {
+  const f=fixture(),receipt=f.args.state!.lastRedemption!;
+  f.args.state!.version=version;
+  const before=f.args.now();receipt.at=before-1000;
+  if(appliedPrevious)expect(await f.run()).toBe(true);
+  f.account.resetReceiptIdentities={[f.args.scope.id]:JSON.stringify([receipt.key,receipt.at,receipt.outcome,receipt.automatic])};
+  vi.spyOn(Date,"now").mockReturnValue(before);
+  f.manager.markRateLimitedWithReason(f.account,300000,"codex","quota","chat-test",f.args.scope.id);
+  receipt.at=before-10000;
+  f.args.now=()=>before+1000;f.snapshot.updatedAt=before+1000;
+  expect(await f.run()).toBe(true);
+  expect(f.args.read).toHaveBeenCalledTimes(appliedPrevious?2:1);
+  f.account.rateLimitResetTimes.codex=before+300000;
+  expect(await f.run()).toBe(false);
+  vi.restoreAllMocks();
+ }
+});
+
 it("accepts a new receipt after a backward clock step", async () => {
 	const f = fixture(); let now = f.args.now(); f.args.now = () => now;
 	expect(await f.run()).toBe(true);

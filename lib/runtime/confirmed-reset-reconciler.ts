@@ -59,11 +59,16 @@ export class ConfirmedResetReconciler {
 		}
 		// Modern receipts are ordered by durable generation, not wall time. A
 		// rejection after this generation was observed cannot replay that receipt.
-		const rejectedAfterReceipt = [account.rateLimitObservations?.[observationKey], account.rateLimitObservations?.[family]].some(rejection =>
+		const rejections = [account.rateLimitObservations?.[observationKey], account.rateLimitObservations?.[family]];
+		// Once a legacy receipt was sequenced, identity takes precedence over wall
+		// time even after clock catch-up, including the previous operation below.
+		const hasSequencedLegacyIdentity = rejections.some(rejection => rejection?.receiptIdentities?.[scope.id] !== undefined);
+		const rejectedAfterReceipt = rejections.some(rejection =>
 			receipt.generation !== undefined
 				? (rejection?.receiptGenerations?.[scope.id] ?? 0) >= receipt.generation
-				: rejection?.receiptIdentities?.[scope.id] === resetReceiptIdentity(receipt) ||
-                    (rejection?.observedAt ?? 0) > receipt.at &&
+				: rejection?.receiptIdentities?.[scope.id] !== undefined
+					? rejection.receiptIdentities[scope.id] === resetReceiptIdentity(receipt)
+					: (rejection?.observedAt ?? 0) > receipt.at &&
 					((rejection?.observedAt ?? 0) <= now || receipt.at > now));
 		if (!eligible() || rejectedAfterReceipt || (receipt.generation !== undefined && receipt.generation < (account.resetReceiptGenerations?.[scope.id] ?? 0))) return false;
 		if (!(quotaResetTime(account, family, scope.accountId) > now ||
@@ -77,7 +82,7 @@ export class ConfirmedResetReconciler {
 		if (existing && existing.manager === manager && existing.account === account &&
 			(receipt.generation !== undefined
 				? existing.generation !== undefined && existing.generation >= receipt.generation
-				: existing.generation !== undefined || existing.at === receipt.at || (existing.at <= now && existing.at > receipt.at)) &&
+				: existing.generation !== undefined || existing.at === receipt.at || (!hasSequencedLegacyIdentity && existing.at <= now && existing.at > receipt.at)) &&
 			(existing.retryAfter === undefined || (now >= existing.startedAt && now < existing.retryAfter))) {
 			await existing.promise;
 			return false;
