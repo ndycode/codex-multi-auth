@@ -29,9 +29,12 @@ or reasoning settings are injected. Native answers, refusals, and usage remain
 intact. Provider rejection status and safe error code/type/parameter fields
 are preserved; error messages are sanitized to avoid reflecting private input.
 
-Unsupported endpoint responses (404/405/501) allow another eligible credential
-in the same pool and region and are cached for five minutes per credential,
-model, and endpoint. Responses capability state is unaffected. A credential
+Unsupported endpoint responses (405, 501, and a 404 that names the model or
+endpoint or carries no structured error) allow another eligible credential in
+the same pool and region and are cached for five minutes per credential,
+model, and endpoint. A 404 about request content, such as a missing input
+file, is returned to the caller without failover or caching. Responses
+capability state is unaffected. A credential
 rejected with 401, 403, or a permanent quota 429 (`insufficient_quota` and
 similar) is rejected before inference, so the next eligible credential in the
 same pool and region is tried and the rejected one is not sent again for that

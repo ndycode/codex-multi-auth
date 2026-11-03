@@ -374,6 +374,56 @@ it("records unsupported endpoint per credential without losing other routes", as
 		),
 	).toEqual(["Bearer key-one", "Bearer key-backup", "Bearer key-backup"]);
 });
+it.each([
+	{ code: "model_not_found", type: "invalid_request_error" },
+	{ code: "not_found", param: "model" },
+	{ code: null, param: null, type: "invalid_request_error" },
+])("caches a 404 that names the model or endpoint (%o)", async (error) => {
+	const fetcher = vi
+		.fn()
+		.mockResolvedValueOnce(Response.json({ error }, { status: 404 }))
+		.mockImplementation(async () => Response.json(answer));
+	const runtime = new DecisionsRuntime(fetcher, catalogs);
+	const routes = [route(), route("backup")];
+	expect((await runtime.request(body, routes)).status).toBe(200);
+	expect((await runtime.request(body, routes)).status).toBe(200);
+	expect(authorizations(fetcher)).toEqual([
+		"Bearer key-one",
+		"Bearer key-backup",
+		"Bearer key-backup",
+	]);
+});
+it.each([
+	{ code: "not_found", type: "invalid_request_error", param: "input" },
+	{ code: "file_not_found", type: "invalid_request_error" },
+])(
+	"returns a request-specific 404 without disabling the credential (%o)",
+	async (error) => {
+		const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) =>
+			String(init?.body).includes("file-missing")
+				? Response.json({ error }, { status: 404 })
+				: Response.json(answer),
+		);
+		const runtime = new DecisionsRuntime(fetcher, catalogs);
+		const routes = [route(), route("backup")];
+		const missing = await runtime.request(
+			{
+				...body,
+				input: [
+					{
+						role: "user",
+						content: [{ type: "input_file", file_id: "file-missing" }],
+					},
+				],
+			},
+			routes,
+		);
+		expect(missing.status).toBe(404);
+		expect((await missing.json()).error).toMatchObject(error);
+		expect((await runtime.request(body, routes)).status).toBe(200);
+		expect(authorizations(fetcher)).toEqual(["Bearer key-one", "Bearer key-one"]);
+	},
+);
 it("cancels a Retry-After wait without a retry", async () => {
 	vi.useFakeTimers();
 	const controller = new AbortController();

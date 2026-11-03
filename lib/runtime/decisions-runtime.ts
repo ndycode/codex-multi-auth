@@ -12,6 +12,7 @@ import { isRecord } from "../utils.js";
 import { extractUsageTokenCounts } from "../usage/usage-extraction.js";
 import type { UsageTokenCounts } from "../usage/types.js";
 import { ApiRateBackoff } from "./api-rate-backoff.js";
+import { classifyCapabilityFailure } from "./runtime-capability-failures.js";
 
 const instructions = z.union([
 	z.string(),
@@ -102,12 +103,29 @@ const PERMANENT_QUOTA_CODES = [
 ];
 /** How one credential's rejection steers the rest of the request. */
 type Rejection = "unsupported" | "credential" | "rate_limited" | "final";
+// A 404 marks the credential unsupported only when it names the model or the
+// endpoint, or names nothing (non-JSON, unknown URL). One caller's missing
+// input must not disable the credential for every caller.
+function notFoundNamesRoute(error: Record<string, unknown>): boolean {
+	if (
+		error.param === "model" ||
+		classifyCapabilityFailure(404, { error }) === "model"
+	)
+		return true;
+	const absent = (value: unknown) => value === undefined || value === null;
+	return (
+		absent(error.param) &&
+		(absent(error.code) || error.code === "unsupported_endpoint")
+	);
+}
 function classifyRejection(
 	status: number,
 	error: Record<string, unknown>,
 ): Rejection {
 	const named = (code: string) => error.code === code || error.type === code;
-	if (status === 404 || status === 405 || status === 501) return "unsupported";
+	if (status === 405 || status === 501) return "unsupported";
+	if (status === 404)
+		return notFoundNamesRoute(error) ? "unsupported" : "final";
 	// Authentication and permanent quota reject the key before inference runs,
 	// so trying another key cannot replay a decision.
 	if (
