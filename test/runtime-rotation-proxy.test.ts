@@ -7639,11 +7639,13 @@ it("does not publish an API-only picker cache when cold subscription discovery e
  const fakeSetTimeout = globalThis.setTimeout;
  let deadlineScheduled!: () => void;
  const waiting = new Promise<void>(resolve => { deadlineScheduled = resolve; });
- const timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback, delay, ...args) => {
+ // Not vi.spyOn: afterEach's restoreAllMocks would re-restore that spy and
+ // reinstall this dead fake clock for every later test in the file.
+ globalThis.setTimeout = ((callback, delay, ...args) => {
   const timer = fakeSetTimeout(callback, delay, ...args);
   if (delay === 2000) deadlineScheduled();
   return timer;
- }) as typeof setTimeout);
+ }) as typeof setTimeout;
  try {
   const pending = getModels(proxy, "/models?client_version=2.0");
   await waiting;
@@ -7651,7 +7653,7 @@ it("does not publish an API-only picker cache when cold subscription discovery e
   const cold = await pending;
   expect(cold.status).toBe(503);
   expect(await cold.json()).toMatchObject({error: {code: "account_catalog_unavailable"}});
- } finally { release(); timerSpy.mockRestore(); vi.useRealTimers(); }
+ } finally { release(); globalThis.setTimeout = fakeSetTimeout; vi.useRealTimers(); }
  const ready = await getModels(proxy, "/models?client_version=2.0");
  expect((await ready.json()).models.map((m: {slug: string}) => m.slug)).toEqual(["fixture-subscription", "zdr/fixture-api"]);
 });
@@ -7730,11 +7732,13 @@ it("does not publish an API-only picker cache when stale subscription refresh ex
  const fakeSetTimeout = globalThis.setTimeout;
  let deadlineScheduled!: () => void;
  const waiting = new Promise<void>(resolve => { deadlineScheduled = resolve; });
- const timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback, delay, ...args) => {
+ // Not vi.spyOn: afterEach's restoreAllMocks would re-restore that spy and
+ // reinstall this dead fake clock for every later test in the file.
+ globalThis.setTimeout = ((callback, delay, ...args) => {
   const timer = fakeSetTimeout(callback, delay, ...args);
   if (delay === 2000) deadlineScheduled();
   return timer;
- }) as typeof setTimeout);
+ }) as typeof setTimeout;
  try {
   const pending = getModels(proxy, "/models?client_version=1.0");
   await waiting;
@@ -7742,7 +7746,7 @@ it("does not publish an API-only picker cache when stale subscription refresh ex
   const cold = await pending;
   expect(cold.status).toBe(503);
   expect(await cold.json()).toMatchObject({error: {code: "account_catalog_unavailable"}});
- } finally { release(); timerSpy.mockRestore(); vi.useRealTimers(); }
+ } finally { release(); globalThis.setTimeout = fakeSetTimeout; vi.useRealTimers(); }
  const ready = await getModels(proxy, "/models?client_version=1.0");
  expect((await ready.json()).models.map((m: {slug: string}) => m.slug)).toEqual(["fixture-subscription", "zdr/fixture-api"]);
 });
