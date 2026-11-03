@@ -15,10 +15,14 @@ interface Operation {
 	startedAt: number;
 	manager: AccountManager;
 	account: ManagedAccount;
+	failures: number;
 	retryAfter?: number;
 	promise: Promise<boolean>;
 }
 const RETRY_DELAY_MS = 5_000;
+// Backend propagation can lag a redemption, so an exhausted read is never
+// final; a long-retained receipt must not cost a native read every 5 seconds.
+const MAX_RETRY_DELAY_MS = 300_000;
 
 /** A redemption is a durable notification, not a permanently healthy quota snapshot. */
 export class ConfirmedResetReconciler {
@@ -93,7 +97,9 @@ export class ConfirmedResetReconciler {
 			const generations = account.resetReceiptGenerations ??= {};
 			generations[scope.id] = Math.max(generations[scope.id] ?? 0, receipt.generation);
 		}
-		const operation: Operation = { identity, generation:receipt.generation, startedAt:now, manager, account, promise: Promise.resolve(false) };
+		const failures = existing?.manager === manager && existing.account === account &&
+			existing.identity === identity && existing.generation === receipt.generation ? existing.failures : 0;
+		const operation: Operation = { identity, generation:receipt.generation, startedAt:now, manager, account, failures, promise: Promise.resolve(false) };
 		if (this.operations.size >= 1000 && !this.operations.has(key)) {
 			this.operations.delete(this.operations.keys().next().value ?? "");
 		}
@@ -111,7 +117,8 @@ export class ConfirmedResetReconciler {
 			if (revision() !== startedRevision) return false;
 			if (!snapshot || snapshot.updatedAt < startedAt || snapshot.updatedAt > options.now() ||
 				snapshot.ordinaryUsageAllowed !== true) {
-				operation.retryAfter = options.now() + RETRY_DELAY_MS;
+				operation.failures++;
+				operation.retryAfter = options.now() + Math.min(RETRY_DELAY_MS * 2 ** (operation.failures - 1), MAX_RETRY_DELAY_MS);
 				return false;
 			}
 			if (options.observations.size >= 1000 && !options.observations.has(key)) {

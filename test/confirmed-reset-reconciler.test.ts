@@ -106,6 +106,21 @@ it.each(["error", "unknown", "exhausted"])("backs off %s reads, then retries the
 	expect(read).toHaveBeenCalledTimes(2);
 });
 
+it("doubles the wait between unconfirmed reads of the same receipt up to five minutes", async () => {
+	const f = fixture(); let now = f.args.now(); f.args.now = () => now;
+	f.account.rateLimitResetTimes = {codex:now + 3_600_000};
+	const read = vi.fn(async (): Promise<ResetSnapshot> => ({...f.snapshot, updatedAt:now, ordinaryUsageAllowed:false})); f.args.read = read;
+	expect(await f.run()).toBe(false);
+	for (const seconds of [5, 10, 20, 40, 80, 160, 300, 300]) {
+		const reads = read.mock.calls.length;
+		now += seconds * 1_000 - 1; expect(await f.run()).toBe(false); expect(read).toHaveBeenCalledTimes(reads);
+		now += 1; expect(await f.run()).toBe(false); expect(read).toHaveBeenCalledTimes(reads + 1);
+	}
+	// A different receipt is a new redemption and is checked immediately.
+	f.args.state!.lastRedemption!.at = now - 1_000;
+	expect(await f.run()).toBe(false); expect(read).toHaveBeenCalledTimes(10);
+});
+
 it("retries an aborted read after the manager becomes current again", async () => {
 	const f = fixture();
 	f.args.read = vi.fn(async () => { f.args.isCurrent = () => false; return f.snapshot; });
