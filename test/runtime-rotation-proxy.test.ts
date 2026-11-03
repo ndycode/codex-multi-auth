@@ -590,6 +590,43 @@ it("bounds an unsequenced rejection at the next request's read, before a redempt
  expect(rpc).toHaveBeenCalledTimes(1);
 });
 
+it.each(["waits on its native read","rereads receipts"] as const)("lets a request that %s while another request recovers the account reselect it", async phase => {
+ const fs=await import("node:fs/promises"),os=await import("node:os"),path=await import("node:path");
+ const previousDir=process.env.CODEX_MULTI_AUTH_DIR;
+ process.env.CODEX_MULTI_AUTH_DIR=await fs.mkdtemp(path.join(os.tmpdir(),"reset-shared-waiter-"));
+ onTestFinished(async()=>{
+  const dir=process.env.CODEX_MULTI_AUTH_DIR!;
+  if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
+  await removeWithRetry(dir,{recursive:true,force:true});
+ });
+ const resets=await import("../lib/runtime/account-reset-credits.js");
+ const native=await import("../lib/runtime/native-rate-limits.js");
+ const {workspaceModelScopes}=await import("../lib/runtime/workspace-model-scopes.js");
+ const now=Date.now();vi.spyOn(Date,"now").mockReturnValue(now);
+ const family=getModelFamily("chat-fixture"),manager=new AccountManager(undefined,createStorage(now,1));
+ const account=manager.getAccountByIndex(0)!,scope=workspaceModelScopes(account).find(s=>s.routable)!;
+ // An expired quota rejection left the exact admission bucket empty, so both requests attempt and exclude the account.
+ manager.markRateLimitedWithReason(account,0,family,"quota","chat-fixture",scope.id,{workspaceId:"acc_1"});
+ getTokenTracker().drain(getRuntimeTrackerKey(account),`${family}:chat-fixture`,DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens);
+ const receipt={key:scope.id,at:now,outcome:"reset" as const,automatic:false,generation:1};
+ let loads=0,bothChecking!:()=>void,firstServed!:()=>void;
+ const checking=new Promise<void>(resolve=>{bothChecking=resolve;}),served=new Promise<void>(resolve=>{firstServed=resolve;});
+ // One shared request read, then one fresh read per blocked request.
+ vi.spyOn(resets,"loadResetCreditState").mockImplementation(async()=>{
+  if(++loads===3){bothChecking();if(phase==="rereads receipts")await served;}
+  return {version:3,policy:"manual",snapshots:{},redemptionGeneration:1,lastRedemption:receipt,redemptions:{[scope.id]:receipt}};
+ });
+ let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async auth=>{await gate;return {accountId:auth.accountId,ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}};});
+ const {calls,fetchImpl}=createRecordingFetch(()=>textEventStream());
+ const proxy=await startProxy({accountManager:manager,fetchImpl});
+ const send=()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"}).then(result=>{firstServed();return result;});
+ const results=Promise.all([send(),send()]);
+ await checking;await new Promise(resolve=>setImmediate(resolve));release();
+ expect((await results).map(result=>result.status)).toEqual([200,200]);
+ expect(rpc).toHaveBeenCalledTimes(1);expect(calls).toHaveLength(2);
+});
+
 it("shares one reset-state read across concurrent healthy provider requests", async () => {
  const now=Date.now();vi.spyOn(Date,"now").mockReturnValue(now);
  const resets=await import("../lib/runtime/account-reset-credits.js");

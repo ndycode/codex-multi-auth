@@ -51,9 +51,9 @@ it("applies a receipt once and preserves a later 429, even with the same deadlin
 	expect(f.args.read).toHaveBeenCalledTimes(1);
 });
 
-it("shares a read across simultaneous requests", async () => {
+it("shares a read across simultaneous requests and reports its recovery to each", async () => {
 	const f = fixture();
-	expect(await Promise.all([f.run(), f.run(), f.run()])).toEqual([true, false, false]);
+	expect(await Promise.all([f.run(), f.run(), f.run()])).toEqual([true, true, true]);
 	expect(f.args.read).toHaveBeenCalledTimes(1);
 });
 
@@ -286,7 +286,7 @@ it("handles a clock rollback after the receipt and still applies that receipt on
  const f = fixture(); const receiptAt = f.args.now();
  f.state.lastRedemption!.at = receiptAt;
  f.args.now = () => receiptAt - 600_000; f.snapshot.updatedAt = f.args.now();
- expect(await Promise.all([f.run(), f.run()])).toEqual([true, false]);
+ expect(await Promise.all([f.run(), f.run()])).toEqual([true, true]);
  f.account.rateLimitResetTimes.codex = receiptAt + 300_000;
  expect(await f.run()).toBe(false); expect(f.args.read).toHaveBeenCalledTimes(1);
 });

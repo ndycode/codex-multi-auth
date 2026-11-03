@@ -82,6 +82,8 @@ export class ConfirmedResetReconciler {
 		if (!eligible() || !blocked(options.now())) return false;
 		const state = await options.state();
 		if (state) settleReceiptBaselines(account, state);
+		// A concurrent check can recover the account meanwhile; the caller then reselects it.
+		if (!blocked(options.now())) return eligible();
 		const receipt = receiptFor(state, scope.id);
 		if (state?.pending?.key === scope.id || !receipt ||
 			(receipt.outcome !== "reset" && receipt.outcome !== "alreadyRedeemed") || receipt.key !== scope.id) return false;
@@ -98,7 +100,7 @@ export class ConfirmedResetReconciler {
 					? rejection.receiptIdentities[scope.id] === identity
 					: (rejection?.observedAt ?? 0) > receipt.at &&
 						((rejection?.observedAt ?? 0) <= now || receipt.at > now));
-		if (!eligible() || rejectedAfterReceipt || !blocked(now) ||
+		if (!eligible() || rejectedAfterReceipt ||
 			(receipt.generation !== undefined && receipt.generation < (account.resetReceiptGenerations?.[scope.id] ?? 0))) return false;
 		// Receipt time may be ahead of this process after a clock rollback. Fresh
 		// permission still decides recovery; exact receipt identity prevents replay.
@@ -110,7 +112,7 @@ export class ConfirmedResetReconciler {
 				: existing.generation !== undefined || existing.identity === identity) &&
 			(existing.retryAfter === undefined || (now >= existing.startedAt && now < existing.retryAfter))) {
 			await existing.promise;
-			return false;
+			return eligible() && !blocked(options.now());
 		}
 		// Install the operation before starting I/O so concurrent requests share it.
 		if (receipt.generation !== undefined) {
