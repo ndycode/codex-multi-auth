@@ -9,7 +9,7 @@ import {
 	type UsageLedgerSource,
 	type UsageTokenCounts,
 } from "./types.js";
-import { estimateUsageCostUsd } from "./pricing.js";
+import { estimateUsageCostUsd, isUnpricedOperation } from "./pricing.js";
 
 const VALID_SOURCES = new Set<UsageLedgerSource>([
 	"runtime-proxy",
@@ -173,7 +173,9 @@ export function normalizeUsageLedgerRow(
 		tokens,
 		costUsd:
 			explicitCost === null
-				? (input.operation === "decisions" ? null : estimateUsageCostUsd(model, tokens))
+				? isUnpricedOperation(input.operation)
+					? null
+					: estimateUsageCostUsd(model, tokens)
 				: Math.max(0, explicitCost),
 	};
 }

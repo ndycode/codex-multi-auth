@@ -22,6 +22,7 @@ import {
 } from "./runtime-policy-cache.js";
 import {
 	appendUsageLedgerRow,
+	isUnpricedOperation,
 	readUsageLedgerRows,
 	summarizeUsageRows,
 	type UsageLedgerAppendInput,
@@ -193,6 +194,7 @@ export async function evaluateRuntimePolicy(input: {
 	model: string | null;
 	capabilityPolicy?: CapabilityPolicyStore | null;
 	now?: number;
+	operation?: UsageLedgerOperation;
 }): Promise<RuntimePolicyDecision> {
 	const now = input.now ?? Date.now();
 	const reasons: string[] = [];
@@ -226,6 +228,19 @@ export async function evaluateRuntimePolicy(input: {
 		if (!evaluation.allowed) {
 			reasons.push(
 				`budget ${evaluation.key} blocked request: ${evaluation.reasons.join("; ")}`,
+			);
+		}
+	}
+	// Every budget window sums all ledger rows, whatever its key, so one row of
+	// unknown cost leaves every cost budget unevaluable and failing closed for
+	// all traffic until its window ends. Refuse before any upstream send.
+	if (isUnpricedOperation(input.operation)) {
+		const costBudgets = Object.values(input.state.budgets.limits)
+			.filter((limit) => limit.maxCostUsd !== undefined)
+			.map((limit) => limit.key);
+		if (costBudgets.length > 0) {
+			reasons.push(
+				`${input.operation} requests have no configured price, so recording one would leave cost budget ${costBudgets.join(", ")} unable to evaluate spend and block all requests until its window ends. Budget on --requests/--tokens instead of --cost to allow ${input.operation} requests.`,
 			);
 		}
 	}

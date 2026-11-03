@@ -33,6 +33,7 @@ import {
 import * as storageMetaModule from "../lib/runtime/rotation-storage-meta.js";
 import * as runtimePolicy from "../lib/policy/runtime-policy.js";
 import { readUsageLedgerRows } from "../lib/usage/ledger.js";
+import { saveBudgetGuardStore } from "../lib/budget-guard.js";
 import { resetRefreshQueue } from "../lib/refresh-queue.js";
 import {
 	DEFAULT_TOKEN_BUCKET_CONFIG,
@@ -7816,5 +7817,32 @@ describe("Decisions endpoint routing", () => {
   const text=await exhausted.text();
   expect(JSON.parse(text).error.code).toBe("decisions_pool_unavailable");
   expect(text).not.toContain("invalid_api_key");
+ });
+ it("refuses Decisions under a cost budget before sending, so unpriced usage cannot block other traffic",async()=>{
+  const fs=await import("node:fs/promises");const os=await import("node:os");const path=await import("node:path");
+  const previousDir=process.env.CODEX_MULTI_AUTH_DIR;const dir=await fs.mkdtemp(path.join(os.tmpdir(),"decisions-cost-budget-"));process.env.CODEX_MULTI_AUTH_DIR=dir;
+  try{
+   await saveBudgetGuardStore({version:1,limits:{global:{key:"global",window:"month",maxCostUsd:50,updatedAt:Date.now()}}});
+   const routes=[{id:"decision",label:"Fixture",kind:"zdr" as const,region:"us" as const,apiKey:"fixture-key",enabled:true,priority:0,visibleModels:["decision-test"],modelProfiles:{"decision-test":{supported_endpoints:["/v1/decisions"]}}}];
+   const {calls,fetchImpl}=createRecordingFetch(call=>call.url.startsWith("https://us.api.openai.com/")
+    ?call.url.endsWith("/models")?Response.json({data:[{id:"decision-test"}]}):Response.json({answers:[{type:"predicate",name:null,probability:1}],usage:{input_tokens:12,output_tokens:0,total_tokens:12}})
+    :textEventStream());
+   const proxy=await startProxy({accountManager:new AccountManager(undefined,createStorage(Date.now(),1)),fetchImpl,options:{readApiRoutes:async()=>routes}});
+   const refused=await postResponses(proxy,{model:"zdr/decision-test",input:"fixture",questions:[{type:"predicate",instructions:"check"}]},"/v1/decisions");
+   expect(refused.status).toBe(403);
+   const payload=await refused.json();
+   expect(payload.error.code).toBe("policy_blocked");
+   expect(payload.error.reasons.join(" ")).toMatch(/decisions requests have no configured price.*global/);
+   expect(calls.filter(c=>c.url.startsWith("https://us.api.openai.com/"))).toHaveLength(0);
+   const oauth=await postResponses(proxy,{model:"gpt-5-codex",stream:true});
+   expect(oauth.status).toBe(200);await oauth.text();
+   await vi.waitFor(async()=>{
+    const rows=await readUsageLedgerRows();
+    expect(rows.map(r=>[r.operation,r.outcome,r.tokens.totalTokens])).toEqual([["decisions","blocked",0],["responses","success",expect.any(Number)]]);
+   });
+  }finally{
+   if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
+   await removeWithRetry(dir,{recursive:true,force:true});
+  }
  });
 });

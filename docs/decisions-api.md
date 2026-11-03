@@ -58,8 +58,17 @@ The usage ledger records the `decisions` operation and actual provider token
 counts, including for responses larger than the generic stream scanner's cap.
 The full provider usage object is returned to the caller. Endpoint-specific
 pricing is not configured: estimated cost remains unknown (`null`), never zero
-or a Responses-model estimate. Existing cost-budget handling of unknown costs
-continues to apply; callers must not present these requests as free.
+or a Responses-model estimate. Callers must not present these requests as
+free.
+
+Every budget window counts all ledger rows, whatever the budget's key, and a
+cost budget whose window holds usage of unknown cost cannot be evaluated and
+fails closed for all traffic until the window ends. So while any `--cost`
+budget exists, the runtime proxy refuses Decisions requests with 403
+`policy_blocked` before discovery or inference, and the reason names the cost
+budgets responsible. Budget on `--requests` or `--tokens` to allow Decisions.
+Decisions usage recorded before a cost budget was created still makes that
+budget fail closed until the usage leaves its window.
 
 Provider contract references:
 [Decisions guide](https://developers.openai.com/api/docs/guides/decisions) and

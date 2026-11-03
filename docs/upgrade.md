@@ -88,7 +88,10 @@ PSP and subscription routes are unchanged and are not used for Decisions.
 
 Usage records have a new `decisions` operation. Endpoint-specific prices remain
 unknown (`null`); they never use Responses prices. Cost budgets cannot be
-evaluated while unpriced token usage is in their window and fail closed.
+evaluated while unpriced token usage is in their window and fail closed, so
+while any `--cost` budget exists, Decisions requests are refused with 403
+`policy_blocked` before inference. Use `--requests` or `--tokens` budgets to
+allow them.
 See [Decisions API routing](decisions-api.md) for configuration and retry limits.
 
 ### Web search and voice through runtime rotation

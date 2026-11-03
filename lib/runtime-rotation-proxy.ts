@@ -1699,6 +1699,19 @@ async function handleRequestInner(
 			return;
 		}
 		const requestStartedAt = state.now();
+		const usageOperation = isDecisionsRequest ? "decisions" : isModelsRequest
+			? "models"
+			: isThreadGoalRequest
+				? "thread-goal"
+				: isImageRequest
+					? "images"
+					: isTranscribeRequest
+						? "transcribe"
+						: isSearchRequest
+							? "search"
+							: isRealtimeCallRequest
+								? "realtime"
+								: "responses";
 		let policyDecision: RuntimePolicyDecision | null = null;
 		let runtimePolicyState: Awaited<ReturnType<typeof loadRuntimePolicyState>> | null = null;
 		let projectKey: string | null = null;
@@ -1711,6 +1724,7 @@ async function handleRequestInner(
 				accounts: accountManager.getAccountsSnapshot(),
 				model: context.model,
 				now: requestStartedAt,
+				operation: usageOperation,
 			});
 			mutateRuntimeObservabilitySnapshot((snapshot) => {
 				snapshot.policyBlockedIndexes = [
@@ -1729,19 +1743,7 @@ async function handleRequestInner(
 		/** Build a recorder for the model that actually serves this request. */
 		const createUsageRecorderForModel = (model: string | null) => createRuntimeUsageRecorder({
 			source: "runtime-proxy",
-			operation: isDecisionsRequest ? "decisions" : isModelsRequest
-				? "models"
-				: isThreadGoalRequest
-					? "thread-goal"
-					: isImageRequest
-						? "images"
-						: isTranscribeRequest
-							? "transcribe"
-							: isSearchRequest
-								? "search"
-								: isRealtimeCallRequest
-									? "realtime"
-									: "responses",
+			operation: usageOperation,
 			model,
 			projectKey,
 			requestId: traceId,

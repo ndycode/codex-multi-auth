@@ -739,7 +739,9 @@ tier); their spend is recorded as unknown, and a `--cost` limit over a window
 containing them **fails closed** (`cost limit cannot be evaluated` blocks,
 because treating unknown spend as `$0.00` would let the cap be exceeded without
 firing). Budget on `--requests`/`--tokens` for unpriced models, or add a rate
-to `MODEL_PRICING`. Budgets are advisory: racing requests can overshoot before
+to `MODEL_PRICING`. Decisions API calls have no price at all, so while any
+`--cost` limit exists the runtime proxy refuses them before inference (see
+[Decisions API routing](../decisions-api.md)). Budgets are advisory: racing requests can overshoot before
 the ledger reflects them.
 
 `monitor` aggregates runtime observability, usage, policy, routing profile,
