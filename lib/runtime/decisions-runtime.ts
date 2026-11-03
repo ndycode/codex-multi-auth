@@ -101,6 +101,7 @@ function waitAtMost<T>(
 // Answers echo per-choice probabilities, and the request schema allows 400
 // questions of 2000 choices each, so match the proxy's 64 MiB request cap.
 const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+const DISCOVERY_DEADLINE_MARGIN_MS = 1_000;
 /** Resolves `null` when the body exceeds MAX_RESPONSE_BYTES. */
 async function readBody(
 	response: Response,
@@ -418,20 +419,25 @@ export class DecisionsRuntime {
 						);
 					}
 				}
-				const now = this.now();
-				const wait = Math.max(0, readyAt - now);
-				if (discovering.size) {
+				// Stop waiting for backup discovery before the deadline, so a known
+				// cooldown still reaches the caller as a 429 with Retry-After.
+				const discoveryLeft = deadline - this.now() - DISCOVERY_DEADLINE_MARGIN_MS;
+				if (discovering.size && discoveryLeft > 0) {
+					const cooldownLeft = Math.max(0, readyAt - this.now());
 					const ready = await waitAtMost(
-						wait,
+						Math.min(cooldownLeft, discoveryLeft),
 						controller.signal,
 						Promise.race(discovering.values()),
 					);
 					if (ready) {
 						discovering.delete(ready.id);
 						resolved.candidates.push(...decisionsRoute(ready.catalogs).candidates);
+						continue;
 					}
-					continue;
+					if (cooldownLeft < discoveryLeft) continue;
 				}
+				const now = this.now();
+				const wait = Math.max(0, readyAt - now);
 				if (!Number.isFinite(readyAt)) return last;
 				if (wait >= deadline - now)
 					return Response.json(

@@ -638,6 +638,27 @@ describe("cold backup catalogs", () => {
 		expect(status).toBe(200);
 		expect(authorizations(fetcher)).toEqual(["Bearer key-one", "Bearer key-one"]);
 	});
+	it("keeps the cooldown's Retry-After when backup discovery outlasts the deadline", async () => {
+		vi.useFakeTimers();
+		const fetcher = vi.fn(async () =>
+			Response.json(
+				{ error: { code: "rate_limit_exceeded" } },
+				{ status: 429, headers: { "retry-after": "120" } },
+			),
+		);
+		const pending = new DecisionsRuntime(
+			fetcher,
+			warmPrimary(() => new Promise(() => {})),
+			Date.now,
+			60_000,
+		).request(body, [route(), route("backup")]);
+		await vi.advanceTimersByTimeAsync(60_000);
+		const response = await pending;
+		expect(response.status).toBe(429);
+		expect(Number(response.headers.get("retry-after"))).toBeGreaterThanOrEqual(60);
+		expect((await response.json()).error.code).toBe("rate_limit_exceeded");
+		expect(authorizations(fetcher)).toEqual(["Bearer key-one"]);
+	});
 });
 it("cancels a Retry-After wait without a retry", async () => {
 	vi.useFakeTimers();
