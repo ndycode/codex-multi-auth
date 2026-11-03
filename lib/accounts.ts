@@ -2073,13 +2073,13 @@ export class AccountManager {
 		for (const account of enabledAccounts) {
 			const perAccountWaitTimes: number[] = [];
 			const baseResetAt = quotaResetTime(account, baseKey);
-			if (model !== LUNA_RESERVE_MODEL && typeof baseResetAt === "number") {
+			if (model !== LUNA_RESERVE_MODEL && baseResetAt > now) {
 				perAccountWaitTimes.push(Math.max(0, baseResetAt - now));
 			}
 
 			if (modelKey) {
 				const modelResetAt = quotaResetTime(account, modelKey);
-				if (typeof modelResetAt === "number") {
+				if (modelResetAt > now) {
 					perAccountWaitTimes.push(Math.max(0, modelResetAt - now));
 				}
 			}

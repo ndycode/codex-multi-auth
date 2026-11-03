@@ -3138,6 +3138,33 @@ async function handleRequestInner(
 			// Refresh can publish another manager/selection. Attribute all response
 			// observations to the finalized serving workspace, not the pre-refresh one.
 			const quotaScheduleKey = buildQuotaScheduleKey(refreshed.account, context.family, context.model, accountId ?? undefined);
+			// Provider refresh may change the selected workspace after admission.
+			// Recheck its actual bounds before dispatch, without claiming another
+			// pool token or half-open circuit probe through a selection restart.
+			if (!state.nativeOpenai && isResponsesRequest && accountId) {
+				const now = state.now();
+				const familyDeadline = context.model === LUNA_RESERVE_MODEL ? 0 :
+					quotaResetTime(refreshed.account, getQuotaKey(context.family), accountId);
+				const modelDeadline = quotaResetTime(refreshed.account, getQuotaKey(context.family, context.model), accountId);
+				const deferral = state.preemptiveQuotaScheduler.getDeferral(quotaScheduleKey, now);
+				const deferred = context.model !== LUNA_RESERVE_MODEL && deferral.defer && deferral.waitMs > 0;
+				if (Math.max(familyDeadline, modelDeadline) > now || deferred) {
+					refundConsumedPoolToken(refreshed.account);
+					accountSkipReasons.set(refreshed.account.index, "rate-limited");
+					exhaustionReason = "rate-limit";
+					capabilityRejectionIsLatest = false;
+					if (deferred) {
+						observeResetGenerations(refreshed.account, resetCreditState, requestScope?.id);
+						accountManager.markRateLimitedWithReason(refreshed.account, deferral.waitMs,
+							context.family, "quota", context.model, requestScope?.id, {workspaceId: accountId});
+						accountManager.saveToDiskDebounced();
+					}
+					attemptedIndexes.add(refreshed.account.index);
+					if (isPinned) break;
+					noteRotation();
+					continue;
+				}
+			}
 			if (!accountId) {
 				refundConsumedPoolToken(refreshed.account);
 				accountManager.recordFailure(refreshed.account, context.family, context.model);

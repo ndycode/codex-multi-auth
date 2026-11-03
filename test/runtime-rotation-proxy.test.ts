@@ -110,6 +110,39 @@ it("keeps native requests usable after a near-limit stream frame with fresh perm
  expect(quotaResetTime(manager.getAccountByIndex(0)!,getModelFamily("chat-fixture"))).toBe(0);
 });
 
+it.each(["deadline", "scheduler"] as const)("rechecks provider %s admission after refresh selects a blocked workspace", async blocker => {
+ const now=Date.now(),disk=createStorage(now,1);
+ disk.accounts[0]!.recordId="refresh-blocked-fixture";
+ disk.accounts[0]!.workspaces=[{id:"acc_1",enabled:true},{id:"selected-b",enabled:true}];
+ disk.accounts[0]!.currentWorkspaceIndex=0;
+ const manager=new AccountManager(undefined,disk);
+ const next=structuredClone(disk);next.accounts[0]!.currentWorkspaceIndex=1;
+ if(blocker==="deadline")next.accounts[0]!.rateLimitResetTimes={[workspaceQuotaKey(getModelFamily("chat-fixture"),"selected-b")]:now+60000};
+ const replacement=new AccountManager(undefined,next);openManagers.push(replacement);
+ vi.spyOn(tokenRefreshRuntime,"ensureFreshAccessToken").mockImplementation(async()=>({ok:true,accountManager:replacement,account:replacement.getAccountByIndex(0)!,accessToken:replacement.getAccountByIndex(0)!.access!}));
+ const key=buildQuotaScheduleKey(replacement.getAccountByIndex(0)!,getModelFamily("chat-fixture"),"chat-fixture");
+ if(blocker==="scheduler"){
+  const original=PreemptiveQuotaScheduler.prototype.getDeferral;
+  vi.spyOn(PreemptiveQuotaScheduler.prototype,"getDeferral").mockImplementation(function(k,n){return k===key?{defer:true,waitMs:60000,reason:"quota-near-exhaustion"}:original.call(this,k,n);});
+ }
+ const {calls,fetchImpl}=createRecordingFetch(()=>textEventStream());
+ const proxy=await startProxy({accountManager:manager,fetchImpl,options:{forcedAccountIndex:0}});
+ expect((await postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"})).status).toBe(503);
+ expect(calls).toHaveLength(0);
+});
+
+it("keeps healthy Responses usable when the reset-state read fails", async () => {
+ const resets=await import("../lib/runtime/account-reset-credits.js");
+ vi.spyOn(resets,"loadResetCreditState").mockRejectedValue(Object.assign(new Error("synthetic busy file"),{code:"EBUSY"}));
+ const manager=new AccountManager(undefined,createStorage(Date.now(),1));
+ const account=manager.getAccountByIndex(0)!;
+ account.resetReceiptGenerations={"fixture-scope":3};
+ const {fetchImpl}=createRecordingFetch(()=>textEventStream());
+ const proxy=await startProxy({accountManager:manager,fetchImpl,options:{forcedAccountIndex:0}});
+ expect((await postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"})).status).toBe(200);
+ expect(account.resetReceiptGenerations).toEqual({"fixture-scope":3});
+});
+
 it("attributes provider quota to the workspace selected by a refresh replacement", async () => {
  const disk=createStorage(Date.now(),1);
  disk.accounts[0]!.recordId="refresh-workspace-fixture";
