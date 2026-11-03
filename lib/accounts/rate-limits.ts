@@ -56,6 +56,18 @@ export function workspaceQuotaKey(key: string, workspaceId: string): string {
 	return JSON.stringify(["workspace", workspaceId, key]);
 }
 
+export function parseWorkspaceQuotaKey(key: string): { workspaceId: string; quotaKey: string } | undefined {
+	if (!key.startsWith('["workspace",')) return undefined;
+	try {
+		const parts: unknown = JSON.parse(key);
+		return Array.isArray(parts) && parts.length === 3 && typeof parts[1] === "string" && typeof parts[2] === "string"
+			? { workspaceId: parts[1], quotaKey: parts[2] }
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export function selectedQuotaWorkspace(entity: Omit<RateLimitedEntity, "rateLimitResetTimes">): string | undefined {
 	const access = entity.access ?? entity.accessToken;
 	const selected = entity.workspaces?.length ? entity.workspaces[entity.currentWorkspaceIndex ?? 0]?.id : entity.accountId ?? extractAccountId(access);
@@ -69,11 +81,9 @@ export function selectedQuotaLimits(entity: Partial<RateLimitedEntity>): RateLim
 	for (const [key, until] of Object.entries(entity.rateLimitResetTimes ?? {})) {
 		let quotaKey = key;
 		if (key.startsWith('["workspace",')) {
-			try {
-				const parts: unknown = JSON.parse(key);
-				if (!Array.isArray(parts) || parts.length !== 3 || parts[1] !== workspace || typeof parts[2] !== "string") continue;
-				quotaKey = parts[2];
-			} catch { continue; }
+			const attributed = parseWorkspaceQuotaKey(key);
+			if (!attributed || attributed.workspaceId !== workspace) continue;
+			quotaKey = attributed.quotaKey;
 		}
 		if (until !== undefined) result[quotaKey] = Math.max(result[quotaKey] ?? 0, until);
 	}

@@ -708,6 +708,28 @@ describe("codex-multi-auth rotation command", () => {
 			expect(infos.join("\n")).toContain("Cleared 2/3 account(s)");
 		});
 
+		it.each([[[]], [["--json"]]])("redacts the workspace id in a cleared workspace key %j", async (extra) => {
+			const now = Date.now();
+			const workspaceId = "9f3c2a1b-7d4e-4c8a-b1f0-5e6d7c8b9a0f";
+			const storage = buildStorageWithLimits(now);
+			storage.accounts = [{
+				...storage.accounts[0]!,
+				accountId: workspaceId,
+				workspaces: [{ id: workspaceId, enabled: true }],
+				currentWorkspaceIndex: 0,
+				rateLimitResetTimes: { [workspaceQuotaKey("codex", workspaceId)]: now + 60_000 },
+			}];
+			const { deps, infos } = createDeps({ storage, now });
+
+			await expect(runRotationCommand(["reset-rate-limits", ...extra], deps)).resolves.toBe(0);
+
+			const output = infos.join("\n");
+			expect(output).toContain("id:***9a0f");
+			expect(output).toContain("codex (workspace ***9a0f)");
+			expect(output).not.toContain(workspaceId);
+			expect(storage.accounts[0]!.rateLimitResetTimes).toEqual({});
+		});
+
 		it("dry-run reports changes without saving", async () => {
 			const now = Date.now();
 			const storage = buildStorageWithLimits(now);
