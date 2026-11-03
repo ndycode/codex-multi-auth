@@ -424,6 +424,43 @@ it.each([
 		expect(authorizations(fetcher)).toEqual(["Bearer key-one", "Bearer key-one"]);
 	},
 );
+describe("cooldowns longer than the deadline", () => {
+	const limited = () =>
+		Response.json(
+			{ error: { code: "rate_limit_exceeded" } },
+			{ status: 429, headers: { "retry-after": "120" } },
+		);
+	it("tells a caller held by a cached cooldown when to retry", async () => {
+		const fetcher = vi.fn(async () => limited());
+		const runtime = new DecisionsRuntime(fetcher, catalogs);
+		expect((await runtime.request(body, [route()])).status).toBe(429);
+		const held = await runtime.request(body, [route()]);
+		expect(fetcher).toHaveBeenCalledTimes(1);
+		expect(held.status).toBe(429);
+		expect(Number(held.headers.get("retry-after"))).toBeGreaterThanOrEqual(119);
+		expect((await held.json()).error).toMatchObject({
+			code: "rate_limit_exceeded",
+			retry_after_ms: expect.any(Number),
+		});
+	});
+	it("reports the cooldown rather than a backup's permanent quota rejection", async () => {
+		const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) =>
+			new Headers(init?.headers).get("authorization") === "Bearer key-one"
+				? limited()
+				: Response.json({ error: { code: "insufficient_quota" } }, { status: 429 }),
+		);
+		const response = await new DecisionsRuntime(fetcher, catalogs).request(
+			body,
+			[route(), route("backup")],
+		);
+		expect(response.status).toBe(429);
+		expect(Number(response.headers.get("retry-after"))).toBeGreaterThanOrEqual(
+			120,
+		);
+		expect((await response.json()).error.code).toBe("rate_limit_exceeded");
+		expect(fetcher).toHaveBeenCalledTimes(2);
+	});
+});
 it("cancels a Retry-After wait without a retry", async () => {
 	vi.useFakeTimers();
 	const controller = new AbortController();

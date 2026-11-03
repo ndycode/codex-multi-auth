@@ -354,9 +354,22 @@ export class DecisionsRuntime {
 				}
 				if (!Number.isFinite(minimumWait)) return last;
 				if (minimumWait >= deadline - this.now())
-					return last.status === 429
-						? last
-						: failure(429, "rate_limit_exceeded");
+					return Response.json(
+						{
+							error: {
+								code: "rate_limit_exceeded",
+								message:
+									"Eligible Decisions credentials are temporarily rate limited. Retry after the indicated delay.",
+								retry_after_ms: Math.ceil(minimumWait),
+							},
+						},
+						{
+							status: 429,
+							headers: {
+								"retry-after": String(Math.max(1, Math.ceil(minimumWait / 1000))),
+							},
+						},
+					);
 				// Scan every same-region candidate before waiting; waits consume time,
 				// never the bounded number of actual inference sends.
 				await new Promise<void>((resolve, reject) => {

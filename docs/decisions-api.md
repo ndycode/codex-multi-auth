@@ -42,7 +42,10 @@ request. If every credential is rejected with 401 or 403, the caller gets 503
 `decisions_pool_unavailable`, never a 401 or 403 that would read as its own
 credential failing; a pool-wide permanent quota rejection stays a sanitized
 429. Confirmed temporary `rate_limit_exceeded` 429 responses use Retry-After
-and shared backoff. Unclassified 429 rejections, network ambiguity, and other
+and shared backoff. When the shortest cooldown left in the pool outlasts the
+request deadline, the caller gets 429 `rate_limit_exceeded` with `Retry-After`
+and `retry_after_ms` set to that cooldown, including when the cooldown was
+cached by an earlier request. Unclassified 429 rejections, network ambiguity, and other
 server errors are not replayed. Discovery, admission, response-body reads, and
 retries share a 60-second deadline and respect cancellation. Response buffering
 is capped at 8 MiB.
