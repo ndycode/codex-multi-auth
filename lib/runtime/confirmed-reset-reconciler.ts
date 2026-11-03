@@ -10,7 +10,7 @@ import { workspaceModelScopes } from "./workspace-model-scopes.js";
 type ResetState = Awaited<ReturnType<ResetCreditService["status"]>>;
 type Scope = ReturnType<typeof workspaceModelScopes>[number];
 interface Operation {
-	at: number;
+	identity: string;
 	generation?: number;
 	startedAt: number;
 	manager: AccountManager;
@@ -59,12 +59,16 @@ export class ConfirmedResetReconciler {
 		}
 		// Modern receipts are ordered by durable generation, not wall time. A
 		// rejection after this generation was observed cannot replay that receipt.
+		// A legacy receipt identity seen by the rejection is exact; wall time only
+		// orders rejections that saw none.
+		const identity = resetReceiptIdentity(receipt);
 		const rejectedAfterReceipt = [account.rateLimitObservations?.[observationKey], account.rateLimitObservations?.[family]].some(rejection =>
 			receipt.generation !== undefined
 				? (rejection?.receiptGenerations?.[scope.id] ?? 0) >= receipt.generation
-				: rejection?.receiptIdentities?.[scope.id] === resetReceiptIdentity(receipt) ||
-                    (rejection?.observedAt ?? 0) > receipt.at &&
-					((rejection?.observedAt ?? 0) <= now || receipt.at > now));
+				: rejection?.receiptIdentities?.[scope.id] !== undefined
+					? rejection.receiptIdentities[scope.id] === identity
+					: (rejection?.observedAt ?? 0) > receipt.at &&
+						((rejection?.observedAt ?? 0) <= now || receipt.at > now));
 		if (!eligible() || rejectedAfterReceipt || (receipt.generation !== undefined && receipt.generation < (account.resetReceiptGenerations?.[scope.id] ?? 0))) return false;
 		if (!(quotaResetTime(account, family, scope.accountId) > now ||
 			(account.cooldownReason === "rate-limit" && (account.coolingDownUntil ?? 0) > now) ||
@@ -77,7 +81,7 @@ export class ConfirmedResetReconciler {
 		if (existing && existing.manager === manager && existing.account === account &&
 			(receipt.generation !== undefined
 				? existing.generation !== undefined && existing.generation >= receipt.generation
-				: existing.generation !== undefined || existing.at === receipt.at || (existing.at <= now && existing.at > receipt.at)) &&
+				: existing.generation !== undefined || existing.identity === identity) &&
 			(existing.retryAfter === undefined || (now >= existing.startedAt && now < existing.retryAfter))) {
 			await existing.promise;
 			return false;
@@ -87,7 +91,7 @@ export class ConfirmedResetReconciler {
 			const generations = account.resetReceiptGenerations ??= {};
 			generations[scope.id] = Math.max(generations[scope.id] ?? 0, receipt.generation);
 		}
-		const operation: Operation = { at: receipt.at, generation:receipt.generation, startedAt:now, manager, account, promise: Promise.resolve(false) };
+		const operation: Operation = { identity, generation:receipt.generation, startedAt:now, manager, account, promise: Promise.resolve(false) };
 		if (this.operations.size >= 1000 && !this.operations.has(key)) {
 			this.operations.delete(this.operations.keys().next().value ?? "");
 		}

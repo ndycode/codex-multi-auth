@@ -167,11 +167,28 @@ it("accepts a new receipt after a backward clock step", async () => {
 	expect(await f.run()).toBe(true); expect(f.args.read).toHaveBeenCalledTimes(2);
 });
 
-it("ignores an older receipt delivered after a newer one without a clock step", async () => {
-	const f = fixture(); expect(await f.run()).toBe(true);
-	f.account.rateLimitResetTimes.codex = f.args.now() + 300_000;
-	f.args.state!.lastRedemption!.at -= 1;
-	expect(await f.run()).toBe(false); expect(f.args.read).toHaveBeenCalledTimes(1);
+it("rechecks a distinct legacy receipt stamped before an applied one", async () => {
+	const f = fixture(); let now = f.args.now(); f.args.now = () => now; vi.spyOn(Date, "now").mockImplementation(() => now);
+	const receipt = f.args.state!.lastRedemption!; receipt.at = now;
+	expect(await f.run()).toBe(true);
+	now -= 10_000;
+	f.manager.markRateLimitedWithReason(f.account, 300_000, "codex", "quota", "chat-test", f.args.scope.id);
+	// Completed during the rollback, after that rejection; no request sees it until the clock catches up.
+	receipt.at = now + 1_000;
+	now += 11_000; f.snapshot.updatedAt = now;
+	expect(await f.run()).toBe(true); expect(f.args.read).toHaveBeenCalledTimes(2);
+});
+
+it("orders a distinct legacy receipt by the identity a rejection saw, not wall time", async () => {
+	const f = fixture(); let now = f.args.now(); f.args.now = () => now; vi.spyOn(Date, "now").mockImplementation(() => now);
+	const receipt = f.args.state!.lastRedemption!; receipt.at = now;
+	f.account.resetReceiptIdentities = {[f.args.scope.id]:JSON.stringify([receipt.key, receipt.at, receipt.outcome, receipt.automatic])};
+	f.manager.markRateLimitedWithReason(f.account, 300_000, "codex", "quota", "chat-test", f.args.scope.id);
+	expect(await f.run()).toBe(false); expect(f.args.read).not.toHaveBeenCalled();
+	// An older CLI completes a different receipt during a rollback; no request sees it until catch-up.
+	receipt.at = now - 9_000;
+	now += 1_000; f.snapshot.updatedAt = now;
+	expect(await f.run()).toBe(true); expect(f.args.read).toHaveBeenCalledTimes(1);
 });
 
 it("does not read native quota for a healthy account with an old receipt", async () => {
