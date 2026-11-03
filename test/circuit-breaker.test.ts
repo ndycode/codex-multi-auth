@@ -24,6 +24,31 @@ describe("Circuit breaker", () => {
     expect(DEFAULT_CIRCUIT_BREAKER_CONFIG.failureThreshold).toBe(3);
   });
 
+  it("releases an unused probe once without changing health or another probe", () => {
+    const breaker = new CircuitBreaker({failureThreshold:1});
+    breaker.recordFailure();vi.advanceTimersByTime(30000);
+    let release!:()=>void;
+    expect(breaker.tryCanExecute(fn=>{release=fn;}).ok).toBe(true);
+    expect(breaker.tryCanExecute().ok).toBe(false);
+    release();
+    expect(breaker.getState()).toBe("half-open");
+    expect(breaker.getFailureCount()).toBe(1);
+    expect(breaker.tryCanExecute().ok).toBe(true);
+    release();
+    expect(breaker.tryCanExecute().ok).toBe(false);
+  });
+
+  it("does not release a new probe window through an old cancellation", () => {
+    const breaker = new CircuitBreaker({failureThreshold:1});
+    breaker.recordFailure();vi.advanceTimersByTime(30000);
+    let release!:()=>void;
+    breaker.tryCanExecute(fn=>{release=fn;});
+    vi.advanceTimersByTime(30000);
+    expect(breaker.tryCanExecute().ok).toBe(true);
+    release();
+    expect(breaker.tryCanExecute().ok).toBe(false);
+  });
+
   it("allows execution when closed", () => {
     const breaker = new CircuitBreaker();
     expect(breaker.canExecute()).toBe(true);

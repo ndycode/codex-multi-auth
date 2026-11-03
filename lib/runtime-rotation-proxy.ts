@@ -2955,7 +2955,7 @@ async function handleRequestInner(
 					"quota",
 					context.model,
 					selectedScopeId,
-					selectedWorkspaceId ? { workspaceId: selectedWorkspaceId } : undefined,
+					selectedWorkspaceId ? { workspaceId: selectedWorkspaceId, receiptReadFailed: isResponsesRequest && resetCreditState === null } : undefined,
 				);
 				accountManager.recordRateLimit(selected, context.family, context.model);
 				accountManager.saveToDiskDebounced();
@@ -2967,13 +2967,15 @@ async function handleRequestInner(
 			// Transcription deliberately bypasses both: its credential-only selector
 			// already enforced disabled/workspace/auth/policy gates, and claiming the
 			// inference probe here could strand a half-open account after dictation.
+			let releaseUnusedProbe: (() => void) | undefined;
+			let probeDispatched = false;
 			const admission = isTranscribeRequest
 				? { ok: true as const }
 				: accountManager.consumeTokenWithReason(
 					selected,
 					context.family,
 					context.model,
-					{ bypassTokenBucket: bypassPoolTokenBucket },
+					{ bypassTokenBucket: bypassPoolTokenBucket, onProbeAcquired: release => { releaseUnusedProbe = release; } },
 				);
 			if (!admission.ok) {
 				accountSkipReasons.set(selected.index, admission.reason);
@@ -2990,6 +2992,7 @@ async function handleRequestInner(
 				continue;
 			}
 
+			try {
 			const refreshed = await ensureFreshAccessToken({
 				accountManager,
 				account: selected,
@@ -3156,7 +3159,7 @@ async function handleRequestInner(
 					if (deferred) {
 						observeResetGenerations(refreshed.account, resetCreditState, requestScope?.id);
 						accountManager.markRateLimitedWithReason(refreshed.account, deferral.waitMs,
-							context.family, "quota", context.model, requestScope?.id, {workspaceId: accountId});
+							context.family, "quota", context.model, requestScope?.id, {workspaceId: accountId, receiptReadFailed: resetCreditState === null});
 						accountManager.saveToDiskDebounced();
 					}
 					attemptedIndexes.add(refreshed.account.index);
@@ -3288,6 +3291,7 @@ async function handleRequestInner(
 					? Math.max(state.fetchTimeoutMs, 300_000)
 					: state.fetchTimeoutMs;
 				if (isResponsesRequest || isImageRequest) recordRuntimeInferenceRequest(inferenceAccountKey(refreshed.account), state.now());
+				probeDispatched = true;
 				upstream = await withTimeout(
 					state.fetchImpl(upstreamUrl, upstreamRequestInit),
 					fetchTimeoutMs,
@@ -4099,6 +4103,9 @@ async function handleRequestInner(
 				...(usageTokens ?? {}),
 			});
 			return;
+            } finally {
+                if (!probeDispatched) releaseUnusedProbe?.();
+            }
 		}
 
 		if (

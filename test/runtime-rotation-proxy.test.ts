@@ -25,7 +25,7 @@ import {
 } from "../lib/runtime-rotation-proxy.js";
 import { PreemptiveQuotaScheduler } from "../lib/preemptive-quota-scheduler.js";
 import { SessionAffinityStore } from "../lib/session-affinity.js";
-import { clearCircuitBreakers } from "../lib/circuit-breaker.js";
+import { clearCircuitBreakers, getCircuitBreaker } from "../lib/circuit-breaker.js";
 import {
 	__resetRoutingMutexForTests,
 	isRoutingMutexHeld,
@@ -129,6 +129,56 @@ it.each(["deadline", "scheduler"] as const)("rechecks provider %s admission afte
  const proxy=await startProxy({accountManager:manager,fetchImpl,options:{forcedAccountIndex:0}});
  expect((await postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"})).status).toBe(503);
  expect(calls).toHaveLength(0);
+});
+
+it("releases only the unused half-open probe when refresh selects blocked quota", async () => {
+ let now=Date.now();vi.spyOn(Date,"now").mockImplementation(()=>now);
+ const disk=createStorage(now,1);disk.accounts[0]!.workspaces=[{id:"acc_1",enabled:true},{id:"b",enabled:true}];
+ const manager=new AccountManager(undefined,disk),account=manager.getAccountByIndex(0)!;
+ for(let i=0;i<3;i++)manager.recordFailure(account,"codex");
+ now+=31000;
+ account.rateLimitResetTimes={[workspaceQuotaKey(getModelFamily("chat-fixture"),"b")]:now+60000};
+ let enter!:()=>void,release!:()=>void;
+ const started=new Promise<void>(r=>{enter=r;}),gate=new Promise<void>(r=>{release=r;});
+ vi.spyOn(tokenRefreshRuntime,"ensureFreshAccessToken").mockImplementationOnce(async()=>{
+  enter();await gate;account.currentWorkspaceIndex=1;
+  return {ok:true,account,accountManager:manager,accessToken:account.access!};
+ });
+ const {calls,fetchImpl}=createRecordingFetch(()=>textEventStream());
+ const proxy=await startProxy({accountManager:manager,fetchImpl,options:{forcedAccountIndex:0}});
+ const send=()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"});
+ const first=send();await started;
+ try{expect((await send()).status).toBe(503);}finally{release();}
+ expect((await first).status).toBe(503);expect(calls).toHaveLength(0);
+ const breaker=getCircuitBreaker(manager.getAccountsSnapshot()[0]!.circuitKeyId!);
+ expect(breaker.getState()).toBe("half-open");expect(breaker.getFailureCount()).toBe(3);
+ account.currentWorkspaceIndex=0;
+ expect((await send()).status).toBe(200);expect(calls).toHaveLength(1);
+});
+
+it.each(["pre-refresh","post-refresh"] as const)("retains EBUSY uncertainty in %s scheduler deferral", async phase => {
+ const resets=await import("../lib/runtime/account-reset-credits.js");
+ const {workspaceModelScopes}=await import("../lib/runtime/workspace-model-scopes.js");
+ const native=await import("../lib/runtime/native-rate-limits.js");
+ const now=Date.now(),disk=createStorage(now,1);
+ disk.accounts[0]!.workspaces=[{id:"acc_1",enabled:true},{id:"b",enabled:true}];
+ disk.accounts[0]!.currentWorkspaceIndex=phase==="pre-refresh"?1:0;
+ const manager=new AccountManager(undefined,disk),account=manager.getAccountByIndex(0)!;
+ const scope=workspaceModelScopes(account).find(s=>s.accountId==="b")!;
+ const state={version:3 as const,policy:"manual" as const,snapshots:{},redemptions:{[scope.id]:{key:scope.id,at:now-1000,outcome:"reset" as const,automatic:false,generation:7}}};
+ vi.spyOn(resets,"loadResetCreditState").mockResolvedValue(state).mockRejectedValueOnce(Object.assign(Error("busy"),{code:"EBUSY"}));
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockResolvedValue({accountId:"b",ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}});
+ if(phase==="post-refresh")vi.spyOn(tokenRefreshRuntime,"ensureFreshAccessToken").mockImplementationOnce(async()=>{account.currentWorkspaceIndex=1;return {ok:true,account,accountManager:manager,accessToken:account.access!};});
+ const key=buildQuotaScheduleKey({...account,currentWorkspaceIndex:1},"codex","gpt-5-codex");
+ const original=PreemptiveQuotaScheduler.prototype.getDeferral;
+ vi.spyOn(PreemptiveQuotaScheduler.prototype,"getDeferral").mockImplementation(function(k,n){return k===key?{defer:true,waitMs:60000,reason:"quota-near-exhaustion"}:original.call(this,k,n);});
+ const {calls,fetchImpl}=createRecordingFetch(()=>textEventStream());
+ const proxy=await startProxy({accountManager:manager,fetchImpl,options:{forcedAccountIndex:0}});
+ const send=()=>postResponsesWithHttp(proxy,{model:"gpt-5-codex",input:"synthetic"});
+ expect((await send()).status).toBe(503);
+ expect(Object.values(account.rateLimitObservations??{}).some(o=>o.receiptReadFailed)).toBe(true);
+ expect((await send()).status).toBe(503);expect((await send()).status).toBe(503);
+ expect(rpc).not.toHaveBeenCalled();expect(calls).toHaveLength(0);
 });
 
 it("keeps healthy Responses usable when the reset-state read fails", async () => {

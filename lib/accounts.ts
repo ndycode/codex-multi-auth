@@ -803,7 +803,12 @@ export class AccountManager {
 				_runtimeTrackerKey: trackerKey,
 				circuitKeyId,
 				rateLimitResetTimes: { ...account.rateLimitResetTimes },
-				rateLimitObservations: account.rateLimitObservations && { ...account.rateLimitObservations },
+				rateLimitObservations: account.rateLimitObservations && Object.fromEntries(
+                    Object.entries(account.rateLimitObservations).map(([key, observation]) => [key, {
+                        ...observation,
+                        receiptGenerations: observation.receiptGenerations && { ...observation.receiptGenerations },
+                    }]),
+                ),
 				resetReceiptGenerations: account.resetReceiptGenerations && { ...account.resetReceiptGenerations },
 				workspaces: account.workspaces?.map((workspace) => ({ ...workspace })),
 			};
@@ -1251,7 +1256,7 @@ export class AccountManager {
 		account: ManagedAccount,
 		family: ModelFamily,
 		model?: string | null,
-		options: { bypassTokenBucket?: boolean } = {},
+		options: { bypassTokenBucket?: boolean; onProbeAcquired?: (release: () => void) => void } = {},
 	): boolean {
 		return this.consumeTokenWithReason(account, family, model, options).ok;
 	}
@@ -1274,7 +1279,7 @@ export class AccountManager {
 		account: ManagedAccount,
 		family: ModelFamily,
 		model?: string | null,
-		options: { bypassTokenBucket?: boolean } = {},
+		options: { bypassTokenBucket?: boolean; onProbeAcquired?: (release: () => void) => void } = {},
 	): { ok: true } | { ok: false; reason: "token-exhausted" | "circuit-open" } {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const tokenTracker = getTokenTracker();
@@ -1285,7 +1290,7 @@ export class AccountManager {
 		}
 
 		// Non-throwing probe keeps circuit-open storms off the exception path.
-		const admission = getCircuitBreaker(getAccountCircuitKey(account)).tryCanExecute();
+		const admission = getCircuitBreaker(getAccountCircuitKey(account)).tryCanExecute(options.onProbeAcquired);
 		if (!admission.ok) {
 			if (shouldConsumeToken) {
 				tokenTracker.refundToken(trackerKey, quotaKey);

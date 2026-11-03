@@ -2,6 +2,16 @@ import { expect, it } from "vitest";
 import { AccountManager } from "../lib/accounts.js";
 import { carryRuntimeQuotaState } from "../lib/runtime/carry-runtime-quota-state.js";
 
+it("isolates nested snapshot observations from live receipt ordering", () => {
+ const manager=new AccountManager(undefined,{version:3,activeIndex:0,accounts:[{refreshToken:"snapshot-fixture",addedAt:1,lastUsed:1}]});
+ const account=manager.getAccountByIndex(0)!;
+ account.rateLimitObservations={codex:{revision:1,observedAt:1,reason:"quota",receiptGenerations:{scope:4}}};
+ const snapshot=manager.getAccountsSnapshot()[0]!;
+ snapshot.rateLimitObservations!.codex!.revision=99;
+ snapshot.rateLimitObservations!.codex!.receiptGenerations!.scope=99;
+ expect(account.rateLimitObservations.codex).toMatchObject({revision:1,receiptGenerations:{scope:4}});
+});
+
 it.each(["inventory", "reload"] as const)("preserves the %s cooldown predicate while retaining expired rejection history", mode => {
  for (const reason of ["auth-failure", "rate-limit"] as const) {
   const manager=new AccountManager(undefined,{version:3,activeIndex:0,accounts:[{recordId:"fixture",accountId:"workspace",refreshToken:"r",addedAt:1,lastUsed:1}]});

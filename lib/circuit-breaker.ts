@@ -41,6 +41,7 @@ export class CircuitBreaker {
 	private failures: number[] = [];
 	private lastStateChange: number = Date.now();
 	private halfOpenAttempts: number = 0;
+	private probeWindow = {};
 	private config: CircuitBreakerConfig;
 
 	constructor(config: Partial<CircuitBreakerConfig> = {}) {
@@ -52,7 +53,7 @@ export class CircuitBreaker {
 	 * object instead of throwing, so reject-heavy callers stay exception-free.
 	 * Admitting a probe still consumes the half-open attempt slot.
 	 */
-	tryCanExecute(): CircuitAdmissionResult {
+	tryCanExecute(onProbeAcquired?: (release: () => void) => void): CircuitAdmissionResult {
 		const now = Date.now();
 
 		if (this.state === "open") {
@@ -86,6 +87,13 @@ export class CircuitBreaker {
 				}
 			}
 			this.halfOpenAttempts += 1;
+            const window = this.probeWindow;
+            let released = false;
+            onProbeAcquired?.(() => {
+                if (released) return;
+                released = true;
+                if (this.state === "half-open" && this.probeWindow === window) this.halfOpenAttempts -= 1;
+            });
 			return { ok: true };
 		}
 
@@ -185,12 +193,14 @@ export class CircuitBreaker {
 		this.state = "open";
 		this.lastStateChange = now;
 		this.halfOpenAttempts = 0;
+		this.probeWindow = {};
 	}
 
 	private transitionToHalfOpen(now: number): void {
 		this.state = "half-open";
 		this.lastStateChange = now;
 		this.halfOpenAttempts = 0;
+		this.probeWindow = {};
 	}
 
 	private hasHalfOpenProbeWaitElapsed(now: number): boolean {
@@ -200,12 +210,14 @@ export class CircuitBreaker {
 	private resetHalfOpenProbeWindow(now: number): void {
 		this.lastStateChange = now;
 		this.halfOpenAttempts = 0;
+		this.probeWindow = {};
 	}
 
 	private resetToClosed(now: number): void {
 		this.state = "closed";
 		this.lastStateChange = now;
 		this.halfOpenAttempts = 0;
+		this.probeWindow = {};
 		this.failures = [];
 	}
 }
