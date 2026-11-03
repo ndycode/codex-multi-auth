@@ -348,3 +348,25 @@ it("retains an unscoped concurrent rejection even when scoped history already ex
  f.args.read=async()=>{f.manager.markRateLimitedWithReason(f.account,300000,"codex","quota","chat-test");return f.snapshot;};
  expect(await f.run()).toBe(false);expect(f.args.clearQuotaScheduler).not.toHaveBeenCalled();
 });
+
+it("bounds an unsequenced rejection by the next successful read, even when it has no receipt", async () => {
+ const f=fixture();const now=f.args.now();
+ f.manager.markRateLimitedWithReason(f.account,3_600_000,"codex","quota","chat-test",f.args.scope.id,{workspaceId:"workspace",receiptReadFailed:true});
+ const other={key:"other-workspace",at:now,outcome:"reset" as const,automatic:false,generation:1};
+ Object.assign(f.state,{version:3,redemptionGeneration:1,lastRedemption:other,redemptions:{[other.key]:other}});
+ expect(await f.run()).toBe(false);
+ // This workspace's first redemption follows that read.
+ const mine={key:f.args.scope.id,at:now,outcome:"reset" as const,automatic:false,generation:2};
+ Object.assign(f.state,{redemptionGeneration:2,lastRedemption:mine,redemptions:{[other.key]:other,[mine.key]:mine}});
+ expect(await f.run()).toBe(true);expect(f.args.read).toHaveBeenCalledTimes(1);
+});
+
+it("bounds an unsequenced rejection by the legacy receipt visible at the next read", async () => {
+ const f=fixture();const receipt=f.state.lastRedemption!;
+ f.manager.markRateLimitedWithReason(f.account,3_600_000,"codex","quota","chat-test",f.args.scope.id,{workspaceId:"workspace",receiptReadFailed:true});
+ expect(await f.run()).toBe(false);expect(await f.run()).toBe(false);
+ expect(f.args.read).not.toHaveBeenCalled();
+ // A different legacy receipt can only have been written after that read.
+ receipt.at+=1;
+ expect(await f.run()).toBe(true);expect(f.args.read).toHaveBeenCalledTimes(1);
+});

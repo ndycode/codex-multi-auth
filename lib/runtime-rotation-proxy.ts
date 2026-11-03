@@ -8,7 +8,7 @@ import { fetchWithProxy } from "./request/proxy-fetch.js";
 import { createNativeAccountStorageReader } from "./runtime/native-account-storage.js";
 import { resetSnapshotQuota, resetReceiptIdentity } from "./runtime/reset-credits.js";
 import { createResetCreditService, loadResetCreditState } from "./runtime/account-reset-credits.js";
-import { ConfirmedResetReconciler } from "./runtime/confirmed-reset-reconciler.js";
+import { ConfirmedResetReconciler, settleReceiptBaselines } from "./runtime/confirmed-reset-reconciler.js";
 import { recoverResetQuota, primaryPoolFullyExhausted } from "./runtime/reset-credit-routing.js";
 import { readSubscriptionQuotaEvent } from "./runtime/subscription-quota-event.js";
 import { loadQuotaCache } from "./quota-cache.js";
@@ -2104,6 +2104,11 @@ async function handleRequestInner(
 		};
   // Shared across concurrent requests; a blocked request rereads before reconciling.
   let resetCreditState=isResponsesRequest ? await cachedRead(state, "reset-credits", loadResetCreditState).catch(()=>null):null;
+  // Bound unsequenced rejections now, before a later redemption becomes visible.
+  if (resetCreditState) for (let index = 0; index < accountManager.getAccountCount(); index++) {
+   const account = accountManager.getAccountByIndex(index);
+   if (account) settleReceiptBaselines(account, resetCreditState);
+  }
   const observeResetGenerations = (account: ManagedAccount, receipts: typeof resetCreditState, scopeId: string | undefined) => {
    if(scopeId === undefined)return;
    const receipt=receipts?.redemptions?.[scopeId] ?? (receipts?.lastRedemption?.key===scopeId ? receipts.lastRedemption : undefined);

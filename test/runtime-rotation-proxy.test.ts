@@ -538,6 +538,38 @@ it("does not dispatch for a pinned client that disconnected during the reset che
  expect(calls).toHaveLength(0);
 });
 
+it("bounds an unsequenced rejection at the next request's read, before a redemption appears", async () => {
+ const fs=await import("node:fs/promises"),os=await import("node:os"),path=await import("node:path");
+ const previousDir=process.env.CODEX_MULTI_AUTH_DIR;
+ process.env.CODEX_MULTI_AUTH_DIR=await fs.mkdtemp(path.join(os.tmpdir(),"reset-baseline-"));
+ onTestFinished(async()=>{
+  const dir=process.env.CODEX_MULTI_AUTH_DIR!;
+  if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
+  await removeWithRetry(dir,{recursive:true,force:true});
+ });
+ const resets=await import("../lib/runtime/account-reset-credits.js");
+ const native=await import("../lib/runtime/native-rate-limits.js");
+ const {workspaceModelScopes}=await import("../lib/runtime/workspace-model-scopes.js");
+ const now=Date.now(),family=getModelFamily("chat-fixture"),manager=new AccountManager(undefined,createStorage(now,2));
+ const first=manager.getAccountByIndex(0)!,scope=workspaceModelScopes(first).find(s=>s.routable)!;
+ // An earlier quota rejection was recorded while reset-credits.json was unreadable.
+ manager.markRateLimitedWithReason(first,3_600_000,family,"quota","chat-fixture",scope.id,{workspaceId:"acc_1",receiptReadFailed:true});
+ let state:Awaited<ReturnType<typeof resets.loadResetCreditState>>={version:3,policy:"manual",snapshots:{}};
+ vi.spyOn(resets,"loadResetCreditState").mockImplementation(async()=>state);
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async auth=>({accountId:auth.accountId,ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}}));
+ const {calls,fetchImpl}=createRecordingFetch(()=>textEventStream());
+ const proxy=await startProxy({accountManager:manager,fetchImpl});
+ const send=()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"});
+ expect((await send()).status).toBe(200);
+ // The user then redeems that workspace, and the healthy sibling becomes exhausted.
+ const receipt={key:scope.id,at:now,outcome:"reset" as const,automatic:false,generation:1};
+ state={version:3,policy:"manual",snapshots:{},redemptionGeneration:1,lastRedemption:receipt,redemptions:{[scope.id]:receipt}};
+ manager.getAccountByIndex(1)!.rateLimitResetTimes={[family]:now+600_000};
+ expect((await send()).status).toBe(200);
+ expect(calls.map(call=>call.headers.get("chatgpt-account-id"))).toEqual(["acc_2","acc_1"]);
+ expect(rpc).toHaveBeenCalledTimes(1);
+});
+
 it("shares one reset-state read across concurrent healthy provider requests", async () => {
  const now=Date.now();vi.spyOn(Date,"now").mockReturnValue(now);
  const resets=await import("../lib/runtime/account-reset-credits.js");

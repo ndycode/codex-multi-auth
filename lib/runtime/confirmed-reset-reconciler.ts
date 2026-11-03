@@ -24,6 +24,30 @@ const RETRY_DELAY_MS = 5_000;
 // final; a long-retained receipt must not cost a native read every 5 seconds.
 const MAX_RETRY_DELAY_MS = 300_000;
 
+function receiptFor(state: ResetState | null, key: string) {
+	return state?.redemptions?.[key] ?? (state?.lastRedemption?.key === key ? state.lastRedemption : undefined);
+}
+
+/**
+ * A rejection recorded while receipts were unreadable is bounded by the next
+ * successful read: anything visible then may predate it, so it cannot replay.
+ */
+export function settleReceiptBaselines(account: ManagedAccount, state: ResetState): void {
+	const keys = new Set([...Object.keys(state.redemptions ?? {}), ...(state.lastRedemption ? [state.lastRedemption.key] : [])]);
+	for (const rejection of Object.values(account.rateLimitObservations ?? {})) {
+		if (!rejection.receiptReadFailed) continue;
+		for (const key of keys) {
+			const receipt = receiptFor(state, key);
+			if (receipt?.generation !== undefined) {
+				(rejection.receiptGenerations ??= {})[key] = Math.max(rejection.receiptGenerations?.[key] ?? 0, receipt.generation);
+			} else if (receipt) {
+				(rejection.receiptIdentities ??= {})[key] = resetReceiptIdentity(receipt);
+			}
+		}
+		rejection.receiptReadFailed = false;
+	}
+}
+
 /** A redemption is a durable notification, not a permanently healthy quota snapshot. */
 export class ConfirmedResetReconciler {
 	private readonly operations = new Map<string, Operation>();
@@ -57,20 +81,11 @@ export class ConfirmedResetReconciler {
 		// Receipts are read only for a request this account cannot otherwise serve.
 		if (!eligible() || !blocked(options.now())) return false;
 		const state = await options.state();
-		const receipt = state?.redemptions?.[scope.id] ?? (state?.lastRedemption?.key === scope.id ? state.lastRedemption : undefined);
+		if (state) settleReceiptBaselines(account, state);
+		const receipt = receiptFor(state, scope.id);
 		if (state?.pending?.key === scope.id || !receipt ||
 			(receipt.outcome !== "reset" && receipt.outcome !== "alreadyRedeemed") || receipt.key !== scope.id) return false;
 		const now = options.now();
-		// A failed receipt read leaves ordering unknown. The first successful
-		// state read establishes a conservative baseline, never permission to replay it.
-		for (const rejection of [account.rateLimitObservations?.[observationKey], account.rateLimitObservations?.[family]]) {
-			if (!rejection?.receiptReadFailed) continue;
-			if (receipt.generation !== undefined) {
-				(rejection.receiptGenerations ??= {})[scope.id] = Math.max(rejection.receiptGenerations?.[scope.id] ?? 0, receipt.generation);
-				rejection.receiptReadFailed = false;
-			}
-			return false;
-		}
 		// Modern receipts are ordered by durable generation, not wall time. A
 		// rejection after this generation was observed cannot replay that receipt.
 		// A legacy receipt identity seen by the rejection is exact; wall time only
