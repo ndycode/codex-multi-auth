@@ -22,6 +22,12 @@ only after verifying the provider supports Decisions for that account/model.
 A model ID returned by `/models` alone does not grant endpoint capability.
 This change neither edits existing profiles nor performs inference probes.
 
+Credentials whose catalog is already fresh are tried first, so a cold or
+stalled catalog elsewhere in the pool never delays them. Other credentials in
+the same pool and region are discovered only after the warm ones fail or are
+rate limited. When no catalog is fresh, the whole pool is discovered before
+the first send.
+
 Typed predicate, choice (including boolean choices), and score questions are
 forwarded with the original input and optional cache/safety fields. Only the
 routing prefix is removed from `model`. No Responses-only `store`, `stream`,

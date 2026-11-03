@@ -75,6 +75,29 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 			.finally(() => signal.removeEventListener("abort", abort));
 	});
 }
+/** Resolves with `pending` if it settles within `ms`, otherwise `undefined`. */
+function waitAtMost<T>(
+	ms: number,
+	signal: AbortSignal,
+	pending?: Promise<T>,
+): Promise<T | undefined> {
+	return new Promise((resolve, reject) => {
+		const settle = (finish: () => void) => {
+			clearTimeout(timer);
+			signal.removeEventListener("abort", cancel);
+			finish();
+		};
+		const cancel = () => settle(() => reject(Error("cancelled")));
+		const timer = Number.isFinite(ms)
+			? setTimeout(() => settle(() => resolve(undefined)), ms)
+			: undefined;
+		signal.addEventListener("abort", cancel, { once: true });
+		pending?.then(
+			(value) => settle(() => resolve(value)),
+			(error: unknown) => settle(() => reject(error)),
+		);
+	});
+}
 // Answers echo per-choice probabilities, and the request schema allows 400
 // questions of 2000 choices each, so match the proxy's 64 MiB request cap.
 const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
@@ -154,6 +177,12 @@ function failure(status: number, code: string): Response {
 	);
 }
 
+export interface DecisionsCatalogs {
+	/** Fresh catalogs already in memory. Must not wait for discovery. */
+	cached(routes: ApiRouteCredential[]): RouteCatalog[];
+	discover(routes: ApiRouteCredential[]): Promise<RouteCatalog[]>;
+}
+
 /** Endpoint-specific routing. ID discovery never grants Decisions capability. */
 export class DecisionsRuntime {
 	private readonly usage = new WeakMap<Response, UsageTokenCounts>();
@@ -164,9 +193,7 @@ export class DecisionsRuntime {
 	private readonly unsupported = new Map<string, number>();
 	constructor(
 		private readonly fetchImpl: typeof fetch,
-		private readonly catalogs: (
-			routes: ApiRouteCredential[],
-		) => Promise<RouteCatalog[]>,
+		private readonly catalogs: DecisionsCatalogs,
 		private readonly now = Date.now,
 		private readonly timeoutMs = 60_000,
 	) {
@@ -198,30 +225,40 @@ export class DecisionsRuntime {
 			const eligible = routes.filter(
 				(r) => r.enabled && r.kind === selection.kind,
 			);
-			const catalogs = await abortable(
-				this.catalogs(eligible),
-				controller.signal,
-			);
-			const resolved = resolveModelRoute(
-				parsed.data.model,
-				catalogs.map((c) => ({
-					...c,
-					models: c.models
-						.filter(
-							(m) =>
-								Array.isArray(m.supported_endpoints) &&
-								m.supported_endpoints.includes("/v1/decisions"),
-						)
-						.map((model) => ({
-							...model,
-							// Responses/tools probes say nothing about Decisions support.
-							// Keep credential availability and all other route metadata.
-							capability_probe_status: isRecord(model.capability_probe_status)
-								? { ...model.capability_probe_status, responses: undefined }
-								: model.capability_probe_status,
-						})),
-				})),
-			);
+			const decisionsRoute = (catalogs: RouteCatalog[]) =>
+				resolveModelRoute(
+					parsed.data.model,
+					catalogs.map((c) => ({
+						...c,
+						models: c.models
+							.filter(
+								(m) =>
+									Array.isArray(m.supported_endpoints) &&
+									m.supported_endpoints.includes("/v1/decisions"),
+							)
+							.map((model) => ({
+								...model,
+								// Responses/tools probes say nothing about Decisions support.
+								// Keep credential availability and all other route metadata.
+								capability_probe_status: isRecord(model.capability_probe_status)
+									? { ...model.capability_probe_status, responses: undefined }
+									: model.capability_probe_status,
+							})),
+					})),
+				);
+			// A cold backup's discovery must not delay a warm candidate, so omitted
+			// backups are discovered only once the warm candidates fail.
+			const warm = decisionsRoute(this.catalogs.cached(eligible));
+			const resolved = warm.candidates.length
+				? warm
+				: decisionsRoute(
+						await abortable(this.catalogs.discover(eligible), controller.signal),
+					);
+			let backupsDiscovered = !warm.candidates.length;
+			const discovering = new Map<
+				string,
+				Promise<{ id: string; catalogs: RouteCatalog[] }>
+			>();
 			let region: string | undefined;
 			let last = failure(503, "decisions_endpoint_unavailable");
 			const attempts = new Map<string, number>();
@@ -364,9 +401,38 @@ export class DecisionsRuntime {
 						}
 					}
 				}
-				if (!Number.isFinite(readyAt)) return last;
+				if (!backupsDiscovered) {
+					backupsDiscovered = true;
+					for (const backup of eligible) {
+						if (
+							resolved.candidates.some((c) => c.id === backup.id) ||
+							(region !== undefined && region !== (backup.region ?? "global"))
+						)
+							continue;
+						discovering.set(
+							backup.id,
+							this.catalogs.discover([backup]).then(
+								(catalogs) => ({ id: backup.id, catalogs }),
+								() => ({ id: backup.id, catalogs: [] }),
+							),
+						);
+					}
+				}
 				const now = this.now();
 				const wait = Math.max(0, readyAt - now);
+				if (discovering.size) {
+					const ready = await waitAtMost(
+						wait,
+						controller.signal,
+						Promise.race(discovering.values()),
+					);
+					if (ready) {
+						discovering.delete(ready.id);
+						resolved.candidates.push(...decisionsRoute(ready.catalogs).candidates);
+					}
+					continue;
+				}
+				if (!Number.isFinite(readyAt)) return last;
 				if (wait >= deadline - now)
 					return Response.json(
 						{
@@ -386,17 +452,7 @@ export class DecisionsRuntime {
 					);
 				// Scan every same-region candidate before waiting; waits consume time,
 				// never the bounded number of actual inference sends.
-				await new Promise<void>((resolve, reject) => {
-					const cancel = () => {
-						clearTimeout(timer);
-						reject(Error("cancelled"));
-					};
-					const timer = setTimeout(() => {
-						controller.signal.removeEventListener("abort", cancel);
-						resolve();
-					}, wait);
-					controller.signal.addEventListener("abort", cancel, { once: true });
-				});
+				await waitAtMost(wait, controller.signal);
 			}
 		} catch {
 			if (signal?.aborted) throw new ClientCancellationError();

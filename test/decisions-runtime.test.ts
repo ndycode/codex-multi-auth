@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DecisionsRuntime } from "../lib/runtime/decisions-runtime.js";
+import {
+	DecisionsRuntime,
+	type DecisionsCatalogs,
+} from "../lib/runtime/decisions-runtime.js";
 import type { ApiRouteCredential } from "../lib/api-route-store.js";
 import type { RouteCatalog } from "../lib/model-route-policy.js";
 const route = (
@@ -16,13 +19,18 @@ const route = (
 	apiKey: `key-${id}`,
 	visibleModels: ["decision-test"],
 });
-const catalogs = async (
-	routes: ApiRouteCredential[],
-): Promise<RouteCatalog[]> =>
+const build = (routes: ApiRouteCredential[]): RouteCatalog[] =>
 	routes.map((r) => ({
 		...r,
 		models: [{ slug: "decision-test", supported_endpoints: ["/v1/decisions"] }],
 	}));
+const warmFrom = (
+	evidence: (routes: ApiRouteCredential[]) => RouteCatalog[],
+): DecisionsCatalogs => ({
+	cached: evidence,
+	discover: async (routes) => evidence(routes),
+});
+const catalogs = warmFrom(build);
 const body = {
 	model: "zdr/decision-test",
 	input: [
@@ -105,22 +113,24 @@ describe("native Decisions boundary", () => {
 		"rejects unauthorized route %s without discovery or inference",
 		async (model) => {
 			const fetcher = vi.fn();
-			const discover = vi.fn(catalogs);
-			const runtime = new DecisionsRuntime(fetcher, discover);
+			const cached = vi.fn(build);
+			const discover = vi.fn(catalogs.discover);
+			const runtime = new DecisionsRuntime(fetcher, { cached, discover });
 			expect(
 				(await runtime.request({ ...body, model }, [route()])).status,
 			).toBe(400);
 			expect(fetcher).not.toHaveBeenCalled();
+			expect(cached).not.toHaveBeenCalled();
 			expect(discover).not.toHaveBeenCalled();
 		},
 	);
 	it("requires endpoint evidence and visibility, not model ID alone", async () => {
 		const fetcher = vi.fn();
-		const runtime = new DecisionsRuntime(fetcher, async (routes) =>
-			(await catalogs(routes)).map((c) => ({
-				...c,
-				models: [{ slug: "decision-test" }],
-			})),
+		const runtime = new DecisionsRuntime(
+			fetcher,
+			warmFrom((routes) =>
+				build(routes).map((c) => ({ ...c, models: [{ slug: "decision-test" }] })),
+			),
 		);
 		expect((await runtime.request(body, [route()])).status).toBe(503);
 		expect(fetcher).not.toHaveBeenCalled();
@@ -193,7 +203,10 @@ describe("native Decisions boundary", () => {
 	it("honors cancellation during discovery without sending", async () => {
 		const controller = new AbortController();
 		const fetcher = vi.fn();
-		const runtime = new DecisionsRuntime(fetcher, () => new Promise(() => {}));
+		const runtime = new DecisionsRuntime(fetcher, {
+			cached: () => [],
+			discover: () => new Promise(() => {}),
+		});
 		const pending = runtime.request(body, [route()], controller.signal);
 		controller.abort();
 		await expect(pending).rejects.toThrow();
@@ -545,6 +558,87 @@ describe("cooldowns that elapse while a backup is slow", () => {
 		expect(fetcher).toHaveBeenCalledTimes(2);
 	});
 });
+describe("cold backup catalogs", () => {
+	const warmPrimary = (
+		discover: DecisionsCatalogs["discover"],
+	): DecisionsCatalogs => ({
+		cached: (routes) => build(routes.filter((r) => r.id === "one")),
+		discover,
+	});
+	it("serves a warm primary without discovering a cold backup", async () => {
+		vi.useFakeTimers();
+		const fetcher = vi.fn(async () => Response.json(answer));
+		const discover = vi.fn(() => new Promise<RouteCatalog[]>(() => {}));
+		let status: number | undefined;
+		void new DecisionsRuntime(fetcher, warmPrimary(discover))
+			.request(body, [route(), route("backup")])
+			.then((response) => {
+				status = response.status;
+			});
+		await vi.advanceTimersByTimeAsync(0);
+		expect(status).toBe(200);
+		expect(authorizations(fetcher)).toEqual(["Bearer key-one"]);
+		expect(discover).not.toHaveBeenCalled();
+	});
+	it("discovers only same-pool, same-region backups once the warm primary is rejected", async () => {
+		vi.useFakeTimers();
+		const events: string[] = [];
+		const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
+			const authorization = new Headers(init?.headers).get("authorization");
+			events.push(`send ${authorization}`);
+			return authorization === "Bearer key-one"
+				? Response.json({ error: { code: "invalid_api_key" } }, { status: 401 })
+				: Response.json(answer);
+		});
+		const discover = async (routes: ApiRouteCredential[]) => {
+			events.push(`discover ${routes.map((r) => r.id).join()}`);
+			await new Promise((resolve) => setTimeout(resolve, 2000));
+			return build(routes);
+		};
+		let status: number | undefined;
+		void new DecisionsRuntime(fetcher, warmPrimary(discover))
+			.request(body, [
+				route(),
+				route("api", "api"),
+				route("foreign", "zdr", "global"),
+				route("backup"),
+			])
+			.then((response) => {
+				status = response.status;
+			});
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(status).toBe(200);
+		expect(events).toEqual([
+			"send Bearer key-one",
+			"discover backup",
+			"send Bearer key-backup",
+		]);
+	});
+	it("retries a warm primary's cooldown while backup discovery stalls", async () => {
+		vi.useFakeTimers();
+		const fetcher = vi
+			.fn()
+			.mockResolvedValueOnce(
+				Response.json(
+					{ error: { code: "rate_limit_exceeded" } },
+					{ status: 429, headers: { "retry-after": "1" } },
+				),
+			)
+			.mockImplementation(async () => Response.json(answer));
+		let status: number | undefined;
+		void new DecisionsRuntime(
+			fetcher,
+			warmPrimary(() => new Promise(() => {})),
+		)
+			.request(body, [route(), route("backup")])
+			.then((response) => {
+				status = response.status;
+			});
+		await vi.advanceTimersByTimeAsync(1300);
+		expect(status).toBe(200);
+		expect(authorizations(fetcher)).toEqual(["Bearer key-one", "Bearer key-one"]);
+	});
+});
 it("cancels a Retry-After wait without a retry", async () => {
 	vi.useFakeTimers();
 	const controller = new AbortController();
@@ -627,8 +721,8 @@ describe("review regressions", () => {
 	});
 	it("ignores Responses probes but keeps credential availability and visibility", async () => {
 		const fetcher = vi.fn(async () => Response.json(answer));
-		const discovery = async (routes: ApiRouteCredential[]) =>
-			(await catalogs(routes)).map((c) => ({
+		const discovery = warmFrom((routes) =>
+			build(routes).map((c) => ({
 				...c,
 				models: c.models.map((m) => ({
 					...m,
@@ -637,7 +731,8 @@ describe("review regressions", () => {
 						credential: c.id === "unavailable" ? "unavailable" : "available",
 					},
 				})),
-			}));
+			})),
+		);
 		const runtime = new DecisionsRuntime(fetcher, discovery);
 		expect(
 			(

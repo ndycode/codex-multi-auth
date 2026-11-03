@@ -1846,7 +1846,7 @@ async function handleRequestInner(
 			try {
 				const apiRoutes = (await state.readApiRoutes?.()) ?? [];
 				let attemptedCredentialIndex: number | undefined;
-				const decisionsRuntime = state.decisionsRuntime ??= new DecisionsRuntime(state.upstreamFetchImpl, routes => apiRuntime.catalogs(routes, false, false, false, false, routes[0]?.kind, false), state.now);
+				const decisionsRuntime = state.decisionsRuntime ??= new DecisionsRuntime(state.upstreamFetchImpl, {cached: routes => apiRuntime.warmCatalogs(routes), discover: routes => apiRuntime.catalogs(routes, false, false, false, false, routes[0]?.kind, false)}, state.now);
                 const request = isDecisionsRequest
                     ? (_alias: string, payload: Record<string, unknown>, routes: Awaited<ReturnType<typeof loadApiRoutes>>, signal: AbortSignal, onAttempt: (index: number) => void) => decisionsRuntime.request(payload, routes, signal, onAttempt)
                     : apiRuntime.request.bind(apiRuntime);

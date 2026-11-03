@@ -7818,6 +7818,27 @@ describe("Decisions endpoint routing", () => {
   expect(JSON.parse(text).error.code).toBe("decisions_pool_unavailable");
   expect(text).not.toContain("invalid_api_key");
  });
+ it("serves a warm primary while a cold backup's catalog discovery stalls",async()=>{
+  const route=(id:string,priority:number)=>({id,label:id,kind:"zdr" as const,region:"us" as const,apiKey:`key-${id}`,enabled:true,priority,visibleModels:["decision-test"],modelProfiles:{"decision-test":{supported_endpoints:["/v1/decisions"]}}});
+  let routes=[route("primary",0)];
+  let release!:()=>void;const stalled=new Promise<void>(resolve=>{release=resolve;});
+  const {calls,fetchImpl}=createRecordingFetch(async call=>{
+   if(!call.url.endsWith("/models"))return Response.json({answers:[{type:"predicate",name:null,probability:1}],usage:{input_tokens:1,output_tokens:0,total_tokens:1}});
+   if(call.headers.get("authorization")==="Bearer key-backup")await stalled;
+   return Response.json({data:[{id:"decision-test"}]});
+  });
+  const proxy=await startProxy({accountManager:new AccountManager(undefined,createStorage(Date.now(),1)),fetchImpl,options:{readApiRoutes:async()=>routes}});
+  const question={model:"zdr/decision-test",input:"fixture",questions:[{type:"predicate",instructions:"check"}]};
+  const warmed=await postResponses(proxy,question,"/v1/decisions");
+  expect(warmed.status).toBe(200);await warmed.text();
+  routes=[route("primary",0),route("backup",1)];
+  try{
+   const served=await Promise.race([postResponses(proxy,question,"/v1/decisions"),timeoutResult(2000)]);
+   expect(served).not.toBe("timeout");
+   expect((served as Response).status).toBe(200);await (served as Response).text();
+   expect(calls.filter(c=>c.url.endsWith("/decisions")).map(c=>c.headers.get("authorization"))).toEqual(["Bearer key-primary","Bearer key-primary"]);
+  }finally{release();}
+ });
  it("refuses Decisions under a cost budget before sending, so unpriced usage cannot block other traffic",async()=>{
   const fs=await import("node:fs/promises");const os=await import("node:os");const path=await import("node:path");
   const previousDir=process.env.CODEX_MULTI_AUTH_DIR;const dir=await fs.mkdtemp(path.join(os.tmpdir(),"decisions-cost-budget-"));process.env.CODEX_MULTI_AUTH_DIR=dir;
