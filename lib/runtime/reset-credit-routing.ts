@@ -88,17 +88,6 @@ export async function recoverResetQuota(options:{
  return recovered;
 }
 
-/** Apply a confirmed earned reset once per workspace/model observation. */
-export function applyConfirmedReset(options:{account:ManagedAccount;scope:Scope;model:string;family:ModelFamily;manager:AccountManager;snapshot:Awaited<ReturnType<ResetCreditService['status']>>['snapshots'][string]|undefined;lastRedemptionAt:number|undefined;previous:QuotaCacheEntry|null|undefined;observations:Map<string,QuotaCacheEntry>;clearQuotaScheduler:(account:ManagedAccount)=>void;now:number}):boolean{
- if(options.model===LUNA_RESERVE_MODEL)return false;
- const s=options.snapshot;
- if(!s||options.lastRedemptionAt===undefined||s.updatedAt<options.lastRedemptionAt||s.ordinaryUsageAllowed!==true||s.updatedAt<=(options.previous?.updatedAt??0)||options.now-s.updatedAt>60000||s.updatedAt>options.now)return false;
- options.observations.set(JSON.stringify([options.scope.id,options.model]),resetSnapshotQuota(s));
- if(clearRecoveredScopeQuota(options))options.manager.saveToDiskDebounced();
- return true;
-}
-
-
 /** Unknown, stale, or pending reset state must never authorize backup traffic. */
 export function primaryPoolFullyExhausted(
  scopes: Map<number, Scope[]>,
