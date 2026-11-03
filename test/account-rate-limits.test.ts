@@ -33,9 +33,16 @@ describe("account rate-limit helpers", () => {
 		vi.advanceTimersByTime(60_000);
 		expect(isRateLimitedForFamily(entity,"codex","model-b")).toBe(false);
 	});
-	it("resolves selected organization aliases and retains legacy global blockers", () => {
+	it("resolves a selected organization alias to its native workspace deadline", () => {
 		vi.useFakeTimers(); vi.setSystemTime(NOW);
 		const entity: RateLimitedEntity={accountId:"org-personal",codexCliMirror:{forAccountId:"org-personal",accountId:"a"},
+			rateLimitResetTimes:{[workspaceQuotaKey("codex","a")]:NOW+10_000}};
+		expect(isRateLimitedForFamily(entity,"codex")).toBe(true);
+		expect(selectedQuotaLimits(entity)).toEqual({codex:NOW+10_000});
+	});
+	it("retains legacy global blockers beside workspace deadlines", () => {
+		vi.useFakeTimers(); vi.setSystemTime(NOW);
+		const entity: RateLimitedEntity={accountId:"a",
 			rateLimitResetTimes:{[workspaceQuotaKey("codex","a")]:NOW+10_000,codex:NOW+20_000}};
 		expect(isRateLimitedForFamily(entity,"codex")).toBe(true);
 		expect(selectedQuotaLimits(entity)).toEqual({codex:NOW+20_000});
