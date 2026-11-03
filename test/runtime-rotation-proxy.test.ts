@@ -238,7 +238,7 @@ it("attributes provider quota to the workspace selected by a refresh replacement
  expect(calls).toHaveLength(2);
 });
 
-it.each([false,true,"pending"] as const)("sequences a post-reset quota stream frame before recovery (receipt read fails: %s)", async failRead => {
+it.each([false,true])("orders a quota stream frame by the receipts known at dispatch (request read fails: %s)", async failRead => {
  const fs=await import("node:fs/promises"),os=await import("node:os"),path=await import("node:path");
  const previousDir=process.env.CODEX_MULTI_AUTH_DIR;
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),"reset-stream-ordering-"));process.env.CODEX_MULTI_AUTH_DIR=dir;
@@ -251,7 +251,6 @@ it.each([false,true,"pending"] as const)("sequences a post-reset quota stream fr
  });
  let controller!:ReadableStreamDefaultController<Uint8Array>,entered!:()=>void;
  const started=new Promise<void>(resolve=>{entered=resolve;});
- let releaseRead!:()=>void;const readGate=new Promise<void>(resolve=>{releaseRead=resolve;});
  try {
   const disk=createStorage(now,1);disk.pinnedAccountIndex=0;disk.accounts[0]!.recordId="stream-fixture";
   const storage=await import("../lib/storage.js");vi.spyOn(storage,"loadAccounts").mockResolvedValue(disk);
@@ -261,21 +260,26 @@ it.each([false,true,"pending"] as const)("sequences a post-reset quota stream fr
    if(++posts>1)return textEventStream();
    return new Response(new ReadableStream<Uint8Array>({start(c){controller=c;entered();}}),{headers:{"content-type":"text/event-stream"}});
   },options:{nativeOpenai:true,forcedAccountIndex:0}});
+  if(failRead)vi.spyOn(resets,"loadResetCreditState").mockRejectedValueOnce(Error("synthetic EIO"));
   const send=()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic",stream:true});
   const pending=send();await started;
   await resets.createResetCreditService(new AccountManager(undefined,disk)).redeem(resets.resetTargetForStoredAccount(disk.accounts[0]!)!);
-  const actualLoad=resets.loadResetCreditState;
-  const loader=vi.spyOn(resets,"loadResetCreditState");if(failRead===true)loader.mockRejectedValueOnce(Error("synthetic EIO"));
-  let sequencing:Promise<Awaited<ReturnType<typeof actualLoad>>>|undefined;
-  if(failRead==="pending")loader.mockImplementationOnce(()=>{sequencing=readGate.then(actualLoad);return sequencing;});
-  controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({type:"codex.rate_limits",rate_limits:{primary:{used_percent:95,reset_at:Math.floor(now/1000)+3600}}})}\n\ndata: {"type":"response.completed","response":{}}\n\n`));controller.close();
+  controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({type:"codex.rate_limits",rate_limits:{primary:{used_percent:95,reset_at:Math.floor(now/1000)+3600}}})}
+
+data: {"type":"response.completed","response":{}}
+
+`));controller.close();
   expect((await pending).status).toBe(200);
   const reads=rpc.mock.calls.length;
-  expect((await send()).status).toBe(503);expect(posts).toBe(1);expect(rpc.mock.calls.length).toBe(reads);
-  releaseRead();await sequencing;
-  expect((await send()).status).toBe(503);expect(posts).toBe(1);
+  if(failRead){
+   // Unknown dispatch knowledge stays conservative: the visible receipt cannot replay.
+   expect((await send()).status).toBe(503);expect(posts).toBe(1);expect(rpc.mock.calls.length).toBe(reads);
+  }else{
+   // The frame answered a request sent before the reset, so a fresh read decides.
+   expect((await send()).status).toBe(200);expect(posts).toBe(2);expect(rpc.mock.calls.length).toBe(reads+1);
+  }
  } finally {
-  releaseRead();rpc.mockRestore();vi.restoreAllMocks();
+  rpc.mockRestore();vi.restoreAllMocks();
   if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
   await removeWithRetry(dir,{recursive:true,force:true});
  }
@@ -357,7 +361,7 @@ it.each([{delay:0,outcome:"reset",pinned:true,secondReset:false},{delay:65_000,o
  }
 });
 
-it.each([false,true])("scopes a late in-flight quota rejection when a sibling workspace reset is %s", async sibling => {
+it.each([false,true])("orders a late in-flight quota rejection by dispatch when the reset is for a sibling workspace: %s", async sibling => {
  const fs = await import("node:fs/promises"), os = await import("node:os"), path = await import("node:path");
  const previousDir = process.env.CODEX_MULTI_AUTH_DIR;
  const dir = await fs.mkdtemp(path.join(os.tmpdir(),"reset-inflight-rejection-")); process.env.CODEX_MULTI_AUTH_DIR=dir;
@@ -394,7 +398,10 @@ it.each([false,true])("scopes a late in-flight quota rejection when a sibling wo
    const cold=new AccountManager(undefined,JSON.parse(JSON.stringify(saved)));
    const coldProxy=await startProxy({accountManager:cold,fetchImpl:async()=>{throw Error("blocked workspace must not reach upstream");},options:{forcedAccountIndex:0}});
    expect((await postResponsesWithHttp(coldProxy,{model:"chat-fixture",input:"cold"})).status).toBe(503);
-  }else{expect((await request()).status).toBe(503);expect(posts).toBe(1);expect(rpc.mock.calls.length).toBe(readsBefore);}
+  }else{
+   // The rejected request was sent before this workspace's reset, so a fresh read decides.
+   expect((await request()).status).toBe(200);expect(posts).toBe(2);expect(rpc.mock.calls.length).toBe(readsBefore+1);
+  }
  } finally {
   release();rpc.mockRestore();clock.mockRestore();
   if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
@@ -402,7 +409,7 @@ it.each([false,true])("scopes a late in-flight quota rejection when a sibling wo
  }
 });
 
-it.each([["reload",false],["receipt-read-failure",false],["reload",true],["receipt-read-failure",true]] as const)("protects a reset from a late rejection after %s (quota headers: %s)", async (mode,headers) => {
+it.each([["reload",false],["same-manager",false],["request-read-failure",false],["reload",true],["same-manager",true],["request-read-failure",true]] as const)("orders a late rejection by the receipts known at dispatch after %s (quota headers: %s)", async (mode,headers) => {
  const fs=await import("node:fs/promises"), os=await import("node:os"), path=await import("node:path");
  const previousDir=process.env.CODEX_MULTI_AUTH_DIR;
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),"reset-late-ordering-"));process.env.CODEX_MULTI_AUTH_DIR=dir;
@@ -423,27 +430,35 @@ it.each([["reload",false],["receipt-read-failure",false],["reload",true],["recei
   // Legacy managers may be matched by token/workspace after record identity changes.
   originalAccount.recordId=undefined;
   const proxy=await startProxy({accountManager:manager,fetchImpl:async()=>{entered();await gate;return headers ? textEventStream(undefined,{"x-codex-primary-used-percent":"100","x-codex-primary-reset-after-seconds":"3600"}) : Response.json({error:{code:"usage_limit_reached"}},{status:429,headers:{"retry-after":"3600"}});},options:{forcedAccountIndex:0}});
+  if(mode==="request-read-failure")vi.spyOn(resets,"loadResetCreditState").mockRejectedValueOnce(Error("synthetic EIO"));
   const pending=postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic request"});await started;
   if(mode==="reload")disk.accounts[0]!.recordId="persisted-new-record";
   const replacement=mode==="reload"?new AccountManager(undefined,disk):manager;
   if(replacement!==manager){openManagers.push(replacement);vi.spyOn(replacement,"saveToDiskDebounced").mockImplementation(()=>{});tokenRefreshRuntime.redirectRuntimeRefreshCommits(manager,replacement);}
   const target=resets.resetTargetForStoredAccount(disk.accounts[0]!)!;
   await resets.createResetCreditService(new AccountManager(undefined,disk)).redeem(target);
-  const load=vi.spyOn(resets,"loadResetCreditState");
-  if(mode==="receipt-read-failure")load.mockRejectedValueOnce(Error("synthetic EIO"));
   release();expect((await pending).status).toBe(headers?200:503);
   const {ConfirmedResetReconciler}=await import("../lib/runtime/confirmed-reset-reconciler.js");
   const {workspaceModelScopes}=await import("../lib/runtime/workspace-model-scopes.js");
   const account=replacement.getAccountByIndex(0)!,scope=workspaceModelScopes(account).find(s=>s.accountId==="acc_1")!;
   const state=await resets.loadResetCreditState();
-  const read=vi.fn(async()=>({updatedAt:now,availableCount:1,credits:null,ordinaryUsageAllowed:true,planType:"pro",primary:{},secondary:{}}));
+  let clock=now,allowed=false;
+  const read=vi.fn(async()=>({updatedAt:clock,availableCount:1,credits:null,ordinaryUsageAllowed:allowed,planType:"pro",primary:{},secondary:{}}));
   const reconciler=new ConfirmedResetReconciler();
-  const args={state:async()=>state,account,scope,model:"chat-fixture",family:getModelFamily("chat-fixture"),manager:replacement,read,isCurrent:()=>true,now:()=>now,observations:new Map(),clearQuotaScheduler:()=>{}};
-  expect(await reconciler.reconcile(args)).toBe(false);expect(read).not.toHaveBeenCalled();
-  expect(await reconciler.reconcile(args)).toBe(false);
-  // Once a successfully observed baseline exists, a strictly newer reset can recover.
-  state.lastRedemption={...state.lastRedemption!,generation:state.redemptionGeneration!+1};state.redemptions={[scope.id]:state.lastRedemption};
-  expect(await reconciler.reconcile(args)).toBe(true);expect(read).toHaveBeenCalledTimes(1);
+  const args={state:async()=>state,account,scope,model:"chat-fixture",family:getModelFamily("chat-fixture"),manager:replacement,read,isCurrent:()=>true,now:()=>clock,observations:new Map(),clearQuotaScheduler:()=>{}};
+  if(mode==="request-read-failure"){
+   // Unknown dispatch knowledge stays conservative: the first readable receipt is its baseline.
+   expect(await reconciler.reconcile(args)).toBe(false);expect(read).not.toHaveBeenCalled();
+   expect(await reconciler.reconcile(args)).toBe(false);
+   state.lastRedemption={...state.lastRedemption!,generation:state.redemptionGeneration!+1};state.redemptions={[scope.id]:state.lastRedemption};
+   allowed=true;expect(await reconciler.reconcile(args)).toBe(true);expect(read).toHaveBeenCalledTimes(1);
+   return;
+  }
+  // The rejected request was sent before the reset, so the fresh read decides either way.
+  expect(await reconciler.reconcile(args)).toBe(false);expect(read).toHaveBeenCalledTimes(1);
+  expect(quotaResetTime(account,getModelFamily("chat-fixture"))).toBeGreaterThan(clock);
+  clock+=5_000;allowed=true;
+  expect(await reconciler.reconcile(args)).toBe(true);expect(read).toHaveBeenCalledTimes(2);
  } finally {
   release();rpc.mockRestore();vi.restoreAllMocks();
   if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
@@ -4330,7 +4345,7 @@ describe("runtime rotation proxy", () => {
 			"unknown",
 			"gpt-5-codex",
 			modelScopeId("oauth", "row-a", "acc_1"),
-            {workspaceId:"acc_1",receiptReadFailed:false},
+            expect.objectContaining({workspaceId:"acc_1",receiptReadFailed:false}),
 		);
 	});
 

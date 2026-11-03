@@ -36,7 +36,6 @@ import * as zlib from "node:zlib";
 import {
 	AccountManager,
 	AUTH_INVALIDATION_MARKER,
-	getRateLimitObservationKey,
 	extractAccountId,
 	type ManagedAccount,
 } from "./accounts.js";
@@ -3273,6 +3272,16 @@ async function handleRequestInner(
 					: null;
 			};
 
+			// A rejection answers this request: a reset completed while it was in
+			// flight is newer, and the fresh native read decides whether it applies.
+			observeResetGenerations(refreshed.account, resetCreditState, modelScopeId("oauth", resolveAccountRecordId(refreshed.account), accountId));
+			const dispatchedReceipts = {
+				receipts: {
+					resetReceiptGenerations: { ...refreshed.account.resetReceiptGenerations },
+					resetReceiptIdentities: { ...refreshed.account.resetReceiptIdentities },
+				},
+				receiptReadFailed: resetCreditState === null,
+			};
 			const outboundHeaders = createOutboundHeaders(
 				context.headers,
 				refreshed.account,
@@ -3583,12 +3592,8 @@ async function handleRequestInner(
 				}
 				// Every 429 still drains this account for its retry window, but only an
 				// explicit subscription-usage signal is persisted as quota exhaustion.
-				// Read durable generations before binding the response to the current
-				// manager: a reset may have completed while this request was in flight.
-				const rejectionResetState = await loadResetCreditState().catch(() => null);
 				const rateLimitState = responseStateTarget();
 				const rejectionScopeId = modelScopeId("oauth", resolveAccountRecordId(rateLimitState.account), accountId);
-				observeResetGenerations(rateLimitState.account, rejectionResetState, rejectionScopeId);
 				rateLimitState.accountManager.recordRateLimit(rateLimitState.account, context.family, context.model);
 				rateLimitState.accountManager.markRateLimitedWithReason(
 					rateLimitState.account,
@@ -3597,7 +3602,7 @@ async function handleRequestInner(
 					subscriptionQuotaExceeded ? "quota" : "unknown",
 					context.model,
 					rejectionScopeId,
-					{ workspaceId: accountId, receiptReadFailed: rejectionResetState === null },
+					{ workspaceId: accountId, ...dispatchedReceipts },
 				);
 				if (
 					subscriptionQuotaExceeded &&
@@ -3948,10 +3953,8 @@ async function handleRequestInner(
 							? quotaDeferral.waitMs
 							: 0;
 				if (nearExhaustionWaitMs > 0) {
-					const rejectionResetState = await loadResetCreditState().catch(() => null);
 					const quotaState = responseStateTarget();
 					const rejectionScopeId = modelScopeId("oauth", resolveAccountRecordId(quotaState.account), accountId);
-					observeResetGenerations(quotaState.account, rejectionResetState, rejectionScopeId);
 					quotaState.accountManager.markRateLimitedWithReason(
 						quotaState.account,
 						nearExhaustionWaitMs,
@@ -3959,7 +3962,7 @@ async function handleRequestInner(
 						"quota",
 						context.model,
 						rejectionScopeId,
-						{ workspaceId: accountId, receiptReadFailed: rejectionResetState === null },
+						{ workspaceId: accountId, ...dispatchedReceipts },
 					);
 					state.sessionAffinityStore?.forgetSession(context.sessionKey);
 					quotaState.accountManager.saveToDiskDebounced();
@@ -4001,7 +4004,6 @@ async function handleRequestInner(
 					});
 				}
 			}
-			let streamQuotaSequence = Promise.resolve();
 			const usageScanner = createUsageStreamScanner({
 				contentType: upstream.headers.get("content-type"),
 				onEvent: (event) => {
@@ -4014,27 +4016,12 @@ async function handleRequestInner(
                     const nativeStreamPermission = state.nativeOpenai && requestScope &&
                         hasFreshOrdinaryUsagePermission(quotaForScope(refreshed.account, requestScope), state.now());
                     if (deferral.defer && !nativeStreamPermission) {
-                        // Publish uncertainty synchronously: a concurrent request must
-                        // not replay a receipt while the event's durable ordering is read.
                         const target = responseStateTarget();
                         const scopeId = modelScopeId("oauth", resolveAccountRecordId(target.account), accountId);
                         target.accountManager.markRateLimitedWithReason(target.account, deferral.waitMs,
                             context.family, "quota", context.model, scopeId,
-                            {workspaceId: accountId, receiptReadFailed: true});
-                        const key = getRateLimitObservationKey(context.family, scopeId);
-                        const observation = target.account.rateLimitObservations?.[key];
+                            {workspaceId: accountId, ...dispatchedReceipts});
                         target.accountManager.saveToDiskDebounced();
-                        streamQuotaSequence = streamQuotaSequence.then(async () => {
-                            if (!observation || responseStateTarget().account.rateLimitObservations?.[key] !== observation) return;
-                            const receipts = await loadResetCreditState().catch(() => null);
-                            const current = responseStateTarget();
-                            // A newer frame or manager replacement owns its own marker.
-                            if (!receipts || !observation || current.account.rateLimitObservations?.[key] !== observation) return;
-                            observeResetGenerations(current.account, receipts, scopeId);
-                            observation.receiptGenerations = {[scopeId]: current.account.resetReceiptGenerations?.[scopeId] ?? 0};
-                            observation.receiptIdentities = { ...current.account.resetReceiptIdentities };
-                            observation.receiptReadFailed = false;
-                        });
                     }
 					state.status.streamQuotaUpdates = (state.status.streamQuotaUpdates ?? 0) + 1;
 					state.status.lastStreamQuotaUpdateAt = snapshot.updatedAt;
@@ -4074,7 +4061,6 @@ async function handleRequestInner(
 				{...(budgetAdvisory.level === "soft" ? buildContextBudgetHeaders(budgetAdvisory) : {}),...(state.catalogEtag ? {"x-models-etag":state.catalogEtag} : {})},
 				() => {usageScanner.result();return responseOutcome.finish();},
 			);
-			await streamQuotaSequence;
 			// The client went away mid-stream: no upstream error, and the response was
 			// neither completed nor failed. That says nothing about the account.
 			const clientDisconnected = !forwarded && !streamErrored && !res.writableEnded;

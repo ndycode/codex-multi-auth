@@ -1442,7 +1442,12 @@ export class AccountManager {
 		reason: RateLimitReason,
 		model?: string | null,
 		scopeId?: string,
-		observation?: { workspaceId: string; receiptReadFailed?: boolean },
+		observation?: {
+			workspaceId: string;
+			receiptReadFailed?: boolean;
+			/** Receipts known when the rejected request was sent; defaults to those known now. */
+			receipts?: Pick<ManagedAccount, "resetReceiptGenerations" | "resetReceiptIdentities">;
+		},
 	): void {
 		let selectionReadable = false;
 		try {
@@ -1483,9 +1488,10 @@ export class AccountManager {
 		const recordRejection = (key: string) => {
 			const observations = account.rateLimitObservations ??= {};
 			const observationKey = getRateLimitObservationKey(key, scopeId);
-			const receiptGenerations = scopeId === undefined ? { ...account.resetReceiptGenerations }
-				: { [scopeId]: account.resetReceiptGenerations?.[scopeId] ?? 0 };
-			observations[observationKey] = { revision: (observations[observationKey]?.revision ?? 0) + 1, observedAt: observedAtMs, reason, receiptGenerations, receiptIdentities: { ...account.resetReceiptIdentities }, receiptReadFailed: observation?.receiptReadFailed };
+			const known = observation?.receipts ?? account;
+			const receiptGenerations = scopeId === undefined ? { ...known.resetReceiptGenerations }
+				: { [scopeId]: known.resetReceiptGenerations?.[scopeId] ?? 0 };
+			observations[observationKey] = { revision: (observations[observationKey]?.revision ?? 0) + 1, observedAt: observedAtMs, reason, receiptGenerations, receiptIdentities: { ...known.resetReceiptIdentities }, receiptReadFailed: observation?.receiptReadFailed };
 		};
 		const deadlineKey = (key: string) => observation ? workspaceQuotaKey(key, observation.workspaceId) : key;
 		const baseKey = deadlineKey(getQuotaKey(family));
