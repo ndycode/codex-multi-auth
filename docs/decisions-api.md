@@ -47,8 +47,10 @@ request deadline, the caller gets 429 `rate_limit_exceeded` with `Retry-After`
 and `retry_after_ms` set to that cooldown, including when the cooldown was
 cached by an earlier request. Unclassified 429 rejections, network ambiguity, and other
 server errors are not replayed. Discovery, admission, response-body reads, and
-retries share a 60-second deadline and respect cancellation. Response buffering
-is capped at 8 MiB. Error bodies are read only until 5 seconds pass without
+retries share a 60-second deadline and respect cancellation. Answers are
+buffered up to 64 MiB, the proxy's request cap. A larger answer returns 502
+`decisions_response_too_large`; the provider has already run that request, but
+its usage cannot be read, so no token counts are recorded. Error bodies are read only until 5 seconds pass without
 data or 64 KiB arrive, so a stalled rejection cannot hold failover until the
 deadline.
 

@@ -671,6 +671,64 @@ describe("review regressions", () => {
 	});
 });
 
+describe("large answers", () => {
+	it("serves a schema-valid answer above 8 MiB and records its usage", async () => {
+		const choices = Array.from({ length: 2000 }, (_, i) => ({
+			value: `option-${i}`,
+		}));
+		const questions = Array.from({ length: 120 }, () => ({
+			type: "choice",
+			instructions: "pick",
+			choices,
+		}));
+		const text = JSON.stringify({
+			answers: questions.map(() => ({
+				type: "choice",
+				name: null,
+				choice: "option-0",
+				confidence: 0.5,
+				probabilities: choices.map((c) => ({
+					value: c.value,
+					probability: 0.0005,
+				})),
+			})),
+			usage: { input_tokens: 900_000, output_tokens: 0, total_tokens: 900_000 },
+		});
+		expect(text.length).toBeGreaterThan(8 * 1024 * 1024);
+		const runtime = new DecisionsRuntime(
+			vi.fn(async () => new Response(text)),
+			catalogs,
+		);
+		const response = await runtime.request({ ...body, questions }, [route()]);
+		expect(response.status).toBe(200);
+		expect(runtime.usageFor(response)?.inputTokens).toBe(900_000);
+		expect((await response.text()).length).toBe(text.length);
+	});
+	it("reports an answer over the response cap distinctly and does not replay it", async () => {
+		const chunk = new Uint8Array(1024 * 1024).fill(32);
+		let sent = 0;
+		const fetcher = vi.fn(
+			async () =>
+				new Response(
+					new ReadableStream({
+						pull(controller) {
+							if (sent++ > 64) controller.close();
+							else controller.enqueue(chunk);
+						},
+					}),
+				),
+		);
+		const response = await new DecisionsRuntime(fetcher, catalogs).request(
+			body,
+			[route(), route("backup")],
+		);
+		expect(response.status).toBe(502);
+		expect((await response.json()).error.code).toBe(
+			"decisions_response_too_large",
+		);
+		expect(fetcher).toHaveBeenCalledTimes(1);
+	});
+});
 it("rejects malformed successful Decisions bodies without replay", async () => {
 	const fetcher = vi.fn(async () => new Response("not JSON", { status: 200 }));
 	const response = await new DecisionsRuntime(fetcher, catalogs).request(body, [

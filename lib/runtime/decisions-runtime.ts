@@ -75,10 +75,14 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 			.finally(() => signal.removeEventListener("abort", abort));
 	});
 }
+// Answers echo per-choice probabilities, and the request schema allows 400
+// questions of 2000 choices each, so match the proxy's 64 MiB request cap.
+const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+/** Resolves `null` when the body exceeds MAX_RESPONSE_BYTES. */
 async function readBody(
 	response: Response,
 	signal: AbortSignal,
-): Promise<string> {
+): Promise<string | null> {
 	const reader = response.body?.getReader();
 	if (!reader) return "";
 	const chunks: Uint8Array[] = [];
@@ -88,7 +92,7 @@ async function readBody(
 			const { done, value } = await abortable(reader.read(), signal);
 			if (done) break;
 			size += value.byteLength;
-			if (size > 8 * 1024 * 1024) throw Error("Decision response too large");
+			if (size > MAX_RESPONSE_BYTES) return null;
 			chunks.push(value);
 		}
 	} finally {
@@ -272,6 +276,8 @@ export class DecisionsRuntime {
 										readErrorBody(response, 5000, 65536),
 										controller.signal,
 									);
+							if (text === null)
+								return failure(502, "decisions_response_too_large");
 							let data: unknown;
 							try {
 								data = JSON.parse(text);
