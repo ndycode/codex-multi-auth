@@ -73,7 +73,9 @@ export class ConfirmedResetReconciler {
 		if (!(quotaResetTime(account, family, scope.accountId) > now ||
 			(account.cooldownReason === "rate-limit" && (account.coolingDownUntil ?? 0) > now) ||
 			options.hasQuotaDeferral?.() || options.hasCachedQuotaBlock?.() ||
-			(options.usesAdmissionBucket !== false && getTokenTracker().getTokens(getRuntimeTrackerKey(account), `${family}:${model}`) < 1))) return false;
+			// Ordinary load also drains the bucket; only a quota rejection makes it reset debt.
+			(options.usesAdmissionBucket !== false && rejectionForScope()?.reason === "quota" &&
+				getTokenTracker().getTokens(getRuntimeTrackerKey(account), `${family}:${model}`) < 1))) return false;
 		// Receipt time may be ahead of this process after a clock rollback. Fresh
 		// permission still decides recovery; exact receipt identity prevents replay.
 		const key = JSON.stringify([scope.id, model]);

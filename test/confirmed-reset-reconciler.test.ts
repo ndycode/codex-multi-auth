@@ -287,12 +287,23 @@ it("reconciles a completed receipt while a different workspace redemption is pen
  expect(await f.run()).toBe(true);expect(f.args.read).toHaveBeenCalledTimes(1);
 });
 
-it("reconciles when the exact admission bucket is the only remaining blocker", async () => {
- const f=fixture();f.account.rateLimitResetTimes={};
+it("reconciles when a rejected account's exact admission bucket is the only remaining blocker", async () => {
+ const f=fixture();Object.assign(f.args.state!.lastRedemption!,{generation:1});
+ f.manager.markRateLimitedWithReason(f.account,300000,"codex","quota","chat-test");f.account.rateLimitResetTimes={};
  const tracker=getTokenTracker(),key=getRuntimeTrackerKey(f.account);
  tracker.drain(key,"codex:chat-test",1000);
  expect(await f.run()).toBe(true);
  expect(tracker.tryConsume(key,"codex:chat-test")).toBe(true);
+});
+
+it("does not read or refill a bucket drained by load without a quota rejection", async () => {
+ const f=fixture();Object.assign(f.args.state!.lastRedemption!,{generation:1,at:f.args.now()-7*86_400_000});
+ f.account.rateLimitResetTimes={};
+ const tracker=getTokenTracker(),key=getRuntimeTrackerKey(f.account);
+ tracker.drain(key,"codex:chat-test",1000);
+ expect(await f.run()).toBe(false);
+ expect(f.args.read).not.toHaveBeenCalled();
+ expect(tracker.tryConsume(key,"codex:chat-test")).toBe(false);
 });
 
 it.each(["before","during"])("ignores another workspace's rejection chronology: %s", async phase => {
