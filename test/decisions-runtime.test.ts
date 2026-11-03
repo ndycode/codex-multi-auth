@@ -481,6 +481,70 @@ describe("cooldowns longer than the deadline", () => {
 		expect(fetcher).toHaveBeenCalledTimes(2);
 	});
 });
+describe("cooldowns that elapse while a backup is slow", () => {
+	const primaryLimitedThenSlowBackupRejection = (retryAfter: string) => {
+		const sends: [string | null, number][] = [];
+		const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
+			const authorization = new Headers(init?.headers).get("authorization");
+			sends.push([authorization, Date.now()]);
+			if (authorization === "Bearer key-backup")
+				return new Promise<Response>((resolve) =>
+					setTimeout(
+						() =>
+							resolve(
+								Response.json(
+									{ error: { code: "invalid_api_key" } },
+									{ status: 401 },
+								),
+							),
+						25_000,
+					),
+				);
+			return sends.length === 1
+				? Response.json(
+						{ error: { code: "rate_limit_exceeded" } },
+						{ status: 429, headers: { "retry-after": retryAfter } },
+					)
+				: Response.json(answer);
+		});
+		return { fetcher, sends };
+	};
+	it("retries the primary when its cooldown ends inside the deadline", async () => {
+		vi.useFakeTimers();
+		const start = Date.now();
+		const { fetcher, sends } = primaryLimitedThenSlowBackupRejection("40");
+		let status: number | undefined;
+		void new DecisionsRuntime(fetcher, catalogs, Date.now, 60_000)
+			.request(body, [route(), route("backup")])
+			.then((response) => {
+				status = response.status;
+			});
+		await vi.advanceTimersByTimeAsync(41_000);
+		expect(status).toBe(200);
+		expect(sends.map(([authorization, at]) => [authorization, at - start])).toEqual([
+			["Bearer key-one", 0],
+			["Bearer key-backup", 0],
+			["Bearer key-one", expect.any(Number)],
+		]);
+		expect(sends[2]![1] - start).toBeGreaterThanOrEqual(40_000);
+		expect(sends[2]![1] - start).toBeLessThanOrEqual(40_250);
+	});
+	it("reports the cooldown left, not the cooldown first seen", async () => {
+		vi.useFakeTimers();
+		const { fetcher } = primaryLimitedThenSlowBackupRejection("70");
+		const pending = new DecisionsRuntime(fetcher, catalogs, Date.now, 60_000)
+			.request(body, [route(), route("backup")]);
+		await vi.advanceTimersByTimeAsync(25_000);
+		const response = await pending;
+		expect(response.status).toBe(429);
+		expect(Number(response.headers.get("retry-after"))).toBeGreaterThanOrEqual(45);
+		expect(Number(response.headers.get("retry-after"))).toBeLessThanOrEqual(46);
+		const { retry_after_ms } = (await response.json()).error;
+		expect(retry_after_ms).toBeGreaterThanOrEqual(45_000);
+		expect(retry_after_ms).toBeLessThanOrEqual(45_250);
+		expect(fetcher).toHaveBeenCalledTimes(2);
+	});
+});
 it("cancels a Retry-After wait without a retry", async () => {
 	vi.useFakeTimers();
 	const controller = new AbortController();

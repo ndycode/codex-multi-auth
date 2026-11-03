@@ -227,7 +227,7 @@ export class DecisionsRuntime {
 			const attempts = new Map<string, number>();
 			const rejected = new Set<string>();
 			for (;;) {
-				let minimumWait = Infinity;
+				let readyAt = Infinity;
 				for (const candidate of resolved.candidates) {
 					const credential = eligible.find((r) => r.id === candidate.id);
 					if (!credential) continue;
@@ -247,7 +247,7 @@ export class DecisionsRuntime {
 						if (controller.signal.aborted) throw Error("deadline");
 						const admission = this.backoff.acquire(key);
 						if (admission.waitMs) {
-							minimumWait = Math.min(minimumWait, admission.waitMs);
+							readyAt = Math.min(readyAt, this.now() + admission.waitMs);
 							continue;
 						}
 						attempts.set(key, (attempts.get(key) ?? 0) + 1);
@@ -355,7 +355,7 @@ export class DecisionsRuntime {
 									apiRetryDelayMs(data, this.now(), response.headers),
 								);
 								if ((attempts.get(key) ?? 0) < 3)
-									minimumWait = Math.min(minimumWait, waitMs);
+									readyAt = Math.min(readyAt, this.now() + waitMs);
 								continue;
 							}
 							return last; // No replay for ambiguous 5xx or provider validation errors.
@@ -364,21 +364,23 @@ export class DecisionsRuntime {
 						}
 					}
 				}
-				if (!Number.isFinite(minimumWait)) return last;
-				if (minimumWait >= deadline - this.now())
+				if (!Number.isFinite(readyAt)) return last;
+				const now = this.now();
+				const wait = Math.max(0, readyAt - now);
+				if (wait >= deadline - now)
 					return Response.json(
 						{
 							error: {
 								code: "rate_limit_exceeded",
 								message:
 									"Eligible Decisions credentials are temporarily rate limited. Retry after the indicated delay.",
-								retry_after_ms: Math.ceil(minimumWait),
+								retry_after_ms: Math.ceil(wait),
 							},
 						},
 						{
 							status: 429,
 							headers: {
-								"retry-after": String(Math.max(1, Math.ceil(minimumWait / 1000))),
+								"retry-after": String(Math.max(1, Math.ceil(wait / 1000))),
 							},
 						},
 					);
@@ -386,13 +388,13 @@ export class DecisionsRuntime {
 				// never the bounded number of actual inference sends.
 				await new Promise<void>((resolve, reject) => {
 					const cancel = () => {
-						clearTimeout(wait);
+						clearTimeout(timer);
 						reject(Error("cancelled"));
 					};
-					const wait = setTimeout(() => {
+					const timer = setTimeout(() => {
 						controller.signal.removeEventListener("abort", cancel);
 						resolve();
-					}, minimumWait);
+					}, wait);
 					controller.signal.addEventListener("abort", cancel, { once: true });
 				});
 			}
