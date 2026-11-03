@@ -408,8 +408,9 @@ export function buildQuotaScheduleKey(
 	},
 	family: ModelFamily,
 	model?: string | null,
+	servingWorkspaceId?: string,
 ): string {
-	const workspace = account.workspaces?.length ? selectedQuotaWorkspace(account) : undefined;
+	const workspace = account.workspaces?.length ? servingWorkspaceId ?? selectedQuotaWorkspace(account) : undefined;
     const scope = workspace ? `workspace:${modelScopeId(workspace)}:` : "";
 	return `${buildQuotaScheduleAccountPrefix(account)}${scope}${model ?? family}`;
 }
@@ -2921,7 +2922,7 @@ async function handleRequestInner(
 				break;
 			}
 			attemptedIndexes.add(selected.index);
-			const quotaScheduleKey = buildQuotaScheduleKey(
+			const selectionQuotaScheduleKey = buildQuotaScheduleKey(
 				selected,
 				context.family,
 				context.model,
@@ -2931,7 +2932,7 @@ async function handleRequestInner(
             const selectedWorkspaceId = selectedQuotaWorkspace(selected);
             const nativePermission = selectedScope && hasFreshOrdinaryUsagePermission(quotaForScope(selected,selectedScope),state.now());
 			const preemptiveDeferral = state.preemptiveQuotaScheduler.getDeferral(
-				quotaScheduleKey,
+				selectionQuotaScheduleKey,
 				state.now(),
 			);
 			if (
@@ -3134,6 +3135,9 @@ async function handleRequestInner(
    }
    const requestScope = pendingScopes?.[0];
    const accountId = requestScope?.accountId ?? resolveAccountId(refreshed.account, refreshed.accessToken);
+			// Refresh can publish another manager/selection. Attribute all response
+			// observations to the finalized serving workspace, not the pre-refresh one.
+			const quotaScheduleKey = buildQuotaScheduleKey(refreshed.account, context.family, context.model, accountId ?? undefined);
 			if (!accountId) {
 				refundConsumedPoolToken(refreshed.account);
 				accountManager.recordFailure(refreshed.account, context.family, context.model);
@@ -3949,7 +3953,9 @@ async function handleRequestInner(
 					if (!snapshot) return;
 					observeQuota(snapshot, snapshot.planType);
                     const deferral = state.preemptiveQuotaScheduler.getDeferral(quotaScheduleKey, state.now());
-                    if (deferral.defer) {
+                    const nativeStreamPermission = state.nativeOpenai && requestScope &&
+                        hasFreshOrdinaryUsagePermission(quotaForScope(refreshed.account, requestScope), state.now());
+                    if (deferral.defer && !nativeStreamPermission) {
                         // Publish uncertainty synchronously: a concurrent request must
                         // not replay a receipt while the event's durable ordering is read.
                         const target = responseStateTarget();

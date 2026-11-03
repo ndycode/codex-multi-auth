@@ -96,6 +96,44 @@ it("uses the selected provider workspace for dispatch and quota admission withou
  account.currentWorkspaceIndex=1;expect((await send()).status).toBe(503);expect(calls).toHaveLength(2);
 });
 
+it("keeps native requests usable after a near-limit stream frame with fresh permission", async () => {
+ const now=Date.now();
+ const manager=new AccountManager(undefined,createStorage(now,1));
+ const quota={updatedAt:now,status:200,model:"chat-fixture",ordinaryUsageAllowed:true,ordinaryUsageCheckedAt:now,primary:{usedPercent:95,resetAtMs:now+3600000},secondary:{}};
+ const frame=`data: ${JSON.stringify({type:"codex.rate_limits",rate_limits:{primary:{used_percent:95,reset_at:Math.floor(now/1000)+3600}}})}\n\ndata: {"type":"response.completed","response":{}}\n\n`;
+ const {calls,fetchImpl}=createRecordingFetch(call=>call.url.includes("/models")?Response.json({models:[{slug:"chat-fixture"}]}):textEventStream(frame));
+ const proxy=await startProxy({accountManager:manager,fetchImpl,options:{nativeOpenai:true,forcedAccountIndex:0,readSubscriptionQuota:async()=>({byAccountId:{acc_1:quota},byEmail:{}})}});
+ const send=()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic",stream:true});
+ expect((await send()).status).toBe(200);
+ expect((await send()).status).toBe(200);
+ expect(calls.filter(call=>call.url.endsWith("/responses"))).toHaveLength(2);
+ expect(quotaResetTime(manager.getAccountByIndex(0)!,getModelFamily("chat-fixture"))).toBe(0);
+});
+
+it("attributes provider quota to the workspace selected by a refresh replacement", async () => {
+ const disk=createStorage(Date.now(),1);
+ disk.accounts[0]!.recordId="refresh-workspace-fixture";
+ disk.accounts[0]!.workspaces=[{id:"acc_1",enabled:true},{id:"selected-b",enabled:true}];
+ disk.accounts[0]!.currentWorkspaceIndex=0;
+ const manager=new AccountManager(undefined,disk);
+ const next=structuredClone(disk);next.accounts[0]!.currentWorkspaceIndex=1;
+ const replacement=new AccountManager(undefined,next);openManagers.push(replacement);
+ const limited=vi.spyOn(PreemptiveQuotaScheduler.prototype,"markRateLimited");
+ const refresh=vi.spyOn(tokenRefreshRuntime,"ensureFreshAccessToken").mockImplementationOnce(async()=>({ok:true,accountManager:replacement,account:replacement.getAccountByIndex(0)!,accessToken:replacement.getAccountByIndex(0)!.access!}));
+ const {calls,fetchImpl}=createRecordingFetch(call=>call.headers.get("chatgpt-account-id")==="selected-b"
+  ?Response.json({error:{code:"usage_limit_reached"}},{status:429,headers:{"retry-after":"3600"}}):textEventStream());
+ const proxy=await startProxy({accountManager:manager,fetchImpl,options:{forcedAccountIndex:0}});
+ const send=()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"});
+ expect((await send()).status).toBe(503);
+ expect(calls[0]!.headers.get("chatgpt-account-id")).toBe("selected-b");
+ expect(limited.mock.calls[0]?.[0]).toBe(buildQuotaScheduleKey(replacement.getAccountByIndex(0)!,getModelFamily("chat-fixture"),"chat-fixture"));
+ expect(quotaResetTime(replacement.getAccountByIndex(0)!,getModelFamily("chat-fixture"))).toBeGreaterThan(Date.now());
+ refresh.mockRestore();
+ replacement.getAccountByIndex(0)!.currentWorkspaceIndex=0;
+ expect((await send()).status).toBe(200);
+ expect(calls).toHaveLength(2);
+});
+
 it.each([false,true,"pending"] as const)("sequences a post-reset quota stream frame before recovery (receipt read fails: %s)", async failRead => {
  const fs=await import("node:fs/promises"),os=await import("node:os"),path=await import("node:path");
  const previousDir=process.env.CODEX_MULTI_AUTH_DIR;
