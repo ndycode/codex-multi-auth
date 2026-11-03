@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { workspaceQuotaKey } from "../lib/accounts/rate-limits.js";
 import {
 	armPoolExhaustionCooldown,
 	buildAdaptiveStreamFailoverCandidateOrder,
@@ -11,6 +12,14 @@ import {
 } from "../lib/request/request-resilience.js";
 
 describe("request resilience helpers", () => {
+	it("admits a healthy selected workspace despite a sibling's deadline", () => {
+		const now=Date.now();
+		const alternate={index:1,lastUsed:now,enabled:true,accountId:"a",workspaces:[{id:"a"},{id:"b"}],currentWorkspaceIndex:1,rateLimitResetTimes:{[workspaceQuotaKey("codex","a")]:now+60000}};
+		const accounts=[{index:0,lastUsed:now,rateLimitResetTimes:{}},alternate];
+		expect(buildAdaptiveStreamFailoverCandidateOrder(0,accounts,now)).toEqual([0,1]);
+		alternate.currentWorkspaceIndex=0;
+		expect(buildAdaptiveStreamFailoverCandidateOrder(0,accounts,now)).toEqual([0]);
+	});
 	it("arms and clears the pool exhaustion cooldown", () => {
 		resetRequestResilienceStateForTests();
 		const now = Date.parse("2026-04-06T00:00:00.000Z");

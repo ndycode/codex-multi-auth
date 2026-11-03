@@ -36,6 +36,7 @@ import * as zlib from "node:zlib";
 import {
 	AccountManager,
 	AUTH_INVALIDATION_MARKER,
+	getRateLimitObservationKey,
 	extractAccountId,
 	type ManagedAccount,
 } from "./accounts.js";
@@ -400,11 +401,17 @@ export function buildQuotaScheduleKey(
 		/** Stable per-record discriminator retained across token/account-id updates. */
 		addedAt?: number;
 		recordId?: string;
+        workspaces?: ManagedAccount["workspaces"];
+        currentWorkspaceIndex?: number;
+        access?: string;
+        codexCliMirror?: ManagedAccount["codexCliMirror"];
 	},
 	family: ModelFamily,
 	model?: string | null,
 ): string {
-	return `${buildQuotaScheduleAccountPrefix(account)}${model ?? family}`;
+	const workspace = account.workspaces?.length ? selectedQuotaWorkspace(account) : undefined;
+    const scope = workspace ? `workspace:${modelScopeId(workspace)}:` : "";
+	return `${buildQuotaScheduleAccountPrefix(account)}${scope}${model ?? family}`;
 }
 
 const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
@@ -3107,11 +3114,14 @@ async function handleRequestInner(
 
 			let pendingScopes = workspaceCandidates.get(refreshed.account.index);
 			// Routes without model-catalog preparation still use the selected enabled workspace.
-			if (isImageRequest || isTranscribeRequest || isThreadGoalRequest || isSearchRequest || isRealtimeCallRequest) {
+			if (!state.nativeOpenai || isImageRequest || isTranscribeRequest || isThreadGoalRequest || isSearchRequest || isRealtimeCallRequest) {
 				pendingScopes = workspaceModelScopes(refreshed.account)
 					.filter((scope) => scope.routable)
 					.sort((a, b) => Number(b.selected) - Number(a.selected) || Number(b.bound) - Number(a.bound));
 			}
+   // A legacy row without any workspace identity still takes the missing-id
+   // auth cooldown below; an explicitly disabled selected workspace must not.
+   if (!state.nativeOpenai && !refreshed.account.workspaces?.length && !pendingScopes?.length) pendingScopes = undefined;
    // Revalidate enabled scopes after token refresh; never write a per-request choice to the account.
    const enabledScopes = new Set(workspaceModelScopes(refreshed.account).filter(s=>s.routable).map(s=>s.id));
    while(pendingScopes?.length && !enabledScopes.has(pendingScopes[0]?.id ?? "")) pendingScopes.shift();
@@ -3870,7 +3880,7 @@ async function handleRequestInner(
 					state.now(),
 				);
 				const nearExhaustionWaitMs =
-					(context.model === LUNA_RESERVE_MODEL || (requestScope && hasFreshOrdinaryUsagePermission(quotaForScope(refreshed.account,requestScope),state.now())))
+					(context.model === LUNA_RESERVE_MODEL || (state.nativeOpenai && requestScope && hasFreshOrdinaryUsagePermission(quotaForScope(refreshed.account,requestScope),state.now())))
 						? 0
 						: quotaDeferral.defer
 							? quotaDeferral.waitMs
@@ -3929,6 +3939,7 @@ async function handleRequestInner(
 					});
 				}
 			}
+			let streamQuotaSequence = Promise.resolve();
 			const usageScanner = createUsageStreamScanner({
 				contentType: upstream.headers.get("content-type"),
 				onEvent: (event) => {
@@ -3937,6 +3948,29 @@ async function handleRequestInner(
 					const snapshot = readSubscriptionQuotaEvent(event, state.now());
 					if (!snapshot) return;
 					observeQuota(snapshot, snapshot.planType);
+                    const deferral = state.preemptiveQuotaScheduler.getDeferral(quotaScheduleKey, state.now());
+                    if (deferral.defer) {
+                        // Publish uncertainty synchronously: a concurrent request must
+                        // not replay a receipt while the event's durable ordering is read.
+                        const target = responseStateTarget();
+                        const scopeId = modelScopeId("oauth", resolveAccountRecordId(target.account), accountId);
+                        target.accountManager.markRateLimitedWithReason(target.account, deferral.waitMs,
+                            context.family, "quota", context.model, scopeId,
+                            {workspaceId: accountId, receiptReadFailed: true});
+                        const key = getRateLimitObservationKey(context.family, scopeId);
+                        const observation = target.account.rateLimitObservations?.[key];
+                        target.accountManager.saveToDiskDebounced();
+                        streamQuotaSequence = streamQuotaSequence.then(async () => {
+                            if (!observation || responseStateTarget().account.rateLimitObservations?.[key] !== observation) return;
+                            const receipts = await loadResetCreditState().catch(() => null);
+                            const current = responseStateTarget();
+                            // A newer frame or manager replacement owns its own marker.
+                            if (!receipts || !observation || current.account.rateLimitObservations?.[key] !== observation) return;
+                            observeResetGenerations(current.account, receipts, scopeId);
+                            observation.receiptGenerations = {[scopeId]: current.account.resetReceiptGenerations?.[scopeId] ?? 0};
+                            observation.receiptReadFailed = false;
+                        });
+                    }
 					state.status.streamQuotaUpdates = (state.status.streamQuotaUpdates ?? 0) + 1;
 					state.status.lastStreamQuotaUpdateAt = snapshot.updatedAt;
 				},
@@ -3975,6 +4009,7 @@ async function handleRequestInner(
 				{...(budgetAdvisory.level === "soft" ? buildContextBudgetHeaders(budgetAdvisory) : {}),...(state.catalogEtag ? {"x-models-etag":state.catalogEtag} : {})},
 				() => {usageScanner.result();return responseOutcome.finish();},
 			);
+			await streamQuotaSequence;
 			// The client went away mid-stream: no upstream error, and the response was
 			// neither completed nor failed. That says nothing about the account.
 			const clientDisconnected = !forwarded && !streamErrored && !res.writableEnded;

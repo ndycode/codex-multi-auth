@@ -1,3 +1,4 @@
+import { selectedQuotaLimits } from "../../accounts/rate-limits.js";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import {
 	AccountManager,
@@ -767,7 +768,7 @@ async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 		if (account.enabled === false) markers.push("disabled");
 		const cooldown = formatCooldown(account, now);
 		if (cooldown) markers.push(`cooldown:${cooldown}`);
-		const rateLimitResetTimes = Object.values(account.rateLimitResetTimes ?? {})
+		const rateLimitResetTimes = Object.values(selectedQuotaLimits(account))
 			.filter((value): value is number => typeof value === "number")
 			.filter((value) => value > now);
 		if (rateLimitResetTimes.length > 0) {

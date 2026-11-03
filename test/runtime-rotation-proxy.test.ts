@@ -81,6 +81,64 @@ const openServers: RuntimeRotationProxyServer[] = [];
 const openManagers: AccountManager[] = [];
 const DEFAULT_CLIENT_API_KEY = "runtime-secret";
 
+it("uses the selected provider workspace for dispatch and quota admission without changing accountId", async () => {
+ const disk=createStorage(Date.now(),1);disk.pinnedAccountIndex=0;
+ Object.assign(disk.accounts[0]!,{workspaces:[{id:"acc_1",enabled:true},{id:"selected-b",enabled:true}],currentWorkspaceIndex:1});
+ const manager=new AccountManager(undefined,disk);
+ const {calls,fetchImpl}=createRecordingFetch(call=>call.headers.get("chatgpt-account-id")==="selected-b"
+  ? Response.json({error:{code:"usage_limit_reached"}},{status:429,headers:{"retry-after":"3600"}}):textEventStream());
+ const proxy=await startProxy({accountManager:manager,fetchImpl,options:{forcedAccountIndex:0}});
+ const send=()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"});
+ expect((await send()).status).toBe(503);expect((await send()).status).toBe(503);
+ expect(calls).toHaveLength(1);expect(calls[0]!.headers.get("chatgpt-account-id")).toBe("selected-b");
+ const account=manager.getAccountByIndex(0)!;account.currentWorkspaceIndex=0;
+ expect((await send()).status).toBe(200);expect(account.accountId).toBe("acc_1");
+ account.currentWorkspaceIndex=1;expect((await send()).status).toBe(503);expect(calls).toHaveLength(2);
+});
+
+it.each([false,true,"pending"] as const)("sequences a post-reset quota stream frame before recovery (receipt read fails: %s)", async failRead => {
+ const fs=await import("node:fs/promises"),os=await import("node:os"),path=await import("node:path");
+ const previousDir=process.env.CODEX_MULTI_AUTH_DIR;
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),"reset-stream-ordering-"));process.env.CODEX_MULTI_AUTH_DIR=dir;
+ const now=Date.now();vi.spyOn(Date,"now").mockReturnValue(now);
+ const native=await import("../lib/runtime/native-rate-limits.js"),resets=await import("../lib/runtime/account-reset-credits.js");
+ let consumed=false;
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async(auth,method)=>{
+  if(method==="account/rateLimitResetCredit/consume"){consumed=true;return {outcome:"reset"};}
+  return {accountId:auth.accountId,ordinaryUsageAllowed:consumed,rateLimitResetCredits:{availableCount:1},rateLimits:{planType:"pro",primary:{usedPercent:consumed?95:100},secondary:{}}};
+ });
+ let controller!:ReadableStreamDefaultController<Uint8Array>,entered!:()=>void;
+ const started=new Promise<void>(resolve=>{entered=resolve;});
+ let releaseRead!:()=>void;const readGate=new Promise<void>(resolve=>{releaseRead=resolve;});
+ try {
+  const disk=createStorage(now,1);disk.pinnedAccountIndex=0;disk.accounts[0]!.recordId="stream-fixture";
+  const storage=await import("../lib/storage.js");vi.spyOn(storage,"loadAccounts").mockResolvedValue(disk);
+  const manager=new AccountManager(undefined,disk);let posts=0;
+  const proxy=await startProxy({accountManager:manager,fetchImpl:async(url)=>{
+   if(String(url).includes("/models"))return Response.json({models:[{slug:"chat-fixture"}]});
+   if(++posts>1)return textEventStream();
+   return new Response(new ReadableStream<Uint8Array>({start(c){controller=c;entered();}}),{headers:{"content-type":"text/event-stream"}});
+  },options:{nativeOpenai:true,forcedAccountIndex:0}});
+  const send=()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic",stream:true});
+  const pending=send();await started;
+  await resets.createResetCreditService(new AccountManager(undefined,disk)).redeem(resets.resetTargetForStoredAccount(disk.accounts[0]!)!);
+  const actualLoad=resets.loadResetCreditState;
+  const loader=vi.spyOn(resets,"loadResetCreditState");if(failRead===true)loader.mockRejectedValueOnce(Error("synthetic EIO"));
+  let sequencing:Promise<Awaited<ReturnType<typeof actualLoad>>>|undefined;
+  if(failRead==="pending")loader.mockImplementationOnce(()=>{sequencing=readGate.then(actualLoad);return sequencing;});
+  controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({type:"codex.rate_limits",rate_limits:{primary:{used_percent:95,reset_at:Math.floor(now/1000)+3600}}})}\n\ndata: {"type":"response.completed","response":{}}\n\n`));controller.close();
+  expect((await pending).status).toBe(200);
+  const reads=rpc.mock.calls.length;
+  expect((await send()).status).toBe(503);expect(posts).toBe(1);expect(rpc.mock.calls.length).toBe(reads);
+  releaseRead();await sequencing;
+  expect((await send()).status).toBe(503);expect(posts).toBe(1);
+ } finally {
+  releaseRead();rpc.mockRestore();vi.restoreAllMocks();
+  if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
+  await removeWithRetry(dir,{recursive:true,force:true});
+ }
+});
+
 it.each([{delay:0,outcome:"reset",pinned:true,secondReset:false},{delay:65_000,outcome:"reset",pinned:true,secondReset:false},{delay:0,outcome:"alreadyRedeemed",pinned:true,secondReset:false},{delay:0,outcome:"reset",pinned:false,secondReset:false},{delay:0,outcome:"reset",pinned:true,secondReset:true}])("adopts CLI $outcome after $delay ms (pinned=$pinned, second reset=$secondReset) without consuming again", async ({delay,outcome,pinned,secondReset}) => {
  const fs = await import("node:fs/promises");
  const os = await import("node:os");
