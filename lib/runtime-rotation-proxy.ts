@@ -2103,7 +2103,8 @@ async function handleRequestInner(
 				}
 			}
 		};
-  let resetCreditState=isResponsesRequest ? await loadResetCreditState().catch(()=>null):null;
+  // Shared across concurrent requests; a blocked request rereads before reconciling.
+  let resetCreditState=isResponsesRequest ? await cachedRead(state, "reset-credits", loadResetCreditState).catch(()=>null):null;
   const observeResetGenerations = (account: ManagedAccount, receipts: typeof resetCreditState, scopeId: string | undefined) => {
    if(scopeId === undefined)return;
    const receipt=receipts?.redemptions?.[scopeId] ?? (receipts?.lastRedemption?.key===scopeId ? receipts.lastRedemption : undefined);
@@ -2456,15 +2457,21 @@ async function handleRequestInner(
 		}
 
 
-  if (isResponsesRequest && context.model && context.model !== LUNA_RESERVE_MODEL && (resetCreditState?.redemptions || resetCreditState?.lastRedemption?.outcome === "reset" || resetCreditState?.lastRedemption?.outcome === "alreadyRedeemed")) {
+  const reconcileConfirmedResets = async (): Promise<boolean> => {
+   const model = context.model;
+   if (!isResponsesRequest || !model || model === LUNA_RESERVE_MODEL) return false;
    const manager = accountManager;
    const reconciler = state.confirmedResetReconciler ??= new ConfirmedResetReconciler();
+   // A blocked request must see a redemption that completed a moment ago.
+   let receipts: Promise<typeof resetCreditState> | undefined;
+   const freshReceipts = () => receipts ??= loadResetCreditState().then(fresh => { resetCreditState = fresh; return fresh; }, () => null);
+   let recovered = false;
    for (const row of manager.getAccountsSnapshot()) {
     const account = manager.getAccountByIndex(row.index);
     if (!account || account.enabled === false || account.authInvalidatedAt || (isPinned && account.index !== pinnedIndex) || policyDecision?.blockedAccountIndexes.has(account.index)) continue;
     const scopes = state.nativeOpenai ? workspaceCandidates.get(account.index) ?? [] : workspaceModelScopes(account).filter(scope => scope.routable);
     for (const scope of scopes) {
-     await reconciler.reconcile({state:resetCreditState,account,scope,model:context.model,family:context.family,manager,
+     if (await reconciler.reconcile({state:freshReceipts,account,scope,model,family:context.family,manager,
       read:async()=> (await createResetCreditService(manager).refresh([{key:scope.id,accountId:scope.accountId}]))[scope.id],
       isCurrent:()=>state.activeAccountManager === manager && manager.getAccountByIndex(account.index) === account,
       observations:state.subscriptionQuotaObservations ??= new Map(),now:state.now,
@@ -2472,9 +2479,15 @@ async function handleRequestInner(
       hasCachedQuotaBlock:()=>state.nativeOpenai === true && subscriptionQuotaPreference(quotaForScope(account,scope),state.now()).exhausted,
       hasQuotaDeferral:()=>state.preemptiveQuotaScheduler.getDeferral(buildQuotaScheduleKey(account,context.family,context.model),state.now()).defer,
       clearQuotaScheduler:()=>state.preemptiveQuotaScheduler.clear(buildQuotaScheduleKey(account,context.family,context.model)),
-     });
+     })) recovered = true;
     }
    }
+   return recovered;
+  };
+  // A pin has no sibling to serve meanwhile; unpinned requests reconcile only when nothing is selectable.
+  if (isPinned) {
+   await reconcileConfirmedResets();
+   if (clientGone()) return;
   }
   const primaryWorkspaceCandidates = () => new Map([...workspaceCandidates].filter(([index]) => {
    const account = accountManager.getAccountByIndex(index);
@@ -2507,6 +2520,7 @@ async function handleRequestInner(
    } finally { state.readCache?.delete("reset-credits"); }
   };
   await recoverPrimaryQuota();
+  if (clientGone()) return;
 
 		// A pinned Luna request can arrive after an earlier turn already proved
 		// ordinary subscription quota exhausted. That persisted family marker
@@ -2661,6 +2675,7 @@ async function handleRequestInner(
 
 		let runtimeSelectionIterations = 0;
 		let recoveryRetriedAfterExhaustion = false;
+		let resetsReconciledAfterExhaustion = false;
 		while (
 			(isPinned ||
 				attemptedIndexes.size < accountCount ||
@@ -2799,6 +2814,16 @@ async function handleRequestInner(
 					: selectAccount();
             for (const index of catalogExcludedIndexes()) accountSkipReasons.set(index, "model-not-supported");
 			if (!selected) {
+                // Select again even when a concurrent request performed the shared check.
+                if (!isPinned && isResponsesRequest && !resetsReconciledAfterExhaustion) {
+                    resetsReconciledAfterExhaustion = true;
+                    if (await reconcileConfirmedResets()) {
+                        attemptedIndexes.clear();
+                        accountSkipReasons.clear();
+                    }
+                    if (clientGone()) return;
+                    continue;
+                }
                 // A 429 can be the first evidence that cached ordinary capacity is gone.
                 // Recheck once before failing; only an explicit pre-inference rejection
                 // reaches this path, never an ambiguous or already-streaming generation.
@@ -2810,6 +2835,7 @@ async function handleRequestInner(
                         accountSkipReasons.clear();
                         continue;
                     }
+                    if (clientGone()) return;
                     if (!backupsWereAllowed && emergencyBackupsAllowed()) continue;
                 }
 				if (

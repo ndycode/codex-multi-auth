@@ -8,6 +8,8 @@ import type { ResetSnapshot } from "../lib/runtime/reset-credits.js";
 beforeEach(() => AccountManager.resetVolatileRuntimeState());
 afterEach(() => vi.restoreAllMocks());
 
+type ResetState = NonNullable<Awaited<ReturnType<Parameters<ConfirmedResetReconciler["reconcile"]>[0]["state"]>>>;
+
 function fixture() {
 	const now = Date.now();
 	vi.spyOn(Date, "now").mockReturnValue(now);
@@ -19,14 +21,15 @@ function fixture() {
 	const scope = workspaceModelScopes(account)[0]!;
 	const snapshot: ResetSnapshot = {updatedAt:now, availableCount:1, credits:null, ordinaryUsageAllowed:true, planType:"pro", primary:{usedPercent:0}, secondary:{}};
 	account.rateLimitResetTimes = {codex:now + 300_000};
+	const state: ResetState = {version:1, policy:"manual", snapshots:{}, lastRedemption:{key:scope.id, at:now - 120_000, outcome:"reset", automatic:false}};
 	const args: Parameters<ConfirmedResetReconciler["reconcile"]>[0] = {
-		state:{version:1, policy:"manual", snapshots:{}, lastRedemption:{key:scope.id, at:now - 120_000, outcome:"reset", automatic:false}},
+		state:vi.fn(async () => state),
 		account, scope, model:"chat-test", family:"codex", manager,
 		read:vi.fn(async () => snapshot), isCurrent:() => true, now:() => now,
 		observations:new Map(), clearQuotaScheduler:vi.fn(),
 	};
 	const reconciler = new ConfirmedResetReconciler();
-	return {args, account, manager, snapshot, reconciler, run:() => reconciler.reconcile(args)};
+	return {args, state, account, manager, snapshot, reconciler, run:() => reconciler.reconcile(args)};
 }
 
 it("rechecks an old receipt after restart and clears only the ordinary family block", async () => {
@@ -78,9 +81,9 @@ it.each(["new-429", "manager-replaced", "disabled", "workspace-changed"])("prese
 
 it.each(["pending", "wrong-workspace", "failed-outcome", "auth", "reserve", "tokens", "unknown", "exhausted", "stale-read"])("does not lift a block for %s", async condition => {
 	const f = fixture();
-	if (condition === "pending") f.args.state!.pending = {key:f.args.scope.id, idempotencyKey:"pending"};
-	if (condition === "wrong-workspace") f.args.state!.lastRedemption!.key = "different";
-	if (condition === "failed-outcome") f.args.state!.lastRedemption!.outcome = "noCredit";
+	if (condition === "pending") f.state.pending = {key:f.args.scope.id, idempotencyKey:"pending"};
+	if (condition === "wrong-workspace") f.state.lastRedemption!.key = "different";
+	if (condition === "failed-outcome") f.state.lastRedemption!.outcome = "noCredit";
 	if (condition === "auth") f.account.authInvalidatedAt = 1;
 	if (condition === "reserve") f.args.model = "gpt-reserve";
 	if (condition === "tokens") f.account.lastRateLimitReason = "tokens";
@@ -117,7 +120,7 @@ it("doubles the wait between unconfirmed reads of the same receipt up to five mi
 		now += 1; expect(await f.run()).toBe(false); expect(read).toHaveBeenCalledTimes(reads + 1);
 	}
 	// A different receipt is a new redemption and is checked immediately.
-	f.args.state!.lastRedemption!.at = now - 1_000;
+	f.state.lastRedemption!.at = now - 1_000;
 	expect(await f.run()).toBe(false); expect(read).toHaveBeenCalledTimes(10);
 });
 
@@ -147,8 +150,8 @@ it("does not cache a failed read as retryable when a new 429 arrived concurrentl
 it.each([1, 2] as const)("does not replay a v%i receipt predating a rejection after clock rollback", async version => {
  const f=fixture();
  const before=f.args.now();
- f.args.state!.version=version;
- f.args.state!.lastRedemption!.at=before-1000;
+ f.state.version=version;
+ f.state.lastRedemption!.at=before-1000;
  f.manager.markRateLimitedWithReason(f.account,300000,"codex","quota","chat-test");
  const rollback=before-10000;
  vi.spyOn(Date,"now").mockReturnValue(rollback);
@@ -160,8 +163,8 @@ it.each([1, 2] as const)("does not replay a v%i receipt predating a rejection af
 });
 
 it.each([1,2] as const)("retains a visible legacy v%i receipt identity when rollback precedes rejection", async version => {
- const f=fixture(),receipt=f.args.state!.lastRedemption!;
- f.args.state!.version=version;
+ const f=fixture(),receipt=f.state.lastRedemption!;
+ f.state.version=version;
  receipt.at=f.args.now();
  f.account.resetReceiptIdentities={[f.args.scope.id]:JSON.stringify([receipt.key,receipt.at,receipt.outcome,receipt.automatic])};
  const now=receipt.at-10000;
@@ -178,13 +181,13 @@ it("accepts a new receipt after a backward clock step", async () => {
 	expect(await f.run()).toBe(true);
 	f.account.rateLimitObservations = {codex:{revision:1, observedAt:now, reason:"quota"}}; f.account.rateLimitResetTimes.codex = now + 300_000;
 	now -= 600_000;
-	f.args.state!.lastRedemption!.at = now; f.snapshot.updatedAt = now;
+	f.state.lastRedemption!.at = now; f.snapshot.updatedAt = now;
 	expect(await f.run()).toBe(true); expect(f.args.read).toHaveBeenCalledTimes(2);
 });
 
 it("rechecks a distinct legacy receipt stamped before an applied one", async () => {
 	const f = fixture(); let now = f.args.now(); f.args.now = () => now; vi.spyOn(Date, "now").mockImplementation(() => now);
-	const receipt = f.args.state!.lastRedemption!; receipt.at = now;
+	const receipt = f.state.lastRedemption!; receipt.at = now;
 	expect(await f.run()).toBe(true);
 	now -= 10_000;
 	f.manager.markRateLimitedWithReason(f.account, 300_000, "codex", "quota", "chat-test", f.args.scope.id);
@@ -196,7 +199,7 @@ it("rechecks a distinct legacy receipt stamped before an applied one", async () 
 
 it("orders a distinct legacy receipt by the identity a rejection saw, not wall time", async () => {
 	const f = fixture(); let now = f.args.now(); f.args.now = () => now; vi.spyOn(Date, "now").mockImplementation(() => now);
-	const receipt = f.args.state!.lastRedemption!; receipt.at = now;
+	const receipt = f.state.lastRedemption!; receipt.at = now;
 	f.account.resetReceiptIdentities = {[f.args.scope.id]:JSON.stringify([receipt.key, receipt.at, receipt.outcome, receipt.automatic])};
 	f.manager.markRateLimitedWithReason(f.account, 300_000, "codex", "quota", "chat-test", f.args.scope.id);
 	expect(await f.run()).toBe(false); expect(f.args.read).not.toHaveBeenCalled();
@@ -206,10 +209,10 @@ it("orders a distinct legacy receipt by the identity a rejection saw, not wall t
 	expect(await f.run()).toBe(true); expect(f.args.read).toHaveBeenCalledTimes(1);
 });
 
-it("does not read native quota for a healthy account with an old receipt", async () => {
+it("does not read receipts or native quota for a healthy account with an old receipt", async () => {
 	const f = fixture(); f.account.rateLimitResetTimes = {};
 	expect(await f.run()).toBe(false); expect(await f.run()).toBe(false);
-	expect(f.args.read).not.toHaveBeenCalled();
+	expect(f.args.state).not.toHaveBeenCalled(); expect(f.args.read).not.toHaveBeenCalled();
 	f.args.hasQuotaDeferral = () => true;
 	expect(await f.run()).toBe(true);
 });
@@ -240,13 +243,13 @@ it.each(["before", "during"])("keeps Reserve and model-specific rejections separ
 });
 
 it("accepts an idempotently completed redemption only after fresh permission", async () => {
- const f = fixture(); f.args.state!.lastRedemption!.outcome = "alreadyRedeemed";
+ const f = fixture(); f.state.lastRedemption!.outcome = "alreadyRedeemed";
  expect(await f.run()).toBe(true); expect(f.args.read).toHaveBeenCalledTimes(1);
 });
 
 it("handles a clock rollback after the receipt and still applies that receipt once", async () => {
  const f = fixture(); const receiptAt = f.args.now();
- f.args.state!.lastRedemption!.at = receiptAt;
+ f.state.lastRedemption!.at = receiptAt;
  f.args.now = () => receiptAt - 600_000; f.snapshot.updatedAt = f.args.now();
  expect(await Promise.all([f.run(), f.run()])).toEqual([true, false]);
  f.account.rateLimitResetTimes.codex = receiptAt + 300_000;
@@ -256,11 +259,11 @@ it("handles a clock rollback after the receipt and still applies that receipt on
 
 it("accepts a later durable generation after the clock catches up to an older receipt", async () => {
  const f = fixture(); const originalNow = f.args.now();
- Object.assign(f.args.state!.lastRedemption!, {generation:1});
- f.args.state!.lastRedemption!.at = originalNow;
+ Object.assign(f.state.lastRedemption!, {generation:1});
+ f.state.lastRedemption!.at = originalNow;
  expect(await f.run()).toBe(true);
  f.manager.markRateLimitedWithReason(f.account, 300_000, "codex", "quota", "chat-test");
- Object.assign(f.args.state!.lastRedemption!, {generation:2, at:originalNow-600_000});
+ Object.assign(f.state.lastRedemption!, {generation:2, at:originalNow-600_000});
  // No request observes the intervening backward-clock period.
  expect(await f.run()).toBe(true);
  expect(f.args.read).toHaveBeenCalledTimes(2);
@@ -278,7 +281,7 @@ it("refills only the confirmed account/model admission bucket", async () => {
 });
 
 it("does not replay a generation after a later 429 even following manager replacement", async () => {
- const f = fixture(); Object.assign(f.args.state!.lastRedemption!,{generation:1});
+ const f = fixture(); Object.assign(f.state.lastRedemption!,{generation:1});
  expect(await f.run()).toBe(true);
  f.manager.markRateLimitedWithReason(f.account,300000,"codex","quota","chat-test");
  const replacement = fixture(); replacement.account.rateLimitObservations = f.account.rateLimitObservations;
@@ -289,21 +292,21 @@ it("does not replay a generation after a later 429 even following manager replac
 });
 
 it("rejects a stale generation even after retry backoff expires", async () => {
- const f = fixture(); Object.assign(f.args.state!.lastRedemption!,{generation:2});
+ const f = fixture(); Object.assign(f.state.lastRedemption!,{generation:2});
  let now = f.args.now(); f.args.now=()=>now; f.args.read=vi.fn(async()=>undefined);
  expect(await f.run()).toBe(false);
- now+=10000; Object.assign(f.args.state!.lastRedemption!,{generation:1});
+ now+=10000; Object.assign(f.state.lastRedemption!,{generation:1});
  expect(await f.run()).toBe(false); expect(f.args.read).toHaveBeenCalledTimes(1);
 });
 
 
 it("reconciles a completed receipt while a different workspace redemption is pending", async () => {
- const f=fixture();f.args.state!.pending={key:"other-workspace",idempotencyKey:"pending"};
+ const f=fixture();f.state.pending={key:"other-workspace",idempotencyKey:"pending"};
  expect(await f.run()).toBe(true);expect(f.args.read).toHaveBeenCalledTimes(1);
 });
 
 it("reconciles when a rejected account's exact admission bucket is the only remaining blocker", async () => {
- const f=fixture();Object.assign(f.args.state!.lastRedemption!,{generation:1});
+ const f=fixture();Object.assign(f.state.lastRedemption!,{generation:1});
  f.manager.markRateLimitedWithReason(f.account,300000,"codex","quota","chat-test");f.account.rateLimitResetTimes={};
  const tracker=getTokenTracker(),key=getRuntimeTrackerKey(f.account);
  tracker.drain(key,"codex:chat-test",1000);
@@ -312,7 +315,7 @@ it("reconciles when a rejected account's exact admission bucket is the only rema
 });
 
 it("does not read or refill a bucket drained by load without a quota rejection", async () => {
- const f=fixture();Object.assign(f.args.state!.lastRedemption!,{generation:1,at:f.args.now()-7*86_400_000});
+ const f=fixture();Object.assign(f.state.lastRedemption!,{generation:1,at:f.args.now()-7*86_400_000});
  f.account.rateLimitResetTimes={};
  const tracker=getTokenTracker(),key=getRuntimeTrackerKey(f.account);
  tracker.drain(key,"codex:chat-test",1000);
@@ -324,7 +327,7 @@ it("does not read or refill a bucket drained by load without a quota rejection",
 it.each(["before","during"])("ignores another workspace's rejection chronology: %s", async phase => {
  const f=fixture();f.account.workspaces=[{id:"workspace",enabled:true},{id:"other-workspace",enabled:true}];f.account.currentWorkspaceIndex=0;
  const other=workspaceModelScopes(f.account).find(s=>s.accountId==="other-workspace")!;
- Object.assign(f.args.state!.lastRedemption!,{generation:1});
+ Object.assign(f.state.lastRedemption!,{generation:1});
  f.account.resetReceiptGenerations={[f.args.scope.id]:1,[other.id]:2};
  const reject=()=>f.manager.markRateLimitedWithReason(f.account,300000,"codex","quota","chat-test",other.id);
  if(phase==="before")reject();else f.args.read=async()=>{reject();return f.snapshot;};
@@ -340,7 +343,7 @@ it("skips bucket-only checks for callers that bypass local admission", async () 
 
 
 it("retains an unscoped concurrent rejection even when scoped history already exists", async () => {
- const f=fixture();Object.assign(f.args.state!.lastRedemption!,{generation:2});
+ const f=fixture();Object.assign(f.state.lastRedemption!,{generation:2});
  f.manager.markRateLimitedWithReason(f.account,300000,"codex","quota","chat-test",f.args.scope.id);
  f.args.read=async()=>{f.manager.markRateLimitedWithReason(f.account,300000,"codex","quota","chat-test");return f.snapshot;};
  expect(await f.run()).toBe(false);expect(f.args.clearQuotaScheduler).not.toHaveBeenCalled();

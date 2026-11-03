@@ -29,7 +29,7 @@ export class ConfirmedResetReconciler {
 	private readonly operations = new Map<string, Operation>();
 
 	async reconcile(options: {
-		state: ResetState | null; account: ManagedAccount; scope: Scope;
+		state: () => Promise<ResetState | null>; account: ManagedAccount; scope: Scope;
 		model: string; family: ModelFamily; manager: AccountManager;
 		read: () => Promise<ResetSnapshot | undefined>;
 		isCurrent: () => boolean; now: () => number;
@@ -39,18 +39,28 @@ export class ConfirmedResetReconciler {
 		hasCachedQuotaBlock?: () => boolean;
 		usesAdmissionBucket?: boolean;
 	}): Promise<boolean> {
-		const { state, account, scope, model, family, manager } = options;
-		const receipt = state?.redemptions?.[scope.id] ?? (state?.lastRedemption?.key === scope.id ? state.lastRedemption : undefined);
-		if (model === LUNA_RESERVE_MODEL || state?.pending?.key === scope.id || !receipt ||
-			(receipt.outcome !== "reset" && receipt.outcome !== "alreadyRedeemed") || receipt.key !== scope.id) return false;
+		const { account, scope, model, family, manager } = options;
+		if (model === LUNA_RESERVE_MODEL) return false;
 		const eligible = () => options.isCurrent() && account.enabled !== false && !account.authInvalidatedAt &&
 			!(account.cooldownReason === "auth-failure" && (account.coolingDownUntil ?? 0) > options.now()) &&
 			workspaceModelScopes(account).some(current => current.id === scope.id && current.routable);
-		const now = options.now();
 		// A wall-clock step backwards must not make an old observation win forever.
 		const observationKey = getRateLimitObservationKey(family, scope.id);
 		const rejectionForScope = () => account.rateLimitObservations?.[observationKey] ?? account.rateLimitObservations?.[family];
 		const revision = () => `${account.rateLimitObservations?.[observationKey]?.revision ?? 0}:${account.rateLimitObservations?.[family]?.revision ?? 0}`;
+		const blocked = (now: number) => quotaResetTime(account, family, scope.accountId) > now ||
+			(account.cooldownReason === "rate-limit" && (account.coolingDownUntil ?? 0) > now) ||
+			options.hasQuotaDeferral?.() || options.hasCachedQuotaBlock?.() ||
+			// Ordinary load also drains the bucket; only a quota rejection makes it reset debt.
+			(options.usesAdmissionBucket !== false && rejectionForScope()?.reason === "quota" &&
+				getTokenTracker().getTokens(getRuntimeTrackerKey(account), `${family}:${model}`) < 1);
+		// Receipts are read only for a request this account cannot otherwise serve.
+		if (!eligible() || !blocked(options.now())) return false;
+		const state = await options.state();
+		const receipt = state?.redemptions?.[scope.id] ?? (state?.lastRedemption?.key === scope.id ? state.lastRedemption : undefined);
+		if (state?.pending?.key === scope.id || !receipt ||
+			(receipt.outcome !== "reset" && receipt.outcome !== "alreadyRedeemed") || receipt.key !== scope.id) return false;
+		const now = options.now();
 		// A failed receipt read leaves ordering unknown. The first successful
 		// state read establishes a conservative baseline, never permission to replay it.
 		for (const rejection of [account.rateLimitObservations?.[observationKey], account.rateLimitObservations?.[family]]) {
@@ -73,13 +83,8 @@ export class ConfirmedResetReconciler {
 					? rejection.receiptIdentities[scope.id] === identity
 					: (rejection?.observedAt ?? 0) > receipt.at &&
 						((rejection?.observedAt ?? 0) <= now || receipt.at > now));
-		if (!eligible() || rejectedAfterReceipt || (receipt.generation !== undefined && receipt.generation < (account.resetReceiptGenerations?.[scope.id] ?? 0))) return false;
-		if (!(quotaResetTime(account, family, scope.accountId) > now ||
-			(account.cooldownReason === "rate-limit" && (account.coolingDownUntil ?? 0) > now) ||
-			options.hasQuotaDeferral?.() || options.hasCachedQuotaBlock?.() ||
-			// Ordinary load also drains the bucket; only a quota rejection makes it reset debt.
-			(options.usesAdmissionBucket !== false && rejectionForScope()?.reason === "quota" &&
-				getTokenTracker().getTokens(getRuntimeTrackerKey(account), `${family}:${model}`) < 1))) return false;
+		if (!eligible() || rejectedAfterReceipt || !blocked(now) ||
+			(receipt.generation !== undefined && receipt.generation < (account.resetReceiptGenerations?.[scope.id] ?? 0))) return false;
 		// Receipt time may be ahead of this process after a clock rollback. Fresh
 		// permission still decides recovery; exact receipt identity prevents replay.
 		const key = JSON.stringify([scope.id, model]);

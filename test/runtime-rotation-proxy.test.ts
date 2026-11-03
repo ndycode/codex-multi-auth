@@ -7,7 +7,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import * as nativeStorageReader from "../lib/runtime/native-account-storage.js";
 import { syncNativeAccountCredentials } from "../lib/runtime/native-account-sync.js";
 import * as tokenRefreshRuntime from "../lib/runtime/rotation-token-refresh.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { request } from "node:http";
 import { gzipSync, brotliCompressSync, deflateSync } from "node:zlib";
 import * as zlib from "node:zlib";
@@ -185,7 +185,9 @@ it.each(["pre-refresh","post-refresh"] as const)("retains EBUSY uncertainty in %
  const manager=new AccountManager(undefined,disk),account=manager.getAccountByIndex(0)!;
  const scope=workspaceModelScopes(account).find(s=>s.accountId==="b")!;
  const state={version:3 as const,policy:"manual" as const,snapshots:{},redemptions:{[scope.id]:{key:scope.id,at:now-1000,outcome:"reset" as const,automatic:false,generation:7}}};
- vi.spyOn(resets,"loadResetCreditState").mockResolvedValue(state).mockRejectedValueOnce(Object.assign(Error("busy"),{code:"EBUSY"}));
+ // Both the shared request read and the blocked pin's fresh reread fail.
+ const busy=Object.assign(Error("busy"),{code:"EBUSY"});
+ vi.spyOn(resets,"loadResetCreditState").mockResolvedValue(state).mockRejectedValueOnce(busy).mockRejectedValueOnce(busy);
  const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockResolvedValue({accountId:"b",ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}});
  if(phase==="post-refresh")vi.spyOn(tokenRefreshRuntime,"ensureFreshAccessToken").mockImplementationOnce(async()=>{account.currentWorkspaceIndex=1;return {ok:true,account,accountManager:manager,accessToken:account.access!};});
  const key=buildQuotaScheduleKey({...account,currentWorkspaceIndex:1},"codex","gpt-5-codex");
@@ -436,7 +438,7 @@ it.each([["reload",false],["receipt-read-failure",false],["reload",true],["recei
   const state=await resets.loadResetCreditState();
   const read=vi.fn(async()=>({updatedAt:now,availableCount:1,credits:null,ordinaryUsageAllowed:true,planType:"pro",primary:{},secondary:{}}));
   const reconciler=new ConfirmedResetReconciler();
-  const args={state,account,scope,model:"chat-fixture",family:getModelFamily("chat-fixture"),manager:replacement,read,isCurrent:()=>true,now:()=>now,observations:new Map(),clearQuotaScheduler:()=>{}};
+  const args={state:async()=>state,account,scope,model:"chat-fixture",family:getModelFamily("chat-fixture"),manager:replacement,read,isCurrent:()=>true,now:()=>now,observations:new Map(),clearQuotaScheduler:()=>{}};
   expect(await reconciler.reconcile(args)).toBe(false);expect(read).not.toHaveBeenCalled();
   expect(await reconciler.reconcile(args)).toBe(false);
   // Once a successfully observed baseline exists, a strictly newer reset can recover.
@@ -447,6 +449,91 @@ it.each([["reload",false],["receipt-read-failure",false],["reload",true],["recei
   if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
   await removeWithRetry(dir,{recursive:true,force:true});
  }
+});
+
+async function mockOldReceiptFor(account: ReturnType<AccountManager["getAccountByIndex"]>) {
+ const resets=await import("../lib/runtime/account-reset-credits.js");
+ const {workspaceModelScopes}=await import("../lib/runtime/workspace-model-scopes.js");
+ const scope=workspaceModelScopes(account!).find(s=>s.routable)!;
+ const receipt={key:scope.id,at:Date.now()-7*86_400_000,outcome:"reset" as const,automatic:false,generation:1};
+ return vi.spyOn(resets,"loadResetCreditState").mockResolvedValue({version:3,policy:"manual",snapshots:{},redemptions:{[scope.id]:receipt}});
+}
+
+it("serves an unpinned provider request from a healthy account without awaiting a blocked sibling's reset check", async () => {
+ const native=await import("../lib/runtime/native-rate-limits.js");
+ const now=Date.now(),manager=new AccountManager(undefined,createStorage(now,2));
+ const blocked=manager.getAccountByIndex(0)!;blocked.rateLimitResetTimes={[getModelFamily("chat-fixture")]:now+600_000};
+ await mockOldReceiptFor(blocked);
+ let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async auth=>{await gate;return {accountId:auth.accountId,ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}};});
+ const {calls,fetchImpl}=createRecordingFetch(()=>textEventStream());
+ const proxy=await startProxy({accountManager:manager,fetchImpl});
+ try {
+  const result=await Promise.race([postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"}),timeoutResult(2_000)]);
+  expect(result==="timeout"?result:result.status).toBe(200);
+  expect(calls.map(call=>call.headers.get("chatgpt-account-id"))).toEqual(["acc_2"]);
+  expect(rpc).not.toHaveBeenCalled();
+ } finally { release(); }
+});
+
+it("does not reread an exhausted native sibling's old receipt while a healthy account serves", async () => {
+ const native=await import("../lib/runtime/native-rate-limits.js");
+ let now=Date.now();vi.spyOn(Date,"now").mockImplementation(()=>now);
+ const manager=new AccountManager(undefined,createStorage(now,2));
+ await mockOldReceiptFor(manager.getAccountByIndex(0));
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async auth=>({accountId:auth.accountId,ordinaryUsageAllowed:false,rateLimits:{planType:"pro",primary:{usedPercent:100},secondary:{}}}));
+ const quota=(usedPercent:number,resetAtMs:number)=>({updatedAt:now,status:200,model:"chat-fixture",planType:"pro",primary:{usedPercent,resetAtMs},secondary:{}});
+ const {calls,fetchImpl}=createRecordingFetch(call=>call.url.includes("/models")?Response.json({models:[{slug:"chat-fixture"}]}):textEventStream());
+ const proxy=await startProxy({accountManager:manager,fetchImpl,options:{nativeOpenai:true,now:()=>now,
+  readSubscriptionQuota:async()=>({byAccountId:{acc_1:quota(100,now+3*86_400_000),acc_2:quota(10,now+3_600_000)},byEmail:{}})}});
+ for(let i=0;i<4;i++){expect((await postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"})).status).toBe(200);now+=6_000;}
+ expect(calls.filter(call=>call.url.endsWith("/responses")).map(call=>call.headers.get("chatgpt-account-id"))).toEqual(["acc_2","acc_2","acc_2","acc_2"]);
+ expect(rpc).not.toHaveBeenCalled();
+});
+
+it("does not dispatch for a pinned client that disconnected during the reset check", async () => {
+ const fs=await import("node:fs/promises"),os=await import("node:os"),path=await import("node:path");
+ const previousDir=process.env.CODEX_MULTI_AUTH_DIR;
+ process.env.CODEX_MULTI_AUTH_DIR=await fs.mkdtemp(path.join(os.tmpdir(),"reset-disconnect-"));
+ onTestFinished(async()=>{
+  const dir=process.env.CODEX_MULTI_AUTH_DIR!;
+  if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
+  await removeWithRetry(dir,{recursive:true,force:true});
+ });
+ const native=await import("../lib/runtime/native-rate-limits.js");
+ const now=Date.now(),manager=new AccountManager(undefined,createStorage(now,1)),account=manager.getAccountByIndex(0)!;
+ const family=getModelFamily("chat-fixture");account.rateLimitResetTimes={[family]:now+600_000};
+ const load=await mockOldReceiptFor(account);
+ const {workspaceModelScopes}=await import("../lib/runtime/workspace-model-scopes.js");
+ const scope=workspaceModelScopes(account).find(s=>s.routable)!;
+ load.mockResolvedValue({version:3,policy:"manual",snapshots:{},redemptions:{[scope.id]:{key:scope.id,at:now-1_000,outcome:"reset",automatic:false,generation:1}}});
+ let entered!:()=>void,release!:()=>void;
+ const started=new Promise<void>(resolve=>{entered=resolve;}),gate=new Promise<void>(resolve=>{release=resolve;});
+ vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async auth=>{entered();await gate;return {accountId:auth.accountId,ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}};});
+ const {calls,fetchImpl}=createRecordingFetch(()=>textEventStream());
+ const proxy=await startProxy({accountManager:manager,fetchImpl,options:{forcedAccountIndex:0}});
+ const url=new URL(`${proxy.baseUrl}/responses`),payload=JSON.stringify({model:"chat-fixture",input:"synthetic"});
+ const req=request({host:url.hostname,port:Number(url.port),path:url.pathname,method:"POST",headers:{authorization:`Bearer ${DEFAULT_CLIENT_API_KEY}`,"content-type":"application/json","content-length":String(Buffer.byteLength(payload))}});
+ req.on("error",()=>{});req.end(payload);
+ await started;req.destroy();
+ await new Promise(resolve=>setTimeout(resolve,100));
+ release();
+ await vi.waitFor(()=>expect(quotaResetTime(account,family)).toBe(0));
+ await new Promise(resolve=>setTimeout(resolve,100));
+ expect(calls).toHaveLength(0);
+});
+
+it("shares one reset-state read across concurrent healthy provider requests", async () => {
+ const now=Date.now();vi.spyOn(Date,"now").mockReturnValue(now);
+ const resets=await import("../lib/runtime/account-reset-credits.js");
+ const load=vi.spyOn(resets,"loadResetCreditState");
+ const native=await import("../lib/runtime/native-rate-limits.js");
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc");
+ const {fetchImpl}=createRecordingFetch(()=>textEventStream());
+ const proxy=await startProxy({accountManager:new AccountManager(undefined,createStorage(now,1)),fetchImpl});
+ const results=await Promise.all(Array.from({length:10},()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"})));
+ expect(results.map(result=>result.status)).toEqual(Array(10).fill(200));
+ expect(load).toHaveBeenCalledTimes(1);expect(rpc).not.toHaveBeenCalled();
 });
 
 it("rechecks an old CLI receipt in a cold native router blocked only by cached quota", async () => {
