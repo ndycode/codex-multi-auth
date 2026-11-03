@@ -62,7 +62,8 @@ export class ConfirmedResetReconciler {
 		const rejectedAfterReceipt = [account.rateLimitObservations?.[observationKey], account.rateLimitObservations?.[family]].some(rejection =>
 			receipt.generation !== undefined
 				? (rejection?.receiptGenerations?.[scope.id] ?? 0) >= receipt.generation
-				: (rejection?.observedAt ?? 0) <= now && (rejection?.observedAt ?? 0) > receipt.at);
+				: (rejection?.observedAt ?? 0) > receipt.at &&
+					((rejection?.observedAt ?? 0) <= now || receipt.at > now));
 		if (!eligible() || rejectedAfterReceipt || (receipt.generation !== undefined && receipt.generation < (account.resetReceiptGenerations?.[scope.id] ?? 0))) return false;
 		if (!(quotaResetTime(account, family, scope.accountId) > now ||
 			(account.cooldownReason === "rate-limit" && (account.coolingDownUntil ?? 0) > now) ||

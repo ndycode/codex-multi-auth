@@ -129,6 +129,21 @@ it("does not cache a failed read as retryable when a new 429 arrived concurrentl
 	expect(await f.run()).toBe(false); expect(f.args.read).toHaveBeenCalledTimes(1);
 });
 
+it.each([1, 2] as const)("does not replay a v%i receipt predating a rejection after clock rollback", async version => {
+ const f=fixture();
+ const before=f.args.now();
+ f.args.state!.version=version;
+ f.args.state!.lastRedemption!.at=before-1000;
+ f.manager.markRateLimitedWithReason(f.account,300000,"codex","quota","chat-test");
+ const rollback=before-10000;
+ vi.spyOn(Date,"now").mockReturnValue(rollback);
+ f.args.now=()=>rollback;f.snapshot.updatedAt=rollback;
+ const deadlines={...f.account.rateLimitResetTimes};
+ expect(await f.run()).toBe(false);
+ expect(f.args.read).not.toHaveBeenCalled();
+ expect(f.account.rateLimitResetTimes).toEqual(deadlines);
+});
+
 it("accepts a new receipt after a backward clock step", async () => {
 	const f = fixture(); let now = f.args.now(); f.args.now = () => now;
 	expect(await f.run()).toBe(true);
