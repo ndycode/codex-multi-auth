@@ -5,12 +5,13 @@ export function carryRuntimeQuotaState(
  previous: ManagedAccount, live: ManagedAccount, now: number,
  shouldCarryCooldown: (previous: ManagedAccount, live: ManagedAccount) => boolean,
 ): void {
+ live.resetReceiptIdentities = previous.resetReceiptIdentities && { ...previous.resetReceiptIdentities };
  live.resetReceiptGenerations = previous.resetReceiptGenerations && { ...previous.resetReceiptGenerations };
  for (const [key, until] of Object.entries(previous.rateLimitResetTimes)) {
   if (typeof until === "number" && until > now) live.rateLimitResetTimes[key] = Math.max(live.rateLimitResetTimes[key] ?? 0, until);
  }
  for (const [key, observation] of Object.entries(previous.rateLimitObservations ?? {})) {
-  (live.rateLimitObservations ??= {})[key] = { ...observation, receiptGenerations: observation.receiptGenerations && { ...observation.receiptGenerations } };
+  (live.rateLimitObservations ??= {})[key] = { ...observation, receiptGenerations: observation.receiptGenerations && { ...observation.receiptGenerations }, receiptIdentities: observation.receiptIdentities && { ...observation.receiptIdentities } };
  }
  if ((previous.coolingDownUntil ?? 0) > (live.coolingDownUntil ?? 0) && shouldCarryCooldown(previous, live)) {
   live.coolingDownUntil = previous.coolingDownUntil;

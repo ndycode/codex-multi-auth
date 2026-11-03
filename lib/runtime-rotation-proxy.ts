@@ -6,7 +6,7 @@ import { createAutomaticSubscriptionCheck } from "./runtime/automatic-subscripti
 import { ClientCancellationError } from "./request/client-cancellation.js";
 import { fetchWithProxy } from "./request/proxy-fetch.js";
 import { createNativeAccountStorageReader } from "./runtime/native-account-storage.js";
-import { resetSnapshotQuota } from "./runtime/reset-credits.js";
+import { resetSnapshotQuota, resetReceiptIdentity } from "./runtime/reset-credits.js";
 import { createResetCreditService, loadResetCreditState } from "./runtime/account-reset-credits.js";
 import { ConfirmedResetReconciler } from "./runtime/confirmed-reset-reconciler.js";
 import { recoverResetQuota, primaryPoolFullyExhausted } from "./runtime/reset-credit-routing.js";
@@ -2107,6 +2107,7 @@ async function handleRequestInner(
   const observeResetGenerations = (account: ManagedAccount, receipts: typeof resetCreditState, scopeId: string | undefined) => {
    if(scopeId === undefined)return;
    const receipt=receipts?.redemptions?.[scopeId] ?? (receipts?.lastRedemption?.key===scopeId ? receipts.lastRedemption : undefined);
+   if(receipt && receipt.generation===undefined)(account.resetReceiptIdentities??={})[scopeId]=resetReceiptIdentity(receipt);
    if(receipt?.generation!==undefined){
     const generations=account.resetReceiptGenerations??={};
     generations[scopeId]=Math.max(generations[scopeId]??0,receipt.generation);
@@ -4005,6 +4006,7 @@ async function handleRequestInner(
                             if (!receipts || !observation || current.account.rateLimitObservations?.[key] !== observation) return;
                             observeResetGenerations(current.account, receipts, scopeId);
                             observation.receiptGenerations = {[scopeId]: current.account.resetReceiptGenerations?.[scopeId] ?? 0};
+                            observation.receiptIdentities = { ...current.account.resetReceiptIdentities };
                             observation.receiptReadFailed = false;
                         });
                     }

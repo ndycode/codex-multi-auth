@@ -4,7 +4,7 @@ import { quotaResetTime, workspaceQuotaKey } from "../accounts/rate-limits.js";
 import { LUNA_RESERVE_MODEL } from "../constants.js";
 import type { ModelFamily } from "../prompts/codex.js";
 import type { QuotaCacheEntry } from "../quota-cache.js";
-import { resetSnapshotQuota, type ResetCreditService, type ResetSnapshot } from "./reset-credits.js";
+import { resetReceiptIdentity, resetSnapshotQuota, type ResetCreditService, type ResetSnapshot } from "./reset-credits.js";
 import { workspaceModelScopes } from "./workspace-model-scopes.js";
 
 type ResetState = Awaited<ReturnType<ResetCreditService["status"]>>;
@@ -62,7 +62,8 @@ export class ConfirmedResetReconciler {
 		const rejectedAfterReceipt = [account.rateLimitObservations?.[observationKey], account.rateLimitObservations?.[family]].some(rejection =>
 			receipt.generation !== undefined
 				? (rejection?.receiptGenerations?.[scope.id] ?? 0) >= receipt.generation
-				: (rejection?.observedAt ?? 0) > receipt.at &&
+				: rejection?.receiptIdentities?.[scope.id] === resetReceiptIdentity(receipt) ||
+                    (rejection?.observedAt ?? 0) > receipt.at &&
 					((rejection?.observedAt ?? 0) <= now || receipt.at > now));
 		if (!eligible() || rejectedAfterReceipt || (receipt.generation !== undefined && receipt.generation < (account.resetReceiptGenerations?.[scope.id] ?? 0))) return false;
 		if (!(quotaResetTime(account, family, scope.accountId) > now ||

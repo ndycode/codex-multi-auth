@@ -304,9 +304,10 @@ export interface ManagedAccount {
 		| "manual";
 	lastRateLimitReason?: RateLimitReason;
 	/** Process-local sequence used to order a fresh quota read against a concurrent 429. */
-	rateLimitObservations?: Record<string, { revision: number; observedAt: number; reason: RateLimitReason; receiptGenerations?: Record<string, number>; receiptReadFailed?: boolean }>;
+	rateLimitObservations?: Record<string, { revision: number; observedAt: number; reason: RateLimitReason; receiptGenerations?: Record<string, number>; receiptIdentities?: Record<string, string>; receiptReadFailed?: boolean }>;
 	/** Highest durable reset generation observed for each workspace in this process. */
 	resetReceiptGenerations?: Record<string, number>;
+	resetReceiptIdentities?: Record<string, string>;
 	rateLimitResetTimes: RateLimitStateV3;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
@@ -807,9 +808,11 @@ export class AccountManager {
                     Object.entries(account.rateLimitObservations).map(([key, observation]) => [key, {
                         ...observation,
                         receiptGenerations: observation.receiptGenerations && { ...observation.receiptGenerations },
+                        receiptIdentities: observation.receiptIdentities && { ...observation.receiptIdentities },
                     }]),
                 ),
 				resetReceiptGenerations: account.resetReceiptGenerations && { ...account.resetReceiptGenerations },
+                resetReceiptIdentities: account.resetReceiptIdentities && { ...account.resetReceiptIdentities },
 				workspaces: account.workspaces?.map((workspace) => ({ ...workspace })),
 			};
 		});
@@ -1482,7 +1485,7 @@ export class AccountManager {
 			const observationKey = getRateLimitObservationKey(key, scopeId);
 			const receiptGenerations = scopeId === undefined ? { ...account.resetReceiptGenerations }
 				: { [scopeId]: account.resetReceiptGenerations?.[scopeId] ?? 0 };
-			observations[observationKey] = { revision: (observations[observationKey]?.revision ?? 0) + 1, observedAt: observedAtMs, reason, receiptGenerations, receiptReadFailed: observation?.receiptReadFailed };
+			observations[observationKey] = { revision: (observations[observationKey]?.revision ?? 0) + 1, observedAt: observedAtMs, reason, receiptGenerations, receiptIdentities: { ...account.resetReceiptIdentities }, receiptReadFailed: observation?.receiptReadFailed };
 		};
 		const deadlineKey = (key: string) => observation ? workspaceQuotaKey(key, observation.workspaceId) : key;
 		const baseKey = deadlineKey(getQuotaKey(family));

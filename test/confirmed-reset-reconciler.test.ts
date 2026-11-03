@@ -144,6 +144,20 @@ it.each([1, 2] as const)("does not replay a v%i receipt predating a rejection af
  expect(f.account.rateLimitResetTimes).toEqual(deadlines);
 });
 
+it.each([1,2] as const)("retains a visible legacy v%i receipt identity when rollback precedes rejection", async version => {
+ const f=fixture(),receipt=f.args.state!.lastRedemption!;
+ f.args.state!.version=version;
+ receipt.at=f.args.now();
+ f.account.resetReceiptIdentities={[f.args.scope.id]:JSON.stringify([receipt.key,receipt.at,receipt.outcome,receipt.automatic])};
+ const now=receipt.at-10000;
+ vi.spyOn(Date,"now").mockReturnValue(now);f.args.now=()=>now;f.snapshot.updatedAt=now;
+ f.manager.markRateLimitedWithReason(f.account,300000,"codex","quota","chat-test",f.args.scope.id);
+ expect(await f.run()).toBe(false);expect(f.args.read).not.toHaveBeenCalled();
+ // A different legacy receipt completed after the clock step may recover.
+ receipt.at=now+1000;f.args.now=()=>now+1000;f.snapshot.updatedAt=now+1000;
+ expect(await f.run()).toBe(true);
+});
+
 it("accepts a new receipt after a backward clock step", async () => {
 	const f = fixture(); let now = f.args.now(); f.args.now = () => now;
 	expect(await f.run()).toBe(true);

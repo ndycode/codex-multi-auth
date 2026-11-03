@@ -8,6 +8,11 @@ import { mapWithConcurrency } from '../concurrency.js';
 import type { QuotaCacheEntry } from '../quota-cache.js';
 import { MAX_RATE_LIMIT_DELAY_MS } from '../constants.js';
 
+/** Stable equality for generation-less receipts; never infer order from this value. */
+export function resetReceiptIdentity(receipt: {key:string;at:number;outcome:string;automatic:boolean}): string {
+ return JSON.stringify([receipt.key,receipt.at,receipt.outcome,receipt.automatic]);
+}
+
 export interface ResetTarget { key: string; accountId: string }
 /** A routing observation may invalidate a healthy check, never authorize spending. */
 export interface ResetExhaustionEvidence extends ResetTarget { observedAt: number }

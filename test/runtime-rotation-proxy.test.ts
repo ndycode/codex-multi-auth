@@ -81,6 +81,25 @@ const openServers: RuntimeRotationProxyServer[] = [];
 const openManagers: AccountManager[] = [];
 const DEFAULT_CLIENT_API_KEY = "runtime-secret";
 
+it.each([1,2] as const)("does not replay a legacy v%i receipt after rollback precedes provider rejection", async version => {
+ const resets=await import("../lib/runtime/account-reset-credits.js");
+ const {workspaceModelScopes}=await import("../lib/runtime/workspace-model-scopes.js");
+ const native=await import("../lib/runtime/native-rate-limits.js");
+ const now=Date.now();vi.spyOn(Date,"now").mockReturnValue(now);
+ const manager=new AccountManager(undefined,createStorage(now,1)),account=manager.getAccountByIndex(0)!;
+ const scope=workspaceModelScopes(account)[0]!;
+ const receipt={key:scope.id,at:now+10000,outcome:"reset" as const,automatic:false};
+ vi.spyOn(resets,"loadResetCreditState").mockResolvedValue({version,policy:"manual",snapshots:{},lastRedemption:receipt});
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockResolvedValue({accountId:scope.accountId,ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}});
+ const {calls,fetchImpl}=createRecordingFetch(()=>Response.json({error:{code:"usage_limit_reached"}},{status:429,headers:{"retry-after":"60"}}));
+ const proxy=await startProxy({accountManager:manager,fetchImpl,options:{forcedAccountIndex:0}});
+ const send=()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"});
+ expect((await send()).status).toBe(503);
+ expect(Object.values(account.rateLimitObservations??{}).some(o=>o.receiptIdentities?.[scope.id]===JSON.stringify([scope.id,receipt.at,"reset",false]))).toBe(true);
+ expect((await send()).status).toBe(503);expect((await send()).status).toBe(503);
+ expect(rpc).not.toHaveBeenCalled();expect(calls).toHaveLength(1);
+});
+
 it("uses the selected provider workspace for dispatch and quota admission without changing accountId", async () => {
  const disk=createStorage(Date.now(),1);disk.pinnedAccountIndex=0;
  Object.assign(disk.accounts[0]!,{workspaces:[{id:"acc_1",enabled:true},{id:"selected-b",enabled:true}],currentWorkspaceIndex:1});
