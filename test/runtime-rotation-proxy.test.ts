@@ -115,7 +115,7 @@ it.each([1,2] as const)("does not replay a legacy v%i receipt after rollback pre
  const proxy=await startProxy({accountManager:manager,fetchImpl,options:{forcedAccountIndex:0}});
  const send=()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"});
  expect((await send()).status).toBe(503);
- expect(Object.values(account.rateLimitObservations??{}).some(o=>o.receiptIdentities?.[scope.id]===JSON.stringify([scope.id,receipt.at,"reset",false]))).toBe(true);
+ expect(Object.values(account.rateLimitObservations??{}).some(o=>o.receiptIdentities?.[scope.id]?.includes(JSON.stringify([scope.id,receipt.at,"reset",false])))).toBe(true);
  expect((await send()).status).toBe(503);expect((await send()).status).toBe(503);
  expect(rpc).not.toHaveBeenCalled();expect(calls).toHaveLength(1);
 });

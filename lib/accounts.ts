@@ -304,7 +304,7 @@ export interface ManagedAccount {
 		| "manual";
 	lastRateLimitReason?: RateLimitReason;
 	/** Process-local sequence used to order a fresh quota read against a concurrent 429. */
-	rateLimitObservations?: Record<string, { revision: number; observedAt: number; reason: RateLimitReason; receiptGenerations?: Record<string, number>; receiptIdentities?: Record<string, string>; receiptReadFailed?: boolean }>;
+	rateLimitObservations?: Record<string, { revision: number; observedAt: number; reason: RateLimitReason; receiptGenerations?: Record<string, number>; receiptIdentities?: Record<string, string[]>; receiptReadFailed?: boolean }>;
 	/** Highest durable reset generation observed for each workspace in this process. */
 	resetReceiptGenerations?: Record<string, number>;
 	resetReceiptIdentities?: Record<string, string>;
@@ -1488,10 +1488,21 @@ export class AccountManager {
 		const recordRejection = (key: string) => {
 			const observations = account.rateLimitObservations ??= {};
 			const observationKey = getRateLimitObservationKey(key, scopeId);
+			const previous = observations[observationKey];
 			const known = observation?.receipts ?? account;
-			const receiptGenerations = scopeId === undefined ? { ...known.resetReceiptGenerations }
-				: { [scopeId]: known.resetReceiptGenerations?.[scopeId] ?? 0 };
-			observations[observationKey] = { revision: (observations[observationKey]?.revision ?? 0) + 1, observedAt: observedAtMs, reason, receiptGenerations, receiptIdentities: { ...known.resetReceiptIdentities }, receiptReadFailed: observation?.receiptReadFailed };
+			// A late answer to an earlier request must not reopen receipts that a
+			// later rejection already followed, so chronology only accumulates.
+			const receiptGenerations = { ...previous?.receiptGenerations };
+			for (const [scope, generation] of Object.entries(scopeId === undefined ? known.resetReceiptGenerations ?? {}
+				: { [scopeId]: known.resetReceiptGenerations?.[scopeId] ?? 0 })) {
+				receiptGenerations[scope] = Math.max(receiptGenerations[scope] ?? 0, generation);
+			}
+			const receiptIdentities = { ...previous?.receiptIdentities };
+			for (const [scope, identity] of Object.entries(known.resetReceiptIdentities ?? {})) {
+				if (!receiptIdentities[scope]?.includes(identity)) receiptIdentities[scope] = [...(receiptIdentities[scope] ?? []), identity];
+			}
+			observations[observationKey] = { revision: (previous?.revision ?? 0) + 1, observedAt: observedAtMs, reason, receiptGenerations, receiptIdentities,
+				receiptReadFailed: previous?.receiptReadFailed || observation?.receiptReadFailed };
 		};
 		const deadlineKey = (key: string) => observation ? workspaceQuotaKey(key, observation.workspaceId) : key;
 		const baseKey = deadlineKey(getQuotaKey(family));

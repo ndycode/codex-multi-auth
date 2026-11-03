@@ -41,7 +41,8 @@ export function settleReceiptBaselines(account: ManagedAccount, state: ResetStat
 			if (receipt?.generation !== undefined) {
 				(rejection.receiptGenerations ??= {})[key] = Math.max(rejection.receiptGenerations?.[key] ?? 0, receipt.generation);
 			} else if (receipt) {
-				(rejection.receiptIdentities ??= {})[key] = resetReceiptIdentity(receipt);
+				const identities = rejection.receiptIdentities ??= {}, identity = resetReceiptIdentity(receipt);
+				if (!identities[key]?.includes(identity)) identities[key] = [...(identities[key] ?? []), identity];
 			}
 		}
 		rejection.receiptReadFailed = false;
@@ -90,16 +91,15 @@ export class ConfirmedResetReconciler {
 		const now = options.now();
 		// Modern receipts are ordered by durable generation, not wall time. A
 		// rejection after this generation was observed cannot replay that receipt.
-		// A legacy receipt identity seen by the rejection is exact; wall time only
+		// Legacy receipt identities seen by the rejections are exact; wall time only
 		// orders rejections that saw none.
 		const identity = resetReceiptIdentity(receipt);
-		const rejectedAfterReceipt = [account.rateLimitObservations?.[observationKey], account.rateLimitObservations?.[family]].some(rejection =>
-			receipt.generation !== undefined
-				? (rejection?.receiptGenerations?.[scope.id] ?? 0) >= receipt.generation
-				: rejection?.receiptIdentities?.[scope.id] !== undefined
-					? rejection.receiptIdentities[scope.id] === identity
-					: (rejection?.observedAt ?? 0) > receipt.at &&
-						((rejection?.observedAt ?? 0) <= now || receipt.at > now));
+		const rejectedAfterReceipt = [account.rateLimitObservations?.[observationKey], account.rateLimitObservations?.[family]].some(rejection => {
+			if (receipt.generation !== undefined) return (rejection?.receiptGenerations?.[scope.id] ?? 0) >= receipt.generation;
+			const seen = rejection?.receiptIdentities?.[scope.id];
+			if (seen !== undefined) return seen.includes(identity);
+			return (rejection?.observedAt ?? 0) > receipt.at && ((rejection?.observedAt ?? 0) <= now || receipt.at > now);
+		});
 		if (!eligible() || rejectedAfterReceipt ||
 			(receipt.generation !== undefined && receipt.generation < (account.resetReceiptGenerations?.[scope.id] ?? 0))) return false;
 		// Receipt time may be ahead of this process after a clock rollback. Fresh

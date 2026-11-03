@@ -405,3 +405,23 @@ it("bounds an unsequenced rejection by the legacy receipt visible at the next re
  receipt.at+=1;
  expect(await f.run()).toBe(true);expect(f.args.read).toHaveBeenCalledTimes(1);
 });
+
+it.each(["generation","legacy"] as const)("keeps a %s receipt rejected when a request sent before it is rejected later", async kind => {
+ const f=fixture(),receipt=f.state.lastRedemption!,scope=f.args.scope.id;
+ if(kind==="generation")receipt.generation=1;
+ const knew=(current:boolean)=>kind==="generation"
+  ?{resetReceiptGenerations:{[scope]:current?1:0}}
+  :{resetReceiptIdentities:{[scope]:JSON.stringify([receipt.key,current?receipt.at:receipt.at-60_000,receipt.outcome,receipt.automatic])}};
+ // A request sent after the receipt is rejected first; one sent before it answers afterward.
+ for(const current of [true,false])f.manager.markRateLimitedWithReason(f.account,300_000,"codex","quota","chat-test",scope,{workspaceId:"workspace",receipts:knew(current)});
+ expect(await f.run()).toBe(false);expect(f.args.read).not.toHaveBeenCalled();
+ if(kind==="generation")receipt.generation=2;else receipt.at+=1;
+ expect(await f.run()).toBe(true);expect(f.args.read).toHaveBeenCalledTimes(1);
+});
+
+it("keeps an unsequenced rejection's uncertainty when a sequenced rejection follows it", async () => {
+ const f=fixture();f.state.lastRedemption!.generation=1;
+ f.manager.markRateLimitedWithReason(f.account,300_000,"codex","quota","chat-test",f.args.scope.id,{workspaceId:"workspace",receiptReadFailed:true});
+ f.manager.markRateLimitedWithReason(f.account,300_000,"codex","quota","chat-test",f.args.scope.id,{workspaceId:"workspace",receipts:{}});
+ expect(await f.run()).toBe(false);expect(f.args.read).not.toHaveBeenCalled();
+});
