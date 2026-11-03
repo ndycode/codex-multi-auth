@@ -7795,4 +7795,26 @@ describe("Decisions endpoint routing", () => {
   const proxy=await startProxy({accountManager:new AccountManager(undefined,createStorage(Date.now(),1)),fetchImpl});
   expect((await postResponses(proxy,{model,input:"fixture",questions:[{type:"predicate",instructions:"check"}]},"/v1/decisions")).status).toBe(400);expect(calls).toHaveLength(0);
  });
+ it.each([401, 403])("serves a credential %s from the same-pool backup and never relays it as the caller's auth failure",async status=>{
+  const route=(id:string,priority:number)=>({id,label:id,kind:"zdr" as const,region:"us" as const,apiKey:`key-${id}`,enabled:true,priority,visibleModels:["decision-test"],modelProfiles:{"decision-test":{supported_endpoints:["/v1/decisions"]}}});
+  const answer={answers:[{type:"predicate",name:null,probability:1}],usage:{input_tokens:1,output_tokens:0,total_tokens:1}};
+  let backupHealthy=true;
+  const {calls,fetchImpl}=createRecordingFetch(call=>{
+   if(call.url.endsWith("/models"))return Response.json({data:[{id:"decision-test"}]});
+   return call.headers.get("authorization")==="Bearer key-revoked"||!backupHealthy
+    ?Response.json({error:{code:"invalid_api_key",type:"invalid_request_error",message:"Incorrect API key provided: key-re***ked"}},{status})
+    :Response.json(answer);
+  });
+  const proxy=await startProxy({accountManager:new AccountManager(undefined,createStorage(Date.now(),1)),fetchImpl,options:{readApiRoutes:async()=>[route("revoked",0),route("healthy",1)]}});
+  const question={model:"zdr/decision-test",input:"fixture",questions:[{type:"predicate",instructions:"check"}]};
+  const served=await postResponses(proxy,question,"/v1/decisions");
+  expect(served.status).toBe(200);await served.text();
+  expect(calls.filter(c=>c.url.endsWith("/decisions")).map(c=>c.headers.get("authorization"))).toEqual(["Bearer key-revoked","Bearer key-healthy"]);
+  backupHealthy=false;
+  const exhausted=await postResponses(proxy,question,"/v1/decisions");
+  expect(exhausted.status).toBe(503);
+  const text=await exhausted.text();
+  expect(JSON.parse(text).error.code).toBe("decisions_pool_unavailable");
+  expect(text).not.toContain("invalid_api_key");
+ });
 });

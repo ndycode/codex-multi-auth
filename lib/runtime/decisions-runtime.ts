@@ -94,6 +94,31 @@ async function readBody(
 	}
 	return Buffer.concat(chunks).toString("utf8");
 }
+const PERMANENT_QUOTA_CODES = [
+	"insufficient_quota",
+	"billing_hard_limit_reached",
+	"billing_not_active",
+	"usage_limit_reached",
+];
+/** How one credential's rejection steers the rest of the request. */
+type Rejection = "unsupported" | "credential" | "rate_limited" | "final";
+function classifyRejection(
+	status: number,
+	error: Record<string, unknown>,
+): Rejection {
+	const named = (code: string) => error.code === code || error.type === code;
+	if (status === 404 || status === 405 || status === 501) return "unsupported";
+	// Authentication and permanent quota reject the key before inference runs,
+	// so trying another key cannot replay a decision.
+	if (
+		status === 401 ||
+		status === 403 ||
+		(status === 429 && PERMANENT_QUOTA_CODES.some(named))
+	)
+		return "credential";
+	if (status === 429 && named("rate_limit_exceeded")) return "rate_limited";
+	return "final";
+}
 function failure(status: number, code: string): Response {
 	return Response.json(
 		{
@@ -177,6 +202,7 @@ export class DecisionsRuntime {
 			let region: string | undefined;
 			let last = failure(503, "decisions_endpoint_unavailable");
 			const attempts = new Map<string, number>();
+			const rejected = new Set<string>();
 			for (;;) {
 				let minimumWait = Infinity;
 				for (const candidate of resolved.candidates) {
@@ -193,7 +219,7 @@ export class DecisionsRuntime {
 					)
 						continue;
 					region ??= credential.region ?? "global";
-					if ((attempts.get(key) ?? 0) >= 3) continue;
+					if (rejected.has(key) || (attempts.get(key) ?? 0) >= 3) continue;
 					{
 						if (controller.signal.aborted) throw Error("deadline");
 						const admission = this.backoff.acquire(key);
@@ -268,18 +294,20 @@ export class DecisionsRuntime {
 									error[field] = value;
 							}
 							const retryAfter = response.headers.get("retry-after");
-							last = Response.json(
-								{ error },
-								{
-									status: response.status,
-									headers: retryAfter ? { "retry-after": retryAfter } : {},
-								},
-							);
-							if (
-								response.status === 404 ||
-								response.status === 405 ||
-								response.status === 501
-							) {
+							const rejection = classifyRejection(response.status, source);
+							// A rejected pool key is not the caller's credential; a 401
+							// relayed through the bridge would read as a bad local token.
+							last =
+								rejection === "credential" && response.status !== 429
+									? failure(503, "decisions_pool_unavailable")
+									: Response.json(
+											{ error },
+											{
+												status: response.status,
+												headers: retryAfter ? { "retry-after": retryAfter } : {},
+											},
+										);
+							if (rejection === "unsupported") {
 								if (this.unsupported.size >= 512) {
 									const oldest = this.unsupported.keys().next().value;
 									if (oldest) this.unsupported.delete(oldest);
@@ -287,17 +315,11 @@ export class DecisionsRuntime {
 								this.unsupported.set(key, this.now() + 300_000);
 								continue;
 							}
-							if (
-								response.status === 429 &&
-								(source.code === "rate_limit_exceeded" ||
-									source.type === "rate_limit_exceeded") &&
-								![
-									"insufficient_quota",
-									"billing_hard_limit_reached",
-									"billing_not_active",
-									"usage_limit_reached",
-								].some((code) => source.code === code || source.type === code)
-							) {
+							if (rejection === "credential") {
+								rejected.add(key);
+								continue;
+							}
+							if (rejection === "rate_limited") {
 								const waitMs = this.backoff.penalize(
 									key,
 									apiRetryDelayMs(data, this.now(), response.headers),

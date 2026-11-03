@@ -31,9 +31,15 @@ are preserved; error messages are sanitized to avoid reflecting private input.
 
 Unsupported endpoint responses (404/405/501) allow another eligible credential
 in the same pool and region and are cached for five minutes per credential,
-model, and endpoint. Responses capability state is unaffected. Confirmed
-temporary `rate_limit_exceeded` 429 responses use Retry-After and shared
-backoff. Unclassified/permanent quota rejections, network ambiguity, and other
+model, and endpoint. Responses capability state is unaffected. A credential
+rejected with 401, 403, or a permanent quota 429 (`insufficient_quota` and
+similar) is rejected before inference, so the next eligible credential in the
+same pool and region is tried and the rejected one is not sent again for that
+request. If every credential is rejected with 401 or 403, the caller gets 503
+`decisions_pool_unavailable`, never a 401 or 403 that would read as its own
+credential failing; a pool-wide permanent quota rejection stays a sanitized
+429. Confirmed temporary `rate_limit_exceeded` 429 responses use Retry-After
+and shared backoff. Unclassified 429 rejections, network ambiguity, and other
 server errors are not replayed. Discovery, admission, response-body reads, and
 retries share a 60-second deadline and respect cancellation. Response buffering
 is capped at 8 MiB.

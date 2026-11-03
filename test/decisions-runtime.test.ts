@@ -241,7 +241,7 @@ describe("native Decisions boundary", () => {
 	});
 });
 
-it.each([500, 502, 503, 504, 401, 403])(
+it.each([500, 502, 503, 504])(
 	"does not replay provider status %s",
 	async (status) => {
 		const fetcher = vi.fn(async () =>
@@ -258,19 +258,101 @@ it.each([500, 502, 503, 504, 401, 403])(
 		expect(fetcher).toHaveBeenCalledTimes(1);
 	},
 );
-it("does not retry permanent quota rejection", async () => {
-	const fetcher = vi.fn(async () =>
-		Response.json({ error: { code: "insufficient_quota" } }, { status: 429 }),
+const authorizations = (fetcher: ReturnType<typeof vi.fn>) =>
+	fetcher.mock.calls.map((c) =>
+		new Headers((c[1] as RequestInit).headers).get("authorization"),
 	);
-	expect(
-		(
-			await new DecisionsRuntime(fetcher, catalogs).request(body, [
-				route(),
-				route("backup"),
-			])
-		).status,
-	).toBe(429);
-	expect(fetcher).toHaveBeenCalledTimes(1);
+describe("rejected pool credentials", () => {
+	it.each([
+		[401, { code: "invalid_api_key", type: "invalid_request_error" }],
+		[403, { code: "unsupported_country_region_territory" }],
+		[429, { code: "insufficient_quota", type: "insufficient_quota" }],
+	] as const)(
+		"fails over a %s credential rejection to the same pool and region",
+		async (status, error) => {
+			const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) =>
+				new Headers(init?.headers).get("authorization") === "Bearer key-one"
+					? Response.json({ error }, { status })
+					: Response.json(answer),
+			);
+			const response = await new DecisionsRuntime(fetcher, catalogs).request(
+				body,
+				[
+					route(),
+					route("api", "api"),
+					route("other-region", "zdr", "global"),
+					route("backup"),
+				],
+			);
+			expect(response.status).toBe(200);
+			expect(authorizations(fetcher)).toEqual([
+				"Bearer key-one",
+				"Bearer key-backup",
+			]);
+		},
+	);
+	it.each([401, 403])(
+		"reports a pool exhausted by %s as unavailable, not as the caller's auth failure",
+		async (status) => {
+			const fetcher = vi.fn(async () =>
+				Response.json(
+					{ error: { code: "invalid_api_key", type: "invalid_request_error" } },
+					{ status },
+				),
+			);
+			const response = await new DecisionsRuntime(fetcher, catalogs).request(
+				body,
+				[route(), route("backup")],
+			);
+			expect(response.status).toBe(503);
+			const text = await response.text();
+			expect(JSON.parse(text).error.code).toBe("decisions_pool_unavailable");
+			expect(text).not.toContain("invalid_api_key");
+			expect(fetcher).toHaveBeenCalledTimes(2);
+		},
+	);
+	it("keeps a pool-wide permanent quota rejection as a sanitized 429", async () => {
+		const fetcher = vi.fn(async () =>
+			Response.json(
+				{ error: { code: "insufficient_quota", message: "private echo" } },
+				{ status: 429 },
+			),
+		);
+		const response = await new DecisionsRuntime(fetcher, catalogs).request(
+			body,
+			[route(), route("backup")],
+		);
+		expect(response.status).toBe(429);
+		const text = await response.text();
+		expect(JSON.parse(text).error.code).toBe("insufficient_quota");
+		expect(text).not.toContain("private echo");
+		expect(fetcher).toHaveBeenCalledTimes(2);
+	});
+	it("never resends a rejected credential while waiting for a rate-limited backup", async () => {
+		vi.useFakeTimers();
+		let backupSends = 0;
+		const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
+			if (new Headers(init?.headers).get("authorization") === "Bearer key-one")
+				return Response.json({ error: { code: "invalid_api_key" } }, { status: 401 });
+			return ++backupSends === 1
+				? Response.json(
+						{ error: { code: "rate_limit_exceeded" } },
+						{ status: 429, headers: { "retry-after": "2" } },
+					)
+				: Response.json(answer);
+		});
+		const pending = new DecisionsRuntime(fetcher, catalogs).request(body, [
+			route(),
+			route("backup"),
+		]);
+		await vi.advanceTimersByTimeAsync(5000);
+		expect((await pending).status).toBe(200);
+		expect(authorizations(fetcher)).toEqual([
+			"Bearer key-one",
+			"Bearer key-backup",
+			"Bearer key-backup",
+		]);
+	});
 });
 it("records unsupported endpoint per credential without losing other routes", async () => {
 	const fetcher = vi
