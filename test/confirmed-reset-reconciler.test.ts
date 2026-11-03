@@ -140,11 +140,27 @@ it("reconciles the same receipt in a replacement manager with persisted blockers
 	expect(replacement.account.rateLimitResetTimes.codex).toBeUndefined();
 });
 
-it("does not cache a failed read as retryable when a new 429 arrived concurrently", async () => {
+it("does not retry a receipt after a concurrent 429 that follows it", async () => {
 	const f = fixture(); let now = f.args.now(); f.args.now = () => now;
 	f.args.read = vi.fn(async () => { f.account.rateLimitObservations = {codex:{revision:1, observedAt:now, reason:"quota"}}; throw Error("offline"); });
 	expect(await f.run()).toBe(false); now += 10_000;
 	expect(await f.run()).toBe(false); expect(f.args.read).toHaveBeenCalledTimes(1);
+});
+
+it("rechecks a receipt after a concurrent rejection to a request sent before it", async () => {
+	const f = fixture(); let now = f.args.now(); f.args.now = () => now;
+	Object.assign(f.state.lastRedemption!, {generation:1});
+	const read = vi.fn<() => Promise<ResetSnapshot | undefined>>()
+		.mockImplementationOnce(async () => {
+			f.manager.markRateLimitedWithReason(f.account, 300_000, "codex", "quota", "chat-test", f.args.scope.id, {workspaceId:"workspace", receipts:{}});
+			return f.snapshot;
+		})
+		.mockImplementation(async () => ({...f.snapshot, updatedAt:now}));
+	f.args.read = read;
+	expect(await f.run()).toBe(false);
+	expect(await f.run()).toBe(false); expect(read).toHaveBeenCalledTimes(1);
+	now += 5_000;
+	expect(await f.run()).toBe(true); expect(read).toHaveBeenCalledTimes(2);
 });
 
 it.each([1, 2] as const)("does not replay a v%i receipt predating a rejection after clock rollback", async version => {

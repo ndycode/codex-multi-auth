@@ -133,10 +133,10 @@ export class ConfirmedResetReconciler {
 				if (this.operations.get(key) === operation) this.operations.delete(key);
 				return false;
 			}
-			// Keep a newer rejection authoritative, including when the read failed.
-			if (revision() !== startedRevision) return false;
-			if (!snapshot || snapshot.updatedAt < startedAt || snapshot.updatedAt > options.now() ||
-				snapshot.ordinaryUsageAllowed !== true) {
+			// A rejection during the read outranks its result. The next check skips
+			// this receipt only if that rejection was sent after the receipt existed.
+			if (revision() !== startedRevision || !snapshot || snapshot.updatedAt < startedAt ||
+				snapshot.updatedAt > options.now() || snapshot.ordinaryUsageAllowed !== true) {
 				operation.failures++;
 				operation.retryAfter = options.now() + Math.min(RETRY_DELAY_MS * 2 ** (operation.failures - 1), MAX_RETRY_DELAY_MS);
 				return false;
