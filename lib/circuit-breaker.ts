@@ -72,6 +72,9 @@ export class CircuitBreaker {
 		}
 
 		if (this.state === "half-open") {
+			// A fully released window has no in-flight probe. Start its timeout
+			// at the next acquisition, including after an arbitrarily long idle.
+			if (this.halfOpenAttempts === 0) this.resetHalfOpenProbeWindow(now);
 			if (this.halfOpenAttempts >= this.config.halfOpenMaxAttempts) {
 				if (this.hasHalfOpenProbeWaitElapsed(now)) {
 					this.resetHalfOpenProbeWindow(now);
