@@ -8,6 +8,7 @@ import {
 } from "../model-route-policy.js";
 import { ClientCancellationError } from "../request/client-cancellation.js";
 import { apiRetryDelayMs } from "../request/api-retry-delay.js";
+import { readErrorBody } from "../request/stream-failover-runtime.js";
 import { isRecord } from "../utils.js";
 import { extractUsageTokenCounts } from "../usage/usage-extraction.js";
 import type { UsageTokenCounts } from "../usage/types.js";
@@ -265,7 +266,12 @@ export class DecisionsRuntime {
 								}),
 								controller.signal,
 							);
-							const text = await readBody(response, controller.signal);
+							const text = response.ok
+								? await readBody(response, controller.signal)
+								: await abortable(
+										readErrorBody(response, 5000, 65536),
+										controller.signal,
+									);
 							let data: unknown;
 							try {
 								data = JSON.parse(text);

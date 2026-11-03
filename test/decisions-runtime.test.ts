@@ -328,6 +328,26 @@ describe("rejected pool credentials", () => {
 		expect(text).not.toContain("private echo");
 		expect(fetcher).toHaveBeenCalledTimes(2);
 	});
+	it("fails over past a stalled error body without waiting for the deadline", async () => {
+		vi.useFakeTimers();
+		const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) =>
+			new Headers(init?.headers).get("authorization") === "Bearer key-one"
+				? new Response(new ReadableStream({ start() {} }), { status: 401 })
+				: Response.json(answer),
+		);
+		let status: number | undefined;
+		void new DecisionsRuntime(fetcher, catalogs, Date.now, 30_000)
+			.request(body, [route(), route("backup")])
+			.then((response) => {
+				status = response.status;
+			});
+		await vi.advanceTimersByTimeAsync(6_000);
+		expect(status).toBe(200);
+		expect(authorizations(fetcher)).toEqual([
+			"Bearer key-one",
+			"Bearer key-backup",
+		]);
+	});
 	it("never resends a rejected credential while waiting for a rate-limited backup", async () => {
 		vi.useFakeTimers();
 		let backupSends = 0;
