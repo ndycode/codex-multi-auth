@@ -545,16 +545,24 @@ it("does not dispatch for a pinned client that disconnected during the reset che
  let entered!:()=>void,release!:()=>void;
  const started=new Promise<void>(resolve=>{entered=resolve;}),gate=new Promise<void>(resolve=>{release=resolve;});
  vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async auth=>{entered();await gate;return {accountId:auth.accountId,ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}};});
+ const logger=await import("../lib/logger.js"),runInContext=logger.runWithCorrelationId;
+ let finished!:()=>void;const handled=new Promise<void>(resolve=>{finished=resolve;});
+ vi.spyOn(logger,"runWithCorrelationId").mockImplementation((id,fn)=>{
+  const result=runInContext(id,fn);
+  void Promise.resolve(result).finally(finished);
+  return result;
+ });
  const {calls,fetchImpl}=createRecordingFetch(()=>textEventStream());
  const proxy=await startProxy({accountManager:manager,fetchImpl,options:{forcedAccountIndex:0}});
  const url=new URL(`${proxy.baseUrl}/responses`),payload=JSON.stringify({model:"chat-fixture",input:"synthetic"});
  const req=request({host:url.hostname,port:Number(url.port),path:url.pathname,method:"POST",headers:{authorization:`Bearer ${DEFAULT_CLIENT_API_KEY}`,"content-type":"application/json","content-length":String(Buffer.byteLength(payload))}});
  req.on("error",()=>{});req.end(payload);
  await started;req.destroy();
- await new Promise(resolve=>setTimeout(resolve,100));
+ // The handler sees the disconnect once the proxy has closed its side of the socket.
+ await vi.waitFor(()=>expect(proxy.getOpenConnectionCount?.()).toBe(0),{timeout:10_000});
  release();
- await vi.waitFor(()=>expect(quotaResetTime(account,family)).toBe(0));
- await new Promise(resolve=>setTimeout(resolve,100));
+ await handled;
+ expect(quotaResetTime(account,family)).toBe(0);
  expect(calls).toHaveLength(0);
 });
 
