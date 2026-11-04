@@ -124,6 +124,13 @@ export function getRateLimitObservationKey(quotaKey: string, scopeId?: string): 
 	return scopeId === undefined ? quotaKey : JSON.stringify([scopeId, quotaKey]);
 }
 
+let rejectionSequence = 0;
+
+/** Process-local count of recorded rejections; orders them against receipt reads without wall time. */
+export function currentRejectionSequence(): number {
+	return rejectionSequence;
+}
+
 type RateLimitObservation = NonNullable<ManagedAccount["rateLimitObservations"]>[string];
 
 export function cloneRateLimitObservation(observation: RateLimitObservation): RateLimitObservation {
@@ -316,7 +323,7 @@ export interface ManagedAccount {
 		| "manual";
 	lastRateLimitReason?: RateLimitReason;
 	/** Process-local sequence used to order a fresh quota read against a concurrent 429. */
-	rateLimitObservations?: Record<string, { revision: number; observedAt: number; reason: RateLimitReason; receiptGenerations?: Record<string, number>; receiptIdentities?: Record<string, string[]>; receiptReadFailed?: boolean }>;
+	rateLimitObservations?: Record<string, { revision: number; observedAt: number; sequence?: number; reason: RateLimitReason; receiptGenerations?: Record<string, number>; receiptIdentities?: Record<string, string[]>; receiptReadFailed?: boolean }>;
 	/** Highest durable reset generation observed for each workspace in this process. */
 	resetReceiptGenerations?: Record<string, number>;
 	resetReceiptIdentities?: Record<string, string>;
@@ -1509,7 +1516,7 @@ export class AccountManager {
 			for (const [scope, identity] of Object.entries(known.resetReceiptIdentities ?? {})) {
 				if (!receiptIdentities[scope]?.includes(identity)) receiptIdentities[scope] = [...(receiptIdentities[scope] ?? []), identity];
 			}
-			observations[observationKey] = { revision: (previous?.revision ?? 0) + 1, observedAt: observedAtMs, reason, receiptGenerations, receiptIdentities,
+			observations[observationKey] = { revision: (previous?.revision ?? 0) + 1, observedAt: observedAtMs, sequence: ++rejectionSequence, reason, receiptGenerations, receiptIdentities,
 				receiptReadFailed: previous?.receiptReadFailed || observation?.receiptReadFailed };
 		};
 		const deadlineKey = (key: string) => observation ? workspaceQuotaKey(key, observation.workspaceId) : key;

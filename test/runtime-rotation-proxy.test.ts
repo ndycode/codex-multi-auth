@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import { request } from "node:http";
 import { gzipSync, brotliCompressSync, deflateSync } from "node:zlib";
 import * as zlib from "node:zlib";
-import { AccountManager, getRuntimeTrackerKey } from "../lib/accounts.js";
+import { AccountManager, currentRejectionSequence, getRuntimeTrackerKey } from "../lib/accounts.js";
 import { getModelFamily } from "../lib/prompts/codex.js";
 import { CodexValidationError } from "../lib/errors.js";
 import { HTTP_STATUS, OPENAI_HEADERS, RATE_LIMIT_CACHE_TTL_MS } from "../lib/constants.js";
@@ -466,7 +466,7 @@ it.each([["reload",false],["same-manager",false],["request-read-failure",false],
   let clock=now,allowed=false;
   const read=vi.fn(async()=>({updatedAt:clock,availableCount:1,credits:null,ordinaryUsageAllowed:allowed,planType:"pro",primary:{},secondary:{}}));
   const reconciler=new ConfirmedResetReconciler();
-  const args={state:async()=>({state,startedAt:Date.now()}),account,scope,model:"chat-fixture",family:getModelFamily("chat-fixture"),manager:replacement,read,isCurrent:()=>true,now:()=>clock,observations:new Map(),clearQuotaScheduler:()=>{}};
+  const args={state:async()=>({state,sequence:currentRejectionSequence()}),account,scope,model:"chat-fixture",family:getModelFamily("chat-fixture"),manager:replacement,read,isCurrent:()=>true,now:()=>clock,observations:new Map(),clearQuotaScheduler:()=>{}};
   if(mode==="request-read-failure"){
    // Unknown dispatch knowledge stays conservative: the first readable receipt is its baseline.
    expect(await reconciler.reconcile(args)).toBe(false);expect(read).not.toHaveBeenCalled();

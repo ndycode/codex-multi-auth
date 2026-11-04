@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { quotaResetTime } from "../lib/accounts/rate-limits.js";
 import { getTokenTracker } from "../lib/rotation.js";
-import { getRuntimeTrackerKey, AccountManager } from "../lib/accounts.js";
+import { currentRejectionSequence, getRuntimeTrackerKey, AccountManager } from "../lib/accounts.js";
 import { ConfirmedResetReconciler, settleReceiptBaselines } from "../lib/runtime/confirmed-reset-reconciler.js";
 import { workspaceModelScopes } from "../lib/runtime/workspace-model-scopes.js";
 import type { ResetSnapshot } from "../lib/runtime/reset-credits.js";
@@ -24,7 +24,7 @@ function fixture() {
 	account.rateLimitResetTimes = {codex:now + 300_000};
 	const state: ResetState = {version:1, policy:"manual", snapshots:{}, lastRedemption:{key:scope.id, at:now - 120_000, outcome:"reset", automatic:false}};
 	const args: Parameters<ConfirmedResetReconciler["reconcile"]>[0] = {
-		state:vi.fn(async () => ({state, startedAt:Date.now()})),
+		state:vi.fn(async () => ({state, sequence:currentRejectionSequence()})),
 		account, scope, model:"chat-test", family:"codex", manager,
 		read:vi.fn(async () => snapshot), isCurrent:() => true, now:() => now,
 		observations:new Map(), clearQuotaScheduler:vi.fn(),
@@ -446,22 +446,36 @@ it("keeps an unsequenced rejection's uncertainty when a sequenced rejection foll
  expect(await f.run()).toBe(false);expect(f.args.read).not.toHaveBeenCalled();
 });
 
+it("bounds an unsequenced rejection after a backward clock step and recovers a later generation", async () => {
+ const f=fixture();const now=f.args.now(),rolledBack=now-3_600_000;
+ f.state.lastRedemption!.generation=1;f.state.redemptionGeneration=1;
+ f.manager.markRateLimitedWithReason(f.account,7_200_000,"codex","quota","chat-test",f.args.scope.id,{workspaceId:"workspace",receiptReadFailed:true});
+ vi.mocked(Date.now).mockReturnValue(rolledBack);f.args.now=()=>rolledBack;f.snapshot.updatedAt=rolledBack;
+ expect(await f.run()).toBe(false);
+ expect(f.args.read).not.toHaveBeenCalled();
+ f.state.lastRedemption={key:f.args.scope.id,at:rolledBack,outcome:"reset",automatic:false,generation:2};f.state.redemptionGeneration=2;
+ expect(await f.run()).toBe(true);
+ expect(f.args.read).toHaveBeenCalledTimes(1);
+});
+
 it("leaves an unsequenced rejection unbounded by a receipt read that began before it", () => {
  const f=fixture();const now=f.args.now();f.state.lastRedemption!.generation=1;
  f.manager.markRateLimitedWithReason(f.account,300_000,"codex","quota","chat-test",f.args.scope.id,{workspaceId:"workspace",receiptReadFailed:true});
  const unbounded=()=>Object.values(f.account.rateLimitObservations??{}).filter(o=>o.receiptReadFailed).length;
- settleReceiptBaselines(f.account,f.state,now-1);
+ const recorded=currentRejectionSequence();
+ settleReceiptBaselines(f.account,f.state,recorded-1);
  expect(unbounded()).toBe(1);
- settleReceiptBaselines(f.account,f.state,now);
+ settleReceiptBaselines(f.account,f.state,recorded);
  expect(unbounded()).toBe(0);
 });
 
 it("does not replay a receipt for an unsequenced rejection recorded while its read was in flight", async () => {
  const f=fixture();const now=f.args.now();f.state.lastRedemption!.generation=1;
  f.args.state=vi.fn(async()=>{
+  const sequence=currentRejectionSequence();
   vi.mocked(Date.now).mockReturnValue(now+1);
   f.manager.markRateLimitedWithReason(f.account,300_000,"codex","quota","chat-test",f.args.scope.id,{workspaceId:"workspace",receiptReadFailed:true});
-  return {state:f.state,startedAt:now};
+  return {state:f.state,sequence};
  });
  expect(await f.run()).toBe(false);expect(f.args.read).not.toHaveBeenCalled();
 });

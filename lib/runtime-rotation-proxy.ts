@@ -37,6 +37,7 @@ import * as zlib from "node:zlib";
 import {
 	AccountManager,
 	AUTH_INVALIDATION_MARKER,
+	currentRejectionSequence,
 	extractAccountId,
 	getRateLimitObservationKey,
 	type ManagedAccount,
@@ -649,8 +650,8 @@ function cachedRead<T>(state: RotationProxyState, key: string, load: () => Promi
 }
 
 async function readResetCredits(): Promise<ReceiptRead> {
-	const startedAt = Date.now();
-	return { state: await loadResetCreditState(), startedAt };
+	const sequence = currentRejectionSequence();
+	return { state: await loadResetCreditState(), sequence };
 }
 
 function catalogAccountKey(account: ManagedAccount): string {
@@ -2126,7 +2127,7 @@ async function handleRequestInner(
   // Bound unsequenced rejections now, before a later redemption becomes visible.
   if (sharedResetCredits) for (let index = 0; index < accountManager.getAccountCount(); index++) {
    const account = accountManager.getAccountByIndex(index);
-   if (account) settleReceiptBaselines(account, sharedResetCredits.state, sharedResetCredits.startedAt);
+   if (account) settleReceiptBaselines(account, sharedResetCredits.state, sharedResetCredits.sequence);
   }
   const observeResetGenerations = (account: ManagedAccount, receipts: typeof resetCreditState, scopeId: string | undefined) => {
    if(scopeId === undefined)return;

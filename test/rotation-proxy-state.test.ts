@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AccountManager } from "../lib/accounts.js";
+import { AccountManager, currentRejectionSequence } from "../lib/accounts.js";
 import { PreemptiveQuotaScheduler } from "../lib/preemptive-quota-scheduler.js";
 import type { RotationProxyStateInit } from "../lib/runtime/rotation-proxy-state.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
@@ -343,7 +343,7 @@ describe("reloadRuntimeCredentials", () => {
   expect(current.rateLimitResetTimes.codex).toBe(observedAt+60000);
   const read = vi.fn();
   expect(await new ConfirmedResetReconciler().reconcile({
-   state:async()=>({state:{version:1,policy:"manual",snapshots:{},lastRedemption:{key:scope.id,at:observedAt-1,outcome:"reset",automatic:false}},startedAt:Date.now()}),
+   state:async()=>({state:{version:1,policy:"manual",snapshots:{},lastRedemption:{key:scope.id,at:observedAt-1,outcome:"reset",automatic:false}},sequence:currentRejectionSequence()}),
    manager:replacement,account:current,scope,model:"chat-test",family:"codex",now:()=>observedAt,
    isCurrent:()=>true,read,observations:new Map(),clearQuotaScheduler:vi.fn(),
   })).toBe(false);

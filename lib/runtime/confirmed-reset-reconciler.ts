@@ -8,8 +8,8 @@ import { resetReceiptIdentity, resetSnapshotQuota, type ResetCreditService, type
 import { workspaceModelScopes } from "./workspace-model-scopes.js";
 
 type ResetState = Awaited<ReturnType<ResetCreditService["status"]>>;
-/** A receipt read and the time it began; only rejections observed by then are bounded by it. */
-export interface ReceiptRead { state: ResetState; startedAt: number }
+/** A receipt read and the rejection sequence when it began; only rejections recorded by then are bounded by it. */
+export interface ReceiptRead { state: ResetState; sequence: number }
 type Scope = ReturnType<typeof workspaceModelScopes>[number];
 interface Operation {
 	identity: string;
@@ -36,10 +36,10 @@ function receiptFor(state: ResetState | null, key: string) {
  * A rejection recorded while receipts were unreadable is bounded by the next
  * successful read begun after it: anything visible then may predate it, so it cannot replay.
  */
-export function settleReceiptBaselines(account: ManagedAccount, state: ResetState, readStartedAt: number): void {
+export function settleReceiptBaselines(account: ManagedAccount, state: ResetState, readSequence: number): void {
 	const keys = new Set([...Object.keys(state.redemptions ?? {}), ...(state.lastRedemption ? [state.lastRedemption.key] : [])]);
 	for (const rejection of Object.values(account.rateLimitObservations ?? {})) {
-		if (!rejection.receiptReadFailed || rejection.observedAt > readStartedAt) continue;
+		if (!rejection.receiptReadFailed || (rejection.sequence ?? 0) > readSequence) continue;
 		for (const key of keys) {
 			const receipt = receiptFor(state, key);
 			if (receipt?.generation !== undefined) {
@@ -88,7 +88,7 @@ export class ConfirmedResetReconciler {
 		// Receipts are read only for a request this account cannot otherwise serve.
 		if (!eligible() || !blocked(options.now())) return false;
 		const read = await options.state(), state = read?.state ?? null;
-		if (read) settleReceiptBaselines(account, read.state, read.startedAt);
+		if (read) settleReceiptBaselines(account, read.state, read.sequence);
 		// A concurrent check can recover the account meanwhile; the caller then reselects it.
 		if (!blocked(options.now())) return eligible();
 		const receipt = receiptFor(state, scope.id);
