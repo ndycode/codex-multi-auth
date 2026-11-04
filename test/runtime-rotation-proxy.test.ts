@@ -757,11 +757,15 @@ it("rechecks a reset when refresh selects a workspace whose scheduler deferral r
  vi.spyOn(tokenRefreshRuntime,"ensureFreshAccessToken").mockImplementationOnce(async()=>{account.currentWorkspaceIndex=1;return {ok:true,account,accountManager:manager,accessToken:account.access!};});
  const key=buildQuotaScheduleKey({...account,currentWorkspaceIndex:1},"codex","gpt-5-codex");
  const original=PreemptiveQuotaScheduler.prototype.getDeferral;
- vi.spyOn(PreemptiveQuotaScheduler.prototype,"getDeferral").mockImplementation(function(k,n){return k===key?{defer:true,waitMs:60000,reason:"rate-limit"}:original.call(this,k,n);});
- const {fetchImpl}=createRecordingFetch(()=>textEventStream());
+ let deferred=false;
+ vi.spyOn(PreemptiveQuotaScheduler.prototype,"getDeferral").mockImplementation(function(k,n){
+  if(k===key&&!deferred){deferred=true;this.markRateLimited(k,60_000,n);}
+  return original.call(this,k,n);
+ });
+ const {calls,fetchImpl}=createRecordingFetch(()=>textEventStream());
  const proxy=await startProxy({accountManager:manager,fetchImpl});
- await postResponsesWithHttp(proxy,{model:"gpt-5-codex",input:"synthetic"});
- expect(rpc).toHaveBeenCalledTimes(1);
+ expect((await postResponsesWithHttp(proxy,{model:"gpt-5-codex",input:"synthetic"})).status).toBe(200);
+ expect(rpc).toHaveBeenCalledTimes(1);expect(calls).toHaveLength(1);
 });
 
 it("shares one reset-state read across concurrent healthy provider requests", async () => {
