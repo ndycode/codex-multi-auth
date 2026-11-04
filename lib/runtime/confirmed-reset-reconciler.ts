@@ -41,9 +41,11 @@ export function settleReceiptBaselines(account: ManagedAccount, state: ResetStat
 		for (const key of keys) {
 			const receipt = receiptFor(state, key);
 			if (receipt?.generation !== undefined) {
-				(rejection.receiptGenerations ??= {})[key] = Math.max(rejection.receiptGenerations?.[key] ?? 0, receipt.generation);
+				rejection.receiptGenerations ??= {};
+				rejection.receiptGenerations[key] = Math.max(rejection.receiptGenerations[key] ?? 0, receipt.generation);
 			} else if (receipt) {
-				const identities = rejection.receiptIdentities ??= {}, identity = resetReceiptIdentity(receipt);
+				rejection.receiptIdentities ??= {};
+				const identities = rejection.receiptIdentities, identity = resetReceiptIdentity(receipt);
 				if (!identities[key]?.includes(identity)) identities[key] = [...(identities[key] ?? []), identity];
 			}
 		}
@@ -120,7 +122,8 @@ export class ConfirmedResetReconciler {
 		}
 		// Install the operation before starting I/O so concurrent requests share it.
 		if (receipt.generation !== undefined) {
-			const generations = account.resetReceiptGenerations ??= {};
+			account.resetReceiptGenerations ??= {};
+			const generations = account.resetReceiptGenerations;
 			generations[scope.id] = Math.max(generations[scope.id] ?? 0, receipt.generation);
 		}
 		const failures = existing?.manager === manager && existing.account === account &&
