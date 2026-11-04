@@ -2500,7 +2500,10 @@ async function handleRequestInner(
       hasCachedQuotaBlock:()=>state.nativeOpenai === true && subscriptionQuotaPreference(quotaForScope(account,scope),state.now()).exhausted,
       hasQuotaDeferral:()=>state.preemptiveQuotaScheduler.getDeferral(buildQuotaScheduleKey(account,context.family,context.model),state.now()).defer,
       clearQuotaScheduler:()=>state.preemptiveQuotaScheduler.clear(buildQuotaScheduleKey(account,context.family,context.model)),
-     })) recovered = true;
+     })) {
+      if (!isPinned) return true;
+      recovered = true;
+     }
     }
    }
    return recovered;

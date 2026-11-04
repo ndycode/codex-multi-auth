@@ -512,6 +512,31 @@ it("serves an unpinned provider request from a healthy account without awaiting 
  } finally { release(); }
 });
 
+it("serves an unpinned provider request from a recovered account without awaiting a blocked sibling's reset check", async () => {
+ const resets=await import("../lib/runtime/account-reset-credits.js");
+ const native=await import("../lib/runtime/native-rate-limits.js");
+ const {workspaceModelScopes}=await import("../lib/runtime/workspace-model-scopes.js");
+ const now=Date.now(),family=getModelFamily("chat-fixture"),manager=new AccountManager(undefined,createStorage(now,2));
+ const redemptions=Object.fromEntries([0,1].map(index=>{
+  const account=manager.getAccountByIndex(index)!,scope=workspaceModelScopes(account).find(s=>s.routable)!;
+  account.rateLimitResetTimes={[family]:now+600_000};
+  return [scope.id,{key:scope.id,at:now-1_000,outcome:"reset" as const,automatic:false,generation:index+1}];
+ }));
+ vi.spyOn(resets,"loadResetCreditState").mockResolvedValue({version:3,policy:"manual",snapshots:{},redemptionGeneration:2,redemptions});
+ let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+ vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async auth=>{
+  if(auth.accountId==="acc_2")await gate;
+  return {accountId:auth.accountId,ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}};
+ });
+ const {calls,fetchImpl}=createRecordingFetch(()=>textEventStream());
+ const proxy=await startProxy({accountManager:manager,fetchImpl});
+ try {
+  const result=await Promise.race([postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"}),timeoutResult(2_000)]);
+  expect(result==="timeout"?result:result.status).toBe(200);
+  expect(calls.map(call=>call.headers.get("chatgpt-account-id"))).toEqual(["acc_1"]);
+ } finally { release(); }
+});
+
 it("does not reread an exhausted native sibling's old receipt while a healthy account serves", async () => {
  const native=await import("../lib/runtime/native-rate-limits.js");
  let now=Date.now();vi.spyOn(Date,"now").mockImplementation(()=>now);
