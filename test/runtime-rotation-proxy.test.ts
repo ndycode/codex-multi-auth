@@ -741,12 +741,14 @@ it.each([{order:"before",status:200,sends:4,reads:1},{order:"after",status:429,s
   const allowed=++nativeReads===1;
   return {accountId:auth.accountId,ordinaryUsageAllowed:allowed,rateLimits:{primary:{usedPercent:allowed?0:100},secondary:{}}};
  });
- let bothSent!:()=>void,firstServed!:()=>void,sent=0;
+ let bothSent!:()=>void,firstServed!:()=>void,waitingMovedOn!:()=>void,sent=0;
  const rejected=new Promise<void>(resolve=>{bothSent=resolve;}),served=new Promise<void>(resolve=>{firstServed=resolve;});
+ // The waiting request reaches the sibling only after recording its own 429 on acc_1.
+ const waitingRecorded=new Promise<void>(resolve=>{waitingMovedOn=resolve;});
  const limited=()=>Response.json({error:{code:"usage_limit_reached"}},{status:429,headers:{"retry-after":"3600"}});
  const {calls,fetchImpl}=createRecordingFetch(async call=>{
   const waiting=call.bodyText.includes("waiting");
-  if(call.headers.get("chatgpt-account-id")==="acc_2"){if(waiting)await served;return limited();}
+  if(call.headers.get("chatgpt-account-id")==="acc_2"){if(waiting){waitingMovedOn();await served;}return limited();}
   if(++sent>2)return textEventStream();
   if(sent===2){
    // The user redeems acc_1 after both requests were sent to it, and the sibling's limit lapses.
@@ -757,6 +759,7 @@ it.each([{order:"before",status:200,sends:4,reads:1},{order:"after",status:429,s
   }
   await rejected;
   if(waiting&&order==="after")await served;
+  if(!waiting&&order==="before")await waitingRecorded;
   return limited();
  });
  const proxy=await startProxy({accountManager:manager,fetchImpl});
