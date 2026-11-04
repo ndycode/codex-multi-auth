@@ -327,8 +327,11 @@ export interface ManagedAccount {
 		| "restore"
 		| "manual";
 	lastRateLimitReason?: RateLimitReason;
-	/** Process-local sequence used to order a fresh quota read against a concurrent 429. */
-	rateLimitObservations?: Record<string, { revision: number; observedAt: number; sequence?: number; reason: RateLimitReason; receiptGenerations?: Record<string, number>; receiptIdentities?: Record<string, string[]>; receiptReadFailed?: boolean }>;
+	/**
+	 * Process-local sequence used to order a fresh quota read against a concurrent 429.
+	 * `liftedByReset` marks the latest rejection a confirmed reset superseded; a newer rejection replaces the entry.
+	 */
+	rateLimitObservations?: Record<string, { revision: number; observedAt: number; sequence?: number; reason: RateLimitReason; receiptGenerations?: Record<string, number>; receiptIdentities?: Record<string, string[]>; receiptReadFailed?: boolean; liftedByReset?: boolean }>;
 	/** Highest durable reset generation observed for each workspace in this process. */
 	resetReceiptGenerations?: Record<string, number>;
 	resetReceiptIdentities?: Record<string, string>;

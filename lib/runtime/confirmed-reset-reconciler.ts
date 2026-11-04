@@ -164,6 +164,8 @@ export class ConfirmedResetReconciler {
 			const reason = account.rateLimitObservations
 				? rejectionForScope()?.reason : account.lastRateLimitReason;
 			if (reason !== undefined && reason !== "quota") return false;
+			const lifted = account.rateLimitObservations?.[observationKey];
+			if (lifted) lifted.liftedByReset = true;
 			delete account.rateLimitResetTimes[family];
 			delete account.rateLimitResetTimes[workspaceQuotaKey(family, scope.accountId)];
 			if (account.cooldownReason === "rate-limit") manager.clearAccountCooldown(account);

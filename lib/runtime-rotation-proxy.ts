@@ -1936,6 +1936,7 @@ async function handleRequestInner(
 			context.upstreamSearch,
 		);
 		const attemptedIndexes = new Set<number>();
+		const ownRejections = new Map<number, string>();
 		// The upstream's own capability 400/403/404, forwarded instead of a
 		// synthetic 503 when no other account can take the request.
 		let lastCapabilityRejection: { status: number; body: string; headers: Record<string, string>; account: ManagedAccount } | undefined;
@@ -2852,6 +2853,11 @@ async function handleRequestInner(
                     if (!resetsReconciledAfterExhaustion) {
                         attemptedIndexes.clear();
                         accountSkipReasons.clear();
+                    } else for (const [index, key] of ownRejections) {
+                        // Another request's reset may have lifted this request's own 429 before this check ran.
+                        if (!accountManager.getAccountByIndex(index)?.rateLimitObservations?.[key]?.liftedByReset) continue;
+                        attemptedIndexes.delete(index);
+                        accountSkipReasons.delete(index);
                     }
                     if (clientGone()) return;
                     continue;
@@ -3637,6 +3643,7 @@ async function handleRequestInner(
 					rejectionScopeId,
 					{ workspaceId: accountId, ...dispatchedReceipts },
 				);
+				ownRejections.set(refreshed.account.index, getRateLimitObservationKey(context.family, rejectionScopeId));
 				if (
 					subscriptionQuotaExceeded &&
 					(context.model === "gpt-6-luna" || context.model === "gpt-5.6-luna")
