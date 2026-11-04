@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { quotaResetTime } from "../lib/accounts/rate-limits.js";
 import { getTokenTracker } from "../lib/rotation.js";
-import { currentRejectionSequence, getRuntimeTrackerKey, AccountManager } from "../lib/accounts.js";
+import { currentRejectionSequence, getRuntimeTrackerKey, AccountManager, resetRejectionSequenceForTests } from "../lib/accounts.js";
 import { ConfirmedResetReconciler, settleReceiptBaselines } from "../lib/runtime/confirmed-reset-reconciler.js";
 import { workspaceModelScopes } from "../lib/runtime/workspace-model-scopes.js";
 import type { ResetSnapshot } from "../lib/runtime/reset-credits.js";
 
-beforeEach(() => AccountManager.resetVolatileRuntimeState());
+beforeEach(() => {
+	AccountManager.resetVolatileRuntimeState();
+	resetRejectionSequenceForTests();
+});
 afterEach(() => vi.restoreAllMocks());
 
 type ResetState = NonNullable<Awaited<ReturnType<Parameters<ConfirmedResetReconciler["reconcile"]>[0]["state"]>>>["state"];
@@ -456,6 +459,13 @@ it("bounds an unsequenced rejection after a backward clock step and recovers a l
  f.state.lastRedemption={key:f.args.scope.id,at:rolledBack,outcome:"reset",automatic:false,generation:2};f.state.redemptionGeneration=2;
  expect(await f.run()).toBe(true);
  expect(f.args.read).toHaveBeenCalledTimes(1);
+});
+
+it("restarts rejection ordering from zero for each test", () => {
+ const f=fixture();
+ expect(currentRejectionSequence()).toBe(0);
+ f.manager.markRateLimitedWithReason(f.account,300_000,"codex","quota","chat-test",f.args.scope.id,{workspaceId:"workspace"});
+ expect(Object.values(f.account.rateLimitObservations??{}).map(o=>o.sequence)).toEqual([1]);
 });
 
 it("leaves an unsequenced rejection unbounded by a receipt read that began before it", () => {

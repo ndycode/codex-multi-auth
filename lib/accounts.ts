@@ -131,6 +131,11 @@ export function currentRejectionSequence(): number {
 	return rejectionSequence;
 }
 
+/** Never call while routing: retained observations and cached reads hold sequence numbers. */
+export function resetRejectionSequenceForTests(): void {
+	rejectionSequence = 0;
+}
+
 type RateLimitObservation = NonNullable<ManagedAccount["rateLimitObservations"]>[string];
 
 export function cloneRateLimitObservation(observation: RateLimitObservation): RateLimitObservation {
