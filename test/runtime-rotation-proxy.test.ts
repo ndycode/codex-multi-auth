@@ -668,6 +668,45 @@ it("rechecks a reset that completes while the scheduler still defers an earlier 
  expect(rpc).toHaveBeenCalledTimes(1);expect(calls).toHaveLength(2);
 });
 
+it("rechecks a recovered pinned reset when a request sent before it is rejected afterward", async () => {
+ const fs=await import("node:fs/promises"),os=await import("node:os"),path=await import("node:path");
+ const previousDir=process.env.CODEX_MULTI_AUTH_DIR;
+ process.env.CODEX_MULTI_AUTH_DIR=await fs.mkdtemp(path.join(os.tmpdir(),"reset-late-after-recovery-"));
+ onTestFinished(async()=>{
+  const dir=process.env.CODEX_MULTI_AUTH_DIR!;
+  if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
+  await removeWithRetry(dir,{recursive:true,force:true});
+ });
+ const resets=await import("../lib/runtime/account-reset-credits.js");
+ const native=await import("../lib/runtime/native-rate-limits.js");
+ const {workspaceModelScopes}=await import("../lib/runtime/workspace-model-scopes.js");
+ const now=Date.now();vi.spyOn(Date,"now").mockReturnValue(now);
+ const family=getModelFamily("chat-fixture"),manager=new AccountManager(undefined,createStorage(now,1));
+ const account=manager.getAccountByIndex(0)!,scope=workspaceModelScopes(account).find(s=>s.routable)!;
+ let state:Awaited<ReturnType<typeof resets.loadResetCreditState>>={version:3,policy:"manual",snapshots:{}};
+ vi.spyOn(resets,"loadResetCreditState").mockImplementation(async()=>state);
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async auth=>({accountId:auth.accountId,ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}}));
+ let release!:()=>void,entered!:()=>void;
+ const gate=new Promise<void>(resolve=>{release=resolve;}),started=new Promise<void>(resolve=>{entered=resolve;});
+ const {calls,fetchImpl}=createRecordingFetch(async(_call,attempt)=>{
+  if(attempt>1)return textEventStream();
+  entered();await gate;
+  return Response.json({error:{code:"usage_limit_reached"}},{status:429,headers:{"retry-after":"3600"}});
+ });
+ const proxy=await startProxy({accountManager:manager,fetchImpl,options:{forcedAccountIndex:0}});
+ const send=()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"});
+ const early=send();await started;
+ // Another request sent before the reset was rejected, then the user redeemed this workspace.
+ manager.markRateLimitedWithReason(account,3_600_000,family,"quota","chat-fixture",scope.id,{workspaceId:"acc_1",receipts:{}});
+ const receipt={key:scope.id,at:now,outcome:"reset" as const,automatic:false,generation:1};
+ state={version:3,policy:"manual",snapshots:{},redemptionGeneration:1,lastRedemption:receipt,redemptions:{[scope.id]:receipt}};
+ expect((await send()).status).toBe(200);expect(rpc).toHaveBeenCalledTimes(1);
+ release();expect((await early).status).toBe(503);
+ expect(quotaResetTime(account,family)).toBeGreaterThan(now);
+ expect((await send()).status).toBe(200);
+ expect(rpc).toHaveBeenCalledTimes(2);expect(calls).toHaveLength(3);
+});
+
 it("rechecks a reset when refresh selects a workspace whose scheduler deferral restates an earlier rejection", async () => {
  const fs=await import("node:fs/promises"),os=await import("node:os"),path=await import("node:path");
  const previousDir=process.env.CODEX_MULTI_AUTH_DIR;

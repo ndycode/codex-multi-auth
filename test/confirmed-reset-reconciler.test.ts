@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { quotaResetTime } from "../lib/accounts/rate-limits.js";
 import { getTokenTracker } from "../lib/rotation.js";
 import { getRuntimeTrackerKey, AccountManager } from "../lib/accounts.js";
 import { ConfirmedResetReconciler } from "../lib/runtime/confirmed-reset-reconciler.js";
@@ -55,6 +56,25 @@ it("shares a read across simultaneous requests and reports its recovery to each"
 	const f = fixture();
 	expect(await Promise.all([f.run(), f.run(), f.run()])).toEqual([true, true, true]);
 	expect(f.args.read).toHaveBeenCalledTimes(1);
+});
+
+it.each(["generation", "legacy"] as const)("rechecks a recovered %s receipt once when a request sent before it is rejected later", async kind => {
+	const f = fixture(), receipt = f.state.lastRedemption!, scope = f.args.scope.id;
+	if (kind === "generation") receipt.generation = 1;
+	const before = kind === "generation" ? {resetReceiptGenerations:{[scope]:0}}
+		: {resetReceiptIdentities:{[scope]:JSON.stringify([receipt.key, receipt.at - 60_000, receipt.outcome, receipt.automatic])}};
+	expect(await f.run()).toBe(true);
+	f.manager.markRateLimitedWithReason(f.account, 300_000, "codex", "quota", "chat-test", scope, {workspaceId:"workspace", receipts:before});
+	expect(await Promise.all([f.run(), f.run()])).toEqual([true, true]);
+	expect(f.args.read).toHaveBeenCalledTimes(2);
+	expect(quotaResetTime(f.account, "codex", "workspace")).toBe(0);
+	// A rejection to a request sent after the receipt still keeps it from replaying.
+	const after = kind === "generation" ? {resetReceiptGenerations:{[scope]:1}}
+		: {resetReceiptIdentities:{[scope]:JSON.stringify([receipt.key, receipt.at, receipt.outcome, receipt.automatic])}};
+	f.manager.markRateLimitedWithReason(f.account, 300_000, "codex", "quota", "chat-test", scope, {workspaceId:"workspace", receipts:after});
+	f.manager.markRateLimitedWithReason(f.account, 300_000, "codex", "quota", "chat-test", scope, {workspaceId:"workspace", receipts:before});
+	expect(await f.run()).toBe(false);
+	expect(f.args.read).toHaveBeenCalledTimes(2);
 });
 
 it("does not revive an old receipt after a more recent rejection", async () => {

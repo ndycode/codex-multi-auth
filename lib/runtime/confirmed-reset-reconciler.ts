@@ -17,6 +17,8 @@ interface Operation {
 	account: ManagedAccount;
 	failures: number;
 	retryAfter?: number;
+	/** Rejection history a completed read judged; a later rejection reopens the receipt. */
+	judgedRevision?: string;
 	promise: Promise<boolean>;
 }
 const RETRY_DELAY_MS = 5_000;
@@ -110,7 +112,9 @@ export class ConfirmedResetReconciler {
 			(receipt.generation !== undefined
 				? existing.generation !== undefined && existing.generation >= receipt.generation
 				: existing.generation !== undefined || existing.identity === identity) &&
-			(existing.retryAfter === undefined || (now >= existing.startedAt && now < existing.retryAfter))) {
+			(existing.retryAfter === undefined
+				? existing.judgedRevision === undefined || existing.judgedRevision === revision()
+				: now >= existing.startedAt && now < existing.retryAfter)) {
 			await existing.promise;
 			return eligible() && !blocked(options.now());
 		}
@@ -143,6 +147,7 @@ export class ConfirmedResetReconciler {
 				operation.retryAfter = options.now() + Math.min(RETRY_DELAY_MS * 2 ** (operation.failures - 1), MAX_RETRY_DELAY_MS);
 				return false;
 			}
+			operation.judgedRevision = startedRevision;
 			if (options.observations.size >= 1000 && !options.observations.has(key)) {
 				options.observations.delete(options.observations.keys().next().value ?? "");
 			}
