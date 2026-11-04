@@ -37,6 +37,7 @@ import {
 	AccountManager,
 	AUTH_INVALIDATION_MARKER,
 	extractAccountId,
+	getRateLimitObservationKey,
 	type ManagedAccount,
 } from "./accounts.js";
 import { withRoutingMutex } from "./routing-mutex.js";
@@ -2118,6 +2119,10 @@ async function handleRequestInner(
     generations[scopeId]=Math.max(generations[scopeId]??0,receipt.generation);
    }
   };
+  // A scheduler deferral restates an earlier rejection, which recorded what its request knew.
+  const deferralChronology = (account: ManagedAccount, scopeId: string | undefined) =>
+   scopeId !== undefined && account.rateLimitObservations?.[getRateLimitObservationKey(context.family, scopeId)]
+    ? { receipts: {} } : { receiptReadFailed: isResponsesRequest && resetCreditState === null };
   const quotaForScope = (account: ManagedAccount, scope: ReturnType<typeof workspaceModelScopes>[number]) => {
    // Scoped observations belong to this credential and workspace; legacy entries only describe the binding.
    const cached = findQuotaCacheEntryForAccount(subscriptionQuotaCache,account,accountManager.getAccountsSnapshot(),undefined,scope.accountId);
@@ -2986,7 +2991,7 @@ async function handleRequestInner(
 					"quota",
 					context.model,
 					selectedScopeId,
-					selectedWorkspaceId ? { workspaceId: selectedWorkspaceId, receiptReadFailed: isResponsesRequest && resetCreditState === null } : undefined,
+					selectedWorkspaceId ? { workspaceId: selectedWorkspaceId, ...deferralChronology(selected, selectedScopeId) } : undefined,
 				);
 				accountManager.recordRateLimit(selected, context.family, context.model);
 				accountManager.saveToDiskDebounced();
@@ -3190,7 +3195,7 @@ async function handleRequestInner(
 					if (deferred) {
 						observeResetGenerations(refreshed.account, resetCreditState, requestScope?.id);
 						accountManager.markRateLimitedWithReason(refreshed.account, deferral.waitMs,
-							context.family, "quota", context.model, requestScope?.id, {workspaceId: accountId, receiptReadFailed: resetCreditState === null});
+							context.family, "quota", context.model, requestScope?.id, {workspaceId: accountId, ...deferralChronology(refreshed.account, requestScope?.id)});
 						accountManager.saveToDiskDebounced();
 					}
 					attemptedIndexes.add(refreshed.account.index);

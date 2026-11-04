@@ -627,6 +627,70 @@ it.each(["waits on its native read","rereads receipts"] as const)("lets a reques
  expect(rpc).toHaveBeenCalledTimes(1);expect(calls).toHaveLength(2);
 });
 
+it("rechecks a reset that completes while the scheduler still defers an earlier provider 429", async () => {
+ const fs=await import("node:fs/promises"),os=await import("node:os"),path=await import("node:path");
+ const previousDir=process.env.CODEX_MULTI_AUTH_DIR;
+ process.env.CODEX_MULTI_AUTH_DIR=await fs.mkdtemp(path.join(os.tmpdir(),"reset-scheduler-replay-"));
+ onTestFinished(async()=>{
+  const dir=process.env.CODEX_MULTI_AUTH_DIR!;
+  if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
+  await removeWithRetry(dir,{recursive:true,force:true});
+ });
+ const resets=await import("../lib/runtime/account-reset-credits.js");
+ const native=await import("../lib/runtime/native-rate-limits.js");
+ const {workspaceModelScopes}=await import("../lib/runtime/workspace-model-scopes.js");
+ let now=Date.now();vi.spyOn(Date,"now").mockImplementation(()=>now);
+ const manager=new AccountManager(undefined,createStorage(now,1)),scope=workspaceModelScopes(manager.getAccountByIndex(0)!).find(s=>s.routable)!;
+ let state:Awaited<ReturnType<typeof resets.loadResetCreditState>>={version:3,policy:"manual",snapshots:{}};
+ vi.spyOn(resets,"loadResetCreditState").mockImplementation(async()=>state);
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async auth=>({accountId:auth.accountId,ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}}));
+ let limited=true;
+ const {calls,fetchImpl}=createRecordingFetch(()=>limited
+  ?Response.json({error:{code:"usage_limit_reached"}},{status:429,headers:{"retry-after":"1","x-codex-primary-used-percent":"100","x-codex-primary-reset-after-seconds":"3600"}})
+  :textEventStream());
+ const proxy=await startProxy({accountManager:manager,fetchImpl});
+ const send=()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"});
+ expect((await send()).status).toBe(429);expect(calls).toHaveLength(1);
+ // The retry-after lapses, but the exhausted primary window keeps the scheduler deferral.
+ now+=2_000;limited=false;
+ const receipt={key:scope.id,at:now,outcome:"reset" as const,automatic:false,generation:1};
+ state={version:3,policy:"manual",snapshots:{},redemptionGeneration:1,lastRedemption:receipt,redemptions:{[scope.id]:receipt}};
+ expect((await send()).status).toBe(200);
+ expect(rpc).toHaveBeenCalledTimes(1);expect(calls).toHaveLength(2);
+});
+
+it("rechecks a reset when refresh selects a workspace whose scheduler deferral restates an earlier rejection", async () => {
+ const fs=await import("node:fs/promises"),os=await import("node:os"),path=await import("node:path");
+ const previousDir=process.env.CODEX_MULTI_AUTH_DIR;
+ process.env.CODEX_MULTI_AUTH_DIR=await fs.mkdtemp(path.join(os.tmpdir(),"reset-refresh-replay-"));
+ onTestFinished(async()=>{
+  const dir=process.env.CODEX_MULTI_AUTH_DIR!;
+  if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
+  await removeWithRetry(dir,{recursive:true,force:true});
+ });
+ const resets=await import("../lib/runtime/account-reset-credits.js");
+ const native=await import("../lib/runtime/native-rate-limits.js");
+ const {workspaceModelScopes}=await import("../lib/runtime/workspace-model-scopes.js");
+ const now=Date.now();vi.spyOn(Date,"now").mockReturnValue(now);
+ const disk=createStorage(now,1);
+ disk.accounts[0]!.workspaces=[{id:"acc_1",enabled:true},{id:"b",enabled:true}];disk.accounts[0]!.currentWorkspaceIndex=0;
+ const manager=new AccountManager(undefined,disk),account=manager.getAccountByIndex(0)!;
+ const scope=workspaceModelScopes(account).find(s=>s.accountId==="b")!;
+ // Workspace b's earlier quota rejection was sent before its reset.
+ manager.markRateLimitedWithReason(account,0,getModelFamily("gpt-5-codex"),"quota","gpt-5-codex",scope.id,{workspaceId:"b"});
+ const receipt={key:scope.id,at:now,outcome:"reset" as const,automatic:false,generation:1};
+ vi.spyOn(resets,"loadResetCreditState").mockResolvedValue({version:3,policy:"manual",snapshots:{},redemptionGeneration:1,lastRedemption:receipt,redemptions:{[scope.id]:receipt}});
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockResolvedValue({accountId:"b",ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}});
+ vi.spyOn(tokenRefreshRuntime,"ensureFreshAccessToken").mockImplementationOnce(async()=>{account.currentWorkspaceIndex=1;return {ok:true,account,accountManager:manager,accessToken:account.access!};});
+ const key=buildQuotaScheduleKey({...account,currentWorkspaceIndex:1},"codex","gpt-5-codex");
+ const original=PreemptiveQuotaScheduler.prototype.getDeferral;
+ vi.spyOn(PreemptiveQuotaScheduler.prototype,"getDeferral").mockImplementation(function(k,n){return k===key?{defer:true,waitMs:60000,reason:"rate-limit"}:original.call(this,k,n);});
+ const {fetchImpl}=createRecordingFetch(()=>textEventStream());
+ const proxy=await startProxy({accountManager:manager,fetchImpl});
+ await postResponsesWithHttp(proxy,{model:"gpt-5-codex",input:"synthetic"});
+ expect(rpc).toHaveBeenCalledTimes(1);
+});
+
 it("shares one reset-state read across concurrent healthy provider requests", async () => {
  const now=Date.now();vi.spyOn(Date,"now").mockReturnValue(now);
  const resets=await import("../lib/runtime/account-reset-credits.js");
