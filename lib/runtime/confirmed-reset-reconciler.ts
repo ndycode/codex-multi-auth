@@ -8,6 +8,8 @@ import { resetReceiptIdentity, resetSnapshotQuota, type ResetCreditService, type
 import { workspaceModelScopes } from "./workspace-model-scopes.js";
 
 type ResetState = Awaited<ReturnType<ResetCreditService["status"]>>;
+/** A receipt read and the time it began; only rejections observed by then are bounded by it. */
+export interface ReceiptRead { state: ResetState; startedAt: number }
 type Scope = ReturnType<typeof workspaceModelScopes>[number];
 interface Operation {
 	identity: string;
@@ -32,12 +34,12 @@ function receiptFor(state: ResetState | null, key: string) {
 
 /**
  * A rejection recorded while receipts were unreadable is bounded by the next
- * successful read: anything visible then may predate it, so it cannot replay.
+ * successful read begun after it: anything visible then may predate it, so it cannot replay.
  */
-export function settleReceiptBaselines(account: ManagedAccount, state: ResetState): void {
+export function settleReceiptBaselines(account: ManagedAccount, state: ResetState, readStartedAt: number): void {
 	const keys = new Set([...Object.keys(state.redemptions ?? {}), ...(state.lastRedemption ? [state.lastRedemption.key] : [])]);
 	for (const rejection of Object.values(account.rateLimitObservations ?? {})) {
-		if (!rejection.receiptReadFailed) continue;
+		if (!rejection.receiptReadFailed || rejection.observedAt > readStartedAt) continue;
 		for (const key of keys) {
 			const receipt = receiptFor(state, key);
 			if (receipt?.generation !== undefined) {
@@ -58,7 +60,7 @@ export class ConfirmedResetReconciler {
 	private readonly operations = new Map<string, Operation>();
 
 	async reconcile(options: {
-		state: () => Promise<ResetState | null>; account: ManagedAccount; scope: Scope;
+		state: () => Promise<ReceiptRead | null>; account: ManagedAccount; scope: Scope;
 		model: string; family: ModelFamily; manager: AccountManager;
 		read: () => Promise<ResetSnapshot | undefined>;
 		isCurrent: () => boolean; now: () => number;
@@ -85,8 +87,8 @@ export class ConfirmedResetReconciler {
 				getTokenTracker().getTokens(getRuntimeTrackerKey(account), `${family}:${model}`) < 1);
 		// Receipts are read only for a request this account cannot otherwise serve.
 		if (!eligible() || !blocked(options.now())) return false;
-		const state = await options.state();
-		if (state) settleReceiptBaselines(account, state);
+		const read = await options.state(), state = read?.state ?? null;
+		if (read) settleReceiptBaselines(account, read.state, read.startedAt);
 		// A concurrent check can recover the account meanwhile; the caller then reselects it.
 		if (!blocked(options.now())) return eligible();
 		const receipt = receiptFor(state, scope.id);
@@ -99,6 +101,7 @@ export class ConfirmedResetReconciler {
 		// orders rejections that saw none.
 		const identity = resetReceiptIdentity(receipt);
 		const rejectedAfterReceipt = [account.rateLimitObservations?.[observationKey], account.rateLimitObservations?.[family]].some(rejection => {
+			if (rejection?.receiptReadFailed) return true;
 			if (receipt.generation !== undefined) return (rejection?.receiptGenerations?.[scope.id] ?? 0) >= receipt.generation;
 			const seen = rejection?.receiptIdentities?.[scope.id];
 			if (seen !== undefined) return seen.includes(identity);

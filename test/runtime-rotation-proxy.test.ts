@@ -466,7 +466,7 @@ it.each([["reload",false],["same-manager",false],["request-read-failure",false],
   let clock=now,allowed=false;
   const read=vi.fn(async()=>({updatedAt:clock,availableCount:1,credits:null,ordinaryUsageAllowed:allowed,planType:"pro",primary:{},secondary:{}}));
   const reconciler=new ConfirmedResetReconciler();
-  const args={state:async()=>state,account,scope,model:"chat-fixture",family:getModelFamily("chat-fixture"),manager:replacement,read,isCurrent:()=>true,now:()=>clock,observations:new Map(),clearQuotaScheduler:()=>{}};
+  const args={state:async()=>({state,startedAt:Date.now()}),account,scope,model:"chat-fixture",family:getModelFamily("chat-fixture"),manager:replacement,read,isCurrent:()=>true,now:()=>clock,observations:new Map(),clearQuotaScheduler:()=>{}};
   if(mode==="request-read-failure"){
    // Unknown dispatch knowledge stays conservative: the first readable receipt is its baseline.
    expect(await reconciler.reconcile(args)).toBe(false);expect(read).not.toHaveBeenCalled();
@@ -642,6 +642,40 @@ it("bounds an unsequenced rejection at the next request's read, before a redempt
  expect((await send()).status).toBe(200);
  expect(calls.map(call=>call.headers.get("chatgpt-account-id"))).toEqual(["acc_2","acc_1"]);
  expect(rpc).toHaveBeenCalledTimes(1);
+});
+
+it("does not bound an unsequenced rejection by a cached receipt read that began before it", async () => {
+ const fs=await import("node:fs/promises"),os=await import("node:os"),path=await import("node:path");
+ const previousDir=process.env.CODEX_MULTI_AUTH_DIR;
+ process.env.CODEX_MULTI_AUTH_DIR=await fs.mkdtemp(path.join(os.tmpdir(),"reset-cached-baseline-"));
+ onTestFinished(async()=>{
+  const dir=process.env.CODEX_MULTI_AUTH_DIR!;
+  if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
+  await removeWithRetry(dir,{recursive:true,force:true});
+ });
+ const resets=await import("../lib/runtime/account-reset-credits.js");
+ const native=await import("../lib/runtime/native-rate-limits.js");
+ const {workspaceModelScopes}=await import("../lib/runtime/workspace-model-scopes.js");
+ let now=Date.now();vi.spyOn(Date,"now").mockImplementation(()=>now);
+ const family=getModelFamily("chat-fixture"),manager=new AccountManager(undefined,createStorage(now,1));
+ const account=manager.getAccountByIndex(0)!,scope=workspaceModelScopes(account).find(s=>s.routable)!;
+ let state:Awaited<ReturnType<typeof resets.loadResetCreditState>>={version:3,policy:"manual",snapshots:{}};
+ vi.spyOn(resets,"loadResetCreditState").mockImplementation(async()=>state);
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async auth=>({accountId:auth.accountId,ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}}));
+ const {calls,fetchImpl}=createRecordingFetch(()=>textEventStream());
+ const proxy=await startProxy({accountManager:manager,fetchImpl});
+ const send=()=>postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"});
+ expect((await send()).status).toBe(200);
+ // A redemption lands after that read; a request sent next, whose own read failed, is rejected.
+ now+=100;
+ const receipt={key:scope.id,at:now,outcome:"reset" as const,automatic:false,generation:1};
+ state={version:3,policy:"manual",snapshots:{},redemptionGeneration:1,lastRedemption:receipt,redemptions:{[scope.id]:receipt}};
+ now+=100;
+ manager.markRateLimitedWithReason(account,3_600_000,family,"quota","chat-fixture",scope.id,{workspaceId:"acc_1",receiptReadFailed:true});
+ now+=100;
+ expect((await send()).status).toBe(503);
+ expect(rpc).not.toHaveBeenCalled();
+ expect(calls).toHaveLength(1);
 });
 
 it.each(["waits on its native read","rereads receipts"] as const)("lets a request that %s while another request recovers the account reselect it", async phase => {

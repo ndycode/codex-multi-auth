@@ -9,7 +9,7 @@ import { fetchWithProxy } from "./request/proxy-fetch.js";
 import { createNativeAccountStorageReader } from "./runtime/native-account-storage.js";
 import { resetSnapshotQuota, resetReceiptIdentity } from "./runtime/reset-credits.js";
 import { createResetCreditService, loadResetCreditState } from "./runtime/account-reset-credits.js";
-import { ConfirmedResetReconciler, settleReceiptBaselines } from "./runtime/confirmed-reset-reconciler.js";
+import { ConfirmedResetReconciler, settleReceiptBaselines, type ReceiptRead } from "./runtime/confirmed-reset-reconciler.js";
 import { recoverResetQuota, primaryPoolFullyExhausted } from "./runtime/reset-credit-routing.js";
 import { readSubscriptionQuotaEvent } from "./runtime/subscription-quota-event.js";
 import { loadQuotaCache } from "./quota-cache.js";
@@ -646,6 +646,11 @@ function cachedRead<T>(state: RotationProxyState, key: string, load: () => Promi
 	cache.set(key, { at: now, value });
 	value.catch(() => { if (cache.get(key)?.value === value) cache.delete(key); });
 	return value;
+}
+
+async function readResetCredits(): Promise<ReceiptRead> {
+	const startedAt = Date.now();
+	return { state: await loadResetCreditState(), startedAt };
 }
 
 function catalogAccountKey(account: ManagedAccount): string {
@@ -2116,11 +2121,12 @@ async function handleRequestInner(
 			}
 		};
   // Shared across concurrent requests; a blocked request rereads before reconciling.
-  let resetCreditState=isResponsesRequest ? await cachedRead(state, "reset-credits", loadResetCreditState).catch(()=>null):null;
+  const sharedResetCredits=isResponsesRequest ? await cachedRead(state, "reset-credits", readResetCredits).catch(()=>null):null;
+  let resetCreditState=sharedResetCredits?.state ?? null;
   // Bound unsequenced rejections now, before a later redemption becomes visible.
-  if (resetCreditState) for (let index = 0; index < accountManager.getAccountCount(); index++) {
+  if (sharedResetCredits) for (let index = 0; index < accountManager.getAccountCount(); index++) {
    const account = accountManager.getAccountByIndex(index);
-   if (account) settleReceiptBaselines(account, resetCreditState);
+   if (account) settleReceiptBaselines(account, sharedResetCredits.state, sharedResetCredits.startedAt);
   }
   const observeResetGenerations = (account: ManagedAccount, receipts: typeof resetCreditState, scopeId: string | undefined) => {
    if(scopeId === undefined)return;
@@ -2484,8 +2490,8 @@ async function handleRequestInner(
    const manager = accountManager;
    const reconciler = state.confirmedResetReconciler ??= new ConfirmedResetReconciler();
    // A blocked request must see a redemption that completed a moment ago.
-   let receipts: Promise<typeof resetCreditState> | undefined;
-   const freshReceipts = () => receipts ??= loadResetCreditState().then(fresh => { resetCreditState = fresh; return fresh; }, () => null);
+   let receipts: Promise<ReceiptRead | null> | undefined;
+   const freshReceipts = () => receipts ??= readResetCredits().then(fresh => { resetCreditState = fresh.state; return fresh; }, () => null);
    let recovered = false;
    for (const row of manager.getAccountsSnapshot()) {
     const account = manager.getAccountByIndex(row.index);

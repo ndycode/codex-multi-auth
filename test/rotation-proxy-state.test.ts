@@ -343,7 +343,7 @@ describe("reloadRuntimeCredentials", () => {
   expect(current.rateLimitResetTimes.codex).toBe(observedAt+60000);
   const read = vi.fn();
   expect(await new ConfirmedResetReconciler().reconcile({
-   state:async()=>({version:1,policy:"manual",snapshots:{},lastRedemption:{key:scope.id,at:observedAt-1,outcome:"reset",automatic:false}}),
+   state:async()=>({state:{version:1,policy:"manual",snapshots:{},lastRedemption:{key:scope.id,at:observedAt-1,outcome:"reset",automatic:false}},startedAt:Date.now()}),
    manager:replacement,account:current,scope,model:"chat-test",family:"codex",now:()=>observedAt,
    isCurrent:()=>true,read,observations:new Map(),clearQuotaScheduler:vi.fn(),
   })).toBe(false);
