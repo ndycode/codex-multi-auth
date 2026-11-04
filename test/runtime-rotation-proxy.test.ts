@@ -771,6 +771,47 @@ it.each([{order:"before",status:200,sends:4,reads:1},{order:"after",status:429,s
  expect(rpc).toHaveBeenCalledTimes(reads);
 });
 
+it("recovers a reset account for a request whose 429 landed on a credential reload that moved the account", async () => {
+ const fs=await import("node:fs/promises"),os=await import("node:os"),path=await import("node:path");
+ const previousDir=process.env.CODEX_MULTI_AUTH_DIR;
+ process.env.CODEX_MULTI_AUTH_DIR=await fs.mkdtemp(path.join(os.tmpdir(),"reset-reloaded-waiter-"));
+ onTestFinished(async()=>{
+  const dir=process.env.CODEX_MULTI_AUTH_DIR!;
+  if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
+  await removeWithRetry(dir,{recursive:true,force:true});
+ });
+ const resets=await import("../lib/runtime/account-reset-credits.js");
+ const native=await import("../lib/runtime/native-rate-limits.js");
+ const {workspaceModelScopes}=await import("../lib/runtime/workspace-model-scopes.js");
+ let now=Date.now();vi.spyOn(Date,"now").mockImplementation(()=>now);
+ const family=getModelFamily("chat-fixture"),storage=createStorage(now,2),disk=structuredClone(storage);
+ const manager=new AccountManager(undefined,storage);
+ const scope=workspaceModelScopes(manager.getAccountByIndex(0)!).find(s=>s.routable)!;
+ manager.getAccountByIndex(1)!.rateLimitResetTimes={[family]:now+3_600_000};
+ let state:Awaited<ReturnType<typeof resets.loadResetCreditState>>={version:3,policy:"manual",snapshots:{}};
+ vi.spyOn(resets,"loadResetCreditState").mockImplementation(async()=>state);
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async auth=>({accountId:auth.accountId,ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}}));
+ let waitingSent!:()=>void,release!:()=>void;
+ const sent=new Promise<void>(resolve=>{waitingSent=resolve;}),released=new Promise<void>(resolve=>{release=resolve;});
+ const {calls,fetchImpl}=createRecordingFetch(async call=>{
+  if(!call.bodyText.includes("waiting")||calls.filter(c=>c.bodyText.includes("waiting")).length>1)return textEventStream();
+  waitingSent();await released;
+  return Response.json({error:{code:"usage_limit_reached"}},{status:429,headers:{"retry-after":"3600"}});
+ });
+ const proxy=await startProxy({accountManager:manager,fetchImpl,options:{readNativeAccountStorage:async()=>structuredClone(disk)}});
+ const waiting=postResponsesWithHttp(proxy,{model:"chat-fixture",input:"waiting"});
+ await sent;
+ now+=1_000;
+ const receipt={key:scope.id,at:now,outcome:"reset" as const,automatic:false,generation:1};
+ state={version:3,policy:"manual",snapshots:{},redemptionGeneration:1,lastRedemption:receipt,redemptions:{[scope.id]:receipt}};
+ disk.accounts.reverse();
+ expect((await postResponsesWithHttp(proxy,{model:"chat-fixture",input:"reload"})).status).toBe(200);
+ release();
+ expect((await waiting).status).toBe(200);
+ expect(calls.filter(call=>call.bodyText.includes("waiting")).map(call=>call.headers.get("chatgpt-account-id"))).toEqual(["acc_1","acc_1"]);
+ expect(rpc).toHaveBeenCalledTimes(1);
+});
+
 it("rechecks a reset that completes while the scheduler still defers an earlier provider 429", async () => {
  const fs=await import("node:fs/promises"),os=await import("node:os"),path=await import("node:path");
  const previousDir=process.env.CODEX_MULTI_AUTH_DIR;

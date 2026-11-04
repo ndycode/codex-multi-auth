@@ -89,7 +89,8 @@ export async function withRuntimeCredentialLock<T>(
 	}
 }
 
-function resolveRuntimeRefreshCommitManager(accountManager: AccountManager): AccountManager {
+/** @internal */
+export function resolveRuntimeRefreshCommitManager(accountManager: AccountManager): AccountManager {
 	let current = accountManager;
 	const seen = new Set<AccountManager>();
 	while (!seen.has(current)) {
