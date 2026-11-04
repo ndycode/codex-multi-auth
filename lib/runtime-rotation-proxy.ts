@@ -160,6 +160,7 @@ import {
 	ensureFreshAccessToken,
 	redirectRuntimeRefreshCommits,
 	withRuntimeCredentialLock,
+	resolveRuntimeRefreshCommitManager,
 	resolveRuntimeRefreshTarget,
 } from "./runtime/rotation-token-refresh.js";
 import { SessionAffinityStore } from "./session-affinity.js";
@@ -1936,6 +1937,7 @@ async function handleRequestInner(
 			context.upstreamSearch,
 		);
 		const attemptedIndexes = new Set<number>();
+		const ownRejections = new Map<number, string>();
 		// The upstream's own capability 400/403/404, forwarded instead of a
 		// synthetic 503 when no other account can take the request.
 		let lastCapabilityRejection: { status: number; body: string; headers: Record<string, string>; account: ManagedAccount } | undefined;
@@ -2704,6 +2706,69 @@ async function handleRequestInner(
 			return "retry";
 		};
 
+		// Indexes are local to one manager, so moving to another drops every index-keyed record of this request.
+		const adoptAccountManager = async (next: AccountManager): Promise<boolean> => {
+			const previousManager = accountManager;
+			remapRequestWorkspaceState(previousManager, next);
+			remapPinnedAccount(previousManager, next);
+			accountManager = next;
+			accountCount = accountManager.getAccountCount();
+			transientAttemptLimit = Math.max(
+				1,
+				Math.min(accountCount, state.maxRuntimeAccountAttempts),
+			);
+			if (runtimePolicyState) {
+				try {
+					const nextPolicyDecision = await evaluateRuntimePolicy({
+						state: runtimePolicyState,
+						accounts: accountManager.getAccountsSnapshot(),
+						model: context.model,
+						now: state.now(),
+					});
+					policyDecision = nextPolicyDecision;
+					mutateRuntimeObservabilitySnapshot((snapshot) => {
+						snapshot.policyBlockedIndexes = [...nextPolicyDecision.blockedAccountIndexes];
+						snapshot.policyBlockedReasons = Object.fromEntries(
+							[...nextPolicyDecision.blockedAccountIndexes].map((index) => [String(index), "policy-blocked"]),
+						);
+					});
+					if (!nextPolicyDecision.allowed) {
+						await usageRecorder?.record({
+							outcome: "blocked",
+							statusCode: nextPolicyDecision.statusCode,
+							errorCode: nextPolicyDecision.errorCode,
+						});
+						writeJson(res, nextPolicyDecision.statusCode, {
+							error: {
+								message: "Runtime policy blocked this local request.",
+								code: nextPolicyDecision.errorCode ?? "policy_blocked",
+								reasons: nextPolicyDecision.reasons,
+							},
+						});
+						return false;
+					}
+				} catch (error) {
+					state.status.lastError = error instanceof Error ? error.message : String(error);
+					await usageRecorder?.record({
+						outcome: "failure",
+						statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
+						errorCode: "runtime_policy_unavailable",
+					});
+					writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, {
+						error: {
+							message: "Runtime policy could not be loaded for this local request.",
+							code: "runtime_policy_unavailable",
+						},
+					});
+					return false;
+				}
+			}
+			accountSkipReasons.clear();
+			attemptedIndexes.clear();
+			ownRejections.clear();
+			return true;
+		};
+
 		let runtimeSelectionIterations = 0;
 		let recoveryRetriedAfterExhaustion = false;
 		let resetsReconciledAfterExhaustion = false;
@@ -2848,10 +2913,22 @@ async function handleRequestInner(
                 // Select again even when a concurrent request performed the shared check.
                 if (!isPinned && isResponsesRequest && !resetsReconciledAfterExhaustion) {
                     // A recovered account can still be limited for this model, so its siblings get another pass.
-                    resetsReconciledAfterExhaustion = !(await reconcileConfirmedResets());
-                    if (!resetsReconciledAfterExhaustion) {
+                    const recovered = await reconcileConfirmedResets();
+                    const liveManager = resolveRuntimeRefreshCommitManager(accountManager);
+                    if (liveManager !== accountManager) {
+                        // A credential reload holds this request's later 429s and any reset that lifted them.
+                        if (!(await adoptAccountManager(liveManager))) return;
+                    } else if (recovered) {
                         attemptedIndexes.clear();
                         accountSkipReasons.clear();
+                    } else {
+                        resetsReconciledAfterExhaustion = true;
+                        for (const [index, key] of ownRejections) {
+                            // Another request's reset may have lifted this request's own 429 before this check ran.
+                            if (!accountManager.getAccountByIndex(index)?.rateLimitObservations?.[key]?.liftedByReset) continue;
+                            attemptedIndexes.delete(index);
+                            accountSkipReasons.delete(index);
+                        }
                     }
                     if (clientGone()) return;
                     continue;
@@ -2975,6 +3052,7 @@ async function handleRequestInner(
 						);
 						accountSkipReasons.clear();
 						attemptedIndexes.clear();
+						ownRejections.clear();
 						continue;
 					}
 				}
@@ -3065,65 +3143,7 @@ async function handleRequestInner(
 			// request was awaiting refresh. Keep the refreshed account and its owner
 			// together for every later mutation/persist; account indexes are local to
 			// one manager and can shift when rows are removed or reordered.
-			if (refreshed.accountManager !== accountManager) {
-				const previousManager = accountManager;
-				remapRequestWorkspaceState(previousManager, refreshed.accountManager);
-				remapPinnedAccount(previousManager, refreshed.accountManager);
-				accountManager = refreshed.accountManager;
-				accountCount = accountManager.getAccountCount();
-				transientAttemptLimit = Math.max(
-					1,
-					Math.min(accountCount, state.maxRuntimeAccountAttempts),
-				);
-				if (runtimePolicyState) {
-					try {
-						const refreshedPolicyDecision = await evaluateRuntimePolicy({
-							state: runtimePolicyState,
-							accounts: accountManager.getAccountsSnapshot(),
-							model: context.model,
-							now: state.now(),
-						});
-						policyDecision = refreshedPolicyDecision;
-						mutateRuntimeObservabilitySnapshot((snapshot) => {
-							snapshot.policyBlockedIndexes = [...refreshedPolicyDecision.blockedAccountIndexes];
-							snapshot.policyBlockedReasons = Object.fromEntries(
-								[...refreshedPolicyDecision.blockedAccountIndexes].map((index) => [String(index), "policy-blocked"]),
-							);
-						});
-						if (!refreshedPolicyDecision.allowed) {
-							await usageRecorder.record({
-								outcome: "blocked",
-								statusCode: refreshedPolicyDecision.statusCode,
-								errorCode: refreshedPolicyDecision.errorCode,
-							});
-							writeJson(res, refreshedPolicyDecision.statusCode, {
-								error: {
-									message: "Runtime policy blocked this local request.",
-									code: refreshedPolicyDecision.errorCode ?? "policy_blocked",
-									reasons: refreshedPolicyDecision.reasons,
-								},
-							});
-							return;
-						}
-					} catch (error) {
-						state.status.lastError = error instanceof Error ? error.message : String(error);
-						await usageRecorder.record({
-							outcome: "failure",
-							statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
-							errorCode: "runtime_policy_unavailable",
-						});
-						writeJson(res, HTTP_STATUS.SERVICE_UNAVAILABLE, {
-							error: {
-								message: "Runtime policy could not be loaded for this local request.",
-								code: "runtime_policy_unavailable",
-							},
-						});
-						return;
-					}
-				}
-				accountSkipReasons.clear();
-				attemptedIndexes.clear();
-			}
+			if (refreshed.accountManager !== accountManager && !(await adoptAccountManager(refreshed.accountManager))) return;
 			if (!refreshed.ok) {
 				refundConsumedPoolToken(selected);
 				if (!refreshed.selectionRestart && refreshed.coordinationFailed) {
@@ -3637,6 +3657,7 @@ async function handleRequestInner(
 					rejectionScopeId,
 					{ workspaceId: accountId, ...dispatchedReceipts },
 				);
+				ownRejections.set(refreshed.account.index, getRateLimitObservationKey(context.family, rejectionScopeId));
 				if (
 					subscriptionQuotaExceeded &&
 					(context.model === "gpt-6-luna" || context.model === "gpt-5.6-luna")
