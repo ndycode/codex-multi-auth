@@ -8,6 +8,11 @@ import { mapWithConcurrency } from '../concurrency.js';
 import type { QuotaCacheEntry } from '../quota-cache.js';
 import { MAX_RATE_LIMIT_DELAY_MS } from '../constants.js';
 
+/** Stable equality for generation-less receipts; never infer order from this value. */
+export function resetReceiptIdentity(receipt: {key:string;at:number;outcome:string;automatic:boolean}): string {
+ return JSON.stringify([receipt.key,receipt.at,receipt.outcome,receipt.automatic]);
+}
+
 export interface ResetTarget { key: string; accountId: string }
 /** A routing observation may invalidate a healthy check, never authorize spending. */
 export interface ResetExhaustionEvidence extends ResetTarget { observedAt: number }
@@ -21,7 +26,8 @@ const windowSchema=z.object({usedPercent:z.number().min(0).max(100).optional(),r
 const snapshotSchema=z.object({updatedAt:z.number(),availableCount:z.number().int().nonnegative().nullable(),credits:creditDetailsSchema,ordinaryUsageAllowed:z.boolean().nullable(),planType:z.string().nullable(),primary:windowSchema,secondary:windowSchema});
 export type ResetSnapshot=z.infer<typeof snapshotSchema>;
 const creditIdSchema=z.string().min(1).refine(id=>id.trim().length>0);
-const stateSchema=z.object({version:z.union([z.literal(1),z.literal(2)]),policy:z.enum(['manual','last-resort']).default('manual'),snapshots:z.record(z.string(),snapshotSchema).default({}),pending:z.object({key:z.string(),idempotencyKey:z.string().uuid(),creditId:creditIdSchema.optional()}).optional(),lastAutomaticCheckAt:z.number().optional(),lastRedemptionAt:z.number().optional(),lastRedemption:z.object({key:z.string(),at:z.number(),outcome:z.enum(['reset','nothingToReset','noCredit','alreadyRedeemed']),automatic:z.boolean()}).optional()});
+const receiptSchema=z.object({key:z.string(),at:z.number(),outcome:z.enum(['reset','nothingToReset','noCredit','alreadyRedeemed']),automatic:z.boolean(),generation:z.number().int().positive().safe().optional()});
+const stateSchema=z.object({version:z.union([z.literal(1),z.literal(2),z.literal(3)]),policy:z.enum(['manual','last-resort']).default('manual'),snapshots:z.record(z.string(),snapshotSchema).default({}),pending:z.object({key:z.string(),idempotencyKey:z.string().uuid(),creditId:creditIdSchema.optional()}).optional(),lastAutomaticCheckAt:z.number().optional(),lastRedemptionAt:z.number().optional(),lastRedemption:receiptSchema.optional(),redemptionGeneration:z.number().int().nonnegative().safe().optional(),redemptions:z.record(z.string(),receiptSchema).optional()});
 type State=z.infer<typeof stateSchema>;
 // Raw credit rows stay in memory for credit selection; only the display projection is persisted.
 const readSchema=z.object({accountId:z.string(),ordinaryUsageAllowed:z.boolean().nullish(),rateLimitResetCredits:z.object({availableCount:z.number().int().nonnegative(),credits:z.unknown().optional()}).nullish(),rateLimits:z.object({planType:z.string().nullish(),primary:windowSchema.nullish(),secondary:windowSchema.nullish()})});
@@ -121,7 +127,8 @@ export class ResetCreditService {
  private async save(state:State){
   // Older readers strip unknown pending fields. Make them reject an explicit
   // credit attempt instead of retrying its UUID with different parameters.
-  state.version=state.pending?.creditId===undefined?1:2;
+  // Once durable per-scope receipts exist, old writers must not strip them.
+  state.version=state.redemptions ? 3 : state.pending?.creditId===undefined?1:2;
   const path=this.path+'.'+randomUUID()+'.tmp';
   try {
    const file=await fs.open(path,'wx',0o600);
@@ -144,7 +151,13 @@ export class ResetCreditService {
   const result=outcomeSchema.parse(await this.io.consume(target,state.pending.idempotencyKey,state.pending.creditId));
   // Keep the same key on *any* ambiguous outcome, including a failed follow-up read.
   state.snapshots[target.key]=await this.read(target);
-  state.lastRedemption={key:target.key,at:this.now(),outcome:result.outcome,automatic};
+  const receipts=state.redemptions??={};
+  const legacy=state.lastRedemption;
+  if(legacy && !receipts[legacy.key] && (legacy.outcome==='reset'||legacy.outcome==='alreadyRedeemed'))receipts[legacy.key]=legacy;
+  const generation=1+Object.values(receipts).reduce((maximum,receipt)=>Math.max(maximum,receipt.generation??0),state.redemptionGeneration??0);
+  state.redemptionGeneration=generation;
+  state.lastRedemption={key:target.key,at:this.now(),outcome:result.outcome,automatic,generation};
+  if(result.outcome==='reset'||result.outcome==='alreadyRedeemed')receipts[target.key]=state.lastRedemption;
   delete state.pending;await this.save(state);return result.outcome;
  }
  async redeem(target:ResetTarget):Promise<ResetOutcome>{

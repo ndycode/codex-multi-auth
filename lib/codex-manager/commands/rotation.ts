@@ -1,3 +1,4 @@
+import { parseWorkspaceQuotaKey, selectedQuotaLimits } from "../../accounts/rate-limits.js";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import {
 	AccountManager,
@@ -22,8 +23,17 @@ function redactedResetRateLimitsLabel(
 	index: number,
 ): string {
 	const id = typeof account.accountId === "string" ? account.accountId : "";
-	const tail = id.length > 4 ? `***${id.slice(-4)}` : "***";
-	return `account ${index + 1} (id:${tail})`;
+	return `account ${index + 1} (id:${redactedId(id)})`;
+}
+
+function redactedId(id: string): string {
+	return id.length > 4 ? `***${id.slice(-4)}` : "***";
+}
+
+/** Workspace-attributed keys embed the full workspace id that the label redacts. */
+function redactedRateLimitKey(key: string): string {
+	const attributed = parseWorkspaceQuotaKey(key);
+	return attributed ? `${attributed.quotaKey} (workspace ${redactedId(attributed.workspaceId)})` : key;
 }
 import {
 	formatAppBindStatus,
@@ -433,7 +443,7 @@ async function runResetRateLimits(
 			changes.push({
 				index,
 				label: redactedResetRateLimitsLabel(account, index),
-				clearedRateLimitKeys,
+				clearedRateLimitKeys: clearedRateLimitKeys.map(redactedRateLimitKey),
 				clearedCoolingDown,
 			});
 			if (!dryRun) {
@@ -767,7 +777,7 @@ async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 		if (account.enabled === false) markers.push("disabled");
 		const cooldown = formatCooldown(account, now);
 		if (cooldown) markers.push(`cooldown:${cooldown}`);
-		const rateLimitResetTimes = Object.values(account.rateLimitResetTimes ?? {})
+		const rateLimitResetTimes = Object.values(selectedQuotaLimits(account))
 			.filter((value): value is number => typeof value === "number")
 			.filter((value) => value > now);
 		if (rateLimitResetTimes.length > 0) {

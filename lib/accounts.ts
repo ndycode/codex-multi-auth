@@ -97,6 +97,8 @@ import {
 } from "./auth/token-utils.js";
 import {
 	boundRateLimitCache,
+	quotaResetTime,
+	workspaceQuotaKey,
 	clampNonNegativeInt,
 	getQuotaKey,
 	clearExpiredRateLimits,
@@ -115,6 +117,35 @@ function getAccountCircuitKey(account: ManagedAccount): string {
 			getAccountIdentityKey(account) ?? `circuit:${nextRuntimeCircuitKeyId++}`;
 	}
 	return account.circuitKeyId;
+}
+
+/** Process-local rejection identity; ordinary quota keys remain unchanged on disk. */
+export function getRateLimitObservationKey(quotaKey: string, scopeId?: string): string {
+	return scopeId === undefined ? quotaKey : JSON.stringify([scopeId, quotaKey]);
+}
+
+let rejectionSequence = 0;
+
+/** Process-local count of recorded rejections; orders them against receipt reads without wall time. */
+export function currentRejectionSequence(): number {
+	return rejectionSequence;
+}
+
+/** Never call while routing: retained observations and cached reads hold sequence numbers. */
+export function resetRejectionSequenceForTests(): void {
+	rejectionSequence = 0;
+}
+
+type RateLimitObservation = NonNullable<ManagedAccount["rateLimitObservations"]>[string];
+
+export function cloneRateLimitObservation(observation: RateLimitObservation): RateLimitObservation {
+	return {
+		...observation,
+		receiptGenerations: observation.receiptGenerations && { ...observation.receiptGenerations },
+		receiptIdentities: observation.receiptIdentities && Object.fromEntries(
+			Object.entries(observation.receiptIdentities).map(([scope, identities]) => [scope, [...identities]]),
+		),
+	};
 }
 
 export function getRuntimeTrackerKey(account: ManagedAccount): string | number {
@@ -296,6 +327,11 @@ export interface ManagedAccount {
 		| "restore"
 		| "manual";
 	lastRateLimitReason?: RateLimitReason;
+	/** Process-local sequence used to order a fresh quota read against a concurrent 429. */
+	rateLimitObservations?: Record<string, { revision: number; observedAt: number; sequence?: number; reason: RateLimitReason; receiptGenerations?: Record<string, number>; receiptIdentities?: Record<string, string[]>; receiptReadFailed?: boolean }>;
+	/** Highest durable reset generation observed for each workspace in this process. */
+	resetReceiptGenerations?: Record<string, number>;
+	resetReceiptIdentities?: Record<string, string>;
 	rateLimitResetTimes: RateLimitStateV3;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
@@ -792,6 +828,11 @@ export class AccountManager {
 				_runtimeTrackerKey: trackerKey,
 				circuitKeyId,
 				rateLimitResetTimes: { ...account.rateLimitResetTimes },
+				rateLimitObservations: account.rateLimitObservations && Object.fromEntries(
+					Object.entries(account.rateLimitObservations).map(([key, observation]) => [key, cloneRateLimitObservation(observation)]),
+				),
+				resetReceiptGenerations: account.resetReceiptGenerations && { ...account.resetReceiptGenerations },
+                resetReceiptIdentities: account.resetReceiptIdentities && { ...account.resetReceiptIdentities },
 				workspaces: account.workspaces?.map((workspace) => ({ ...workspace })),
 			};
 		});
@@ -1238,7 +1279,7 @@ export class AccountManager {
 		account: ManagedAccount,
 		family: ModelFamily,
 		model?: string | null,
-		options: { bypassTokenBucket?: boolean } = {},
+		options: { bypassTokenBucket?: boolean; onProbeAcquired?: (release: () => void) => void } = {},
 	): boolean {
 		return this.consumeTokenWithReason(account, family, model, options).ok;
 	}
@@ -1261,7 +1302,7 @@ export class AccountManager {
 		account: ManagedAccount,
 		family: ModelFamily,
 		model?: string | null,
-		options: { bypassTokenBucket?: boolean } = {},
+		options: { bypassTokenBucket?: boolean; onProbeAcquired?: (release: () => void) => void } = {},
 	): { ok: true } | { ok: false; reason: "token-exhausted" | "circuit-open" } {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const tokenTracker = getTokenTracker();
@@ -1272,7 +1313,7 @@ export class AccountManager {
 		}
 
 		// Non-throwing probe keeps circuit-open storms off the exception path.
-		const admission = getCircuitBreaker(getAccountCircuitKey(account)).tryCanExecute();
+		const admission = getCircuitBreaker(getAccountCircuitKey(account)).tryCanExecute(options.onProbeAcquired);
 		if (!admission.ok) {
 			if (shouldConsumeToken) {
 				tokenTracker.refundToken(trackerKey, quotaKey);
@@ -1420,6 +1461,13 @@ export class AccountManager {
 		family: ModelFamily,
 		reason: RateLimitReason,
 		model?: string | null,
+		scopeId?: string,
+		observation?: {
+			workspaceId: string;
+			receiptReadFailed?: boolean;
+			/** Receipts known when the rejected request was sent; defaults to those known now. */
+			receipts?: Pick<ManagedAccount, "resetReceiptGenerations" | "resetReceiptIdentities">;
+		},
 	): void {
 		let selectionReadable = false;
 		try {
@@ -1457,22 +1505,44 @@ export class AccountManager {
 				: undefined;
 		const newLimits: RateLimitStateV3 = { ...carried?.limits };
 
-		const baseKey = getQuotaKey(family);
+		const recordRejection = (key: string) => {
+			const observations = account.rateLimitObservations ??= {};
+			const observationKey = getRateLimitObservationKey(key, scopeId);
+			const previous = observations[observationKey];
+			const known = observation?.receipts ?? account;
+			// A late answer to an earlier request must not reopen receipts that a
+			// later rejection already followed, so chronology only accumulates.
+			const receiptGenerations = { ...previous?.receiptGenerations };
+			for (const [scope, generation] of Object.entries(scopeId === undefined ? known.resetReceiptGenerations ?? {}
+				: { [scopeId]: known.resetReceiptGenerations?.[scopeId] ?? 0 })) {
+				receiptGenerations[scope] = Math.max(receiptGenerations[scope] ?? 0, generation);
+			}
+			const receiptIdentities = { ...previous?.receiptIdentities };
+			for (const [scope, identity] of Object.entries(known.resetReceiptIdentities ?? {})) {
+				if (!receiptIdentities[scope]?.includes(identity)) receiptIdentities[scope] = [...(receiptIdentities[scope] ?? []), identity];
+			}
+			observations[observationKey] = { revision: (previous?.revision ?? 0) + 1, observedAt: observedAtMs, sequence: ++rejectionSequence, reason, receiptGenerations, receiptIdentities,
+				receiptReadFailed: previous?.receiptReadFailed || observation?.receiptReadFailed };
+		};
+		const deadlineKey = (key: string) => observation ? workspaceQuotaKey(key, observation.workspaceId) : key;
+		const baseKey = deadlineKey(getQuotaKey(family));
 		const independentReserve = model === LUNA_RESERVE_MODEL;
 		if (!independentReserve && (!model || reason === "quota" || reason === "unknown")) {
 			const currentResetAt = account.rateLimitResetTimes[baseKey] ?? 0;
 			account.rateLimitResetTimes[baseKey] = Math.max(currentResetAt, resetAt);
 			newLimits[baseKey] = Math.max(newLimits[baseKey] ?? 0, resetAt);
+			recordRejection(getQuotaKey(family));
 		}
 
 		if (
 			model &&
 			(independentReserve || reason === "tokens" || reason === "concurrent" || reason === "unknown")
 		) {
-			const modelKey = getQuotaKey(family, model);
+			const modelKey = deadlineKey(getQuotaKey(family, model));
 			const currentResetAt = account.rateLimitResetTimes[modelKey] ?? 0;
 			account.rateLimitResetTimes[modelKey] = Math.max(currentResetAt, resetAt);
 			newLimits[modelKey] = Math.max(newLimits[modelKey] ?? 0, resetAt);
+			recordRejection(getQuotaKey(family, model));
 		}
 
 		account.lastRateLimitReason = reason;
@@ -2047,14 +2117,14 @@ export class AccountManager {
 
 		for (const account of enabledAccounts) {
 			const perAccountWaitTimes: number[] = [];
-			const baseResetAt = account.rateLimitResetTimes[baseKey];
-			if (model !== LUNA_RESERVE_MODEL && typeof baseResetAt === "number") {
+			const baseResetAt = quotaResetTime(account, baseKey);
+			if (model !== LUNA_RESERVE_MODEL && baseResetAt > now) {
 				perAccountWaitTimes.push(Math.max(0, baseResetAt - now));
 			}
 
 			if (modelKey) {
-				const modelResetAt = account.rateLimitResetTimes[modelKey];
-				if (typeof modelResetAt === "number") {
+				const modelResetAt = quotaResetTime(account, modelKey);
+				if (modelResetAt > now) {
 					perAccountWaitTimes.push(Math.max(0, modelResetAt - now));
 				}
 			}

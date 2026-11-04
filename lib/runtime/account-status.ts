@@ -1,4 +1,4 @@
-import { getQuotaKey } from "../accounts/rate-limits.js";
+import { getQuotaKey, selectedQuotaLimits, type RateLimitedEntity } from "../accounts/rate-limits.js";
 import { LUNA_RESERVE_MODEL } from "../constants.js";
 import type { ModelFamily } from "../prompts/codex.js";
 
@@ -19,11 +19,11 @@ export function resolveActiveIndex(
 }
 
 export function getRateLimitResetTimeForFamily(
-	account: { rateLimitResetTimes?: Record<string, number | undefined> },
+	account: Partial<RateLimitedEntity>,
 	now: number,
 	family: ModelFamily,
 ): number | null {
-	const times = account.rateLimitResetTimes;
+	const times = selectedQuotaLimits(account);
 	if (!times) return null;
 
 	let minReset: number | null = null;
@@ -87,15 +87,14 @@ export interface AccountRecoveryBounds {
  * a rate-limited account as if a cooldown bounded its recovery.
  */
 export function getAccountRecoveryBoundsForFamily(
-	account: {
-		rateLimitResetTimes?: Record<string, number | undefined>;
+	account: Partial<RateLimitedEntity> & {
 		coolingDownUntil?: number;
 	},
 	now: number,
 	family: ModelFamily,
 	model?: string | null,
 ): AccountRecoveryBounds {
-	const times = account.rateLimitResetTimes;
+	const times = selectedQuotaLimits(account);
 	const rateLimitAtMs = times
 		? laterBound(
 				model === LUNA_RESERVE_MODEL ? null : activeBound(times[getQuotaKey(family)], now),
@@ -113,8 +112,7 @@ export function getAccountRecoveryBoundsForFamily(
 
 /** The `recoveryAtMs` bound alone; see getAccountRecoveryBoundsForFamily. */
 export function getAccountRecoveryTimeForFamily(
-	account: {
-		rateLimitResetTimes?: Record<string, number | undefined>;
+	account: Partial<RateLimitedEntity> & {
 		coolingDownUntil?: number;
 	},
 	now: number,
@@ -127,9 +125,7 @@ export function getAccountRecoveryTimeForFamily(
 
 /** The `rateLimitAtMs` bound alone; see getAccountRecoveryBoundsForFamily. */
 export function getRateLimitRecoveryTimeForFamily(
-	account: {
-		rateLimitResetTimes?: Record<string, number | undefined>;
-	},
+	account: Partial<RateLimitedEntity>,
 	now: number,
 	family: ModelFamily,
 	model?: string | null,
@@ -139,7 +135,7 @@ export function getRateLimitRecoveryTimeForFamily(
 }
 
 export function formatRateLimitEntry(
-	account: { rateLimitResetTimes?: Record<string, number | undefined> },
+	account: Partial<RateLimitedEntity>,
 	now: number,
 	formatWaitTime: (ms: number) => string,
 	family: ModelFamily = "codex",
@@ -171,7 +167,7 @@ export function formatRateLimitEntry(
  * model key applies and should keep the family-wide union above.
  */
 export function getRateLimitResetTimeForModel(
-	account: { rateLimitResetTimes?: Record<string, number | undefined> },
+	account: Partial<RateLimitedEntity>,
 	now: number,
 	family: ModelFamily,
 	model: string,

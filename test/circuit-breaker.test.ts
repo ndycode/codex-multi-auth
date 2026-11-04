@@ -24,6 +24,45 @@ describe("Circuit breaker", () => {
     expect(DEFAULT_CIRCUIT_BREAKER_CONFIG.failureThreshold).toBe(3);
   });
 
+  it.each([1, 2])("starts a fresh probe window after all %i unused probes are released and idle", limit => {
+    const breaker = new CircuitBreaker({failureThreshold:1, halfOpenMaxAttempts:limit});
+    breaker.recordFailure();vi.advanceTimersByTime(30000);
+    const releases: Array<() => void> = [];
+    for(let i=0;i<limit;i++)expect(breaker.tryCanExecute(fn=>releases.push(fn)).ok).toBe(true);
+    releases.forEach(release=>release());
+    vi.advanceTimersByTime(31000);
+    for(let i=0;i<limit;i++)expect(breaker.tryCanExecute().ok).toBe(true);
+    expect(breaker.tryCanExecute().ok).toBe(false);
+    expect(breaker.getTimeUntilAvailable()).toBe(30000);
+    releases.forEach(release=>release());
+    expect(breaker.tryCanExecute().ok).toBe(false);
+  });
+
+  it("releases an unused probe once without changing health or another probe", () => {
+    const breaker = new CircuitBreaker({failureThreshold:1});
+    breaker.recordFailure();vi.advanceTimersByTime(30000);
+    let release!:()=>void;
+    expect(breaker.tryCanExecute(fn=>{release=fn;}).ok).toBe(true);
+    expect(breaker.tryCanExecute().ok).toBe(false);
+    release();
+    expect(breaker.getState()).toBe("half-open");
+    expect(breaker.getFailureCount()).toBe(1);
+    expect(breaker.tryCanExecute().ok).toBe(true);
+    release();
+    expect(breaker.tryCanExecute().ok).toBe(false);
+  });
+
+  it("does not release a new probe window through an old cancellation", () => {
+    const breaker = new CircuitBreaker({failureThreshold:1});
+    breaker.recordFailure();vi.advanceTimersByTime(30000);
+    let release!:()=>void;
+    breaker.tryCanExecute(fn=>{release=fn;});
+    vi.advanceTimersByTime(30000);
+    expect(breaker.tryCanExecute().ok).toBe(true);
+    release();
+    expect(breaker.tryCanExecute().ok).toBe(false);
+  });
+
   it("allows execution when closed", () => {
     const breaker = new CircuitBreaker();
     expect(breaker.canExecute()).toBe(true);

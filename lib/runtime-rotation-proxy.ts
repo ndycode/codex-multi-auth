@@ -1,3 +1,5 @@
+import { carryRuntimeQuotaState } from "./runtime/carry-runtime-quota-state.js";
+import { resolveAccountRecordId } from "./storage/record-identity.js";
 import { DecisionsRuntime } from "./runtime/decisions-runtime.js";
 import { createAutomaticApiCheck, startAutomaticApiChecks } from "./runtime/automatic-api-checks.js";
 import { startAutomaticAccountChecks } from "./runtime/automatic-account-checks.js";
@@ -5,9 +7,10 @@ import { createAutomaticSubscriptionCheck } from "./runtime/automatic-subscripti
 import { ClientCancellationError } from "./request/client-cancellation.js";
 import { fetchWithProxy } from "./request/proxy-fetch.js";
 import { createNativeAccountStorageReader } from "./runtime/native-account-storage.js";
-import { resetSnapshotQuota } from "./runtime/reset-credits.js";
+import { resetSnapshotQuota, resetReceiptIdentity } from "./runtime/reset-credits.js";
 import { createResetCreditService, loadResetCreditState } from "./runtime/account-reset-credits.js";
-import { recoverResetQuota, applyConfirmedReset, primaryPoolFullyExhausted } from "./runtime/reset-credit-routing.js";
+import { ConfirmedResetReconciler, settleReceiptBaselines, type ReceiptRead } from "./runtime/confirmed-reset-reconciler.js";
+import { recoverResetQuota, primaryPoolFullyExhausted } from "./runtime/reset-credit-routing.js";
 import { readSubscriptionQuotaEvent } from "./runtime/subscription-quota-event.js";
 import { loadQuotaCache } from "./quota-cache.js";
 import { findQuotaCacheEntryForAccount } from "./quota-readiness.js";
@@ -34,11 +37,13 @@ import * as zlib from "node:zlib";
 import {
 	AccountManager,
 	AUTH_INVALIDATION_MARKER,
+	currentRejectionSequence,
 	extractAccountId,
+	getRateLimitObservationKey,
 	type ManagedAccount,
 } from "./accounts.js";
 import { withRoutingMutex } from "./routing-mutex.js";
-import { getQuotaKey } from "./accounts/rate-limits.js";
+import { getQuotaKey, quotaResetTime, selectedQuotaWorkspace, workspaceQuotaKey } from "./accounts/rate-limits.js";
 import {
 	getFetchTimeoutMs,
 	getNetworkErrorCooldownMs,
@@ -398,11 +403,18 @@ export function buildQuotaScheduleKey(
 		/** Stable per-record discriminator retained across token/account-id updates. */
 		addedAt?: number;
 		recordId?: string;
+        workspaces?: ManagedAccount["workspaces"];
+        currentWorkspaceIndex?: number;
+        access?: string;
+        codexCliMirror?: ManagedAccount["codexCliMirror"];
 	},
 	family: ModelFamily,
 	model?: string | null,
+	servingWorkspaceId?: string,
 ): string {
-	return `${buildQuotaScheduleAccountPrefix(account)}${model ?? family}`;
+	const workspace = account.workspaces?.length ? servingWorkspaceId ?? selectedQuotaWorkspace(account) : undefined;
+    const scope = workspace ? `workspace:${modelScopeId(workspace)}:` : "";
+	return `${buildQuotaScheduleAccountPrefix(account)}${scope}${model ?? family}`;
 }
 
 const DEFAULT_MAX_RUNTIME_ACCOUNT_ATTEMPTS = 4;
@@ -635,6 +647,11 @@ function cachedRead<T>(state: RotationProxyState, key: string, load: () => Promi
 	cache.set(key, { at: now, value });
 	value.catch(() => { if (cache.get(key)?.value === value) cache.delete(key); });
 	return value;
+}
+
+async function readResetCredits(): Promise<ReceiptRead> {
+	const sequence = currentRejectionSequence();
+	return { state: await loadResetCreditState(), sequence };
 }
 
 function catalogAccountKey(account: ManagedAccount): string {
@@ -1573,12 +1590,7 @@ async function handleRequestInner(
                     const current = carryTarget(previous);
                     const live = current && accountManager.getAccountByIndex(current.index);
                     if (!live) continue;
-                    for (const [key, until] of Object.entries(previous.rateLimitResetTimes)) {
-                        if (typeof until === "number" && until > state.now()) live.rateLimitResetTimes[key] = Math.max(live.rateLimitResetTimes[key] ?? 0, until);
-                    }
-                    if (previous.access === live.access && (previous.coolingDownUntil ?? 0) > (live.coolingDownUntil ?? 0)) {
-                        live.coolingDownUntil = previous.coolingDownUntil; live.cooldownReason = previous.cooldownReason;
-                    }
+                    carryRuntimeQuotaState(previous, live, state.now(), (oldAccount, newAccount) => oldAccount.access === newAccount.access);
                 }
                 // Reorders change index-based pins/affinity, so they deliberately reload too.
                 const generation = disk.affinityGeneration ?? 0;
@@ -2109,7 +2121,27 @@ async function handleRequestInner(
 				}
 			}
 		};
-  let resetCreditState=state.nativeOpenai&&isResponsesRequest ? await cachedRead(state, "reset-credits", loadResetCreditState).catch(()=>null):null;
+  // Shared across concurrent requests; a blocked request rereads before reconciling.
+  const sharedResetCredits=isResponsesRequest ? await cachedRead(state, "reset-credits", readResetCredits).catch(()=>null):null;
+  let resetCreditState=sharedResetCredits?.state ?? null;
+  // Bound unsequenced rejections now, before a later redemption becomes visible.
+  if (sharedResetCredits) for (let index = 0; index < accountManager.getAccountCount(); index++) {
+   const account = accountManager.getAccountByIndex(index);
+   if (account) settleReceiptBaselines(account, sharedResetCredits.state, sharedResetCredits.sequence);
+  }
+  const observeResetGenerations = (account: ManagedAccount, receipts: typeof resetCreditState, scopeId: string | undefined) => {
+   if(scopeId === undefined)return;
+   const receipt=receipts?.redemptions?.[scopeId] ?? (receipts?.lastRedemption?.key===scopeId ? receipts.lastRedemption : undefined);
+   if(receipt && receipt.generation===undefined)(account.resetReceiptIdentities??={})[scopeId]=resetReceiptIdentity(receipt);
+   if(receipt?.generation!==undefined){
+    const generations=account.resetReceiptGenerations??={};
+    generations[scopeId]=Math.max(generations[scopeId]??0,receipt.generation);
+   }
+  };
+  // A scheduler deferral restates an earlier rejection, which recorded what its request knew.
+  const deferralChronology = (account: ManagedAccount, scopeId: string | undefined) =>
+   scopeId !== undefined && account.rateLimitObservations?.[getRateLimitObservationKey(context.family, scopeId)]
+    ? { receipts: {} } : { receiptReadFailed: isResponsesRequest && resetCreditState === null };
   const quotaForScope = (account: ManagedAccount, scope: ReturnType<typeof workspaceModelScopes>[number]) => {
    // Scoped observations belong to this credential and workspace; legacy entries only describe the binding.
    const cached = findQuotaCacheEntryForAccount(subscriptionQuotaCache,account,accountManager.getAccountsSnapshot(),undefined,scope.accountId);
@@ -2453,12 +2485,40 @@ async function handleRequestInner(
 		}
 
 
-  if (state.nativeOpenai && isResponsesRequest && context.model && context.model !== LUNA_RESERVE_MODEL && resetCreditState?.lastRedemptionAt !== undefined) {
-   for(const [index,scopes] of workspaceCandidates){const account=accountManager.getAccountByIndex(index);if(!account)continue;
-    for(const scope of scopes)applyConfirmedReset({account,scope,model:context.model,family:context.family,manager:accountManager,snapshot:resetCreditState.snapshots[scope.id],lastRedemptionAt:resetCreditState.lastRedemptionAt,
-     previous:state.subscriptionQuotaObservations?.get(JSON.stringify([scope.id,context.model])) ?? findQuotaCacheEntryForAccount(subscriptionQuotaCache,account,accountManager.getAccountsSnapshot(),undefined,scope.accountId),
-     observations:state.subscriptionQuotaObservations ??=new Map(),now:state.now(),clearQuotaScheduler:a=>state.preemptiveQuotaScheduler.clear(buildQuotaScheduleKey(a,context.family,context.model))});
+  const reconcileConfirmedResets = async (): Promise<boolean> => {
+   const model = context.model;
+   if (!isResponsesRequest || !model || model === LUNA_RESERVE_MODEL) return false;
+   const manager = accountManager;
+   const reconciler = state.confirmedResetReconciler ??= new ConfirmedResetReconciler();
+   // A blocked request must see a redemption that completed a moment ago.
+   let receipts: Promise<ReceiptRead | null> | undefined;
+   const freshReceipts = () => receipts ??= readResetCredits().then(fresh => { resetCreditState = fresh.state; return fresh; }, () => null);
+   let recovered = false;
+   for (const row of manager.getAccountsSnapshot()) {
+    const account = manager.getAccountByIndex(row.index);
+    if (!account || account.enabled === false || account.authInvalidatedAt || (isPinned && account.index !== pinnedIndex) || policyDecision?.blockedAccountIndexes.has(account.index)) continue;
+    const scopes = state.nativeOpenai ? workspaceCandidates.get(account.index) ?? [] : workspaceModelScopes(account).filter(scope => scope.routable);
+    for (const scope of scopes) {
+     if (await reconciler.reconcile({state:freshReceipts,account,scope,model,family:context.family,manager,
+      read:async()=> (await createResetCreditService(manager).refresh([{key:scope.id,accountId:scope.accountId}]))[scope.id],
+      isCurrent:()=>state.activeAccountManager === manager && manager.getAccountByIndex(account.index) === account,
+      observations:state.subscriptionQuotaObservations ??= new Map(),now:state.now,
+      usesAdmissionBucket:!state.nativeOpenai && !isPinned,
+      hasCachedQuotaBlock:()=>state.nativeOpenai === true && subscriptionQuotaPreference(quotaForScope(account,scope),state.now()).exhausted,
+      hasQuotaDeferral:()=>state.preemptiveQuotaScheduler.getDeferral(buildQuotaScheduleKey(account,context.family,context.model),state.now()).defer,
+      clearQuotaScheduler:()=>state.preemptiveQuotaScheduler.clear(buildQuotaScheduleKey(account,context.family,context.model)),
+     })) {
+      if (!isPinned) return true;
+      recovered = true;
+     }
+    }
    }
+   return recovered;
+  };
+  // A pin has no sibling to serve meanwhile; unpinned requests reconcile only when nothing is selectable.
+  if (isPinned) {
+   await reconcileConfirmedResets();
+   if (clientGone()) return;
   }
   const primaryWorkspaceCandidates = () => new Map([...workspaceCandidates].filter(([index]) => {
    const account = accountManager.getAccountByIndex(index);
@@ -2491,6 +2551,7 @@ async function handleRequestInner(
    } finally { state.readCache?.delete("reset-credits"); }
   };
   await recoverPrimaryQuota();
+  if (clientGone()) return;
 
 		// A pinned Luna request can arrive after an earlier turn already proved
 		// ordinary subscription quota exhausted. That persisted family marker
@@ -2502,10 +2563,10 @@ async function handleRequestInner(
 		) {
 			const pinnedAccount = typeof pinnedIndex === "number" ? accountManager.getAccountByIndex(pinnedIndex) : null;
 			const now = state.now();
-			const familyResetAt = pinnedAccount?.rateLimitResetTimes[getQuotaKey(context.family)];
-			const modelResetAt = pinnedAccount?.rateLimitResetTimes[getQuotaKey(context.family, context.model)];
+			const familyResetAt = pinnedAccount && quotaResetTime(pinnedAccount, getQuotaKey(context.family));
+			const modelResetAt = pinnedAccount && quotaResetTime(pinnedAccount, getQuotaKey(context.family, context.model));
 			const confirmedQuotaResetAt =
-				pinnedAccount?.rateLimitResetTimes[confirmedQuotaExhaustionKey(context.family, context.model)];
+				pinnedAccount && quotaResetTime(pinnedAccount, confirmedQuotaExhaustionKey(context.family, context.model));
 			const persistedQuotaExhausted =
 				typeof familyResetAt === "number" &&
 				familyResetAt > now &&
@@ -2645,6 +2706,7 @@ async function handleRequestInner(
 
 		let runtimeSelectionIterations = 0;
 		let recoveryRetriedAfterExhaustion = false;
+		let resetsReconciledAfterExhaustion = false;
 		while (
 			(isPinned ||
 				attemptedIndexes.size < accountCount ||
@@ -2783,6 +2845,17 @@ async function handleRequestInner(
 					: selectAccount();
             for (const index of catalogExcludedIndexes()) accountSkipReasons.set(index, "model-not-supported");
 			if (!selected) {
+                // Select again even when a concurrent request performed the shared check.
+                if (!isPinned && isResponsesRequest && !resetsReconciledAfterExhaustion) {
+                    // A recovered account can still be limited for this model, so its siblings get another pass.
+                    resetsReconciledAfterExhaustion = !(await reconcileConfirmedResets());
+                    if (!resetsReconciledAfterExhaustion) {
+                        attemptedIndexes.clear();
+                        accountSkipReasons.clear();
+                    }
+                    if (clientGone()) return;
+                    continue;
+                }
                 // A 429 can be the first evidence that cached ordinary capacity is gone.
                 // Recheck once before failing; only an explicit pre-inference rejection
                 // reaches this path, never an ambiguous or already-streaming generation.
@@ -2794,6 +2867,7 @@ async function handleRequestInner(
                         accountSkipReasons.clear();
                         continue;
                     }
+                    if (clientGone()) return;
                     if (!backupsWereAllowed && emergencyBackupsAllowed()) continue;
                 }
 				if (
@@ -2907,15 +2981,17 @@ async function handleRequestInner(
 				break;
 			}
 			attemptedIndexes.add(selected.index);
-			const quotaScheduleKey = buildQuotaScheduleKey(
+			const selectionQuotaScheduleKey = buildQuotaScheduleKey(
 				selected,
 				context.family,
 				context.model,
 			);
 			const selectedScope = workspaceCandidates.get(selected.index)?.[0];
+            const selectedScopeId = selectedScope?.id ?? workspaceModelScopes(selected).find(scope=>scope.routable)?.id;
+            const selectedWorkspaceId = selectedQuotaWorkspace(selected);
             const nativePermission = selectedScope && hasFreshOrdinaryUsagePermission(quotaForScope(selected,selectedScope),state.now());
 			const preemptiveDeferral = state.preemptiveQuotaScheduler.getDeferral(
-				quotaScheduleKey,
+				selectionQuotaScheduleKey,
 				state.now(),
 			);
 			if (
@@ -2930,12 +3006,15 @@ async function handleRequestInner(
 				);
 				exhaustionReason = "rate-limit";
 				capabilityRejectionIsLatest = false;
+				observeResetGenerations(selected, resetCreditState, selectedScopeId);
 				accountManager.markRateLimitedWithReason(
 					selected,
 					preemptiveDeferral.waitMs,
 					context.family,
 					"quota",
 					context.model,
+					selectedScopeId,
+					selectedWorkspaceId ? { workspaceId: selectedWorkspaceId, ...deferralChronology(selected, selectedScopeId) } : undefined,
 				);
 				accountManager.recordRateLimit(selected, context.family, context.model);
 				accountManager.saveToDiskDebounced();
@@ -2947,13 +3026,15 @@ async function handleRequestInner(
 			// Transcription deliberately bypasses both: its credential-only selector
 			// already enforced disabled/workspace/auth/policy gates, and claiming the
 			// inference probe here could strand a half-open account after dictation.
+			let releaseUnusedProbe: (() => void) | undefined;
+			let probeDispatched = false;
 			const admission = isTranscribeRequest
 				? { ok: true as const }
 				: accountManager.consumeTokenWithReason(
 					selected,
 					context.family,
 					context.model,
-					{ bypassTokenBucket: bypassPoolTokenBucket },
+					{ bypassTokenBucket: bypassPoolTokenBucket, onProbeAcquired: release => { releaseUnusedProbe = release; } },
 				);
 			if (!admission.ok) {
 				accountSkipReasons.set(selected.index, admission.reason);
@@ -2970,6 +3051,7 @@ async function handleRequestInner(
 				continue;
 			}
 
+			try {
 			const refreshed = await ensureFreshAccessToken({
 				accountManager,
 				account: selected,
@@ -3095,11 +3177,14 @@ async function handleRequestInner(
 
 			let pendingScopes = workspaceCandidates.get(refreshed.account.index);
 			// Routes without model-catalog preparation still use the selected enabled workspace.
-			if (isImageRequest || isTranscribeRequest || isThreadGoalRequest || isSearchRequest || isRealtimeCallRequest) {
+			if (!state.nativeOpenai || isImageRequest || isTranscribeRequest || isThreadGoalRequest || isSearchRequest || isRealtimeCallRequest) {
 				pendingScopes = workspaceModelScopes(refreshed.account)
 					.filter((scope) => scope.routable)
 					.sort((a, b) => Number(b.selected) - Number(a.selected) || Number(b.bound) - Number(a.bound));
 			}
+   // A legacy row without any workspace identity still takes the missing-id
+   // auth cooldown below; an explicitly disabled selected workspace must not.
+   if (!state.nativeOpenai && !refreshed.account.workspaces?.length && !pendingScopes?.length) pendingScopes = undefined;
    // Revalidate enabled scopes after token refresh; never write a per-request choice to the account.
    const enabledScopes = new Set(workspaceModelScopes(refreshed.account).filter(s=>s.routable).map(s=>s.id));
    while(pendingScopes?.length && !enabledScopes.has(pendingScopes[0]?.id ?? "")) pendingScopes.shift();
@@ -3112,6 +3197,36 @@ async function handleRequestInner(
    }
    const requestScope = pendingScopes?.[0];
    const accountId = requestScope?.accountId ?? resolveAccountId(refreshed.account, refreshed.accessToken);
+			// Refresh can publish another manager/selection. Attribute all response
+			// observations to the finalized serving workspace, not the pre-refresh one.
+			const quotaScheduleKey = buildQuotaScheduleKey(refreshed.account, context.family, context.model, accountId ?? undefined);
+			// Provider refresh may change the selected workspace after admission.
+			// Recheck its actual bounds before dispatch, without claiming another
+			// pool token or half-open circuit probe through a selection restart.
+			if (!state.nativeOpenai && isResponsesRequest && accountId) {
+				const now = state.now();
+				const familyDeadline = context.model === LUNA_RESERVE_MODEL ? 0 :
+					quotaResetTime(refreshed.account, getQuotaKey(context.family), accountId);
+				const modelDeadline = quotaResetTime(refreshed.account, getQuotaKey(context.family, context.model), accountId);
+				const deferral = state.preemptiveQuotaScheduler.getDeferral(quotaScheduleKey, now);
+				const deferred = context.model !== LUNA_RESERVE_MODEL && deferral.defer && deferral.waitMs > 0;
+				if (Math.max(familyDeadline, modelDeadline) > now || deferred) {
+					refundConsumedPoolToken(refreshed.account);
+					accountSkipReasons.set(refreshed.account.index, "rate-limited");
+					exhaustionReason = "rate-limit";
+					capabilityRejectionIsLatest = false;
+					if (deferred) {
+						observeResetGenerations(refreshed.account, resetCreditState, requestScope?.id);
+						accountManager.markRateLimitedWithReason(refreshed.account, deferral.waitMs,
+							context.family, "quota", context.model, requestScope?.id, {workspaceId: accountId, ...deferralChronology(refreshed.account, requestScope?.id)});
+						accountManager.saveToDiskDebounced();
+					}
+					attemptedIndexes.add(refreshed.account.index);
+					if (isPinned) break;
+					noteRotation();
+					continue;
+				}
+			}
 			if (!accountId) {
 				refundConsumedPoolToken(refreshed.account);
 				accountManager.recordFailure(refreshed.account, context.family, context.model);
@@ -3190,6 +3305,16 @@ async function handleRequestInner(
 					: null;
 			};
 
+			// A rejection answers this request: a reset completed while it was in
+			// flight is newer, and the fresh native read decides whether it applies.
+			observeResetGenerations(refreshed.account, resetCreditState, modelScopeId("oauth", resolveAccountRecordId(refreshed.account), accountId));
+			const dispatchedReceipts = {
+				receipts: {
+					resetReceiptGenerations: { ...refreshed.account.resetReceiptGenerations },
+					resetReceiptIdentities: { ...refreshed.account.resetReceiptIdentities },
+				},
+				receiptReadFailed: resetCreditState === null,
+			};
 			const outboundHeaders = createOutboundHeaders(
 				context.headers,
 				refreshed.account,
@@ -3235,6 +3360,7 @@ async function handleRequestInner(
 					? Math.max(state.fetchTimeoutMs, 300_000)
 					: state.fetchTimeoutMs;
 				if (isResponsesRequest || isImageRequest) recordRuntimeInferenceRequest(inferenceAccountKey(refreshed.account), state.now());
+				probeDispatched = true;
 				upstream = await withTimeout(
 					state.fetchImpl(upstreamUrl, upstreamRequestInit),
 					fetchTimeoutMs,
@@ -3500,6 +3626,7 @@ async function handleRequestInner(
 				// Every 429 still drains this account for its retry window, but only an
 				// explicit subscription-usage signal is persisted as quota exhaustion.
 				const rateLimitState = responseStateTarget();
+				const rejectionScopeId = modelScopeId("oauth", resolveAccountRecordId(rateLimitState.account), accountId);
 				rateLimitState.accountManager.recordRateLimit(rateLimitState.account, context.family, context.model);
 				rateLimitState.accountManager.markRateLimitedWithReason(
 					rateLimitState.account,
@@ -3507,12 +3634,14 @@ async function handleRequestInner(
 					context.family,
 					subscriptionQuotaExceeded ? "quota" : "unknown",
 					context.model,
+					rejectionScopeId,
+					{ workspaceId: accountId, ...dispatchedReceipts },
 				);
 				if (
 					subscriptionQuotaExceeded &&
 					(context.model === "gpt-6-luna" || context.model === "gpt-5.6-luna")
 				) {
-					const confirmedKey = confirmedQuotaExhaustionKey(context.family, context.model);
+					const confirmedKey = workspaceQuotaKey(confirmedQuotaExhaustionKey(context.family, context.model), accountId);
 					const confirmedResetAt =
 						state.now() +
 						Math.min(Math.max(0, Math.floor(retryAfterMs)), RATE_LIMIT_CACHE_TTL_MS);
@@ -3851,19 +3980,22 @@ async function handleRequestInner(
 					state.now(),
 				);
 				const nearExhaustionWaitMs =
-					(context.model === LUNA_RESERVE_MODEL || (requestScope && hasFreshOrdinaryUsagePermission(quotaForScope(refreshed.account,requestScope),state.now())))
+					(context.model === LUNA_RESERVE_MODEL || (state.nativeOpenai && requestScope && hasFreshOrdinaryUsagePermission(quotaForScope(refreshed.account,requestScope),state.now())))
 						? 0
 						: quotaDeferral.defer
 							? quotaDeferral.waitMs
 							: 0;
 				if (nearExhaustionWaitMs > 0) {
 					const quotaState = responseStateTarget();
+					const rejectionScopeId = modelScopeId("oauth", resolveAccountRecordId(quotaState.account), accountId);
 					quotaState.accountManager.markRateLimitedWithReason(
 						quotaState.account,
 						nearExhaustionWaitMs,
 						context.family,
 						"quota",
 						context.model,
+						rejectionScopeId,
+						{ workspaceId: accountId, ...dispatchedReceipts },
 					);
 					state.sessionAffinityStore?.forgetSession(context.sessionKey);
 					quotaState.accountManager.saveToDiskDebounced();
@@ -3913,6 +4045,17 @@ async function handleRequestInner(
 					const snapshot = readSubscriptionQuotaEvent(event, state.now());
 					if (!snapshot) return;
 					observeQuota(snapshot, snapshot.planType);
+                    const deferral = state.preemptiveQuotaScheduler.getDeferral(quotaScheduleKey, state.now());
+                    const nativeStreamPermission = state.nativeOpenai && requestScope &&
+                        hasFreshOrdinaryUsagePermission(quotaForScope(refreshed.account, requestScope), state.now());
+                    if (deferral.defer && !nativeStreamPermission) {
+                        const target = responseStateTarget();
+                        const scopeId = modelScopeId("oauth", resolveAccountRecordId(target.account), accountId);
+                        target.accountManager.markRateLimitedWithReason(target.account, deferral.waitMs,
+                            context.family, "quota", context.model, scopeId,
+                            {workspaceId: accountId, ...dispatchedReceipts});
+                        target.accountManager.saveToDiskDebounced();
+                    }
 					state.status.streamQuotaUpdates = (state.status.streamQuotaUpdates ?? 0) + 1;
 					state.status.lastStreamQuotaUpdateAt = snapshot.updatedAt;
 				},
@@ -4007,6 +4150,9 @@ async function handleRequestInner(
 				...(usageTokens ?? {}),
 			});
 			return;
+            } finally {
+                if (!probeDispatched) releaseUnusedProbe?.();
+            }
 		}
 
 		if (

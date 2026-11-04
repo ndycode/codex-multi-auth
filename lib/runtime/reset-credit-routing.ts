@@ -1,3 +1,4 @@
+import { selectedQuotaWorkspace, workspaceQuotaKey } from "../accounts/rate-limits.js";
 import type { AccountManager, ManagedAccount } from '../accounts.js';
 import { LUNA_RESERVE_MODEL } from '../constants.js';
 import type { ModelFamily } from '../prompts/codex.js';
@@ -15,6 +16,8 @@ function clearRecoveredScopeQuota(options:{account:ManagedAccount;scope:Scope;fa
  if(account.lastRateLimitReason!=='quota'||!workspaceModelScopes(account).some(current=>
   current.routable&&current.id===scope.id&&current.accountId===scope.accountId))return false;
  delete account.rateLimitResetTimes[family];delete account.rateLimitResetTimes[`${family}:${model}`];
+ const workspace=selectedQuotaWorkspace(account);
+ if(workspace){delete account.rateLimitResetTimes[workspaceQuotaKey(family,workspace)];delete account.rateLimitResetTimes[workspaceQuotaKey(`${family}:${model}`,workspace)];}
  if(account.cooldownReason==='rate-limit')manager.clearAccountCooldown(account);
  clearQuotaScheduler(account);
  return true;
@@ -84,17 +87,6 @@ export async function recoverResetQuota(options:{
  if(recovered)options.manager.saveToDiskDebounced();
  return recovered;
 }
-
-/** Apply a confirmed earned reset once per workspace/model observation. */
-export function applyConfirmedReset(options:{account:ManagedAccount;scope:Scope;model:string;family:ModelFamily;manager:AccountManager;snapshot:Awaited<ReturnType<ResetCreditService['status']>>['snapshots'][string]|undefined;lastRedemptionAt:number|undefined;previous:QuotaCacheEntry|null|undefined;observations:Map<string,QuotaCacheEntry>;clearQuotaScheduler:(account:ManagedAccount)=>void;now:number}):boolean{
- if(options.model===LUNA_RESERVE_MODEL)return false;
- const s=options.snapshot;
- if(!s||options.lastRedemptionAt===undefined||s.updatedAt<options.lastRedemptionAt||s.ordinaryUsageAllowed!==true||s.updatedAt<=(options.previous?.updatedAt??0)||options.now-s.updatedAt>60000||s.updatedAt>options.now)return false;
- options.observations.set(JSON.stringify([options.scope.id,options.model]),resetSnapshotQuota(s));
- if(clearRecoveredScopeQuota(options))options.manager.saveToDiskDebounced();
- return true;
-}
-
 
 /** Unknown, stale, or pending reset state must never authorize backup traffic. */
 export function primaryPoolFullyExhausted(

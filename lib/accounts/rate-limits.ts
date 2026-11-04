@@ -6,6 +6,8 @@
 import { LUNA_RESERVE_MODEL, RATE_LIMIT_CACHE_TTL_MS } from "../constants.js";
 import { nowMs } from "../utils.js";
 import type { ModelFamily } from "../prompts/codex.js";
+import { extractAccountId, nativeWorkspaceIdentity } from "../auth/token-utils.js";
+import type { CodexCliMirror } from "../storage/public-types.js";
 
 export type BaseQuotaKey = ModelFamily;
 export type QuotaKey = BaseQuotaKey | `${BaseQuotaKey}:${string}`;
@@ -41,6 +43,56 @@ export interface RateLimitState {
 
 export interface RateLimitedEntity {
 	rateLimitResetTimes: RateLimitState;
+	accountId?: string;
+	access?: string;
+	accessToken?: string;
+	codexCliMirror?: CodexCliMirror;
+	workspaces?: { id: string }[];
+	currentWorkspaceIndex?: number;
+}
+
+/** Persist workspace attribution independently of a legacy row's record identity. */
+export function workspaceQuotaKey(key: string, workspaceId: string): string {
+	return JSON.stringify(["workspace", workspaceId, key]);
+}
+
+export function parseWorkspaceQuotaKey(key: string): { workspaceId: string; quotaKey: string } | undefined {
+	if (!key.startsWith('["workspace",')) return undefined;
+	try {
+		const parts: unknown = JSON.parse(key);
+		return Array.isArray(parts) && parts.length === 3 && typeof parts[1] === "string" && typeof parts[2] === "string"
+			? { workspaceId: parts[1], quotaKey: parts[2] }
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+export function selectedQuotaWorkspace(entity: Omit<RateLimitedEntity, "rateLimitResetTimes">): string | undefined {
+	const access = entity.access ?? entity.accessToken;
+	const selected = entity.workspaces?.length ? entity.workspaces[entity.currentWorkspaceIndex ?? 0]?.id : entity.accountId ?? extractAccountId(access);
+	return nativeWorkspaceIdentity({ ...entity, access }, selected);
+}
+
+/** The selected workspace's bounds plus legacy unscoped bounds for diagnostics. */
+export function selectedQuotaLimits(entity: Partial<RateLimitedEntity>): RateLimitState {
+	const result: RateLimitState = {};
+	const workspace = selectedQuotaWorkspace(entity);
+	for (const [key, until] of Object.entries(entity.rateLimitResetTimes ?? {})) {
+		let quotaKey = key;
+		if (key.startsWith('["workspace",')) {
+			const attributed = parseWorkspaceQuotaKey(key);
+			if (!attributed || attributed.workspaceId !== workspace) continue;
+			quotaKey = attributed.quotaKey;
+		}
+		if (until !== undefined) result[quotaKey] = Math.max(result[quotaKey] ?? 0, until);
+	}
+	return result;
+}
+
+export function quotaResetTime(entity: RateLimitedEntity, key: string, workspaceId = selectedQuotaWorkspace(entity)): number {
+	return Math.max(entity.rateLimitResetTimes[key] ?? 0,
+		workspaceId ? entity.rateLimitResetTimes[workspaceQuotaKey(key, workspaceId)] ?? 0 : 0);
 }
 
 /**
@@ -88,8 +140,7 @@ export function clearAllRateLimits(entity: RateLimitedEntity): void {
 }
 
 export function isRateLimitedForQuotaKey(entity: RateLimitedEntity, key: QuotaKey): boolean {
-	const resetTime = entity.rateLimitResetTimes[key];
-	return resetTime !== undefined && nowMs() < resetTime;
+	return nowMs() < quotaResetTime(entity, key);
 }
 
 export function isRateLimitedForFamily(

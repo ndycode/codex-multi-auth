@@ -1706,6 +1706,21 @@ describe("AccountManager", () => {
 	});
 
 	describe("getMinWaitTimeForFamily", () => {
+		it("ignores absent quota deadlines when a breaker reaches its reset boundary", () => {
+			vi.useFakeTimers();
+			try {
+			vi.setSystemTime(1_750_000_000_000);
+			const now=Date.now();
+			const manager=new AccountManager(undefined,{version:3,activeIndex:0,accounts:[
+				{refreshToken:"boundary-fixture",addedAt:now,lastUsed:now},
+				{refreshToken:"limited-fixture",addedAt:now,lastUsed:now,rateLimitResetTimes:{codex:now+30000}},
+			]});
+			// The availability read happens just before the breaker boundary; its
+			// subsequent wait read returns zero, with no quota deadline on this row.
+			vi.spyOn(manager,"isCircuitAvailable").mockReturnValue(false);
+			expect(manager.getMinWaitTimeForFamily("codex","gpt-5-codex")).toBe(30000);
+			} finally { vi.useRealTimers(); }
+		});
 		it("returns 0 when accounts are available", () => {
 			const now = Date.now();
 			const stored = {

@@ -1,3 +1,4 @@
+import { selectedQuotaLimits, type RateLimitedEntity } from "../accounts/rate-limits.js";
 import type { ManagedAccount } from "../accounts.js";
 
 const POOL_EXHAUSTION_COOLDOWN_MS = 15_000;
@@ -83,7 +84,7 @@ export function clearServerBurstCooldown(): void {
 
 export function buildAdaptiveStreamFailoverCandidateOrder(
 	primaryIndex: number,
-	accounts: Array<Pick<ManagedAccount, "index" | "lastUsed" | "enabled" | "coolingDownUntil" | "rateLimitResetTimes">>,
+	accounts: Array<Pick<ManagedAccount, "index" | "lastUsed" | "enabled" | "coolingDownUntil" | "rateLimitResetTimes"> & Partial<RateLimitedEntity>>,
 	now = Date.now(),
 ): number[] {
 	const primary = accounts.find((account) => account.index === primaryIndex);
@@ -92,7 +93,7 @@ export function buildAdaptiveStreamFailoverCandidateOrder(
 		.filter((account) => {
 			const coolingDownUntil = account.coolingDownUntil ?? 0;
 			if (coolingDownUntil > now) return false;
-			const rateLimitValues = Object.values(account.rateLimitResetTimes ?? {});
+			const rateLimitValues = Object.values(selectedQuotaLimits(account));
 			return !rateLimitValues.some(
 				(value) => typeof value === "number" && value > now,
 			);

@@ -171,3 +171,15 @@ it('clamps an absurd resetsAt to the rate-limit horizon and drops a non-finite o
  expect(quota.secondary.resetAtMs).toBeUndefined();
  expect(resetSnapshotQuota({updatedAt:1000,availableCount:0,ordinaryUsageAllowed:false,planType:'pro',primary:{resetsAt:2000},secondary:{}}).primary.resetAtMs).toBe(2000000);
 });
+
+
+it("retains receipts for two scopes across restart with clock-independent generations", async () => {
+ let now = Date.now(); const read = vi.fn(async (t:ResetTarget) => payload(t.accountId));
+ const consume = vi.fn(async () => ({outcome:"reset"}));
+ const service = new ResetCreditService(join(dir,"state.json"),{read,consume,now:()=>now});
+ await service.redeem(target("a")); now += 11000; await service.redeem(target("b"));
+ const reloaded = new ResetCreditService(join(dir,"state.json"),{read,consume,now:()=>now});
+ expect(await reloaded.status()).toMatchObject({redemptions:{a:{key:"a",generation:1},b:{key:"b",generation:2}}});
+ now -= 600_000; await reloaded.redeem(target("a"));
+ expect(await service.status()).toMatchObject({redemptions:{a:{generation:3,at:now},b:{generation:2}}});
+});

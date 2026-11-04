@@ -664,6 +664,14 @@ describe("Documentation Integrity", () => {
 		expect(publicApi).toContain("currently ships on a `2.x` line");
 	});
 
+	it("locates the reset-credit file to delete on downgrade from the resolved multi-auth root", () => {
+		const upgradeGuide = read("docs/upgrade.md").replace(/\s+/g, " ");
+		expect(upgradeGuide).not.toContain("`~/.codex/multi-auth/reset-credits.json`");
+		expect(upgradeGuide).toContain("delete `reset-credits.json` from the multi-auth root");
+		expect(upgradeGuide).toContain("`CODEX_MULTI_AUTH_DIR` when set");
+		expect(upgradeGuide).toContain("`%USERPROFILE%\\.codex\\multi-auth`");
+	});
+
 	it("keeps the historical changelog aligned with the archived 0.x release set", () => {
 		const changelog = read("CHANGELOG.md");
 		expect(changelog).toContain("## [0.1.8] - 2026-03-11");

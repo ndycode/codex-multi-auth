@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AccountManager } from "../lib/accounts.js";
+import { AccountManager, currentRejectionSequence } from "../lib/accounts.js";
 import { PreemptiveQuotaScheduler } from "../lib/preemptive-quota-scheduler.js";
 import type { RotationProxyStateInit } from "../lib/runtime/rotation-proxy-state.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
@@ -320,6 +320,35 @@ describe("reloadRuntimeCredentials", () => {
 		expect(active?.rateLimitResetTimes["codex:workspace-b"]).toBe(NOW + 120_000);
 		expect(active?.rateLimitResetTimes["codex:workspace-a"]).toBeUndefined();
 	});
+
+	it.each(["future","absent","expired"])("carries rejection chronology with %s deadlines so an old receipt cannot clear a later 429 after reload", async deadline => {
+  const disk = storageWith(1); const resident = new AccountManager(undefined,disk);
+  const account = resident.getAccountByIndex(0)!;
+  const {workspaceModelScopes} = await import("../lib/runtime/workspace-model-scopes.js");
+  const {ConfirmedResetReconciler} = await import("../lib/runtime/confirmed-reset-reconciler.js");
+  const scope = workspaceModelScopes(account)[0]!;
+  account.resetReceiptGenerations = {[scope.id]:7};
+  resident.markRateLimitedWithReason(account,60000,"codex","quota");
+  const observedAt = account.rateLimitObservations!.codex!.observedAt;
+  const state = createRotationProxyState({...stateInit(),now:()=>observedAt,activeAccountManager:resident});
+  const replacementDisk = storageWith(2);
+  replacementDisk.accounts[0]!.rateLimitResetTimes={codex:observedAt+60000};
+  if(deadline==="absent")delete account.rateLimitResetTimes.codex;
+  if(deadline==="expired")account.rateLimitResetTimes.codex=observedAt-1;
+  const replacement = new AccountManager(undefined,replacementDisk); loadFromDisk.mockResolvedValueOnce(replacement);
+  await reloadRuntimeCredentials(state);
+  const current = replacement.getAccountByIndex(0)!;
+  expect(current.rateLimitObservations?.codex).toEqual(account.rateLimitObservations!.codex);
+  expect(current.resetReceiptGenerations).toEqual(account.resetReceiptGenerations);
+  expect(current.rateLimitResetTimes.codex).toBe(observedAt+60000);
+  const read = vi.fn();
+  expect(await new ConfirmedResetReconciler().reconcile({
+   state:async()=>({state:{version:1,policy:"manual",snapshots:{},lastRedemption:{key:scope.id,at:observedAt-1,outcome:"reset",automatic:false}},sequence:currentRejectionSequence()}),
+   manager:replacement,account:current,scope,model:"chat-test",family:"codex",now:()=>observedAt,
+   isCurrent:()=>true,read,observations:new Map(),clearQuotaScheduler:vi.fn(),
+  })).toBe(false);
+  expect(read).not.toHaveBeenCalled();
+ });
 
 	it("carries a token rotation that lands while disk loading is pending", async () => {
 		const state = createRotationProxyState(stateInit());

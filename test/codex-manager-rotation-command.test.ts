@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AccountManager } from "../lib/accounts.js";
+import { workspaceQuotaKey } from "../lib/accounts/rate-limits.js";
 import { runRotationCommand } from "../lib/codex-manager/commands/rotation.js";
 import type { RotationCommandDeps } from "../lib/codex-manager/commands/rotation.js";
 import type { AppBindResult, AppBindStatus } from "../lib/runtime/app-bind.js";
@@ -306,6 +307,17 @@ afterEach(async () => {
 });
 
 describe("codex-multi-auth rotation command", () => {
+	it("reports only the selected workspace's rate-limit status", async () => {
+		const now=Date.now(),storage=createStorage(now);
+		storage.accounts=storage.accounts.slice(0,1);
+		Object.assign(storage.accounts[0]!,{enabled:true,accountId:"a",workspaces:[{id:"a"},{id:"b"}],currentWorkspaceIndex:1,rateLimitResetTimes:{[workspaceQuotaKey("codex","a")]:now+60000},coolingDownUntil:undefined});
+		const {deps,infos}=createDeps({storage,now});
+		expect(await runRotationCommand(["status"],deps)).toBe(0);
+		expect(infos.join("\n")).not.toContain("rate-limited:");
+		storage.accounts[0]!.currentWorkspaceIndex=0;infos.length=0;
+		expect(await runRotationCommand(["status"],deps)).toBe(0);
+		expect(infos.join("\n")).toContain("rate-limited:1m 0s");
+	});
 	it("enables and disables the runtime rotation proxy setting", async () => {
 		const { deps, savePluginConfigMock, infos } = createDeps();
 
@@ -694,6 +706,28 @@ describe("codex-multi-auth rotation command", () => {
 			expect(storage.accounts[1].rateLimitResetTimes).toEqual({});
 			expect(storage.accounts[2].rateLimitResetTimes).toEqual({});
 			expect(infos.join("\n")).toContain("Cleared 2/3 account(s)");
+		});
+
+		it.each([[[]], [["--json"]]])("redacts the workspace id in a cleared workspace key %j", async (extra) => {
+			const now = Date.now();
+			const workspaceId = "9f3c2a1b-7d4e-4c8a-b1f0-5e6d7c8b9a0f";
+			const storage = buildStorageWithLimits(now);
+			storage.accounts = [{
+				...storage.accounts[0]!,
+				accountId: workspaceId,
+				workspaces: [{ id: workspaceId, enabled: true }],
+				currentWorkspaceIndex: 0,
+				rateLimitResetTimes: { [workspaceQuotaKey("codex", workspaceId)]: now + 60_000 },
+			}];
+			const { deps, infos } = createDeps({ storage, now });
+
+			await expect(runRotationCommand(["reset-rate-limits", ...extra], deps)).resolves.toBe(0);
+
+			const output = infos.join("\n");
+			expect(output).toContain("id:***9a0f");
+			expect(output).toContain("codex (workspace ***9a0f)");
+			expect(output).not.toContain(workspaceId);
+			expect(storage.accounts[0]!.rateLimitResetTimes).toEqual({});
 		});
 
 		it("dry-run reports changes without saving", async () => {

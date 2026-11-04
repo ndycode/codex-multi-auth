@@ -5,6 +5,12 @@ Dates use ISO format (`YYYY-MM-DD`).
 
 This repository's current stable release line is `2.x`. Full release notes live in [`docs/releases/`](docs/releases/) — this file is the short version. Pre-`0.1.0` iteration history is archived in [`docs/releases/legacy-pre-0.1-history.md`](docs/releases/legacy-pre-0.1-history.md). Conventions: entry headings are `## [x.y.z] - YYYY-MM-DD`; section headings come from `Added`, `Changed`, `Fixed`, `Removed`, `Security`, `Internal`, `Notes`; issue and pull-request references link as `[#N](https://github.com/ndycode/codex-multi-auth/pull/N)`.
 
+## Unreleased
+
+### Fixed
+
+- Successful CLI reset redemptions now unblock running provider and native routers, including hard pins, after a fresh read-only quota confirmation. Unpinned requests check only when no account is usable, so healthy traffic does not wait on it. Failed checks back off from 5 seconds to at most 5 minutes and retry unless a newer rejection of the same quota key arrives during the check (which requires a new receipt); a rejection for a request sent before the redemption is not newer. Account reloads and backward clock steps do not lose the receipt. Per-workspace receipts use durable generations, and successful recovery refills only the affected admission bucket. No additional reset credit is consumed. [#760](https://github.com/ndycode/codex-multi-auth/pull/760)
+
 ## [2.25.0] - 2026-10-31
 
 Codex voice and web search work with runtime rotation on, the packaged-app

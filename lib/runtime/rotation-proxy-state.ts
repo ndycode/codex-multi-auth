@@ -1,6 +1,8 @@
+import { carryRuntimeQuotaState } from "./carry-runtime-quota-state.js";
 import type { DecisionsRuntime } from "./decisions-runtime.js";
 import { RealtimeCallRegistry } from "./realtime-calls.js";
 import type { ResetExhaustionEvidence } from "./reset-credits.js";
+import type { ConfirmedResetReconciler } from "./confirmed-reset-reconciler.js";
 import type { NativeAccountSnapshot } from "./native-account-storage.js";
 import type { QuotaCacheData, QuotaCacheEntry } from "../quota-cache.js";
 import type {RuntimeCapabilityFailures} from "./runtime-capability-failures.js";
@@ -104,6 +106,7 @@ export interface RotationProxyState extends RotationProxyStateInit {
  catalogApiRoutes?:ApiRouteCredential[];
  catalogInventory?:ModelInventory;
  subscriptionQuotaObservations?: Map<string, QuotaCacheEntry>;
+ confirmedResetReconciler?: ConfirmedResetReconciler;
  /** Explicit pre-inference quota rejections, scoped to immutable workspace/model identity. */
  subscriptionQuotaRejections?: Map<string, ResetExhaustionEvidence>;
 	readonly threadGoalFallbacks: Map<string, string | null>;
@@ -463,19 +466,8 @@ export async function reloadRuntimeCredentials(
 					live.email = previous.email;
 				}
 			}
-			for (const [key, until] of Object.entries(previous.rateLimitResetTimes)) {
-				if (typeof until === "number" && until > state.now()) {
-					live.rateLimitResetTimes[key] = Math.max(live.rateLimitResetTimes[key] ?? 0, until);
-				}
-			}
-			if ((previous.coolingDownUntil ?? 0) > (live.coolingDownUntil ?? 0)) {
-				const repairedAuth =
-					previous.cooldownReason === "auth-failure" && previous.access !== live.access;
-				if (!repairedAuth) {
-					live.coolingDownUntil = previous.coolingDownUntil;
-					live.cooldownReason = previous.cooldownReason;
-				}
-			}
+			carryRuntimeQuotaState(previous, live, state.now(), (oldAccount, newAccount) =>
+				!(oldAccount.cooldownReason === "auth-failure" && oldAccount.access !== newAccount.access));
 			const sameCredential =
 				live.access === previous.access && live.refreshToken === previous.refreshToken;
 			// Auth-invalidation and workspace-disable markers are written in memory

@@ -1,5 +1,39 @@
 # Upgrade Guide
 
+## After 2.25.0: manual reset propagation
+
+Once the updated router is loaded, a successful `codex-multi-auth resets redeem`
+is picked up by the next blocked Responses request in provider or native mode,
+including a hard pin. Unpinned requests check only when no account is usable.
+No further router restart, unpin, or redemption is needed
+for subsequent resets. Receipts survive idle time and account reloads. Recovery
+requires a fresh read-only quota confirmation; failed or unknown checks retain
+the quota block and retry after a delay that starts at five seconds and doubles
+to at most five minutes, unless a newer rejection of the same quota key arrives
+during the check. That rejection requires a new receipt. A rejection for a
+request sent before the redemption is not newer. Healthy traffic does not
+wait on unnecessary quota checks. Authentication and model-specific blocks remain
+protected. Completed receipts are retained per workspace with clock-independent
+generations. A pending redemption in another workspace does not block recovery.
+New completions upgrade reset-credit state to version 3; older
+binaries reject this state to avoid dropping receipts. Upgrade the CLI and router
+together. Existing version 1/2 state remains readable. See [the reset design](design/earned-reset-credits.md).
+
+Once a new completion has written version 3, a 2.25.0 CLI fails every
+`resets list`, `resets redeem`, and `resets auto`, and a 2.25.0 router that is
+still running loses last-resort automatic redemption. Restart the router after
+upgrading. To downgrade, delete `reset-credits.json` from the multi-auth root once
+no redemption is pending (this also returns `resets auto` to manual), then restart
+any running router. That root is `CODEX_MULTI_AUTH_DIR` when set, otherwise
+`$CODEX_HOME/multi-auth` when `CODEX_HOME` is customized, and by default
+`~/.codex/multi-auth` (`%USERPROFILE%\.codex\multi-auth` on Windows, where `~`
+is not expanded). [Data Cleanup](privacy.md#data-cleanup) lists the older
+install locations the default can resolve to. A recreated file numbers
+generations from 1 again, and a router that already saw higher generations
+ignores the next redemptions until it restarts.
+
+Workspace quota deadlines in the manual-reset follow-up use attributed keys in the existing rate-limit map. Upgrade the CLI and router together: earlier binaries do not interpret these keys. Existing unscoped deadlines remain readable; no credential or pin migration is required.
+
 ## GPT-6.1 Terra and Ultrafast pricing
 
 `gpt-6.1-terra` (released 2026-10-26, in the Codex catalog since CLI 0.165.0) is
