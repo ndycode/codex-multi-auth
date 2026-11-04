@@ -810,7 +810,7 @@ Operator checklist:
 1. Ensure runtime rotation is available (`codex-multi-auth rotation status`, or a wrapper session that owns a proxy).
 2. `codex-multi-auth bridge token create --label my-client` and store the plaintext once.
 3. Start `startLocalBridge` against the **loopback** proxy `baseUrl`.
-4. Point clients at `/v1/models` and `/v1/responses` with the bearer token.
+4. Point clients at `/v1/models`, `/v1/responses`, and `/v1/decisions` with the bearer token.
 5. Generate glue with `codex-multi-auth integrations --kind python|curl|env|...`.
 
 Security invariants match the library: loopback-only bind, loopback-only
