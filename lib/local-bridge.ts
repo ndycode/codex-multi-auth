@@ -244,7 +244,7 @@ export async function startLocalBridge(
 
 	const forward = async (
 		request: Request,
-		targetPath: "/v1/models" | "/v1/responses",
+		targetPath: "/v1/models" | "/v1/responses" | "/v1/decisions",
 	): Promise<Response> => {
 		const startedAt = Date.now();
 		if (requireAuth) {
@@ -273,6 +273,7 @@ export async function startLocalBridge(
 			upstream = await fetchImpl(targetUrl, {
 				method: request.method,
 				headers: forwardHeaders(request.headers, runtimeClientApiKey),
+				...(targetPath === "/v1/decisions" ? { signal: request.signal, redirect: "error" as const } : {}),
 				body:
 					request.method === "GET" || request.method === "HEAD"
 						? undefined
@@ -281,7 +282,7 @@ export async function startLocalBridge(
 		} catch {
 			await appendUsageLedgerRow({
 				source: "local-bridge",
-				operation: targetPath === "/v1/models" ? "models" : "responses",
+				operation: targetPath === "/v1/models" ? "models" : targetPath === "/v1/decisions" ? "decisions" : "responses",
 				outcome: "failure",
 				statusCode: 502,
 				errorCode: "local_bridge_upstream_error",
@@ -302,7 +303,7 @@ export async function startLocalBridge(
 		}
 		await appendUsageLedgerRow({
 			source: "local-bridge",
-			operation: targetPath === "/v1/models" ? "models" : "responses",
+			operation: targetPath === "/v1/models" ? "models" : targetPath === "/v1/decisions" ? "decisions" : "responses",
 			outcome: upstream.ok ? "success" : "failure",
 			statusCode: upstream.status,
 			durationMs: Date.now() - startedAt,
@@ -315,12 +316,13 @@ export async function startLocalBridge(
 	};
 
 	app.get("/v1/models", (context) => forward(context.req.raw, "/v1/models"));
+	app.post("/v1/decisions", (context) => forward(context.req.raw, "/v1/decisions"));
 	app.post("/v1/responses", (context) => forward(context.req.raw, "/v1/responses"));
 	app.all("*", (context) =>
 		context.json(
 			{
 				error: {
-					message: "Local bridge only accepts /health, /v1/models, and /v1/responses.",
+					message: "Local bridge only accepts /health, /v1/models, /v1/responses, and /v1/decisions.",
 					code: "local_bridge_not_found",
 				},
 			},
@@ -331,8 +333,18 @@ export async function startLocalBridge(
 	const server = createServer((req, res) => {
 		void (async () => {
 			try {
-				const webRequest = await toWebRequest(req, urlHost, resolvedPort);
-				writeWebResponse(res, await app.fetch(webRequest));
+				let webRequest = await toWebRequest(req, urlHost, resolvedPort);
+				if (new URL(webRequest.url).pathname === "/v1/decisions") {
+					const controller = new AbortController();
+					const abort = () => { if (!res.writableEnded) controller.abort(); };
+					res.once("close", abort);
+					if (res.destroyed) controller.abort();
+					webRequest = new Request(webRequest, { signal: controller.signal });
+					res.once("finish", () => res.off("close", abort));
+					writeWebResponse(res, await app.fetch(webRequest));
+				} else {
+					writeWebResponse(res, await app.fetch(webRequest));
+				}
 			} catch (error) {
 				if (!res.headersSent) {
 					res.writeHead(500, { "content-type": "application/json; charset=utf-8" });

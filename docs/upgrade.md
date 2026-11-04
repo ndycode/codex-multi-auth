@@ -77,6 +77,23 @@ The account pool under `~/.codex/multi-auth` carries over.
 
 ## Changes To Know About
 
+### Native Decisions API
+
+The runtime proxy accepts `POST /decisions` and `POST /v1/decisions`; the
+authenticated local bridge also forwards `/v1/decisions`. Callers must select
+`api/<model>` or `zdr/<model>` and declare `/v1/decisions` in that credential's
+model profile. Model visibility and credential availability still apply;
+Responses/tool probe failures do not establish Decisions incompatibility.
+PSP and subscription routes are unchanged and are not used for Decisions.
+
+Usage records have a new `decisions` operation. Endpoint-specific prices remain
+unknown (`null`); they never use Responses prices. Cost budgets cannot be
+evaluated while unpriced token usage is in their window and fail closed, so
+while any `--cost` budget exists, Decisions requests are refused with 403
+`policy_blocked` before inference. Use `--requests` or `--tokens` budgets to
+allow them.
+See [Decisions API routing](decisions-api.md) for configuration and retry limits.
+
 ### Web search and voice through runtime rotation
 
 Codex web search (`web.run`, `POST /alpha/search`) and native voice (`/voice`)

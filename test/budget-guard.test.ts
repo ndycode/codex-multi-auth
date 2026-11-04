@@ -143,6 +143,16 @@ describe("budget guard", () => {
 		).toBe(true);
 	});
 
+	it("does not tell the user to price a model when the unknown cost may be a Decisions call", async () => {
+		const { evaluateBudgetGuard } = await import("../lib/budget-guard.js");
+		const reason = evaluateBudgetGuard(
+			{ key: "probe", window: "day", maxCostUsd: 100, updatedAt: 0 },
+			makeSummary(1, 12, 0, 1),
+		).reasons.join(" ");
+		expect(reason).toContain("Decisions");
+		expect(reason).not.toMatch(/price the model/i);
+	});
+
 	it("ignores unpriced usage when no cost budget is configured", async () => {
 		const { evaluateBudgetGuard } = await import("../lib/budget-guard.js");
 		const evaluation = evaluateBudgetGuard(

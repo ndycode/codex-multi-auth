@@ -213,8 +213,8 @@ preserving, with a warning, records whose PID is still live.
 | `~/.codex/multi-auth/budget-guards.json` | Local budget limits evaluated from usage summaries (`codex-multi-auth budget ...`) |
 | `~/.codex/multi-auth/local-client-tokens.json` | Local bridge token hashes and prefixes only (`codex-multi-auth bridge token ...`) |
 
-The local bridge is loopback-only and exposes `/health`, `/v1/models`, and
-`/v1/responses`. Plaintext tokens are shown only by `bridge token create` /
+The local bridge is loopback-only and exposes `/health`, `/v1/models`,
+`/v1/responses`, and `/v1/decisions`. Plaintext tokens are shown only by `bridge token create` /
 `rotate`; the store persists hashes.
 
 Policy pause/drain entries in `account-policies.json` are enforced at selection

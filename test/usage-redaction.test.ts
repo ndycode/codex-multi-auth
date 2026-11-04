@@ -207,3 +207,8 @@ describe("usage ledger redaction and normalization", () => {
 		});
 	});
 });
+
+it("keeps Decisions usage unpriced instead of applying Responses rates", () => {
+ const row=normalizeUsageLedgerRow({operation:"decisions",model:"gpt-6-luna",inputTokens:100,outputTokens:0,totalTokens:100});
+ expect(row.operation).toBe("decisions");expect(row.tokens.inputTokens).toBe(100);expect(row.costUsd).toBeNull();
+});
