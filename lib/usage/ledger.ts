@@ -39,6 +39,7 @@ const VALID_SOURCES = new Set<UsageLedgerSource>([
 	"unknown",
 ]);
 const VALID_OPERATIONS = new Set<UsageLedgerOperation>([
+	"decisions",
 	"responses",
 	"images",
 	"models",

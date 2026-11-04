@@ -358,7 +358,7 @@ export function evaluateBudgetGuard(
 			// silently unenforceable for every unpriced model; an unevaluable spend
 			// limit fails closed instead. Priced models are unaffected.
 			reasons.push(
-				`cost limit cannot be evaluated: ${summary.totals.unpricedRequests} request(s) in this window used a model with no known price, so recorded cost (${summary.totals.costUsd.toFixed(6)}) is incomplete. Price the model in lib/usage/pricing.ts, or budget on --requests/--tokens instead of --cost.`,
+				`cost limit cannot be evaluated: ${summary.totals.unpricedRequests} request(s) in this window have no known price (a model without a rate, or a Decisions call), so recorded cost (${summary.totals.costUsd.toFixed(6)}) is incomplete. Budget on --requests/--tokens instead of --cost.`,
 			);
 		}
 	}

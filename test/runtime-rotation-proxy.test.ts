@@ -34,6 +34,7 @@ import {
 import * as storageMetaModule from "../lib/runtime/rotation-storage-meta.js";
 import * as runtimePolicy from "../lib/policy/runtime-policy.js";
 import { readUsageLedgerRows } from "../lib/usage/ledger.js";
+import { saveBudgetGuardStore } from "../lib/budget-guard.js";
 import { resetRefreshQueue } from "../lib/refresh-queue.js";
 import {
 	DEFAULT_TOKEN_BUCKET_CONFIG,
@@ -1862,7 +1863,7 @@ describe("runtime rotation proxy", () => {
 		expect(await authUnknownPath.json()).toEqual({
 			error: {
 				message:
-					"Runtime rotation proxy only accepts Responses API, images, transcription, web search, voice calls, model discovery, and Codex thread goal requests.",
+					"Runtime rotation proxy only accepts Decisions API, Responses API, images, transcription, web search, voice calls, model discovery, and Codex thread goal requests.",
 				code: "runtime_rotation_proxy_not_found",
 			},
 		});
@@ -8314,11 +8315,13 @@ it("does not publish an API-only picker cache when cold subscription discovery e
  const fakeSetTimeout = globalThis.setTimeout;
  let deadlineScheduled!: () => void;
  const waiting = new Promise<void>(resolve => { deadlineScheduled = resolve; });
- const timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback, delay, ...args) => {
+ // Not vi.spyOn: afterEach's restoreAllMocks would re-restore that spy and
+ // reinstall this dead fake clock for every later test in the file.
+ globalThis.setTimeout = ((callback, delay, ...args) => {
   const timer = fakeSetTimeout(callback, delay, ...args);
   if (delay === 2000) deadlineScheduled();
   return timer;
- }) as typeof setTimeout);
+ }) as typeof setTimeout;
  try {
   const pending = getModels(proxy, "/models?client_version=2.0");
   await waiting;
@@ -8326,7 +8329,7 @@ it("does not publish an API-only picker cache when cold subscription discovery e
   const cold = await pending;
   expect(cold.status).toBe(503);
   expect(await cold.json()).toMatchObject({error: {code: "account_catalog_unavailable"}});
- } finally { release(); timerSpy.mockRestore(); vi.useRealTimers(); }
+ } finally { release(); globalThis.setTimeout = fakeSetTimeout; vi.useRealTimers(); }
  const ready = await getModels(proxy, "/models?client_version=2.0");
  expect((await ready.json()).models.map((m: {slug: string}) => m.slug)).toEqual(["fixture-subscription", "zdr/fixture-api"]);
 });
@@ -8405,11 +8408,13 @@ it("does not publish an API-only picker cache when stale subscription refresh ex
  const fakeSetTimeout = globalThis.setTimeout;
  let deadlineScheduled!: () => void;
  const waiting = new Promise<void>(resolve => { deadlineScheduled = resolve; });
- const timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback, delay, ...args) => {
+ // Not vi.spyOn: afterEach's restoreAllMocks would re-restore that spy and
+ // reinstall this dead fake clock for every later test in the file.
+ globalThis.setTimeout = ((callback, delay, ...args) => {
   const timer = fakeSetTimeout(callback, delay, ...args);
   if (delay === 2000) deadlineScheduled();
   return timer;
- }) as typeof setTimeout);
+ }) as typeof setTimeout;
  try {
   const pending = getModels(proxy, "/models?client_version=1.0");
   await waiting;
@@ -8417,7 +8422,7 @@ it("does not publish an API-only picker cache when stale subscription refresh ex
   const cold = await pending;
   expect(cold.status).toBe(503);
   expect(await cold.json()).toMatchObject({error: {code: "account_catalog_unavailable"}});
- } finally { release(); timerSpy.mockRestore(); vi.useRealTimers(); }
+ } finally { release(); globalThis.setTimeout = fakeSetTimeout; vi.useRealTimers(); }
  const ready = await getModels(proxy, "/models?client_version=1.0");
  expect((await ready.json()).models.map((m: {slug: string}) => m.slug)).toEqual(["fixture-subscription", "zdr/fixture-api"]);
 });
@@ -8445,4 +8450,95 @@ it("returns a cached API picker immediately after successful empty subscription 
  const response = await pending;
  expect(response.status).toBe(200);
  expect((await response.json()).models.map((m: {slug: string}) => m.slug)).toEqual(["zdr/fixture-api"]);
+});
+
+
+describe("Decisions endpoint routing", () => {
+ it.each(["/decisions", "/v1/decisions"])("forwards native typed answers via %s without touching OAuth or PSP",async path=>{
+  const routes=[{id:"decision",label:"Fixture",kind:"zdr" as const,region:"us" as const,apiKey:"fixture-key",enabled:true,priority:0,visibleModels:["decision-test"],modelProfiles:{"decision-test":{supported_endpoints:["/v1/decisions"]}}}];
+  const result={model:"decision-test",answers:[{type:"choice",name:"typed",choice:true,probabilities:[{value:true,probability:1}],confidence:1},{type:"refusal",name:"x".repeat(1_100_000)}],usage:{input_tokens:15,output_tokens:0,total_tokens:15}};
+  const {calls,fetchImpl}=createRecordingFetch(call=>call.url.endsWith("/models")?Response.json({data:[{id:"decision-test"}]}):Response.json(result));
+  const proxy=await startProxy({accountManager:new AccountManager(undefined,createStorage(Date.now(),1)),fetchImpl,options:{readApiRoutes:async()=>routes}});
+  const previousRowIds = new Set((await readUsageLedgerRows()).map(row => row.id));
+  const response=await postResponses(proxy,{model:"zdr/decision-test",input:"fixture",questions:[{type:"choice",instructions:"pick",choices:[{value:true},{value:"true"}]},{type:"predicate",instructions:"check"}]},path);
+  expect(response.status).toBe(200);expect(await response.json()).toEqual(result);
+  await vi.waitFor(async()=>{const rows=await readUsageLedgerRows();expect(rows.some(r=>!previousRowIds.has(r.id)&&r.operation==="decisions"&&r.tokens.inputTokens===15&&r.costUsd===null)).toBe(true);});
+  expect(calls.every(c=>c.url.startsWith("https://us.api.openai.com/v1/"))).toBe(true);
+  const post=calls.find(c=>c.url.endsWith("/decisions"))!;expect(JSON.parse(post.bodyText)).not.toHaveProperty("store");expect(post.headers.get("authorization")).toBe("Bearer fixture-key");
+ });
+ it.each(["decision-test","psp/decision-test"])("does not spend on implicit or PSP route %s",async model=>{
+  const {calls,fetchImpl}=createRecordingFetch(()=>Response.json({}));
+  const proxy=await startProxy({accountManager:new AccountManager(undefined,createStorage(Date.now(),1)),fetchImpl});
+  expect((await postResponses(proxy,{model,input:"fixture",questions:[{type:"predicate",instructions:"check"}]},"/v1/decisions")).status).toBe(400);expect(calls).toHaveLength(0);
+ });
+ it.each([401, 403])("serves a credential %s from the same-pool backup and never relays it as the caller's auth failure",async status=>{
+  const route=(id:string,priority:number)=>({id,label:id,kind:"zdr" as const,region:"us" as const,apiKey:`key-${id}`,enabled:true,priority,visibleModels:["decision-test"],modelProfiles:{"decision-test":{supported_endpoints:["/v1/decisions"]}}});
+  const answer={answers:[{type:"predicate",name:null,probability:1}],usage:{input_tokens:1,output_tokens:0,total_tokens:1}};
+  let backupHealthy=true;
+  const {calls,fetchImpl}=createRecordingFetch(call=>{
+   if(call.url.endsWith("/models"))return Response.json({data:[{id:"decision-test"}]});
+   return call.headers.get("authorization")==="Bearer key-revoked"||!backupHealthy
+    ?Response.json({error:{code:"invalid_api_key",type:"invalid_request_error",message:"Incorrect API key provided: key-re***ked"}},{status})
+    :Response.json(answer);
+  });
+  const proxy=await startProxy({accountManager:new AccountManager(undefined,createStorage(Date.now(),1)),fetchImpl,options:{readApiRoutes:async()=>[route("revoked",0),route("healthy",1)]}});
+  const question={model:"zdr/decision-test",input:"fixture",questions:[{type:"predicate",instructions:"check"}]};
+  const served=await postResponses(proxy,question,"/v1/decisions");
+  expect(served.status).toBe(200);await served.text();
+  expect(calls.filter(c=>c.url.endsWith("/decisions")).map(c=>c.headers.get("authorization"))).toEqual(["Bearer key-revoked","Bearer key-healthy"]);
+  backupHealthy=false;
+  const exhausted=await postResponses(proxy,question,"/v1/decisions");
+  expect(exhausted.status).toBe(503);
+  const text=await exhausted.text();
+  expect(JSON.parse(text).error.code).toBe("decisions_pool_unavailable");
+  expect(text).not.toContain("invalid_api_key");
+ });
+ it("serves a warm primary while a cold backup's catalog discovery stalls",async()=>{
+  const route=(id:string,priority:number)=>({id,label:id,kind:"zdr" as const,region:"us" as const,apiKey:`key-${id}`,enabled:true,priority,visibleModels:["decision-test"],modelProfiles:{"decision-test":{supported_endpoints:["/v1/decisions"]}}});
+  let routes=[route("primary",0)];
+  let release!:()=>void;const stalled=new Promise<void>(resolve=>{release=resolve;});
+  const {calls,fetchImpl}=createRecordingFetch(async call=>{
+   if(!call.url.endsWith("/models"))return Response.json({answers:[{type:"predicate",name:null,probability:1}],usage:{input_tokens:1,output_tokens:0,total_tokens:1}});
+   if(call.headers.get("authorization")==="Bearer key-backup")await stalled;
+   return Response.json({data:[{id:"decision-test"}]});
+  });
+  const proxy=await startProxy({accountManager:new AccountManager(undefined,createStorage(Date.now(),1)),fetchImpl,options:{readApiRoutes:async()=>routes}});
+  const question={model:"zdr/decision-test",input:"fixture",questions:[{type:"predicate",instructions:"check"}]};
+  const warmed=await postResponses(proxy,question,"/v1/decisions");
+  expect(warmed.status).toBe(200);await warmed.text();
+  routes=[route("primary",0),route("backup",1)];
+  try{
+   const served=await Promise.race([postResponses(proxy,question,"/v1/decisions"),timeoutResult(2000)]);
+   expect(served).not.toBe("timeout");
+   expect((served as Response).status).toBe(200);await (served as Response).text();
+   expect(calls.filter(c=>c.url.endsWith("/decisions")).map(c=>c.headers.get("authorization"))).toEqual(["Bearer key-primary","Bearer key-primary"]);
+  }finally{release();}
+ });
+ it("refuses Decisions under a cost budget before sending, so unpriced usage cannot block other traffic",async()=>{
+  const fs=await import("node:fs/promises");const os=await import("node:os");const path=await import("node:path");
+  const previousDir=process.env.CODEX_MULTI_AUTH_DIR;const dir=await fs.mkdtemp(path.join(os.tmpdir(),"decisions-cost-budget-"));process.env.CODEX_MULTI_AUTH_DIR=dir;
+  try{
+   await saveBudgetGuardStore({version:1,limits:{global:{key:"global",window:"month",maxCostUsd:50,updatedAt:Date.now()}}});
+   const routes=[{id:"decision",label:"Fixture",kind:"zdr" as const,region:"us" as const,apiKey:"fixture-key",enabled:true,priority:0,visibleModels:["decision-test"],modelProfiles:{"decision-test":{supported_endpoints:["/v1/decisions"]}}}];
+   const {calls,fetchImpl}=createRecordingFetch(call=>call.url.startsWith("https://us.api.openai.com/")
+    ?call.url.endsWith("/models")?Response.json({data:[{id:"decision-test"}]}):Response.json({answers:[{type:"predicate",name:null,probability:1}],usage:{input_tokens:12,output_tokens:0,total_tokens:12}})
+    :textEventStream());
+   const proxy=await startProxy({accountManager:new AccountManager(undefined,createStorage(Date.now(),1)),fetchImpl,options:{readApiRoutes:async()=>routes}});
+   const refused=await postResponses(proxy,{model:"zdr/decision-test",input:"fixture",questions:[{type:"predicate",instructions:"check"}]},"/v1/decisions");
+   expect(refused.status).toBe(403);
+   const payload=await refused.json();
+   expect(payload.error.code).toBe("policy_blocked");
+   expect(payload.error.reasons.join(" ")).toMatch(/decisions requests have no configured price.*global/);
+   expect(calls.filter(c=>c.url.startsWith("https://us.api.openai.com/"))).toHaveLength(0);
+   const oauth=await postResponses(proxy,{model:"gpt-5-codex",stream:true});
+   expect(oauth.status).toBe(200);await oauth.text();
+   await vi.waitFor(async()=>{
+    const rows=await readUsageLedgerRows();
+    expect(rows.map(r=>[r.operation,r.outcome,r.tokens.totalTokens])).toEqual([["decisions","blocked",0],["responses","success",expect.any(Number)]]);
+   });
+  }finally{
+   if(previousDir===undefined)delete process.env.CODEX_MULTI_AUTH_DIR;else process.env.CODEX_MULTI_AUTH_DIR=previousDir;
+   await removeWithRetry(dir,{recursive:true,force:true});
+  }
+ });
 });

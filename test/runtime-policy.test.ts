@@ -147,6 +147,34 @@ describe("runtime policy", () => {
 		expect(decision.errorCode).toBe("budget_blocked");
 	});
 
+	// Budget windows sum every ledger row regardless of key, so one unpriced
+	// Decisions row would make any cost budget unevaluable, not only a matching one.
+	it("refuses Decisions while any cost budget exists, even one for another key", async () => {
+		const policyState = state();
+		const limit = { key: "project:elsewhere", window: "hour" as const, updatedAt: 1 };
+		policyState.budgets.limits[limit.key] = { ...limit, maxCostUsd: 5 };
+		const evaluate = (operation: "decisions" | "responses") =>
+			evaluateRuntimePolicy({
+				state: policyState,
+				accounts: [],
+				model: "zdr/decision-test",
+				now: Date.UTC(2026, 3, 29, 2),
+				operation,
+			});
+
+		const decisions = await evaluate("decisions");
+		expect(decisions).toMatchObject({
+			allowed: false,
+			statusCode: 403,
+			errorCode: "policy_blocked",
+		});
+		expect(decisions.reasons.join(" ")).toContain("project:elsewhere");
+		expect((await evaluate("responses")).allowed).toBe(true);
+
+		policyState.budgets.limits[limit.key] = { ...limit, maxRequests: 5, maxTokens: 1000 };
+		expect((await evaluate("decisions")).allowed).toBe(true);
+	});
+
 	// budget-guard stores limits ONLY under normalizeBudgetKey (lowercased, spaces
 	// -> "-"), so a project key that carries uppercase/spaces at runtime must be
 	// normalized before lookup or the budget is silently unenforced. The limit here

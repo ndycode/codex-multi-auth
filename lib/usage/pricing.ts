@@ -2,7 +2,11 @@ import {
 	getNormalizedModel,
 	RETIRED_MODEL_REPLACEMENTS,
 } from "../request/helpers/model-map.js";
-import type { UsageServiceTier, UsageTokenCounts } from "./types.js";
+import type {
+	UsageLedgerOperation,
+	UsageServiceTier,
+	UsageTokenCounts,
+} from "./types.js";
 
 export interface UsageModelPricing {
 	inputUsdPerMillion: number;
@@ -329,6 +333,16 @@ function resolveContextLengthPricing(
 	// The model has long-context rates but not for this tier: unknown, never
 	// the cheaper short-context rate.
 	return basePricing.longContext ? null : tierPricing;
+}
+
+/**
+ * Operations with no endpoint-specific rate. Their usage is always recorded
+ * at unknown cost, never priced as a Responses model.
+ */
+export function isUnpricedOperation(
+	operation: UsageLedgerOperation | undefined,
+): boolean {
+	return operation === "decisions";
 }
 
 export function estimateUsageCostUsd(

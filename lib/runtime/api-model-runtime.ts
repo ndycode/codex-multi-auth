@@ -164,6 +164,16 @@ export class ApiModelRuntime {
 			.filter(([key]) => this.activeKeys.has(key))
 			.map(([, catalog]) => catalog);
 	}
+	/** Fresh cached evidence under the current policy of `routes`, never an old snapshot. Never waits for discovery. */
+	warmCatalogs(routes: ApiRouteCredential[]): RouteCatalog[] {
+		return routes.flatMap(credential => {
+			const cached = this.cache.get(this.key(credential));
+			if (!credential.enabled || !cached || cached.error || cached.at + 300_000 <= this.now()) return [];
+			return [{ id: credential.id, kind: credential.kind, enabled: credential.enabled,
+				priority: credential.priority, visibleModels: credential.visibleModels,
+				models: cached.models.map(model => withRouteMetadata(model, credential)) }];
+		});
+	}
 	private readonly cache = new Map<
 		string,
 		{ at: number; models: RouteModel[]; error: boolean; failure?: ApiCatalogFailure; lastSuccessfulAt?: number }
@@ -402,16 +412,8 @@ export class ApiModelRuntime {
 						? body.reasoning.effort
 						: undefined,
             };
-            // Resolve current policy against fresh evidence before waiting for
-            // unrelated cold catalogs. Never reuse an old policy snapshot.
-            const warmCatalogs: RouteCatalog[] = routes.flatMap(credential => {
-                const cached = this.cache.get(this.key(credential));
-                if (!credential.enabled || !cached || cached.error || cached.at + 300_000 <= this.now()) return [];
-                return [{ id: credential.id, kind: credential.kind, enabled: credential.enabled,
-                    priority: credential.priority, visibleModels: credential.visibleModels,
-                    models: cached.models.map(model => withRouteMetadata(model, credential)) }];
-            });
-            route = resolveModelRoute(alias, warmCatalogs, settings);
+            // Resolve against fresh evidence before waiting for unrelated cold catalogs.
+            route = resolveModelRoute(alias, this.warmCatalogs(routes), settings);
             if (!route.candidates.length) {
                 route = resolveModelRoute(alias, await this.catalogs(routes, false, false, true, false, parseModelRoute(alias).kind), settings);
             }

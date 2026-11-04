@@ -1,4 +1,5 @@
 import { carryRuntimeQuotaState } from "./carry-runtime-quota-state.js";
+import type { DecisionsRuntime } from "./decisions-runtime.js";
 import { RealtimeCallRegistry } from "./realtime-calls.js";
 import type { ResetExhaustionEvidence } from "./reset-credits.js";
 import type { ConfirmedResetReconciler } from "./confirmed-reset-reconciler.js";
@@ -98,6 +99,7 @@ export interface RotationProxyState extends RotationProxyStateInit {
     readCache?: Map<string, { at: number; value: Promise<unknown> }>;
  capabilityFailures?: RuntimeCapabilityFailures;
 	apiModelRuntime?: ApiModelRuntime;
+	decisionsRuntime?: DecisionsRuntime;
  apiModelCapabilities?:ApiModelCapabilities;
 	catalogEtag?: string;
  catalogOAuthModels?:RouteModel[];
