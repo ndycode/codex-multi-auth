@@ -1,4 +1,4 @@
-import type { ManagedAccount } from "../accounts.js";
+import { cloneRateLimitObservation, type ManagedAccount } from "../accounts.js";
 
 /** Identity matching belongs to the caller; preserve chronology even after timers expire. */
 export function carryRuntimeQuotaState(
@@ -11,7 +11,7 @@ export function carryRuntimeQuotaState(
   if (typeof until === "number" && until > now) live.rateLimitResetTimes[key] = Math.max(live.rateLimitResetTimes[key] ?? 0, until);
  }
  for (const [key, observation] of Object.entries(previous.rateLimitObservations ?? {})) {
-  (live.rateLimitObservations ??= {})[key] = { ...observation, receiptGenerations: observation.receiptGenerations && { ...observation.receiptGenerations }, receiptIdentities: observation.receiptIdentities && { ...observation.receiptIdentities } };
+  (live.rateLimitObservations ??= {})[key] = cloneRateLimitObservation(observation);
  }
  if ((previous.coolingDownUntil ?? 0) > (live.coolingDownUntil ?? 0) && shouldCarryCooldown(previous, live)) {
   live.coolingDownUntil = previous.coolingDownUntil;

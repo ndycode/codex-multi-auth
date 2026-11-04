@@ -9,7 +9,7 @@ it("isolates nested snapshot observations from live receipt ordering", () => {
  account.resetReceiptIdentities={scope:"receipt"};
  const snapshot=manager.getAccountsSnapshot()[0]!;
  snapshot.resetReceiptIdentities!.scope="changed";
- snapshot.rateLimitObservations!.codex!.receiptIdentities!.scope=["changed"];
+ snapshot.rateLimitObservations!.codex!.receiptIdentities!.scope!.push("changed");
  expect(account.resetReceiptIdentities.scope).toBe("receipt");
  snapshot.rateLimitObservations!.codex!.revision=99;
  snapshot.rateLimitObservations!.codex!.receiptGenerations!.scope=99;
@@ -32,7 +32,8 @@ it.each(["inventory", "reload"] as const)("preserves the %s cooldown predicate w
   expect(live.resetReceiptGenerations).toEqual({scope:4});
   expect(live.resetReceiptIdentities).toEqual({scope:"receipt"});
   expect(live.resetReceiptIdentities).not.toBe(previous.resetReceiptIdentities);
-  expect(live.rateLimitObservations!.codex!.receiptIdentities).not.toBe(previous.rateLimitObservations.codex!.receiptIdentities);
+  live.rateLimitObservations!.codex!.receiptIdentities!.scope!.push("changed");
+  expect(previous.rateLimitObservations.codex!.receiptIdentities!.scope).toEqual(["receipt"]);
   expect(live.coolingDownUntil).toBe(mode==="reload"&&reason==="rate-limit"?200:undefined);
  }
 });

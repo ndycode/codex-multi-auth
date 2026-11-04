@@ -124,6 +124,18 @@ export function getRateLimitObservationKey(quotaKey: string, scopeId?: string): 
 	return scopeId === undefined ? quotaKey : JSON.stringify([scopeId, quotaKey]);
 }
 
+type RateLimitObservation = NonNullable<ManagedAccount["rateLimitObservations"]>[string];
+
+export function cloneRateLimitObservation(observation: RateLimitObservation): RateLimitObservation {
+	return {
+		...observation,
+		receiptGenerations: observation.receiptGenerations && { ...observation.receiptGenerations },
+		receiptIdentities: observation.receiptIdentities && Object.fromEntries(
+			Object.entries(observation.receiptIdentities).map(([scope, identities]) => [scope, [...identities]]),
+		),
+	};
+}
+
 export function getRuntimeTrackerKey(account: ManagedAccount): string | number {
 	if (account._runtimeTrackerKey !== undefined) {
 		return account._runtimeTrackerKey;
@@ -805,12 +817,8 @@ export class AccountManager {
 				circuitKeyId,
 				rateLimitResetTimes: { ...account.rateLimitResetTimes },
 				rateLimitObservations: account.rateLimitObservations && Object.fromEntries(
-                    Object.entries(account.rateLimitObservations).map(([key, observation]) => [key, {
-                        ...observation,
-                        receiptGenerations: observation.receiptGenerations && { ...observation.receiptGenerations },
-                        receiptIdentities: observation.receiptIdentities && { ...observation.receiptIdentities },
-                    }]),
-                ),
+					Object.entries(account.rateLimitObservations).map(([key, observation]) => [key, cloneRateLimitObservation(observation)]),
+				),
 				resetReceiptGenerations: account.resetReceiptGenerations && { ...account.resetReceiptGenerations },
                 resetReceiptIdentities: account.resetReceiptIdentities && { ...account.resetReceiptIdentities },
 				workspaces: account.workspaces?.map((workspace) => ({ ...workspace })),
