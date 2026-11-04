@@ -2840,8 +2840,9 @@ async function handleRequestInner(
 			if (!selected) {
                 // Select again even when a concurrent request performed the shared check.
                 if (!isPinned && isResponsesRequest && !resetsReconciledAfterExhaustion) {
-                    resetsReconciledAfterExhaustion = true;
-                    if (await reconcileConfirmedResets()) {
+                    // A recovered account can still be limited for this model, so its siblings get another pass.
+                    resetsReconciledAfterExhaustion = !(await reconcileConfirmedResets());
+                    if (!resetsReconciledAfterExhaustion) {
                         attemptedIndexes.clear();
                         accountSkipReasons.clear();
                     }
