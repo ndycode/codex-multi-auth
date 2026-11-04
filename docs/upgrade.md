@@ -22,9 +22,13 @@ together. Existing version 1/2 state remains readable. See [the reset design](de
 Once a new completion has written version 3, a 2.25.0 CLI fails every
 `resets list`, `resets redeem`, and `resets auto`, and a 2.25.0 router that is
 still running loses last-resort automatic redemption. Restart the router after
-upgrading. To downgrade, delete `~/.codex/multi-auth/reset-credits.json` once no
-redemption is pending (this also returns `resets auto` to manual), then restart
-any running router. A recreated file numbers
+upgrading. To downgrade, delete `reset-credits.json` from the multi-auth root once
+no redemption is pending (this also returns `resets auto` to manual), then restart
+any running router. That root is `CODEX_MULTI_AUTH_DIR` when set, otherwise
+`$CODEX_HOME/multi-auth` when `CODEX_HOME` is customized, and by default
+`~/.codex/multi-auth` (`%USERPROFILE%\.codex\multi-auth` on Windows, where `~`
+is not expanded). [Data Cleanup](privacy.md#data-cleanup) lists the older
+install locations the default can resolve to. A recreated file numbers
 generations from 1 again, and a router that already saw higher generations
 ignores the next redemptions until it restarts.
 
