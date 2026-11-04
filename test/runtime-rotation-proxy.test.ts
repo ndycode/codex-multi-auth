@@ -500,13 +500,14 @@ it("serves an unpinned provider request from a healthy account without awaiting 
  const now=Date.now(),manager=new AccountManager(undefined,createStorage(now,2));
  const blocked=manager.getAccountByIndex(0)!;blocked.rateLimitResetTimes={[getModelFamily("chat-fixture")]:now+600_000};
  await mockOldReceiptFor(blocked);
- let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
- const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async auth=>{await gate;return {accountId:auth.accountId,ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}};});
+ let release!:()=>void,entered!:()=>void;
+ const gate=new Promise<void>(resolve=>{release=resolve;}),checked=new Promise<"checked">(resolve=>{entered=()=>resolve("checked");});
+ const rpc=vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async auth=>{entered();await gate;return {accountId:auth.accountId,ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}};});
  const {calls,fetchImpl}=createRecordingFetch(()=>textEventStream());
  const proxy=await startProxy({accountManager:manager,fetchImpl});
  try {
-  const result=await Promise.race([postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"}),timeoutResult(2_000)]);
-  expect(result==="timeout"?result:result.status).toBe(200);
+  const result=await Promise.race([postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"}),checked]);
+  expect(result==="checked"?result:result.status).toBe(200);
   expect(calls.map(call=>call.headers.get("chatgpt-account-id"))).toEqual(["acc_2"]);
   expect(rpc).not.toHaveBeenCalled();
  } finally { release(); }
@@ -523,16 +524,17 @@ it("serves an unpinned provider request from a recovered account without awaitin
   return [scope.id,{key:scope.id,at:now-1_000,outcome:"reset" as const,automatic:false,generation:index+1}];
  }));
  vi.spyOn(resets,"loadResetCreditState").mockResolvedValue({version:3,policy:"manual",snapshots:{},redemptionGeneration:2,redemptions});
- let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+ let release!:()=>void,entered!:()=>void;
+ const gate=new Promise<void>(resolve=>{release=resolve;}),checked=new Promise<"checked">(resolve=>{entered=()=>resolve("checked");});
  vi.spyOn(native,"nativeRateLimitsRpc").mockImplementation(async auth=>{
-  if(auth.accountId==="acc_2")await gate;
+  if(auth.accountId==="acc_2"){entered();await gate;}
   return {accountId:auth.accountId,ordinaryUsageAllowed:true,rateLimits:{primary:{usedPercent:0},secondary:{}}};
  });
  const {calls,fetchImpl}=createRecordingFetch(()=>textEventStream());
  const proxy=await startProxy({accountManager:manager,fetchImpl});
  try {
-  const result=await Promise.race([postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"}),timeoutResult(2_000)]);
-  expect(result==="timeout"?result:result.status).toBe(200);
+  const result=await Promise.race([postResponsesWithHttp(proxy,{model:"chat-fixture",input:"synthetic"}),checked]);
+  expect(result==="checked"?result:result.status).toBe(200);
   expect(calls.map(call=>call.headers.get("chatgpt-account-id"))).toEqual(["acc_1"]);
  } finally { release(); }
 });
