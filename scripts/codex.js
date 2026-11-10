@@ -5819,12 +5819,19 @@ async function createRuntimeRotationProxyContextIfEnabled(
 		}
 	};
 
+	const providerArgs = [
+		"-c",
+		`model_provider=${configTomlModule.tomlStringLiteral(RUNTIME_ROTATION_PROXY_PROVIDER_ID)}`,
+	];
 	return {
-		args: [
-			...baseContext.args,
-			"-c",
-			`model_provider=${configTomlModule.tomlStringLiteral(RUNTIME_ROTATION_PROXY_PROVIDER_ID)}`,
-		],
+		// Same separator rule as buildForwardArgs: everything after a `--`
+		// belongs to the subcommand's positional list (or the root `[PROMPT]`),
+		// where Codex rejects an appended `-c` outright (`exec` errors with
+		// "unexpected argument '-c' found"). Insert on the option side instead.
+		args:
+			findForwardedCommand(baseContext.args) === null
+				? insertArgsBeforeRootPrompt(baseContext.args, providerArgs)
+				: insertArgsBeforeForwardedSeparator(baseContext.args, providerArgs),
 		env: shadowContext.env,
 		cleanup,
 		proxyAppServerAccountRead: isCodexAppServerCommand(rawArgs),
