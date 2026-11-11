@@ -3,6 +3,7 @@ import { getStoragePath, normalizeAccountStorage, type AccountStorageV3 } from "
 import { loadAccountsFromPath } from "../storage/storage-parser.js";
 import { applyPendingAuth } from "../storage/pending-auth.js";
 import { isRecord } from "../utils.js";
+import { syncNativeLogin } from "./native-login-sync.js";
 export interface NativeAccountSnapshot {
     storage: AccountStorageV3 | null;
     verified: boolean;
@@ -26,12 +27,20 @@ export function createNativeAccountStorageReader(read?: () => Promise<AccountSto
                     const info = await stat(path);
                     nextSignature = `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
                     if (cached && nextSignature === signature && Date.now() - Math.max(info.mtimeMs, info.ctimeMs) > 2000) {
+                        if (path === getStoragePath() && await syncNativeLogin(await applyPendingAuth(path, structuredClone(cached)) ?? cached)) {
+                            cached = null;
+                        } else {
                         lastSuccess = Date.now();
                         // The pending journal can change without touching the primary.
                         return { storage: await applyPendingAuth(path, structuredClone(cached)), verified: true };
+                        }
                     }
                 }
-                const storage = read ? await read() : (await loadAccountsFromPath(path, { normalizeAccountStorage, isRecord })).normalized;
+                let storage = read ? await read() : (await loadAccountsFromPath(path, { normalizeAccountStorage, isRecord })).normalized;
+                if (!read && storage && path === getStoragePath() && await syncNativeLogin(await applyPendingAuth(path, structuredClone(storage)) ?? storage)) {
+                    storage = (await loadAccountsFromPath(path, { normalizeAccountStorage, isRecord })).normalized;
+                    nextSignature = undefined;
+                }
                 cached = structuredClone(storage);
                 signature = nextSignature;
                 lastSuccess = Date.now();

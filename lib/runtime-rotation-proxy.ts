@@ -1250,6 +1250,10 @@ export async function startRuntimeRotationProxy(
 	options: RuntimeRotationProxyOptions,
 ): Promise<RuntimeRotationProxyServer> {
 	const pluginConfig = loadPluginConfig();
+	const readNativeAccountStorage = options.readNativeAccountStorage || !options.accountManager ? createNativeAccountStorageReader(options.readNativeAccountStorage) : undefined;
+	// Adopt the complete credential pair before legacy startup hydration can
+	// copy just the access token and leave an unrelated refresh token behind.
+	if (!options.accountManager) await readNativeAccountStorage?.();
 	const activeAccountManager = options.accountManager ?? (await AccountManager.loadFromDisk());
 	// accounts-01/08: apply the configured routing-mutex mode so the proxy's
 	// async select->commit path (persistRuntimeActiveAccount) can serialize cursor
@@ -1369,7 +1373,7 @@ export async function startRuntimeRotationProxy(
 		readStorageMetaFromDisk().affinityGeneration;
 	const state = createRotationProxyState({
 		nativeOpenai: options.nativeOpenai === true,
-		readNativeAccountStorage: options.readNativeAccountStorage || !options.accountManager ? createNativeAccountStorageReader(options.readNativeAccountStorage) : undefined,
+		readNativeAccountStorage,
 		readApiRoutes: options.readApiRoutes ?? loadApiRoutes,
 		readSubscriptionQuota: options.readSubscriptionQuota ?? (options.accountManager ? undefined : loadQuotaCache),
 		catalogAccount: options.catalogAccount,
