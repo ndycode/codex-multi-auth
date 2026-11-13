@@ -5457,6 +5457,82 @@ describe("codex bin wrapper", () => {
 		await waitForFileText(markerPath, "start:http://127.0.0.1:4567\nclose\n");
 	});
 
+	// The rotation proxy's own `-c model_provider=...` injection appended past
+	// a `--`, so `codex exec -- "prompt"` failed with
+	// "unexpected argument '-c' found". The separator bounds that injection
+	// too, exactly like the helper args above.
+	it("injects the rotation provider before a `--` on the exec path", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"const args = process.argv.slice(2);",
+			"const sep = args.indexOf(\"--\");",
+			"console.log(`SEP_INDEX:${sep}`);",
+			"console.log(`AFTER_SEP:${args.slice(sep + 1).join(\" \")}`);",
+			"console.log(`PROVIDER_BEFORE_SEP:${args.slice(0, sep).some((a) => a.startsWith(\"model_provider=\"))}`);",
+			"console.log(`FIRST_ARG:${args[0]}`);",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["exec", "--", "do the thing"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		if (result.status !== 0) {
+			throw new Error(output);
+		}
+		// The subcommand still leads, the injected provider sits on the option
+		// side, and only the user's own text survives past the separator.
+		expect(output).toContain("FIRST_ARG:exec");
+		expect(output).toContain("AFTER_SEP:do the thing");
+		expect(output).toContain("PROVIDER_BEFORE_SEP:true");
+		await waitForFileText(markerPath, "start:http://127.0.0.1:4567\nclose\n");
+	});
+
+	// Without a `--` the provider injection stays a plain append, keeping the
+	// forwarded argv byte-identical to the pre-separator-handling ordering.
+	it("appends the rotation provider at the end when there is no `--`", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			OPENAI_API_KEY: undefined,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status -c cli_auth_credentials_store="file" -c model_provider="codex-multi-auth-runtime-proxy"',
+		);
+	});
+
 	// Printing help makes no model requests, so it must not pay for the rotation
 	// transport at all. This matters most for resume/fork now that they are
 	// interactive: that branch detaches its helper on a clean exit, so a helper
