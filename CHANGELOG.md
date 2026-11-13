@@ -1245,3 +1245,18 @@ Pre-`0.1.0` iteration history is archived in [`docs/releases/legacy-pre-0.1-hist
 [1.3.2]: https://github.com/ndycode/codex-multi-auth/releases/tag/v1.3.2
 [2.0.1]: https://github.com/ndycode/codex-multi-auth/releases/tag/v2.0.1
 [2.0.0]: https://github.com/ndycode/codex-multi-auth/releases/tag/v2.0.0
+## [2.26.1] - 2026-11-13
+
+Native catalog discovery, login synchronization, and runtime rotation now handle
+recent Codex CLI changes safely. The release includes fixes from [#765](https://github.com/ndycode/codex-multi-auth/pull/765), [#766](https://github.com/ndycode/codex-multi-auth/pull/766), and [#767](https://github.com/ndycode/codex-multi-auth/pull/767).
+[Full notes](docs/releases/v2.26.1.md).
+
+## Fixed
+
+- Rotation provider arguments are inserted before the command separator, so
+  forwarded native CLI arguments remain intact. ([#765](https://github.com/ndycode/codex-multi-auth/pull/765))
+- Native login changes are adopted by running state without losing account
+  synchronization. ([#766](https://github.com/ndycode/codex-multi-auth/pull/766))
+- Catalog probes use the installed Codex version, recover from rejected probes,
+  and retry shared requests without leaking stale version state. ([#767](https://github.com/ndycode/codex-multi-auth/pull/767))
+
