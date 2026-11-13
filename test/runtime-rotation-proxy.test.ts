@@ -90,7 +90,7 @@ const openManagers: AccountManager[] = [];
 const DEFAULT_CLIENT_API_KEY = "runtime-secret";
 
 beforeEach(() => {
-	detectInstalledCodexCliVersionMock.mockResolvedValue(null);
+	detectInstalledCodexCliVersionMock.mockReset().mockResolvedValue(null);
 });
 
 it.each([1,2] as const)("recovers a pinned provider from a distinct legacy v%i receipt after clock catch-up", async version => {
@@ -6643,10 +6643,29 @@ describe("native catalog client version", () => {
 			fetch(`${proxy.baseUrl}/models`, { headers }),
 			fetch(`${proxy.baseUrl}/models`, { headers }),
 		]);
+		await vi.waitFor(() => expect(detectInstalledCodexCliVersionMock).toHaveBeenCalledTimes(2));
 		release("9.1.0");
 		const responses = await pending;
 		expect(detectInstalledCodexCliVersionMock).toHaveBeenCalledTimes(2);
 		for (const response of responses) { expect(response.status).toBe(200); await response.text(); }
+	});
+
+	it("recovers after an installed CLI probe rejects", async () => {
+		let now = Date.now();
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+		detectInstalledCodexCliVersionMock.mockRejectedValueOnce(new Error("probe failed")).mockResolvedValueOnce("9.1.0");
+		const manager = new AccountManager(undefined, createStorage(now));
+		const { fetchImpl } = createRecordingFetch(call => new URL(call.url).searchParams.get("client_version") === "9.1.0"
+			? Response.json({ models: [{ slug: "future-model" }] })
+			: new Response("version required", { status: 400 }));
+		const proxy = await startProxy({ accountManager: manager, fetchImpl, options: { nativeOpenai: true, now: () => now } });
+		const headers = { authorization: "Bearer access-1" };
+		const first = await fetch(`${proxy.baseUrl}/models`, { headers });
+		expect(first.status).toBe(503); await first.text();
+		now += 30_000;
+		const second = await fetch(`${proxy.baseUrl}/models`, { headers });
+		expect(second.status).toBe(200); await second.text();
+		expect(detectInstalledCodexCliVersionMock).toHaveBeenCalledTimes(2);
 	});
 });
 

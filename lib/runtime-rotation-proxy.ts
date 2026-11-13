@@ -2266,7 +2266,12 @@ async function handleRequestInner(
 					state.catalogClientVersionPromise = detectInstalledCodexCliVersion();
 				}
 				if (state.catalogClientVersionPromise) {
-					installedCatalogVersion = await state.catalogClientVersionPromise;
+					try {
+						installedCatalogVersion = await state.catalogClientVersionPromise;
+					} catch {
+						state.catalogClientVersionPromise = undefined;
+						state.catalogClientVersionRetryAt = state.now() + 30_000;
+					}
 					if (installedCatalogVersion === null) {
 						state.catalogClientVersionPromise = undefined;
 						state.catalogClientVersionRetryAt = state.now() + 30_000;
