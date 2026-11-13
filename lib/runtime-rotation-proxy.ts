@@ -2254,11 +2254,26 @@ async function handleRequestInner(
 		if (state.nativeOpenai && (isModelsRequest || (isResponsesRequest && context.model))) {
 			const requestedVersion = incomingUrl.searchParams.get("client_version") ?? incomingHeaders.get("version");
 			const requestedCatalogVersion = requestedVersion?.trim();
-			if (!state.catalogClientVersionPromise) {
-				state.catalogClientVersionPromise = detectInstalledCodexCliVersion();
+			const hasRequestedCatalogVersion = Boolean(
+				requestedCatalogVersion && CLIENT_VERSION_PATTERN.test(requestedCatalogVersion),
+			);
+			let installedCatalogVersion: string | null = null;
+			if (!hasRequestedCatalogVersion) {
+				if (
+					!state.catalogClientVersionPromise &&
+					(state.catalogClientVersionRetryAt ?? 0) <= state.now()
+				) {
+					state.catalogClientVersionPromise = detectInstalledCodexCliVersion();
+				}
+				if (state.catalogClientVersionPromise) {
+					installedCatalogVersion = await state.catalogClientVersionPromise;
+					if (installedCatalogVersion === null) {
+						state.catalogClientVersionPromise = undefined;
+						state.catalogClientVersionRetryAt = state.now() + 30_000;
+					}
+				}
 			}
-			const installedCatalogVersion = await state.catalogClientVersionPromise;
-			const catalogClientVersion = requestedCatalogVersion && CLIENT_VERSION_PATTERN.test(requestedCatalogVersion)
+			const catalogClientVersion = hasRequestedCatalogVersion
 				? requestedCatalogVersion
 				: installedCatalogVersion ?? undefined;
             const backoff = state.catalogBackoff ??= new Map();
