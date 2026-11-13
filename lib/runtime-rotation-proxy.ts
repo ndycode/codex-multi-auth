@@ -30,6 +30,7 @@ import { isSameNativeAccount, syncNativeAccountCredentials } from "./runtime/nat
 import { sanitizeEmail } from "./auth/token-utils.js";
 import { isNativeClientToken } from "./runtime/native-client-auth.js";
 import { CatalogRetryError, AccountModelCatalog, clampCatalogRetryMs } from "./runtime/account-model-catalog.js";
+import { detectInstalledCodexCliVersion, CLIENT_VERSION_PATTERN } from "./codex-cli/version.js";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
@@ -2252,7 +2253,14 @@ async function handleRequestInner(
 		};
 		if (state.nativeOpenai && (isModelsRequest || (isResponsesRequest && context.model))) {
 			const requestedVersion = incomingUrl.searchParams.get("client_version") ?? incomingHeaders.get("version");
-            const catalogClientVersion = requestedVersion && /^[0-9A-Za-z.+_-]{1,80}$/.test(requestedVersion) ? requestedVersion : undefined;
+			const requestedCatalogVersion = requestedVersion?.trim();
+			if (!state.catalogClientVersionPromise) {
+				state.catalogClientVersionPromise = detectInstalledCodexCliVersion();
+			}
+			const installedCatalogVersion = await state.catalogClientVersionPromise;
+			const catalogClientVersion = requestedCatalogVersion && CLIENT_VERSION_PATTERN.test(requestedCatalogVersion)
+				? requestedCatalogVersion
+				: installedCatalogVersion ?? undefined;
             const backoff = state.catalogBackoff ??= new Map();
 			const forceCatalogRefresh = isModelsRequest && incomingUrl.searchParams.get("refresh_capabilities") === "1";
 			// An explicit capability check is a deliberate retry: it must not stay
