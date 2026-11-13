@@ -94,6 +94,9 @@ export interface RotationProxyState extends RotationProxyStateInit {
 	readonly status: RuntimeRotationProxyStatus;
 	modelCatalog?: AccountModelCatalog;
 	modelCatalogs?: Map<string, AccountModelCatalog>;
+	/** Installed Codex version used when the client omits `client_version`. */
+	catalogClientVersionPromise?: Promise<string | null>;
+	catalogClientVersionRetryAt?: number;
     catalogBackoff?: Map<string, number>;
     /** Short-lived per-request file reads (quota cache, reset credits), keyed by source. */
     readCache?: Map<string, { at: number; value: Promise<unknown> }>;
