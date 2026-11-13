@@ -6624,6 +6624,30 @@ describe("native catalog client version", () => {
 		const first = await fetch(`${proxy.baseUrl}/models`, { headers }); expect(first.status).toBe(503); await first.text();
 		const next = await fetch(`${proxy.baseUrl}/models?client_version=9.1.0`, { headers }); expect(next.status).toBe(200); expect((await next.json()).models[0].slug).toBe("future-model");
 	});
+	it("shares a deferred retry probe across concurrent unversioned requests", async () => {
+		let now = Date.now();
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+		let release!: (version: string) => void;
+		const deferred = new Promise<string>(resolve => { release = resolve; });
+		detectInstalledCodexCliVersionMock.mockResolvedValueOnce(null).mockReturnValueOnce(deferred);
+		const manager = new AccountManager(undefined, createStorage(now));
+		const { fetchImpl } = createRecordingFetch(call => new URL(call.url).searchParams.get("client_version") === "9.1.0"
+			? Response.json({ models: [{ slug: "future-model" }] })
+			: new Response("version required", { status: 400 }));
+		const proxy = await startProxy({ accountManager: manager, fetchImpl, options: { nativeOpenai: true, now: () => now } });
+		const headers = { authorization: "Bearer access-1" };
+		const first = await fetch(`${proxy.baseUrl}/models`, { headers });
+		expect(first.status).toBe(503); await first.text();
+		now += 30_000;
+		const pending = Promise.all([
+			fetch(`${proxy.baseUrl}/models`, { headers }),
+			fetch(`${proxy.baseUrl}/models`, { headers }),
+		]);
+		release("9.1.0");
+		const responses = await pending;
+		expect(detectInstalledCodexCliVersionMock).toHaveBeenCalledTimes(2);
+		for (const response of responses) { expect(response.status).toBe(200); await response.text(); }
+	});
 });
 
 describe("Responses WebSocket fallback", () => {
