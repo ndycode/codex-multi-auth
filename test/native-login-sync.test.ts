@@ -24,7 +24,7 @@ it.each([false,true])("adopts login when only auth.json changes (warm cache: %s)
  expect(JSON.parse(await readFile(path,"utf8")).accounts[0].refreshToken).toBe("fresh");
  expect((await reader()).storage!.accounts[0]!.refreshToken).toBe("fresh");
 });
-it.each(["older","expired","different-account","different-email","disabled","ambiguous","same-refresh"])("rejects %s native credentials",async mode=>{
+it.each(["older","expired","different-account","different-email","disabled","ambiguous"])("rejects %s native credentials",async mode=>{
  const disk=pool();let access=jwt(now/1000);
  if(mode==="older")disk.accounts[0]!.accessToken=jwt(now/1000+1);
  if(mode==="expired")access=jwt(now/1000-4000);
@@ -32,9 +32,17 @@ it.each(["older","expired","different-account","different-email","disabled","amb
  if(mode==="different-email")access=jwt(now/1000,"workspace","other@example.test");
  if(mode==="disabled")disk.accounts[0]!.enabled=false;
  if(mode==="ambiguous")disk.accounts.push({...disk.accounts[0]!,recordId:"duplicate"});
- if(mode==="same-refresh")disk.accounts[0]!.refreshToken="fresh";
  await writeFile(path,JSON.stringify(disk));expect(await syncNativeLogin(disk,async()=>auth(access))).toBe(false);
  expect(JSON.parse(await readFile(path,"utf8"))).toEqual(disk);
+});
+it("adopts a newer access token when native login keeps the refresh token",async()=>{
+ const disk=pool();disk.accounts[0]!.refreshToken="fresh";await writeFile(path,JSON.stringify(disk));
+ expect(await syncNativeLogin(disk,async()=>auth())).toBe(true);
+});
+it("rejects a conflicting id token email",async()=>{
+ const disk=pool();await writeFile(path,JSON.stringify(disk));
+ const conflicting=JSON.stringify({tokens:{access_token:jwt(now/1000),refresh_token:"fresh",id_token:jwt(now/1000,"workspace","other@example.test")} });
+ expect(await syncNativeLogin(disk,async()=>conflicting)).toBe(false);
 });
 it("does not overwrite a concurrent newer credential or a removed account",async()=>{
  const stale=pool(),current=pool();current.accounts[0]!.accessToken=jwt(now/1000+1);current.accounts[0]!.refreshToken="newer";

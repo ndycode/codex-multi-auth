@@ -1,5 +1,5 @@
 import { stat } from "node:fs/promises";
-import { getStoragePath, normalizeAccountStorage, type AccountStorageV3 } from "../storage.js";
+import { cloneTrackedAccountStorage, getStoragePath, normalizeAccountStorage, type AccountStorageV3 } from "../storage.js";
 import { loadAccountsFromPath } from "../storage/storage-parser.js";
 import { applyPendingAuth } from "../storage/pending-auth.js";
 import { isRecord } from "../utils.js";
@@ -27,21 +27,26 @@ export function createNativeAccountStorageReader(read?: () => Promise<AccountSto
                     const info = await stat(path);
                     nextSignature = `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
                     if (cached && nextSignature === signature && Date.now() - Math.max(info.mtimeMs, info.ctimeMs) > 2000) {
-                        if (path === getStoragePath() && await syncNativeLogin(await applyPendingAuth(path, structuredClone(cached)) ?? cached)) {
+                        let adopted = false;
+                        try { adopted = path === getStoragePath() && await syncNativeLogin(await applyPendingAuth(path, cloneTrackedAccountStorage(cached)) ?? cached); } catch { /* Keep the verified cached pool when adoption is temporarily unavailable. */ }
+                        if (adopted) {
                             cached = null;
                         } else {
                         lastSuccess = Date.now();
                         // The pending journal can change without touching the primary.
-                        return { storage: await applyPendingAuth(path, structuredClone(cached)), verified: true };
+                        return { storage: await applyPendingAuth(path, cloneTrackedAccountStorage(cached)), verified: true };
                         }
                     }
                 }
                 let storage = read ? await read() : (await loadAccountsFromPath(path, { normalizeAccountStorage, isRecord })).normalized;
-                if (!read && storage && path === getStoragePath() && await syncNativeLogin(await applyPendingAuth(path, structuredClone(storage)) ?? storage)) {
+                let adopted = false;
+                const loadedStorage = storage;
+                try { adopted = !read && loadedStorage !== null && path === getStoragePath() && await syncNativeLogin(await applyPendingAuth(path, cloneTrackedAccountStorage(loadedStorage)) ?? loadedStorage); } catch { /* Keep the freshly loaded pool when adoption is temporarily unavailable. */ }
+                if (adopted) {
                     storage = (await loadAccountsFromPath(path, { normalizeAccountStorage, isRecord })).normalized;
                     nextSignature = undefined;
                 }
-                cached = structuredClone(storage);
+                cached = storage ? cloneTrackedAccountStorage(storage) : null;
                 signature = nextSignature;
                 lastSuccess = Date.now();
                 // A rotated token journaled after a locked write is newer than the
@@ -54,7 +59,7 @@ export function createNativeAccountStorageReader(read?: () => Promise<AccountSto
                     // Availability grace is bounded, never refreshes its own age, and cannot
                     // authenticate a managed bearer. Retry the changed file on the next request.
                     signature = undefined;
-                    return { storage: Date.now() - lastSuccess < 2000 ? await applyPendingAuth(path, structuredClone(cached)) : null, verified: false, transientFailure: true, routingAvailable: cached !== null && Date.now() - lastSuccess < 30000 };
+                    return { storage: Date.now() - lastSuccess < 2000 && cached ? await applyPendingAuth(path, cloneTrackedAccountStorage(cached)) : null, verified: false, transientFailure: true, routingAvailable: cached !== null && Date.now() - lastSuccess < 30000 };
                 }
                 cached = null;
                 signature = undefined;

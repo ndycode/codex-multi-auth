@@ -23,7 +23,9 @@ export async function syncNativeLogin(
  const issued = claims?.iat, expires = claims?.exp;
  if (typeof issued !== "number" || !Number.isFinite(issued) || typeof expires !== "number" || !Number.isFinite(expires) || expires * 1000 <= Date.now()) return false;
  const accountId = extractAccountId(access);
- const email = sanitizeEmail(extractAccountEmail(access, typeof idToken === "string" ? idToken : undefined));
+ const email = sanitizeEmail(extractAccountEmail(access));
+ const idEmail = typeof idToken === "string" ? sanitizeEmail(extractAccountEmail(undefined, idToken)) : undefined;
+ if (idEmail && email && idEmail !== email) return false;
  if (!accountId || !email) return false;
  const candidate = (pool: AccountStorageV3) => {
   const matches = pool.accounts.filter(a => a.accountId === accountId && sanitizeEmail(a.email) === email);
@@ -31,7 +33,7 @@ export async function syncNativeLogin(
   const a = matches[0];
   if (!a) return undefined;
   const oldIssued = a.accessToken ? decodeJWT(a.accessToken)?.iat : undefined;
-  if (a.enabled === false || a.accessToken === access || a.refreshToken === refresh || typeof oldIssued !== "number" || issued <= oldIssued) return undefined;
+  if (a.enabled === false || a.accessToken === access || typeof oldIssued !== "number" || issued <= oldIssued) return undefined;
   return a;
  };
  if (!candidate(storage)) return false;
