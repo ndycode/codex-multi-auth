@@ -82,6 +82,9 @@ describe("GPT-6.2 Astra and Sol", () => {
 			expect(
 			getReasoningConfig("gpt-6.2-astra", { reasoningEffort: "ultra" }).effort,
 		).toBe("max");
+			expect(
+				getReasoningConfig("gpt-6.2-sol", { reasoningEffort: "ultra" }).effort,
+			).toBe("max");
 			expect(resolveProbeReasoningEffort("gpt-6.2-astra")).toBe("low");
 		});
 
@@ -243,6 +246,11 @@ describe("GPT-6.2 Astra and Sol", () => {
 
 		it("keeps the API 1.05M context claim unestimated until the Codex ceiling is verified", () => {
 			expect(getEffectiveContextWindow("gpt-6.2-astra", undefined)).toBeNull();
+			expect(
+				getEffectiveContextWindow("gpt-6.2-astra-ultra", {
+					"gpt-6.2-astra": 1_050_000,
+				}),
+			).toEqual({ tokens: 1_050_000, source: "override" });
 			expect(
 			getEffectiveContextWindow("gpt-6.2-sol-max", {
 				"gpt-6.2-sol": 1_050_000,
