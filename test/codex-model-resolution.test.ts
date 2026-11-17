@@ -179,6 +179,12 @@ describe("codex.js wrapper — parity with lib/request/helpers/model-map", () =>
 	const MODEL_IDS = [
 		"gpt-6",
 		"gpt6",
+		"gpt-6.2",
+		"gpt-6.2-sol",
+		"gpt-6.2-sol-max",
+		"gpt-6.2-astra",
+		"gpt-6.2-astra-2026-11-17",
+		"gpt6.2-sol",
 		"gpt-6.1",
 		"gpt-6.1-sol",
 		"gpt-6.1-sol-low",
@@ -251,6 +257,8 @@ describe("codex.js wrapper — parity with lib/request/helpers/model-map", () =>
 	// wrapper mirrors. lib's getReasoningConfig applies the same fallback + the
 	// ultra->max wire rewrite, so the two must agree for every known effort.
 	const COERCION_MODELS = [
+		"gpt-6.2-astra",
+		"gpt-6.2-sol",
 		"gpt-6-astra",
 		"gpt-6-astra-aeon",
 		"gpt-6.1-sol",

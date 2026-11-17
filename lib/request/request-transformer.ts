@@ -60,8 +60,8 @@ export {
  * Uses the shared model catalog so request routing, prompt selection, and CLI
  * diagnostics all agree on the same effective model.
  *
- * @param model - Original model name (e.g., "gpt-5-codex-low", "openai/gpt-5.3-codex")
- * @returns Normalized model name (e.g., "gpt-5.6-sol", "gpt-6.1-sol", "gpt-6-astra")
+ * @param model - Original model name (e.g., "gpt-6.2-sol-high", "gpt-5-codex-low", "openai/gpt-5.3-codex")
+ * @returns Normalized model name (e.g., "gpt-6.2-sol", "gpt-5.6-sol", "gpt-6.1-sol", "gpt-6-astra")
  */
 export function normalizeModel(model: string | undefined): string {
 	return resolveNormalizedModel(model);

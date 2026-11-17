@@ -91,6 +91,80 @@ const MODEL_PRICING: Record<string, UsageModelPricing> = {
 			},
 		},
 	},
+	// GPT-6.2 Astra, released 2026-11-17. Standard API rates are $8/$40
+	// with $0.40 cached input and $10 30-minute cache writes. This pricing
+	// table has no cache-write field, so the ledger keeps the repository-wide
+	// convention of billing cache writes as input. Long-context pricing follows
+	// the published 2x input/cache and 1.5x output rule.
+	"gpt-6.2-astra": {
+		inputUsdPerMillion: 8,
+		outputUsdPerMillion: 40,
+		cachedInputUsdPerMillion: 0.4,
+		reasoningUsdPerMillion: 40,
+		longContext: {
+			inputUsdPerMillion: 16,
+			outputUsdPerMillion: 60,
+			cachedInputUsdPerMillion: 0.8,
+			reasoningUsdPerMillion: 60,
+		},
+		serviceTiers: {
+			priority: {
+				inputUsdPerMillion: 16,
+				outputUsdPerMillion: 80,
+				cachedInputUsdPerMillion: 0.8,
+				reasoningUsdPerMillion: 80,
+				longContext: {
+					inputUsdPerMillion: 32,
+					outputUsdPerMillion: 120,
+					cachedInputUsdPerMillion: 1.6,
+					reasoningUsdPerMillion: 120,
+				},
+			},
+			// OpenAI documents Ultrafast at 3x Standard through 2027-02-28.
+			// Long-context stacking is unspecified, so it remains unpriced there.
+			ultrafast: {
+				inputUsdPerMillion: 24,
+				outputUsdPerMillion: 120,
+				cachedInputUsdPerMillion: 1.2,
+				reasoningUsdPerMillion: 120,
+			},
+		},
+	},
+	// GPT-6.2 Sol keeps GPT-6.1 Sol's standard rates, including its cache
+	// discount; the published $2.50 cache-write rate is represented as input by
+	// the repository-wide ledger convention because this table has no write field.
+	"gpt-6.2-sol": {
+		inputUsdPerMillion: 2,
+		outputUsdPerMillion: 10,
+		cachedInputUsdPerMillion: 0.1,
+		reasoningUsdPerMillion: 10,
+		longContext: {
+			inputUsdPerMillion: 4,
+			outputUsdPerMillion: 15,
+			cachedInputUsdPerMillion: 0.2,
+			reasoningUsdPerMillion: 15,
+		},
+		serviceTiers: {
+			priority: {
+				inputUsdPerMillion: 4,
+				outputUsdPerMillion: 20,
+				cachedInputUsdPerMillion: 0.2,
+				reasoningUsdPerMillion: 20,
+				longContext: {
+					inputUsdPerMillion: 8,
+					outputUsdPerMillion: 30,
+					cachedInputUsdPerMillion: 0.4,
+					reasoningUsdPerMillion: 30,
+				},
+			},
+			ultrafast: {
+				inputUsdPerMillion: 6,
+				outputUsdPerMillion: 30,
+				cachedInputUsdPerMillion: 0.3,
+				reasoningUsdPerMillion: 30,
+			},
+		},
+	},
 	// GPT-6.1 Sol, published with the model on 2026-09-29: same $2 / $10 shape
 	// as 6 Sol but a cheaper cached-input rate ($0.10 vs $0.20) and a separate
 	// cache-write rate this table has no field for — cache writes bill as input

@@ -40,12 +40,17 @@ export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> 
 	//
 	// Depth is not free: every hop spends one of the shared per-request
 	// outbound attempts (`tryConsumeOutboundRequestAttempt`). A single-account
-	// balanced session gets a budget of 5, and the deepest walks — 6.1 Sol and
-	// the retired ids that migrate through Astra — spend all 5, the same shape
+	// balanced session gets a budget of 5, and the deepest pre-6.2 walks — 6.1
+	// Sol and the retired ids that migrate through Astra — spend all 5, the same shape
 	// the aeon walk had before `gpt-5.4` was retired as the floor. Hops are
 	// ordered most-valuable-first so what is lost first matters least. Do not
 	// add a hop to a GPT-6 row without re-checking that budget;
-	// `test/gpt6-astra-models.test.ts` asserts it.
+	// `test/gpt6-astra-models.test.ts` asserts it. The 6.2 launch chain
+	// intentionally adds the new-generation hop ahead of that shared floor;
+	// callers with the default single-account budget may stop before the floor
+	// while still receiving same-family fallbacks first.
+	"gpt-6.2-astra": ["gpt-6.2-sol"],
+	"gpt-6.2-sol": ["gpt-6.1-sol"],
 	"gpt-6.1-sol": ["gpt-6-sol"],
 	// 6.1 Terra steps to the tier it replaces, `gpt-5.6-terra`, whose own row
 	// continues to Sol and then Luna: four hops, inside the budget above.
