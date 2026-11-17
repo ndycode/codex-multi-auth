@@ -11,7 +11,13 @@ import {
 import { getReasoningConfig } from "../lib/request/request-transformer.js";
 import { getEffectiveContextWindow } from "../lib/context-budget/model-context-windows.js";
 import { resolveUnsupportedCodexFallbackModel } from "../lib/request/error-classification.js";
-import { estimateUsageCostUsd, getUsageModelPricing } from "../lib/usage/pricing.js";
+import { computeOutboundRequestAttemptBudget } from "../lib/request/request-attempt-budget.js";
+import { normalizeUsageLedgerRow } from "../lib/usage/redaction.js";
+import {
+	GPT_62_ULTRAFAST_PROMOTION_END_MS,
+	estimateUsageCostUsd,
+	getUsageModelPricing,
+} from "../lib/usage/pricing.js";
 
 const GPT_62_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 
@@ -120,12 +126,119 @@ describe("GPT-6.2 Astra and Sol", () => {
 				estimateUsageCostUsd("gpt-6.2-sol", {
 					...tokens,
 					serviceTier: "ultrafast",
-				}),
+				}, GPT_62_ULTRAFAST_PROMOTION_END_MS - 1),
 			).toBeCloseTo(30.6, 10);
 			expect(getUsageModelPricing("gpt-6.2-sol")?.serviceTiers?.ultrafast).toMatchObject({
 				inputUsdPerMillion: 6,
 				outputUsdPerMillion: 30,
 			});
+		});
+
+		it("covers cached, priority, and both sides of the Ultrafast promotion", () => {
+			const beforePromotion = GPT_62_ULTRAFAST_PROMOTION_END_MS - 1;
+			const afterPromotion = GPT_62_ULTRAFAST_PROMOTION_END_MS;
+			const cachedOnly = {
+				inputTokens: 100_000,
+				cachedInputTokens: 100_000,
+				outputTokens: 0,
+				reasoningTokens: 0,
+			};
+			const cases = [
+				{ model: "gpt-6.2-astra", tokens, expected: 40.8 },
+				{ model: "gpt-6.2-astra", tokens: cachedOnly, expected: 0.04 },
+				{ model: "gpt-6.2-astra", tokens: { ...tokens, serviceTier: "priority" as const }, expected: 81.6 },
+				{
+					model: "gpt-6.2-astra",
+					tokens: { ...tokens, serviceTier: "ultrafast" as const },
+					at: beforePromotion,
+					expected: 122.4,
+				},
+				{
+					model: "gpt-6.2-astra",
+					tokens: { ...tokens, serviceTier: "ultrafast" as const },
+					at: afterPromotion,
+					expected: 244.8,
+				},
+				{ model: "gpt-6.2-sol", tokens, expected: 10.2 },
+				{ model: "gpt-6.2-sol", tokens: cachedOnly, expected: 0.01 },
+				{ model: "gpt-6.2-sol", tokens: { ...tokens, serviceTier: "priority" as const }, expected: 20.4 },
+				{
+					model: "gpt-6.2-sol",
+					tokens: { ...tokens, serviceTier: "ultrafast" as const },
+					at: beforePromotion,
+					expected: 30.6,
+				},
+				{
+					model: "gpt-6.2-sol",
+					tokens: { ...tokens, serviceTier: "ultrafast" as const },
+					at: afterPromotion,
+					expected: 61.2,
+				},
+			] as const;
+
+			for (const testCase of cases) {
+				expect(
+					estimateUsageCostUsd(
+						testCase.model,
+						testCase.tokens,
+						testCase.at,
+					),
+				).toBeCloseTo(testCase.expected, 10);
+			}
+		});
+
+		it("keeps the 272,000-token boundary exact for both models and tiers", () => {
+			for (const [model, shortRate, longRate, priorityLongRate] of [
+				["gpt-6.2-astra", 8, 16, 32],
+				["gpt-6.2-sol", 2, 4, 8],
+			] as const) {
+				const atBoundary = {
+					inputTokens: 272_000,
+					cachedInputTokens: 0,
+					outputTokens: 0,
+					reasoningTokens: 0,
+				};
+				const pastBoundary = { ...atBoundary, inputTokens: 272_001 };
+				expect(estimateUsageCostUsd(model, atBoundary)).toBeCloseTo(
+					(272_000 / 1_000_000) * shortRate,
+					10,
+				);
+				expect(estimateUsageCostUsd(model, pastBoundary)).toBeCloseTo(
+					(272_001 / 1_000_000) * longRate,
+					10,
+				);
+				expect(
+					estimateUsageCostUsd(model, { ...pastBoundary, serviceTier: "priority" }),
+				).toBeCloseTo((272_001 / 1_000_000) * priorityLongRate, 10);
+			}
+		});
+
+		it("fails closed for long-context Ultrafast where stacking is unpublished", () => {
+			for (const model of ["gpt-6.2-astra", "gpt-6.2-sol"] as const) {
+				expect(
+					estimateUsageCostUsd(model, {
+						inputTokens: 272_001,
+						cachedInputTokens: 0,
+						outputTokens: 0,
+						reasoningTokens: 0,
+						serviceTier: "ultrafast",
+					}),
+				).toBeNull();
+			}
+		});
+
+		it("prices ledger rows using their recorded timestamp", () => {
+			const row = (createdAt: number) =>
+				normalizeUsageLedgerRow({
+					createdAt,
+					outcome: "success",
+					model: "gpt-6.2-sol",
+					inputTokens: 100_000,
+					outputTokens: 1_000_000,
+					serviceTier: "ultrafast",
+				});
+			expect(row(GPT_62_ULTRAFAST_PROMOTION_END_MS - 1).costUsd).toBeCloseTo(30.6, 10);
+			expect(row(GPT_62_ULTRAFAST_PROMOTION_END_MS).costUsd).toBeCloseTo(61.2, 10);
 		});
 
 		it("keeps the API 1.05M context claim unestimated until the Codex ceiling is verified", () => {
@@ -167,7 +280,50 @@ describe("GPT-6.2 Astra and Sol", () => {
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			}),
 		).toBe("gpt-6.1-sol");
-	});
-});
+		});
 
+		it("documents the launch-chain depth against the shared attempt budget", () => {
+			const budget = computeOutboundRequestAttemptBudget({
+				accountCount: 1,
+				maxSameAccountRetries: 1,
+				emptyResponseMaxRetries: 2,
+				streamFailoverMax: 2,
+			});
+			// The initial Astra request plus the first four fallback hops fit the
+			// default single-account budget. The final Luna hops remain bounded but
+			// are intentionally unreachable in that configuration.
+			expect(budget).toBe(5);
+			const attempted = new Set<string>(["gpt-6.2-astra"]);
+			const hops: string[] = [];
+			let model = "gpt-6.2-astra";
+			for (let step = 0; step < 10; step += 1) {
+				const next = resolveUnsupportedCodexFallbackModel({
+					requestedModel: model,
+					errorBody,
+					attemptedModels: attempted,
+					fallbackOnUnsupportedCodexModel: true,
+					fallbackToGpt52OnUnsupportedGpt53: true,
+				});
+				if (!next) break;
+				hops.push(next);
+				attempted.add(model);
+				attempted.add(next);
+				model = next;
+			}
+			expect(hops.slice(0, budget - 1)).toEqual([
+				"gpt-6.2-sol",
+				"gpt-6.1-sol",
+				"gpt-6-sol",
+				"gpt-5.6-sol",
+			]);
+			expect(hops).toEqual([
+				"gpt-6.2-sol",
+				"gpt-6.1-sol",
+				"gpt-6-sol",
+				"gpt-5.6-sol",
+				"gpt-6-luna",
+				"gpt-5.6-luna",
+			]);
+		});
+	});
 });

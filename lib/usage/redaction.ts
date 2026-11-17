@@ -154,12 +154,12 @@ export function normalizeUsageLedgerRow(
 	const model = normalizeOptionalString(input.model);
 	const tokens = normalizeTokens(input);
 	const explicitCost = normalizeFiniteNumber(input.costUsd);
+	const createdAt = normalizeFiniteNumber(input.createdAt) ?? Date.now();
 
 	return {
 		version: 1,
 		id: normalizeOptionalString(input.id) ?? randomUUID(),
-		createdAt:
-			normalizeFiniteNumber(input.createdAt) ?? Date.now(),
+		createdAt,
 		source: normalizeSource(input.source),
 		operation: normalizeOperation(input.operation),
 		outcome: normalizeOutcome(input.outcome),
@@ -175,7 +175,7 @@ export function normalizeUsageLedgerRow(
 			explicitCost === null
 				? isUnpricedOperation(input.operation)
 					? null
-					: estimateUsageCostUsd(model, tokens)
+					: estimateUsageCostUsd(model, tokens, createdAt)
 				: Math.max(0, explicitCost),
 	};
 }

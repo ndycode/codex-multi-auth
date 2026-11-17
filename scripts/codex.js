@@ -1545,12 +1545,22 @@ function resolveUnsupportedModelRetryTarget(
 			.filter(Boolean),
 	);
 	const normalizedRequestedModel = canonicalizeUnsupportedModelKey(requestedModel);
+	// Keep raw model keys first so retired ids preserve their historical lookup
+	// precedence, then resolve convenience aliases (for example bare `gpt-6.2`)
+	// before giving up. The TypeScript request path normalizes these aliases before
+	// fallback; the pre-build wrapper must do the same at its own boundary.
+	const aliasedRequestedModel = canonicalizeUnsupportedModelKey(
+		normalizeRequestedModel(requestedModel),
+	);
 	const blockedModel =
 		extractUnsupportedModelFromOutput(output) ?? normalizedRequestedModel;
 	const fallbackChain =
 		WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN[blockedModel] ??
 		(normalizedRequestedModel
 			? WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN[normalizedRequestedModel]
+			: undefined) ??
+		(aliasedRequestedModel
+			? WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN[aliasedRequestedModel]
 			: undefined) ??
 		[];
 
@@ -7187,6 +7197,7 @@ export {
 	coerceReasoningEffortForModel,
 	resolveModelFamilyForStatus,
 	canonicalizeRequestedModelName,
+	resolveUnsupportedModelRetryTarget,
 	WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN,
 	RETIRED_MODEL_REPLACEMENTS,
 };
