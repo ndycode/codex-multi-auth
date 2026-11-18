@@ -4721,13 +4721,25 @@ function createRuntimeRotationAppHelperOwnerLivenessCheck(
 	return {
 		check(currentTime) {
 			if (!ownerPid) {
-				return { verdict: OWNER_UNKNOWN, identityVerified };
+				return {
+					verdict: OWNER_UNKNOWN,
+					identityVerified,
+					identityProbeInFlight: false,
+				};
 			}
 			if (!isProcessAlive(ownerPid)) {
-				return { verdict: OWNER_DEAD, identityVerified };
+				return {
+					verdict: OWNER_DEAD,
+					identityVerified,
+					identityProbeInFlight: false,
+				};
 			}
 			if (expectedStartTimeMs === null) {
-				return { verdict: OWNER_ALIVE, identityVerified };
+				return {
+					verdict: OWNER_ALIVE,
+					identityVerified,
+					identityProbeInFlight: false,
+				};
 			}
 			// A successful identity read is only a bounded lease. If subsequent
 			// probes keep failing, do not let an old PID/start-time match exempt a
@@ -4765,6 +4777,7 @@ function createRuntimeRotationAppHelperOwnerLivenessCheck(
 			return {
 				verdict: lastIdentityVerdict ? OWNER_ALIVE : OWNER_DEAD,
 				identityVerified,
+				identityProbeInFlight: probeInFlight,
 			};
 		},
 	};
@@ -5355,6 +5368,7 @@ async function runRuntimeRotationAppHelper(identityToken = "") {
 			} else if (
 				maxLifetimeMs > 0 &&
 				(!ownerStatus.identityVerified || ownerVerdict !== OWNER_ALIVE) &&
+				!ownerStatus.identityProbeInFlight &&
 				currentTime - startedAt >= maxLifetimeMs
 			) {
 				// A verified live owner is still using this helper, so the ceiling must
