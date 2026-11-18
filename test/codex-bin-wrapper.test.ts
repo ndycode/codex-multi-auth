@@ -3975,6 +3975,7 @@ describe("codex bin wrapper", () => {
 				await stopDirectAppHelper(helper, closed);
 			}
 		},
+		10_000,
 	);
 
 	// The detach grace hands a helper off to nobody whenever a launcher merely
@@ -4316,9 +4317,8 @@ describe("codex bin wrapper", () => {
 		},
 	);
 
-	// The absolute lifetime ceiling is unconditional on activity: it exists for
-	// exactly the case where activity accounting is wrong, so a genuinely live
-	// owner must not extend a helper past it.
+	// An owner without a verified start time keeps the lifetime ceiling as the
+	// leak backstop. A verified owner is covered by the identity check below.
 	it("stops at the max-lifetime ceiling even while its owner is alive", async () => {
 		const fixtureRoot = createWrapperFixture();
 		createRuntimeRotationProxyFixtureModule(fixtureRoot);
@@ -4350,6 +4350,111 @@ describe("codex bin wrapper", () => {
 			await stopDirectAppHelper(helper, closed);
 		}
 	});
+
+	it.skipIf(process.platform === "win32")(
+		"does not stop at the max-lifetime ceiling for a verified live owner",
+		async () => {
+			const ownerStartTimeMs = readOwnProcessStartTimeMs();
+			expect(ownerStartTimeMs).not.toBeNull();
+			if (ownerStartTimeMs === null) return;
+
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const multiAuthDir = join(fixtureRoot, "multi-auth");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+			const { helper, ready, closed } = await spawnDirectAppHelper(fixtureRoot, {
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_DIR: multiAuthDir,
+				CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+				// Use a short detached window to drive owner rechecks at 100ms;
+				// the lifetime boundary is crossed only after several probe windows.
+				CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "400",
+				CODEX_MULTI_AUTH_APP_ROTATION_MAX_LIFETIME_MS: "8000",
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_START_TIME_MS: String(ownerStartTimeMs),
+			});
+			try {
+				await sleep(10_000);
+				expect(isProcessAlive(ready.pid)).toBe(true);
+				const status = JSON.parse(readFileSync(ready.statusPath, "utf8")) as {
+					state: string;
+				};
+				expect(status.state).toBe("running");
+			} finally {
+				await stopDirectAppHelper(helper, closed);
+			}
+		},
+		15_000,
+	);
+
+	it.skipIf(process.platform === "win32")(
+		"survives a resumed owner probe after its verification lease expires",
+		async () => {
+			const ownerStartTimeMs = readOwnProcessStartTimeMs();
+			expect(ownerStartTimeMs).not.toBeNull();
+			if (ownerStartTimeMs === null) return;
+
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const multiAuthDir = join(fixtureRoot, "multi-auth");
+			const fakePsState = join(fixtureRoot, "ps-state");
+			const fakePs = join(fixtureRoot, "ps");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+			writeFileSync(
+				fakePs,
+				[
+					"#!/bin/sh",
+					`state=${JSON.stringify(fakePsState)}`,
+					`expected=${JSON.stringify(new Date(ownerStartTimeMs).toString())}`,
+					"count=0",
+					'[ -f "$state" ] && count=$(cat "$state")',
+					"count=$((count + 1))",
+					'printf "%s" "$count" > "$state"',
+					'case "$count" in',
+					'  1|4) printf "%s\\n" "$expected" ;;',
+					'  *) exit 1 ;;',
+					"esac",
+					"",
+				].join("\n"),
+				"utf8",
+			);
+			chmodSync(fakePs, 0o755);
+
+			const { helper, ready, closed } = await spawnDirectAppHelper(fixtureRoot, {
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_DIR: multiAuthDir,
+				CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+				CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "400",
+				CODEX_MULTI_AUTH_APP_ROTATION_MAX_LIFETIME_MS: "1200",
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_START_TIME_MS: String(ownerStartTimeMs),
+				PATH: `${fixtureRoot}${delimiter}${process.env.PATH ?? ""}`,
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "marker.txt"),
+			});
+			try {
+				// The fake ps fails for two rechecks, forcing lease expiry, then
+				// succeeds on the resumed probe while the lifetime cap is due.
+				await sleep(2_500);
+				expect(isProcessAlive(ready.pid)).toBe(true);
+				const status = JSON.parse(readFileSync(ready.statusPath, "utf8")) as {
+					state: string;
+				};
+				expect(status.state).toBe("running");
+			} finally {
+				await stopDirectAppHelper(helper, closed);
+			}
+		},
+		10_000,
+	);
 
 	// N helpers, N status files: each helper publishes
 	// `runtime-rotation-app-helper.<pid>.json` and never the shared legacy

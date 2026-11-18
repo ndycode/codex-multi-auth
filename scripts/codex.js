@@ -4743,40 +4743,71 @@ function createRuntimeRotationAppHelperOwnerLivenessCheck(
 ) {
 	let lastIdentityCheckedAt = 0;
 	let lastIdentityVerdict = true;
+	let identityVerified = false;
+	let identityVerifiedAt = 0;
 	let probeInFlight = false;
-	return (currentTime) => {
-		if (!ownerPid) {
-			return OWNER_UNKNOWN;
-		}
-		if (!isProcessAlive(ownerPid)) {
-			return OWNER_DEAD;
-		}
-		if (expectedStartTimeMs === null) {
-			return OWNER_ALIVE;
-		}
-		// The probe is asynchronous and single-flight: the tick runs on the live
-		// proxy's event loop, so it always answers from the last verdict and the
-		// probe updates it in the background — a stale verdict is tolerated by
-		// design (one recheck window against a 12h timeout), and single-flight
-		// means a wedged `ps` holds one child, not one per tick.
-		if (
-			!probeInFlight &&
-			currentTime - lastIdentityCheckedAt >= recheckIntervalMs
-		) {
-			lastIdentityCheckedAt = currentTime;
-			probeInFlight = true;
-			readProcessStartTimeMsAsync(ownerPid, (actualStartTimeMs) => {
-				probeInFlight = false;
-				// A failed read is "identity unknown", not "owner dead": under the
-				// process-table pressure this fix exists for, fork itself can fail,
-				// and declaring a live owner dead would kill the proxy out from
-				// under an active session. Keep the verdict and retry next window.
-				if (actualStartTimeMs !== null) {
-					lastIdentityVerdict = actualStartTimeMs === expectedStartTimeMs;
-				}
-			});
-		}
-		return lastIdentityVerdict ? OWNER_ALIVE : OWNER_DEAD;
+	return {
+		check(currentTime) {
+			if (!ownerPid) {
+				return {
+					verdict: OWNER_UNKNOWN,
+					identityVerified,
+					identityProbeInFlight: false,
+				};
+			}
+			if (!isProcessAlive(ownerPid)) {
+				return {
+					verdict: OWNER_DEAD,
+					identityVerified,
+					identityProbeInFlight: false,
+				};
+			}
+			if (expectedStartTimeMs === null) {
+				return {
+					verdict: OWNER_ALIVE,
+					identityVerified,
+					identityProbeInFlight: false,
+				};
+			}
+			// A successful identity read is only a bounded lease. If subsequent
+			// probes keep failing, do not let an old PID/start-time match exempt a
+			// stranded helper from the lifetime ceiling forever.
+			if (
+				identityVerified &&
+				currentTime - identityVerifiedAt >= recheckIntervalMs * 2
+			) {
+				identityVerified = false;
+			}
+			// The probe is asynchronous and single-flight: the tick runs on the live
+			// proxy's event loop, so it always answers from the last verdict and the
+			// probe updates it in the background — a stale verdict is tolerated by
+			// design (one recheck window against a 12h timeout), and single-flight
+			// means a wedged `ps` holds one child, not one per tick.
+			if (
+				!probeInFlight &&
+				currentTime - lastIdentityCheckedAt >= recheckIntervalMs
+			) {
+				lastIdentityCheckedAt = currentTime;
+				probeInFlight = true;
+				readProcessStartTimeMsAsync(ownerPid, (actualStartTimeMs) => {
+					probeInFlight = false;
+					// A failed read is "identity unknown", not "owner dead": under the
+					// process-table pressure this fix exists for, fork itself can fail,
+					// and declaring a live owner dead would kill the proxy out from
+					// under an active session. Keep the verdict and retry next window.
+					if (actualStartTimeMs !== null) {
+						identityVerified = true;
+						identityVerifiedAt = Date.now();
+						lastIdentityVerdict = actualStartTimeMs === expectedStartTimeMs;
+					}
+				});
+			}
+			return {
+				verdict: lastIdentityVerdict ? OWNER_ALIVE : OWNER_DEAD,
+				identityVerified,
+				identityProbeInFlight: probeInFlight,
+			};
+		},
 	};
 }
 
@@ -5119,7 +5150,7 @@ async function runRuntimeRotationAppHelper(identityToken = "") {
 	const maxLifetimeMs = resolveRuntimeRotationAppHelperMaxLifetimeMs();
 	const detachedIdleMs = resolveRuntimeRotationAppHelperDetachedIdleMs();
 	const ownerPid = resolveRuntimeRotationAppHelperOwnerPid();
-	const isOwnerAlive = createRuntimeRotationAppHelperOwnerLivenessCheck(
+	const ownerLiveness = createRuntimeRotationAppHelperOwnerLivenessCheck(
 		ownerPid,
 		resolveRuntimeRotationAppHelperOwnerStartTimeMs(),
 		resolveRuntimeRotationAppHelperOwnerRecheckMs(idleTimeoutMs, detachedIdleMs),
@@ -5329,7 +5360,8 @@ async function runRuntimeRotationAppHelper(identityToken = "") {
 				lastRequestCount = requestCount;
 				lastActivityAt = currentTime;
 			}
-			const ownerVerdict = isOwnerAlive(currentTime);
+			const ownerStatus = ownerLiveness.check(currentTime);
+			const ownerVerdict = ownerStatus.verdict;
 			if (ownerVerdict === OWNER_ALIVE) {
 				lastActivityAt = currentTime;
 				ownerGoneSince = null;
@@ -5363,10 +5395,13 @@ async function runRuntimeRotationAppHelper(identityToken = "") {
 				exitAfterCleanup("owner-gone", 0);
 			} else if (
 				maxLifetimeMs > 0 &&
+				(!ownerStatus.identityVerified || ownerVerdict !== OWNER_ALIVE) &&
+				!ownerStatus.identityProbeInFlight &&
 				currentTime - startedAt >= maxLifetimeMs
 			) {
-				// The ceiling is deliberately unconditional on activity: it exists
-				// for exactly the case where activity accounting is wrong.
+				// A verified live owner is still using this helper, so the ceiling must
+				// not strand its client on a dead port. Keep the fallback for owners
+				// whose identity is unknown or confirmed dead, where it bounds leaks.
 				exitAfterCleanup("max-lifetime", 0);
 			}
 			// Tick against the shortest window that can fire, so a short detached
