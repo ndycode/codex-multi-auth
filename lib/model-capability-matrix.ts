@@ -89,7 +89,15 @@ export function buildModelCapabilityMatrix(input: {
 		});
 		const entitlementKeys = [accountKey, entitlementKey];
 		for (const model of models) {
-			const profile = MODEL_PROFILES[model] ?? MODEL_PROFILES[resolveNormalizedModel(model)];
+			// `Object.hasOwn` before the index: `models` comes from `--model` on
+			// the CLI, so `constructor` and friends reach this lookup and a bare
+			// index returns the matching `Object.prototype` member. It is truthy,
+			// so the `!profile` guard passes it through and the matrix emits a row
+			// whose normalizedModel, promptFamily and capabilities are all
+			// undefined.
+			const profile = Object.hasOwn(MODEL_PROFILES, model)
+				? MODEL_PROFILES[model]
+				: MODEL_PROFILES[resolveNormalizedModel(model)];
 			if (!profile) continue;
 			const entitlement = getEntitlementBlock(
 				input.entitlements,

@@ -84,21 +84,21 @@ describe("Codex Prompts Module", () => {
 	});
 
 		describe("getModelFamily", () => {
-			it("should detect gpt-5.3-codex-spark", () => {
-				expect(getModelFamily("gpt-5.3-codex-spark")).toBe("gpt-5-codex");
+			it("should put retired gpt-5.3-codex-spark on the gpt-5.2 family", () => {
+				expect(getModelFamily("gpt-5.3-codex-spark")).toBe("gpt-5.2");
 			});
 
-			it("should detect gpt-5.3-codex with space separator", () => {
-				expect(getModelFamily("gpt 5.3 codex")).toBe("gpt-5-codex");
+			it("should put retired gpt-5.3-codex with space separator on the gpt-5.2 family", () => {
+				expect(getModelFamily("gpt 5.3 codex")).toBe("gpt-5.2");
 			});
 
-			it("should detect gpt-5.2-codex with space separator", () => {
-				expect(getModelFamily("gpt 5.2 codex")).toBe("gpt-5-codex");
+			it("should put retired gpt-5.2-codex with space separator on the gpt-5.2 family", () => {
+				expect(getModelFamily("gpt 5.2 codex")).toBe("gpt-5.2");
 			});
 
-			it("should classify gpt-5 codex mini aliases under gpt-5-codex family", () => {
-				expect(getModelFamily("gpt-5-codex-mini-low")).toBe("gpt-5-codex");
-				expect(getModelFamily("gpt-5.1-codex-mini-low")).toBe("gpt-5-codex");
+			it("should classify retired gpt-5 codex mini aliases under their replacement's gpt-5.2 family", () => {
+				expect(getModelFamily("gpt-5-codex-mini-low")).toBe("gpt-5.2");
+				expect(getModelFamily("gpt-5.1-codex-mini-low")).toBe("gpt-5.2");
 			});
 
 			it("should route GPT-5.4/5.5 era general models through the latest available general prompt family", () => {
@@ -111,9 +111,9 @@ describe("Codex Prompts Module", () => {
 				expect(getModelFamily("gpt-5-mini")).toBe("gpt-5.2");
 			});
 
-		it("should detect models starting with codex-", () => {
-			expect(getModelFamily("codex-mini")).toBe("gpt-5-codex");
-			expect(getModelFamily("codex-latest")).toBe("gpt-5-codex");
+		it("should put models starting with codex- on the gpt-5.2 family", () => {
+			expect(getModelFamily("codex-mini")).toBe("gpt-5.2");
+			expect(getModelFamily("codex-latest")).toBe("gpt-5.2");
 		});
 	});
 
@@ -426,7 +426,7 @@ describe("Codex Prompts Module", () => {
 		});
 
 		describe("GitHub fetch with ETag", () => {
-			it("should fetch current Codex prompts for deprecated codex-max aliases", async () => {
+			it("should fetch the replacement's general prompt for retired codex-max aliases", async () => {
 				mockedReadFile.mockRejectedValue(new Error("ENOENT"));
 				mockFetch.mockResolvedValueOnce({
 					ok: true,
@@ -449,9 +449,13 @@ describe("Codex Prompts Module", () => {
 						(url): url is string =>
 							typeof url === "string" && url.includes("raw.githubusercontent.com"),
 					);
+				// codex-max runs on gpt-5.6-sol, whose prompt family is gpt-5.2.
+				expect(
+					rawGitHubUrls.some((url) => url.includes("gpt_5_2_prompt.md")),
+				).toBe(true);
 				expect(
 					rawGitHubUrls.some((url) => url.includes("gpt_5_codex_prompt.md")),
-				).toBe(true);
+				).toBe(false);
 			});
 
 			it("should handle 304 Not Modified response", async () => {
@@ -643,7 +647,7 @@ describe("Codex Prompts Module", () => {
 				mockedMkdir.mockResolvedValue(undefined);
 				mockedWriteFile.mockResolvedValue(undefined);
 
-				const result = await getCodexInstructions("gpt-5.2-codex");
+				const result = await getCodexInstructions("gpt-5.6-sol");
 				expect(result).toBe("fallback instructions");
 				const rawGitHubUrls = mockFetch.mock.calls
 					.map((call) => call[0])
@@ -651,7 +655,7 @@ describe("Codex Prompts Module", () => {
 						(url): url is string =>
 							typeof url === "string" && url.includes("raw.githubusercontent.com"),
 					);
-				expect(rawGitHubUrls.some((url) => url.includes("gpt_5_codex_prompt.md"))).toBe(
+				expect(rawGitHubUrls.some((url) => url.includes("gpt_5_2_prompt.md"))).toBe(
 					true,
 				);
 			});
@@ -778,7 +782,7 @@ describe("Codex Prompts Module", () => {
 				expect(result).toBe("bundled fallback instructions");
 			});
 
-			it("prewarms unique prompt families once while retaining gpt-5.1 coverage", async () => {
+			it("prewarms the one live prompt family once", async () => {
 				mockedReadFile.mockRejectedValue(new Error("ENOENT"));
 				mockFetch.mockImplementation((input) => {
 					if (typeof input === "string" && input.includes("api.github.com")) {
@@ -804,7 +808,7 @@ describe("Codex Prompts Module", () => {
 							typeof call[0] === "string" &&
 							call[0].includes("raw.githubusercontent.com"),
 					);
-					expect(rawCalls).toHaveLength(3);
+					expect(rawCalls).toHaveLength(1);
 				});
 
 				const rawUrls = mockFetch.mock.calls
@@ -813,9 +817,11 @@ describe("Codex Prompts Module", () => {
 						(url): url is string =>
 							typeof url === "string" && url.includes("raw.githubusercontent.com"),
 					);
+				// Every live model is on the gpt-5.2 prompt family, so the retired
+				// codex and gpt-5.1 prompts are no longer fetched.
 				expect(rawUrls.filter((url) => url.includes("gpt_5_2_prompt.md"))).toHaveLength(1);
-				expect(rawUrls.some((url) => url.includes("gpt_5_codex_prompt.md"))).toBe(true);
-				expect(rawUrls.some((url) => url.includes("gpt_5_1_prompt.md"))).toBe(true);
+				expect(rawUrls.some((url) => url.includes("gpt_5_codex_prompt.md"))).toBe(false);
+				expect(rawUrls.some((url) => url.includes("gpt_5_1_prompt.md"))).toBe(false);
 			});
 		});
 
@@ -853,7 +859,7 @@ describe("Codex Prompts Module", () => {
 		});
 
 			describe("Model family mapping", () => {
-				it("should use correct prompt file for each model family", async () => {
+				it("should map the retired gpt-5-codex id to its replacement's prompt file", async () => {
 				mockedReadFile.mockRejectedValue(new Error("ENOENT"));
 				mockFetch.mockResolvedValue({
 					ok: true,
@@ -870,10 +876,10 @@ describe("Codex Prompts Module", () => {
 				const rawGitHubCall = fetchCalls.find(call => 
 					typeof call[0] === "string" && call[0].includes("raw.githubusercontent.com")
 				);
-					expect(rawGitHubCall?.[0]).toContain("gpt_5_codex_prompt.md");
+					expect(rawGitHubCall?.[0]).toContain("gpt_5_2_prompt.md");
 				});
 
-				it("should map gpt-5.3-codex prompts to the current codex prompt file", async () => {
+				it("should map retired gpt-5.3-codex prompts to the replacement's general prompt file", async () => {
 					mockedReadFile.mockRejectedValue(new Error("ENOENT"));
 					mockFetch.mockResolvedValue({
 						ok: true,
@@ -891,10 +897,10 @@ describe("Codex Prompts Module", () => {
 							typeof call[0] === "string" &&
 							call[0].includes("raw.githubusercontent.com"),
 					);
-					expect(rawGitHubCall?.[0]).toContain("gpt_5_codex_prompt.md");
+					expect(rawGitHubCall?.[0]).toContain("gpt_5_2_prompt.md");
 				});
 
-				it("should map gpt-5.3-codex-spark prompts to the current codex prompt file", async () => {
+				it("should map retired gpt-5.3-codex-spark prompts to the replacement's general prompt file", async () => {
 					mockedReadFile.mockRejectedValue(new Error("ENOENT"));
 					mockFetch.mockResolvedValue({
 						ok: true,
@@ -912,7 +918,7 @@ describe("Codex Prompts Module", () => {
 							typeof call[0] === "string" &&
 							call[0].includes("raw.githubusercontent.com"),
 					);
-					expect(rawGitHubCall?.[0]).toContain("gpt_5_codex_prompt.md");
+					expect(rawGitHubCall?.[0]).toContain("gpt_5_2_prompt.md");
 				});
 
 				it("should map gpt-5.4 prompts to the latest available general prompt file", async () => {

@@ -4,6 +4,9 @@
 		"allowJs": true,
 		"checkJs": true,
 		"noEmit": true,
+		// Separate build-info file so this project does not clobber the main
+		// program's incremental state (and vice versa).
+		"tsBuildInfoFile": "./tsconfig.scripts.tsbuildinfo",
 		"types": ["node"]
 	},
 	"include": [

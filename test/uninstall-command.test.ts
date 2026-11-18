@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { resolveInstallPaths } from "../scripts/install-codex-auth-utils.js";
 import {
 	parseUninstallArgs,
 	removePluginFromList,
@@ -58,6 +59,16 @@ describe("removePluginFromList", () => {
 		).toEqual(["keep-me"]);
 	});
 
+	it("strips the legacy scoped package name and its versioned variants", () => {
+		expect(
+			removePluginFromList([
+				"@ndycode/codex-multi-auth",
+				"@ndycode/codex-multi-auth@2.0.0",
+				"keep-me",
+			]),
+		).toEqual(["keep-me"]);
+	});
+
 	it("preserves non-string entries", () => {
 		const obj = { name: "other-plugin" };
 		expect(removePluginFromList([obj, "codex-multi-auth"])).toEqual([obj]);
@@ -98,6 +109,23 @@ describe("parseUninstallArgs", () => {
 });
 
 describe("resolveUninstallPaths", () => {
+	it("matches installer cache paths on Windows", () => {
+		const home = "C:\\Users\\user";
+		const env = {
+			APPDATA: path.join(home, "AppData", "Roaming"),
+			LOCALAPPDATA: path.join(home, "AppData", "Local"),
+		};
+		const installed = resolveInstallPaths("win32", env, home);
+		const uninstalled = resolveUninstallPaths("win32", env, home);
+
+		expect(uninstalled.configPath).toBe(installed.configPath);
+		expect(uninstalled.cacheNodeModules).toBe(installed.cacheNodeModules);
+		expect(uninstalled.cacheLegacyNodeModules).toBe(
+			installed.cacheLegacyNodeModules,
+		);
+		expect(uninstalled.cacheBunLock).toBe(installed.cacheBunLock);
+	});
+
 	it("uses XDG layout on linux", () => {
 		const paths = resolveUninstallPaths(
 			"linux",
@@ -153,6 +181,7 @@ describe("runUninstallCommand", () => {
 			paths: {
 				configPath: paths.configPath,
 				cacheNodeModules: paths.cacheNodeModules,
+				cacheLegacyNodeModules: paths.cacheLegacyNodeModules,
 				cacheBunLock: paths.cacheBunLock,
 			},
 		});
@@ -231,13 +260,37 @@ describe("runUninstallCommand", () => {
 		).toBe(false);
 	});
 
+	it("dry-run reports the legacy cache path too", async () => {
+		const home = makeTempHome();
+		const paths = pathsForTempHome(home);
+		const messages: string[] = [];
+
+		const code = await runUninstallCommand(["--dry-run"], {
+			log: (m) => messages.push(m),
+			unbind: async () => {},
+			removeLauncher: async () => {},
+			paths,
+		});
+
+		expect(code).toBe(0);
+		expect(
+			messages.some((m) => m.includes(paths.cacheLegacyNodeModules)),
+		).toBe(true);
+	});
+
 	it("removes plugin entry from Codex.json and clears node_modules cache", async () => {
 		const home = makeTempHome();
 		const paths = pathsForTempHome(home);
 		mkdirSync(paths.configDir, { recursive: true });
 		mkdirSync(paths.cacheNodeModules, { recursive: true });
+		mkdirSync(paths.cacheLegacyNodeModules, { recursive: true });
 		writeFileSync(
 			path.join(paths.cacheNodeModules, "marker.txt"),
+			"present",
+			"utf8",
+		);
+		writeFileSync(
+			path.join(paths.cacheLegacyNodeModules, "legacy-marker.txt"),
 			"present",
 			"utf8",
 		);
@@ -261,6 +314,7 @@ describe("runUninstallCommand", () => {
 			paths: {
 				configPath: paths.configPath,
 				cacheNodeModules: paths.cacheNodeModules,
+				cacheLegacyNodeModules: paths.cacheLegacyNodeModules,
 				cacheBunLock: paths.cacheBunLock,
 			},
 		});
@@ -269,6 +323,7 @@ describe("runUninstallCommand", () => {
 		const config = JSON.parse(readFileSync(paths.configPath, "utf8"));
 		expect(config.plugins).toEqual(["other-plugin"]);
 		expect(existsSync(paths.cacheNodeModules)).toBe(false);
+		expect(existsSync(paths.cacheLegacyNodeModules)).toBe(false);
 		// Other plugins still installed → shared bun.lock must be preserved.
 		expect(existsSync(paths.cacheBunLock)).toBe(true);
 	});

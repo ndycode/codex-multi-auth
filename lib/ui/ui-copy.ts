@@ -110,10 +110,10 @@ export const UI_COPY = {
 		experimentalSubtitle:
 			"Preview sync and backup actions before they become stable",
 		experimentalHelpMenu:
-			"Enter Select | 1 Sync | 2 Backup | 3 Guard | [ - Down | ] + Up | S Save | Q Back",
+			"Enter Select | 1 Sync | 2 Backup | 3 Guard | 4 Budget | [ - Down | ] + Up | S Save | Q Back",
 		experimentalHelpPreview: "Enter Select | A Apply | Q Back",
 		experimentalHelpStatus: "Enter Select | Q Back",
-		experimentalSync: "Sync Accounts to oc-chatgpt-multi-auth",
+		experimentalSync: "Sync Accounts to oc-codex-multi-auth",
 		experimentalApplySync: "Apply Sync",
 		experimentalBackup: "Save Pool Backup",
 		experimentalBackupPrompt: "Backup file name (.json): ",
@@ -121,6 +121,7 @@ export const UI_COPY = {
 		experimentalRefreshInterval: "Refresh Guard Interval",
 		experimentalDecreaseInterval: "Decrease Refresh Interval",
 		experimentalIncreaseInterval: "Increase Refresh Interval",
+		experimentalContextBudgetGuard: "Enable Context Budget Guard",
 		backend: "Backend Controls",
 		back: "Back",
 		previewHeading: "Live Preview",
@@ -141,8 +142,9 @@ export const UI_COPY = {
 		behaviorHelp:
 			"Enter Select | 1-3 Delay | P Pause | L AutoFetch | F Status | T TTL | S Save | Q Back (No Save)",
 		themeTitle: "Color Theme",
-		themeSubtitle: "Pick base color and accent",
-		themeHelp: "Enter Select | 1-2 Base | S Save | Q Back (No Save)",
+		themeSubtitle: "Pick base color, accent, and background mode",
+		themeHelp:
+			"Enter Select | 1-2 Base | A/D/L Mode | S Save | Q Back (No Save)",
 		backendTitle: "Backend Controls",
 		backendSubtitle: "Tune sync, retry, and limit behavior",
 		backendHelp:
@@ -159,6 +161,7 @@ export const UI_COPY = {
 		backendBackToCategories: "Back to Categories",
 		baseTheme: "Base Color",
 		accentColor: "Accent Color",
+		terminalBackground: "Terminal Background",
 		actionTiming: "Auto Return Delay",
 		moveUp: "Move Focused Field Up",
 		moveDown: "Move Focused Field Down",
@@ -169,8 +172,8 @@ export const UI_COPY = {
 		addAnotherQuestion: (count: number) =>
 			`Add another account? (${count} added) (y/n): `,
 		selectModePrompt:
-			"(a) add, (c) check, (b) best, fi(x), (s) settings, (d) deep, (g) problem, (f) fresh, (q) back [a/c/b/x/s/d/g/f/q]: ",
-		invalidModePrompt: "Use one of: a, c, b, x, s, d, g, f, q.",
+			"(api) API models, (a) add, (c) check, (b) best, fi(x), (s) settings, (d) deep, (g) problem, (f) fresh, (q) back [api/a/c/b/x/s/d/g/f/q]: ",
+		invalidModePrompt: "Use one of: api, a, c, b, x, s, d, g, f, q.",
 	},
 } as const;
 

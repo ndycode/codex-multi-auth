@@ -1,4 +1,4 @@
 theme: jekyll-theme-hacker
-title: Codex Multi Auth Docs
+title: codex-multi-auth
 description: Codex CLI multi-account OAuth manager docs for account switching, health checks, runtime rotation, diagnostics, and recovery
 show_downloads: false

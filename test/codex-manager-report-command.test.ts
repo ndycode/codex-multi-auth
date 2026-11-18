@@ -93,6 +93,166 @@ describe("runReportCommand", () => {
 		expect(deps.logError).toHaveBeenCalledWith("Unknown option: --bogus");
 	});
 
+	it("gates the forecast on the requested model's family record", async () => {
+		const storage = createStorage([
+			{
+				email: "one@example.com",
+				refreshToken: "refresh-token-1",
+				accessToken: "access-token-1",
+				expiresAt: 10,
+				addedAt: 1,
+				lastUsed: 1,
+				enabled: true,
+				rateLimitResetTimes: { "gpt-5.2": 31_000 },
+			},
+		]);
+		const deps = createDeps({ loadAccounts: vi.fn(async () => storage) });
+
+		const readForecast = (): {
+			accounts: Array<{ availability: string; reasons: string[] }>;
+		} =>
+			(
+				JSON.parse(
+					String(
+						(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ??
+							"{}",
+					),
+				) as {
+					forecast: {
+						accounts: Array<{ availability: string; reasons: string[] }>;
+					};
+				}
+			).forecast;
+
+		// The record is under the gpt-5.2 family, which gpt-5.6-sol belongs to.
+		await expect(
+			runReportCommand(["--json", "--model", "gpt-5.6-sol"], deps),
+		).resolves.toBe(0);
+		const general = readForecast();
+		expect(general.accounts[0]?.availability).toBe("delayed");
+		expect(
+			general.accounts[0]?.reasons.some((reason) =>
+				reason.startsWith("rate limit resets in"),
+			),
+		).toBe(true);
+
+		// A record under another family does not gate it. Every live model is
+		// on gpt-5.2 now, so the other family is the legacy `codex` key an
+		// existing storage file can still carry.
+		const otherFamilyStorage = createStorage([
+			{
+				email: "one@example.com",
+				refreshToken: "refresh-token-1",
+				accessToken: "access-token-1",
+				expiresAt: 10,
+				addedAt: 1,
+				lastUsed: 1,
+				enabled: true,
+				rateLimitResetTimes: { codex: 31_000 },
+			},
+		]);
+		(deps.loadAccounts as ReturnType<typeof vi.fn>).mockImplementation(
+			async () => otherFamilyStorage,
+		);
+		await expect(
+			runReportCommand(["--json", "--model", "gpt-5.6-sol"], deps),
+		).resolves.toBe(0);
+		const otherFamily = readForecast();
+		expect(otherFamily.accounts[0]?.availability).toBe("ready");
+	});
+
+	it("keeps a bare report on the codex family", async () => {
+		const storage = createStorage([
+			{
+				email: "one@example.com",
+				refreshToken: "refresh-token-1",
+				accessToken: "access-token-1",
+				expiresAt: 10,
+				addedAt: 1,
+				lastUsed: 1,
+				enabled: true,
+				rateLimitResetTimes: { codex: 31_000 },
+			},
+		]);
+		const deps = createDeps({ loadAccounts: vi.fn(async () => storage) });
+
+		// DEFAULT_PROBE_MODEL is gpt-5.6-sol, whose family is gpt-5.2. Keying the
+		// no-flag invocation on it would report this account ready while every
+		// /codex/responses request 503s off the very same record.
+		await expect(runReportCommand(["--json"], deps)).resolves.toBe(0);
+		const forecast = (
+			JSON.parse(
+				String(
+					(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ??
+						"{}",
+				),
+			) as {
+				forecast: {
+					accounts: Array<{ availability: string; reasons: string[] }>;
+				};
+			}
+		).forecast;
+		expect(forecast.accounts[0]?.availability).toBe("delayed");
+		expect(
+			forecast.accounts[0]?.reasons.some((reason) =>
+				reason.startsWith("rate limit resets in"),
+			),
+		).toBe(true);
+	});
+
+	it("does not gate the forecast on a sibling model's record in the same family", async () => {
+		const storage = createStorage([
+			{
+				email: "one@example.com",
+				refreshToken: "refresh-token-1",
+				accessToken: "access-token-1",
+				expiresAt: 10,
+				addedAt: 1,
+				lastUsed: 1,
+				enabled: true,
+				// A token/concurrency limit on a sibling model, keyed
+				// `family:<model>` the way markRateLimitedWithReason writes it.
+				rateLimitResetTimes: { "gpt-5.2:gpt-5.6-terra": 31_000 },
+			},
+		]);
+		const deps = createDeps({ loadAccounts: vi.fn(async () => storage) });
+
+		const readForecast = (): {
+			accounts: Array<{ availability: string; reasons: string[] }>;
+		} =>
+			(
+				JSON.parse(
+					String(
+						(deps.logInfo as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ??
+							"{}",
+					),
+				) as {
+					forecast: {
+						accounts: Array<{ availability: string; reasons: string[] }>;
+					};
+				}
+			).forecast;
+
+		// Selection checks `gpt-5.2` and `gpt-5.2:gpt-5.6-sol`, neither of which
+		// is set - the proxy serves this model, so the report must not say wait.
+		await expect(
+			runReportCommand(["--json", "--model", "gpt-5.6-sol"], deps),
+		).resolves.toBe(0);
+		expect(readForecast().accounts[0]?.availability).toBe("ready");
+
+		// The model the record actually names is still gated.
+		await expect(
+			runReportCommand(["--json", "--model", "gpt-5.6-terra"], deps),
+		).resolves.toBe(0);
+		const own = readForecast();
+		expect(own.accounts[0]?.availability).toBe("delayed");
+		expect(
+			own.accounts[0]?.reasons.some((reason) =>
+				reason.startsWith("rate limit resets in"),
+			),
+		).toBe(true);
+	});
+
 	it("rejects a flag-like or whitespace-only --model value instead of consuming it", async () => {
 		// Split-arg form trims before validating, so "  -x" / "   " can't slip
 		// through and silently fall back to the default model.
@@ -830,5 +990,55 @@ describe("runReportCommand", () => {
 				e.includes("is not supported when using Codex"),
 			),
 		).toBe(false);
+	});
+});
+
+describe("runReportCommand refresh keeps explicit bindings", () => {
+	const jwt = (claims: Record<string, unknown>) =>
+		`h.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.s`;
+
+	it("keeps a manual id and source when the refreshed token names another workspace", async () => {
+		const storage = createStorage([
+			{
+				email: "one@example.com",
+				accountId: "ws-team",
+				accountIdSource: "manual",
+				refreshToken: "refresh-token-1",
+				accessToken: "access-token-1",
+				expiresAt: 10,
+				addedAt: 1,
+				lastUsed: 1,
+				enabled: true,
+			},
+		]);
+		const refreshedAccess = jwt({
+			"https://api.openai.com/auth": { chatgpt_account_id: "ws-token-claim" },
+		});
+		const deps = createDeps({
+			loadAccounts: vi.fn(async () => structuredClone(storage)),
+			queuedRefresh: vi.fn(async () => ({
+				type: "success",
+				access: refreshedAccess,
+				refresh: "refresh-token-updated",
+				expires: 500,
+			})),
+		});
+
+		expect(await runReportCommand(["--live", "--json"], deps)).toBe(0);
+
+		expect(deps.saveAccounts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: [
+					expect.objectContaining({
+						accessToken: refreshedAccess,
+						accountId: "ws-team",
+						accountIdSource: "manual",
+					}),
+				],
+			}),
+		);
+		expect(deps.fetchCodexQuotaSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({ accountId: "ws-team" }),
+		);
 	});
 });

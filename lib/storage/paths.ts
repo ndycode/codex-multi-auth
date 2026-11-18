@@ -75,7 +75,7 @@ function resolveGitPath(basePath: string, pointerValue: string): string {
 }
 
 function readGitCommonDir(gitDirPath: string): string {
-	const commonDirFile = join(gitDirPath, "commondir");
+	const commonDirFile = resolveGitPath(gitDirPath, "commondir");
 	if (!existsSync(commonDirFile)) {
 		return gitDirPath;
 	}
@@ -134,7 +134,7 @@ function worktreeGitDirBelongsToProject(
 	projectRoot: string,
 	gitDirPath: string,
 ): boolean {
-	const gitdirBackRefPath = join(gitDirPath, "gitdir");
+	const gitdirBackRefPath = resolveGitPath(gitDirPath, "gitdir");
 	if (!existsSync(gitdirBackRefPath)) {
 		return false;
 	}
@@ -319,8 +319,8 @@ export function resolveProjectStorageIdentityRoot(projectRoot: string): string {
 		if (!isGitDirUnderCommonWorktrees(gitDirPath, commonGitDir)) {
 			return projectRoot;
 		}
-		const candidateRepoRoot = dirname(commonGitDir);
-		if (!existsSync(join(candidateRepoRoot, ".git"))) {
+		const candidateRepoRoot = resolveGitPath(commonGitDir, "..");
+		if (!existsSync(resolveGitPath(candidateRepoRoot, ".git"))) {
 			return projectRoot;
 		}
 

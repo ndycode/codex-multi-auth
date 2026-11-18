@@ -32,6 +32,7 @@ import {
 	getStoragePathState,
 	setStoragePathState,
 } from "../lib/storage/path-state.js";
+import type { AccountStorageV3 } from "../lib/storage.js";
 import type { OAuthAuthDetails } from "../lib/types.js";
 import { MODEL_FAMILIES } from "../lib/prompts/codex.js";
 
@@ -368,8 +369,8 @@ describe("AccountManager", () => {
 		expect(account.enabled).toBe(true);
 		expect(manager.hasEnabledWorkspaces(account)).toBe(true);
 		expect(manager.getEnabledWorkspaceCount(account)).toBe(2);
-		expect(account.currentWorkspaceIndex).toBe(0);
-		expect(manager.getCurrentWorkspace(account)?.id).toBe("workspace-1");
+		expect(account.currentWorkspaceIndex).toBe(1);
+		expect(manager.getCurrentWorkspace(account)?.id).toBe("workspace-2");
 		expect(account.workspaces).toEqual([
 			{
 				id: "workspace-1",
@@ -381,7 +382,7 @@ describe("AccountManager", () => {
 		]);
 	});
 
-	it("re-enabling an exhausted account without a default workspace resets to the first workspace", () => {
+	it("re-enabling an exhausted account without a default preserves the selected workspace", () => {
 		const now = Date.now();
 		const stored = {
 			version: 3 as const,
@@ -418,8 +419,8 @@ describe("AccountManager", () => {
 			throw new Error("account should exist");
 		}
 
-		expect(account.currentWorkspaceIndex).toBe(0);
-		expect(manager.getCurrentWorkspace(account)?.id).toBe("workspace-1");
+		expect(account.currentWorkspaceIndex).toBe(1);
+		expect(manager.getCurrentWorkspace(account)?.id).toBe("workspace-2");
 		expect(account.workspaces).toEqual([
 			{ id: "workspace-1", name: "Workspace 1", enabled: true },
 			{ id: "workspace-2", name: "Workspace 2", enabled: true },
@@ -1283,7 +1284,7 @@ describe("AccountManager", () => {
 			expect(account.rateLimitResetTimes["codex"]).toBeDefined();
 		});
 
-		it("H1: clamps an absurd retry-after value to MAX_RATE_LIMIT_DELAY_MS (7d)", () => {
+		it("H1: clamps an absurd retry-after value to the one-hour revalidation deadline", () => {
 			const now = new Date("2026-04-05T00:00:00.000Z");
 			vi.useFakeTimers();
 			vi.setSystemTime(now);
@@ -1297,13 +1298,13 @@ describe("AccountManager", () => {
 				const account = manager.getCurrentAccount()!;
 				// Hostile/buggy upstream: ~31 years in ms.
 				manager.markRateLimitedWithReason(account, 999_999_999_999, "codex", "quota");
-				const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+				const oneHourMs = 60 * 60 * 1000;
 				const resetAt = account.rateLimitResetTimes["codex"]!;
-				// Window must not exceed 7 days from now.
-				expect(resetAt - now.getTime()).toBeLessThanOrEqual(sevenDaysMs);
-				expect(resetAt - now.getTime()).toBe(sevenDaysMs);
-				// And the clamped window is in the past after 7d+ elapses (self-heals).
-				vi.advanceTimersByTime(sevenDaysMs + 1000);
+				// Window must not exceed one hour from now.
+				expect(resetAt - now.getTime()).toBeLessThanOrEqual(oneHourMs);
+				expect(resetAt - now.getTime()).toBe(oneHourMs);
+				// And the clamped window is in the past after 1h+ elapses (self-heals).
+				vi.advanceTimersByTime(oneHourMs + 1000);
 				expect(account.rateLimitResetTimes["codex"]!).toBeLessThan(Date.now());
 			} finally {
 				vi.useRealTimers();
@@ -1358,7 +1359,7 @@ describe("AccountManager", () => {
 					"quota",
 				);
 
-				const expectedResetAt = now.getTime() + 90 * 60_000;
+				const expectedResetAt = now.getTime() + 60 * 60_000;
 
 				vi.advanceTimersByTime(30 * 60_000);
 
@@ -1397,7 +1398,7 @@ describe("AccountManager", () => {
 					"gpt-5.2",
 				);
 
-				const expectedResetAt = now.getTime() + 90 * 60_000;
+				const expectedResetAt = now.getTime() + 60 * 60_000;
 
 				vi.advanceTimersByTime(30 * 60_000);
 
@@ -1624,6 +1625,51 @@ describe("AccountManager", () => {
 	});
 
 	describe("auth failure tracking", () => {
+		it.each([
+			["zero", 0],
+			["negative", -1],
+			["NaN", Number.NaN],
+			["infinity", Number.POSITIVE_INFINITY],
+		] as const)("does not treat %s as an auth invalidation", (_label, timestamp) => {
+			const now = Date.now();
+			const manager = new AccountManager(undefined, {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						refreshToken: "token-1",
+						addedAt: now,
+						lastUsed: now,
+						authInvalidatedAt: timestamp,
+					},
+				],
+			});
+			const account = manager.getCurrentAccount();
+			if (!account) throw new Error("account missing");
+
+			expect(manager.isAccountAuthInvalidated(account)).toBe(false);
+		});
+
+		it("treats a positive finite timestamp as an auth invalidation", () => {
+			const now = Date.now();
+			const manager = new AccountManager(undefined, {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						refreshToken: "token-1",
+						addedAt: now,
+						lastUsed: now,
+						authInvalidatedAt: now,
+					},
+				],
+			});
+			const account = manager.getCurrentAccount();
+			if (!account) throw new Error("account missing");
+
+			expect(manager.isAccountAuthInvalidated(account)).toBe(true);
+		});
+
 		it("increments consecutive auth failures", () => {
 			const now = Date.now();
 			const stored = {
@@ -1660,6 +1706,21 @@ describe("AccountManager", () => {
 	});
 
 	describe("getMinWaitTimeForFamily", () => {
+		it("ignores absent quota deadlines when a breaker reaches its reset boundary", () => {
+			vi.useFakeTimers();
+			try {
+			vi.setSystemTime(1_750_000_000_000);
+			const now=Date.now();
+			const manager=new AccountManager(undefined,{version:3,activeIndex:0,accounts:[
+				{refreshToken:"boundary-fixture",addedAt:now,lastUsed:now},
+				{refreshToken:"limited-fixture",addedAt:now,lastUsed:now,rateLimitResetTimes:{codex:now+30000}},
+			]});
+			// The availability read happens just before the breaker boundary; its
+			// subsequent wait read returns zero, with no quota deadline on this row.
+			vi.spyOn(manager,"isCircuitAvailable").mockReturnValue(false);
+			expect(manager.getMinWaitTimeForFamily("codex","gpt-5-codex")).toBe(30000);
+			} finally { vi.useRealTimers(); }
+		});
 		it("returns 0 when accounts are available", () => {
 			const now = Date.now();
 			const stored = {
@@ -1670,6 +1731,30 @@ describe("AccountManager", () => {
 
 			const manager = new AccountManager(undefined, stored);
 			expect(manager.getMinWaitTimeForFamily("codex")).toBe(0);
+		});
+
+		it("ignores excluded accounts so policy-reserved capacity does not report a zero wait", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						refreshToken: "token-1",
+						addedAt: now,
+						lastUsed: now,
+						rateLimitResetTimes: { codex: now + 30000 },
+					},
+					{ refreshToken: "token-2", addedAt: now, lastUsed: now },
+				],
+			};
+
+			const manager = new AccountManager(undefined, stored);
+			expect(manager.getMinWaitTimeForFamily("codex")).toBe(0);
+			const waitTime = manager.getMinWaitTimeForFamily("codex", null, new Set([1]));
+			expect(waitTime).toBeGreaterThan(0);
+			expect(waitTime).toBeLessThanOrEqual(30000);
+			expect(manager.getMinWaitTimeForFamily("codex", null, new Set([0, 1]))).toBe(0);
 		});
 
 		it("returns wait time when all accounts rate limited", () => {
@@ -1718,6 +1803,27 @@ describe("AccountManager", () => {
 			const waitTime = manager.getMinWaitTimeForFamily("codex", "gpt-5.2");
 			expect(waitTime).toBeGreaterThan(0);
 			expect(waitTime).toBeLessThanOrEqual(45000);
+		});
+
+		it("uses only the Reserve-specific reset when ordinary family quota resets later", () => {
+			vi.useFakeTimers();
+			try {
+				const now = 1_790_000_000_000;
+				vi.setSystemTime(now);
+				const stored = {
+					version: 3 as const,
+					activeIndex: 0,
+					accounts: [{ refreshToken: "token-reserve", addedAt: now, lastUsed: now }],
+				};
+				const manager = new AccountManager(undefined, stored);
+				const account = manager.getAccountByIndex(0)!;
+				account.rateLimitResetTimes = { codex: now + 120_000, "codex:gpt-reserve": now + 30_000 };
+
+				const waitTime = manager.getMinWaitTimeForFamily("codex", "gpt-reserve");
+				expect(waitTime).toBe(30_000);
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 	});
 
@@ -2062,7 +2168,27 @@ describe("AccountManager", () => {
 			expect(account.accountId).toBe("matching-account-id");
 		});
 
-		it("propagates storage write failure as retryable CodexAuthError", async () => {
+		it.each([
+			["ELOCKED", "Storage is busy with another live writer; retry shortly."],
+			["EACCES", "Failed to save accounts: access denied"],
+		])("keeps the rotated credential live when the storage transaction fails with %s", async (code, message) => {
+			const { withAccountStorageTransaction } = await import("../lib/storage.js");
+			// ELOCKED: another writer held the file lock past its wait; EACCES: the
+			// Windows temp write still failed after retries (wrapped StorageError).
+			vi.mocked(withAccountStorageTransaction).mockRejectedValueOnce(Object.assign(new Error(message), { code }));
+			const now = Date.now();
+			const manager = new AccountManager(undefined, {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "old-refresh", accessToken: "old-access", expiresAt: now, addedAt: now, lastUsed: now }],
+			} as any);
+			const account = manager.getAccountByIndex(0)!;
+			const committed = await manager.commitRefreshedAuth(account, { type: "oauth", access: "header.payload.signature", refresh: "new-refresh", expires: now + 3_600_000 });
+			expect(committed).toBe(account);
+			expect(account.refreshToken).toBe("new-refresh");
+		});
+
+		it("keeps the rotated credential live when the storage write stays locked", async () => {
 			const { withAccountStorageTransaction } = await import(
 				"../lib/storage.js"
 			);
@@ -2073,7 +2199,9 @@ describe("AccountManager", () => {
 				Object.assign(new Error("EBUSY"), { code: "EBUSY" }),
 			);
 
-			const now = Date.now();
+			const storageModule = await import("../lib/storage.js");
+            const journal = vi.spyOn(storageModule, "recordPendingAuth").mockResolvedValue(undefined);
+            const now = Date.now();
 			const stored = {
 				version: 3 as const,
 				activeIndex: 0,
@@ -2096,13 +2224,15 @@ describe("AccountManager", () => {
 				expires: now + 3_600_000,
 			};
 
-			const error = await manager
-				.commitRefreshedAuth(account, refreshedAuth)
-				.catch((err) => err as CodexAuthError);
+			// The refresh already spent old-refresh upstream; dropping new-refresh
+			// would force a re-login, so it is kept (and journaled) for a later save.
+			const committed = await manager.commitRefreshedAuth(account, refreshedAuth);
 
-			expect(error).toBeInstanceOf(CodexAuthError);
-			expect(error.retryable).toBe(true);
-			expect(account.refreshToken).toBe("old-refresh");
+			expect(committed).toBe(account);
+			expect(account.refreshToken).toBe("new-refresh");
+            const { resolveAccountRecordId } = await import("../lib/accounts.js");
+            expect(journal).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({recordId: resolveAccountRecordId(stored.accounts[0]!)}));
+            journal.mockRestore();
 		});
 
 		it("propagates non-transient storage write failure as terminal CodexAuthError", async () => {
@@ -2113,7 +2243,7 @@ describe("AccountManager", () => {
 				withAccountStorageTransaction,
 			);
 			mockWithAccountStorageTransaction.mockRejectedValueOnce(
-				Object.assign(new Error("EACCES"), { code: "EACCES" }),
+				Object.assign(new Error("EINVAL"), { code: "EINVAL" }),
 			);
 
 			const now = Date.now();
@@ -2423,7 +2553,7 @@ describe("AccountManager", () => {
 		});
 	});
 
-	describe("saveToDisk", () => {
+		describe("saveToDisk", () => {
 		it("saves accounts with all fields", async () => {
 			const { saveAccounts } = await import("../lib/storage.js");
 			const mockSaveAccounts = vi.mocked(saveAccounts);
@@ -2456,6 +2586,76 @@ describe("AccountManager", () => {
 			expect(savedData?.version).toBe(3);
 			expect(savedData?.accounts[0]?.email).toBe("test@example.com");
 			expect(savedData?.accounts[0]?.rateLimitResetTimes).toBeDefined();
+		});
+
+		it("omits malformed auth invalidation markers from routine saves", async () => {
+			const { saveAccounts } = await import("../lib/storage.js");
+			const mockSaveAccounts = vi.mocked(saveAccounts);
+			const now = Date.now();
+			const manager = new AccountManager(undefined, {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						refreshToken: "token-1",
+						addedAt: now,
+						lastUsed: now,
+						authInvalidatedAt: 0,
+						authInvalidationErrorCode: "oauth_token_revoked",
+					},
+				],
+			});
+
+			await manager.saveToDisk();
+
+			const savedAccount = mockSaveAccounts.mock.calls[0]?.[0]?.accounts[0];
+			expect(savedAccount?.authInvalidatedAt).toBeUndefined();
+			expect(savedAccount?.authInvalidationErrorCode).toBeUndefined();
+		});
+
+		it("preserves an invalidation written by another manager before a stale routine save", async () => {
+			const { saveAccounts, withAccountStorageTransaction } = await import(
+				"../lib/storage.js"
+			);
+			const mockSaveAccounts = vi.mocked(saveAccounts);
+			const mockWithAccountStorageTransaction = vi.mocked(
+				withAccountStorageTransaction,
+			);
+			let disk: AccountStorageV3 | null = null;
+			mockWithAccountStorageTransaction.mockImplementation(async (handler) => {
+				const persist = async (storage: AccountStorageV3) => {
+					disk = structuredClone(storage);
+					await mockSaveAccounts(storage);
+				};
+				return handler(disk ? structuredClone(disk) : null, persist);
+			});
+
+			const now = Date.now();
+			const initialStorage: AccountStorageV3 = {
+				version: 3,
+				activeIndex: 0,
+				accounts: [
+					{
+						refreshToken: "shared-refresh-token",
+						email: "shared@example.com",
+						addedAt: now,
+						lastUsed: now,
+					},
+				],
+			};
+			const managerA = new AccountManager(undefined, structuredClone(initialStorage));
+			const managerB = new AccountManager(undefined, structuredClone(initialStorage));
+
+			const accountA = managerA.getAccountByIndex(0);
+			if (!accountA) throw new Error("manager A account missing");
+			managerA.markAuthInvalidated(accountA, "oauth_token_revoked", now + 1);
+			await managerA.saveToDisk();
+			await managerB.saveToDisk();
+
+			expect(disk?.accounts[0]).toMatchObject({
+				authInvalidatedAt: now + 1,
+				authInvalidationErrorCode: "oauth_token_revoked",
+		});
 		});
 	});
 
@@ -4111,6 +4311,127 @@ describe("AccountManager", () => {
 			expect(result).toBe(true);
 		});
 
+		it("can bypass an exhausted pool bucket without bypassing circuit admission", () => {
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						refreshToken: "token-1",
+						email: "pinned@example.com",
+						addedAt: now,
+						lastUsed: now,
+					},
+				],
+			};
+			const manager = new AccountManager(undefined, stored);
+			const account = manager.getCurrentAccount()!;
+			const tokenTracker = getTokenTracker();
+			const trackerKey = getRuntimeTrackerKey(account);
+			const quotaKey = "codex:gpt-5.1";
+			tokenTracker.drain(
+				trackerKey,
+				quotaKey,
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+			);
+
+			expect(manager.consumeToken(account, "codex", "gpt-5.1")).toBe(false);
+			const tryConsumeSpy = vi.spyOn(tokenTracker, "tryConsume");
+			const refundTokenSpy = vi.spyOn(tokenTracker, "refundToken");
+			try {
+				expect(
+					manager.consumeToken(account, "codex", "gpt-5.1", {
+						bypassTokenBucket: true,
+					}),
+				).toBe(true);
+				expect(tryConsumeSpy).not.toHaveBeenCalled();
+				expect(tokenTracker.getTokens(trackerKey, quotaKey)).toBeLessThan(1);
+
+				manager.recordFailure(account, "codex", "gpt-5.1");
+				manager.recordFailure(account, "codex", "gpt-5.1");
+				manager.recordFailure(account, "codex", "gpt-5.1");
+				expect(
+					manager.consumeToken(account, "codex", "gpt-5.1", {
+						bypassTokenBucket: true,
+					}),
+				).toBe(false);
+				// A rejected bypass must not refund another request's bucket token.
+				expect(tryConsumeSpy).not.toHaveBeenCalled();
+				expect(refundTokenSpy).not.toHaveBeenCalled();
+				expect(tokenTracker.getTokens(trackerKey, quotaKey)).toBeLessThan(1);
+			} finally {
+				tryConsumeSpy.mockRestore();
+				refundTokenSpy.mockRestore();
+			}
+		});
+
+		it("names the admission gate that actually rejected the request", () => {
+			// `account_skip_reasons` is written from this verdict. Re-deriving it
+			// afterwards with getManagedAccountRuntimeSkipReason reports the FIRST
+			// blocker on the account instead of the gate that rejected, so a drained
+			// bucket on a cooling-down account came back as the cooldown.
+			const now = Date.now();
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						refreshToken: "token-1",
+						email: "gates@example.com",
+						addedAt: now,
+						lastUsed: now,
+					},
+				],
+			};
+			const manager = new AccountManager(undefined, stored);
+			const account = manager.getCurrentAccount()!;
+			const tokenTracker = getTokenTracker();
+			const trackerKey = getRuntimeTrackerKey(account);
+			const quotaKey = "codex:gpt-5.1";
+
+			expect(manager.consumeTokenWithReason(account, "codex", "gpt-5.1")).toEqual({
+				ok: true,
+			});
+
+			tokenTracker.drain(
+				trackerKey,
+				quotaKey,
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens,
+			);
+			// A cooldown on the same account must not be reported in place of the
+			// bucket: the bucket is what rejected.
+			manager.markAccountCoolingDown(account, 60_000, "server-error");
+			expect(manager.consumeTokenWithReason(account, "codex", "gpt-5.1")).toEqual({
+				ok: false,
+				reason: "token-exhausted",
+			});
+			// Contrast: re-deriving the reason from account state answers with the
+			// cooldown, which is NOT what rejected this call. That substitution is
+			// exactly the mis-attribution consumeTokenWithReason exists to avoid.
+			expect(
+				manager.getManagedAccountRuntimeSkipReason(account, "codex", "gpt-5.1"),
+			).toBe("cooling-down:server-error");
+
+			// With the bucket bypassed the only gate left is circuit admission, so a
+			// rejection there is reported as such and never as an exhausted bucket.
+			manager.recordFailure(account, "codex", "gpt-5.1");
+			manager.recordFailure(account, "codex", "gpt-5.1");
+			manager.recordFailure(account, "codex", "gpt-5.1");
+			expect(
+				manager.consumeTokenWithReason(account, "codex", "gpt-5.1", {
+					bypassTokenBucket: true,
+				}),
+			).toEqual({ ok: false, reason: "circuit-open" });
+
+			// consumeToken stays the boolean face of the same evaluation.
+			expect(
+				manager.consumeToken(account, "codex", "gpt-5.1", {
+					bypassTokenBucket: true,
+				}),
+			).toBe(false);
+		});
+
 		it("consumeToken returns false and refunds the token when the circuit is open", () => {
 			const now = Date.now();
 			const stored = {
@@ -4802,4 +5123,49 @@ describe("AccountManager", () => {
 			expect(afterUnblock?.index).toBe(1);
 		});
 	});
+});
+
+describe("workspace preference persistence", () => {
+	it("preserves external additions, deletions and workspace exclusions across repeated daemon saves", async () => {
+		const initial:AccountStorageV3={version:3,activeIndex:0,accounts:[{recordId:"first",accountId:"first",refreshToken:"fixture-first",addedAt:1,lastUsed:1,workspaces:[{id:"personal",enabled:true},{id:"business",enabled:true}]},{recordId:"removed",accountId:"removed",refreshToken:"fixture-removed",addedAt:2,lastUsed:2}]};
+		const manager=new AccountManager(undefined,initial);
+		let disk=structuredClone(initial);
+		disk.accounts[0]!.workspaces![1]!.enabled=false;
+		disk.accounts.splice(1,1,{recordId:"added",accountId:"added",refreshToken:"fixture-added",addedAt:3,lastUsed:3});
+		const {withAccountStorageTransaction}=await import("../lib/storage.js");
+		vi.mocked(withAccountStorageTransaction).mockImplementation(async handler=>handler(structuredClone(disk),async next=>{disk=structuredClone(next);}));
+		manager.getAccountByIndex(0)!.lastUsed=50;
+		await manager.saveToDisk();
+		await manager.saveToDisk();
+		expect(disk.accounts.map(a=>a.recordId)).toEqual(["first","added"]);
+		expect(disk.accounts[0]!.lastUsed).toBe(50);
+		expect(disk.accounts[0]!.workspaces![1]!.enabled).toBe(false);
+	});
+ it.each(["save", "refresh"])("keeps a newer CLI preference during %s", async mode => {
+  const initial:AccountStorageV3={version:3,activeIndex:0,accounts:[{accountId:"a",email:"test@example.test",refreshToken:"old",addedAt:1,lastUsed:1,currentWorkspaceIndex:0,workspaces:[{id:"business",enabled:true},{id:"personal",enabled:true}]}]};
+  const manager=new AccountManager(undefined,structuredClone(initial));
+  let disk=structuredClone(initial); disk.accounts[0]!.currentWorkspaceIndex=1;
+  const {withAccountStorageTransaction}=await import("../lib/storage.js");
+  vi.mocked(withAccountStorageTransaction).mockImplementation(async handler=>handler(structuredClone(disk),async next=>{disk=structuredClone(next);}));
+  const account=manager.getAccountByIndex(0)!;
+  manager.disableWorkspace(account,"business");
+  if(mode==="refresh") await manager.commitRefreshedAuth(account,{type:"oauth",access:"new",refresh:"new-refresh",expires:Date.now()+60_000});
+  else await manager.saveToDisk();
+  expect(disk.accounts[0]!.currentWorkspaceIndex).toBe(1);
+  expect(account.currentWorkspaceIndex).toBe(1);
+  expect(disk.accounts[0]!.workspaces?.[0]?.enabled).toBe(false);
+  await manager.saveToDisk();
+  expect(disk.accounts[0]!.currentWorkspaceIndex).toBe(1);
+ });
+ it("still persists local legacy workspace rotation when disk preference has not changed",async()=>{
+  let disk:AccountStorageV3={version:3,activeIndex:0,accounts:[{accountId:"a",refreshToken:"old",addedAt:1,lastUsed:1,currentWorkspaceIndex:0,workspaces:[{id:"one",enabled:true},{id:"two",enabled:true}]}]};
+  const manager=new AccountManager(undefined,structuredClone(disk));
+  const {withAccountStorageTransaction}=await import("../lib/storage.js");
+  vi.mocked(withAccountStorageTransaction).mockImplementation(async handler=>handler(structuredClone(disk),async next=>{disk=structuredClone(next);}));
+  manager.rotateToNextWorkspace(manager.getAccountByIndex(0)!);
+  await manager.saveToDisk();
+  expect(disk.accounts[0]!.currentWorkspaceIndex).toBe(1);
+  await manager.saveToDisk();
+  expect(disk.accounts[0]!.currentWorkspaceIndex).toBe(1);
+ });
 });

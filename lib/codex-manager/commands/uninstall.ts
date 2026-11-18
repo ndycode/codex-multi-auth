@@ -6,6 +6,8 @@ import { withFileOperationRetry } from "../../fs-retry.js";
 import { unbindCodexAppRuntimeRotation } from "../../runtime/app-bind.js";
 
 const PLUGIN_NAME = "codex-multi-auth";
+const LEGACY_PLUGIN_NAME = "@ndycode/codex-multi-auth";
+const PLUGIN_NAMES = [PLUGIN_NAME, LEGACY_PLUGIN_NAME];
 
 export function resolveUninstallPaths(
 	platform: NodeJS.Platform = process.platform,
@@ -26,6 +28,12 @@ export function resolveUninstallPaths(
 	return {
 		configPath: join(configDir, "Codex.json"),
 		cacheNodeModules: join(cacheDir, "node_modules", PLUGIN_NAME),
+		cacheLegacyNodeModules: join(
+			cacheDir,
+			"node_modules",
+			"@ndycode",
+			"codex-multi-auth",
+		),
 		cacheBunLock: join(cacheDir, "bun.lock"),
 	};
 }
@@ -36,7 +44,9 @@ export function removePluginFromList(list: unknown[]): unknown[] {
 	// stray null entry in Codex.json.
 	return list.filter(Boolean).filter((entry) => {
 		if (typeof entry !== "string") return true;
-		return entry !== PLUGIN_NAME && !entry.startsWith(`${PLUGIN_NAME}@`);
+		return !PLUGIN_NAMES.some(
+			(pluginName) => entry === pluginName || entry.startsWith(`${pluginName}@`),
+		);
 	});
 }
 
@@ -60,7 +70,7 @@ function printUninstallUsage(): void {
 			"Options:",
 			"  --dry-run          Show what would be removed without making changes",
 			"  --json             Print machine-readable JSON output",
-			"  --clear-accounts   Also remove stored account credentials (irreversible)",
+			"  --clear-accounts   Also remove stored account credentials and API keys (irreversible)",
 			"",
 			"Behavior:",
 			"  Reverses all first-run setup changes: unbinds Codex app, removes OS launchers,",
@@ -70,6 +80,7 @@ function printUninstallUsage(): void {
 			"so cleanup must be initiated manually):",
 			"  1. codex-multi-auth uninstall          # remove residual artifacts",
 			"  2. npm uninstall -g codex-multi-auth   # remove the package itself",
+			"     (@ndycode/codex-multi-auth is the legacy scoped package name.)",
 		].join("\n"),
 	);
 }
@@ -276,6 +287,9 @@ export async function runUninstallCommand(
 	try {
 		if (dryRun) {
 			log(`[dry-run] Would remove ${paths.cacheNodeModules}`);
+			if (paths.cacheLegacyNodeModules) {
+				log(`[dry-run] Would remove ${paths.cacheLegacyNodeModules}`);
+			}
 			if (bunLockSafeToRemove) {
 				log(`[dry-run] Would remove ${paths.cacheBunLock}`);
 			} else {
@@ -287,6 +301,11 @@ export async function runUninstallCommand(
 			await withFileOperationRetry(() =>
 				rm(paths.cacheNodeModules, { recursive: true, force: true }),
 			);
+			if (paths.cacheLegacyNodeModules) {
+				await withFileOperationRetry(() =>
+					rm(paths.cacheLegacyNodeModules, { recursive: true, force: true }),
+				);
+			}
 			if (bunLockSafeToRemove) {
 				await withFileOperationRetry(() =>
 					rm(paths.cacheBunLock, { force: true }),
@@ -333,6 +352,9 @@ export async function runUninstallCommand(
 		if (warnings.length > 0) {
 			log(`warnings: ${warnings.length} step(s) skipped (see above)`);
 		}
+		log(
+			"To remove the installed package itself, run `npm uninstall -g codex-multi-auth`; `@ndycode/codex-multi-auth` is the legacy package name and does not remove the current package.",
+		);
 	}
 
 	return partialFailure ? 1 : 0;

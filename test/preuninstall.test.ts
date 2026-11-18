@@ -6,10 +6,32 @@ import { runPreuninstallCleanup } from "../scripts/preuninstall.js";
 import { resolveInstallPaths } from "../scripts/install-codex-auth-utils.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
 
+let injectPreuninstallEbusyOnNextRm = false;
+
+vi.mock("node:fs/promises", async () => {
+	const actual: typeof import("node:fs/promises") = await vi.importActual(
+		"node:fs/promises",
+	);
+	return {
+		...actual,
+		rm: vi.fn(async (...args: Parameters<typeof actual.rm>) => {
+			if (injectPreuninstallEbusyOnNextRm) {
+				injectPreuninstallEbusyOnNextRm = false;
+				const error = Object.assign(new Error("EBUSY: cache is busy"), {
+					code: "EBUSY",
+				});
+				throw error;
+			}
+			return actual.rm(...args);
+		}),
+	};
+});
+
 const tempRoots: string[] = [];
 
 afterEach(async () => {
 	vi.restoreAllMocks();
+	injectPreuninstallEbusyOnNextRm = false;
 	while (tempRoots.length > 0) {
 		const root = tempRoots.pop();
 		if (root) await removeWithRetry(root, { recursive: true, force: true });
@@ -66,6 +88,40 @@ describe("runPreuninstallCleanup", () => {
 
 		expect(code).toBe(0);
 		expect(calls).toEqual([]);
+	});
+
+	it("removes current and legacy caches with transient retryable failures", async () => {
+		const home = makeTempHome();
+		const env = envFor(home);
+		const paths = resolveTempPaths(home);
+		mkdirSync(paths.configDir, { recursive: true });
+		mkdirSync(paths.cacheNodeModules, { recursive: true });
+		mkdirSync(paths.cacheLegacyNodeModules, { recursive: true });
+		writeFileSync(
+			paths.configPath,
+			JSON.stringify({ plugins: ["codex-multi-auth"] }, null, "\t") + "\n",
+			"utf8",
+		);
+		writeFileSync(path.join(paths.cacheNodeModules, "current.txt"), "current", "utf8");
+		writeFileSync(
+			path.join(paths.cacheLegacyNodeModules, "legacy.txt"),
+			"legacy",
+			"utf8",
+		);
+
+		injectPreuninstallEbusyOnNextRm = true;
+		const code = await runPreuninstallCleanup({
+			env,
+			home,
+			log: () => {},
+			unbindCodexApp: async () => {},
+			removeLauncher: async () => {},
+		});
+
+		expect(code).toBe(0);
+		expect(injectPreuninstallEbusyOnNextRm).toBe(false);
+		expect(existsSync(paths.cacheNodeModules)).toBe(false);
+		expect(existsSync(paths.cacheLegacyNodeModules)).toBe(false);
 	});
 
 	it("preserves bun.lock when other plugins remain after removal", async () => {

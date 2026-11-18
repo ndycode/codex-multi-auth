@@ -12,6 +12,7 @@ Canonical governance for repository documentation quality and consistency.
 | User operations | Daily users | Configure, run, recover, and report issues safely |
 | Reference | Power users and maintainers | Exact command, setting, and path lookup |
 | Development | Contributors and maintainers | Internal architecture, flow, tests, and ownership |
+| Historical | Auditors and archaeologists | Frozen snapshot evidence — releases, audits, implementation plans, design docs |
 
 ---
 
@@ -37,19 +38,20 @@ Canonical governance for repository documentation quality and consistency.
 | Storage path reference | `docs/reference/storage-paths.md` |
 | Docs style contract | `docs/STYLE_GUIDE.md` |
 | Docs governance (this file) | `docs/DOCUMENTATION.md` |
-| Architecture internals | `docs/development/ARCHITECTURE.md` |
-| Runtime rotation, selection order, security boundaries | `docs/development/ARCHITECTURE.md` |
+| Architecture internals (module layering, proxy request flow, storage lifecycle, concurrency model, security boundaries) | `docs/development/ARCHITECTURE.md` |
 | Config fields internals | `docs/development/CONFIG_FIELDS.md` |
 | Config flow internals | `docs/development/CONFIG_FLOW.md` |
 | Repository ownership map | `docs/development/REPOSITORY_SCOPE.md` |
 | Agent/project knowledge | `AGENTS.md`, `lib/AGENTS.md`, `test/AGENTS.md` |
 | Testing and release gates | `docs/development/TESTING.md` |
 | TUI parity checklist | `docs/development/TUI_PARITY_CHECKLIST.md` |
+| Maintainer runbooks | `docs/development/RUNBOOK_ADD_AUTH_COMMAND.md`, `RUNBOOK_ADD_CONFIG_FIELD.md`, `RUNBOOK_CHANGE_ROUTING_POLICY.md`, `RUNBOOK_ADD_AUTH_MANAGER_COMMAND.md`, `RUNBOOK_ADD_CONFIG_FIELD_SAFELY.md`, `RUNBOOK_CHANGE_ROUTING_POLICY_SAFELY.md` (all under `docs/development/`) |
 | GitHub metadata guidance | `docs/development/GITHUB_DISCOVERABILITY.md` |
 | IA/findability audit (2026-03-01) | `docs/development/IA_FINDABILITY_AUDIT_2026-03-01.md` |
 | Benchmark methodology | `docs/benchmarks/code-edit-format-benchmark.md` |
 | Historical implementation plans | `docs/development/implementation-plans/` (archive; not current architecture guidance) |
 | Historical audit snapshots | `docs/audits/` |
+| Historical design docs | `docs/design/` |
 
 ---
 
@@ -58,12 +60,13 @@ Canonical governance for repository documentation quality and consistency.
 1. Canonical package name: `codex-multi-auth`.
 2. Canonical account command family: `codex-multi-auth ...`.
 3. Canonical storage root: `~/.codex/multi-auth` unless explicitly overridden.
-4. Compatibility aliases (`codex multi auth`, `codex multi-auth`, `codex multiauth`) belong only in command reference, troubleshooting, or migration sections.
+4. Compatibility aliases belong only in command reference, troubleshooting, or migration sections (`docs/reference/commands.md`, `docs/troubleshooting.md`, `docs/upgrade.md`).
 5. Legacy paths/flows and scoped package references belong only in migration and compatibility sections.
 6. Current stable release line is `2.x`; foundational `0.x` and pre-`0.1.0` entries stay archived separately.
 7. Runtime rotation is documented as default-on unless a future release intentionally changes that policy.
 8. Audit evidence under `docs/audits/` is historical snapshot material. Do not rewrite captured evidence to look current; add snapshot notes or new audit artifacts instead.
-9. Material under `docs/development/implementation-plans/` is historical planning archive, not current architecture guidance.
+9. Material under `docs/development/implementation-plans/` and `docs/design/` is historical planning archive, not current architecture guidance.
+10. The documentation contract is executable: `test/documentation.test.ts` pins required files, literals, naming scopes, and link integrity. A doc change that cannot keep a pinned literal must update the test in the same commit with a comment explaining why the pin moved.
 
 ---
 
@@ -91,7 +94,7 @@ Before merge:
 1. Every documented command is executable as written.
 2. CLI flags documented in references match runtime parser/usage output.
 3. Paths match runtime modules (`lib/runtime-paths.ts`, `lib/storage.ts`, `lib/config.ts`).
-4. Internal links are valid.
+4. Internal links are valid (enforced by `test/documentation.test.ts`).
 5. Cross-platform instructions exist for OS-sensitive operations.
 6. No conflicting guidance between README, docs, and governance files.
 7. Public landing pages use accurate discoverability terms without keyword stuffing or ranking promises.

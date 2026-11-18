@@ -1,127 +1,123 @@
 # codex-multi-auth FAQ
 
-Short answers for developers evaluating Codex CLI multi-account OAuth, account switching, local diagnostics, runtime rotation, governance, and recovery workflows in `codex-multi-auth`.
+Short answers for anyone evaluating `codex-multi-auth` or getting started with multi-account Codex CLI use.
 
 ---
 
-## Does this replace `@openai/codex`?
+## Does this replace the Codex CLI?
 
-No. `codex-multi-auth` does not replace the official Codex CLI and does **not** publish a global `codex` binary. The official install path keeps owning `codex`. Use `codex-multi-auth ...` for account management, and use `codex-multi-auth-codex ...` or `mcodex ...` only when you intentionally want this package's forwarding wrapper.
-
----
-
-## What problem does it solve?
-
-It makes Codex CLI multi-account OAuth state visible and operable. Instead of relying on one hidden local auth state, you can sign into multiple ChatGPT-authenticated accounts, switch explicitly, run health checks, forecast account readiness, apply local pause/drain policies, and repair local storage issues.
+No. `codex-multi-auth` never installs a `codex` binary — that name belongs to the official install (`@openai/codex`). This package adds a local account manager plus an optional wrapper that forwards commands to the official CLI.
 
 ---
 
-## How is it different from the official Codex CLI alone?
+## Which command do I run?
 
-The official Codex CLI owns the core coding experience and the `codex` binary. `codex-multi-auth` adds a separate local management layer for multiple OAuth accounts: account pool storage, explicit switching, health checks, forecasts, reports, repair commands, default-on runtime rotation for wrapper-launched sessions, local governance, and an optional loopback bridge.
-
----
-
-## When should I use each binary?
-
-| Binary | Use when |
+| Command | Use it to |
 | --- | --- |
-| `codex-multi-auth` | Managing accounts: login, list, switch, check, forecast, rotation, usage, doctor, and other local commands |
-| `codex-multi-auth-codex` | You want this package to forward official Codex commands with optional runtime rotation and shadow `CODEX_HOME` |
-| `mcodex` | You want a short convenience launcher over the wrapper, with optional `--monitor` or `--tmux` / `-t` |
-| `codex-multi-auth-app-launcher` | You need user-level desktop shortcut / macOS wrapper routing helpers |
-| Official `codex` | You want the stock Codex CLI without this package's wrapper |
+| `codex-multi-auth …` | Manage accounts: login, list, switch, check, forecast, doctor, budgets |
+| `codex-multi-auth-codex …` | Run Codex through the wrapper, with account rotation on by default |
+| `mcodex …` | Same wrapper, shorter name; adds `--monitor` and `--tmux` / `-t` |
+| `codex …` | Plain official CLI, no wrapper |
+
+`mcodex` is a launcher only — it forwards to `codex-multi-auth-codex` and does no account management of its own.
 
 ---
 
-## What is `mcodex`?
+## How does login work?
 
-`mcodex` is a convenience entrypoint over `codex-multi-auth-codex` (`scripts/codex.js`).
+Browser OAuth with PKCE by default. `codex-multi-auth login` opens a sign-in tab; after you approve, the browser redirects to a temporary listener on `localhost:1455` that captures the code and exchanges it for tokens.
 
-- Default: forward remaining args to the wrapper.
-- `--monitor`: live-refresh `codex-multi-auth list` via `watch` (requires `watch` on PATH).
-- `--tmux` / `-t`: open a tmux session running the wrapper (optional `--live-accounts`).
+No usable browser or callback? Two fallbacks:
 
-It does not replace the account manager; use `codex-multi-auth ...` for management commands.
+- `codex-multi-auth login --device-auth` prints `https://auth.openai.com/codex/device` and a one-time code (valid 15 minutes) — approve it in any browser; nothing binds a local port.
+- `codex-multi-auth login --manual` lets you paste the full redirect URL.
+
+Repeat per account; the pool holds up to 20.
+
+---
+
+## How does rotation work?
+
+Request-bearing Codex sessions launched through the wrapper route through a loopback-only proxy that picks a managed account per request. It honors a pin first, otherwise scores accounts by health, quota headroom, and time since last use. On a rate limit, auth failure, or server error it rotates to another account before response bytes stream back.
+
+Rotation is **on by default**. Turn it off with `codex-multi-auth rotation disable` or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`; check it with `codex-multi-auth rotation status`.
+
+---
+
+## Where is my data?
+
+Under `~/.codex/multi-auth/` — the account pool (`openai-codex-accounts.json`, mode `0600`), settings, quota cache, usage ledger, policies, and backups. Per-repo pools live under `projects/<project-key>/`. `CODEX_MULTI_AUTH_DIR` moves the whole root. The official CLI's own files stay under `~/.codex/`.
+
+Nothing leaves the machine except the OAuth and backend calls themselves. See [privacy.md](privacy.md).
 
 ---
 
 ## Do I need an OpenAI Platform API key?
 
-Not for the ChatGPT-authenticated multi-account workflow in this repository. If you are building production applications or API integrations, use the OpenAI Platform API instead.
+No. Accounts sign in with ChatGPT OAuth, exactly like the official CLI's own login. API keys are only relevant for the optional `login --api` credential path and unrelated to normal multi-account use.
 
 ---
 
-## Is the plugin runtime required?
+## Does it patch the Codex desktop app?
 
-No. Most users only need `codex-multi-auth ...` plus optional wrapper launches (`codex-multi-auth-codex` / `mcodex`). The plugin-host runtime is optional and uses the same account pool for advanced host request handling.
-
----
-
-## Is runtime rotation required? Is it on by default?
-
-Runtime rotation is **enabled by default** for request-bearing forwarded Codex CLI/app sessions launched through this package's wrapper or app bind. Disable it with `codex-multi-auth rotation disable`, `codexRuntimeRotationProxy=false`, or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` when you need plain official Codex forwarding without the local proxy.
+No. The optional app bind edits user-level config and installs a local router — reversible with `codex-multi-auth rotation unbind-app`. Official app binaries are never modified.
 
 ---
 
-## Does runtime rotation patch the Codex app?
+## Can I force one account?
 
-No. The packaged app bind updates user-level Codex config and startup/router metadata and keeps a backup for restore. Official app binaries are not patched.
-
----
-
-## Are pause and drain actually enforced?
-
-Yes, on the runtime path. `codex-multi-auth account pause|drain <index>` updates local policy storage, and `evaluateRuntimePolicy` blocks paused or drained accounts during account selection in the runtime rotation proxy (and plugin-host path). They are not cosmetic dashboard labels.
+- Per run: `codex-multi-auth-codex --account <index|email|id>` — ephemeral pin for that invocation only.
+- Persistently: `codex-multi-auth switch <index>` — stays pinned until `codex-multi-auth unpin`.
 
 ---
 
-## Where is account data stored?
+## Are pause and drain real?
 
-By default, under `~/.codex/multi-auth`. Project-scoped account pools can also live under `~/.codex/multi-auth/projects/<project-key>/...`. Override the root with `CODEX_MULTI_AUTH_DIR` when needed. Credentials stay local on your machine.
-
----
-
-## How do I force one account for a single Codex run?
-
-Use the wrapper force-pin (ephemeral; does not change the persisted `switch` pin):
-
-```bash
-codex-multi-auth-codex --account 2 exec "…"
-```
-
-Or set `CODEX_MULTI_AUTH_FORCE_ACCOUNT`. The pin is fail-hard and requires the runtime rotation proxy to be active for that command.
+Yes. `codex-multi-auth account pause <index>` and `drain <index>` write to the local policy store, and the rotation path enforces them — a paused or drained account is skipped during selection. They are not cosmetic labels.
 
 ---
 
-## How do I recover quickly if something looks wrong?
+## Do pause/drain and budgets affect plain `codex`?
+
+No. Policies are enforced on the rotation path — sessions launched through `codex-multi-auth-codex`, `mcodex`, or the app bind. A direct `codex` launch uses whatever account is synced to `~/.codex/auth.json`.
+
+---
+
+## Something looks broken — where do I start?
 
 ```bash
 codex-multi-auth doctor --fix
 codex-multi-auth check
-codex-multi-auth forecast --live
 ```
 
-Then rerun `codex-multi-auth login` if the affected account still looks stale. For storage-only issues, prefer `codex-multi-auth fix --dry-run` before applying repairs.
+If a specific account stays stale, re-login it with `codex-multi-auth login --account <index|email|id>`. For named symptoms, go to [troubleshooting.md](troubleshooting.md).
 
 ---
 
-## Who is this for?
+## Is this for teams or hosted services?
 
-This project is aimed at individual developers using the official Codex CLI who want more control over local account state, account switching, diagnostics, quota visibility, runtime rotation, local budgets/policies, and recovery.
-
----
-
-## Is this intended for commercial multi-user services?
-
-No. The repository is positioned for personal development workflows with your own accounts.
+No. It targets individual developers running the official Codex CLI with their own accounts. All state is local; there is no multi-user surface.
 
 ---
 
-## Where should I start after this page?
+## How does the vocabulary map to `oc-codex-multi-auth`?
+
+The sibling project [oc-codex-multi-auth](https://github.com/ndycode/oc-codex-multi-auth) is an OpenCode plugin rather than a Codex CLI manager. Where the same idea has a different name there:
+
+| Here | oc-codex-multi-auth |
+| --- | --- |
+| `check --prime`, `account auto-prime` — start windows on unused subscriptions | `codex-warm` / `warm` — open every enabled account's usage window |
+| Earned reset credits (`resets`) | Banked reset credits (`codex-reset`) |
+| Flagged (sidelined) account | Flagged (quarantined) account |
+| Quota window | Usage window / quota window |
+| `debug bundle` | `codex-diag` — redacted diagnostic snapshot |
+| `check` — live health probe | `codex-health` / `health` — local health summary |
+
+---
+
+## Related
 
 - [getting-started.md](getting-started.md)
-- [architecture.md](architecture.md)
 - [features.md](features.md)
 - [troubleshooting.md](troubleshooting.md)
 - [reference/commands.md](reference/commands.md)

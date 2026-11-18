@@ -3,7 +3,7 @@ import {
 	getBudgetWindowStart,
 	loadBudgetGuardStore,
 	normalizeBudgetKey,
-	saveBudgetGuardStore,
+	updateBudgetGuardStore,
 	upsertBudgetLimit,
 	type BudgetWindow,
 } from "../../budget-guard.js";
@@ -11,7 +11,13 @@ import { summarizeUsageLedger } from "../../usage/index.js";
 
 export interface BudgetCommandDeps {
 	loadStore?: typeof loadBudgetGuardStore;
-	saveStore?: typeof saveBudgetGuardStore;
+	/**
+	 * Mutation seam: each mutation re-applies under the cross-process lock
+	 * against the freshest store, so a concurrent `budget limit` on the same
+	 * key is not silently dropped by the whole-record timestamp merge.
+	 * Defaults to the real updateBudgetGuardStore.
+	 */
+	updateStore?: typeof updateBudgetGuardStore;
 	summarizeUsage?: typeof summarizeUsageLedger;
 	logInfo?: (message: string) => void;
 	logError?: (message: string) => void;
@@ -49,7 +55,7 @@ export async function runBudgetCommand(
 		return 0;
 	}
 	const loadStore = deps.loadStore ?? loadBudgetGuardStore;
-	const saveStore = deps.saveStore ?? saveBudgetGuardStore;
+	const updateStore = deps.updateStore ?? updateBudgetGuardStore;
 	const store = await loadStore();
 	const now = deps.getNow?.() ?? Date.now();
 
@@ -120,12 +126,14 @@ export async function runBudgetCommand(
 			logError("At least one of --requests, --tokens, or --cost is required.");
 			return 1;
 		}
-		const limit = upsertBudgetLimit(
-			store,
-			{ key, window, maxRequests, maxTokens, maxCostUsd },
-			now,
-		);
-		await saveStore(store);
+		const limit = await updateStore((store) => ({
+			result: upsertBudgetLimit(
+				store,
+				{ key, window, maxRequests, maxTokens, maxCostUsd },
+				now,
+			),
+			dirty: true,
+		}));
 		logInfo(`Saved budget limit ${limit.key} (${limit.window}).`);
 		return 0;
 	}

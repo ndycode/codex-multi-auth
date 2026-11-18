@@ -5,6 +5,7 @@ import {
 	findMatchingAccountIndex,
 	normalizeEmailKey,
 } from "../../lib/storage.js";
+import { selectNewestAccount } from "../../lib/storage/account-match-utils.js";
 
 // Small identity alphabets so generated pools actually collide on facets;
 // the matcher's interesting behavior (ambiguity vetoes, newest-wins, tier
@@ -69,6 +70,79 @@ const arbPoolWithPermutation = fc
 	});
 
 const arbCandidate: fc.Arbitrary<TestAccount> = arbAccount;
+
+// Reference implementation of the pre-index dedup algorithm: one linear
+// findMatchingAccountIndex scan per candidate, the same selectNewestAccount
+// merge, and the same outer fixpoint loop. The indexed pass in
+// deduplicateAccountsByIdentityPass is a performance rewrite, not a semantic
+// change, so both must return the identical survivors on every pool.
+function deduplicateAccountsByIdentityPassLinear<T extends TestAccount>(
+	accounts: readonly T[],
+): T[] {
+	const deduplicated: T[] = [];
+	for (const account of accounts) {
+		if (!account) continue;
+		const existingIndex = findMatchingAccountIndex(deduplicated, account);
+		if (existingIndex === undefined) {
+			deduplicated.push(account);
+			continue;
+		}
+		deduplicated[existingIndex] = selectNewestAccount(
+			deduplicated[existingIndex],
+			account,
+		);
+	}
+	return deduplicated;
+}
+
+function deduplicateAccountsLinear<T extends TestAccount>(accounts: T[]): T[] {
+	let current = deduplicateAccountsByIdentityPassLinear(accounts);
+	for (;;) {
+		const next = deduplicateAccountsByIdentityPassLinear(current);
+		if (next.length === current.length) return next;
+		current = next;
+	}
+}
+
+// Freshness for the oracle pool deliberately comes from a tiny, mostly-tied
+// domain: unlike arbPoolWithPermutation (which forces distinct lastUsed so
+// newest-wins has a unique answer), tied lastUsed and addedAt values are
+// exactly what the indexed implementation's (lastUsed, addedAt, index)
+// ordering must reproduce from the linear fold's later-position-wins rule.
+const arbTiedFreshness = fc.oneof(
+	{ weight: 4, arbitrary: fc.constantFrom(undefined, 0, 5, 10) },
+	{ weight: 1, arbitrary: fc.nat(1_000) },
+);
+
+// accountIds and refreshTokens are trimmed but not case-folded, so padded
+// spellings still collide on the same facet while case variants stay
+// distinct identities.
+const arbPaddedToken = fc
+	.tuple(
+		fc.constantFrom(...REFRESH_TOKENS),
+		fc.constantFrom("", " ", "  "),
+		fc.constantFrom("", " ", "\t"),
+	)
+	.map(([token, pad, trail]) => `${pad}${token}${trail}`);
+
+const arbOracleAccount: fc.Arbitrary<TestAccount> = fc.record(
+	{
+		accountId: fc.option(
+			fc.constantFrom(...ACCOUNT_IDS, "acc-4"),
+			{ nil: undefined },
+		),
+		email: fc.option(arbSpelledEmail, { nil: undefined }),
+		refreshToken: fc.option(arbPaddedToken, { nil: undefined }),
+		lastUsed: arbTiedFreshness,
+		addedAt: arbTiedFreshness,
+	},
+	{ requiredKeys: [] },
+);
+
+const arbOraclePool = fc.array(arbOracleAccount, {
+	minLength: 0,
+	maxLength: 12,
+});
 
 describe("normalizeEmailKey properties", () => {
 	it("is idempotent and insensitive to casing and surrounding whitespace", () => {
@@ -263,6 +337,28 @@ describe("deduplicateAccounts properties", () => {
 				expect(deduplicateAccounts([...deduplicated])).toStrictEqual(
 					deduplicated,
 				);
+			}),
+		);
+	});
+
+	// Regression oracle for the indexed dedup pass: the incremental identity
+	// indexes must produce the same survivors as the original linear
+	// findMatchingAccountIndex fold, including the cases that generator-based
+	// coverage previously skipped — shared refresh tokens, respelled
+	// (mixed-case/padded) emails, and pools where lastUsed and addedAt tie so
+	// only the survivor position decides the winner.
+	it("returns the same survivors as the linear identity fold", () => {
+		fc.assert(
+			fc.property(arbOraclePool, (pool) => {
+				const indexed = deduplicateAccounts([...pool]);
+				const linear = deduplicateAccountsLinear([...pool]);
+				expect(indexed.length).toBe(linear.length);
+				for (let i = 0; i < linear.length; i += 1) {
+					// Object identity, not just structural equality: a faithful
+					// index resolves every tier to the same input element the
+					// linear fold would have picked.
+					expect(indexed[i]).toBe(linear[i]);
+				}
 			}),
 		);
 	});

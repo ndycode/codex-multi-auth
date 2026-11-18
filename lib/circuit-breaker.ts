@@ -21,41 +21,94 @@ export class CircuitOpenError extends Error {
 	}
 }
 
+/**
+ * Non-throwing admission result, for hot paths that would otherwise pay for a
+ * {@link CircuitOpenError} allocation on every rejection during a storm.
+ * `reason` names the gate that rejected so callers can keep their own error
+ * taxonomy without parsing exception messages.
+ */
+export type CircuitAdmissionResult =
+	| { ok: true }
+	| {
+			ok: false;
+			reason: "open" | "half-open";
+			/** Milliseconds until a fresh attempt may be admitted. */
+			retryAfterMs: number;
+	  };
+
 export class CircuitBreaker {
 	private state: CircuitState = "closed";
 	private failures: number[] = [];
 	private lastStateChange: number = Date.now();
 	private halfOpenAttempts: number = 0;
+	private probeWindow = {};
 	private config: CircuitBreakerConfig;
 
 	constructor(config: Partial<CircuitBreakerConfig> = {}) {
 		this.config = { ...DEFAULT_CIRCUIT_BREAKER_CONFIG, ...config };
 	}
 
-	canExecute(): boolean {
+	/**
+	 * Same admission decision as {@link canExecute} but returns a result
+	 * object instead of throwing, so reject-heavy callers stay exception-free.
+	 * Admitting a probe still consumes the half-open attempt slot.
+	 */
+	tryCanExecute(onProbeAcquired?: (release: () => void) => void): CircuitAdmissionResult {
 		const now = Date.now();
 
 		if (this.state === "open") {
 			if (now - this.lastStateChange >= this.config.resetTimeoutMs) {
 				this.transitionToHalfOpen(now);
 			} else {
-				throw new CircuitOpenError();
+				return {
+					ok: false,
+					reason: "open",
+					retryAfterMs: Math.max(
+						0,
+						this.config.resetTimeoutMs - (now - this.lastStateChange),
+					),
+				};
 			}
 		}
 
 		if (this.state === "half-open") {
+			// A fully released window has no in-flight probe. Start its timeout
+			// at the next acquisition, including after an arbitrarily long idle.
+			if (this.halfOpenAttempts === 0) this.resetHalfOpenProbeWindow(now);
 			if (this.halfOpenAttempts >= this.config.halfOpenMaxAttempts) {
 				if (this.hasHalfOpenProbeWaitElapsed(now)) {
 					this.resetHalfOpenProbeWindow(now);
 				} else {
-					throw new CircuitOpenError("Circuit is half-open");
+					return {
+						ok: false,
+						reason: "half-open",
+						retryAfterMs: Math.max(
+							0,
+							this.config.resetTimeoutMs - (now - this.lastStateChange),
+						),
+					};
 				}
 			}
 			this.halfOpenAttempts += 1;
-			return true;
+            const window = this.probeWindow;
+            let released = false;
+            onProbeAcquired?.(() => {
+                if (released) return;
+                released = true;
+                if (this.state === "half-open" && this.probeWindow === window) this.halfOpenAttempts -= 1;
+            });
+			return { ok: true };
 		}
 
-		return true;
+		return { ok: true };
+	}
+
+	canExecute(): boolean {
+		const result = this.tryCanExecute();
+		if (result.ok) return true;
+		throw new CircuitOpenError(
+			result.reason === "half-open" ? "Circuit is half-open" : "Circuit is open",
+		);
 	}
 
 	isAvailable(now = Date.now()): boolean {
@@ -143,12 +196,14 @@ export class CircuitBreaker {
 		this.state = "open";
 		this.lastStateChange = now;
 		this.halfOpenAttempts = 0;
+		this.probeWindow = {};
 	}
 
 	private transitionToHalfOpen(now: number): void {
 		this.state = "half-open";
 		this.lastStateChange = now;
 		this.halfOpenAttempts = 0;
+		this.probeWindow = {};
 	}
 
 	private hasHalfOpenProbeWaitElapsed(now: number): boolean {
@@ -158,12 +213,14 @@ export class CircuitBreaker {
 	private resetHalfOpenProbeWindow(now: number): void {
 		this.lastStateChange = now;
 		this.halfOpenAttempts = 0;
+		this.probeWindow = {};
 	}
 
 	private resetToClosed(now: number): void {
 		this.state = "closed";
 		this.lastStateChange = now;
 		this.halfOpenAttempts = 0;
+		this.probeWindow = {};
 		this.failures = [];
 	}
 }

@@ -17,6 +17,7 @@ import {
 	ensureContentType,
 } from "./response-handler.js";
 import type { UserConfig, RequestBody } from "../types.js";
+import type { UsageTokenCounts } from "../usage/types.js";
 import { isRecord } from "../utils.js";
 import {
 	HTTP_STATUS,
@@ -41,6 +42,7 @@ export {
 	resolveUnsupportedCodexFallbackModel,
 	shouldFallbackToGpt52OnUnsupportedGpt53,
 	isEntitlementError,
+	isModelAtCapacityError,
 	isWorkspaceDisabledError,
 	createEntitlementErrorResponse,
 } from "./error-classification.js";
@@ -285,6 +287,12 @@ export async function handleSuccessResponse(
     isStreaming: boolean,
     options?: {
 		onResponseId?: (responseId: string) => void;
+		/**
+		 * Reports the upstream token counts once they are known, for the usage
+		 * ledger. Fires from the SSE tee on the streaming path and from the
+		 * assembled response on the non-streaming path.
+		 */
+		onUsage?: (usage: UsageTokenCounts) => void;
 		streamStallTimeoutMs?: number;
 	},
 ): Promise<Response> {
@@ -299,7 +307,12 @@ export async function handleSuccessResponse(
 	}
 
 	// For streaming requests (streamText), return stream as-is
-	return attachResponseIdCapture(response, responseHeaders, options?.onResponseId);
+	return attachResponseIdCapture(
+		response,
+		responseHeaders,
+		options?.onResponseId,
+		options?.onUsage,
+	);
 }
 
 async function safeReadBody(response: Response): Promise<string> {
@@ -451,7 +464,7 @@ function normalizeErrorPayload(
 								message:
 										`The model '${unsupportedModel}' is not currently available for this ChatGPT account when using Codex OAuth. ` +
 										"This is an account/workspace entitlement gate, not a temporary rate limit. " +
-										"Try 'gpt-5.3-codex' (current), or legacy aliases like 'gpt-5-codex'/'gpt-5.2-codex', or enable automatic fallback via " +
+										"Try 'gpt-6.1-sol' or 'gpt-5.6-sol', or enable automatic fallback via " +
 										'unsupportedCodexPolicy: "fallback" (or CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback). ' +
 										"(Legacy: CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL=1 or fallbackOnUnsupportedCodexModel).",
 								type: "entitlement_error",

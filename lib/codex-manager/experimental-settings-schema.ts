@@ -8,6 +8,7 @@ export type ExperimentalSettingsAction =
 	| { type: "toggle-refresh-guardian" }
 	| { type: "decrease-refresh-interval" }
 	| { type: "increase-refresh-interval" }
+	| { type: "toggle-context-budget-guard" }
 	| { type: "apply" }
 	| { type: "save" }
 	| { type: "back" };
@@ -34,6 +35,7 @@ export function mapExperimentalMenuHotkey(
 	if (raw === "1") return { type: "sync" };
 	if (raw === "2") return { type: "backup" };
 	if (raw === "3") return { type: "toggle-refresh-guardian" };
+	if (raw === "4") return { type: "toggle-context-budget-guard" };
 	if (raw === "[" || raw === "-") return { type: "decrease-refresh-interval" };
 	if (raw === "]" || raw === "+") return { type: "increase-refresh-interval" };
 	const lower = raw.toLowerCase();

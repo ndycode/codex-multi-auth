@@ -1,5 +1,6 @@
 import {
 	createUiTheme,
+	type UiColorMode,
 	type UiColorProfile,
 	type UiGlyphMode,
 	type UiPalette,
@@ -13,6 +14,8 @@ export interface UiRuntimeOptions {
 	glyphMode: UiGlyphMode;
 	palette: UiPalette;
 	accent: UiAccent;
+	/** Requested background mode; `theme.colorMode` holds the resolved value. */
+	colorMode: UiColorMode;
 	theme: UiTheme;
 }
 
@@ -22,11 +25,13 @@ const DEFAULT_OPTIONS: UiRuntimeOptions = {
 	glyphMode: "ascii",
 	palette: "green",
 	accent: "green",
+	colorMode: "auto",
 	theme: createUiTheme({
 		profile: "truecolor",
 		glyphMode: "ascii",
 		palette: "green",
 		accent: "green",
+		colorMode: "auto",
 	}),
 };
 
@@ -56,13 +61,21 @@ export function setUiRuntimeOptions(
 	const glyphMode = options.glyphMode ?? runtimeOptions.glyphMode;
 	const palette = options.palette ?? runtimeOptions.palette;
 	const accent = options.accent ?? runtimeOptions.accent;
+	const colorMode = options.colorMode ?? runtimeOptions.colorMode;
 	runtimeOptions = {
 		v2Enabled,
 		colorProfile,
 		glyphMode,
 		palette,
 		accent,
-		theme: createUiTheme({ profile: colorProfile, glyphMode, palette, accent }),
+		colorMode,
+		theme: createUiTheme({
+			profile: colorProfile,
+			glyphMode,
+			palette,
+			accent,
+			colorMode,
+		}),
 	};
 	return runtimeOptions;
 }

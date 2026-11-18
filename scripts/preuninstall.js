@@ -189,6 +189,9 @@ export async function runPreuninstallCleanup(deps = {}) {
 			);
 			if (dryRun) {
 				log(`[dry-run] Would remove ${paths.cacheNodeModules}`);
+				if (paths.cacheLegacyNodeModules) {
+					log(`[dry-run] Would remove ${paths.cacheLegacyNodeModules}`);
+				}
 				if (bunLockSafe) {
 					log(`[dry-run] Would remove ${paths.cacheBunLock}`);
 				} else {
@@ -201,6 +204,14 @@ export async function runPreuninstallCleanup(deps = {}) {
 					await withFileOperationRetry(() =>
 						rm(paths.cacheNodeModules, { recursive: true, force: true }),
 					);
+					if (paths.cacheLegacyNodeModules) {
+						await withFileOperationRetry(() =>
+							rm(paths.cacheLegacyNodeModules, {
+								recursive: true,
+								force: true,
+							}),
+						);
+					}
 					if (bunLockSafe) {
 						await withFileOperationRetry(() =>
 							rm(paths.cacheBunLock, { force: true }),

@@ -1,9 +1,12 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
-import process from "node:process";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import type { RuntimeObservabilitySnapshot } from "./runtime-observability.js";
 import type { AppBindRouterStatus } from "./app-bind.js";
-import { APP_RUNTIME_HELPER_STATUS_FILE } from "../runtime-constants.js";
+import {
+	isLiveRuntimeHelper,
+	readRuntimeHelperPid,
+	selectRuntimeHelperStatus,
+} from "./app-helper-selection.js";
+import { listRuntimeHelperStatusPaths } from "../runtime-constants.js";
 import { getCodexMultiAuthDir } from "../runtime-paths.js";
 import type { AccountStorageV3 } from "../storage.js";
 import { isRecord } from "../utils.js";
@@ -56,6 +59,9 @@ export interface AppRuntimeHelperAccountStatus {
 	kind: string | null;
 	state: string | null;
 	pid: number | null;
+	// Parsed so liveness can be identity-checked rather than trusting
+	// `kill(pid, 0)` alone; see app-helper-selection.ts.
+	startedAt: number | null;
 	lastAccountIndex: number | null;
 	lastAccountLabel: string | null;
 	lastAccountEmail: string | null;
@@ -110,22 +116,10 @@ function readOptionalString(record: Record<string, unknown>, key: string): strin
 		: null;
 }
 
-// Best-effort liveness probe: process.kill(pid, 0) can report permission
-// failures for live processes and cannot protect against rare PID reuse.
-function isProcessAlive(pid: number | null): boolean {
-	if (!pid) return false;
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		const code =
-			error && typeof error === "object" && "code" in error ? error.code : null;
-		return code === "EPERM";
-	}
-}
 
-export function readAppRuntimeHelperStatus(): AppRuntimeHelperAccountStatus | null {
-	const statusPath = join(getCodexMultiAuthDir(), APP_RUNTIME_HELPER_STATUS_FILE);
+function readAppRuntimeHelperStatusFile(
+	statusPath: string,
+): AppRuntimeHelperAccountStatus | null {
 	if (!existsSync(statusPath)) return null;
 	try {
 		const stat = statSync(statusPath);
@@ -139,7 +133,8 @@ export function readAppRuntimeHelperStatus(): AppRuntimeHelperAccountStatus | nu
 		return {
 			kind: readOptionalString(parsed, "kind"),
 			state: readOptionalString(parsed, "state"),
-			pid: readOptionalNumber(parsed, "pid"),
+			pid: readRuntimeHelperPid(parsed.pid),
+			startedAt: readOptionalNumber(parsed, "startedAt"),
 			lastAccountIndex: readOptionalNumber(parsed, "lastAccountIndex"),
 			lastAccountLabel: readOptionalString(parsed, "lastAccountLabel"),
 			lastAccountEmail: readOptionalString(parsed, "lastAccountEmail"),
@@ -152,13 +147,41 @@ export function readAppRuntimeHelperStatus(): AppRuntimeHelperAccountStatus | nu
 	}
 }
 
+// Helpers publish per-PID status files (`runtime-rotation-app-helper.<pid>.json`)
+// so N concurrent helpers stop overwriting one shared path; path discovery is
+// shared with every other reader via listRuntimeHelperStatusPaths.
+function listAppRuntimeHelperStatusPaths(multiAuthDir: string): string[] {
+	let entries: string[] = [];
+	try {
+		entries = readdirSync(multiAuthDir);
+	} catch {
+		entries = [];
+	}
+	return listRuntimeHelperStatusPaths(multiAuthDir, entries);
+}
+
+export function readAppRuntimeHelperStatus(
+	now: number = Date.now(),
+): AppRuntimeHelperAccountStatus | null {
+	const statuses = listAppRuntimeHelperStatusPaths(getCodexMultiAuthDir())
+		.map(readAppRuntimeHelperStatusFile)
+		.filter(
+			(status): status is AppRuntimeHelperAccountStatus =>
+				status !== null && status.kind === APP_RUNTIME_HELPER_KIND,
+		);
+	// Selection is shared with `rotation status` so the helper named on the
+	// status line and the helper whose account is marked `current` can never be
+	// two different helpers (#667).
+	return selectRuntimeHelperStatus(statuses, now);
+}
+
 export function appRuntimeHelperStatusToSignal(
 	status: AppRuntimeHelperAccountStatus | null,
+	now: number = Date.now(),
 ): RuntimeAccountSignal | null {
 	if (!status) return null;
 	if (status.kind !== APP_RUNTIME_HELPER_KIND) return null;
-	if (status.state !== "running") return null;
-	if (!isProcessAlive(status.pid)) return null;
+	if (!isLiveRuntimeHelper(status, now)) return null;
 	return {
 		source: "app-helper",
 		lastAccountIndex: status.lastAccountIndex,
@@ -171,7 +194,10 @@ export function appRuntimeHelperStatusToSignal(
 }
 
 export function readAppRuntimeHelperAccountSignal(): RuntimeAccountSignal | null {
-	return appRuntimeHelperStatusToSignal(readAppRuntimeHelperStatus());
+	// One `now` for both the selection and the liveness verdict, so a helper
+	// cannot be selected against one instant and judged against another.
+	const now = Date.now();
+	return appRuntimeHelperStatusToSignal(readAppRuntimeHelperStatus(now), now);
 }
 
 function runtimeSnapshotToSignal(

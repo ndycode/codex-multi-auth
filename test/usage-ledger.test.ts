@@ -67,6 +67,21 @@ describe("usage ledger core", () => {
 		await expect(readUsageLedgerRows()).resolves.toEqual([row]);
 	});
 
+	it("round-trips image accounting without storing request bodies or raw identity", async () => {
+		const { appendUsageLedgerRow, readUsageLedgerRows, getUsageLedgerPaths } = await import("../lib/usage/index.js");
+		const row = await appendUsageLedgerRow({
+			source: "runtime-proxy", operation: "images", outcome: "success",
+			model: "gpt-image-2", statusCode: 200, accountId: "synthetic-image-account",
+			email: "image@example.test", accountIndex: 0,
+		});
+		expect(row.operation).toBe("images");
+		await expect(readUsageLedgerRows()).resolves.toEqual([row]);
+		const raw = await fs.readFile(getUsageLedgerPaths().current, "utf8");
+		expect(raw).not.toContain("synthetic-image-account");
+		expect(raw).not.toContain("image@example.test");
+		expect(raw).not.toContain("b64_json");
+	});
+
 	it("summarizes usage by model and applies date filters", async () => {
 		const { appendUsageLedgerRow, summarizeUsageLedger } = await import(
 			"../lib/usage/index.js"
@@ -204,29 +219,56 @@ describe("usage ledger core", () => {
 	});
 
 	it("exports pricing helpers with deterministic estimates", async () => {
-		const { estimateUsageCostUsd, listUsageModelPricing } = await import(
-			"../lib/usage/index.js"
-		);
+		const { estimateUsageCostUsd, getUsageModelPricing, listUsageModelPricing } =
+			await import("../lib/usage/index.js");
 
-		expect(Object.keys(listUsageModelPricing())).toContain("gpt-5.3-codex");
+		expect(Object.keys(listUsageModelPricing())).toContain("gpt-6.1-sol");
+		// Bare aliases reach the ledger raw (the proxy records the client's model
+		// string verbatim) but price through their canonical card — an unresolved
+		// alias would read as unpriced and fail a cost budget closed.
+		expect(getUsageModelPricing("gpt-6.1")).toEqual(
+			getUsageModelPricing("gpt-6.1-sol"),
+		);
+		expect(getUsageModelPricing("gpt-6")).toEqual(
+			getUsageModelPricing("gpt-6-astra"),
+		);
+		expect(getUsageModelPricing("gpt-5.6")).toEqual(
+			getUsageModelPricing("gpt-5.6-sol"),
+		);
+		expect(getUsageModelPricing("gpt-6.1-sol-max")).toEqual(
+			getUsageModelPricing("gpt-6.1-sol"),
+		);
 		expect(
-			estimateUsageCostUsd("gpt-5.3-codex", {
+			estimateUsageCostUsd("gpt-6.1", {
+				inputTokens: 100_000,
+				outputTokens: 1_000_000,
+				cachedInputTokens: 0,
+				reasoningTokens: 0,
+				totalTokens: 1_100_000,
+			}),
+		).toBeCloseTo(10.2, 10);
+		// Unknown ids still price as unknown rather than at the default's rate.
+		expect(getUsageModelPricing("gpt-6.2-sol")).toBeNull();
+		// Retired gpt-5.5 prices through its replacement card (gpt-6-sol);
+		// 1M input crosses the 272K long-context threshold ($4/$15/$0.40).
+		expect(
+			estimateUsageCostUsd("gpt-5.5", {
 				inputTokens: 1_000_000,
 				outputTokens: 1_000_000,
 				cachedInputTokens: 1_000_000,
 				reasoningTokens: 1_000_000,
 				totalTokens: 4_000_000,
 			}),
-		).toBe(20.125);
+		).toBe(30.4);
 		expect(
-			estimateUsageCostUsd("gpt-5.3-codex", {
+			estimateUsageCostUsd("gpt-5.5", {
 				inputTokens: 1_000,
 				outputTokens: 200,
 				cachedInputTokens: 50,
 				reasoningTokens: 25,
 				totalTokens: 1_225,
 			}),
-		).toBe(0.00344375);
+		).toBe(0.00416);
 		expect(
 			estimateUsageCostUsd(null, {
 				inputTokens: 1,
@@ -245,6 +287,45 @@ describe("usage ledger core", () => {
 				totalTokens: 2,
 			}),
 		).toBeNull();
+	});
+
+	it("counts token-consuming rows it cannot price", async () => {
+		const { summarizeUsageRows } = await import("../lib/usage/index.js");
+
+		const baseRow = {
+			version: 1 as const,
+			createdAt: 1_700_000_000_000,
+			source: "runtime-proxy" as const,
+			operation: "responses" as const,
+			outcome: "success" as const,
+			projectKey: undefined,
+			account: undefined,
+			requestId: undefined,
+			statusCode: 200,
+			errorCode: undefined,
+			durationMs: 10,
+		};
+		const tokens = (total: number) => ({
+			inputTokens: total,
+			outputTokens: 0,
+			cachedInputTokens: 0,
+			reasoningTokens: 0,
+			totalTokens: total,
+		});
+
+		const summary = summarizeUsageRows([
+			// Priced: contributes real cost, not counted as unpriced.
+			{ ...baseRow, id: "a", model: "gpt-5.3-codex", tokens: tokens(1000), costUsd: 0.00125 },
+			// Unpriced but consumed tokens: cost is an under-count, so flag it.
+			{ ...baseRow, id: "b", model: "gpt-5.5-pro", tokens: tokens(2000), costUsd: null },
+			// Unpriced and consumed nothing (e.g. a blocked request): must NOT make
+			// a cost budget unevaluable.
+			{ ...baseRow, id: "c", model: "gpt-5.5-pro", tokens: tokens(0), costUsd: null },
+		] as Parameters<typeof summarizeUsageRows>[0]);
+
+		expect(summary.totals.unpricedRequests).toBe(1);
+		expect(summary.totals.requests).toBe(3);
+		expect(summary.totals.costUsd).toBe(0.00125);
 	});
 
 	it("retries transient append failures", async () => {

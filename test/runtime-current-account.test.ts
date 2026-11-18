@@ -9,8 +9,10 @@ import {
 	resolveRuntimeCurrentAccount,
 } from "../lib/runtime/runtime-current-account.js";
 import { APP_RUNTIME_HELPER_STATUS_FILE } from "../lib/runtime-constants.js";
+import { RUNTIME_HELPER_STATUS_STALE_MS } from "../lib/runtime/app-helper-selection.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
+import { withDeadPid, withLivePid } from "./helpers/owned-pids.js";
 
 function createStorage(): AccountStorageV3 {
 	return {
@@ -307,35 +309,70 @@ describe("resolveRuntimeCurrentAccount", () => {
 	});
 
 	it("only turns a running live app helper status into a runtime signal", () => {
+		const now = Date.now();
 		const baseStatus = {
 			kind: "codex-app-runtime-rotation-helper",
 			state: "running",
 			pid: process.pid,
+			startedAt: now - 60_000,
 			lastAccountIndex: 1,
 			lastAccountLabel: "Account 2",
 			lastAccountEmail: null,
 			lastAccountId: "acc_runtime",
-			lastAccountUpdatedAt: 10_000,
-			updatedAt: 10_000,
+			lastAccountUpdatedAt: now - 1_000,
+			updatedAt: now - 1_000,
 		};
 
-		expect(appRuntimeHelperStatusToSignal(baseStatus)).toMatchObject({
+		expect(appRuntimeHelperStatusToSignal(baseStatus, now)).toMatchObject({
 			source: "app-helper",
 			lastAccountIndex: 1,
 			lastAccountId: "acc_runtime",
 		});
 		expect(
-			appRuntimeHelperStatusToSignal({
-				...baseStatus,
-				state: "idle-timeout",
-			}),
+			appRuntimeHelperStatusToSignal(
+				{
+					...baseStatus,
+					state: "idle-timeout",
+				},
+				now,
+			),
 		).toBeNull();
 		expect(
-			appRuntimeHelperStatusToSignal({
-				...baseStatus,
-				kind: "unrelated-process",
-			}),
+			appRuntimeHelperStatusToSignal(
+				{
+					...baseStatus,
+					kind: "unrelated-process",
+				},
+				now,
+			),
 		).toBeNull();
+	});
+
+	it("refuses to signal from a running record too stale to have a live writer", () => {
+		// A live helper republishes at least once per heartbeat, so a `running`
+		// record older than the staleness window was not written by whoever holds
+		// its PID now. This is the identity check the readers were missing: the
+		// PID here is unquestionably alive — it is this very process.
+		const now = Date.now();
+		const stale = {
+			kind: "codex-app-runtime-rotation-helper",
+			state: "running",
+			pid: process.pid,
+			startedAt: now - RUNTIME_HELPER_STATUS_STALE_MS - 120_000,
+			lastAccountIndex: 1,
+			lastAccountLabel: "Account 2",
+			lastAccountEmail: null,
+			lastAccountId: "acc_stale",
+			lastAccountUpdatedAt: now - RUNTIME_HELPER_STATUS_STALE_MS - 60_000,
+			updatedAt: now - RUNTIME_HELPER_STATUS_STALE_MS - 60_000,
+		};
+		expect(appRuntimeHelperStatusToSignal(stale, now)).toBeNull();
+		expect(
+			appRuntimeHelperStatusToSignal(
+				{ ...stale, updatedAt: now - 1_000, lastAccountUpdatedAt: now - 1_000 },
+				now,
+			),
+		).not.toBeNull();
 	});
 
 	it("labels stored selected and runtime in-use rows separately", () => {
@@ -514,6 +551,7 @@ describe("readAppRuntimeHelperStatus", () => {
 				kind: "  codex-app-runtime-rotation-helper  ",
 				state: "running",
 				pid: 42,
+				startedAt: 5_000,
 				lastAccountIndex: 1,
 				lastAccountLabel: "   ",
 				lastAccountEmail: " user@example.com ",
@@ -526,6 +564,7 @@ describe("readAppRuntimeHelperStatus", () => {
 			kind: "codex-app-runtime-rotation-helper",
 			state: "running",
 			pid: 42,
+			startedAt: 5_000,
 			lastAccountIndex: 1,
 			lastAccountLabel: null,
 			lastAccountEmail: "user@example.com",
@@ -535,10 +574,161 @@ describe("readAppRuntimeHelperStatus", () => {
 		});
 	});
 
+	it("rejects a negative or fractional PID instead of probing a process group", async () => {
+		// `readOptionalNumber` used to accept any finite number, so `-1234`
+		// reached `process.kill(-1234, 0)` — a POSIX process-group probe that
+		// succeeds on any busy machine and reports a helper that does not exist
+		// as live. A PID is a positive integer or it is nothing.
+		for (const pid of [-1234, 4242.5, 0]) {
+			await writeStatusFile(
+				JSON.stringify({
+					kind: "codex-app-runtime-rotation-helper",
+					state: "running",
+					pid,
+					lastAccountId: "acc_bogus",
+					updatedAt: Date.now(),
+				}),
+			);
+			expect(readAppRuntimeHelperStatus()?.pid).toBeNull();
+			expect(
+				appRuntimeHelperStatusToSignal(readAppRuntimeHelperStatus()),
+			).toBeNull();
+		}
+	});
+
 	it("rejects a JSON array status file as not-a-record", async () => {
 		// isRecord() excludes arrays: an `[]` helper-status file is malformed
 		// content, not an all-null status object.
 		await writeStatusFile("[]");
 		expect(readAppRuntimeHelperStatus()).toBeNull();
+	});
+
+	it("prefers a live per-PID helper over a fresher record with a dead PID", async () => {
+		const now = Date.now();
+		// Per-PID file for a live process (this test), older updatedAt.
+		await fs.writeFile(
+			join(tempDir, `runtime-rotation-app-helper.${process.pid}.json`),
+			JSON.stringify({
+				kind: "codex-app-runtime-rotation-helper",
+				state: "running",
+				pid: process.pid,
+				lastAccountId: "acc_live",
+				updatedAt: now - 30_000,
+			}),
+			"utf8",
+		);
+		// Legacy shared file naming a dead PID, fresher updatedAt: recency must
+		// not outrank liveness. The dead PID belongs to a process this test
+		// started and killed, so "dead" is a fact rather than a guess about the
+		// platform's PID ceiling.
+		await withDeadPid(async (deadPid) => {
+			await writeStatusFile(
+				JSON.stringify({
+					kind: "codex-app-runtime-rotation-helper",
+					state: "running",
+					pid: deadPid,
+					lastAccountId: "acc_dead",
+					updatedAt: now,
+				}),
+			);
+			expect(readAppRuntimeHelperStatus()?.lastAccountId).toBe("acc_live");
+		});
+	});
+
+	it("picks the most recently updated helper when several are live", async () => {
+		// The live branch sorts by recency before returning the first candidate.
+		// With only one live record that sort is dead weight — inverting or
+		// deleting it changes nothing — and this selector is what drives runtime
+		// account resolution, so the ordering needs two live candidates to be a
+		// claim the suite actually checks (#668).
+		const now = Date.now();
+		await withLivePid(async (otherLivePid) => {
+			await fs.writeFile(
+				join(tempDir, `runtime-rotation-app-helper.${process.pid}.json`),
+				JSON.stringify({
+					kind: "codex-app-runtime-rotation-helper",
+					state: "running",
+					pid: process.pid,
+					lastAccountId: "acc_older_live",
+					updatedAt: now - 30_000,
+				}),
+				"utf8",
+			);
+			await fs.writeFile(
+				join(tempDir, `runtime-rotation-app-helper.${otherLivePid}.json`),
+				JSON.stringify({
+					kind: "codex-app-runtime-rotation-helper",
+					state: "running",
+					pid: otherLivePid,
+					lastAccountId: "acc_newer_live",
+					updatedAt: now - 1_000,
+				}),
+				"utf8",
+			);
+			expect(readAppRuntimeHelperStatus()?.lastAccountId).toBe(
+				"acc_newer_live",
+			);
+		});
+	});
+
+	it("reports no live helper for a stale legacy record whose PID was recycled", async () => {
+		// The #667 scenario, and the one place the two behaviours differ
+		// observably: a legacy shared file left behind by a SIGKILLed pre-upgrade
+		// helper, whose PID has since been handed to an unrelated live process.
+		// `kill(pid, 0)` succeeds, so bare liveness accepts the record as a
+		// running helper and marks its account `current` — pinning the UI to an
+		// account no helper is using. Recency cannot save this: there is only one
+		// record, so it wins selection either way. What has to change is whether
+		// it counts as *live*.
+		const now = Date.now();
+		await withLivePid(async (recycledPid) => {
+			await writeStatusFile(
+				JSON.stringify({
+					kind: "codex-app-runtime-rotation-helper",
+					state: "running",
+					pid: recycledPid,
+					lastAccountId: "acc_recycled",
+					updatedAt: now - RUNTIME_HELPER_STATUS_STALE_MS - 60_000,
+				}),
+			);
+			// Still the record the fallback reports, so `rotation status` can show
+			// the last thing a helper said...
+			expect(readAppRuntimeHelperStatus()?.lastAccountId).toBe("acc_recycled");
+			// ...but not a signal, so nothing marks that account as in use.
+			expect(
+				appRuntimeHelperStatusToSignal(readAppRuntimeHelperStatus()),
+			).toBeNull();
+		});
+	});
+
+	it("falls back to the freshest terminal stamp when no helper is live", async () => {
+		const now = Date.now();
+		await withDeadPid(async (olderDeadPid) => {
+			await withDeadPid(async (newerDeadPid) => {
+				await fs.writeFile(
+					join(tempDir, `runtime-rotation-app-helper.${olderDeadPid}.json`),
+					JSON.stringify({
+						kind: "codex-app-runtime-rotation-helper",
+						state: "idle-timeout",
+						pid: olderDeadPid,
+						lastAccountId: "acc_older",
+						updatedAt: now - 60_000,
+					}),
+					"utf8",
+				);
+				await fs.writeFile(
+					join(tempDir, `runtime-rotation-app-helper.${newerDeadPid}.json`),
+					JSON.stringify({
+						kind: "codex-app-runtime-rotation-helper",
+						state: "stopped",
+						pid: newerDeadPid,
+						lastAccountId: "acc_newer",
+						updatedAt: now - 10_000,
+					}),
+					"utf8",
+				);
+				expect(readAppRuntimeHelperStatus()?.lastAccountId).toBe("acc_newer");
+			});
+		});
 	});
 });

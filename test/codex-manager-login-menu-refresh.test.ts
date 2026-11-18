@@ -9,7 +9,8 @@ const { loadQuotaCacheMock, saveQuotaCacheMock, fetchCodexQuotaSnapshotMock } =
 		fetchCodexQuotaSnapshotMock: vi.fn(),
 	}));
 
-vi.mock("../lib/quota-cache.js", () => ({
+vi.mock("../lib/quota-cache.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../lib/quota-cache.js")>()),
 	loadQuotaCache: loadQuotaCacheMock,
 	saveQuotaCache: saveQuotaCacheMock,
 }));

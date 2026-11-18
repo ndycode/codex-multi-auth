@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { parseWorkspaceQuotaKey, selectedQuotaLimits } from "../../accounts/rate-limits.js";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import {
 	AccountManager,
 	formatAccountLabel,
@@ -23,15 +23,26 @@ function redactedResetRateLimitsLabel(
 	index: number,
 ): string {
 	const id = typeof account.accountId === "string" ? account.accountId : "";
-	const tail = id.length > 4 ? `***${id.slice(-4)}` : "***";
-	return `account ${index + 1} (id:${tail})`;
+	return `account ${index + 1} (id:${redactedId(id)})`;
+}
+
+function redactedId(id: string): string {
+	return id.length > 4 ? `***${id.slice(-4)}` : "***";
+}
+
+/** Workspace-attributed keys embed the full workspace id that the label redacts. */
+function redactedRateLimitKey(key: string): string {
+	const attributed = parseWorkspaceQuotaKey(key);
+	return attributed ? `${attributed.quotaKey} (workspace ${redactedId(attributed.workspaceId)})` : key;
 }
 import {
 	formatAppBindStatus,
+	normalizeAppBindUpstreamBaseUrl,
+	type AppBindOptions,
 	type AppBindResult,
 	type AppBindStatus,
 } from "../../runtime/app-bind.js";
-import { APP_RUNTIME_HELPER_STATUS_FILE } from "../../runtime-constants.js";
+import { listRuntimeHelperStatusPaths } from "../../runtime-constants.js";
 import {
 	findQuotaCacheEntryForAccount,
 	isQuotaCacheEntryExhausted,
@@ -46,6 +57,12 @@ import {
 	resolveAccountCurrentMarkers,
 	resolveRuntimeCurrentAccount,
 } from "../../runtime/runtime-current-account.js";
+import {
+	isLiveRuntimeHelper,
+	liveRuntimeHelpers,
+	readRuntimeHelperPid,
+	selectRuntimeHelperStatus,
+} from "../../runtime/app-helper-selection.js";
 import { isRateLimitedMarker } from "../rate-limit-markers.js";
 import type { PluginConfig } from "../../types.js";
 import type { AccountMetadataV3, AccountStorageV3 } from "../../storage.js";
@@ -57,6 +74,9 @@ interface AppRuntimeHelperStatus {
 	kind: string | null;
 	state: string | null;
 	pid: number | null;
+	// Parsed so liveness can be identity-checked rather than trusting
+	// `kill(pid, 0)` alone; see app-helper-selection.ts.
+	startedAt: number | null;
 	idleExpiresAt: number | null;
 	totalRequests: number | null;
 	rotations: number | null;
@@ -77,7 +97,7 @@ export interface RotationCommandDeps {
 	resolveActiveIndex: (storage: AccountStorageV3) => number;
 	getStoragePath: () => string | null;
 	setStoragePath: (path: string | null) => void;
-	bindCodexApp?: () => Promise<AppBindResult>;
+	bindCodexApp?: (options?: AppBindOptions) => Promise<AppBindResult>;
 	unbindCodexApp?: () => Promise<AppBindResult>;
 	getCodexAppBindStatus?: () => Promise<AppBindStatus>;
 	loadRuntimeObservabilitySnapshot?: () => Promise<RuntimeObservabilitySnapshot | null>;
@@ -94,7 +114,7 @@ function printRotationUsage(logInfo: (message: string) => void): void {
 			"  codex-multi-auth rotation enable",
 			"  codex-multi-auth rotation disable",
 			"  codex-multi-auth rotation status",
-			"  codex-multi-auth rotation bind-app",
+			"  codex-multi-auth rotation bind-app [--native [--catalog-account <idx>] | --custom-provider] [--upstream <url> | --no-upstream]",
 			"  codex-multi-auth rotation unbind-app",
 			"  codex-multi-auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]",
 			"  codex-multi-auth rotation reset-runtime [--json]",
@@ -105,8 +125,24 @@ function printRotationUsage(logInfo: (message: string) => void): void {
 			"  - Use CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0 to disable the proxy for the current process without changing persistent settings",
 			"  - reset-rate-limits clears stored rateLimitResetTimes and active coolingDownUntil entries; use when `fix --live` confirms quota is available but the proxy still returns 503 pool-exhausted",
 			"  - reset-runtime clears process-local runtime trackers and re-applies the Codex app bind when available",
+			"  - bind-app --upstream http://127.0.0.1:<port> sends the app router's upstream traffic through one more local proxy; --no-upstream removes it",
 		].join("\n"),
 	);
+}
+
+const ROUTER_STILL_RUNNING_HINT =
+	process.platform === "darwin"
+		? "If an old router is still listening, run `launchctl bootout gui/$UID/com.ndycode.codex-multi-auth.runtime-router`, stop the leftover codex-app-router process, then run `codex-multi-auth rotation bind-app`."
+		: "If an old router is still listening, stop the leftover codex-app-router process, then run `codex-multi-auth rotation bind-app`.";
+
+function reportAppBindWarnings(
+	warnings: readonly string[],
+	logError: (message: string) => void,
+): void {
+	for (const warning of warnings) logError(`  - ${warning}`);
+	if (warnings.some((warning) => /did not stop|launchctl/.test(warning))) {
+		logError(ROUTER_STILL_RUNNING_HINT);
+	}
 }
 
 async function runResetRuntime(
@@ -134,8 +170,18 @@ async function runResetRuntime(
 	let appBindRestarted = false;
 	if (deps.unbindCodexApp && deps.bindCodexApp) {
 		try {
+			const previous = await deps.getCodexAppBindStatus?.();
+			const upstream = previous?.state?.upstreamBaseUrl
+				? { upstreamBaseUrl: previous.state.upstreamBaseUrl }
+				: {};
 			unbind = await deps.unbindCodexApp();
-			bind = await deps.bindCodexApp();
+			bind = previous?.state?.nativeOpenai
+				? await deps.bindCodexApp({
+					nativeOpenai: true,
+					catalogAccount: previous.state.catalogAccount,
+					...upstream,
+				})
+				: await deps.bindCodexApp(...(previous?.state ? [{ nativeOpenai: false, ...upstream }] : []));
 			appBindRestarted = true;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -157,6 +203,7 @@ async function runResetRuntime(
 	}
 	AccountManager.resetVolatileRuntimeState();
 	recordRuntimeReset("rotation-reset-runtime");
+	const warnings = [...(unbind?.warnings ?? []), ...(bind?.warnings ?? [])];
 	const payload = {
 		ok: true,
 		command: "rotation reset-runtime",
@@ -164,12 +211,17 @@ async function runResetRuntime(
 		appBindRestarted,
 		unbindStatus: unbind?.status.state ?? null,
 		bindStatus: bind?.status.state ?? null,
+		...(warnings.length ? { warnings } : {}),
 	};
 	if (json) {
 		logInfo(JSON.stringify(payload));
 	} else {
 		logInfo("Runtime rotation volatile state reset.");
-		if (appBindRestarted) logInfo("Codex app bind restarted.");
+		if (appBindRestarted && warnings.length) {
+			// Do not claim a clean restart while an old router may still serve (#748).
+			logError("Codex app bind restarted with warnings:");
+			reportAppBindWarnings(warnings, logError);
+		} else if (appBindRestarted) logInfo("Codex app bind restarted.");
 		else logInfo("Codex app bind helpers unavailable; new wrapper sessions will use the reset state.");
 	}
 	return 0;
@@ -391,7 +443,7 @@ async function runResetRateLimits(
 			changes.push({
 				index,
 				label: redactedResetRateLimitsLabel(account, index),
-				clearedRateLimitKeys,
+				clearedRateLimitKeys: clearedRateLimitKeys.map(redactedRateLimitKey),
 				clearedCoolingDown,
 			});
 			if (!dryRun) {
@@ -515,8 +567,9 @@ function readOptionalString(record: Record<string, unknown>, key: string): strin
 
 const MAX_STATUS_FILE_BYTES = 1024 * 1024; // 1 MB sanity cap
 
-function readAppRuntimeHelperStatus(): AppRuntimeHelperStatus | null {
-	const statusPath = join(getCodexMultiAuthDir(), APP_RUNTIME_HELPER_STATUS_FILE);
+function readAppRuntimeHelperStatusFile(
+	statusPath: string,
+): AppRuntimeHelperStatus | null {
 	if (!existsSync(statusPath)) return null;
 	try {
 		const stat = statSync(statusPath);
@@ -530,7 +583,8 @@ function readAppRuntimeHelperStatus(): AppRuntimeHelperStatus | null {
 		return {
 			state: readOptionalString(parsed, "state"),
 			kind: readOptionalString(parsed, "kind"),
-			pid: readOptionalNumber(parsed, "pid"),
+			pid: readRuntimeHelperPid(parsed.pid),
+			startedAt: readOptionalNumber(parsed, "startedAt"),
 			idleExpiresAt: readOptionalNumber(parsed, "idleExpiresAt"),
 			totalRequests: readOptionalNumber(parsed, "totalRequests"),
 			rotations: readOptionalNumber(parsed, "rotations"),
@@ -546,16 +600,29 @@ function readAppRuntimeHelperStatus(): AppRuntimeHelperStatus | null {
 	}
 }
 
-function isProcessAlive(pid: number | null): boolean {
-	if (!pid) return false;
+// One directory scan feeds both the status line and the live-helper count so
+// the two cannot observe different moments; path discovery is shared with
+// every other reader via listRuntimeHelperStatusPaths in runtime-constants.
+function readAppRuntimeHelperStatuses(): AppRuntimeHelperStatus[] {
+	const multiAuthDir = getCodexMultiAuthDir();
+	let entries: string[] = [];
 	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		const code =
-			error && typeof error === "object" && "code" in error ? error.code : null;
-		return code === "EPERM";
+		entries = readdirSync(multiAuthDir);
+	} catch {
+		entries = [];
 	}
+	return listRuntimeHelperStatusPaths(multiAuthDir, entries)
+		.map(readAppRuntimeHelperStatusFile)
+		.filter(
+			(status): status is AppRuntimeHelperStatus =>
+				status !== null && status.kind === "codex-app-runtime-rotation-helper",
+		);
+}
+
+function readAppRuntimeHelperStatus(
+	now: number = Date.now(),
+): AppRuntimeHelperStatus | null {
+	return selectRuntimeHelperStatus(readAppRuntimeHelperStatuses(), now);
 }
 
 function formatHelperLastAccount(status: AppRuntimeHelperStatus): string | null {
@@ -575,14 +642,20 @@ function formatHelperLastAccount(status: AppRuntimeHelperStatus): string | null 
 
 function formatAppRuntimeHelperStatus(
 	now: number,
-	status = readAppRuntimeHelperStatus(),
+	status = readAppRuntimeHelperStatus(now),
+	liveHelperCount = status ? 1 : 0,
 ): string {
 	if (!status) return "Codex app helper: not running";
 	if (status.kind !== "codex-app-runtime-rotation-helper") {
 		return "Codex app helper: not running";
 	}
-	const alive = isProcessAlive(status.pid);
-	if (!alive || status.state === "stopped" || status.state === "idle-timeout") {
+	// Only "running" is running: "stopped", "idle-timeout", "max-lifetime",
+	// "owner-gone", "error", and anything a future helper invents are all
+	// terminal, and a live kill(pid, 0) on a terminal record proves nothing —
+	// the PID may be recycled, which is the exact gate this fix stopped
+	// trusting. `isLiveRuntimeHelper` folds both conditions together, and is
+	// the same predicate the selection above and the account marker below use.
+	if (!isLiveRuntimeHelper(status, now)) {
 		return "Codex app helper: not running";
 	}
 	const parts = [`running${status.pid ? ` pid=${status.pid}` : ""}`];
@@ -592,6 +665,12 @@ function formatAppRuntimeHelperStatus(
 	if (lastAccount) parts.push(`lastAccount=${lastAccount}`);
 	if (status.idleExpiresAt !== null && status.idleExpiresAt > now) {
 		parts.push(`idle-expires=${formatWaitTime(status.idleExpiresAt - now)}`);
+	}
+	// The line shows the most recently active helper; with per-account
+	// app-servers several can be live at once, so say so instead of implying
+	// this one is the only one.
+	if (liveHelperCount > 1) {
+		parts.push(`(+${liveHelperCount - 1} more running)`);
 	}
 	return `Codex app helper: ${parts.join(", ")}`;
 }
@@ -647,8 +726,19 @@ async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 		`Stored setting: ${config.codexRuntimeRotationProxy === true ? "enabled" : "disabled"}`,
 	);
 	logInfo(`Env override: ${formatEnvOverride()}`);
-	const helperStatus = readAppRuntimeHelperStatus();
-	logInfo(formatAppRuntimeHelperStatus(now, helperStatus));
+	// One scan and one selection feed the status line, the live count and the
+	// account marker below. Selecting twice re-ran the liveness probes at a
+	// later instant, so the helper named on the line and the helper whose
+	// account is marked `current` could be different processes (#667).
+	const helperStatuses = readAppRuntimeHelperStatuses();
+	const selectedHelperStatus = selectRuntimeHelperStatus(helperStatuses, now);
+	logInfo(
+		formatAppRuntimeHelperStatus(
+			now,
+			selectedHelperStatus,
+			liveRuntimeHelpers(helperStatuses, now).length,
+		),
+	);
 	const appBindStatus = await printCodexAppBindStatus(deps);
 	logInfo(`Storage: ${storagePath}`);
 
@@ -671,7 +761,10 @@ async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 		{
 			runtimeSnapshot,
 			appBindStatus: appBindStatus?.running ? appBindStatus.router : null,
-			appHelperStatus: appRuntimeHelperStatusToRuntimeSignal(helperStatus),
+			appHelperStatus: appRuntimeHelperStatusToRuntimeSignal(
+				selectedHelperStatus,
+				now,
+			),
 		},
 		{ now },
 	);
@@ -684,7 +777,7 @@ async function printRotationStatus(deps: RotationCommandDeps): Promise<number> {
 		if (account.enabled === false) markers.push("disabled");
 		const cooldown = formatCooldown(account, now);
 		if (cooldown) markers.push(`cooldown:${cooldown}`);
-		const rateLimitResetTimes = Object.values(account.rateLimitResetTimes ?? {})
+		const rateLimitResetTimes = Object.values(selectedQuotaLimits(account))
 			.filter((value): value is number => typeof value === "number")
 			.filter((value) => value > now);
 		if (rateLimitResetTimes.length > 0) {
@@ -736,6 +829,73 @@ export async function runRotationCommand(
 	if (subcommand === "reset-runtime") {
 		return runResetRuntime(rest, deps);
 	}
+	if (subcommand === "bind-app") {
+		if (!deps.bindCodexApp) {
+			logError("Codex app bind is unavailable in this build.");
+			return 1;
+		}
+		const options: AppBindOptions = {};
+		let catalogIndex: number | undefined;
+		for (let i = 0;i < rest.length;i += 1) {
+			const arg = rest[i];
+			if ((arg === "--upstream" || arg === "--no-upstream") && options.upstreamBaseUrl !== undefined) {
+				logError("Choose one app bind upstream.");
+				return 1;
+			}
+			if (arg === "--upstream") {
+				const value = rest[++i] ?? "";
+				try {
+					options.upstreamBaseUrl = normalizeAppBindUpstreamBaseUrl(value);
+				} catch (error) {
+					logError(error instanceof Error ? error.message : String(error));
+					return 1;
+				}
+			} else if (arg === "--no-upstream") {
+				options.upstreamBaseUrl = null;
+			} else if (arg === "--native" || arg === "--custom-provider") {
+				if (options.nativeOpenai !== undefined) {
+					logError("Choose one app bind mode.");
+					return 1;
+				}
+				options.nativeOpenai = arg === "--native";
+			} else if (arg === "--catalog-account" && catalogIndex === undefined) {
+				const value = rest[++i] ?? "";
+				if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) {
+					logError("Catalog account must be a positive account index.");
+					return 1;
+				}
+				catalogIndex = Number(value) - 1;
+			} else {
+				logError(`Unknown app bind option: ${arg}`);
+				return 1;
+			}
+		}
+		if (catalogIndex !== undefined) {
+			if (options.nativeOpenai !== true) {
+				logError("--catalog-account requires --native.");
+				return 1;
+			}
+			const previousStoragePath = deps.getStoragePath();
+            deps.setStoragePath(null);
+            let catalogStorage: Awaited<ReturnType<typeof deps.loadAccounts>>;
+            try { catalogStorage = await deps.loadAccounts(); }
+            finally { deps.setStoragePath(previousStoragePath); }
+            const account = catalogStorage?.accounts[catalogIndex];
+			if (!account?.email || !account.accountId || account.enabled === false) {
+				logError("Catalog account must be an enabled account with an email and account ID.");
+				return 1;
+			}
+			options.catalogAccount = { email: account.email, accountId: account.accountId };
+		}
+		const result = rest.length ? await deps.bindCodexApp(options) : await deps.bindCodexApp();
+		logInfo(result.message);
+		logInfo(formatAppBindStatus(result.status));
+		if (result.warnings?.length) {
+			logError("Codex app bind completed with warnings:");
+			reportAppBindWarnings(result.warnings, logError);
+		}
+		return 0;
+	}
 	if (rest.length > 0) {
 		logError(`Unknown rotation option: ${rest[0]}`);
 		return 1;
@@ -749,6 +909,10 @@ export async function runRotationCommand(
 				const result = await deps.bindCodexApp();
 				logInfo(result.message);
 				logInfo(formatAppBindStatus(result.status));
+				if (result.warnings?.length) {
+					logError("Codex app bind completed with warnings:");
+					reportAppBindWarnings(result.warnings, logError);
+				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				logError(`Codex app bind failed: ${message}`);
@@ -765,22 +929,16 @@ export async function runRotationCommand(
 				const result = await deps.unbindCodexApp();
 				logInfo(result.message);
 				logInfo(formatAppBindStatus(result.status));
+				if (result.warnings?.length) {
+					logError("Codex app unbind completed with warnings:");
+					reportAppBindWarnings(result.warnings, logError);
+				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				logError(`Codex app unbind failed: ${message}`);
 				return 1;
 			}
 		}
-		return 0;
-	}
-	if (subcommand === "bind-app") {
-		if (!deps.bindCodexApp) {
-			logError("Codex app bind is unavailable in this build.");
-			return 1;
-		}
-		const result = await deps.bindCodexApp();
-		logInfo(result.message);
-		logInfo(formatAppBindStatus(result.status));
 		return 0;
 	}
 	if (subcommand === "unbind-app") {
@@ -791,6 +949,10 @@ export async function runRotationCommand(
 		const result = await deps.unbindCodexApp();
 		logInfo(result.message);
 		logInfo(formatAppBindStatus(result.status));
+		if (result.warnings?.length) {
+			logError("Codex app unbind completed with warnings:");
+			reportAppBindWarnings(result.warnings, logError);
+		}
 		return 0;
 	}
 

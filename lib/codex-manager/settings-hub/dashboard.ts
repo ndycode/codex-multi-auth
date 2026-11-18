@@ -1,5 +1,6 @@
 import {
 	type DashboardAccentColor,
+	type DashboardColorMode,
 	type DashboardDisplaySettings,
 	type DashboardStatuslineField,
 	type DashboardThemePreset,
@@ -130,6 +131,7 @@ const ACCENT_COLOR_OPTIONS: DashboardAccentColor[] = [
 	"blue",
 	"yellow",
 ];
+const COLOR_MODE_OPTIONS: DashboardColorMode[] = ["auto", "dark", "light"];
 
 const ACCOUNT_LIST_PANEL_KEYS = [
 	"menuShowStatusBadge",
@@ -160,6 +162,7 @@ export const BEHAVIOR_PANEL_KEYS = [
 export const THEME_PANEL_KEYS = [
 	"uiThemePreset",
 	"uiAccentColor",
+	"uiColorMode",
 ] as const satisfies readonly DashboardSettingKey[];
 
 export function applyUiThemeFromDashboardSettings(
@@ -172,6 +175,7 @@ export function applyUiThemeFromDashboardSettings(
 		glyphMode: current.glyphMode,
 		palette: settings.uiThemePreset ?? "green",
 		accent: settings.uiAccentColor ?? "green",
+		colorMode: settings.uiColorMode ?? "auto",
 	});
 }
 
@@ -286,6 +290,7 @@ export async function promptThemeSettings(
 		applyUiThemeFromDashboardSettings,
 		THEME_PRESET_OPTIONS,
 		ACCENT_COLOR_OPTIONS,
+		COLOR_MODE_OPTIONS,
 		THEME_PANEL_KEYS,
 		UI_COPY,
 	});

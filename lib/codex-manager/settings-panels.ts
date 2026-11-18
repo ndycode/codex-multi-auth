@@ -133,6 +133,7 @@ export async function promptThemeSettingsPanelEntry(params: {
 	applyUiThemeFromDashboardSettings: ThemeSettingsPanelDeps["applyUiThemeFromDashboardSettings"];
 	THEME_PRESET_OPTIONS: ThemeSettingsPanelDeps["THEME_PRESET_OPTIONS"];
 	ACCENT_COLOR_OPTIONS: ThemeSettingsPanelDeps["ACCENT_COLOR_OPTIONS"];
+	COLOR_MODE_OPTIONS: ThemeSettingsPanelDeps["COLOR_MODE_OPTIONS"];
 	THEME_PANEL_KEYS: ThemeSettingsPanelDeps["THEME_PANEL_KEYS"];
 	UI_COPY: ThemeSettingsPanelDeps["UI_COPY"];
 }): Promise<DashboardDisplaySettings | null> {
@@ -142,6 +143,7 @@ export async function promptThemeSettingsPanelEntry(params: {
 		applyUiThemeFromDashboardSettings: params.applyUiThemeFromDashboardSettings,
 		THEME_PRESET_OPTIONS: params.THEME_PRESET_OPTIONS,
 		ACCENT_COLOR_OPTIONS: params.ACCENT_COLOR_OPTIONS,
+		COLOR_MODE_OPTIONS: params.COLOR_MODE_OPTIONS,
 		THEME_PANEL_KEYS: params.THEME_PANEL_KEYS,
 		UI_COPY: params.UI_COPY,
 	});

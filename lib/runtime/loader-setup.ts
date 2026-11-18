@@ -15,10 +15,14 @@ export function applyLoaderRuntimeSetup(params: {
 	applyPreemptiveQuotaSettings: (
 		pluginConfig: ReturnType<typeof import("../config.js").loadPluginConfig>,
 	) => void;
+	applyContextBudgetGuardSettings: (
+		pluginConfig: ReturnType<typeof import("../config.js").loadPluginConfig>,
+	) => void;
 }): void {
 	params.applyUiRuntimeFromConfig(params.pluginConfig);
 	params.applyAccountStorageScope(params.pluginConfig);
 	params.ensureSessionAffinity(params.pluginConfig);
 	params.ensureRefreshGuardian(params.pluginConfig);
 	params.applyPreemptiveQuotaSettings(params.pluginConfig);
+	params.applyContextBudgetGuardSettings(params.pluginConfig);
 }

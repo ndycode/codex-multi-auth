@@ -10,6 +10,7 @@ import {
 } from "../lib/policy/runtime-policy.js";
 import { appendUsageLedgerRow, rotateUsageLedger } from "../lib/usage/index.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
+import * as logger from "../lib/logger.js";
 
 function state(): RuntimePolicyState {
 	return {
@@ -42,6 +43,14 @@ describe("runtime policy", () => {
 			process.env.CODEX_MULTI_AUTH_DIR = originalDir;
 		}
 		await removeWithRetry(tempDir, { recursive: true, force: true });
+	});
+
+	it("carries emergency-only accounts separately from hard exclusions",async()=>{
+		const policyState=state();const key=getAccountPolicyKey({accountId:"acct_1"},0);
+		policyState.accountPolicies.accounts[key]={accountKey:key,tags:[],weight:1,paused:false,drained:false,note:null,updatedAt:1,emergencyOnly:true};
+		const decision=await evaluateRuntimePolicy({state:policyState,accounts:[{index:0,accountId:"acct_1"}],model:"gpt-5.3-codex",now:100});
+		expect(decision.emergencyAccountIndexes).toEqual(new Set([0]));
+		expect(decision.blockedAccountIndexes.has(0)).toBe(false);
 	});
 
 	it("blocks paused accounts and adds profile score boosts", async () => {
@@ -136,6 +145,34 @@ describe("runtime policy", () => {
 		expect(decision.allowed).toBe(false);
 		expect(decision.statusCode).toBe(429);
 		expect(decision.errorCode).toBe("budget_blocked");
+	});
+
+	// Budget windows sum every ledger row regardless of key, so one unpriced
+	// Decisions row would make any cost budget unevaluable, not only a matching one.
+	it("refuses Decisions while any cost budget exists, even one for another key", async () => {
+		const policyState = state();
+		const limit = { key: "project:elsewhere", window: "hour" as const, updatedAt: 1 };
+		policyState.budgets.limits[limit.key] = { ...limit, maxCostUsd: 5 };
+		const evaluate = (operation: "decisions" | "responses") =>
+			evaluateRuntimePolicy({
+				state: policyState,
+				accounts: [],
+				model: "zdr/decision-test",
+				now: Date.UTC(2026, 3, 29, 2),
+				operation,
+			});
+
+		const decisions = await evaluate("decisions");
+		expect(decisions).toMatchObject({
+			allowed: false,
+			statusCode: 403,
+			errorCode: "policy_blocked",
+		});
+		expect(decisions.reasons.join(" ")).toContain("project:elsewhere");
+		expect((await evaluate("responses")).allowed).toBe(true);
+
+		policyState.budgets.limits[limit.key] = { ...limit, maxRequests: 5, maxTokens: 1000 };
+		expect((await evaluate("decisions")).allowed).toBe(true);
 	});
 
 	// budget-guard stores limits ONLY under normalizeBudgetKey (lowercased, spaces
@@ -278,6 +315,22 @@ describe("runtime policy", () => {
 			accountIndex: 0,
 		});
 		expect(recorder.hasRecorded()).toBe(true);
+	});
+
+	it.each([undefined, 0])("logs successful zero or missing usage once without request or account data (total=%s)", async totalTokens => {
+		const debug = vi.spyOn(logger, "logDebug").mockImplementation(() => undefined);
+		const recorder = createRuntimeUsageRecorder({ source: "runtime-proxy", operation: "responses", model: "private-model", projectKey: "private-project", requestId: "private-request" });
+		await recorder.record({ outcome: "success", totalTokens, account: { index: 0, accountId: "private-account" } });
+		await recorder.record({ outcome: "success", totalTokens });
+		expect(debug).toHaveBeenCalledTimes(1);
+		expect(debug.mock.calls[0]).toEqual([expect.any(String), { source: "runtime-proxy", operation: "responses" }]);
+	});
+
+	it.each(["nonzero", "cancelled", "models"])("does not flag %s as a successful Responses usage regression", async variant => {
+		const debug = vi.spyOn(logger, "logDebug").mockImplementation(() => undefined);
+		const recorder = createRuntimeUsageRecorder({ source: "runtime-proxy", operation: variant === "models" ? "models" : "responses", model: null, projectKey: null, requestId: null });
+		await recorder.record({ outcome: variant === "cancelled" ? "cancelled" : "success", inputTokens: variant === "nonzero" ? 1 : 0 });
+		expect(debug).not.toHaveBeenCalled();
 	});
 
 	it("records thread goal usage as a distinct operation", async () => {

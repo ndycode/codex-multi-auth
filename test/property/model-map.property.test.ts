@@ -105,7 +105,7 @@ describe("model-map resolution property invariants", () => {
 		);
 	});
 
-	it("unmapped general GPT-5 spellings stay in the general family, codex-free", () => {
+	it("unmapped general GPT-5 spellings land on a live general model, codex-free", () => {
 		fc.assert(
 			fc.property(arbSynthesizedGpt5, (modelId) => {
 				fc.pre(!modelId.includes("codex"));
@@ -114,7 +114,10 @@ describe("model-map resolution property invariants", () => {
 				// A general-purpose GPT-5 request must never silently route to a
 				// codex-tuned model (the inverse of the codex-dominance rule).
 				expect(resolved.includes("codex")).toBe(false);
-				expect(resolved.startsWith("gpt-5")).toBe(true);
+				// Retired minors route to their replacement, which for `gpt-5.4`
+				// is a GPT-6 model, so the target is a live profile rather than
+				// necessarily a `gpt-5*` id.
+				expect(PROFILE_KEYS.has(resolved)).toBe(true);
 			}),
 		);
 	});

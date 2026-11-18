@@ -25,6 +25,10 @@ export const REQUIRED_PREFIXES = [
 	"dist/",
 	"assets/",
 	"config/",
+	// .codex-plugin/plugin.json declares "skills": "./skills/" — if files[]
+	// drops this prefix the published package ships a manifest that points at
+	// content that does not exist.
+	"skills/",
 	"scripts/",
 	"vendor/codex-ai-plugin/",
 	"vendor/codex-ai-sdk/",
@@ -62,7 +66,9 @@ export function normalizePackPath(filePath) {
  */
 export function parsePackMetadata(stdout) {
 	/** @type {unknown} */
-	const packs = JSON.parse(stdout);
+	const parsed = JSON.parse(stdout);
+	// npm <= 11 prints an array of packs; npm 12 prints an object keyed by package name.
+	const packs = isRecord(parsed) ? Object.values(parsed) : parsed;
 	if (!Array.isArray(packs) || packs.length === 0) {
 		throw new Error("npm pack --dry-run --json returned no package metadata");
 	}

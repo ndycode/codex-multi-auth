@@ -6,6 +6,8 @@ import { join } from "node:path";
 import process from "node:process";
 
 const PLUGIN_NAME = "codex-multi-auth";
+const LEGACY_PLUGIN_NAME = "@ndycode/codex-multi-auth";
+const PLUGIN_NAMES = [PLUGIN_NAME, LEGACY_PLUGIN_NAME];
 
 const TRUE_VALUES = new Set(["1", "true", "yes"]);
 const FALSE_VALUES = new Set(["0", "false", "no"]);
@@ -82,6 +84,7 @@ export function resolveInstallPaths(
 		configPath,
 		cacheDir,
 		cacheNodeModules: join(cacheDir, "node_modules", PLUGIN_NAME),
+		cacheLegacyNodeModules: join(cacheDir, "node_modules", "@ndycode", "codex-multi-auth"),
 		cacheBunLock: join(cacheDir, "bun.lock"),
 		cachePackageJson: join(cacheDir, "package.json"),
 	};
@@ -92,7 +95,9 @@ export function removePluginFromList(list) {
 	const entries = Array.isArray(list) ? list.filter(Boolean) : [];
 	return entries.filter((entry) => {
 		if (typeof entry !== "string") return true;
-		return entry !== PLUGIN_NAME && !entry.startsWith(`${PLUGIN_NAME}@`);
+		return !PLUGIN_NAMES.some(
+			(pluginName) => entry === pluginName || entry.startsWith(`${pluginName}@`),
+		);
 	});
 }
 
@@ -101,7 +106,9 @@ export function normalizePluginList(list) {
 	const entries = Array.isArray(list) ? list.filter(Boolean) : [];
 	const filtered = entries.filter((entry) => {
 		if (typeof entry !== "string") return true;
-		return entry !== PLUGIN_NAME && !entry.startsWith(`${PLUGIN_NAME}@`);
+		return !PLUGIN_NAMES.some(
+			(pluginName) => entry === pluginName || entry.startsWith(`${pluginName}@`),
+		);
 	});
 	const deduped = [];
 	const seen = new Set();

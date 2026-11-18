@@ -1,4 +1,8 @@
+import { mergeAccountCooldown, mergeAccountSnapshot, mergeAccountRuntimeObservations } from "./storage/snapshot-merge.js";
 import type { Auth } from "@codex-ai/sdk";
+import { deriveAccountRecordId, resolveAccountRecordId } from "./storage/record-identity.js";
+export { resolveAccountRecordId } from "./storage/record-identity.js";
+import { existsSync } from "node:fs";
 import { saveAccountsWithRetry } from "./storage/save-retry.js";
 import { createLogger } from "./logger.js";
 import {
@@ -11,9 +15,11 @@ import {
 	type RateLimitStateV3,
 	findMatchingAccountIndex,
 	withAccountStorageTransaction,
+	ACCOUNT_STORAGE_UNREADABLE,
+	recordPendingAuth,
 } from "./storage.js";
 import type { AccountIdSource, OAuthAuthDetails } from "./types.js";
-import type { Workspace } from "./storage/public-types.js";
+import type { CodexCliMirror, Workspace } from "./storage/public-types.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./request/helpers/model-map.js";
 import {
 	getHealthTracker,
@@ -29,7 +35,7 @@ import {
 	type SelectionRecord,
 } from "./routing-mutex.js";
 import { nowMs } from "./utils.js";
-import { ERROR_MESSAGES, HTTP_STATUS, MAX_RATE_LIMIT_DELAY_MS } from "./constants.js";
+import { ERROR_MESSAGES, HTTP_STATUS, LUNA_RESERVE_MODEL, RATE_LIMIT_CACHE_TTL_MS } from "./constants.js";
 import { CodexAuthError } from "./errors.js";
 import {
 	loadCodexCliState,
@@ -83,12 +89,16 @@ export {
 } from "./codex-cli/state.js";
 
 import {
+	codexCliAccountIdFor,
 	extractAccountId,
 	extractAccountEmail,
 	shouldUpdateAccountIdFromToken,
 	sanitizeEmail,
 } from "./auth/token-utils.js";
 import {
+	boundRateLimitCache,
+	quotaResetTime,
+	workspaceQuotaKey,
 	clampNonNegativeInt,
 	getQuotaKey,
 	clearExpiredRateLimits,
@@ -107,6 +117,35 @@ function getAccountCircuitKey(account: ManagedAccount): string {
 			getAccountIdentityKey(account) ?? `circuit:${nextRuntimeCircuitKeyId++}`;
 	}
 	return account.circuitKeyId;
+}
+
+/** Process-local rejection identity; ordinary quota keys remain unchanged on disk. */
+export function getRateLimitObservationKey(quotaKey: string, scopeId?: string): string {
+	return scopeId === undefined ? quotaKey : JSON.stringify([scopeId, quotaKey]);
+}
+
+let rejectionSequence = 0;
+
+/** Process-local count of recorded rejections; orders them against receipt reads without wall time. */
+export function currentRejectionSequence(): number {
+	return rejectionSequence;
+}
+
+/** Never call while routing: retained observations and cached reads hold sequence numbers. */
+export function resetRejectionSequenceForTests(): void {
+	rejectionSequence = 0;
+}
+
+type RateLimitObservation = NonNullable<ManagedAccount["rateLimitObservations"]>[string];
+
+export function cloneRateLimitObservation(observation: RateLimitObservation): RateLimitObservation {
+	return {
+		...observation,
+		receiptGenerations: observation.receiptGenerations && { ...observation.receiptGenerations },
+		receiptIdentities: observation.receiptIdentities && Object.fromEntries(
+			Object.entries(observation.receiptIdentities).map(([scope, identities]) => [scope, [...identities]]),
+		),
+	};
 }
 
 export function getRuntimeTrackerKey(account: ManagedAccount): string | number {
@@ -239,8 +278,35 @@ function isRetryableAuthPersistenceError(error: unknown): boolean {
 // re-exported here to preserve the historical import surface.
 export type { Workspace } from "./storage/public-types.js";
 
+/** Stable operator-facing marker for an explicitly invalidated OAuth token. */
+export const AUTH_INVALIDATION_MARKER = "token-invalid — re-login needed";
+
+/**
+ * How long a 429 recorded while the selection metadata was unreadable stays
+ * eligible to be replayed over a `switch` that clears the account's markers.
+ *
+ * The window only has to cover the gap between the CLI's atomic storage write
+ * and this process observing it, which is a single filesystem read away and in
+ * practice sub-second. 30s is generous for a stalled Windows volume while still
+ * guaranteeing that a 429 from minutes or hours earlier can never be
+ * resurrected by a later, unrelated switch.
+ */
+export const UNSEQUENCED_RATE_LIMIT_TTL_MS = 30_000;
+
+/**
+ * How many times a debounced save re-arms itself after a failure before giving
+ * up. A save can fail because the selection metadata was momentarily
+ * unreadable, and dropping it loses every rate-limit window, cooldown and
+ * rotated refresh token accumulated since the last successful save.
+ */
+export const MAX_DEBOUNCED_SAVE_RETRIES = 5;
+
+/** Ceiling for the debounced-save retry backoff. */
+export const MAX_SAVE_RETRY_DELAY_MS = 8_000;
+
 export interface ManagedAccount {
 	index: number;
+	recordId?: string;
 	_runtimeTrackerKey?: string | number;
 	circuitKeyId?: string;
 	accountId?: string;
@@ -261,16 +327,33 @@ export interface ManagedAccount {
 		| "restore"
 		| "manual";
 	lastRateLimitReason?: RateLimitReason;
+	/**
+	 * Process-local sequence used to order a fresh quota read against a concurrent 429.
+	 * `liftedByReset` marks the latest rejection a confirmed reset superseded; a newer rejection replaces the entry.
+	 */
+	rateLimitObservations?: Record<string, { revision: number; observedAt: number; sequence?: number; reason: RateLimitReason; receiptGenerations?: Record<string, number>; receiptIdentities?: Record<string, string[]>; receiptReadFailed?: boolean; liftedByReset?: boolean }>;
+	/** Highest durable reset generation observed for each workspace in this process. */
+	resetReceiptGenerations?: Record<string, number>;
+	resetReceiptIdentities?: Record<string, string>;
 	rateLimitResetTimes: RateLimitStateV3;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
+	authInvalidatedAt?: number;
+	authInvalidationErrorCode?: string;
 	consecutiveAuthFailures?: number;
 	workspaces?: Workspace[];
 	currentWorkspaceIndex?: number;
+	codexCliMirror?: CodexCliMirror;
 }
 
 export class AccountManager {
+	private persistenceBaseline: AccountStorageV3 | null = null;
 	private accounts: ManagedAccount[] = [];
+	private readonly persistedWorkspaceSelections = new WeakMap<ManagedAccount, string | undefined>();
+	private readonly persistedWorkspaces = new WeakMap<ManagedAccount, Workspace[] | undefined>();
+	private hadPersistedStorage = false;
+	private hasUnpersistedRateLimitBounds = false;
+	private readonly loadedAccountStorageSnapshot: boolean;
 	private cursorByFamily: Record<ModelFamily, number> = initFamilyState(0);
 	private currentAccountIndexByFamily: Record<ModelFamily, number> =
 		initFamilyState(-1);
@@ -278,6 +361,8 @@ export class AccountManager {
 	private lastToastTime = 0;
 	private saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private pendingSave: Promise<void> | null = null;
+	/** Consecutive debounced-save failures; reset by the next success. */
+	private saveRetryCount = 0;
 	private readonly storagePathState: StoragePathState;
 	/**
 	 * Manual pin set by the `switch` CLI command, hydrated from disk at
@@ -293,6 +378,21 @@ export class AccountManager {
 	 * as `pinnedAccountIndex`. See #474.
 	 */
 	private affinityGeneration: number;
+	// A 429 observed while the selection metadata was unreadable must survive
+	// the next reconciliation, because we cannot tell whether it landed before
+	// or after the `switch` that reconciliation is about to apply. Keep only
+	// those new markers, not the stale account map.
+	//
+	// `recordedAtMs` bounds that ambiguity. Only a 429 recorded within
+	// UNSEQUENCED_RATE_LIMIT_TTL_MS of the reconciliation could have raced the
+	// switch we are applying; an older entry provably predates it and must NOT
+	// be replayed, or an arbitrarily stale 429 would be resurrected by the very
+	// command meant to revalidate the account.
+	private readonly unsequencedRateLimits = new WeakMap<ManagedAccount, {
+		limits: RateLimitStateV3;
+		reason: RateLimitReason;
+		recordedAtMs: number;
+	}>();
 	/**
 	 * PR-N / R4: feature-flagged routing mutex mode.
 	 * Defaults to `"legacy"` to preserve pre-PR-N behaviour for one release
@@ -320,7 +420,34 @@ export class AccountManager {
 
 		const manager = new AccountManager(authFallback, sourceOfTruthStorage);
 		await manager.hydrateFromCodexCli();
+		if (manager.hasUnpersistedRateLimitBounds) {
+			// Short-lived wrappers may exit without another save; persisting the
+			// bound now keeps each restart from re-bounding from its own load time.
+			try {
+				await manager.saveToDisk(true);
+				manager.hasUnpersistedRateLimitBounds = false;
+			} catch (error) {
+				log.debug("Failed to persist bounded rate-limit deadlines", {
+					error: String(error),
+				});
+			}
+		}
 		return manager;
+	}
+
+	/** @internal True when construction received a parsed/recovered storage snapshot. */
+	hasLoadedAccountStorageSnapshot(): boolean {
+		return this.loadedAccountStorageSnapshot;
+	}
+
+	/** @internal True only when this account identity was explicitly persisted, not legacy-derived in memory. */
+	hasPersistedRecordId(account: ManagedAccount): boolean {
+		const recordId = account.recordId?.trim();
+		if (!recordId || !this.persistenceBaseline) return false;
+		const baseline = this.persistenceBaseline.accounts.find(
+			(row) => resolveAccountRecordId(row) === recordId,
+		);
+		return typeof baseline?.recordId === "string" && baseline.recordId.trim().length > 0;
 	}
 
 	hasRefreshToken(refreshToken: string): boolean {
@@ -402,6 +529,8 @@ export class AccountManager {
 		stored?: AccountStorageV3 | null,
 	) {
 		this.storagePathState = { ...getStoragePathState() };
+		this.loadedAccountStorageSnapshot = stored !== undefined && stored !== null;
+		this.hadPersistedStorage = existsSync(this.resolveSelectionStoragePath());
 		const fallbackAccountId =
 			extractAccountId(authFallback?.access)?.trim() || undefined;
 		const fallbackAccountEmail = sanitizeEmail(
@@ -415,7 +544,8 @@ export class AccountManager {
 		this.affinityGeneration =
 			typeof rawStoredGen === "number" &&
 			Number.isFinite(rawStoredGen) &&
-			Number.isInteger(rawStoredGen) &&
+			// See readAffinityGenerationFromDisk: an unsafe integer wedges the bump.
+			Number.isSafeInteger(rawStoredGen) &&
 			rawStoredGen >= 0
 				? rawStoredGen
 				: 0;
@@ -480,6 +610,11 @@ export class AccountManager {
 
 					const matchesFallback =
 						!!authFallback && fallbackMatchedRowIndex === index;
+					const storedRateLimits = account.rateLimitResetTimes ?? {};
+					const rateLimitResetTimes = boundRateLimitCache(storedRateLimits, baseNow);
+					if (Object.entries(rateLimitResetTimes).some(([key, until]) => until !== storedRateLimits[key])) {
+						this.hasUnpersistedRateLimitBounds = true;
+					}
 
 					const refreshToken =
 						matchesFallback && authFallback
@@ -488,6 +623,9 @@ export class AccountManager {
 
 					return {
 						index,
+						recordId: resolveAccountRecordId(
+							account,
+						),
 						accountId: matchesFallback
 							? (fallbackAccountId ?? account.accountId)
 							: account.accountId,
@@ -509,11 +647,14 @@ export class AccountManager {
 						addedAt: clampNonNegativeInt(account.addedAt, baseNow),
 						lastUsed: clampNonNegativeInt(account.lastUsed, 0),
 						lastSwitchReason: account.lastSwitchReason,
-						rateLimitResetTimes: account.rateLimitResetTimes ?? {},
+						rateLimitResetTimes,
 						coolingDownUntil: account.coolingDownUntil,
 						cooldownReason: account.cooldownReason,
+						authInvalidatedAt: account.authInvalidatedAt,
+						authInvalidationErrorCode: account.authInvalidationErrorCode,
 						workspaces: account.workspaces,
 						currentWorkspaceIndex: account.currentWorkspaceIndex,
+						codexCliMirror: account.codexCliMirror,
 					};
 				})
 				.filter((account): account is ManagedAccount => account !== null);
@@ -525,6 +666,14 @@ export class AccountManager {
 				const now = nowMs();
 				this.accounts.push({
 					index: this.accounts.length,
+					recordId: deriveAccountRecordId(
+						{
+							accountId: fallbackAccountId,
+							email: fallbackAccountEmail,
+							refreshToken: authFallback.refresh,
+							addedAt: now,
+						},
+					),
 					accountId: fallbackAccountId,
 					accountIdSource: fallbackAccountId ? "token" : undefined,
 					email: fallbackAccountEmail,
@@ -551,6 +700,8 @@ export class AccountManager {
 					this.cursorByFamily[family] = nextIndex;
 				}
 			}
+			this.persistenceBaseline = stored ? structuredClone(stored) : null;
+			this.rememberWorkspaceSelections();
 			return;
 		}
 
@@ -559,6 +710,14 @@ export class AccountManager {
 			this.accounts = [
 				{
 					index: 0,
+					recordId: deriveAccountRecordId(
+						{
+							accountId: fallbackAccountId,
+							email: fallbackAccountEmail,
+							refreshToken: authFallback.refresh,
+							addedAt: now,
+						},
+					),
 					accountId: fallbackAccountId,
 					accountIdSource: fallbackAccountId ? "token" : undefined,
 					email: fallbackAccountEmail,
@@ -577,6 +736,61 @@ export class AccountManager {
 				this.cursorByFamily[family] = 0;
 			}
 		}
+		this.persistenceBaseline = stored ? structuredClone(stored) : null;
+		this.rememberWorkspaceSelections();
+	}
+
+	/** Reconcile external workspace policy by ID, preserving health changes not superseded on disk. */
+	syncWorkspaceSelections(current: AccountStorageV3 | null): boolean {
+		if (!current) return false;
+		let changed = false;
+		for (const account of this.accounts) {
+			const matches = current.accounts.filter(disk => disk.recordId && disk.recordId === account.recordId);
+			const key = getAccountIdentityKey(account);
+			const candidates = matches.length ? matches : current.accounts.filter(disk => key && getAccountIdentityKey(disk) === key);
+			if (candidates.length !== 1) continue;
+			const disk = candidates[0];
+			if (!disk) continue;
+			const localSelectedId = account.workspaces?.[account.currentWorkspaceIndex ?? 0]?.id;
+			const baseline = this.persistedWorkspaces.get(account);
+			if (JSON.stringify(disk.workspaces) !== JSON.stringify(baseline)) {
+				account.workspaces = disk.workspaces?.map(workspace => {
+					const previous = baseline?.find(item => item.id === workspace.id);
+					const local = account.workspaces?.find(item => item.id === workspace.id);
+					return previous && local && workspace.enabled === previous.enabled && workspace.disabledAt === previous.disabledAt
+						? {...workspace, enabled: local.enabled, disabledAt: local.disabledAt}
+						: {...workspace};
+				});
+				this.persistedWorkspaces.set(account, structuredClone(disk.workspaces));
+				changed = true;
+			}
+			const selectedId = disk.workspaces?.[disk.currentWorkspaceIndex ?? 0]?.id;
+			const preferredId = selectedId !== this.persistedWorkspaceSelections.get(account) ? selectedId : localSelectedId;
+			let index = account.workspaces?.findIndex(workspace => workspace.id === preferredId) ?? -1;
+			if (index < 0) index = account.workspaces?.findIndex(workspace => workspace.id === selectedId) ?? -1;
+			if (index < 0) index = 0;
+			if (account.workspaces?.length && account.currentWorkspaceIndex !== index) {
+				account.currentWorkspaceIndex = index;
+				changed = true;
+			}
+			this.persistedWorkspaceSelections.set(account, selectedId);
+		}
+		return changed;
+	}
+
+	private rememberWorkspaceSelections(snapshot?: AccountStorageV3): void {
+		this.accounts.forEach(account => {
+			// recordId first; the identity key only when defined and unique, since
+			// duplicate identities (or two missing ones) would pick another row's baseline.
+			const rows = snapshot?.accounts ?? [];
+			const byRecord = account.recordId ? rows.filter(row => row.recordId === account.recordId) : [];
+			const key = getAccountIdentityKey(account);
+			const matches = byRecord.length ? byRecord : key ? rows.filter(row => getAccountIdentityKey(row) === key) : [];
+			const saved = (matches.length === 1 ? matches[0] : undefined) ?? account;
+			this.persistedWorkspaceSelections.set(account, saved.workspaces?.[saved.currentWorkspaceIndex ?? 0]?.id);
+			this.persistedWorkspaces.set(account, structuredClone(saved.workspaces));
+		});
+		this.hadPersistedStorage ||= existsSync(this.resolveSelectionStoragePath());
 	}
 
 	getAccountCount(): number {
@@ -617,6 +831,12 @@ export class AccountManager {
 				_runtimeTrackerKey: trackerKey,
 				circuitKeyId,
 				rateLimitResetTimes: { ...account.rateLimitResetTimes },
+				rateLimitObservations: account.rateLimitObservations && Object.fromEntries(
+					Object.entries(account.rateLimitObservations).map(([key, observation]) => [key, cloneRateLimitObservation(observation)]),
+				),
+				resetReceiptGenerations: account.resetReceiptGenerations && { ...account.resetReceiptGenerations },
+                resetReceiptIdentities: account.resetReceiptIdentities && { ...account.resetReceiptIdentities },
+				workspaces: account.workspaces?.map((workspace) => ({ ...workspace })),
 			};
 		});
 	}
@@ -640,6 +860,7 @@ export class AccountManager {
 		clearExpiredRateLimits(account);
 		return (
 			!isRateLimitedForFamily(account, family, model) &&
+			!this.isAccountAuthInvalidated(account) &&
 			!this.isAccountCoolingDown(account) &&
 			this.isCircuitAvailable(account)
 		);
@@ -652,8 +873,23 @@ export class AccountManager {
 	): string | null {
 		const account = this.getAccountByIndex(index);
 		if (!account) return "missing";
+		return this.getManagedAccountRuntimeSkipReason(account, family, model);
+	}
+
+	/**
+	 * Evaluate a managed-account snapshot with the same runtime gates used by
+	 * production selection. This is public for read-only diagnostics that build
+	 * their own trace rows from storage and therefore cannot safely resolve an
+	 * account by its compacted array position.
+	 */
+	getManagedAccountRuntimeSkipReason(
+		account: ManagedAccount,
+		family: ModelFamily,
+		model?: string | null,
+	): string | null {
 		if (account.enabled === false) return "disabled";
 		if (!this.hasEnabledWorkspaces(account)) return "workspace-disabled";
+		if (this.isAccountAuthInvalidated(account)) return AUTH_INVALIDATION_MARKER;
 		clearExpiredRateLimits(account);
 		if (isRateLimitedForFamily(account, family, model)) return "rate-limited";
 		if (this.isAccountCoolingDown(account)) {
@@ -668,6 +904,42 @@ export class AccountManager {
 	static resetVolatileRuntimeState(): void {
 		resetTrackers();
 		resetAllCircuitBreakers();
+	}
+
+	/**
+	 * Apply each explicit selection once without erasing a subsequent 429.
+	 *
+	 * A `switch` asks for a fresh upstream attempt, so the selected account's
+	 * rate-limit markers are cleared. The only markers that survive that clear
+	 * are ones recorded while the selection metadata was unreadable AND recent
+	 * enough to have raced this switch (see UNSEQUENCED_RATE_LIMIT_TTL_MS); an
+	 * older unsequenced entry provably predates the switch and is discarded.
+	 *
+	 * @param meta Latest successfully read selection generation and pin.
+	 */
+	applyManualSelection(meta: {
+		pinnedAccountIndex?: number | null;
+		affinityGeneration: number;
+	}): void {
+		if (meta.affinityGeneration <= this.affinityGeneration) return;
+		const index = meta.pinnedAccountIndex;
+		const account = typeof index === "number"
+			? this.getAccountByIndex(index)
+			: null;
+		if (account) {
+			clearAllRateLimits(account);
+			const pending = this.unsequencedRateLimits.get(account);
+			const replayable =
+				pending !== undefined &&
+				nowMs() - pending.recordedAtMs <= UNSEQUENCED_RATE_LIMIT_TTL_MS
+					? pending
+					: undefined;
+			Object.assign(account.rateLimitResetTimes, replayable?.limits);
+			account.lastRateLimitReason = replayable?.reason;
+			this.unsequencedRateLimits.delete(account);
+		}
+		this.pinnedAccountIndex = account ? index ?? undefined : undefined;
+		this.affinityGeneration = meta.affinityGeneration;
 	}
 
 	/**
@@ -723,7 +995,7 @@ export class AccountManager {
 		const account = this.accounts[index];
 		if (!account) return;
 		await setCodexCliActiveSelection({
-			accountId: account.accountId,
+			accountId: codexCliAccountIdFor(account, account.access),
 			email: account.email,
 			accessToken: account.access,
 			refreshToken: account.refreshToken,
@@ -770,6 +1042,7 @@ export class AccountManager {
 			clearExpiredRateLimits(account);
 			if (
 				isRateLimitedForFamily(account, family, model) ||
+				this.isAccountAuthInvalidated(account) ||
 				this.isAccountCoolingDown(account) ||
 				!this.isCircuitAvailable(account)
 			) {
@@ -804,6 +1077,7 @@ export class AccountManager {
 			clearExpiredRateLimits(account);
 			if (
 				isRateLimitedForFamily(account, family, model) ||
+				this.isAccountAuthInvalidated(account) ||
 				this.isAccountCoolingDown(account) ||
 				!this.isCircuitAvailable(account)
 			) {
@@ -861,6 +1135,7 @@ export class AccountManager {
 			clearExpiredRateLimits(account);
 			return (
 				!isRateLimitedForFamily(account, family, model) &&
+				!this.isAccountAuthInvalidated(account) &&
 				!this.isAccountCoolingDown(account) &&
 				this.isCircuitAvailable(account)
 			);
@@ -917,6 +1192,7 @@ export class AccountManager {
 				clearExpiredRateLimits(account);
 				const isAvailable =
 					!isRateLimitedForFamily(account, family, model) &&
+					!this.isAccountAuthInvalidated(account) &&
 					!this.isAccountCoolingDown(account) &&
 					this.isCircuitAvailable(account);
 				return {
@@ -1006,21 +1282,48 @@ export class AccountManager {
 		account: ManagedAccount,
 		family: ModelFamily,
 		model?: string | null,
+		options: { bypassTokenBucket?: boolean; onProbeAcquired?: (release: () => void) => void } = {},
 	): boolean {
+		return this.consumeTokenWithReason(account, family, model, options).ok;
+	}
+
+	/**
+	 * `consumeToken`, but it says which admission gate rejected the request.
+	 *
+	 * There are two gates and they are not interchangeable to a caller writing
+	 * `account_skip_reasons`: the pool-scoring token bucket, and the circuit
+	 * breaker's race-safe admission slot. Re-deriving the answer afterwards
+	 * with `getManagedAccountRuntimeSkipReason` gets it wrong in both
+	 * directions -- that helper reports the FIRST blocker it finds (so a live
+	 * cooldown masks a drained bucket), and its `isAvailable()` check answers
+	 * true for a half-open breaker whose single probe `canExecute()` just
+	 * handed to a concurrent request. Reporting the gate that actually
+	 * rejected removes the race and the mis-attribution, and avoids a second
+	 * state-mutating evaluation (`clearExpiredRateLimits`) on the hot path.
+	 */
+	consumeTokenWithReason(
+		account: ManagedAccount,
+		family: ModelFamily,
+		model?: string | null,
+		options: { bypassTokenBucket?: boolean; onProbeAcquired?: (release: () => void) => void } = {},
+	): { ok: true } | { ok: false; reason: "token-exhausted" | "circuit-open" } {
 		const quotaKey = model ? `${family}:${model}` : family;
 		const tokenTracker = getTokenTracker();
 		const trackerKey = getRuntimeTrackerKey(account);
-		if (!tokenTracker.tryConsume(trackerKey, quotaKey)) {
-			return false;
+		const shouldConsumeToken = options.bypassTokenBucket !== true;
+		if (shouldConsumeToken && !tokenTracker.tryConsume(trackerKey, quotaKey)) {
+			return { ok: false, reason: "token-exhausted" };
 		}
 
-		try {
-			getCircuitBreaker(getAccountCircuitKey(account)).canExecute();
-			return true;
-		} catch {
-			tokenTracker.refundToken(trackerKey, quotaKey);
-			return false;
+		// Non-throwing probe keeps circuit-open storms off the exception path.
+		const admission = getCircuitBreaker(getAccountCircuitKey(account)).tryCanExecute(options.onProbeAcquired);
+		if (!admission.ok) {
+			if (shouldConsumeToken) {
+				tokenTracker.refundToken(trackerKey, quotaKey);
+			}
+			return { ok: false, reason: "circuit-open" };
 		}
+		return { ok: true };
 	}
 
 	/**
@@ -1161,31 +1464,113 @@ export class AccountManager {
 		family: ModelFamily,
 		reason: RateLimitReason,
 		model?: string | null,
+		scopeId?: string,
+		observation?: {
+			workspaceId: string;
+			receiptReadFailed?: boolean;
+			/** Receipts known when the rejected request was sent; defaults to those known now. */
+			receipts?: Pick<ManagedAccount, "resetReceiptGenerations" | "resetReceiptIdentities">;
+		},
 	): void {
-		// Clamp to MAX_RATE_LIMIT_DELAY_MS so a bogus upstream retry-after value
-		// cannot wedge this account unavailable for years (see stress audit H1).
+		let selectionReadable = false;
+		try {
+			// Deliberately a fresh strict read rather than the proxy's cached
+			// `readStorageMetaFromDisk`: that reader falls back to its last good
+			// snapshot on failure, so it cannot tell this call site the one thing
+			// it needs to know, namely whether the selection was observable at all.
+			const meta = readPinAndGenFromDisk(this.resolveSelectionStoragePath(), {
+				strict: true,
+			});
+			// Observe a switch BEFORE recording this response, not at the later
+			// debounced save where it would erase a genuine post-switch 429.
+			this.applyManualSelection(meta);
+			selectionReadable = true;
+		} catch {
+			// Fail closed: retain this new limit if the selection cannot be read.
+			log.warn("Rate limit recorded while account selection metadata is unavailable");
+		}
+		// A local rejection is authoritative for at most an hour. The next request
+		// then revalidates upstream, including after an out-of-band quota reset.
 		const retryMs = Math.min(
 			Math.max(0, Math.floor(retryAfterMs)),
-			MAX_RATE_LIMIT_DELAY_MS,
+			RATE_LIMIT_CACHE_TTL_MS,
 		);
-		const resetAt = nowMs() + retryMs;
+		const observedAtMs = nowMs();
+		const resetAt = observedAtMs + retryMs;
+		// Only carry forward an unsequenced entry that is still replayable.
+		// Merging an expired one would give it a fresh `recordedAtMs` below and
+		// keep resurrecting it indefinitely.
+		const pending = this.unsequencedRateLimits.get(account);
+		const carried =
+			pending !== undefined &&
+			observedAtMs - pending.recordedAtMs <= UNSEQUENCED_RATE_LIMIT_TTL_MS
+				? pending
+				: undefined;
+		const newLimits: RateLimitStateV3 = { ...carried?.limits };
 
-		const baseKey = getQuotaKey(family);
-		if (!model || reason === "quota" || reason === "unknown") {
+		const recordRejection = (key: string) => {
+			const observations = account.rateLimitObservations ??= {};
+			const observationKey = getRateLimitObservationKey(key, scopeId);
+			const previous = observations[observationKey];
+			const known = observation?.receipts ?? account;
+			// A late answer to an earlier request must not reopen receipts that a
+			// later rejection already followed, so chronology only accumulates.
+			const receiptGenerations = { ...previous?.receiptGenerations };
+			for (const [scope, generation] of Object.entries(scopeId === undefined ? known.resetReceiptGenerations ?? {}
+				: { [scopeId]: known.resetReceiptGenerations?.[scopeId] ?? 0 })) {
+				receiptGenerations[scope] = Math.max(receiptGenerations[scope] ?? 0, generation);
+			}
+			const receiptIdentities = { ...previous?.receiptIdentities };
+			for (const [scope, identity] of Object.entries(known.resetReceiptIdentities ?? {})) {
+				if (!receiptIdentities[scope]?.includes(identity)) receiptIdentities[scope] = [...(receiptIdentities[scope] ?? []), identity];
+			}
+			observations[observationKey] = { revision: (previous?.revision ?? 0) + 1, observedAt: observedAtMs, sequence: ++rejectionSequence, reason, receiptGenerations, receiptIdentities,
+				receiptReadFailed: previous?.receiptReadFailed || observation?.receiptReadFailed };
+		};
+		const deadlineKey = (key: string) => observation ? workspaceQuotaKey(key, observation.workspaceId) : key;
+		const baseKey = deadlineKey(getQuotaKey(family));
+		const independentReserve = model === LUNA_RESERVE_MODEL;
+		if (!independentReserve && (!model || reason === "quota" || reason === "unknown")) {
 			const currentResetAt = account.rateLimitResetTimes[baseKey] ?? 0;
 			account.rateLimitResetTimes[baseKey] = Math.max(currentResetAt, resetAt);
+			newLimits[baseKey] = Math.max(newLimits[baseKey] ?? 0, resetAt);
+			recordRejection(getQuotaKey(family));
 		}
 
 		if (
 			model &&
-			(reason === "tokens" || reason === "concurrent" || reason === "unknown")
+			(independentReserve || reason === "tokens" || reason === "concurrent" || reason === "unknown")
 		) {
-			const modelKey = getQuotaKey(family, model);
+			const modelKey = deadlineKey(getQuotaKey(family, model));
 			const currentResetAt = account.rateLimitResetTimes[modelKey] ?? 0;
 			account.rateLimitResetTimes[modelKey] = Math.max(currentResetAt, resetAt);
+			newLimits[modelKey] = Math.max(newLimits[modelKey] ?? 0, resetAt);
+			recordRejection(getQuotaKey(family, model));
 		}
 
 		account.lastRateLimitReason = reason;
+		if (!selectionReadable) {
+			this.unsequencedRateLimits.set(account, {
+				limits: newLimits,
+				reason,
+				recordedAtMs: observedAtMs,
+			});
+		} else {
+			// The selection was observable, so this 429 is unambiguously ordered
+			// against the current generation and needs no replay backup.
+			this.unsequencedRateLimits.delete(account);
+		}
+	}
+
+	/**
+	 * Storage file this manager owns, resolved through the path state captured
+	 * at construction. Reading the ambient `getStoragePath()` instead would
+	 * point a project-scoped pool at whichever storage file happens to be
+	 * current on the calling async context. See `saveToDisk`, which wraps
+	 * `runWithStoragePathState(this.storagePathState, ...)` for the same reason.
+	 */
+	private resolveSelectionStoragePath(): string {
+		return this.storagePathState.currentStoragePath ?? getStoragePath();
 	}
 
 	markAccountCoolingDown(
@@ -1216,6 +1601,22 @@ export class AccountManager {
 		return getCircuitBreaker(getAccountCircuitKey(account)).isAvailable();
 	}
 
+	/**
+	 * When the account's circuit breaker will admit an attempt again, as an
+	 * epoch-ms deadline — null when it already would. Lets the pinned-503
+	 * recovery metadata cover circuit-open skips, whose deadline lives in the
+	 * breaker rather than the persisted account record.
+	 */
+	getCircuitRecoveryTime(
+		account: ManagedAccount,
+		now = Date.now(),
+	): number | null {
+		const waitMs = getCircuitBreaker(
+			getAccountCircuitKey(account),
+		).getTimeUntilAvailable(now);
+		return waitMs > 0 ? now + waitMs : null;
+	}
+
 	incrementAuthFailures(account: ManagedAccount): number {
 		account.consecutiveAuthFailures =
 			(account.consecutiveAuthFailures ?? 0) + 1;
@@ -1224,6 +1625,28 @@ export class AccountManager {
 
 	clearAuthFailures(account: ManagedAccount): void {
 		account.consecutiveAuthFailures = 0;
+	}
+
+	markAuthInvalidated(
+		account: ManagedAccount,
+		errorCode = "token_invalidated",
+		invalidatedAt = nowMs(),
+	): void {
+		account.authInvalidatedAt = invalidatedAt;
+		account.authInvalidationErrorCode = errorCode;
+	}
+
+	clearAuthInvalidation(account: ManagedAccount): void {
+		delete account.authInvalidatedAt;
+		delete account.authInvalidationErrorCode;
+	}
+
+	isAccountAuthInvalidated(account: ManagedAccount): boolean {
+		return (
+			typeof account.authInvalidatedAt === "number" &&
+			Number.isFinite(account.authInvalidatedAt) &&
+			account.authInvalidatedAt > 0
+		);
 	}
 
 	getAccountByIdentity(
@@ -1257,6 +1680,7 @@ export class AccountManager {
 		account.refreshToken = auth.refresh;
 		account.access = auth.access;
 		account.expires = auth.expires;
+		this.clearAuthInvalidation(account);
 		const tokenAccountId = extractAccountId(auth.access)?.trim() || undefined;
 		if (
 			tokenAccountId &&
@@ -1315,10 +1739,79 @@ export class AccountManager {
 				account.accessToken = disk.accessToken;
 				account.expiresAt = disk.expiresAt;
 			}
+			const diskInvalidatedAt = disk.authInvalidatedAt;
+			const diskHasValidInvalidation =
+				typeof diskInvalidatedAt === "number" &&
+				Number.isFinite(diskInvalidatedAt) &&
+				diskInvalidatedAt > 0;
+			const accountHasValidInvalidation =
+				typeof account.authInvalidatedAt === "number" &&
+				Number.isFinite(account.authInvalidatedAt) &&
+				account.authInvalidatedAt > 0;
+			if (diskHasValidInvalidation && !accountHasValidInvalidation) {
+				// Ordinary saves must not erase an invalidation written by another
+				// AccountManager. Successful refresh persistence explicitly deletes
+				// this marker in commitRefreshedAuth; this reconciliation path does not.
+				account.authInvalidatedAt = diskInvalidatedAt;
+				if (disk.authInvalidationErrorCode) {
+					account.authInvalidationErrorCode = disk.authInvalidationErrorCode;
+				}
+			}
 		}
 		return snapshot;
 	}
 
+	/**
+	 * Re-read the on-disk selection and fold it into this manager's state.
+	 *
+	 * Race protection: a CLI `switch`/`unpin`/`best` may have written a NEW
+	 * pin/gen between proxy startup (or the last save) and now. If we persisted
+	 * our stale instance values, we'd silently clobber the CLI update on every
+	 * routine save (rate-limit, cooldown, near-quota refund, etc.). See #474.
+	 *
+	 * This MUTATES `pinnedAccountIndex`, `affinityGeneration` and, when the
+	 * generation advanced, the selected account's rate-limit markers, so it is a
+	 * separate step from the pure `buildStorageSnapshot` serializer below rather
+	 * than a hidden side effect of it. Callers must run it immediately before a
+	 * snapshot they intend to persist. Applying it twice is a no-op.
+	 *
+	 * @throws when the metadata exists but cannot be observed (see
+	 * `readPinAndGenFromDisk`), which is the one case where persisting would
+	 * risk overwriting a newer pin.
+	 */
+	private reconcileSelectionFromDisk(): void {
+		const onDisk = readPinAndGenFromDisk(this.resolveSelectionStoragePath(), {
+			strict: true,
+		});
+		// A delayed save must not resurrect the markers the CLI just cleared.
+		this.applyManualSelection(onDisk);
+		let effectivePinnedAccountIndex = this.pinnedAccountIndex;
+		let effectiveAffinityGeneration = this.affinityGeneration;
+		if (onDisk.affinityGeneration > effectiveAffinityGeneration) {
+			effectiveAffinityGeneration = onDisk.affinityGeneration;
+			// The pin is part of the same atomic write the CLI performs when it
+			// bumps the generation, so a strictly-greater on-disk gen is the
+			// signal that the disk pin is the authoritative one.
+			effectivePinnedAccountIndex = onDisk.pinnedAccountIndex;
+		}
+		// Validate the refreshed pin against the live account count.
+		if (
+			effectivePinnedAccountIndex !== undefined &&
+			(effectivePinnedAccountIndex < 0 ||
+				effectivePinnedAccountIndex >= this.accounts.length)
+		) {
+			effectivePinnedAccountIndex = undefined;
+		}
+		// Cache the refreshed values so subsequent saves start from the freshest
+		// known state without re-reading every time.
+		this.pinnedAccountIndex = effectivePinnedAccountIndex;
+		this.affinityGeneration = effectiveAffinityGeneration;
+	}
+
+	/**
+	 * Serialize the live pool. Pure: it reads no files and mutates no state.
+	 * Persisting callers must call `reconcileSelectionFromDisk()` first.
+	 */
 	private buildStorageSnapshot(): AccountStorageV3 {
 		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
 		for (const family of MODEL_FAMILIES) {
@@ -1327,64 +1820,44 @@ export class AccountManager {
 		}
 
 		const activeIndex = clampNonNegativeInt(activeIndexByFamily.codex, 0);
-
-		// Race protection: a CLI `switch`/`unpin`/`best` may have written a NEW
-		// pin/gen between proxy startup (or the last save) and now. If we
-		// persisted our stale instance values, we'd silently clobber the CLI
-		// update on every routine save (rate-limit, cooldown, near-quota refund,
-		// etc.). Re-read just before snapshotting and prefer the fresher value.
-		// See #474.
-		let effectivePinnedAccountIndex = this.pinnedAccountIndex;
-		let effectiveAffinityGeneration = this.affinityGeneration;
-		try {
-			const onDisk = readPinAndGenFromDisk(getStoragePath());
-			if (onDisk.affinityGeneration > effectiveAffinityGeneration) {
-				effectiveAffinityGeneration = onDisk.affinityGeneration;
-				// The pin is part of the same atomic write the CLI performs when
-				// it bumps the generation, so a strictly-greater on-disk gen is
-				// the signal that the disk pin is the authoritative one.
-				effectivePinnedAccountIndex = onDisk.pinnedAccountIndex;
-			}
-			// Validate the refreshed pin against the live account count.
-			if (
-				effectivePinnedAccountIndex !== undefined &&
-				(effectivePinnedAccountIndex < 0 ||
-					effectivePinnedAccountIndex >= this.accounts.length)
-			) {
-				effectivePinnedAccountIndex = undefined;
-			}
-			// Cache the refreshed values so subsequent saves start from the
-			// freshest known state without re-reading every time.
-			this.pinnedAccountIndex = effectivePinnedAccountIndex;
-			this.affinityGeneration = effectiveAffinityGeneration;
-		} catch {
-			// Disk read failures fall back to in-memory values; better than
-			// dropping the snapshot save entirely.
-		}
+		const effectivePinnedAccountIndex = this.pinnedAccountIndex;
+		const effectiveAffinityGeneration = this.affinityGeneration;
 
 		const snapshot: AccountStorageV3 = {
 			version: 3,
-			accounts: this.accounts.map((account) => ({
-				accountId: account.accountId,
-				accountIdSource: account.accountIdSource,
-				accountLabel: account.accountLabel,
-				email: account.email,
-				refreshToken: account.refreshToken,
-				accessToken: account.access,
-				expiresAt: account.expires,
-				enabled: account.enabled === false ? false : undefined,
-				addedAt: account.addedAt,
-				lastUsed: account.lastUsed,
-				lastSwitchReason: account.lastSwitchReason,
-				rateLimitResetTimes:
-					Object.keys(account.rateLimitResetTimes).length > 0
-						? account.rateLimitResetTimes
+			accounts: this.accounts.map((account) => {
+				const hasValidAuthInvalidation =
+					this.isAccountAuthInvalidated(account);
+				return {
+					recordId: account.recordId,
+					accountId: account.accountId,
+					accountIdSource: account.accountIdSource,
+					accountLabel: account.accountLabel,
+					email: account.email,
+					refreshToken: account.refreshToken,
+					accessToken: account.access,
+					expiresAt: account.expires,
+					enabled: account.enabled === false ? false : undefined,
+					addedAt: account.addedAt,
+					lastUsed: account.lastUsed,
+					lastSwitchReason: account.lastSwitchReason,
+					rateLimitResetTimes:
+						Object.keys(account.rateLimitResetTimes).length > 0
+							? account.rateLimitResetTimes
+							: undefined,
+					coolingDownUntil: account.coolingDownUntil,
+					cooldownReason: account.cooldownReason,
+					authInvalidatedAt: hasValidAuthInvalidation
+						? account.authInvalidatedAt
 						: undefined,
-				coolingDownUntil: account.coolingDownUntil,
-				cooldownReason: account.cooldownReason,
-				workspaces: account.workspaces,
-				currentWorkspaceIndex: account.currentWorkspaceIndex,
-			})),
+					authInvalidationErrorCode: hasValidAuthInvalidation
+						? account.authInvalidationErrorCode
+						: undefined,
+					workspaces: account.workspaces,
+					currentWorkspaceIndex: account.currentWorkspaceIndex,
+					codexCliMirror: account.codexCliMirror,
+				};
+			}),
 			activeIndex,
 			activeIndexByFamily,
 		};
@@ -1408,10 +1881,16 @@ export class AccountManager {
 		const nextEmail = sanitizeEmail(extractAccountEmail(auth.access));
 		try {
 			return await withAccountStorageTransaction(async (_current, persist) => {
+				if (!_current && this.hadPersistedStorage) throw Object.assign(new Error("Account storage was removed; reload before saving."), {code:"ESTALE"});
+				this.syncWorkspaceSelections(_current);
 				// Snapshot the live in-memory pool under the storage lock so refresh
-				// persistence merges against the latest account state.
+				// persistence merges against the latest account state. Reconcile the
+				// selection first for the same reason `saveToDisk` does: this write
+				// carries `pinnedAccountIndex`/`affinityGeneration` too, so a stale
+				// pair here would clobber a `switch` that landed since the last save.
+				this.reconcileSelectionFromDisk();
 				const nextStorage = structuredClone(
-					this.buildStorageSnapshot(),
+                    this.reconcileTokensFromDisk(this.buildStorageSnapshot(), _current),
 				) as AccountStorageV3;
 				const storageIndex = findAccountIndexByIdentity(
 					nextStorage.accounts,
@@ -1430,6 +1909,16 @@ export class AccountManager {
 					return null;
 				}
 
+				const liveAccount = this.getAccountByIdentity(source, auth);
+				// Credential rotation proves auth health only. It must not erase an
+				// unrelated inference network/server/rate-limit backoff that happens
+				// to be live on the same account.
+				const preserveNonAuthCooldown =
+					liveAccount?.cooldownReason !== undefined &&
+					liveAccount.cooldownReason !== "auth-failure" &&
+					typeof liveAccount.coolingDownUntil === "number" &&
+					liveAccount.coolingDownUntil > nowMs();
+
 				storedAccount.refreshToken = auth.refresh;
 				storedAccount.accessToken = auth.access;
 				storedAccount.expiresAt = auth.expires;
@@ -1447,10 +1936,16 @@ export class AccountManager {
 					storedAccount.email = nextEmail;
 				}
 				storedAccount.enabled = undefined;
-				delete storedAccount.coolingDownUntil;
-				delete storedAccount.cooldownReason;
+				delete storedAccount.authInvalidatedAt;
+				delete storedAccount.authInvalidationErrorCode;
+				if (preserveNonAuthCooldown && liveAccount) {
+					storedAccount.coolingDownUntil = liveAccount.coolingDownUntil;
+					storedAccount.cooldownReason = liveAccount.cooldownReason;
+				} else {
+					delete storedAccount.coolingDownUntil;
+					delete storedAccount.cooldownReason;
+				}
 
-				const liveAccount = this.getAccountByIdentity(source, auth);
 				if (liveAccount) {
 					const previousLiveAccountState = {
 						access: liveAccount.access,
@@ -1463,15 +1958,19 @@ export class AccountManager {
 						coolingDownUntil: liveAccount.coolingDownUntil,
 						cooldownReason: liveAccount.cooldownReason,
 						consecutiveAuthFailures: liveAccount.consecutiveAuthFailures,
+						authInvalidatedAt: liveAccount.authInvalidatedAt,
+						authInvalidationErrorCode:
+							liveAccount.authInvalidationErrorCode,
 					};
 
 					this.updateFromAuth(liveAccount, auth);
 					liveAccount.enabled = true;
-					this.clearAccountCooldown(liveAccount);
+					if (!preserveNonAuthCooldown) this.clearAccountCooldown(liveAccount);
 					this.clearAuthFailures(liveAccount);
 
 					try {
-						await persist(nextStorage);
+						await this.persistSnapshot(_current, nextStorage, persist, storedAccount);
+						this.rememberWorkspaceSelections(nextStorage);
 					} catch (error) {
 						liveAccount.access = previousLiveAccountState.access;
 						liveAccount.refreshToken = previousLiveAccountState.refreshToken;
@@ -1483,6 +1982,20 @@ export class AccountManager {
 						liveAccount.enabled = previousLiveAccountState.enabled;
 						liveAccount.consecutiveAuthFailures =
 							previousLiveAccountState.consecutiveAuthFailures;
+						if (previousLiveAccountState.authInvalidatedAt === undefined) {
+							delete liveAccount.authInvalidatedAt;
+						} else {
+							liveAccount.authInvalidatedAt =
+								previousLiveAccountState.authInvalidatedAt;
+						}
+						if (
+							previousLiveAccountState.authInvalidationErrorCode === undefined
+						) {
+							delete liveAccount.authInvalidationErrorCode;
+						} else {
+							liveAccount.authInvalidationErrorCode =
+								previousLiveAccountState.authInvalidationErrorCode;
+						}
 						if (previousLiveAccountState.coolingDownUntil === undefined) {
 							delete liveAccount.coolingDownUntil;
 						} else {
@@ -1501,13 +2014,59 @@ export class AccountManager {
 					return liveAccount;
 				}
 
-				await persist(nextStorage);
+				await this.persistSnapshot(_current, nextStorage, persist, storedAccount);
+				this.rememberWorkspaceSelections(nextStorage);
 				log.warn("Unable to resolve refreshed live account after persistence", {
 					sourceIndex: source.index,
 				});
 				return null;
 			});
 		} catch (error) {
+			// The refresh already rotated the token upstream; the old one is spent.
+			// A locked or unreadable accounts file must not discard the only valid
+			// credential, so keep it live and let the retrying debounced save
+			// persist it once the file can be read.
+			// A write that still fails after the storage retries (e.g. a Windows lock)
+			// spends the old token just the same, so it is rescued like an unreadable file.
+			const live = [ACCOUNT_STORAGE_UNREADABLE, "ELOCKED", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "") || isRetryableAuthPersistenceError(error)
+				? this.getAccountByIdentity(source, auth)
+				: null;
+			if (live) {
+				const priorRefreshToken = live.refreshToken;
+				this.updateFromAuth(live, auth);
+				live.enabled = true;
+				if (live.cooldownReason === "auth-failure") this.clearAccountCooldown(live);
+				this.clearAuthFailures(live);
+				// The debounced save needs this process to survive and the file to
+				// unlock. Journal the rotated credential beside the pool so the next
+				// load (any process) applies it even if neither happens.
+				try {
+					await runWithStoragePathState(this.storagePathState, () =>
+						recordPendingAuth(getStoragePath(), {
+							priorRefreshToken,
+							recordId: live.recordId,
+							refreshToken: auth.refresh,
+							accessToken: auth.access,
+							expiresAt: auth.expires,
+							at: nowMs(),
+						}),
+					);
+					// Loads now see the journaled token, so it is the persisted state
+					// that later merges (and a further rotation) compare against.
+					const baselineRow = this.persistenceBaseline?.accounts.find(row => row.refreshToken === priorRefreshToken);
+					if (baselineRow) Object.assign(baselineRow, { refreshToken: auth.refresh, accessToken: auth.access, expiresAt: auth.expires });
+					log.warn("Account storage could not be read or written; rotated credential journaled until it can be saved", {
+						sourceIndex: source.index,
+					});
+				} catch (journalError) {
+					log.error("Account storage could not be read or written and the rotated credential could not be journaled; it is only in memory. Keep this process running until the accounts file is readable, or the account will need a re-login.", {
+						sourceIndex: source.index,
+						code: typeof (journalError as NodeJS.ErrnoException).code === "string" && /^[A-Z_]{1,40}$/.test((journalError as NodeJS.ErrnoException).code ?? "") ? (journalError as NodeJS.ErrnoException).code : "INVALID_PENDING_AUTH",
+					});
+				}
+				this.saveToDiskDebounced();
+				return live;
+			}
 			throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, {
 				retryable: isRetryableAuthPersistenceError(error),
 				cause: error,
@@ -1528,10 +2087,21 @@ export class AccountManager {
 		return this.getMinWaitTimeForFamily("codex");
 	}
 
-	getMinWaitTimeForFamily(family: ModelFamily, model?: string | null): number {
+	/**
+	 * Accounts in `excludedIndexes` (policy-blocked or reserved for this request)
+	 * are not capacity the caller can retry into, so they never shorten the wait.
+	 */
+	getMinWaitTimeForFamily(
+		family: ModelFamily,
+		model?: string | null,
+		excludedIndexes?: ReadonlySet<number>,
+	): number {
 		const now = nowMs();
 		const enabledAccounts = this.accounts.filter(
-			(account) => account.enabled !== false,
+			(account) =>
+				account.enabled !== false &&
+				!this.isAccountAuthInvalidated(account) &&
+				!excludedIndexes?.has(account.index),
 		);
 		const available = enabledAccounts.filter((account) => {
 			clearExpiredRateLimits(account);
@@ -1550,14 +2120,14 @@ export class AccountManager {
 
 		for (const account of enabledAccounts) {
 			const perAccountWaitTimes: number[] = [];
-			const baseResetAt = account.rateLimitResetTimes[baseKey];
-			if (typeof baseResetAt === "number") {
+			const baseResetAt = quotaResetTime(account, baseKey);
+			if (model !== LUNA_RESERVE_MODEL && baseResetAt > now) {
 				perAccountWaitTimes.push(Math.max(0, baseResetAt - now));
 			}
 
 			if (modelKey) {
-				const modelResetAt = account.rateLimitResetTimes[modelKey];
-				if (typeof modelResetAt === "number") {
+				const modelResetAt = quotaResetTime(account, modelKey);
+				if (modelResetAt > now) {
 					perAccountWaitTimes.push(Math.max(0, modelResetAt - now));
 				}
 			}
@@ -1800,15 +2370,80 @@ export class AccountManager {
 		return account;
 	}
 
-	async saveToDisk(): Promise<void> {
+ private async persistSnapshot(current: AccountStorageV3 | null, proposed: AccountStorageV3, persist: (storage: AccountStorageV3) => Promise<void>, refreshed?: AccountStorageV3["accounts"][number], runtimeOnConflict = false): Promise<void> {
+  // Preserve initial/missing-store creation. An intentionally cleared store has
+  // distinct metadata and must still win over this manager's stale inventory.
+  let merged: AccountStorageV3;
+  let rescuedBaseline: AccountStorageV3 | undefined;
+  try {
+   merged = current ? mergeAccountSnapshot(this.persistenceBaseline, current, proposed) : proposed;
+  } catch (error) {
+   if (runtimeOnConflict && (error as NodeJS.ErrnoException).code === "ESTALE" && current && this.persistenceBaseline) {
+    await persist(mergeAccountRuntimeObservations(this.persistenceBaseline, current, proposed));
+    log.warn("Saved runtime observations; conflicting account edits remain pending and require reload or reconciliation.");
+    return;
+   }
+   if ((error as NodeJS.ErrnoException).code !== "ESTALE" || !refreshed?.recordId || !current) throw error;
+   // A rotated credential must not be discarded because an unrelated user edit
+   // conflicts. Persist only its auth delta under this same transaction lock.
+   const matches = (row: AccountStorageV3["accounts"][number]) => resolveAccountRecordId(row) === refreshed.recordId;
+   const prior = this.persistenceBaseline?.accounts.find(matches);
+   const index = current.accounts.findIndex(matches);
+   const disk = current.accounts[index];
+   if (!prior || !disk || disk.refreshToken !== prior.refreshToken || disk.enabled === false || disk.authInvalidatedAt) throw error;
+   merged = structuredClone(current);
+   const row = merged.accounts[index];
+   if (!row || !this.persistenceBaseline) throw error;
+   rescuedBaseline = structuredClone(this.persistenceBaseline);
+   const baselineRow = rescuedBaseline.accounts.find(matches);
+   if (!baselineRow) throw error;
+   const cooldown = mergeAccountCooldown(prior, disk, refreshed);
+   // Persist the stable identity before rotating a legacy row's identity material.
+   row.recordId = refreshed.recordId;
+   baselineRow.recordId = refreshed.recordId;
+   // Only authentication was committed. Pending additions, removals and user
+   // edits must still differ from their old baseline on the next save. The
+   // refresh can also move the identity and clears auth blockers; a restart
+   // must not bring the old identity or cooldown back.
+   for (const field of ["accessToken", "refreshToken", "expiresAt", "accountId", "accountIdSource", "email", "authInvalidatedAt", "authInvalidationErrorCode", "coolingDownUntil", "cooldownReason"] as const) {
+    const value = refreshed[field];
+    if (value === undefined) {delete row[field];delete baselineRow[field];}
+    else {Object.assign(row, { [field]: value });Object.assign(baselineRow, { [field]: value });}
+   }
+   Object.assign(row, cooldown);
+  }
+  await persist(merged);
+  if (refreshed) {
+   const saved = merged.accounts.find(row => row.recordId === refreshed.recordId);
+   const live = this.accounts.find(row => row.recordId === refreshed.recordId);
+   // A successful refresh must retain blockers learned by another request,
+   // including an observation made while the storage write was pending.
+   if (saved && live) Object.assign(live, mergeAccountCooldown(refreshed, saved, live));
+  }
+  // Keep the baseline in this manager's inventory/intent space. Adopting added
+  // disk records here would misread their absence in the next save as deletion.
+  this.persistenceBaseline = rescuedBaseline ?? structuredClone(proposed);
+  if (refreshed) {
+   const saved = merged.accounts.find(row => row.recordId === refreshed.recordId);
+   const baseline = this.persistenceBaseline.accounts.find(row => row.recordId === refreshed.recordId);
+   // The adopted blocker is now known persisted state, so a later explicit
+   // clear must compare against it rather than the pre-refresh clear.
+   if (saved && baseline) Object.assign(baseline, { coolingDownUntil: saved.coolingDownUntil, cooldownReason: saved.cooldownReason });
+  }
+ }
+
+	async saveToDisk(runtimeOnConflict = false): Promise<void> {
 		await runWithStoragePathState(this.storagePathState, async () => {
 			await withAccountStorageTransaction(async (current, persist) => {
+				if (!current && this.hadPersistedStorage) throw Object.assign(new Error("Account storage was removed; reload before saving."), {code:"ESTALE"});
 				// Reconcile against the disk state loaded under the storage lock so a
 				// routine save does not clobber a token another process just rotated
-				// (stress audit H3).
-				await persist(
-					this.reconcileTokensFromDisk(this.buildStorageSnapshot(), current),
-				);
+				// (stress audit H3) or a pin the CLI just wrote (#474).
+				this.reconcileSelectionFromDisk();
+				this.syncWorkspaceSelections(current);
+				const snapshot = this.reconcileTokensFromDisk(this.buildStorageSnapshot(), current);
+				await this.persistSnapshot(current, snapshot, persist, undefined, runtimeOnConflict);
+				this.rememberWorkspaceSelections(snapshot);
 			});
 		});
 	}
@@ -1824,28 +2459,60 @@ export class AccountManager {
 					if (this.pendingSave) {
 						await this.pendingSave;
 					}
-					this.pendingSave = this.saveToDisk().finally(() => {
+					this.pendingSave = this.saveToDisk(true).finally(() => {
 						this.pendingSave = null;
 					});
 					await this.pendingSave;
+					this.saveRetryCount = 0;
 				} catch (error) {
 					log.warn("Debounced save failed", {
 						error: error instanceof Error ? error.message : String(error),
+						attempt: this.saveRetryCount + 1,
 					});
+					// The debounce timer has already fired and cleared itself, so
+					// without re-arming this save is simply lost, and with it every
+					// rate-limit window, cooldown and rotated refresh token recorded
+					// since the last successful write. Saves fail for transient
+					// reasons (a Windows AV scanner or indexer holding accounts.json,
+					// a torn read of a concurrent atomic rename), so back off and try
+					// again instead of dropping the state.
+					if (this.saveRetryCount < MAX_DEBOUNCED_SAVE_RETRIES) {
+						this.saveRetryCount += 1;
+						this.saveToDiskDebounced(
+							Math.min(delayMs * 2, MAX_SAVE_RETRY_DELAY_MS),
+						);
+					} else {
+						this.saveRetryCount = 0;
+						log.error(
+							"Dropping account state save after repeated failures; runtime state since the last successful save is lost",
+						);
+					}
 				}
 			};
 			void doSave();
 		}, delayMs);
 	}
 
+	/**
+	 * Flush any debounced save. Never rejects: this runs on the proxy shutdown
+	 * path (`RuntimeRotationProxy.close`), and a rejection there aborts the rest
+	 * of the teardown. A failure is logged at error level instead, because the
+	 * process is exiting and there is no later attempt to fall back to.
+	 */
 	async flushPendingSave(): Promise<void> {
-		if (this.saveDebounceTimer) {
-			clearTimeout(this.saveDebounceTimer);
-			this.saveDebounceTimer = null;
-			await this.saveToDisk();
-		}
-		if (this.pendingSave) {
-			await this.pendingSave;
+		try {
+			if (this.saveDebounceTimer) {
+				clearTimeout(this.saveDebounceTimer);
+				this.saveDebounceTimer = null;
+				await this.saveToDisk(true);
+			}
+			if (this.pendingSave) {
+				await this.pendingSave;
+			}
+		} catch (error) {
+			log.error("Failed to flush pending account state save", {
+				error: error instanceof Error ? error.message : String(error),
+			});
 		}
 	}
 
@@ -1860,11 +2527,16 @@ export class AccountManager {
 		);
 
 		for (const workspace of account.workspaces) {
-			workspace.enabled = true;
-			delete workspace.disabledAt;
+			// Only undo runtime health disablement, never an explicit workspace exclusion.
+			if (workspace.disabledAt !== undefined) {
+				workspace.enabled = true;
+				delete workspace.disabledAt;
+			}
 		}
 
-		account.currentWorkspaceIndex = resetIndex >= 0 ? resetIndex : 0;
+		if (!account.workspaces[account.currentWorkspaceIndex ?? -1]) {
+			account.currentWorkspaceIndex = resetIndex >= 0 ? resetIndex : 0;
+		}
 	}
 
 	getCurrentWorkspace(account: ManagedAccount): Workspace | null {
@@ -1874,6 +2546,15 @@ export class AccountManager {
 		const idx = account.currentWorkspaceIndex ?? 0;
 		return account.workspaces[idx] ?? null;
 	}
+
+ /** Disable a specific request workspace without changing the interactive selection. */
+ disableWorkspace(account: ManagedAccount, workspaceId: string): boolean {
+  const workspace = account.workspaces?.find(item=>item.id===workspaceId);
+  if(!workspace || workspace.enabled===false) return false;
+  workspace.enabled=false;
+  workspace.disabledAt=nowMs();
+  return true;
+ }
 
 	disableCurrentWorkspace(
 		account: ManagedAccount,
@@ -2010,6 +2691,7 @@ export function formatWorkspaceLines(
 		| { workspaces?: Workspace[]; currentWorkspaceIndex?: number }
 		| undefined,
 	indent = "   ",
+	selectionLabel = "active",
 ): string[] {
 	const workspaces = account?.workspaces;
 	if (!workspaces || workspaces.length === 0) return [];
@@ -2020,7 +2702,7 @@ export function formatWorkspaceLines(
 		const id = workspace.id?.trim() ?? "";
 		const idSuffix = id.length > 6 ? id.slice(-6) : id;
 		const tags: string[] = [];
-		if (isActive) tags.push("active");
+		if (isActive) tags.push(selectionLabel);
 		if (workspace.enabled === false) tags.push("disabled");
 		const tagLabel = tags.length > 0 ? ` (${tags.join(", ")})` : "";
 		const idLabel = idSuffix ? ` id:${idSuffix}` : "";

@@ -23,6 +23,12 @@
 - [ ] `docs/upgrade.md` updated (if migration behavior changed)
 - [ ] `SECURITY.md` and `CONTRIBUTING.md` reviewed for alignment
 
+## Compliance Confirmation
+
+- [ ] This change stays within the repository scope and OpenAI Terms of Service expectations.
+- [ ] This change uses official authentication flows only and does not add bypass, scraping, or credential-sharing behavior.
+- [ ] I updated tests and documentation when the change affected users, maintainers, or repository behavior.
+
 ## Risk and Rollback
 
 - Risk level:

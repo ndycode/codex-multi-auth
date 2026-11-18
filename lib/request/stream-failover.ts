@@ -9,9 +9,25 @@ export interface StreamFailoverOptions {
 }
 
 const DEFAULT_MAX_FAILOVERS = 1;
+// Generous hard bound for the library API: the runtime path already clamps to
+// MAX_STREAM_FAILOVERS via capStreamFailoverMax, but a direct caller passing a
+// non-finite or huge value must not produce unbounded fallback churn.
+const MAX_FAILOVERS_HARD_BOUND = 32;
+
+function normalizeMaxFailovers(value: number | undefined): number {
+	if (value === undefined || !Number.isFinite(value)) {
+		return DEFAULT_MAX_FAILOVERS;
+	}
+	return Math.max(0, Math.min(MAX_FAILOVERS_HARD_BOUND, Math.floor(value)));
+}
 const DEFAULT_STALL_TIMEOUT_MS = 45_000;
 const DEFAULT_SOFT_TIMEOUT_MS = 15_000;
 const MAX_REQUEST_INSTANCE_ID_LENGTH = 64;
+// Node clamps setTimeout delays above 2^31-1 (~24.8 days) to ~1ms, so an
+// oversized-but-finite timeout would otherwise fire the stall window almost
+// immediately and churn fallovers. Cap effective delays at the supported
+// maximum.
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 class StallTimeoutError extends Error {
 	readonly isStallTimeout = true;
@@ -125,15 +141,27 @@ export function withStreamingFailover(
 	getFallbackResponse: (attempt: number, emittedBytes: number) => Promise<Response | null>,
 	options: StreamFailoverOptions = {},
 ): Response {
-	const maxFailovers = Math.max(0, Math.floor(options.maxFailovers ?? DEFAULT_MAX_FAILOVERS));
-	const defaultHardTimeoutMs = options.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS;
-	const softTimeoutMs = Math.max(
-		1_000,
-		Math.floor(options.softTimeoutMs ?? Math.min(defaultHardTimeoutMs, DEFAULT_SOFT_TIMEOUT_MS)),
+	const maxFailovers = normalizeMaxFailovers(options.maxFailovers);
+	const stallTimeoutOption =
+		options.stallTimeoutMs !== undefined && Number.isFinite(options.stallTimeoutMs)
+			? options.stallTimeoutMs
+			: DEFAULT_STALL_TIMEOUT_MS;
+	const defaultHardTimeoutMs = stallTimeoutOption;
+	const softTimeoutOption =
+		options.softTimeoutMs !== undefined && Number.isFinite(options.softTimeoutMs)
+			? options.softTimeoutMs
+			: Math.min(defaultHardTimeoutMs, DEFAULT_SOFT_TIMEOUT_MS);
+	const softTimeoutMs = Math.min(
+		MAX_TIMER_DELAY_MS,
+		Math.max(1_000, Math.floor(softTimeoutOption)),
 	);
-	const hardTimeoutMs = Math.max(
-		softTimeoutMs,
-		Math.floor(options.hardTimeoutMs ?? defaultHardTimeoutMs),
+	const hardTimeoutOption =
+		options.hardTimeoutMs !== undefined && Number.isFinite(options.hardTimeoutMs)
+			? options.hardTimeoutMs
+			: defaultHardTimeoutMs;
+	const hardTimeoutMs = Math.min(
+		MAX_TIMER_DELAY_MS,
+		Math.max(softTimeoutMs, Math.floor(hardTimeoutOption)),
 	);
 	const requestInstanceId = normalizeRequestInstanceId(options.requestInstanceId);
 	const headers = ensureContentType(initialResponse.headers);
@@ -144,6 +172,34 @@ export function withStreamingFailover(
 
 	let closed = false;
 	let releaseCurrentReaderForCancel: (() => Promise<void>) | null = null;
+	// Backpressure. `pump()` runs from `start()` as a free-running loop, so
+	// without a demand signal it enqueues every chunk upstream delivers as fast
+	// as it arrives and the whole stream buffers in memory for a slow consumer.
+	// `pull()` (and cancellation) release the loop; the sibling forwarder in
+	// stream-failover-runtime.ts gets the same guarantee from waitForDrain.
+	let demandWaiter: (() => void) | null = null;
+	let demandPending = false;
+	const signalDemand = (): void => {
+		if (demandWaiter) {
+			demandWaiter();
+			return;
+		}
+		// `pull()` can fire before the loop parks. Latch it, or the next
+		// awaitDemand() would block on a signal that already happened.
+		demandPending = true;
+	};
+	const awaitDemand = (): Promise<void> => {
+		if (demandPending || closed) {
+			demandPending = false;
+			return Promise.resolve();
+		}
+		return new Promise<void>((resolve) => {
+			demandWaiter = () => {
+				demandWaiter = null;
+				resolve();
+			};
+		});
+	};
 	const body = new ReadableStream<Uint8Array>({
 		start(controller) {
 			let currentReader = initialResponse.body?.getReader() ?? null;
@@ -205,6 +261,15 @@ export function withStreamingFailover(
 						if (result.value && result.value.byteLength > 0) {
 							emittedBytes += result.value.byteLength;
 							controller.enqueue(result.value);
+							// Park until the consumer asks for more. desiredSize is
+							// null once the controller is errored or closed, and the
+							// loop's own `closed` checks cover that case.
+							if (
+								typeof controller.desiredSize === "number" &&
+								controller.desiredSize <= 0
+							) {
+								await awaitDemand();
+							}
 						}
 					} catch (error) {
 						let switched = false;
@@ -235,8 +300,14 @@ export function withStreamingFailover(
 				}
 			});
 		},
+		pull() {
+			signalDemand();
+		},
 		cancel() {
 			closed = true;
+			// Release a parked pump so it observes `closed` and unwinds instead
+			// of holding the upstream reader open for a demand that never comes.
+			signalDemand();
 			if (releaseCurrentReaderForCancel) {
 				void releaseCurrentReaderForCancel();
 			}

@@ -8,18 +8,22 @@ export function printUsage(): void {
 			"Codex Multi-Auth CLI",
 			"",
 			"Start here:",
-			"  codex-multi-auth login [--device-auth|--manual|--no-browser] [--org <org_id>]",
-			"  codex-multi-auth status [--json]   (list is the same command)",
-			"  codex-multi-auth check            (always live-probes)",
+			"  codex-multi-auth login [--device-auth|--manual|--no-browser] [--org <org_id>] [--preserve-selection] [--account <index|email|account_id>]",
+			"  codex-multi-auth login --api      (API credentials and visible models)",
+			"  codex-multi-auth status [--json|--details]   (list is the same command)",
+			"  codex-multi-auth web [--port 4317] [--no-open]   (local real-time pool dashboard)",
+			"  codex-multi-auth check [accounts|resets|capabilities] [--prime]   (default: all checks)",
+			"  codex-multi-auth limits --json [--refresh]   (structured quota windows; refresh is age-gated)",
 			"",
 			"Daily use:",
 			"  codex-multi-auth list [--json]",
 			"  codex-multi-auth switch <index>   (pins the account for runtime routing)",
+			"  codex-multi-auth resets list [--refresh] | redeem <account> | auto manual|last-resort",
 			"  codex-multi-auth unpin            (clears the manual pin set by switch)",
-			"  codex-multi-auth workspace <account> [workspace]   (list or switch an account's workspaces)",
+			"  codex-multi-auth workspace <account> [workspace]   (list or select; add enable/disable to change availability)",
 			"  codex-multi-auth best [--live] [--json] [--model <model>]   (clears any manual pin set by switch)",
 			"  codex-multi-auth forecast [--live] [--json] [--explain] [--model <model>] [--no-runtime-overlay]",
-			"  codex-multi-auth account tag|untag|weight|pause|unpause|drain|undrain|note|policy list ...",
+			"  codex-multi-auth account tag|untag|weight|priority|auto-prime|emergency-only|pause|unpause|drain|undrain|note|policy list ...",
 			"",
 			"Repair:",
 			"  codex-multi-auth uninstall [--dry-run] [--json] [--clear-accounts]",
@@ -41,6 +45,7 @@ export function printUsage(): void {
 			"  codex-multi-auth rotation reset-rate-limits [--all | --account <idx>] [--dry-run] [--json]",
 			"  codex-multi-auth why-selected [--now|-n | --last|-l] [--json]",
 			"  codex-multi-auth history [list|show <id>] [--json]   (all local sessions, ignores /resume provider filtering)",
+			"  codex-multi-auth config locale [auto|en|zh]   (language; auto follows the system locale)",
 			"",
 			"Advanced:",
 			"  codex-multi-auth report [--live] [--json] [--explain] [--model <model>] [--max-accounts <n>] [--max-probes <n>] [--cached-only] [--out <path>]",
@@ -61,7 +66,9 @@ export function printUsage(): void {
 export type AuthLoginOptions = {
 	manual: boolean;
 	deviceAuth: boolean;
+	preserveSelection?: boolean;
 	org?: string;
+	account?: string;
 };
 
 export type ParsedAuthLoginArgs =
@@ -87,6 +94,33 @@ export function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
 		}
 		if (arg === "--device-auth") {
 			options.deviceAuth = true;
+			continue;
+		}
+		if (arg === "--preserve-selection") {
+			options.preserveSelection = true;
+			continue;
+		}
+		if (arg === "--account" || arg?.startsWith("--account=")) {
+			let value: string | undefined;
+			if (arg === "--account") {
+				value = args[i + 1];
+				i += 1;
+			} else {
+				value = arg.slice("--account=".length);
+			}
+			const trimmed = value?.trim();
+			if (!trimmed || trimmed.startsWith("--")) {
+				return {
+					ok: false,
+					reason: "error",
+					message:
+						"Missing value for --account. Usage: codex-multi-auth login --account <index|email|account_id>",
+				};
+			}
+			options.account = trimmed;
+			// A targeted re-auth must never select the refreshed account as a
+			// side effect, even if the caller omits the redundant safety flag.
+			options.preserveSelection = true;
 			continue;
 		}
 		if (arg === "--org" || arg?.startsWith("--org=")) {
@@ -129,6 +163,18 @@ export function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
 			ok: false,
 			reason: "error",
 			message: `Cannot combine --device-auth with ${conflict}`,
+		};
+	}
+
+	// --org rebinds a login to a different workspace, which is exactly the
+	// identity change a targeted re-auth is built to refuse. Rejecting the pair
+	// up front beats failing after the user has already completed a sign-in.
+	if (options.account && options.org) {
+		return {
+			ok: false,
+			reason: "error",
+			message:
+				"Cannot combine --account with --org. Re-authenticate the saved account on its own workspace, or register the other workspace with --org on its own.",
 		};
 	}
 

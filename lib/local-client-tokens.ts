@@ -1,10 +1,16 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { basename, join } from "node:path";
 import { logWarn } from "./logger.js";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
 import { isRecord, sleep } from "./utils.js";
 import { tempPathFor } from "./temp-path.js";
+import {
+	assertJsonStoreFileMtimeUnchanged,
+	getJsonStoreFileMtimeMs,
+	withJsonStoreCasRetry,
+	withJsonStoreFileLock,
+} from "./storage/json-store-lock.js";
 
 export interface LocalClientTokenRecord {
 	id: string;
@@ -70,6 +76,30 @@ function normalizeLabel(value: string | undefined): string {
 
 function hashToken(token: string): string {
 	return `sha256:${createHash("sha256").update(token).digest("hex")}`;
+}
+
+/**
+ * Constant-time equality for two `sha256:<hex>` token hashes.
+ *
+ * A `===` on the hex strings returns early at the first differing byte, so a
+ * local process that can spam verify calls could measure the comparison cost
+ * and recover a stored hash prefix byte-by-byte. Comparing the decoded digest
+ * bytes with timingSafeEqual removes the oracle; both inputs are validated to
+ * the fixed 32-byte shape first, so timingSafeEqual never throws.
+ */
+function sha256DigestBytes(hash: string): Buffer | null {
+	if (!/^sha256:[0-9a-f]{64}$/i.test(hash)) return null;
+	return Buffer.from(hash.slice("sha256:".length), "hex");
+}
+
+function tokenHashEqual(left: string, right: string): boolean {
+	const leftDigest = sha256DigestBytes(left);
+	const rightDigest = sha256DigestBytes(right);
+	return (
+		leftDigest !== null &&
+		rightDigest !== null &&
+		timingSafeEqual(leftDigest, rightDigest)
+	);
 }
 
 function createPlainToken(): string {
@@ -160,7 +190,54 @@ export async function loadLocalClientTokenStore(): Promise<LocalClientTokenStore
 	}
 }
 
-async function writeStoreToDisk(store: LocalClientTokenStore): Promise<void> {
+/**
+ * Merge a caller-supplied store over the freshest on-disk store by token id.
+ * Records the caller does not carry are preserved (this store is append-only:
+ * rotation and revocation mark records in place, nothing deletes them), and
+ * the monotone fields a concurrent process may have advanced — `lastUsedAt`
+ * from verifies, `revokedAt` from revocations/rotations — are kept at their
+ * furthest value so a stale snapshot cannot un-revoke or rewind usage.
+ */
+function mergeTokenStoreRecords(
+	current: LocalClientTokenStore,
+	incoming: LocalClientTokenStore,
+): LocalClientTokenStore {
+	const indexById = new Map<string, number>();
+	const tokens = current.tokens.map((record, index) => {
+		indexById.set(record.id, index);
+		return record;
+	});
+	for (const record of incoming.tokens) {
+		const index = indexById.get(record.id);
+		if (index === undefined) {
+			indexById.set(record.id, tokens.length);
+			tokens.push(record);
+			continue;
+		}
+		const existing = tokens[index];
+		if (existing === undefined) {
+			// Unreachable: indexes recorded in indexById always point at a
+			// slot that exists in `tokens`.
+			continue;
+		}
+		tokens[index] = {
+			...record,
+			lastUsedAt:
+				record.lastUsedAt === null
+					? existing.lastUsedAt
+					: existing.lastUsedAt === null
+						? record.lastUsedAt
+						: Math.max(record.lastUsedAt, existing.lastUsedAt),
+			revokedAt: record.revokedAt ?? existing.revokedAt,
+		};
+	}
+	return { version: 1, tokens };
+}
+
+async function writeStoreToDisk(
+	store: LocalClientTokenStore,
+	expectedMtimeMs?: number | null,
+): Promise<void> {
 	const path = getLocalClientTokenPath();
 	const payload = normalizeStore(store);
 	const dir = getCodexMultiAuthDir();
@@ -191,6 +268,12 @@ async function writeStoreToDisk(store: LocalClientTokenStore): Promise<void> {
 		} finally {
 			await handle.close();
 		}
+		// Compare-and-swap guard: a writer that did not take the lockfile (or an
+		// expired-lock takeover racing this write) moved the target's mtime; abort
+		// with ESTALE so the caller reloads and re-merges instead of clobbering.
+		if (expectedMtimeMs !== undefined) {
+			await assertJsonStoreFileMtimeUnchanged(path, expectedMtimeMs);
+		}
 		for (let attempt = 0; attempt < 5; attempt += 1) {
 			try {
 				await fs.rename(tempPath, path);
@@ -212,10 +295,49 @@ async function writeStoreToDisk(store: LocalClientTokenStore): Promise<void> {
 	}
 }
 
+/**
+ * Run a token-store read→mutate→write inside the write queue (in-process
+ * serialization) AND the cross-process lock directory, with mtime CAS retry:
+ * every attempt re-stats the file, re-reads the freshest on-disk store, and
+ * re-applies `mutate` before writing — so an op whose snapshot raced a
+ * concurrent process's write reloads-and-retries rather than clobbering it.
+ * `mutate` must be re-appliable across retries (apply precomputed work onto
+ * the store it is handed, don't capture mutated state).
+ */
+async function updateLocalClientTokenStore<T>(
+	mutate: (store: LocalClientTokenStore) => { result: T; dirty: boolean },
+): Promise<T> {
+	const path = getLocalClientTokenPath();
+	return enqueue(() =>
+		withJsonStoreFileLock(path, () =>
+			withJsonStoreCasRetry(async () => {
+				const expectedMtimeMs = await getJsonStoreFileMtimeMs(path);
+				const store = await loadLocalClientTokenStore();
+				const { result, dirty } = mutate(store);
+				if (dirty) {
+					await writeStoreToDisk(store, expectedMtimeMs);
+				}
+				return result;
+			}),
+		),
+	);
+}
+
 export async function saveLocalClientTokenStore(
 	store: LocalClientTokenStore,
 ): Promise<void> {
-	await enqueue(() => writeStoreToDisk(store));
+	const path = getLocalClientTokenPath();
+	const incoming = normalizeStore(store);
+	await enqueue(() =>
+		withJsonStoreFileLock(path, () =>
+			withJsonStoreCasRetry(async () => {
+				const expectedMtimeMs = await getJsonStoreFileMtimeMs(path);
+				const current = await loadLocalClientTokenStore();
+				const merged = mergeTokenStoreRecords(current, incoming);
+				await writeStoreToDisk(merged, expectedMtimeMs);
+			}),
+		),
+	);
 }
 
 export function createLocalClientTokenRecord(input: {
@@ -239,12 +361,12 @@ export async function addLocalClientToken(input: {
 	label?: string;
 	now?: number;
 } = {}): Promise<CreatedLocalClientToken> {
-	return enqueue(async () => {
-		const store = await loadLocalClientTokenStore();
-		const created = createLocalClientTokenRecord(input);
+	// The token record is created once, outside the CAS retry: re-applying the
+	// same record onto a freshly-reloaded store is what makes each retry safe.
+	const created = createLocalClientTokenRecord(input);
+	return updateLocalClientTokenStore((store) => {
 		store.tokens.push(created.record);
-		await writeStoreToDisk(store);
-		return created;
+		return { result: created, dirty: true };
 	});
 }
 
@@ -253,19 +375,21 @@ export async function rotateLocalClientToken(input: {
 	label?: string;
 	now?: number;
 }): Promise<CreatedLocalClientToken | null> {
-	return enqueue(async () => {
-		const store = await loadLocalClientTokenStore();
+	const now = input.now ?? Date.now();
+	let created: CreatedLocalClientToken | null = null;
+	return updateLocalClientTokenStore((store) => {
 		const existing = store.tokens.find((record) => record.id === input.id);
-		if (!existing || existing.revokedAt !== null) return null;
-		const now = input.now ?? Date.now();
+		if (!existing || existing.revokedAt !== null) {
+			return { result: null, dirty: false };
+		}
 		existing.revokedAt = now;
-		const created = createLocalClientTokenRecord({
+		// Same record across CAS retries so a retry cannot mint a second token.
+		created ??= createLocalClientTokenRecord({
 			label: input.label ?? existing.label,
 			now,
 		});
 		store.tokens.push(created.record);
-		await writeStoreToDisk(store);
-		return created;
+		return { result: created, dirty: true };
 	});
 }
 
@@ -273,13 +397,13 @@ export async function revokeLocalClientToken(
 	id: string,
 	now = Date.now(),
 ): Promise<boolean> {
-	return enqueue(async () => {
-		const store = await loadLocalClientTokenStore();
+	return updateLocalClientTokenStore((store) => {
 		const existing = store.tokens.find((record) => record.id === id);
-		if (!existing || existing.revokedAt !== null) return false;
+		if (!existing || existing.revokedAt !== null) {
+			return { result: false, dirty: false };
+		}
 		existing.revokedAt = now;
-		await writeStoreToDisk(store);
-		return true;
+		return { result: true, dirty: true };
 	});
 }
 
@@ -291,12 +415,11 @@ export async function verifyLocalClientBearerToken(
 	const token = match?.[1]?.trim();
 	if (!token) return null;
 	const tokenHash = hashToken(token);
-	return enqueue(async () => {
-		const store = await loadLocalClientTokenStore();
+	return updateLocalClientTokenStore((store) => {
 		const record = store.tokens.find(
-			(entry) => entry.revokedAt === null && entry.tokenHash === tokenHash,
+			(entry) => entry.revokedAt === null && tokenHashEqual(entry.tokenHash, tokenHash),
 		);
-		if (!record) return null;
+		if (!record) return { result: null, dirty: false };
 		// Token match (verification correctness) is decided above and never
 		// depends on lastUsedAt. Always advance lastUsedAt in-memory so callers
 		// see a fresh value, but only flush to disk when it has not been
@@ -305,10 +428,12 @@ export async function verifyLocalClientBearerToken(
 		// recent usage on a coarse (>=60s) cadence.
 		const persisted = record.lastUsedAt;
 		record.lastUsedAt = now;
-		if (persisted === null || now - persisted >= LAST_USED_PERSIST_THRESHOLD_MS) {
-			await writeStoreToDisk(store);
-		}
-		return record;
+		return {
+			result: record,
+			dirty:
+				persisted === null ||
+				now - persisted >= LAST_USED_PERSIST_THRESHOLD_MS,
+		};
 	});
 }
 

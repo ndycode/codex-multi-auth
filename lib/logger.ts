@@ -39,7 +39,18 @@ const TOKEN_PATTERNS = [
 	/cma_local_[A-Za-z0-9_-]{16,}/g,
 ];
 
-const EMAIL_PATTERN = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+// Label-shaped domain instead of `[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`: letting `.`
+// live inside the quantified class makes every dot a candidate split point,
+// which backtracked quadratically (~3.5s) on dotted near-miss input. Labels
+// are dot-free, so each dot has exactly one structural role.
+// The `(?<!...)` lookbehind confines match starts to a run boundary: the
+// unanchored pattern could otherwise begin inside an overlong local part or
+// domain label and leave its leading/trailing edge visible in logs. Interior
+// positions fail the lookbehind in O(1), which is also what keeps the
+// unbounded quantifiers linear — each character run is scanned once from its
+// edge instead of being rescanned from every offset.
+const EMAIL_PATTERN =
+	/(?<![a-zA-Z0-9._%+-])[a-zA-Z0-9._%+-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.[a-zA-Z]{2,}/g;
 
 const SENSITIVE_KEYS = new Set([
 	"access",

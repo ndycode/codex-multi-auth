@@ -143,6 +143,38 @@ describe('Logger Module', () => {
 			const masked = maskEmail('test@domain.io');
 			expect(masked).toBe('te***@***.io');
 		});
+
+		it('masks dotted subdomain emails', () => {
+			const masked = maskString('contact a.b@mail.corp.example.com now');
+			expect(masked).not.toContain('a.b@mail.corp.example.com');
+		});
+
+		it('masks email-shaped values that exceed RFC length bounds end to end', () => {
+			// The unanchored bounded pattern could start inside an overlong local
+			// part or domain label and leave its edge visible; an overlong first
+			// label produced no match at all. The match must cover the whole
+			// value so nothing email-shaped survives outside the mask.
+			for (const value of [
+				`${'z'.repeat(70)}@x.com`,
+				`x@${'z'.repeat(70)}.com`,
+				`x@sub.${'z'.repeat(70)}.com`,
+				`x@a.${'z'.repeat(70)}`,
+			]) {
+				expect(maskString(`contact ${value} now`)).toBe(
+					`contact ${maskEmail(value)} now`,
+				);
+			}
+		});
+
+		// The old `[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}` domain let `.` live inside the
+		// quantified class, so a long dotted near-miss backtracked quadratically
+		// (~3.5s at 1/4 this size). `a1` is not a valid TLD, so the whole
+		// near-miss must be left untouched; at this size the old pattern would
+		// blow past the default test timeout, which is the deterministic bound.
+		it('does not backtrack on a long dotted near-miss', () => {
+			const evil = `x@${'a.'.repeat(200_000)}a1`;
+			expect(maskString(evil)).toBe(evil);
+		});
 	});
 
 	describe('correlation ID management', () => {

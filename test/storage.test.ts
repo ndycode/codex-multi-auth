@@ -1,10 +1,15 @@
 import { createHash } from "node:crypto";
-import { existsSync, promises as fs } from "node:fs";
+import { existsSync, realpathSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getConfigDir, getProjectStorageKey } from "../lib/storage/paths.js";
-import { setStoragePathState } from "../lib/storage/path-state.js";
+import {
+	getStoragePathState,
+	runWithStoragePathState,
+	setStoragePathDirectState,
+	setStoragePathState,
+} from "../lib/storage/path-state.js";
 import { getIntentionalResetMarkerPath } from "../lib/storage/backup-paths.js";
 import { getRuntimeAccountIdentityKey } from "../lib/storage/identity.js";
 import { removeWithRetry } from "./helpers/remove-with-retry.js";
@@ -25,6 +30,7 @@ import {
 	loadFlaggedAccounts,
 	normalizeEmailKey,
 	normalizeAccountStorage,
+	recordPendingAuth,
 	resolveAccountSelectionIndex,
 	saveFlaggedAccounts,
 	StorageError,
@@ -38,9 +44,52 @@ import {
 	withFlaggedStorageTransaction,
 } from "../lib/storage.js";
 
+// macOS exposes its temporary root through /var -> /private/var. The export
+// symlink defense requires a canonical fixture and an identically scoped root.
+const originalTmpdir = process.env.TMPDIR;
+beforeAll(() => { if (process.platform !== "win32") process.env.TMPDIR = realpathSync(tmpdir()); });
+afterAll(() => { if (originalTmpdir === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = originalTmpdir; });
+
 describe("storage", () => {
 	const _origCODEX_HOME = process.env.CODEX_HOME;
 	const _origCODEX_MULTI_AUTH_DIR = process.env.CODEX_MULTI_AUTH_DIR;
+
+	it("keeps a direct path override ahead of a stale async context", async () => {
+		const staleState = {
+			currentStoragePath: "stale-storage.json",
+			currentLegacyProjectStoragePath: null,
+			currentLegacyWorktreeStoragePath: null,
+			currentProjectRoot: null,
+		};
+		const directState = {
+			currentStoragePath: "direct-storage.json",
+			currentLegacyProjectStoragePath: null,
+			currentLegacyWorktreeStoragePath: null,
+			currentProjectRoot: null,
+		};
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+
+		try {
+			const staleRead = runWithStoragePathState(staleState, async () => {
+				await gate;
+				return getStoragePathState();
+			});
+			await Promise.resolve();
+			setStoragePathDirectState(directState);
+			release();
+			await expect(staleRead).resolves.toEqual(directState);
+		} finally {
+			setStoragePathState({
+				currentStoragePath: null,
+				currentLegacyProjectStoragePath: null,
+				currentLegacyWorktreeStoragePath: null,
+				currentProjectRoot: null,
+			});
+		}
+	});
 
 	beforeEach(() => {
 		delete process.env.CODEX_HOME;
@@ -68,7 +117,7 @@ describe("storage", () => {
 		let storagePath: string;
 
 		beforeEach(async () => {
-			storageDir = await fs.mkdtemp(join(tmpdir(), "codex-acct-dirmode-"));
+			storageDir = await fs.mkdtemp(join(realpathSync(tmpdir()), "codex-acct-dirmode-"));
 			storagePath = join(storageDir, "openai-codex-accounts.json");
 			setStoragePathDirect(storagePath);
 		});
@@ -508,7 +557,7 @@ describe("storage", () => {
 
 	describe("import/export (TDD)", () => {
 		const testWorkDir = join(
-			tmpdir(),
+			realpathSync(tmpdir()),
 			"codex-test-" + Math.random().toString(36).slice(2),
 		);
 		const exportPath = join(testWorkDir, "export.json");
@@ -2560,6 +2609,27 @@ describe("storage", () => {
 			expect(result?.accounts).toHaveLength(1);
 		});
 
+		it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+			"removes malformed auth invalidation fields for timestamp %s",
+			(timestamp) => {
+				const result = normalizeAccountStorage({
+					version: 3,
+					accounts: [
+						{
+							refreshToken: "t1",
+							authInvalidatedAt: timestamp,
+							authInvalidationErrorCode: "oauth_token_revoked",
+						},
+					],
+				});
+
+				expect(result?.accounts[0]).not.toHaveProperty("authInvalidatedAt");
+				expect(result?.accounts[0]).not.toHaveProperty(
+					"authInvalidationErrorCode",
+				);
+			},
+		);
+
 		it("remaps activeKey when deduplication changes indices", () => {
 			const now = Date.now();
 			const data = {
@@ -2692,7 +2762,7 @@ describe("storage", () => {
 
 	describe("loadAccounts", () => {
 		const testWorkDir = join(
-			tmpdir(),
+			realpathSync(tmpdir()),
 			"codex-load-test-" + Math.random().toString(36).slice(2),
 		);
 		let testStoragePath: string;
@@ -2802,7 +2872,7 @@ describe("storage", () => {
 
 	describe("saveAccounts", () => {
 		const testWorkDir = join(
-			tmpdir(),
+			realpathSync(tmpdir()),
 			"codex-save-test-" + Math.random().toString(36).slice(2),
 		);
 		let testStoragePath: string;
@@ -2852,7 +2922,7 @@ describe("storage", () => {
 
 	describe("clearAccounts", () => {
 		const testWorkDir = join(
-			tmpdir(),
+			realpathSync(tmpdir()),
 			"codex-clear-test-" + Math.random().toString(36).slice(2),
 		);
 		let testStoragePath: string;
@@ -2907,7 +2977,7 @@ describe("storage", () => {
 
 		it("uses the same storage path for main repo and linked worktree", async () => {
 			const testWorkDir = join(
-				tmpdir(),
+				realpathSync(tmpdir()),
 				"codex-worktree-key-" + Math.random().toString(36).slice(2),
 			);
 			const fakeHome = join(testWorkDir, "home");
@@ -3014,7 +3084,7 @@ describe("storage", () => {
 
 	describe("clearAccounts error handling", () => {
 		const testWorkDir = join(
-			tmpdir(),
+			realpathSync(tmpdir()),
 			"codex-clear-err-" + Math.random().toString(36).slice(2),
 		);
 		let testStoragePath: string;
@@ -3121,7 +3191,7 @@ describe("storage", () => {
 
 	describe("ensureGitignore edge cases", () => {
 		const testWorkDir = join(
-			tmpdir(),
+			realpathSync(tmpdir()),
 			"codex-gitignore-" + Math.random().toString(36).slice(2),
 		);
 		const originalHome = process.env.HOME;
@@ -3243,7 +3313,7 @@ describe("storage", () => {
 
 	describe("legacy project storage migration", () => {
 		const testWorkDir = join(
-			tmpdir(),
+			realpathSync(tmpdir()),
 			"codex-legacy-migration-" + Math.random().toString(36).slice(2),
 		);
 		const originalHome = process.env.HOME;
@@ -3304,7 +3374,7 @@ describe("storage", () => {
 
 	describe("worktree-scoped storage migration", () => {
 		const testWorkDir = join(
-			tmpdir(),
+			realpathSync(tmpdir()),
 			"codex-worktree-migration-" + Math.random().toString(36).slice(2),
 		);
 		const originalHome = process.env.HOME;
@@ -3712,13 +3782,20 @@ describe("storage", () => {
 
 	describe("saveAccounts EPERM/EBUSY retry logic", () => {
 		const testWorkDir = join(
-			tmpdir(),
+			realpathSync(tmpdir()),
 			"codex-retry-" + Math.random().toString(36).slice(2),
 		);
 		let testStoragePath: string;
+		let origBackupMinInterval: string | undefined;
 
 		beforeEach(async () => {
 			vi.useFakeTimers({ shouldAdvanceTime: true });
+			// These tests assert rotation mechanics on every save; pin the
+			// throttle window to 0 so the legacy rotate-on-every-save behavior
+			// they were written against still applies.
+			origBackupMinInterval =
+				process.env.CODEX_AUTH_STORAGE_BACKUP_MIN_INTERVAL_MS;
+			process.env.CODEX_AUTH_STORAGE_BACKUP_MIN_INTERVAL_MS = "0";
 			await fs.mkdir(testWorkDir, { recursive: true });
 			testStoragePath = join(testWorkDir, "accounts.json");
 			setStoragePathDirect(testStoragePath);
@@ -3726,6 +3803,11 @@ describe("storage", () => {
 
 		afterEach(async () => {
 			vi.useRealTimers();
+			if (origBackupMinInterval === undefined)
+				delete process.env.CODEX_AUTH_STORAGE_BACKUP_MIN_INTERVAL_MS;
+			else
+				process.env.CODEX_AUTH_STORAGE_BACKUP_MIN_INTERVAL_MS =
+					origBackupMinInterval;
 			setStoragePathDirect(null);
 			await fs.rm(testWorkDir, { recursive: true, force: true });
 		});
@@ -3743,6 +3825,7 @@ describe("storage", () => {
 			const renameSpy = vi
 				.spyOn(fs, "rename")
 				.mockImplementation(async (oldPath, newPath) => {
+					if (String(newPath) !== testStoragePath) return originalRename(oldPath, newPath);
 					attemptCount++;
 					if (attemptCount === 1) {
 						const err = new Error("EPERM error") as NodeJS.ErrnoException;
@@ -3772,6 +3855,7 @@ describe("storage", () => {
 			const renameSpy = vi
 				.spyOn(fs, "rename")
 				.mockImplementation(async (oldPath, newPath) => {
+					if (String(newPath) !== testStoragePath) return originalRename(oldPath, newPath);
 					attemptCount++;
 					if (attemptCount <= 2) {
 						const err = new Error("EBUSY error") as NodeJS.ErrnoException;
@@ -3796,9 +3880,11 @@ describe("storage", () => {
 				accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
 			};
 
+			const originalRename = fs.rename.bind(fs);
 			let attemptCount = 0;
-			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async () => {
-				attemptCount++;
+			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (oldPath, newPath) => {
+				if (String(newPath) !== testStoragePath) return originalRename(oldPath, newPath);
+					attemptCount++;
 				const err = new Error("EPERM error") as NodeJS.ErrnoException;
 				err.code = "EPERM";
 				throw err;
@@ -3820,9 +3906,11 @@ describe("storage", () => {
 				accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
 			};
 
+			const originalRename = fs.rename.bind(fs);
 			let attemptCount = 0;
-			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async () => {
-				attemptCount++;
+			const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (oldPath, newPath) => {
+				if (String(newPath) !== testStoragePath) return originalRename(oldPath, newPath);
+					attemptCount++;
 				const err = new Error("EACCES error") as NodeJS.ErrnoException;
 				err.code = "EACCES";
 				throw err;
@@ -4266,6 +4354,332 @@ describe("storage", () => {
 			expect(historicalBackup.accounts?.[0]?.refreshToken).toBe("token-2");
 			expect(oldestBackup.accounts?.[0]?.refreshToken).toBe("token-1");
 		});
+
+		it("skips backup rotation inside the min-interval window unless the credential signature changes", async () => {
+			process.env.CODEX_AUTH_STORAGE_BACKUP_MIN_INTERVAL_MS = "60000";
+			const now = Date.now();
+			const storagePath = getStoragePath();
+			const account = (token: string, at: number) => ({
+				refreshToken: token,
+				addedAt: at,
+				lastUsed: at,
+			});
+
+			await saveAccounts({
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [account("token-1", now)],
+			});
+			await saveAccounts({
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [account("token-1", now + 1)],
+			});
+			// The .bak from save 2 is fresh and the credential signature (count +
+			// refresh-token set) is unchanged — pure metadata churn — so save 3
+			// must not pay for another rotation.
+			await saveAccounts({
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [account("token-1", now + 2)],
+			});
+
+			const latestBackup = JSON.parse(
+				await fs.readFile(`${storagePath}.bak`, "utf-8"),
+			) as { accounts?: Array<{ refreshToken?: string }> };
+			expect(latestBackup.accounts?.[0]?.refreshToken).toBe("token-1");
+			expect(existsSync(`${storagePath}.bak.1`)).toBe(false);
+
+			// A refresh-token rotation earns a fresh slot even at constant count:
+			// a backup predating it could only offer a spent token to recovery.
+			await saveAccounts({
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [account("token-3", now + 3)],
+			});
+			const preToken3Backup = JSON.parse(
+				await fs.readFile(`${storagePath}.bak`, "utf-8"),
+			) as { accounts?: Array<{ refreshToken?: string }> };
+			expect(preToken3Backup.accounts?.[0]?.refreshToken).toBe("token-1");
+			expect(existsSync(`${storagePath}.bak.1`)).toBe(true);
+
+			// A cardinality change still forces a fresh slot inside the window.
+			await saveAccounts({
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [account("token-4a", now + 4), account("token-4b", now + 4)],
+			});
+			const rotatedBackup = JSON.parse(
+				await fs.readFile(`${storagePath}.bak`, "utf-8"),
+			) as { accounts?: Array<{ refreshToken?: string }> };
+			expect(rotatedBackup.accounts?.[0]?.refreshToken).toBe("token-3");
+		});
+
+		it("keeps pending rotated credentials while a backup can still surface the spent token", async () => {
+			process.env.CODEX_AUTH_STORAGE_BACKUP_MIN_INTERVAL_MS = "0";
+			const { getPendingAuthPath } = await import(
+				"../lib/storage/pending-auth.js"
+			);
+			// The baseline-less-overwrite warning is once-per-path; use a distinct
+			// file so this test cannot consume another test's guard.
+			setStoragePathDirect(join(testWorkDir, "accounts-pending.json"));
+			const storagePath = getStoragePath();
+			const now = Date.now();
+			const withToken = (token: string) => ({
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [{ refreshToken: token, addedAt: now, lastUsed: now }],
+			});
+
+			// A rotation whose persist failed journals the new credential.
+			await saveAccounts(withToken("rt-old"));
+			await saveAccounts(withToken("rt-old")); // establish .bak = rt-old
+			await recordPendingAuth(storagePath, {
+				priorRefreshToken: "rt-old",
+				refreshToken: "rt-new",
+				accessToken: "at-new",
+				expiresAt: now + 3_600_000,
+				at: now,
+			});
+
+			// The successful save persists rt-new. Pruning must keep the entry
+			// because .bak still holds rt-old — a stale-backup restore has to
+			// self-heal to rt-new instead of reviving the spent token.
+			await saveAccounts(withToken("rt-new"));
+			const pendingAfterSave = JSON.parse(
+				await fs.readFile(getPendingAuthPath(storagePath), "utf-8"),
+			) as { entries: Array<{ refreshToken: string }> };
+			expect(
+				pendingAfterSave.entries.some(
+					(entry) => entry.refreshToken === "rt-new",
+				),
+			).toBe(true);
+
+			// Corrupt the primary: recovery loads .bak (rt-old) and the retained
+			// pending entry rewrites it to rt-new on load.
+			await fs.writeFile(storagePath, "{torn", "utf-8");
+			const recovered = await loadAccounts();
+			expect(recovered?.accounts?.[0]?.refreshToken).toBe("rt-new");
+
+			// The entry survives while ANY recovery source can still surface
+			// rt-old — each save's pre-write backup keeps it alive one slot
+			// longer — so it takes a full history-depth of rt-new saves before
+			// the prune finally removes it and deletes the journal file.
+			for (let i = 0; i < 4; i += 1) {
+				await saveAccounts(withToken("rt-new"));
+			}
+			expect(existsSync(getPendingAuthPath(storagePath))).toBe(false);
+		});
+
+		it("applies pending rotated credentials over a WAL recovery of the spent token", async () => {
+			const { getAccountsWalPath } = await import(
+				"../lib/storage/backup-paths.js"
+			);
+			setStoragePathDirect(join(testWorkDir, "accounts-wal.json"));
+			const storagePath = getStoragePath();
+			const now = Date.now();
+			const withToken = (token: string) => ({
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [{ refreshToken: token, addedAt: now, lastUsed: now }],
+			});
+			await saveAccounts(withToken("rt-old"));
+			await recordPendingAuth(storagePath, {
+				priorRefreshToken: "rt-old",
+				refreshToken: "rt-new",
+				accessToken: "at-new",
+				expiresAt: now + 3_600_000,
+				at: now,
+			});
+			// Crash mid-rotation: a torn primary plus a WAL holding the older
+			// pre-rotation payload — the spent token resurfaces on recovery.
+			const walContent = JSON.stringify(withToken("rt-old"));
+			await fs.writeFile(
+				getAccountsWalPath(storagePath),
+				JSON.stringify({
+					version: 1,
+					createdAt: now,
+					path: getAccountsWalPath(storagePath),
+					checksum: createHash("sha256")
+						.update(walContent)
+						.digest("hex"),
+					content: walContent,
+				}),
+				"utf-8",
+			);
+			await fs.writeFile(storagePath, "{torn", "utf-8");
+			const recovered = await loadAccounts();
+			expect(recovered?.accounts?.[0]?.refreshToken).toBe("rt-new");
+			expect(recovered?.accounts?.[0]?.accessToken).toBe("at-new");
+		});
+
+		it("does not spend the baseline-less warning on a deliberate recovery persist", async () => {
+			const now = Date.now();
+			// Distinct path: the once-per-path warning guard must not leak
+			// between tests in this shared-directory describe.
+			setStoragePathDirect(join(testWorkDir, "accounts-recovery-warn.json"));
+			const storagePath = getStoragePath();
+			const withToken = (token: string) => ({
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [{ refreshToken: token, addedAt: now, lastUsed: now }],
+			});
+			await saveAccounts(withToken("rt-1"));
+			// A restorable backup holding a valid snapshot, then a torn primary.
+			await fs.writeFile(
+				`${storagePath}.bak`,
+				JSON.stringify(withToken("rt-bak")),
+				"utf-8",
+			);
+			await fs.writeFile(storagePath, "{torn", "utf-8");
+
+			const warnSpy = vi
+				.spyOn(process, "emitWarning")
+				.mockImplementation(() => true);
+			try {
+				const recovered = await loadAccounts();
+				expect(recovered?.accounts?.[0]?.refreshToken).toBe("rt-bak");
+				// The recovery persist is a deliberate overwrite of the torn file —
+				// it must neither warn nor consume the once-per-path guard.
+				expect(warnSpy).not.toHaveBeenCalled();
+
+				// A genuine foreign write afterwards still trips the guard.
+				await fs.writeFile(
+					storagePath,
+					JSON.stringify(withToken("foreign")),
+					"utf-8",
+				);
+				await saveAccounts(withToken("rt-2"));
+				expect(warnSpy).toHaveBeenCalledTimes(1);
+			} finally {
+				warnSpy.mockRestore();
+			}
+		});
+
+		it("warns on a baseline-less save after a foreign write that preserves the mtime", async () => {
+			// Integer-millisecond stamp: utimes restores it exactly.
+			const stamp = 1_700_000_000_000;
+			setStoragePathDirect(join(testWorkDir, "accounts-same-mtime.json"));
+			const storagePath = getStoragePath();
+			const withToken = (token: string) => ({
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [{ refreshToken: token, addedAt: stamp, lastUsed: stamp }],
+			});
+			await fs.writeFile(
+				storagePath,
+				JSON.stringify(withToken("rt-1")),
+				"utf-8",
+			);
+			await fs.utimes(storagePath, new Date(stamp), new Date(stamp));
+			// A real load records the content hash alongside the stat tuple.
+			await loadAccounts();
+
+			// Foreign write of DIFFERENT content with the identical mtime — an
+			// mtime-only comparison calls this unchanged; the recorded content
+			// hash is what catches it.
+			await fs.writeFile(
+				storagePath,
+				JSON.stringify(withToken("foreign")),
+				"utf-8",
+			);
+			await fs.utimes(storagePath, new Date(stamp), new Date(stamp));
+
+			const warnSpy = vi
+				.spyOn(process, "emitWarning")
+				.mockImplementation(() => true);
+			try {
+				await saveAccounts(withToken("rt-2"));
+				expect(warnSpy).toHaveBeenCalledTimes(1);
+				expect(warnSpy).toHaveBeenCalledWith(
+					expect.stringContaining("without a merge baseline"),
+					expect.objectContaining({
+						code: "CODEX_MULTI_AUTH_BASELINELESS_SAVE",
+					}),
+				);
+			} finally {
+				warnSpy.mockRestore();
+			}
+		});
+
+		it("stays quiet when a foreign write lands identical bytes", async () => {
+			const now = Date.now();
+			setStoragePathDirect(join(testWorkDir, "accounts-identical-bytes.json"));
+			const storagePath = getStoragePath();
+			const withToken = (token: string) => ({
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [{ refreshToken: token, addedAt: now, lastUsed: now }],
+			});
+			await saveAccounts(withToken("rt-1"));
+			// Another process rewrote the identical bytes (fresh mtime): nothing
+			// would be lost, so the guard must not fire.
+			const written = await fs.readFile(storagePath, "utf-8");
+			await fs.writeFile(storagePath, written, "utf-8");
+			const warnSpy = vi
+				.spyOn(process, "emitWarning")
+				.mockImplementation(() => true);
+			try {
+				await saveAccounts(withToken("rt-1"));
+				expect(warnSpy).not.toHaveBeenCalled();
+			} finally {
+				warnSpy.mockRestore();
+			}
+		});
+
+		it("warns once when a baseline-less save overwrites an externally modified primary", async () => {
+			const now = Date.now();
+			const storagePath = getStoragePath();
+			const storage = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "token", addedAt: now, lastUsed: now }],
+			};
+			await saveAccounts(storage);
+
+			const warnSpy = vi
+				.spyOn(process, "emitWarning")
+				.mockImplementation(() => true);
+			try {
+				// Baseline-less, but the primary is still exactly what this process
+				// wrote: no concurrent modification, no warning.
+				await saveAccounts({ ...storage });
+				expect(warnSpy).not.toHaveBeenCalled();
+
+				// A foreign write (distinct mtime) then a baseline-less save is the
+				// last-writer-wins hazard the guard exists for.
+				await fs.writeFile(
+					storagePath,
+					JSON.stringify({
+						version: 3,
+						activeIndex: 0,
+						accounts: [
+							{ refreshToken: "foreign", addedAt: now, lastUsed: now },
+						],
+					}),
+				);
+				await fs.utimes(
+					storagePath,
+					new Date(now + 60_000),
+					new Date(now + 60_000),
+				);
+				await saveAccounts({ ...storage });
+				expect(warnSpy).toHaveBeenCalledTimes(1);
+				expect(warnSpy).toHaveBeenCalledWith(
+					expect.stringContaining("without a merge baseline"),
+					expect.objectContaining({
+						code: "CODEX_MULTI_AUTH_BASELINELESS_SAVE",
+					}),
+				);
+
+				// Once per path per process: the save above re-recorded our write,
+				// and a repeat stays quiet either way.
+				await saveAccounts({ ...storage });
+				expect(warnSpy).toHaveBeenCalledTimes(1);
+			} finally {
+				warnSpy.mockRestore();
+			}
+		});
 	});
 
 	describe("clearAccounts edge cases", () => {
@@ -4316,11 +4730,13 @@ describe("storage", () => {
 		});
 
 		it("logs error for non-ENOENT errors during clear", async () => {
+			const originalUnlink = fs.unlink.bind(fs);
 			const unlinkSpy = vi
 				.spyOn(fs, "unlink")
-				.mockRejectedValue(
-					Object.assign(new Error("EACCES error"), { code: "EACCES" }),
-				);
+				.mockImplementation(async path => {
+					if (String(path).includes(".write-lock")) return originalUnlink(path);
+					throw Object.assign(new Error("EACCES error"), {code: "EACCES"});
+				});
 
 			await expect(clearAccounts()).rejects.toMatchObject({ code: "EACCES" });
 

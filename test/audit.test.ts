@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { join } from "node:path";
-import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
 	AuditAction,
@@ -128,6 +128,96 @@ describe("Audit logging", () => {
 			expect(entry.metadata.refreshToken).toBe("***REDACTED***");
 		});
 
+		it("should create the log file with 0600 permissions", () => {
+			auditLog(
+				AuditAction.ACCOUNT_ADD,
+				"test-actor",
+				"test-resource",
+				AuditOutcome.SUCCESS
+			);
+
+			const logPath = getAuditLogPath();
+			// Fresh log files must not be world-readable; the append-mode write
+			// only applies the mode on creation. Windows reports requested POSIX
+			// mode bits unreliably (0o666 for a writable file), so only assert
+			// existence there and the exact mode on POSIX.
+			if (process.platform === "win32") {
+				expect(existsSync(logPath)).toBe(true);
+			} else {
+				expect(statSync(logPath).mode & 0o777).toBe(0o600);
+			}
+		});
+
+		it.skipIf(process.platform === "win32")(
+			"should restrict permissions on a pre-existing permissive log file",
+			() => {
+				const logPath = getAuditLogPath();
+				// An audit.log created before this hardening (or in a shared logDir)
+				// can carry permissive bits; the append-mode mode flag does NOT
+				// tighten an existing file, so the writer re-asserts 0600.
+				writeFileSync(logPath, "", { mode: 0o644 });
+				expect(statSync(logPath).mode & 0o777).toBe(0o644);
+
+				auditLog(
+					AuditAction.ACCOUNT_ADD,
+					"test-actor",
+					"test-resource",
+					AuditOutcome.SUCCESS
+				);
+
+				expect(statSync(logPath).mode & 0o777).toBe(0o600);
+			},
+		);
+
+		it.skipIf(process.platform === "win32")(
+			"should restrict permissions on rotated backups",
+			() => {
+				const logPath = getAuditLogPath();
+				// A permissive audit.log that rotates keeps its mode on the
+				// rename; the backups must be re-asserted too.
+				writeFileSync(logPath, `${"x".repeat(2048)}\n`, { mode: 0o644 });
+
+				auditLog(
+					AuditAction.ACCOUNT_ADD,
+					"test-actor",
+					"test-resource",
+					AuditOutcome.SUCCESS
+				);
+
+				const rotated = join(testLogDir, "audit.1.log");
+				expect(statSync(rotated).mode & 0o777).toBe(0o600);
+				expect(statSync(logPath).mode & 0o777).toBe(0o600);
+			},
+		);
+
+		it("should redact credential-carrying metadata keys", () => {
+			auditLog(
+				AuditAction.AUTH_REFRESH,
+				"user",
+				"auth",
+				AuditOutcome.SUCCESS,
+				{
+					authorization: "Bearer live-token",
+					api_key: "sk-live",
+					apiKey: "sk-camel",
+					"X-Api-Key": "sk-header",
+					userCredential: "cred",
+				}
+			);
+
+			const logPath = getAuditLogPath();
+			const content = readFileSync(logPath, "utf8");
+			const entry = JSON.parse(content.trim());
+
+			expect(entry.metadata.authorization).toBe("***REDACTED***");
+			expect(entry.metadata.api_key).toBe("***REDACTED***");
+			expect(entry.metadata.apiKey).toBe("***REDACTED***");
+			expect(entry.metadata["X-Api-Key"]).toBe("***REDACTED***");
+			expect(entry.metadata.userCredential).toBe("***REDACTED***");
+			expect(content).not.toContain("sk-live");
+			expect(content).not.toContain("live-token");
+		});
+
 		it("should mask email addresses in actor", () => {
 			auditLog(
 				AuditAction.ACCOUNT_ADD,
@@ -142,6 +232,56 @@ describe("Audit logging", () => {
 
 			expect(entry.actor).not.toContain("user@example.com");
 			expect(entry.actor).toContain("***");
+		});
+
+		it("should mask email addresses in the resource field", () => {
+			auditLog(
+				AuditAction.ACCOUNT_SWITCH,
+				"actor",
+				"owner@example.com/account",
+				AuditOutcome.SUCCESS
+			);
+
+			const logPath = getAuditLogPath();
+			const content = readFileSync(logPath, "utf8");
+			const entry = JSON.parse(content.trim());
+
+			expect(entry.resource).not.toContain("owner@example.com");
+			expect(entry.resource).toContain("***");
+		});
+
+		it.each([
+			["@scope/package", "actor"],
+			["@scope/package", "resource"],
+		])("should preserve non-email @identifier %s in the %s field", (value, field) => {
+			// "@scope/package" is not an email; the whole-string maskEmail path
+			// used to mangle it into "***@***.scope/package", erasing the
+			// resource identity the audit entry exists to record.
+			auditLog(
+				AuditAction.ACCOUNT_ADD,
+				field === "actor" ? value : "actor",
+				field === "resource" ? value : "account",
+				AuditOutcome.SUCCESS
+			);
+
+			const logPath = getAuditLogPath();
+			const entry = JSON.parse(readFileSync(logPath, "utf8").trim());
+			expect(entry[field]).toBe("@scope/package");
+		});
+
+		it("should mask only the email span inside a larger resource string", () => {
+			auditLog(
+				AuditAction.ACCOUNT_SWITCH,
+				"actor",
+				"https://accounts.example.io/reset?user=alice@example.com",
+				AuditOutcome.SUCCESS
+			);
+
+			const logPath = getAuditLogPath();
+			const entry = JSON.parse(readFileSync(logPath, "utf8").trim());
+			expect(entry.resource).toBe(
+				"https://accounts.example.io/reset?user=al***@***.com",
+			);
 		});
 
 		it("should mask email addresses in metadata values (line 112 coverage)", () => {
@@ -159,6 +299,21 @@ describe("Audit logging", () => {
 
 			expect(entry.metadata.userEmail).not.toContain("test@example.org");
 			expect(entry.metadata.userEmail).toContain("***");
+		});
+
+		it("should preserve non-email @identifiers in metadata values", () => {
+			auditLog(
+				AuditAction.CONFIG_CHANGE,
+				"actor",
+				"config",
+				AuditOutcome.SUCCESS,
+				{ packageName: "@scope/package", url: "https://x.io/?u=bob@example.com" }
+			);
+
+			const logPath = getAuditLogPath();
+			const entry = JSON.parse(readFileSync(logPath, "utf8").trim());
+			expect(entry.metadata.packageName).toBe("@scope/package");
+			expect(entry.metadata.url).toBe("https://x.io/?u=bo***@***.com");
 		});
 
 		it("should recursively sanitize nested object metadata (line 114 coverage)", () => {

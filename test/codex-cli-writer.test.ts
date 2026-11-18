@@ -1,3 +1,5 @@
+import * as bindingLock from "../lib/runtime/native-binding-lock.js";
+import { withFileTransactionLock } from "../lib/storage/file-lock.js";
 import { promises as fsPromises } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,7 +10,11 @@ import {
   resetCodexCliMetricsForTests,
 } from "../lib/codex-cli/observability.js";
 import { clearCodexCliStateCache } from "../lib/codex-cli/state.js";
-import { setCodexCliActiveSelection } from "../lib/codex-cli/writer.js";
+import {
+  ensureCodexCliFileAuthStore,
+  readTopLevelCodexCliAuthStoreMode,
+  setCodexCliActiveSelection,
+} from "../lib/codex-cli/writer.js";
 
 describe("codex-cli writer", () => {
   let tempDir: string;
@@ -62,12 +68,238 @@ describe("codex-cli writer", () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
+	it("preserves the desktop credentials when native app binding is active", async () => {
+		const auth = JSON.stringify({ tokens: { access_token: "desktop-access", refresh_token: "desktop-refresh" } });
+		await writeFile(authPath, auth);
+		await writeFile(configPath, '# codex-multi-auth native provider begin\nmodel_provider = "openai"\nopenai_base_url = "http://127.0.0.1:43210"\n# codex-multi-auth native provider end\n');
+		expect(await setCodexCliActiveSelection({ accountId: "inference", accessToken: "inference-access", refreshToken: "inference-refresh" })).toBe(false);
+		expect(await readFile(authPath, "utf8")).toBe(auth);
+	});
+
+
+  it("serializes the native config check and auth write with binding", async()=>{
+    const original=JSON.stringify({tokens:{access_token:"desktop",refresh_token:"desktop-refresh"}});
+    await writeFile(authPath,original);await writeFile(configPath,'model_provider="openai"\n');
+    let entered!:()=>void, release!:()=>void, attempted!:()=>void;
+    const inside=new Promise<void>(r=>entered=r), gate=new Promise<void>(r=>release=r), attempt=new Promise<void>(r=>attempted=r);
+    const held=withFileTransactionLock(`${configPath}.native-bind`,async()=>{entered();await gate;});
+    await inside;
+    const read=fsPromises.readFile.bind(fsPromises), rename=fsPromises.rename.bind(fsPromises);
+    const reader=vi.spyOn(fsPromises,"readFile").mockImplementation(async(...args)=>{
+      const value=await read(...args);if(String(args[0])===configPath)attempted();return value;
+    });
+    const renamer=vi.spyOn(fsPromises,"rename").mockImplementation(async(...args)=>{
+      if(String(args[1]).endsWith(".native-bind.write-lock"))attempted();return rename(...args);
+    });
+    const writing=setCodexCliActiveSelection({accountId:"inference",accessToken:"inference",refreshToken:"inference-refresh"});
+    try{
+      await attempt;
+      await writeFile(configPath,'# codex-multi-auth native provider begin\nmodel_provider="openai"\nopenai_base_url="http://127.0.0.1:43210"\n# codex-multi-auth native provider end\n');
+    }finally{release();await held;}
+    try{expect(await writing).toBe(false);expect(await readFile(authPath,"utf8")).toBe(original);}
+    finally{reader.mockRestore();renamer.mockRestore();}
+  });
+
+
+  it("resolves false after real native binding contention times out", async()=>{
+    const original=JSON.stringify({tokens:{access_token:"desktop",refresh_token:"desktop-refresh"}});
+    await writeFile(authPath,original);
+    let entered!:()=>void,release!:()=>void;
+    const started=new Promise<void>(r=>entered=r), gate=new Promise<void>(r=>release=r);
+    const held=withFileTransactionLock(`${configPath}.native-bind`,async()=>{entered();await gate;});
+    await started;
+    try {
+      await expect(setCodexCliActiveSelection({accountId:"inference",accessToken:"fixture",refreshToken:"fixture-refresh"})).resolves.toBe(false);
+      expect(await readFile(authPath,"utf8")).toBe(original);
+    } finally {release();await held;}
+  },20000);
+  it.each(["ELOCKED", "EPERM"])("resolves false when binding lock acquisition fails with %s",async code=>{
+    const original=JSON.stringify({tokens:{access_token:"desktop",refresh_token:"desktop-refresh"}});
+    await writeFile(authPath,original);
+    const lock=vi.spyOn(bindingLock,"withNativeBindingLock").mockRejectedValueOnce(Object.assign(Error("fixture failure"),{code}));
+    try {
+      await expect(setCodexCliActiveSelection({accountId:"inference",accessToken:"fixture",refreshToken:"fixture-refresh"})).resolves.toBe(false);
+      expect(await readFile(authPath,"utf8")).toBe(original);
+      expect(getCodexCliMetricsSnapshot().writeFailures).toBe(1);
+    } finally {lock.mockRestore();}
+  });
+
+  it("resolves false instead of rejecting when the native binding lock cannot be set up", async () => {
+    const mkdtemp = fsPromises.mkdtemp.bind(fsPromises);
+    const spy = vi.spyOn(fsPromises, "mkdtemp").mockImplementation(async (...args) => {
+      if (String(args[0]).includes(".native-bind")) throw Object.assign(Error("fixture denied"), { code: "EACCES" });
+      return mkdtemp(...args);
+    });
+    try {
+      await expect(setCodexCliActiveSelection({ accountId: "inference", accessToken: "inference", refreshToken: "inference-refresh" })).resolves.toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
   it("returns false when neither accounts.json nor auth.json exists", async () => {
     const updated = await setCodexCliActiveSelection({ accountId: "missing" });
     expect(updated).toBe(false);
     expect(getCodexCliMetricsSnapshot().writeFailures).toBeGreaterThanOrEqual(
       1,
     );
+  });
+
+  it("writes the token's chatgpt_account_id instead of an org id (#700)", async () => {
+    const jwt = (claims: Record<string, unknown>) =>
+      `h.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.s`;
+    const accessToken = jwt({
+      "https://api.openai.com/auth": { chatgpt_account_id: "ws-uuid-1" },
+    });
+
+    await setCodexCliActiveSelection({
+      accountId: "org-AbC123",
+      accessToken,
+      refreshToken: "r",
+    });
+    let written = JSON.parse(await readFile(authPath, "utf-8")) as {
+      tokens?: { account_id?: string };
+    };
+    expect(written.tokens?.account_id).toBe("ws-uuid-1");
+
+    // explicit non-org workspace selections are preserved
+    await setCodexCliActiveSelection({
+      accountId: "team-ws-uuid",
+      accessToken,
+      refreshToken: "r",
+    });
+    written = JSON.parse(await readFile(authPath, "utf-8"));
+    expect(written.tokens?.account_id).toBe("team-ws-uuid");
+
+    // no claim in either token: never write the org id, drop the field
+    await setCodexCliActiveSelection({
+      accountId: "org-AbC123",
+      accessToken: "opaque-access",
+      refreshToken: "r",
+    });
+    written = JSON.parse(await readFile(authPath, "utf-8"));
+    expect(written.tokens?.account_id).toBeUndefined();
+  });
+
+  it("falls back to the id_token's chatgpt_account_id for an org id (#700)", async () => {
+    const jwt = (claims: Record<string, unknown>) =>
+      `h.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.s`;
+    const idToken = jwt({
+      "https://api.openai.com/auth": { chatgpt_account_id: "ws-uuid-2" },
+    });
+
+    await setCodexCliActiveSelection({
+      accountId: "ORG-AbC123",
+      accessToken: "opaque-access",
+      idToken,
+      refreshToken: "r",
+    });
+    const written = JSON.parse(await readFile(authPath, "utf-8")) as {
+      tokens?: { account_id?: string };
+    };
+    expect(written.tokens?.account_id).toBe("ws-uuid-2");
+  });
+
+  it("sanitises a stale org account_id already in auth.json when no accountId is selected (#700)", async () => {
+    const jwt = (claims: Record<string, unknown>) =>
+      `h.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.s`;
+    const accessToken = jwt({
+      "https://api.openai.com/auth": { chatgpt_account_id: "ws-uuid-3" },
+    });
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: {
+          access_token: "old-access",
+          refresh_token: "old-refresh",
+          account_id: "org-Stale",
+        },
+      }),
+      "utf-8",
+    );
+
+    await setCodexCliActiveSelection({ accessToken, refreshToken: "r" });
+    const written = JSON.parse(await readFile(authPath, "utf-8")) as {
+      tokens?: { account_id?: string };
+    };
+    expect(written.tokens?.account_id).toBe("ws-uuid-3");
+  });
+
+  it("does not carry the previous workspace id onto new tokens without an accountId (#700)", async () => {
+    const jwt = (claims: Record<string, unknown>) =>
+      `h.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.s`;
+    const writeExisting = (accountId: string) =>
+      writeFile(
+        authPath,
+        JSON.stringify({
+          auth_mode: "chatgpt",
+          tokens: {
+            access_token: "old-access",
+            refresh_token: "old-refresh",
+            account_id: accountId,
+          },
+        }),
+        "utf-8",
+      );
+    const readAccountId = async () =>
+      (JSON.parse(await readFile(authPath, "utf-8")) as {
+        tokens?: { account_id?: string };
+      }).tokens?.account_id;
+
+    await writeExisting("ws-previous-account");
+    await setCodexCliActiveSelection({
+      accessToken: jwt({
+        "https://api.openai.com/auth": { chatgpt_account_id: "ws-new-account" },
+      }),
+      refreshToken: "r",
+    });
+    expect(await readAccountId()).toBe("ws-new-account");
+
+    // a token without any claim gives nothing better, so the id is kept
+    await writeExisting("ws-previous-account");
+    await setCodexCliActiveSelection({ accessToken: "opaque-access", refreshToken: "r" });
+    expect(await readAccountId()).toBe("ws-previous-account");
+  });
+
+  it("keeps a same-identity id_token when a resync passes no idToken", async () => {
+    const jwt = (claims: Record<string, unknown>) =>
+      `h.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.s`;
+    const auth = { chatgpt_account_id: "ws-uuid-1" };
+    const idToken = jwt({ sub: "user-1", email: "a@example.com", "https://api.openai.com/auth": auth });
+    const refreshedAccess = jwt({ sub: "user-1", exp: 2, "https://api.openai.com/auth": auth });
+    const otherUserAccess = jwt({ sub: "user-2", "https://api.openai.com/auth": auth });
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: {
+          access_token: jwt({ sub: "user-1", exp: 1, "https://api.openai.com/auth": auth }),
+          refresh_token: "old-refresh",
+          id_token: idToken,
+          account_id: "ws-uuid-1",
+        },
+      }),
+      "utf-8",
+    );
+
+    await setCodexCliActiveSelection({
+      accountId: "org-AbC123",
+      accessToken: refreshedAccess,
+      refreshToken: "r2",
+    });
+    let written = JSON.parse(await readFile(authPath, "utf-8")) as {
+      tokens?: { id_token?: string };
+    };
+    expect(written.tokens?.id_token).toBe(idToken);
+
+    // a different user in the same workspace does not inherit it
+    await setCodexCliActiveSelection({
+      accountId: "ws-uuid-1",
+      accessToken: otherUserAccess,
+      refreshToken: "r3",
+    });
+    written = JSON.parse(await readFile(authPath, "utf-8"));
+    expect(written.tokens?.id_token).toBe(otherUserAccess);
   });
 
   it("creates auth.json when missing and selection includes tokens", async () => {
@@ -239,6 +471,7 @@ describe("codex-cli writer", () => {
     let attempts = 0;
     const renameSpy = vi.spyOn(fsPromises, "rename");
     renameSpy.mockImplementation(async (...args) => {
+      if (String(args[1]).includes(".write-lock")) return realRename(...args);
       attempts += 1;
       if (attempts === 1) {
         const error = new Error("busy") as NodeJS.ErrnoException;
@@ -281,8 +514,10 @@ describe("codex-cli writer", () => {
       "utf-8",
     );
 
+    const realRename = fsPromises.rename.bind(fsPromises);
     const renameSpy = vi.spyOn(fsPromises, "rename");
-    renameSpy.mockImplementation(async () => {
+    renameSpy.mockImplementation(async (...args) => {
+      if (String(args[1]).includes(".write-lock")) return realRename(...args);
       const error = new Error("still busy") as NodeJS.ErrnoException;
       error.code = "EBUSY";
       throw error;
@@ -551,5 +786,193 @@ describe("codex-cli writer", () => {
     expect(writtenAuth.tokens?.refresh_token).toBe("old-refresh");
     expect(writtenAuth.tokens?.account_id).toBe("old-account");
     expect(writtenAuth.email).toBeUndefined();
+  });
+
+  // Issue #641: the official CLI reads config.toml directly, so third-party
+  // front-ends that exec it (CodexBar, editor extensions) keep hitting the macOS
+  // login keychain until the persisted value is pinned to "file".
+  describe("ensureCodexCliFileAuthStore", () => {
+    it("rewrites a keychain-backed store to file", async () => {
+      await writeFile(
+        configPath,
+        'model = "gpt-5.3-codex"\ncli_auth_credentials_store = "keychain"\n',
+        "utf-8",
+      );
+
+      expect(await ensureCodexCliFileAuthStore(configPath)).toBe(true);
+      const written = await readFile(configPath, "utf-8");
+      expect(written).toContain('cli_auth_credentials_store = "file"');
+      expect(written).not.toContain('cli_auth_credentials_store = "keychain"');
+      expect(written).toContain('model = "gpt-5.3-codex"');
+    });
+
+    it("is a no-op when the store is already file", async () => {
+      const original = 'cli_auth_credentials_store = "file"\n';
+      await writeFile(configPath, original, "utf-8");
+
+      expect(await ensureCodexCliFileAuthStore(configPath)).toBe(false);
+      expect(await readFile(configPath, "utf-8")).toBe(original);
+    });
+
+    // A TOML literal string is as valid as a basic string; rewriting it would
+    // churn a healthy config on every wrapper startup.
+    it("is a no-op when the store is a literal-string file", async () => {
+      const original = "cli_auth_credentials_store = 'file'\n";
+      await writeFile(configPath, original, "utf-8");
+
+      expect(await ensureCodexCliFileAuthStore(configPath)).toBe(false);
+      expect(await readFile(configPath, "utf-8")).toBe(original);
+    });
+
+    it("rewrites a literal-string keychain value", async () => {
+      await writeFile(
+        configPath,
+        "cli_auth_credentials_store = 'keychain'\n",
+        "utf-8",
+      );
+
+      expect(await ensureCodexCliFileAuthStore(configPath)).toBe(true);
+      expect(await readFile(configPath, "utf-8")).toBe(
+        'cli_auth_credentials_store = "file"\n',
+      );
+    });
+
+    it("creates the config file when it does not exist", async () => {
+      expect(await ensureCodexCliFileAuthStore(configPath)).toBe(true);
+      expect(await readFile(configPath, "utf-8")).toBe(
+        'cli_auth_credentials_store = "file"\n',
+      );
+    });
+
+    // Rewriting the profile-scoped key in place would mangle a deliberate
+    // per-profile setting while leaving the top-level default on the keychain,
+    // so the prompts would keep coming.
+    it("leaves profile-scoped assignments alone and adds a top-level one", async () => {
+      await writeFile(
+        configPath,
+        '[profiles.work]\ncli_auth_credentials_store = "keychain"\n',
+        "utf-8",
+      );
+
+      expect(await ensureCodexCliFileAuthStore(configPath)).toBe(true);
+      const written = await readFile(configPath, "utf-8");
+      expect(written).toContain('cli_auth_credentials_store = "keychain"');
+      expect(
+        written.indexOf('cli_auth_credentials_store = "file"'),
+      ).toBeLessThan(written.indexOf("[profiles.work]"));
+      expect(readTopLevelCodexCliAuthStoreMode(written)).toBe("file");
+    });
+
+    // Rewriting a CRLF config as LF is an edit the user never asked for, and
+    // this path now runs on every wrapper startup rather than only on switch.
+    it("preserves CRLF line endings", async () => {
+      await writeFile(
+        configPath,
+        'model = "gpt-5.3-codex"\r\ncli_auth_credentials_store = "keychain"\r\n',
+        "utf-8",
+      );
+
+      expect(await ensureCodexCliFileAuthStore(configPath)).toBe(true);
+      const written = await readFile(configPath, "utf-8");
+      expect(written).toBe(
+        'model = "gpt-5.3-codex"\r\ncli_auth_credentials_store = "file"\r\n',
+      );
+      expect(written).not.toMatch(/[^\r]\n/);
+    });
+
+    it("preserves LF line endings when inserting a new key", async () => {
+      await writeFile(configPath, 'model = "gpt-5.3-codex"\n', "utf-8");
+
+      expect(await ensureCodexCliFileAuthStore(configPath)).toBe(true);
+      expect(await readFile(configPath, "utf-8")).not.toContain("\r");
+    });
+
+    // A continuation line of a multi-line array starts with "[" but is not a
+    // table header. Treating it as one would cut the top-level scan short and
+    // append a second top-level key -- a duplicate, which is invalid TOML and
+    // would stop the official CLI from starting.
+    it("does not mistake a multi-line array entry for a table header", async () => {
+      await writeFile(
+        configPath,
+        'pairs = [\n[1, 2],\n]\ncli_auth_credentials_store = "keychain"\n',
+        "utf-8",
+      );
+
+      expect(await ensureCodexCliFileAuthStore(configPath)).toBe(true);
+      const written = await readFile(configPath, "utf-8");
+      expect(
+        written.match(/^\s*cli_auth_credentials_store\s*=/gm) ?? [],
+      ).toHaveLength(1);
+      expect(written).toContain('cli_auth_credentials_store = "file"');
+      expect(written).toContain("[1, 2],");
+    });
+
+    it("still treats a commented table header as ending top-level scope", async () => {
+      await writeFile(
+        configPath,
+        "[profiles.work] # work profile\ncli_auth_credentials_store = 'keychain'\n",
+        "utf-8",
+      );
+
+      expect(await ensureCodexCliFileAuthStore(configPath)).toBe(true);
+      const written = await readFile(configPath, "utf-8");
+      expect(written).toContain("cli_auth_credentials_store = 'keychain'");
+      expect(readTopLevelCodexCliAuthStoreMode(written)).toBe("file");
+    });
+
+    it("respects the enforcement opt-out", async () => {
+      process.env.CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE = "0";
+      const original = 'cli_auth_credentials_store = "keychain"\n';
+      await writeFile(configPath, original, "utf-8");
+
+      expect(await ensureCodexCliFileAuthStore(configPath)).toBe(false);
+      expect(await readFile(configPath, "utf-8")).toBe(original);
+    });
+
+    it("defaults to the resolved Codex CLI config path", async () => {
+      expect(await ensureCodexCliFileAuthStore()).toBe(true);
+      expect(await readFile(configPath, "utf-8")).toContain(
+        'cli_auth_credentials_store = "file"',
+      );
+    });
+  });
+
+  it("does not acquire a filesystem lock when active-selection sync is disabled",async()=>{
+    process.env.CODEX_MULTI_AUTH_SYNC_CODEX_CLI="0";
+    const lock=vi.spyOn(bindingLock,"withNativeBindingLock");
+    try {
+      expect(await setCodexCliActiveSelection({accountId:"fixture",accessToken:"fixture-access",refreshToken:"fixture-refresh"})).toBe(false);
+      expect(lock).not.toHaveBeenCalled();
+    } finally {lock.mockRestore();}
+  });
+
+  describe("readTopLevelCodexCliAuthStoreMode", () => {
+    it("reads a top-level assignment and ignores trailing comments", () => {
+      expect(
+        readTopLevelCodexCliAuthStoreMode(
+          'cli_auth_credentials_store = "keychain" # legacy\n',
+        ),
+      ).toBe("keychain");
+    });
+
+    it("reads literal-string values", () => {
+      expect(
+        readTopLevelCodexCliAuthStoreMode(
+          "cli_auth_credentials_store = 'file'\n",
+        ),
+      ).toBe("file");
+    });
+
+    it("ignores assignments scoped to a table", () => {
+      expect(
+        readTopLevelCodexCliAuthStoreMode(
+          '[profiles.work]\ncli_auth_credentials_store = "file"\n',
+        ),
+      ).toBeNull();
+    });
+
+    it("returns null when unset", () => {
+      expect(readTopLevelCodexCliAuthStoreMode('model = "gpt-5.3-codex"\n')).toBeNull();
+    });
   });
 });

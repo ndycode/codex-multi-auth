@@ -1,11 +1,10 @@
 {
 	"$schema": "https://unpkg.com/knip@6.16.1/schema.json",
 	"entry": [
-		"index.ts",
+		// index.ts and the package.json `exports` subpath barrels
+		// (lib/{auth,request,codex-cli}/index.ts) are resolved from package.json
+		// automatically, so they are intentionally not repeated here.
 		"lib/index.ts",
-		"lib/auth/index.ts",
-		"lib/request/index.ts",
-		"lib/codex-cli/index.ts",
 		"lib/ui/index.ts",
 		"scripts/*.{js,mjs}",
 		"test/**/*.test.ts",
@@ -14,14 +13,7 @@
 	"project": [
 		"lib/**/*.ts",
 		"scripts/**/*.{js,mjs}",
-		"index.ts",
 		"test/**/*.ts"
-	],
-	"ignore": [
-		"bench/**",
-		"vendor/**",
-		"dist/**",
-		"docs/**"
 	],
 	"ignoreBinaries": [
 		"powershell.exe",
@@ -42,8 +34,13 @@
 	],
 	// Export/type-level findings are warn-only on purpose: the blocking signal
 	// is unused FILES and DEPENDENCIES. The export backlog was cleared
-	// incrementally (PRs #556/#557, down to two documented keepers); escalate a
+	// incrementally (PRs #556/#557, down to documented keepers); escalate a
 	// rule to "error" once its warning count is intentionally pinned at zero.
+	// Documented keeper: index.ts exports the plugin three ways on purpose —
+	// `OpenAIOAuthPlugin`, its `OpenAIAuthPlugin` alias, and a `default`
+	// re-export are all declared public API in docs/reference/public-api.md
+	// (and `OpenAIAuthPlugin` is exercised by test/index-retry.test.ts), so the
+	// "duplicate exports" warning is expected.
 	"rules": {
 		"exports": "warn",
 		"types": "warn",

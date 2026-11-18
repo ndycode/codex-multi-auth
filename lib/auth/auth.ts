@@ -1,5 +1,4 @@
-import { generatePKCE } from "@openauthjs/openauth/pkce";
-import { randomBytes } from "node:crypto";
+import { randomBytes, webcrypto } from "node:crypto";
 import type {
 	PKCEPair,
 	AuthorizationFlow,
@@ -10,6 +9,7 @@ import type {
 import { logError } from "../logger.js";
 import { safeParseOAuthTokenResponse } from "../schemas.js";
 import { isAbortError } from "../utils.js";
+import { fetchAuth } from "./http.js";
 
 // OAuth constants (from openai/codex)
 export const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -46,6 +46,26 @@ const OAUTH_SENSITIVE_QUERY_PARAMS = [
 	"code",
 	"code_challenge",
 	"code_verifier",
+	"access_token",
+	"id_token",
+	"refresh_token",
+	"token",
+	"device_auth_id",
+	"user_code",
+	"authorization_code",
+	"client_secret",
+	"password",
+	// Credential-carrying names the logger's SENSITIVE_KEYS already masks:
+	// keep the query-key set aligned so they cannot reach a log either.
+	"api_key",
+	"apikey",
+	"authorization",
+	"credential",
+	"credentials",
+	"secret",
+	"assertion",
+	"client_assertion",
+	"id_token_hint",
 ] as const;
 
 function getOAuthResponseLogMetadata(
@@ -74,18 +94,143 @@ const OAUTH_SENSITIVE_BODY_KEYS = [
 	"id_token",
 	"idToken",
 	"codeVerifier",
+	"code_verifier",
+	"code_challenge",
+	"codeChallenge",
 	"token",
 	"code",
-	"code_verifier",
+	"state",
+	"device_auth_id",
+	"deviceAuthId",
+	"user_code",
+	"userCode",
+	"authorization_code",
+	"authorizationCode",
+	"client_secret",
+	"clientSecret",
+	"password",
+	// Credential-carrying names the logger's SENSITIVE_KEYS already masks:
+	// keep the body-key set aligned so they cannot reach a log either.
+	"api_key",
+	"apiKey",
+	"apikey",
+	"authorization",
+	"credential",
+	"credentials",
+	"secret",
+	"assertion",
+	"client_assertion",
+	"clientAssertion",
+	"id_token_hint",
+	"idTokenHint",
 ] as const;
 
+function normalizeOAuthSensitiveKey(key: string): string {
+	return key.toLowerCase().replace(/[\s_-]/g, "");
+}
+
+const OAUTH_SENSITIVE_KEY_SET = new Set<string>(
+	[...OAUTH_SENSITIVE_BODY_KEYS, ...OAUTH_SENSITIVE_QUERY_PARAMS].map(
+		normalizeOAuthSensitiveKey,
+	),
+);
+
+// A normalized key is also sensitive when it *ends* with a compound secret
+// name — `x-api-key`, `x-client-secret`, `my-refresh-token`,
+// `x-ms-token-aad-id-token` are still credentials. Bare `code`/`state`/`token`
+// are excluded so `error_code`, `csrf_token`, `session_state`, `valid_token`
+// and `api_keys` keep their documented over-redaction protection.
+const OAUTH_SENSITIVE_KEY_SUFFIXES = [
+	"accesstoken",
+	"refreshtoken",
+	"idtoken",
+	"clientsecret",
+	"clientassertion",
+	"apikey",
+	"authorizationcode",
+	"codechallenge",
+	"codeverifier",
+	"deviceauthid",
+	"usercode",
+	"idtokenhint",
+	"authorization",
+	"credential",
+	"credentials",
+	"assertion",
+	"password",
+	"passwords",
+	"secret",
+] as const;
+
+function isOAuthSensitiveKey(key: string): boolean {
+	const normalized = normalizeOAuthSensitiveKey(key);
+	return (
+		OAUTH_SENSITIVE_KEY_SET.has(normalized) ||
+		OAUTH_SENSITIVE_KEY_SUFFIXES.some((suffix) =>
+			normalized.endsWith(suffix),
+		)
+	);
+}
+
+// Separator inside a compound key spelling: whitespace, `_`, `-`, `+`, and the
+// percent-encoded space all collapse under normalizeOAuthSensitiveKey, so
+// "client-secret", "ACCESS TOKEN" and "access%20token" must match too.
+const OAUTH_KEY_SEPARATOR = "(?:[\\s_+-]|%20)*";
+
+// Free-text key shapes. `code`/`state`/`token` need a non-word boundary so
+// longer names like `error_code`/`device_code`/`csrf_token` are untouched.
+const OAUTH_TEXT_SECRET_KEY_PATTERN = [
+	`(?:refresh|access|id)${OAUTH_KEY_SEPARATOR}token`,
+	`code${OAUTH_KEY_SEPARATOR}(?:challenge|verifier)`,
+	`device${OAUTH_KEY_SEPARATOR}auth${OAUTH_KEY_SEPARATOR}id`,
+	`user${OAUTH_KEY_SEPARATOR}code`,
+	`authorization${OAUTH_KEY_SEPARATOR}code`,
+	`client${OAUTH_KEY_SEPARATOR}secret`,
+	`api${OAUTH_KEY_SEPARATOR}key`,
+	`client${OAUTH_KEY_SEPARATOR}assertion`,
+	`id${OAUTH_KEY_SEPARATOR}token${OAUTH_KEY_SEPARATOR}hint`,
+	"authorization",
+	"credentials?",
+	"assertion",
+	"password",
+	"secret",
+	"state",
+	"token",
+	"code",
+].join("|");
+
 function scrubTokenLikeSubstrings(value: string): string {
+	// Bearer runs first: in a "key: Bearer <jwt>" shape the key pass below
+	// would otherwise consume the literal word "Bearer" as its value and
+	// strand the token behind it.
 	let scrubbed = value.replace(
-		/(\b(?:refresh|access|id)[_-]?token\s*[:=]\s*)([^\s,;"'}]{8,})/gi,
+		/\bBearer(?:[\s+]|%20)+[A-Za-z0-9._~+/=-]{8,4096}/gi,
+		"Bearer ***REDACTED***",
+	);
+	// `key <sep> value` in free text. Quoted keys and encoded separator gaps
+	// (%20/%22/%27) are tolerated; percent-encoded `:`/`=` (%3A/%3D, plus the
+	// double-encoded %253A/%253D) count as separators, and a key directly
+	// behind a %XX escape still counts as boundary (the escape itself is the
+	// delimiter). `_`/`-` are deliberately absent from the gap classes so
+	// `error_code`/`csrf-token` style names still survive. Value length is
+	// capped so a megabyte-scale run cannot exhaust the regex backtrack
+	// stack; the entropy pass below absorbs any leftover tail.
+	scrubbed = scrubbed.replace(
+		new RegExp(
+			`((?:(?<![A-Za-z0-9_])|(?<=%[0-9a-zA-Z]{2}))(?:${OAUTH_TEXT_SECRET_KEY_PATTERN})(?:[\\s'"+]|%2[027])*(?:[:=]|%3[ad]|%253[ad])(?:[\\s'"+]|%2[027])*)([^\\s,;"'{}&=*()<>?]{4,4096})`,
+			"gi",
+		),
 		(_match, prefix) => `${prefix}***REDACTED***`,
 	);
+	// Bare high-entropy slugs (32-512 chars of token charset) with no key
+	// context. No word boundaries: consecutive chunks of a giant run each
+	// match, so a huge homogeneous value is consumed piecewise instead of
+	// overflowing the backtrack stack on one giant quantified match.
+	scrubbed = scrubbed.replace(/[A-Za-z0-9_-]{32,512}/g, "***REDACTED***");
+	// ChatGPT opaque token shapes — catches shorter RT_/AT_ values the entropy
+	// rule misses. No leading boundary: they may be glued inside identifiers.
 	scrubbed = scrubbed.replace(
-		/\b(?:RT|AT)_ch_[A-Za-z0-9_-]{20,}\b/g,
+		/(?:RT|AT)_ch_[A-Za-z0-9_-]{20,512}/g,
 		"***REDACTED***",
 	);
 	return scrubbed;
@@ -96,13 +241,16 @@ function redactSensitiveFields(value: unknown): unknown {
 		return value.map((item) => redactSensitiveFields(item));
 	}
 	if (value !== null && typeof value === "object") {
-		const out: Record<string, unknown> = {};
-		const sensitiveSet = new Set<string>(OAUTH_SENSITIVE_BODY_KEYS);
+		// Null-prototype map so a `__proto__` key stays ordinary data instead of
+		// munging the output object's prototype.
+		const out: Record<string, unknown> = Object.create(null);
 		for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-			if (sensitiveSet.has(k)) {
+			if (isOAuthSensitiveKey(k)) {
 				out[k] = "***REDACTED***";
 			} else {
-				out[k] = redactSensitiveFields(v);
+				// The key name itself can smuggle a token (an error response that
+				// echoes request fields verbatim) — scrub token shapes from it.
+				out[scrubTokenLikeSubstrings(k)] = redactSensitiveFields(v);
 			}
 		}
 		return out;
@@ -146,34 +294,115 @@ export function sanitizeOAuthResponseBodyForLog(rawBody: string): string {
 		}
 	}
 
+	// Single-pass alternation over the normalized key shapes so case- and
+	// separator-varied spellings ("client-secret", "ACCESS TOKEN",
+	// "access%20token") still match when the body is not parseable JSON.
 	let scrubbed = rawBody;
-	for (const key of OAUTH_SENSITIVE_BODY_KEYS) {
-		// "key":"value" style (JSON-like text)
-		const jsonPattern = new RegExp(`("${key}"\\s*:\\s*)"[^"]*"`, "g");
-		scrubbed = scrubbed.replace(jsonPattern, `$1"***REDACTED***"`);
-		// key=value style (urlencoded / query-string)
-		const urlPattern = new RegExp(`(^|[?&\\s])(${key}=)[^&\\s]+`, "g");
-		scrubbed = scrubbed.replace(urlPattern, `$1$2***REDACTED***`);
+	// "key":"value" / 'key':'value' style (JSON-like text); a stray separator
+	// may sit before the closing quote ("access_token ":).
+	scrubbed = scrubbed.replace(
+		new RegExp(
+			`(["'](?:${OAUTH_TEXT_SECRET_KEY_PATTERN})${OAUTH_KEY_SEPARATOR}["']\\s*:\\s*)["'][^"']*["']`,
+			"gi",
+		),
+		`$1"***REDACTED***"`,
+	);
+	// key<sep>value style (urlencoded / query-string). The boundary class
+	// excludes `_` and alphanumerics so `device_code`/`error_code`/
+	// `csrf_token`/`opcode` are not redacted; a leading %XX escape does count
+	// as a boundary since it decodes to a delimiter.
+	scrubbed = scrubbed.replace(
+		new RegExp(
+			`(^|[^A-Za-z0-9_]|%[0-9a-zA-Z]{2})((?:${OAUTH_TEXT_SECRET_KEY_PATTERN})${OAUTH_KEY_SEPARATOR}(?:[:=]|%3[ad]|%253[ad]))[^&\\s]+`,
+			"gi",
+		),
+		"$1$2***REDACTED***",
+	);
+	return scrubTokenLikeSubstrings(scrubbed);
+}
+
+function redactUrlSearchParamsForLog(
+	params: URLSearchParams,
+	depth: number,
+): void {
+	for (const key of new Set(params.keys())) {
+		if (isOAuthSensitiveKey(key)) {
+			params.set(key, "<redacted>");
+			continue;
+		}
+		// Non-sensitive keys still get a free-text scrub at every depth:
+		// `msg=refresh_token%3D...` or `error_description=Bearer ...` would
+		// otherwise carry embedded secrets straight into the log. URL values
+		// recurse structurally while depth remains, then fall back to the
+		// flat scrub so deeper nesting still loses its secrets.
+		const values = params.getAll(key);
+		const redactedValues = values.map((value) =>
+			/^https?:\/\//i.test(value) && depth > 0
+				? redactOAuthUrlForLogDepth(value, depth - 1)
+				: scrubTokenLikeSubstrings(value),
+		);
+		if (redactedValues.some((v, i) => v !== values[i])) {
+			params.delete(key);
+			for (const v of redactedValues) params.append(key, v);
+		}
 	}
-	return scrubbed;
+}
+
+function redactOAuthUrlForLogDepth(rawUrl: string, depth: number): string {
+	let parsed: URL;
+	try {
+		parsed = new URL(rawUrl);
+	} catch {
+		return "<unparseable-url>";
+	}
+
+	redactUrlSearchParamsForLog(parsed.searchParams, depth);
+
+	// Fragment params (#access_token=...) live in `hash`, not `searchParams`.
+	// A route-style fragment (#/path?code=...) keeps its prefix, which is
+	// itself free text that can carry secrets like `#code=...?` — scrub it
+	// rather than copying it back verbatim. The body is decoded first so a
+	// fully percent-encoded fragment cannot hide `?`/`=` from the splitter.
+	let hashBody = parsed.hash.startsWith("#") ? parsed.hash.slice(1) : "";
+	if (hashBody.includes("%")) {
+		try {
+			hashBody = decodeURIComponent(hashBody);
+		} catch {
+			// Malformed escape — keep the raw fragment body.
+		}
+	}
+	if (hashBody.includes("=")) {
+		const qIndex = hashBody.indexOf("?");
+		const fragPath = qIndex >= 0 ? hashBody.slice(0, qIndex + 1) : "";
+		const fragParams = qIndex >= 0 ? hashBody.slice(qIndex + 1) : hashBody;
+		const scrubbedPath = scrubTokenLikeSubstrings(fragPath);
+		const params = new URLSearchParams(fragParams);
+		redactUrlSearchParamsForLog(params, depth);
+		const rebuilt = params.toString();
+		if (rebuilt !== fragParams || scrubbedPath !== fragPath) {
+			parsed.hash = `${scrubbedPath}${rebuilt}`;
+		}
+	} else if (hashBody.length > 0) {
+		parsed.hash = scrubTokenLikeSubstrings(hashBody);
+	}
+
+	if (parsed.username) parsed.username = "***";
+	if (parsed.password) parsed.password = "***";
+	const scrubbedHost = scrubTokenLikeSubstrings(parsed.hostname);
+	if (scrubbedHost !== parsed.hostname) parsed.hostname = scrubbedHost;
+	parsed.pathname = scrubTokenLikeSubstrings(parsed.pathname);
+
+	return parsed.toString();
 }
 
 /**
- * Redacts sensitive OAuth query parameters for safe logging.
- * Returns the original string when parsing fails.
+ * Redacts sensitive OAuth parameters for safe logging: query keys match
+ * case-insensitively, fragment and nested-URL params are covered, userinfo is
+ * masked, and unparseable input collapses to `<unparseable-url>` so the raw
+ * string can never reach a log verbatim.
  */
 export function redactOAuthUrlForLog(rawUrl: string): string {
-	try {
-		const parsed = new URL(rawUrl);
-		for (const key of OAUTH_SENSITIVE_QUERY_PARAMS) {
-			if (parsed.searchParams.has(key)) {
-				parsed.searchParams.set(key, "<redacted>");
-			}
-		}
-		return parsed.toString();
-	} catch {
-		return rawUrl;
-	}
+	return redactOAuthUrlForLogDepth(rawUrl, 1);
 }
 
 /**
@@ -239,7 +468,7 @@ export async function exchangeAuthorizationCode(
 	verifier: string,
 	redirectUri: string = REDIRECT_URI,
 ): Promise<TokenResult> {
-	const res = await fetch(TOKEN_URL, {
+	const res = await fetchAuth(TOKEN_URL, {
 		method: "POST",
 		headers: { "Content-Type": "application/x-www-form-urlencoded" },
 		body: new URLSearchParams({
@@ -332,7 +561,7 @@ export async function refreshAccessToken(
 	options: RefreshAccessTokenOptions = {},
 ): Promise<TokenResult> {
 	try {
-		const response = await fetch(TOKEN_URL, {
+		const response = await fetchAuth(TOKEN_URL, {
 			method: "POST",
 			headers: { "Content-Type": "application/x-www-form-urlencoded" },
 			signal: options?.signal,
@@ -410,6 +639,16 @@ export interface AuthorizationFlowOptions {
 	forceNewLogin?: boolean;
 }
 
+async function generatePKCE(): Promise<PKCEPair> {
+	const verifier = randomBytes(64).toString("base64url");
+	const digest = await webcrypto.subtle.digest(
+		"SHA-256",
+		new TextEncoder().encode(verifier),
+	);
+	const challenge = Buffer.from(digest).toString("base64url");
+	return { verifier, challenge };
+}
+
 /**
  * Create OAuth authorization flow
  * @param options - Optional configuration for the flow
@@ -418,7 +657,7 @@ export interface AuthorizationFlowOptions {
 export async function createAuthorizationFlow(
 	options?: AuthorizationFlowOptions,
 ): Promise<AuthorizationFlow> {
-	const pkce = (await generatePKCE()) as PKCEPair;
+	const pkce = await generatePKCE();
 	const state = createState();
 
 	const url = new URL(AUTHORIZE_URL);

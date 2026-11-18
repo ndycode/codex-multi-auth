@@ -11,6 +11,7 @@ import {
 
 export type DashboardThemePreset = "green" | "blue";
 export type DashboardAccentColor = "green" | "cyan" | "blue" | "yellow";
+export type DashboardColorMode = "auto" | "dark" | "light";
 export type DashboardAccountSortMode = "manual" | "ready-first";
 type DashboardLayoutMode = "compact-details" | "expanded-rows";
 type DashboardFocusStyle = "row-invert";
@@ -30,6 +31,7 @@ export interface DashboardDisplaySettings {
 	menuSortQuickSwitchVisibleRow?: boolean;
 	uiThemePreset?: DashboardThemePreset;
 	uiAccentColor?: DashboardAccentColor;
+	uiColorMode?: DashboardColorMode;
 	menuShowStatusBadge?: boolean;
 	menuShowCurrentBadge?: boolean;
 	menuShowLastUsed?: boolean;
@@ -61,6 +63,7 @@ export const DEFAULT_DASHBOARD_DISPLAY_SETTINGS: DashboardDisplaySettings = {
 	menuSortQuickSwitchVisibleRow: true,
 	uiThemePreset: "green",
 	uiAccentColor: "green",
+	uiColorMode: "auto",
 	menuShowStatusBadge: true,
 	menuShowCurrentBadge: true,
 	menuShowLastUsed: true,
@@ -148,6 +151,23 @@ function normalizeAccentColor(value: unknown): DashboardAccentColor {
 			return "yellow";
 		default:
 			return "green";
+	}
+}
+
+/**
+ * Normalize an input value into a dashboard terminal-background mode.
+ *
+ * @param value - Input value to coerce into a color mode
+ * @returns `'dark'` or `'light'` if `value` matches one of those strings; otherwise `'auto'` (terminal detection)
+ */
+function normalizeColorMode(value: unknown): DashboardColorMode {
+	switch (value) {
+		case "dark":
+			return "dark";
+		case "light":
+			return "light";
+		default:
+			return "auto";
 	}
 }
 
@@ -350,6 +370,9 @@ export function normalizeDashboardDisplaySettings(
 		),
 		uiAccentColor: normalizeAccentColor(
 			value.uiAccentColor,
+		),
+		uiColorMode: normalizeColorMode(
+			value.uiColorMode,
 		),
 		menuShowStatusBadge: normalizeBoolean(
 			value.menuShowStatusBadge,

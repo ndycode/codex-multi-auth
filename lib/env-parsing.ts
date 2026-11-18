@@ -31,3 +31,25 @@ export function parseBooleanEnv(
 	if (FALSE_VALUES.has(normalized)) return false;
 	return undefined;
 }
+
+/**
+ * Parses an integer environment-variable string.
+ *
+ * Returns `undefined` for `undefined` input, an empty/whitespace-only string,
+ * or any value that does not start with a parseable integer — letting callers
+ * fall back through nullish coalescing to their default. Matches the semantics
+ * of the local `parseEnvInt` copies in lib/refresh-lease.ts and
+ * lib/request/failover-config.ts.
+ *
+ * @param value - Raw env-variable value (or `undefined` when unset).
+ * @returns The parsed integer, otherwise `undefined`.
+ */
+export function parseIntegerEnv(
+	value: string | undefined,
+): number | undefined {
+	if (value === undefined) return undefined;
+	const trimmed = value.trim();
+	if (trimmed.length === 0) return undefined;
+	const parsed = Number.parseInt(trimmed, 10);
+	return Number.isFinite(parsed) ? parsed : undefined;
+}

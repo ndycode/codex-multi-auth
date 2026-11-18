@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { isRecord, isAbortError, nowMs, toStringValue, sleep } from '../lib/utils.js';
+import { getEventListeners } from 'node:events';
+import { isRecord, isAbortError, combineSignals, nowMs, toStringValue, sleep } from '../lib/utils.js';
 
 describe('Utils Module', () => {
 	describe('isRecord', () => {
@@ -59,6 +60,83 @@ describe('Utils Module', () => {
 			expect(isAbortError(new Error('network error'))).toBe(false);
 			expect(isAbortError({ name: 'AbortError' })).toBe(false);
 			expect(isAbortError(null)).toBe(false);
+		});
+	});
+
+	describe('combineSignals', () => {
+		// AbortSignal.any is available on every Node the engines floor (`>=22.19`) permits; the
+		// helper adds the null-tolerance the call sites need plus — via the
+		// native composite — no listener accumulation on long-lived signals.
+		it('aborts with the first signal that fires and forwards its reason', () => {
+			const first = new AbortController();
+			const second = new AbortController();
+			const combined = combineSignals(first.signal, second.signal);
+
+			expect(combined.aborted).toBe(false);
+			first.abort('first-reason');
+
+			expect(combined.aborted).toBe(true);
+			expect(combined.reason).toBe('first-reason');
+		});
+
+		it('aborts when the second signal fires first', () => {
+			const first = new AbortController();
+			const second = new AbortController();
+			const combined = combineSignals(first.signal, second.signal);
+
+			second.abort('second-reason');
+
+			expect(combined.aborted).toBe(true);
+			expect(combined.reason).toBe('second-reason');
+		});
+
+		it('returns an already-aborted input directly so its reason survives', () => {
+			const aborted = new AbortController();
+			aborted.abort('already-done');
+			const other = new AbortController();
+
+			expect(combineSignals(aborted.signal, other.signal)).toBe(aborted.signal);
+			expect(combineSignals(other.signal, aborted.signal)).toBe(aborted.signal);
+		});
+
+		it('passes a single defined signal through unchanged', () => {
+			const only = new AbortController();
+
+			expect(combineSignals(only.signal, undefined)).toBe(only.signal);
+			expect(combineSignals(undefined, only.signal)).toBe(only.signal);
+			expect(combineSignals(only.signal, null)).toBe(only.signal);
+		});
+
+		it('yields a never-aborting signal when both inputs are absent', () => {
+			const combined = combineSignals(undefined, undefined);
+			expect(combined.aborted).toBe(false);
+		});
+
+		it('forwards AbortSignal.timeout reasons', async () => {
+			const other = new AbortController();
+			const combined = combineSignals(other.signal, AbortSignal.timeout(5));
+
+			await vi.waitFor(() => expect(combined.aborted).toBe(true));
+			expect(combined.reason).toMatchObject({ name: 'TimeoutError' });
+		});
+
+		it('accumulates no abort listeners on a long-lived caller signal across repeated combines', () => {
+			// Regression: a manual addEventListener pair would stay registered on
+			// BOTH inputs until one fired, so a caller that combines a
+			// long-lived signal (proxy-lifetime abort) once per request pinned a
+			// listener + controller closure for every completed request. The
+			// native composite is tracked weakly and never appears here.
+			const caller = new AbortController();
+			const composites: AbortSignal[] = [];
+			for (let i = 0; i < 25; i += 1) {
+				composites.push(combineSignals(caller.signal, AbortSignal.timeout(60_000)));
+			}
+
+			expect(getEventListeners(caller.signal, 'abort')).toHaveLength(0);
+			// Propagation still works for every in-flight composite.
+			caller.abort('caller-stopped');
+			expect(composites.every((signal) => signal.aborted)).toBe(true);
+			expect(composites[0]?.reason).toBe('caller-stopped');
 		});
 	});
 

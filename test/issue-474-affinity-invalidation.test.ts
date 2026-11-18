@@ -19,7 +19,10 @@ import {
 import { SessionAffinityStore } from "../lib/session-affinity.js";
 import {
 	type AccountStorageV3,
+	bumpStorageAffinityGeneration,
 	normalizeAccountStorage,
+	readAffinityGenerationFromDisk,
+	readPinAndGenFromDisk,
 } from "../lib/storage.js";
 
 const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "EACCES", "EAGAIN", "ENOTEMPTY"]);
@@ -134,6 +137,60 @@ describe("issue #474 — affinity invalidation on user storage events", () => {
 				affinityGeneration: 1.5,
 			} as AccountStorageV3);
 			expect(normalized?.affinityGeneration).toBeUndefined();
+		});
+	});
+
+	describe("an unsafe-integer generation cannot wedge the bump", () => {
+		// Past 2^53, `Math.max(inMemory, disk) + 1 === disk`, so
+		// bumpStorageAffinityGeneration stops advancing and every later
+		// `switch`/`unpin`/`best` writes the same generation. A running proxy then
+		// never observes another selection change, permanently. Every reader must
+		// reject the value so the next bump writes 1 and repairs the file.
+		const UNSAFE = Number.MAX_SAFE_INTEGER + 2;
+
+		it("is rejected by both storage readers and the proxy's meta reader", () => {
+			const dir = mkdtempSync(join(tmpdir(), "issue-474-unsafe-gen-"));
+			tmpDirs.push(dir);
+			const path = join(dir, "accounts.json");
+			writeFileSync(
+				path,
+				JSON.stringify({ pinnedAccountIndex: 0, affinityGeneration: UNSAFE }),
+				"utf8",
+			);
+
+			expect(readAffinityGenerationFromDisk(path)).toBe(0);
+			expect(readPinAndGenFromDisk(path).affinityGeneration).toBe(0);
+			expect(readPinAndGenFromDisk(path, { strict: true }).affinityGeneration)
+				.toBe(0);
+			expect(readStorageMetaFromDisk(path).affinityGeneration).toBe(0);
+		});
+
+		it("is dropped by the storage normalizer", () => {
+			const normalized = normalizeAccountStorage({
+				...createStorage(Date.now(), 2),
+				affinityGeneration: UNSAFE,
+			} as AccountStorageV3);
+			expect(normalized?.affinityGeneration).toBeUndefined();
+		});
+
+		it("lets the next bump advance instead of writing the same value forever", () => {
+			// Sanity check on the arithmetic this guards against.
+			expect(Math.max(UNSAFE, 0) + 1).toBe(UNSAFE);
+
+			const dir = mkdtempSync(join(tmpdir(), "issue-474-unsafe-bump-"));
+			tmpDirs.push(dir);
+			const path = join(dir, "accounts.json");
+			const storage = createStorage(Date.now(), 2, {
+				affinityGeneration: UNSAFE,
+			});
+			writeFileSync(path, JSON.stringify(storage), "utf8");
+
+			// Both sides are poisoned: the file on disk and the in-memory object
+			// the CLI mutates. The bump must still advance.
+			const next = bumpStorageAffinityGeneration(storage, path);
+			expect(Number.isSafeInteger(next)).toBe(true);
+			expect(next).toBe(1);
+			expect(storage.affinityGeneration).toBe(1);
 		});
 	});
 

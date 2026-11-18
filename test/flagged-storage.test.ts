@@ -64,4 +64,26 @@ describe("flagged storage helper", () => {
 
 		expect(result.accounts[0]?.cooldownReason).toBe("server-error");
 	});
+
+	it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+		"removes malformed auth invalidation fields for timestamp %s",
+		(timestamp) => {
+			const result = normalizeFlaggedStorage(
+				{
+					version: 1,
+					accounts: [
+						{
+							refreshToken: "token-1",
+							authInvalidatedAt: timestamp,
+							authInvalidationErrorCode: "oauth_token_revoked",
+						},
+					],
+				},
+				{ isRecord, now: () => 99 },
+			);
+
+			expect(result.accounts[0]?.authInvalidatedAt).toBeUndefined();
+			expect(result.accounts[0]?.authInvalidationErrorCode).toBeUndefined();
+		},
+	);
 });

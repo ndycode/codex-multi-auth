@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { AccountStorageV3, FlaggedAccountStorageV1 } from "./public-types.js";
+import { withFileTransactionLock } from "./file-lock.js";
 
 export type TransactionSnapshotState = {
 	snapshot: AccountStorageV3 | null;
@@ -58,7 +59,7 @@ export async function withAccountStorageTransaction<T>(
 		saveAccounts: (storage: AccountStorageV3) => Promise<void>;
 	},
 ): Promise<T> {
-	return withStorageLock(async () => {
+	return withStorageLock(() => withFileTransactionLock(deps.getStoragePath(), async () => {
 		const state: TransactionSnapshotState = {
 			snapshot: await deps.loadCurrent(),
 			storagePath: deps.getStoragePath(),
@@ -72,7 +73,7 @@ export async function withAccountStorageTransaction<T>(
 		return transactionSnapshotContext.run(state, () =>
 			handler(current, persist),
 		);
-	});
+	}));
 }
 
 export async function withAccountAndFlaggedStorageTransaction<T>(
@@ -96,7 +97,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 		logRollbackError: (error: unknown, rollbackError: unknown) => void;
 	},
 ): Promise<T> {
-	return withStorageLock(async () => {
+	return withStorageLock(() => withFileTransactionLock(deps.getStoragePath(), async () => {
 		const state: TransactionSnapshotState = {
 			snapshot: await deps.loadCurrent(),
 			storagePath: deps.getStoragePath(),
@@ -139,5 +140,5 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 		return transactionSnapshotContext.run(state, () =>
 			handler(current, persist, currentFlagged),
 		);
-	});
+	}));
 }

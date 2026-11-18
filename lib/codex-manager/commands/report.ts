@@ -39,6 +39,7 @@ import type { RuntimeObservabilitySnapshot } from "../../runtime/runtime-observa
 import type { QuotaCacheData } from "../../quota-cache.js";
 import type { TokenFailure, TokenResult } from "../../types.js";
 import { sleep } from "../../utils.js";
+import { shouldUpdateAccountIdFromToken } from "../../auth/token-utils.js";
 import { tempPathFor } from "../../temp-path.js";
 
 interface ReportCliOptions {
@@ -46,6 +47,8 @@ interface ReportCliOptions {
 	json: boolean;
 	explain: boolean;
 	model: string;
+	/** Whether --model was actually passed; see ForecastCliOptions.modelProvided. */
+	modelProvided: boolean;
 	maxAccounts?: number;
 	maxProbes?: number;
 	cachedOnly: boolean;
@@ -144,6 +147,7 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 		json: false,
 		explain: false,
 		model: DEFAULT_PROBE_MODEL,
+		modelProvided: false,
 		cachedOnly: false,
 	};
 
@@ -172,6 +176,7 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;
+			options.modelProvided = true;
 			i += 1;
 			continue;
 		}
@@ -181,6 +186,7 @@ function parseReportArgs(args: string[]): ParsedArgsResult<ReportCliOptions> {
 				return { ok: false, message: "Missing value for --model" };
 			}
 			options.model = value;
+			options.modelProvided = true;
 			continue;
 		}
 		if (arg === "--max-accounts") {
@@ -392,7 +398,12 @@ export async function runReportCommand(
 				if (refreshedEmail) {
 					refreshPatch.email = refreshedEmail;
 				}
-				if (tokenDerivedAccountId) {
+				// Only a token-derived id follows the new token (as on every other
+				// refresh path); an explicit (manual) or org binding stays.
+				if (
+					tokenDerivedAccountId &&
+					shouldUpdateAccountIdFromToken(account.accountIdSource, account.accountId)
+				) {
 					refreshPatch.accountId = tokenDerivedAccountId;
 					refreshPatch.accountIdSource = "token";
 				}
@@ -462,6 +473,15 @@ export async function runReportCommand(
 		}
 	}
 
+	// Only an explicit --model moves the report off the codex family; see the
+	// note in the forecast command. promptFamily is reused from the inspection
+	// rather than re-resolved per account.
+	const forecastFamily = options.modelProvided
+		? modelInspection.promptFamily
+		: undefined;
+	const forecastModel = options.modelProvided
+		? modelInspection.normalized
+		: undefined;
 	const forecastResults = storage
 		? evaluateForecastAccounts(
 				storage.accounts.map((account, index) => ({
@@ -474,6 +494,8 @@ export async function runReportCommand(
 					quotaCache,
 					allAccounts: storage.accounts,
 					runtimeOverlay: runtimeSnapshot,
+					family: forecastFamily,
+					model: forecastModel,
 				})),
 			)
 		: [];

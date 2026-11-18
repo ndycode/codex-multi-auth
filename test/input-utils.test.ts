@@ -357,6 +357,77 @@ describe("Tool Output Normalization", () => {
 			expect(result).toBeDefined();
 		});
 	});
+
+	describe("copy-on-write and sparse-array parity", () => {
+		it("filterHostSystemPromptsWithCachedPrompt returns the same array when nothing is filtered", () => {
+			const input: InputItem[] = [
+				{ type: "message", role: "user", content: "Hello" },
+				{ type: "message", role: "system", content: "unrelated system note" },
+			];
+			expect(filterHostSystemPromptsWithCachedPrompt(input, null)).toBe(input);
+		});
+
+		it("filterHostSystemPromptsWithCachedPrompt drops sparse holes like flatMap did", () => {
+			const sparse = new Array<InputItem | undefined>(3);
+			sparse[0] = { type: "message", role: "user", content: "Hello" };
+			sparse[2] = {
+				type: "message",
+				role: "system",
+				content: "You are Codex, an agent doing things",
+			};
+
+			const result = filterHostSystemPromptsWithCachedPrompt(
+				sparse as InputItem[],
+				null,
+			);
+			expect(result).toHaveLength(1);
+			expect(result?.[0]).toEqual(sparse[0]);
+		});
+
+		it("filterHostSystemPromptsWithCachedPrompt throws on an explicit undefined element like flatMap did", () => {
+			const input = [undefined as unknown as InputItem];
+			expect(() =>
+				filterHostSystemPromptsWithCachedPrompt(input, null),
+			).toThrow(TypeError);
+		});
+
+		it("normalizeOrphanedToolOutputs returns the same array when nothing converts", () => {
+			const input: InputItem[] = [
+				{ type: "message", role: "user", content: "hi" },
+			];
+			expect(normalizeOrphanedToolOutputs(input)).toBe(input);
+		});
+
+		it("normalizeOrphanedToolOutputs preserves holes only by throwing like the legacy scan", () => {
+			const sparse = new Array<InputItem | undefined>(2);
+			sparse[1] = {
+				type: "function_call_output",
+				call_id: "c1",
+				output: "x",
+			} as InputItem;
+			// collectCallIds iterates with for..of, which yields undefined for a
+			// hole — a TypeError here matches the pre-refactor behavior.
+			expect(() =>
+				normalizeOrphanedToolOutputs(sparse as InputItem[]),
+			).toThrow(TypeError);
+		});
+
+		it("injectMissingToolOutputs returns the same array when no call is orphaned", () => {
+			const input: InputItem[] = [
+				{ type: "function_call", call_id: "c1" } as InputItem,
+				{ type: "function_call_output", call_id: "c1", output: "ok" } as InputItem,
+			];
+			expect(injectMissingToolOutputs(input)).toBe(input);
+		});
+
+		it("injectMissingToolOutputs throws on sparse input like the legacy scan", () => {
+			const sparse = new Array<InputItem | undefined>(2);
+			sparse[0] = { type: "function_call", call_id: "c1" } as InputItem;
+			expect(() =>
+				injectMissingToolOutputs(sparse as InputItem[]),
+			).toThrow(TypeError);
+		});
+	});
 });
 
 

@@ -69,5 +69,22 @@ describe("package bin entries", () => {
 			expect.arrayContaining(["scripts/preuninstall.js"]),
 		);
 	});
+
+	// `tsgo` (typescript@7, native compiler) and `typescript`@6 both declare a
+	// `tsc` bin, so bare `tsc` resolves by .bin link order — nondeterministic
+	// across installs. Build/typecheck must invoke the tsgo entrypoint by path
+	// so the native checker is always the one that runs in CI.
+	it("selects the TypeScript 7 compiler explicitly in compiler scripts", () => {
+		const pkg = JSON.parse(readFileSync("package.json", "utf8")) as {
+			scripts?: Record<string, string>;
+			devDependencies?: Record<string, string>;
+		};
+		expect(pkg.devDependencies?.tsgo).toMatch(/^npm:typescript@/);
+		for (const name of ["build", "typecheck", "typecheck:scripts"]) {
+			const script = pkg.scripts?.[name] ?? "";
+			expect(script).toContain("node_modules/tsgo/bin/tsc");
+			expect(script).not.toMatch(/(?:^|&&\s*|;\s*)tsc(?:\s|$)/);
+		}
+	});
 });
 

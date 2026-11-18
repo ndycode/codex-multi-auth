@@ -1,4 +1,10 @@
 import { extractAccountId, sanitizeEmail } from "../accounts.js";
+import {
+	codexAuthAccountIdsMatch,
+	codexCliAccountIdFor,
+	codexCliActiveIdentity,
+	isOpenAiOrgId,
+} from "../auth/token-utils.js";
 import type { ExistingAccountInfo } from "../cli.js";
 import { loadCodexCliState } from "../codex-cli/state.js";
 import { setCodexCliActiveSelection } from "../codex-cli/writer.js";
@@ -219,7 +225,8 @@ export async function refreshQuotaCacheForMenu(
 		// loaded; another writer (a deep check, a second session) may have saved
 		// entries meanwhile, and writing the stale clone back whole-file would
 		// silently discard them (last write wins). Re-apply this run's results
-		// onto the freshest persisted cache instead.
+		// onto a fresh snapshot for the returned menu view. saveQuotaCache then
+        // reloads under its file lock and applies only changes since saveBaseline.
 		//
 		// loadQuotaCache() is documented to never throw — on any read failure it
 		// returns empty maps. We also guard the empty-maps case explicitly: if the
@@ -227,12 +234,15 @@ export async function refreshQuotaCacheForMenu(
 		// nextCache so non-probed entries are not wiped. The try/catch handles any
 		// mocked or future implementation that does throw.
 		let cacheToSave = nextCache;
+        let saveBaseline = cache;
 		try {
 			const persisted = await loadQuotaCache();
 			const persistedHasData =
 				Object.keys(persisted.byAccountId).length > 0 ||
-				Object.keys(persisted.byEmail).length > 0;
+				Object.keys(persisted.byEmail).length > 0 ||
+                Object.keys(persisted.byWorkspace ?? {}).length > 0;
 			if (persistedHasData) {
+                saveBaseline = cloneQuotaCacheData(persisted);
 				for (const { account, snapshot } of appliedSnapshots) {
 					updateQuotaCacheForAccount(
 						persisted,
@@ -250,7 +260,7 @@ export async function refreshQuotaCacheForMenu(
 			// so non-probed entries survive.
 		}
 		try {
-			await saveQuotaCache(cacheToSave);
+			await saveQuotaCache(cacheToSave, saveBaseline);
 		} catch (error) {
 			// Quota cache is a derived artifact; a transient Windows EBUSY/EPERM
 			// here must not fail the menu refresh, but it should not vanish into
@@ -540,10 +550,20 @@ function activeAccountMatchesCodexCliState(
 	state: Awaited<ReturnType<typeof loadCodexCliState>>,
 ): boolean {
 	if (!state) return true;
-	const accountId = account.accountId?.trim();
-	const activeAccountId = state.activeAccountId?.trim();
-	if (accountId && activeAccountId) {
-		return accountId === activeAccountId;
+	// An org account_id in auth.json (written before #700) makes Codex CLI
+	// 0.156+ fail; resync so the writer replaces it with the workspace id.
+	if (isOpenAiOrgId(state.authFileAccountId)) return false;
+	// A stored "org-..." id is written to auth.json as the token's workspace
+	// id, while the legacy accounts.json keeps the raw id (#700); match either.
+	// Compared as the writer would write it: through the account's
+	// CodexCliMirror, or an explicit id the backend refused comes back here.
+	const accountId = codexCliAccountIdFor(account, account.accessToken)?.trim();
+	const activeIdentity = codexCliActiveIdentity(state);
+	if (accountId && activeIdentity.accountId) {
+		return codexAuthAccountIdsMatch(
+			{ accountId, accessToken: account.accessToken },
+			activeIdentity,
+		);
 	}
 
 	const email = sanitizeEmail(account.email);
@@ -573,7 +593,7 @@ export async function syncCodexCliActiveSelectionIfDrifted(
 			return false;
 		}
 		return setCodexCliActiveSelection({
-			accountId: account.accountId,
+			accountId: codexCliAccountIdFor(account, account.accessToken),
 			email: account.email,
 			accessToken: account.accessToken,
 			refreshToken: account.refreshToken,

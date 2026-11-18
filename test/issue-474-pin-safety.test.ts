@@ -194,7 +194,7 @@ describe("issue #474 — pin-honored review feedback", () => {
 			).toBe(true);
 			expect(
 				logInfo.mock.calls.some(([msg]) =>
-					/Pinned: account 100 \(set by switch\)/.test(String(msg)),
+					/Pinned: account 100 \(/.test(String(msg)),
 				),
 			).toBe(false);
 		});
@@ -444,13 +444,13 @@ describe("issue #474 — pin-honored review feedback", () => {
 	});
 
 	describe("readPinAndGenFromDisk transient FS error handling", () => {
-		// Belt-and-suspenders coverage for the disk read used inside
-		// AccountManager.buildStorageSnapshot. The outer guard in accounts.ts
-		// already makes the regression provably impossible (defaults of
-		// `{undefined, 0}` fail the `disk.affinityGeneration > effective` check
-		// so in-memory values are preserved), but explicit coverage here pins
-		// the contract so future refactors of `readPinAndGenFromDisk` can't
-		// silently throw.
+		// Coverage for the DEFAULT (non-strict) contract of the disk read used by
+		// AccountManager.reconcileSelectionFromDisk. Non-strict callers still get
+		// `{undefined, 0}` on any failure, which fails the
+		// `disk.affinityGeneration > effective` check and so preserves in-memory
+		// values. Strict callers instead throw when the metadata could not be
+		// observed at all; that contract is pinned in
+		// test/pr691-switch-revalidation.test.ts.
 
 		it("returns defaults for a missing file", () => {
 			const dir = mkdtempSync(join(tmpdir(), "issue-474-readpin-missing-"));

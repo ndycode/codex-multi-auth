@@ -12,6 +12,10 @@ import { join } from "node:path";
 import { getCodexMultiAuthDir } from "./runtime-paths.js";
 import { sleep } from "./utils.js";
 import { tempPathFor } from "./temp-path.js";
+import {
+	withJsonStoreFileLock,
+	withJsonStoreWriteQueue,
+} from "./storage/json-store-lock.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -21,7 +25,6 @@ const UNIFIED_SETTINGS_PATH = join(getCodexMultiAuthDir(), "settings.json");
 const UNIFIED_SETTINGS_BACKUP_PATH = `${UNIFIED_SETTINGS_PATH}.bak`;
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 const TRANSIENT_READ_FS_CODES = new Set(["EBUSY", "EAGAIN"]);
-let settingsWriteQueue: Promise<void> = Promise.resolve();
 
 type SettingsReadResult = {
 	record: JsonRecord | null;
@@ -449,13 +452,17 @@ async function getUnifiedSettingsMtimeMs(): Promise<number | null> {
 	}
 }
 
+/**
+ * Serialize async settings writes: the per-path promise queue orders writers
+ * inside THIS process, and the cross-process lock directory
+ * (lib/storage/json-store-lock.ts) closes the same read→merge→rename window
+ * against OTHER processes. The task keeps its mtime CAS retry as the
+ * second-line guard for writers that do not take the lockfile.
+ */
 async function enqueueSettingsWrite<T>(task: () => Promise<T>): Promise<T> {
-	const run = settingsWriteQueue.catch(() => {}).then(task);
-	settingsWriteQueue = run.then(
-		() => undefined,
-		() => undefined,
+	return withJsonStoreWriteQueue(UNIFIED_SETTINGS_PATH, () =>
+		withJsonStoreFileLock(UNIFIED_SETTINGS_PATH, task),
 	);
-	return run;
 }
 
 /**
@@ -512,10 +519,12 @@ export function saveUnifiedPluginConfigSync(pluginConfig: JsonRecord): void {
 /**
  * Persist the provided plugin configuration to the unified settings file, replacing the `pluginConfig` section.
  *
- * Writes a shallow clone of `pluginConfig` into the on-disk settings payload. In-process calls are serialized
- * through an async queue to reduce lost-update races, but there is still no cross-process locking. On Windows,
- * filesystem atomicity and visibility semantics are platform-dependent; do not assume atomic merges across processes.
- * The settings file is written as plain JSON; redact or remove any sensitive tokens or secrets before calling.
+ * Writes a shallow clone of `pluginConfig` into the on-disk settings payload. Calls are serialized
+ * through a per-path async queue and a cross-process lock directory (lib/storage/json-store-lock.ts);
+ * each attempt re-reads the freshest on-disk record and re-applies the section under mtime CAS, so a
+ * concurrent process's write is merged rather than clobbered. On Windows, filesystem atomicity and
+ * visibility semantics are platform-dependent. The settings file is written as plain JSON; redact or
+ * remove any sensitive tokens or secrets before calling.
  *
  * @param pluginConfig - The plugin configuration object to store (will be shallow-cloned)
  */
@@ -567,12 +576,13 @@ export async function loadUnifiedDashboardSettings(): Promise<JsonRecord | null>
  *
  * Writes `dashboardDisplaySettings` into the shared settings.json (overwriting
  * any existing dashboardDisplaySettings section) and ensures the payload is
- * normalized with the file version. In-process async callers are serialized
- * through an internal queue (last writer still wins), but no cross-process lock
- * is provided. On Windows, path and directory creation follow Node's filesystem
- * semantics (case-insensitive paths, ACLs apply). Sensitive tokens or secrets
- * included in `dashboardDisplaySettings` are written verbatim — callers must
- * redact or omit secrets before calling.
+ * normalized with the file version. Async callers are serialized through a
+ * per-path queue plus the cross-process lock directory
+ * (lib/storage/json-store-lock.ts), with mtime CAS reload-and-retry inside the
+ * lock (last writer still wins per section). On Windows, path and directory
+ * creation follow Node's filesystem semantics (case-insensitive paths, ACLs
+ * apply). Sensitive tokens or secrets included in `dashboardDisplaySettings`
+ * are written verbatim — callers must redact or omit secrets before calling.
  *
  * @param dashboardDisplaySettings - A plain JSON record describing dashboard display preferences; the object is shallow-copied before persisting.
  */

@@ -1,5 +1,8 @@
 import type { Workspace } from "../accounts.js";
-import type { AccountMetadataV3 } from "../storage/public-types.js";
+import type {
+	AccountMetadataV3,
+	CodexCliMirror,
+} from "../storage/public-types.js";
 
 /**
  * Outcome of folding a single login result into the saved account pool.
@@ -32,6 +35,16 @@ export interface ResolvedAccountWrite {
 	accessToken?: string;
 	expiresAt?: number;
 	workspaces?: Workspace[];
+	/** Set, keep (undefined) or clear (null) the saved CodexCliMirror. */
+	codexCliMirror?: CodexCliMirror | null;
+	/**
+	 * Keep the saved row's `enabled` flag instead of re-enabling it. A targeted
+	 * re-authentication only tops up credentials for a row the user named, so it
+	 * must not pull a deliberately disabled account back into rotation behind
+	 * their back. A plain login still re-enables: signing in is the user asking
+	 * for that account to be usable again.
+	 */
+	preserveEnabledState?: boolean;
 	now: number;
 }
 
@@ -135,10 +148,13 @@ export function buildInsertedAccount(
 			accessToken: write.accessToken,
 			expiresAt: write.expiresAt,
 			enabled: true,
+			authInvalidatedAt: undefined,
+			authInvalidationErrorCode: undefined,
 			addedAt: write.now,
 			lastUsed: write.now,
 			workspaces: write.workspaces,
 			currentWorkspaceIndex: initialWorkspaceIndex,
+			...(write.codexCliMirror ? { codexCliMirror: write.codexCliMirror } : {}),
 		},
 	};
 }
@@ -190,10 +206,16 @@ export function buildUpdatedAccount(
 			refreshToken: write.refreshToken,
 			accessToken: write.accessToken,
 			expiresAt: write.expiresAt,
-			enabled: true,
+			enabled: write.preserveEnabledState ? existing.enabled : true,
+			authInvalidatedAt: undefined,
+			authInvalidationErrorCode: undefined,
 			lastUsed: write.now,
 			workspaces: mergedWorkspaces,
 			currentWorkspaceIndex: nextCurrentWorkspaceIndex,
+			codexCliMirror:
+				write.codexCliMirror === null
+					? undefined
+					: (write.codexCliMirror ?? existing.codexCliMirror),
 		},
 	};
 }

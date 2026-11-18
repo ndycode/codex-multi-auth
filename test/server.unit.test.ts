@@ -104,6 +104,32 @@ describe('OAuth Server Unit Tests', () => {
 			expect(result.ready).toBe(true);
 		});
 
+		it('binds both numeric loopbacks, not the registered "localhost" name', async () => {
+			// The registered redirect URI keeps its "localhost" host name, but the
+			// LISTEN side pins BOTH numeric loopbacks: a DNS-family-ambiguous name
+			// can resolve to ::1 first (or off-host via a hostile hosts entry), and
+			// a squatter on either family must not be able to receive the code.
+			(mockServer.listen as ReturnType<typeof vi.fn>).mockImplementation(
+				(_port: number, _host: string, callback: () => void) => {
+					callback();
+					return mockServer;
+				}
+			);
+			(mockServer.on as ReturnType<typeof vi.fn>).mockReturnValue(mockServer);
+
+			await startLocalOAuthServer({ state: 'test-state' });
+			expect(mockServer.listen).toHaveBeenCalledWith(
+				1455,
+				'::1',
+				expect.any(Function),
+			);
+			expect(mockServer.listen).toHaveBeenCalledWith(
+				1455,
+				'127.0.0.1',
+				expect.any(Function),
+			);
+		});
+
 		it('should set ready=false when port binding fails', async () => {
 			(mockServer.listen as ReturnType<typeof vi.fn>).mockReturnValue(mockServer);
 			(mockServer.on as ReturnType<typeof vi.fn>).mockImplementation(
@@ -124,6 +150,43 @@ describe('OAuth Server Unit Tests', () => {
 			expect(logError).toHaveBeenCalledWith(
 				expect.stringContaining('Failed to bind http://localhost:1455')
 			);
+		});
+
+		it('closes the bound candidate when the other loopback family reports EADDRINUSE', async () => {
+			// The shared-mock default above binds BOTH attempts on one object, so it
+			// cannot exercise the partial-bind path: one candidate bound while the
+			// other failed EADDRINUSE must be closed, or the survivor keeps a
+			// listener that can still receive callbacks on its family.
+			const boundServer = {
+				listen: vi.fn((_port: number, _host: string, callback: () => void) => {
+					callback();
+					return boundServer;
+				}),
+				on: vi.fn(() => boundServer),
+				close: vi.fn(),
+				unref: vi.fn(),
+			};
+			const inUseServer = {
+				listen: vi.fn(() => inUseServer),
+				on: vi.fn((event: string, handler: (err: NodeJS.ErrnoException) => void) => {
+					if (event === 'error') {
+						const error = new Error('Address in use') as NodeJS.ErrnoException;
+						error.code = 'EADDRINUSE';
+						setTimeout(() => handler(error), 0);
+					}
+					return inUseServer;
+				}),
+				close: vi.fn(),
+				unref: vi.fn(),
+			};
+			(http.createServer as unknown as ReturnType<typeof vi.fn>)
+				.mockImplementationOnce(() => boundServer)
+				.mockImplementationOnce(() => inUseServer);
+
+			const result = await startLocalOAuthServer({ state: 'test-state' });
+			expect(result.ready).toBe(false);
+			expect(result.bindErrorCode).toBe('EADDRINUSE');
+			expect(boundServer.close).toHaveBeenCalled();
 		});
 	});
 

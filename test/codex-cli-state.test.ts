@@ -220,6 +220,60 @@ describe("codex-cli state", () => {
       statSpy.mockRestore();
     }
   });
+  it("reads auth.json's org account_id behind a valid accounts.json through EBUSY (#700)", async () => {
+    await writeFile(
+      accountsPath,
+      JSON.stringify({
+        activeAccountId: "org-AbC123",
+        accounts: [
+          { accountId: "org-AbC123", accessToken: "a", refreshToken: "r", isActive: true },
+        ],
+      }),
+      "utf-8",
+    );
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        tokens: { access_token: "a", refresh_token: "r", account_id: "org-AbC123" },
+      }),
+      "utf-8",
+    );
+    const realReadFile = fsPromises.readFile.bind(fsPromises);
+    let authReadAttempts = 0;
+    let authFailures = 0;
+    const readSpy = vi.spyOn(fsPromises, "readFile");
+    readSpy.mockImplementation(async (...args) => {
+      if (String(args[0]) === authPath) {
+        authReadAttempts += 1;
+        if (authReadAttempts <= authFailures) {
+          const error = new Error("busy") as NodeJS.ErrnoException;
+          error.code = "EBUSY";
+          throw error;
+        }
+      }
+      return realReadFile(...args);
+    });
+    try {
+      // one EBUSY, then success: the retry surfaces the org id
+      authFailures = 1;
+      let state = await loadCodexCliState({ forceRefresh: true });
+      expect(state?.path).toBe(accountsPath);
+      expect(state?.activeAccountId).toBe("org-AbC123");
+      expect(state?.authFileAccountId).toBe("org-AbC123");
+      expect(authReadAttempts).toBe(2);
+
+      // every attempt busy: accounts.json state still returned, nothing thrown
+      authReadAttempts = 0;
+      authFailures = Number.POSITIVE_INFINITY;
+      state = await loadCodexCliState({ forceRefresh: true });
+      expect(state?.path).toBe(accountsPath);
+      expect(state?.activeAccountId).toBe("org-AbC123");
+      expect(state?.authFileAccountId).toBeUndefined();
+      expect(authReadAttempts).toBe(4);
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
   it("falls back to Codex auth.json when accounts.json is missing", async () => {
     await writeFile(
       authPath,

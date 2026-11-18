@@ -14,6 +14,7 @@ import type {
 	CooldownReason,
 	RateLimitStateV3,
 } from "./public-types.js";
+import { isRecord } from "./record-utils.js";
 
 interface AccountMetadataV1 {
 	accountId?: string;
@@ -50,37 +51,72 @@ function nowMs(): number {
 	return Date.now();
 }
 
+/**
+ * A version-1 row that may carry V3-era fields. Hybrid files are real: the
+ * flagged-accounts store is `version: 1` with full V3 rows, and hand-edited or
+ * partially-written files can carry fields the V1 schema never declared. The
+ * V3 path keeps unknown fields verbatim, so the migration must not silently
+ * drop them (e.g. a `rateLimitResetTimes` map discarded on upgrade would make
+ * a rate-limited account look immediately available — see the M3 pin in
+ * test/storage-parser.test.ts).
+ */
+type AccountMetadataV1Input = AccountMetadataV1 & {
+	rateLimitResetTimes?: unknown;
+};
+
 export function migrateV1ToV3(v1: AccountStorageV1): AccountStorageV3 {
 	const now = nowMs();
+	const rawActiveIndexByFamily = isRecord(
+		(v1 as { activeIndexByFamily?: unknown }).activeIndexByFamily,
+	)
+		? ((v1 as { activeIndexByFamily?: unknown })
+				.activeIndexByFamily as Record<string, unknown>)
+		: {};
 	return {
 		version: 3,
-		accounts: v1.accounts.map((account) => {
-			const rateLimitResetTimes: RateLimitStateV3 = {};
-			if (typeof account.rateLimitResetTime === "number" && account.rateLimitResetTime > now) {
-				for (const family of MODEL_FAMILIES) {
-					rateLimitResetTimes[family] = account.rateLimitResetTime;
+		accounts: v1.accounts
+			.filter(
+				(account): account is AccountMetadataV1Input =>
+					account !== null && typeof account === "object",
+			)
+			.map((account) => {
+				const {
+					rateLimitResetTime,
+					rateLimitResetTimes: existingResets,
+					...passthrough
+				} = account;
+				// A pre-existing V3 map wins per key; the legacy scalar only fills
+				// families the map does not already cover.
+				const rateLimitResetTimes: RateLimitStateV3 = {};
+				if (isRecord(existingResets)) {
+					for (const [family, value] of Object.entries(existingResets)) {
+						if (typeof value === "number") {
+							rateLimitResetTimes[family] = value;
+						}
+					}
 				}
-			}
-			return {
-				accountId: account.accountId,
-				accountIdSource: account.accountIdSource,
-				accountLabel: account.accountLabel,
-				email: account.email,
-				refreshToken: account.refreshToken,
-				accessToken: account.accessToken,
-				expiresAt: account.expiresAt,
-				enabled: account.enabled,
-				addedAt: account.addedAt,
-				lastUsed: account.lastUsed,
-				lastSwitchReason: account.lastSwitchReason,
-				rateLimitResetTimes: Object.keys(rateLimitResetTimes).length > 0 ? rateLimitResetTimes : undefined,
-				coolingDownUntil: account.coolingDownUntil,
-				cooldownReason: account.cooldownReason,
-			};
-		}),
+				if (typeof rateLimitResetTime === "number" && rateLimitResetTime > now) {
+					for (const family of MODEL_FAMILIES) {
+						rateLimitResetTimes[family] ??= rateLimitResetTime;
+					}
+				}
+				return {
+					...passthrough,
+					rateLimitResetTimes:
+						Object.keys(rateLimitResetTimes).length > 0
+							? rateLimitResetTimes
+							: undefined,
+				};
+			}),
 		activeIndex: v1.activeIndex,
 		activeIndexByFamily: Object.fromEntries(
-			MODEL_FAMILIES.map((family) => [family, v1.activeIndex]),
+			MODEL_FAMILIES.map((family) => {
+				const perFamily = rawActiveIndexByFamily[family];
+				return [
+					family,
+					typeof perFamily === "number" ? perFamily : v1.activeIndex,
+				];
+			}),
 		) as Partial<Record<ModelFamily, number>>,
 	};
 }

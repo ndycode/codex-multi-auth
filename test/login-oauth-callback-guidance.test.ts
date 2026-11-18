@@ -5,17 +5,42 @@
  * failure reason and forwards the bind error, which is what actually makes the
  * Windows/WSL conflict legible to the user.
  *
- * Under vitest neither stdin nor stdout is a TTY, so the manual-paste prompt
- * short-circuits to `cancelled` in browser mode and the flow returns without
- * blocking on input.
+ * The manual/incognito regression below supplies a fake readline prompt so it
+ * can exercise the same callback validation and exchange seam without a TTY.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { hooks } = vi.hoisted(() => ({
-	hooks: {
-		serverInfo: null as unknown,
-		guidanceLines: [] as string[],
-	},
+		hooks: {
+			serverInfo: null as unknown,
+			guidanceLines: [] as string[],
+			manualInput: "",
+			exchangeAuthorizationCode: vi.fn(),
+			openBrowserUrl: true,
+			copyTextToClipboard: true,
+		},
+	}));
+
+vi.mock("node:process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:process")>();
+	return {
+		...actual,
+		stdin: {
+			isTTY: false,
+			readableEnded: false,
+			destroyed: false,
+			once: vi.fn(),
+			off: vi.fn(),
+		},
+		stdout: { isTTY: false },
+	};
+});
+
+vi.mock("node:readline/promises", () => ({
+	createInterface: vi.fn(() => ({
+		question: vi.fn(async () => hooks.manualInput),
+		close: vi.fn(),
+	})),
 }));
 
 vi.mock("../lib/auth/auth.js", async (importOriginal) => {
@@ -25,8 +50,10 @@ vi.mock("../lib/auth/auth.js", async (importOriginal) => {
 		createAuthorizationFlow: vi.fn(async () => ({
 			pkce: { challenge: "challenge", verifier: "verifier" },
 			state: "test-state",
-			url: "https://auth.openai.com/oauth/authorize?state=test-state",
+			url:
+				"https://auth.openai.com/oauth/authorize?state=test-state&code_challenge=challenge",
 		})),
+		exchangeAuthorizationCode: hooks.exchangeAuthorizationCode,
 	};
 });
 
@@ -35,8 +62,8 @@ vi.mock("../lib/auth/server.js", () => ({
 }));
 
 vi.mock("../lib/auth/browser.js", () => ({
-	openBrowserUrl: vi.fn(() => true),
-	copyTextToClipboard: vi.fn(() => true),
+	openBrowserUrl: vi.fn(() => hooks.openBrowserUrl),
+	copyTextToClipboard: vi.fn(() => hooks.copyTextToClipboard),
 	isBrowserLaunchSuppressed: vi.fn(() => false),
 	getBrowserOpener: vi.fn(() => "xdg-open"),
 }));
@@ -80,6 +107,10 @@ describe("runOAuthFlow callback-failure guidance", () => {
 		vi.clearAllMocks();
 		logged = [];
 		hooks.guidanceLines = ["GUIDANCE LINE ONE", "", "GUIDANCE LINE TWO"];
+		hooks.manualInput = "";
+		hooks.exchangeAuthorizationCode.mockReset();
+		hooks.openBrowserUrl = true;
+		hooks.copyTextToClipboard = true;
 		vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
 			logged.push(args.map(String).join(" "));
 		});
@@ -121,9 +152,40 @@ describe("runOAuthFlow callback-failure guidance", () => {
 		expect(logged).toContain("");
 	});
 
-	// Manual mode is not exercised here: it sets `allowNonTty`, so the prompt
-	// blocks reading stdin rather than short-circuiting, and faking that stream
-	// would test the harness more than the code. The guidance is gated on
-	// `signInMode === "browser"` in one place, and the three cases above pin the
-	// branch that actually selects the reason.
+	it("prints the complete authorization URL for manual/incognito login", async () => {
+		const authorizationUrl =
+			"https://auth.openai.com/oauth/authorize?state=test-state&code_challenge=challenge";
+		hooks.manualInput =
+			"http://localhost:1455/auth/callback?code=callback-code&state=test-state";
+		hooks.exchangeAuthorizationCode.mockResolvedValue({
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+		});
+
+		await expect(runOAuthFlow(false, "manual")).resolves.toMatchObject({
+			type: "success",
+		});
+
+		expect(logged.join("\n")).toContain(authorizationUrl);
+		expect(logged.join("\n")).not.toContain("%3Credacted%3E");
+		expect(hooks.exchangeAuthorizationCode).toHaveBeenCalledWith(
+			"callback-code",
+			"verifier",
+			"http://localhost:1455/auth/callback",
+		);
+	});
+
+	it("prints a usable URL when browser and clipboard fallbacks both fail", async () => {
+		hooks.serverInfo = serverThatTimesOut();
+		hooks.openBrowserUrl = false;
+		hooks.copyTextToClipboard = false;
+
+		await runOAuthFlow(false, "browser");
+
+		expect(logged.join("\n")).toContain(
+			"https://auth.openai.com/oauth/authorize?state=test-state&code_challenge=challenge",
+		);
+	});
 });

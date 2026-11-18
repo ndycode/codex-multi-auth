@@ -1,9 +1,10 @@
 import { createLogger, logRequest, LOGGING_ENABLED } from "../logger.js";
 import { HTTP_STATUS, PLUGIN_NAME } from "../constants.js";
 import { isRecord } from "../utils.js";
+import { extractResponsesUsage } from "../usage/usage-extraction.js";
+import type { UsageTokenCounts } from "../usage/types.js";
 
 import type { SSEEventData } from "../types.js";
-
 const log = createLogger("response-handler");
 
 const MAX_SSE_SIZE = 10 * 1024 * 1024; // 10MB limit to prevent memory exhaustion
@@ -785,6 +786,7 @@ export async function convertSseToJson(
 	headers: Headers,
 	options?: {
 		onResponseId?: (responseId: string) => void;
+		onUsage?: (usage: UsageTokenCounts) => void;
 		streamStallTimeoutMs?: number;
 	},
 ): Promise<Response> {
@@ -887,9 +889,16 @@ export async function convertSseToJson(
 				headers: headers,
 			});
 		}
-
 		logStreamDiagnostics(finalResponse);
 
+		if (options?.onUsage) {
+			// The non-streaming branch already holds the assembled response, so
+			// the token counts come straight off it. Reported even though the
+			// caller sees JSON rather than SSE: the usage ledger (and therefore
+			// the maxTokens / maxCostUsd budget caps) needs both shapes.
+			const usage = extractResponsesUsage(finalResponse);
+			if (usage) options.onUsage(usage);
+		}
 		// Return as plain JSON (not SSE)
 		const jsonHeaders = new Headers(headers);
 		jsonHeaders.set("content-type", "application/json; charset=utf-8");
@@ -914,7 +923,8 @@ export async function convertSseToJson(
 
 function createResponseIdCapturingStream(
 	body: ReadableStream<Uint8Array>,
-	onResponseId: (responseId: string) => void,
+	onResponseId?: (responseId: string) => void,
+	onUsage?: (usage: UsageTokenCounts) => void,
 ): ReadableStream<Uint8Array> {
 	const decoder = new TextDecoder();
 	let bufferedText = "";
@@ -937,7 +947,17 @@ function createResponseIdCapturingStream(
 			if (!payload || payload === "[DONE]") continue;
 			try {
 				const data = JSON.parse(payload) as SSEEventData;
-				maybeCaptureResponseEvent(state, data, onResponseId);
+				if (onResponseId) {
+					maybeCaptureResponseEvent(state, data, onResponseId);
+				}
+				if (onUsage) {
+					// Reuse the JSON this loop already parsed rather than scanning
+					// the stream twice. Without these counts every usage-ledger row
+					// lands with zero tokens and zero cost, which silently disables
+					// the maxTokens / maxCostUsd budget caps.
+					const usage = extractResponsesUsage(data);
+					if (usage) onUsage(usage);
+				}
 				if (state.encounteredError) break;
 			} catch (error) {
 				// AUDIT-H9 / H-03: stream passthrough. The raw bytes still
@@ -1067,8 +1087,9 @@ export function attachResponseIdCapture(
 	response: Response,
 	headers: Headers,
 	onResponseId?: (responseId: string) => void,
+	onUsage?: (usage: UsageTokenCounts) => void,
 ): Response {
-	if (!response.body || !onResponseId) {
+	if (!response.body || (!onResponseId && !onUsage)) {
 		return new Response(response.body, {
 			status: response.status,
 			statusText: response.statusText,
@@ -1077,7 +1098,7 @@ export function attachResponseIdCapture(
 	}
 
 	return new Response(
-		createResponseIdCapturingStream(response.body, onResponseId),
+		createResponseIdCapturingStream(response.body, onResponseId, onUsage),
 		{
 			status: response.status,
 			statusText: response.statusText,

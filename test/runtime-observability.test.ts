@@ -20,6 +20,8 @@ vi.mock("node:fs", () => ({
 	},
 }));
 
+vi.mock("../lib/logger.js", () => ({createLogger:()=>({warn:vi.fn()})}));
+
 vi.mock("../lib/runtime-paths.js", () => ({
 	getCodexMultiAuthDir: () => "/mock/.codex/multi-auth",
 }));
@@ -99,6 +101,23 @@ describe("runtime observability snapshot versioning", () => {
 			expect(renameMock).toHaveBeenCalledTimes(2);
 		});
 		expect(unlinkMock).toHaveBeenCalled();
+	});
+
+	it("collapses a burst of snapshot mutations into the in-flight write and the latest one", async () => {
+		process.env.VITEST = "";
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		writeFileMock.mockImplementationOnce(async () => { await gate; });
+		renameMock.mockResolvedValue(undefined);
+		const mod = await import("../lib/runtime/runtime-observability.js");
+		for (let i = 1; i <= 10; i++) mod.mutateRuntimeObservabilitySnapshot((snapshot) => { snapshot.responsesRequests = i; });
+		await vi.waitFor(() => expect(writeFileMock).toHaveBeenCalledTimes(1));
+		for (let i = 11; i <= 20; i++) mod.mutateRuntimeObservabilitySnapshot((snapshot) => { snapshot.responsesRequests = i; });
+		release();
+		await vi.waitFor(() => expect(renameMock).toHaveBeenCalledTimes(2));
+		expect(writeFileMock).toHaveBeenCalledTimes(2);
+		const written = (writeFileMock.mock.calls as unknown[][]).map((call) => JSON.parse(String(call[1])).responsesRequests);
+		expect(written).toEqual([10, 20]);
 	});
 
 	it("does not chmod the dir on win32 and still persists the snapshot", async () => {
@@ -231,6 +250,24 @@ describe("runtime observability snapshot versioning", () => {
 		const after = mod.getRuntimeObservabilitySnapshot();
 		expect(after.accountSkipReasons).toEqual({ "1": "rate-limited" });
 		expect(after.lastPoolExhaustionSkipReasons).toEqual({ "1": "rate-limited" });
+	});
+
+	it("preserves cumulative Luna Reserve fallback history across runtime recovery resets", async () => {
+		process.env.VITEST = "";
+		const mod = await import("../lib/runtime/runtime-observability.js");
+		mod.mutateRuntimeObservabilitySnapshot((snapshot) => {
+			snapshot.responsesRequests = 4;
+			snapshot.lunaReserveFallbacks = 3;
+			snapshot.accountSkipReasons = { "0": "rate-limited" };
+		});
+
+		mod.recordRuntimeReset("pool-recovered");
+
+		const after = mod.getRuntimeObservabilitySnapshot();
+		expect(after.responsesRequests).toBe(4);
+		expect(after.lunaReserveFallbacks).toBe(3);
+		expect(after.accountSkipReasons).toEqual({});
+		expect(after.lastRuntimeResetReason).toBe("pool-recovered");
 	});
 
 	it("is a no-op when the recovered account has no recorded skip reason", async () => {

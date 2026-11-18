@@ -81,6 +81,39 @@ describe("local client tokens", () => {
 		expect(store.tokens.filter((token) => token.revokedAt !== null)).toHaveLength(2);
 	});
 
+	it.each([
+		"sha256:not-hex-at-all",
+		`sha256:${"ab".repeat(32)}`.slice(0, -1), // 63 hex chars — one short
+		"sha256:", // empty digest
+		`sha256:${"AB".repeat(32)}`, // uppercase hex decodes fine but must still match bytes
+	])(
+		"returns null when a persisted tokenHash is malformed or mismatched: %s",
+		async (storedHash) => {
+			const {
+				addLocalClientToken,
+				saveLocalClientTokenStore,
+				loadLocalClientTokenStore,
+				verifyLocalClientBearerToken,
+			} = await import("../lib/local-client-tokens.js");
+
+			const created = await addLocalClientToken({ label: "victim", now: 100 });
+
+			// Persist a record whose tokenHash survives normalizeRecord (it only
+			// requires the "sha256:" prefix) but fails sha256DigestBytes' strict
+			// 64-hex shape, or decodes to bytes that don't match the bearer token.
+			const store = await loadLocalClientTokenStore();
+			const record = store.tokens.find((t) => t.id === created.record.id);
+			expect(record).toBeDefined();
+			record!.tokenHash = storedHash;
+			await saveLocalClientTokenStore(store);
+
+			// tokenHashEqual must reject via digest validation without throwing.
+			expect(
+				await verifyLocalClientBearerToken(`Bearer ${created.plainToken}`, 200),
+			).toBeNull();
+		},
+	);
+
 	it("debounces lastUsedAt persistence across rapid verifies", async () => {
 		const { addLocalClientToken, loadLocalClientTokenStore, verifyLocalClientBearerToken } =
 			await import("../lib/local-client-tokens.js");
@@ -92,8 +125,14 @@ describe("local client tokens", () => {
 		await verifyLocalClientBearerToken(`Bearer ${created.plainToken}`, 1_000);
 
 		// From here, every verify within the threshold must stay in-memory: no
-		// temp-write + rename per request on the auth hot path.
+		// temp-write + rename per request on the auth hot path. (The store's
+		// cross-process lock publishes by rename too — exclude `.write-lock`
+		// publishes; the STORE must not be renamed.)
 		const renameSpy = vi.spyOn(fs, "rename");
+		const storeRenames = () =>
+			renameSpy.mock.calls.filter(
+				(args) => !String(args[1]).endsWith(".write-lock"),
+			);
 		try {
 			for (let i = 1; i <= 5; i += 1) {
 				const verified = await verifyLocalClientBearerToken(
@@ -105,7 +144,7 @@ describe("local client tokens", () => {
 				expect(verified?.id).toBe(created.record.id);
 				expect(verified?.lastUsedAt).toBe(1_000 + i);
 			}
-			expect(renameSpy).not.toHaveBeenCalled();
+			expect(storeRenames()).toEqual([]);
 
 			// On disk it is still the last persisted value (debounced).
 			const debounced = await loadLocalClientTokenStore();
@@ -118,7 +157,7 @@ describe("local client tokens", () => {
 				1_000 + 60_000,
 			);
 			expect(flushed?.lastUsedAt).toBe(1_000 + 60_000);
-			expect(renameSpy).toHaveBeenCalledTimes(1);
+			expect(storeRenames()).toHaveLength(1);
 		} finally {
 			renameSpy.mockRestore();
 		}
@@ -172,6 +211,11 @@ describe("local client tokens", () => {
 			let attempts = 0;
 			const renameSpy = vi.spyOn(fs, "rename");
 			renameSpy.mockImplementation(async (...args) => {
+				// Let the cross-process lock publish through; inject the transient
+				// failure on the first STORE rename only.
+				if (String(args[1]).endsWith(".write-lock")) {
+					return realRename(...args);
+				}
 				attempts += 1;
 				if (attempts === 1) {
 					const error = new Error(`transient ${code}`) as NodeJS.ErrnoException;

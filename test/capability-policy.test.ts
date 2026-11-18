@@ -38,6 +38,50 @@ describe("capability policy store", () => {
 		expect(store.getSnapshot("id:acc_b", "gpt-5-codex")).not.toBeNull();
 	});
 
+	it("shares one policy key between a GPT-6 id and the model it routes to", () => {
+		// The catalog gate here has to match the resolver it guards. It tested a
+		// hand-picked `[-_\s]` separator while `tokenizeModelId` splits on any
+		// non-alphanumeric run, so `gpt.6-turbo` kept its raw string as the policy
+		// key while routing sent the request to `gpt-6-astra`. State recorded under
+		// one was invisible to the other.
+		const store = new CapabilityPolicyStore();
+		store.recordSuccess("id:acc_gpt6", "gpt.6-turbo", 1_000);
+		expect(store.getBoost("id:acc_gpt6", "gpt-6-astra", 1_500)).toBeGreaterThan(0);
+
+		// The tokenizer collapses a RUN of separators, so the gate uses `*`, not
+		// `?`. Repeated separators and no separator at all both have to route the
+		// same way the resolver does.
+		const repeated = new CapabilityPolicyStore();
+		repeated.recordSuccess("id:acc_rep", "gpt..6-turbo", 1_000);
+		expect(repeated.getBoost("id:acc_rep", "gpt-6-astra", 1_500)).toBeGreaterThan(0);
+
+		const bare = new CapabilityPolicyStore();
+		bare.recordSuccess("id:acc_bare", "gpt6", 1_000);
+		expect(bare.getBoost("id:acc_bare", "gpt-6-astra", 1_500)).toBeGreaterThan(0);
+
+		// The same holds for ids the alias table does carry, and for Daybreak.
+		const aliased = new CapabilityPolicyStore();
+		aliased.recordSuccess("id:acc_astra", "gpt-6-astra-pro", 1_000);
+		expect(aliased.getBoost("id:acc_astra", "gpt-6-astra", 1_500)).toBeGreaterThan(0);
+
+		const daybreak = new CapabilityPolicyStore();
+		daybreak.recordSuccess("id:acc_db", "gpt-daybreak-teal", 1_000);
+		expect(
+			daybreak.getBoost("id:acc_db", "gpt-daybreak-blue-latest", 1_500),
+		).toBeGreaterThan(0);
+	});
+
+	it("still refuses to drag an unrelated model onto a GPT-5 default", () => {
+		// Widening the gate to every hyphenated id would let an unknown model
+		// inherit the DEFAULT_MODEL key and read another model's policy state.
+		const store = new CapabilityPolicyStore();
+		store.recordSuccess("id:acc_other", "gpt-5.5", 1_000);
+		expect(store.getBoost("id:acc_other", "gpt-4o", 1_500)).toBe(0);
+		expect(store.getBoost("id:acc_other", "gpt.4-turbo", 1_500)).toBe(0);
+		expect(store.getBoost("id:acc_other", "gpt-4.5-preview", 1_500)).toBe(0);
+		expect(store.getBoost("id:acc_other", "gpt..4", 1_500)).toBe(0);
+	});
+
 	it("uses canonical model normalization across aliases", () => {
 		const store = new CapabilityPolicyStore();
 		store.recordSuccess("id:acc_alias", "gpt-5.3-codex", 1_000);

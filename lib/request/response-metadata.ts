@@ -51,6 +51,7 @@ export function sanitizeResponseHeadersForLog(
 		"x-codex-secondary-window-minutes",
 		"x-codex-secondary-reset-at",
 		"x-codex-secondary-reset-after-seconds",
+		"x-codex-context-budget-percent",
 		"retry-after",
 		"x-ratelimit-reset",
 		"x-ratelimit-reset-requests",

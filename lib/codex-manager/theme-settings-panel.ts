@@ -1,6 +1,7 @@
 import { stdin as input, stdout as output } from "node:process";
 import type {
 	DashboardAccentColor,
+	DashboardColorMode,
 	DashboardDisplaySettings,
 	DashboardThemePreset,
 } from "../dashboard-settings.js";
@@ -11,6 +12,7 @@ import { type MenuItem, select } from "../ui/select.js";
 type ThemeConfigAction =
 	| { type: "set-palette"; palette: DashboardThemePreset }
 	| { type: "set-accent"; accent: DashboardAccentColor }
+	| { type: "set-color-mode"; colorMode: DashboardColorMode }
 	| { type: "reset" }
 	| { type: "save" }
 	| { type: "cancel" };
@@ -28,6 +30,7 @@ export interface ThemeSettingsPanelDeps {
 	) => void;
 	THEME_PRESET_OPTIONS: readonly DashboardThemePreset[];
 	ACCENT_COLOR_OPTIONS: readonly DashboardAccentColor[];
+	COLOR_MODE_OPTIONS: readonly DashboardColorMode[];
 	THEME_PANEL_KEYS: readonly (keyof DashboardDisplaySettings)[];
 	UI_COPY: typeof UI_COPY;
 }
@@ -48,6 +51,7 @@ export async function promptThemeSettingsPanel(
 		const ui = getUiRuntimeOptions();
 		const palette = draft.uiThemePreset ?? "green";
 		const accent = draft.uiAccentColor ?? "green";
+		const colorMode = draft.uiColorMode ?? "auto";
 		const paletteItems: MenuItem<ThemeConfigAction>[] =
 			deps.THEME_PRESET_OPTIONS.map((candidate, index) => {
 				const color: MenuItem<ThemeConfigAction>["color"] =
@@ -72,6 +76,25 @@ export async function promptThemeSettingsPanel(
 					color,
 				};
 			});
+		const colorModeItems: MenuItem<ThemeConfigAction>[] =
+			deps.COLOR_MODE_OPTIONS.map((candidate) => {
+				const color: MenuItem<ThemeConfigAction>["color"] =
+					colorMode === candidate ? "green" : "yellow";
+				const key =
+					candidate === "auto" ? "A" : candidate === "dark" ? "D" : "L";
+				const hint =
+					candidate === "auto"
+						? "Detect from COLORFGBG; dark when unknown."
+						: candidate === "dark"
+							? "Pale text on a dark terminal background."
+							: "Dark text on a light terminal background.";
+				return {
+					label: `${colorMode === candidate ? "[x]" : "[ ]"} ${key}. ${candidate}`,
+					hint,
+					value: { type: "set-color-mode", colorMode: candidate },
+					color,
+				};
+			});
 
 		const items: MenuItem<ThemeConfigAction>[] = [
 			{
@@ -87,6 +110,13 @@ export async function promptThemeSettingsPanel(
 				kind: "heading",
 			},
 			...accentItems,
+			{ label: "", value: { type: "cancel" }, separator: true },
+			{
+				label: deps.UI_COPY.settings.terminalBackground,
+				value: { type: "cancel" },
+				kind: "heading",
+			},
+			...colorModeItems,
 			{ label: "", value: { type: "cancel" }, separator: true },
 			{
 				label: deps.UI_COPY.settings.resetDefault,
@@ -114,6 +144,12 @@ export async function promptThemeSettingsPanel(
 			if (value.type === "set-accent" && focus.type === "set-accent") {
 				return value.accent === focus.accent;
 			}
+			if (
+				value.type === "set-color-mode" &&
+				focus.type === "set-color-mode"
+			) {
+				return value.colorMode === focus.colorMode;
+			}
 			return true;
 		});
 
@@ -136,6 +172,10 @@ export async function promptThemeSettingsPanel(
 				if (lower === "q") return { type: "cancel" };
 				if (lower === "s") return { type: "save" };
 				if (lower === "r") return { type: "reset" };
+				if (lower === "a") return { type: "set-color-mode", colorMode: "auto" };
+				if (lower === "d") return { type: "set-color-mode", colorMode: "dark" };
+				if (lower === "l")
+					return { type: "set-color-mode", colorMode: "light" };
 				if (raw === "1") return { type: "set-palette", palette: "green" };
 				if (raw === "2") return { type: "set-palette", palette: "blue" };
 				return undefined;
@@ -155,6 +195,12 @@ export async function promptThemeSettingsPanel(
 		}
 		if (result.type === "set-palette") {
 			draft = { ...draft, uiThemePreset: result.palette };
+			focus = result;
+			deps.applyUiThemeFromDashboardSettings(draft);
+			continue;
+		}
+		if (result.type === "set-color-mode") {
+			draft = { ...draft, uiColorMode: result.colorMode };
 			focus = result;
 			deps.applyUiThemeFromDashboardSettings(draft);
 			continue;

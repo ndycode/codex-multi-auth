@@ -42,6 +42,7 @@ function isRetryableRefreshFailure(
 	result: Extract<TokenResult, { type: "failed" }>,
 ): boolean {
 	switch (result.reason) {
+		case "coordination_error":
 		case "network_error":
 		case "unknown":
 		case "invalid_response":

@@ -130,7 +130,7 @@ describe("quota readiness", () => {
 			primary: { usedPercent: 100, windowMinutes },
 			updatedAt,
 		};
-		const boundary = updatedAt + windowMinutes * 60_000;
+		const boundary = updatedAt + 60 * 60_000;
 		expect(isQuotaCacheEntryExhausted(entry, boundary - 1)).toBe(true);
 		expect(isQuotaCacheEntryExhausted(entry, boundary)).toBe(false);
 	});
@@ -148,17 +148,17 @@ describe("quota readiness", () => {
 			).toBe(true);
 		});
 
-		it("stays exhausted when windowMinutes is missing", () => {
+		it("expires stale usage even when windowMinutes is missing", () => {
 			const updatedAt = 5_000_000;
 			expect(
 				isQuotaCacheEntryExhausted(
 					{ primary: { usedPercent: 100 }, updatedAt },
 					updatedAt + 10 * 24 * 60 * 60_000,
 				),
-			).toBe(true);
+			).toBe(false);
 		});
 
-		it("stays exhausted when windowMinutes is zero or negative", () => {
+		it("expires stale usage even when windowMinutes is zero or negative", () => {
 			const updatedAt = 6_000_000;
 			for (const windowMinutes of [0, -300]) {
 				expect(
@@ -166,7 +166,7 @@ describe("quota readiness", () => {
 						{ primary: { usedPercent: 100, windowMinutes }, updatedAt },
 						updatedAt + 10 * 24 * 60 * 60_000,
 					),
-				).toBe(true);
+				).toBe(false);
 			}
 		});
 

@@ -78,6 +78,7 @@ export async function showAuthMenu(
 			{ label: UI_COPY.mainMenu.checkAccounts, value: { type: "check" }, color: "green" },
 			{ label: UI_COPY.mainMenu.bestAccount, value: { type: "forecast" }, color: "green" },
 			{ label: UI_COPY.mainMenu.fixIssues, value: { type: "fix" }, color: "green" },
+			{ label: "API credentials and models", value: { type: "api-models" }, color: "green" },
 			{ label: UI_COPY.mainMenu.settings, value: { type: "settings" }, color: "green" },
 			{ label: "", value: { type: "cancel" }, separator: true },
 			{ label: UI_COPY.mainMenu.moreChecks, value: { type: "cancel" }, kind: "heading" },

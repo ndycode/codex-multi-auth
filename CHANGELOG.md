@@ -3,541 +3,1232 @@
 All notable changes to this project are documented in this file.
 Dates use ISO format (`YYYY-MM-DD`).
 
-This repository's current stable release line is `2.x`.
-Current stable release notes live in `docs/releases/`.
-This top-level changelog preserves the foundational `0.x` milestones and points older iteration history to `docs/releases/legacy-pre-0.1-history.md`.
+This repository's current stable release line is `2.x`. Full release notes live in [`docs/releases/`](docs/releases/) — this file is the short version. Pre-`0.1.0` iteration history is archived in [`docs/releases/legacy-pre-0.1-history.md`](docs/releases/legacy-pre-0.1-history.md). Conventions: entry headings are `## [x.y.z] - YYYY-MM-DD`; section headings come from `Added`, `Changed`, `Fixed`, `Removed`, `Security`, `Internal`, `Notes`; issue and pull-request references link as `[#N](https://github.com/ndycode/codex-multi-auth/pull/N)`.
 
-## [2.7.1] - 2026-07-24
+## [2.26.0] - 2026-11-04
 
-A correctness release with no new features and no configuration changes — the output of a whole-repo bug hunt across the refresh lease, quota forecasting, account storage, the request pipeline, and account routing. Every fix was reproduced first and ships with a regression test that fails against 2.7.0. Two of them could silently route requests to the wrong account or stall refreshes for every process on the machine, so upgrading is recommended for multi-account setups.
-Closes [#635](https://github.com/ndycode/codex-multi-auth/issues/635). Landed as [#636](https://github.com/ndycode/codex-multi-auth/pull/636), [#637](https://github.com/ndycode/codex-multi-auth/pull/637), and [#638](https://github.com/ndycode/codex-multi-auth/pull/638). See [docs/releases/v2.7.1.md](docs/releases/v2.7.1.md) for full details.
+The runtime proxy and local bridge route native Decisions API requests to
+API and ZDR credentials, with failover inside the selected pool. A successful
+`resets redeem` now reaches a running router, including a hard pin, without a
+restart. Reset-credit state moves to version 3, so upgrade the CLI and router
+together.
+[Full notes](docs/releases/v2.26.0.md).
 
-### Fixed
+## [2.25.0] - 2026-10-31
 
-- **A manual pin could silently route to the wrong account.** Account removal remapped `activeIndex` but never `pinnedAccountIndex`, and the loader only range-checks the pin. After an account was removed — including the automatic removal of a revoked-token account, which needs no user action — a stale in-range pin pointed at a different account with no error surfaced, or went out of range and wedged the pool with a 503. Both removal paths now follow the pinned account by identity and clear the pin when that account is gone; the proxy's hot-path pin reader also rejects negative and non-integer pins ([#638](https://github.com/ndycode/codex-multi-auth/pull/638))
-- **A transient refresh failure blocked refreshes for every process for up to 20s.** The cross-process lease cached any result, so a network error or timeout — which returns a failure rather than throwing — was served verbatim to every follower for the result TTL, and a cached `429` could cool down a healthy account. Only successful results are cached now ([#637](https://github.com/ndycode/codex-multi-auth/pull/637))
-- **A still-waiting lease acquire could be evicted into a duplicate refresh**, which fails with `invalid_grant` because the refresh token rotates on first use. Eviction now waits for the lease wait budget plus slack, read from the coordinator's configured value rather than the compiled-in default ([#637](https://github.com/ndycode/codex-multi-auth/pull/637))
-- **Monthly (Codex Business) quota windows were labelled `5h`.** The account menu hardcoded the positional `5h`/`7d` labels, so a 30-day window rendered as a five-hour window resetting in 28 days. Labels now derive from the window's real duration; the summary fallback and the ready-first sort resolve by duration too, so a Business row no longer loses its quota bar or sinks to the bottom of the sort ([#635](https://github.com/ndycode/codex-multi-auth/issues/635), [#636](https://github.com/ndycode/codex-multi-auth/pull/636))
-- **`forecast` could recommend an exhausted account and bench a usable one.** A live probe at 100% used with no reset time stayed `ready`; and exhaustion was decided on the rounded left-percent, so 99.6% used rounded to 0% left and benched an account that still had quota. Both now test the raw used-percent, which also stops a 99.6%-used sibling window inflating a reported wait ([#637](https://github.com/ndycode/codex-multi-auth/pull/637))
-- **`import` and legacy project-storage migration dropped the manual pin** and reset `affinityGeneration` to 0, letting a running proxy clobber a newer CLI pin. Both now carry the fields through and re-resolve the pin by identity, since deduplication can move accounts ([#637](https://github.com/ndycode/codex-multi-auth/pull/637))
-- **Fast-session trimming dropped the leading developer/system instructions it was preserving**, because the final tail slice discarded them ([#637](https://github.com/ndycode/codex-multi-auth/pull/637))
-- **A genuinely empty completion skipped the empty-response retry** — `output: []` counted as having output ([#637](https://github.com/ndycode/codex-multi-auth/pull/637))
-- **A timed-out request never got its rate-limit token back.** The refund window was 30s while the default fetch timeout is 60s, so the consumption had aged out before the refund ran, causing gradual token-bucket starvation and spurious `token-exhausted` skips ([#637](https://github.com/ndycode/codex-multi-auth/pull/637))
-- **Project- and profile-scoped budgets were silently unenforced.** Limits are stored under a normalised key but were looked up raw, so any budget key carrying uppercase or spaces never matched. Global budgets were unaffected ([#637](https://github.com/ndycode/codex-multi-auth/pull/637))
+Codex voice and web search work with runtime rotation on, the packaged-app
+router can chain a second local proxy, macOS app binds are managed through
+launchd, GPT-6.1 Terra is a first-class model, and API routes gain US
+endpoints and a PSP pool. Saved re-logins take effect in a running router,
+and refresh coordination fails closed.
+[Full notes](docs/releases/v2.25.0.md).
 
-## [2.7.0] - 2026-07-23
+## [2.24.0] - 2026-10-20
 
-Adds reset timestamps to `codex-multi-auth check`, so a single command answers both how much quota is left in each window and when that window comes back. The reset data was already fetched and cached; this release only renders it. Routing, rotation, storage, quota math, and the token flow are unchanged, and every surface other than `check` is byte-identical to 2.6.1.
-Closes [#633](https://github.com/ndycode/codex-multi-auth/issues/633). Also carries the product-documentation rewrite that landed after 2.6.1 was cut ([#632](https://github.com/ndycode/codex-multi-auth/pull/632)). See [docs/releases/v2.7.0.md](docs/releases/v2.7.0.md) for full details.
+Regular accounts are used up before emergency backups, last-resort reset
+recovery spends the soonest-expiring credit first, `resets list --refresh`
+shows each credit's expiry, and cached rate limits are rechecked after an
+hour so pinned accounts recover promptly.
+[Full notes](docs/releases/v2.24.0.md).
 
-### Added
+## [2.23.0] - 2026-10-16
 
-- **`check` prints when each quota window resets**, alongside the percentage left — `live session OK (5h 100%, resets 18:10 | 7d 93%, resets 13:50 on Jul 29)`. Local system timezone, 24-hour clock; a reset later today prints as `HH:MM`, past midnight it appends the date ([#633](https://github.com/ndycode/codex-multi-auth/issues/633))
-- Reset display is opt-in at the formatter level and scoped to `check`; the dashboard rows, account menu, and `forecast` keep their existing compact summaries ([#633](https://github.com/ndycode/codex-multi-auth/issues/633))
-- A `codex-multi-auth check` reference section documenting the output shape, timezone, label fallback, and missing-timestamp behaviour — including that `check`, unlike `fix`, iterates every stored account and re-enables one whose token is still usable ([#633](https://github.com/ndycode/codex-multi-auth/issues/633))
+Proxy environment variables reach every outbound request, `status` defaults
+to a compact view with a live `codex-ma web` dashboard, `resume --last`
+keeps the right provider, and native WebSocket forwarding recovers safely
+from upstream drops.
+[Full notes](docs/releases/v2.23.0.md).
 
-### Fixed
+## [2.22.0] - 2026-10-14
 
-- **Quota percentages keep their severity colour when a reset time is shown.** `styleQuotaSummary` matched an anchored `label NN%` pattern, so appending `, resets ...` would have dropped every quota segment to the muted tone and silently lost the red / yellow / green colouring. The pattern now captures the reset clause and mutes only that part ([#633](https://github.com/ndycode/codex-multi-auth/issues/633))
-- A window with a missing, zero, negative, non-finite, or unparseable reset timestamp keeps its percentage and omits only the reset clause; the account check never fails on reset data ([#633](https://github.com/ndycode/codex-multi-auth/issues/633))
+Native Codex dictation rides the managed OAuth pool, sequential
+scheduling honors saved account order within priority tiers, and API/ZDR
+routes get daily capability checks plus WebSocket disconnect diagnostics.
+[Full notes](docs/releases/v2.22.0.md).
 
-### Changed
+## [2.21.0] - 2026-10-11
 
-- Product documentation rewritten against the current architecture, closing the audit's P0/P1 gaps between the docs and the live CLI and config ([#632](https://github.com/ndycode/codex-multi-auth/pull/632))
-
-## [2.6.1] - 2026-07-14
-
-Fixes OAuth login on WSL. Installing `codex-multi-auth` on a Windows host and inside WSL at the same time broke sign-in in both environments, and removing the Windows install was the only thing that made WSL work. WSL logins now open the Windows browser, and a contended callback port is explained instead of presenting as a silent hang. Routing, rotation, storage, and the token flow are unchanged; every behavior change is gated behind a new WSL check that is `false` on all other hosts.
-Closes [#630](https://github.com/ndycode/codex-multi-auth/issues/630). See [docs/releases/v2.6.1.md](docs/releases/v2.6.1.md) for full details.
-
-### Fixed
-
-- **WSL logins now open a browser.** WSL reports `process.platform === "linux"`, so the launcher fell through to `xdg-open`, which is not installed on a stock WSL Debian — no browser opened and sign-in looked like a hang. Under WSL the Windows browser is now opened via `wslview`, falling back to `powershell.exe` interop, and only then to the Linux opener ([#630](https://github.com/ndycode/codex-multi-auth/issues/630))
-- **The manual-paste clipboard now targets Windows under WSL**, routing through `clip.exe` and then PowerShell `Set-Clipboard` before the Linux clipboard tools ([#630](https://github.com/ndycode/codex-multi-auth/issues/630))
-- **A contended OAuth callback port is now explained rather than silently degraded.** The redirect URI is registered with the provider, so port `1455` is fixed and cannot be renegotiated; a Windows-side listener can therefore swallow the redirect a WSL listener is waiting for. `login` now names the conflict, shows how to find the listener on each side, and points at `login --device-auth`, which needs no callback port. Contention is only asserted when observed (`EADDRINUSE`); a callback that never arrives leads with the far likelier cancelled-sign-in explanation ([#630](https://github.com/ndycode/codex-multi-auth/issues/630))
-- Clipboard spawns now handle `error` on `child.stdin`: a child that dies before draining stdin emits `EPIPE` on the stream, which the surrounding `try/catch` cannot catch. Also hardens the pre-existing `pbcopy` / `xclip` / `xsel` paths ([#630](https://github.com/ndycode/codex-multi-auth/issues/630))
-
-### Added
-
-- Windows and WSL side-by-side troubleshooting guidance, including that the two environments keep separate state directories and must each be signed in independently ([#630](https://github.com/ndycode/codex-multi-auth/issues/630))
-
-## [2.6.0] - 2026-07-11
-
-Follows up the 2.5.0 GPT-5.6 launch: the diagnostic live/quota probe now leads with GPT-5.6 (`gpt-5.6-sol`), the model pickers can surface the GPT-5.6 tiers (legacy config template + installer merge + the `codex-multi-auth-codex` wrapper), and `pidOffsetEnabled` now defaults on so parallel agents spread across accounts. `DEFAULT_MODEL`, routing, rotation, storage, and auth are unchanged.
-Closes [#626](https://github.com/ndycode/codex-multi-auth/issues/626), [#627](https://github.com/ndycode/codex-multi-auth/issues/627), [#628](https://github.com/ndycode/codex-multi-auth/issues/628). See [docs/releases/v2.6.0.md](docs/releases/v2.6.0.md) for full details.
-
-### Added
-
-- Dedicated `DEFAULT_PROBE_MODEL` (`gpt-5.6-sol`) leading the diagnostic probe and `QUOTA_PROBE_MODEL_CHAIN`, so `check`, `report`, `forecast`, `best`, and `fix` probe GPT-5.6 (falling back to 5.5/5.4/codex for accounts without entitlement) while `DEFAULT_MODEL` stays on `gpt-5.5` ([#627](https://github.com/ndycode/codex-multi-auth/issues/627))
-- GPT-5.6 tiers in `config/codex-legacy.json` (flattened per-effort format) and GPT-5.6 support in the `codex-multi-auth-codex` wrapper's model map, with a wrapper↔library parity test ([#626](https://github.com/ndycode/codex-multi-auth/issues/626))
-
-### Changed
-
-- `pidOffsetEnabled` now defaults to `true`, spreading parallel `codex-multi-auth-codex` processes across accounts to reduce cascading 429s; a no-op for single-account pools, and overridable with `CODEX_AUTH_PID_OFFSET_ENABLED=0` ([#628](https://github.com/ndycode/codex-multi-auth/issues/628))
-- The config installer merges `provider.openai.models` at the model-id level, so upgrades gain newly shipped template models (e.g. GPT-5.6) while preserving user customizations ([#626](https://github.com/ndycode/codex-multi-auth/issues/626))
-
-### Fixed
-
-- The quota probe resolves each model's cheapest declared reasoning effort instead of hardcoding `none`, keeping the probe consistent with normal request routing ([#627](https://github.com/ndycode/codex-multi-auth/issues/627))
-- Corrected two documented defaults (`retryAllAccountsRateLimited` is `false`, `retryAllAccountsMaxRetries` is `0`) and added high-parallelism tuning/troubleshooting guidance ([#628](https://github.com/ndycode/codex-multi-auth/issues/628))
-
-## [2.5.0] - 2026-07-10
-
-Adds the GPT-5.6 model family (Sol, Terra, Luna) and the `max`/`ultra` reasoning tiers it introduces. GPT-5.6 is opt-in: the legacy `gpt-5` alias, the default model, and the quota-probe chain are unchanged.
-See [docs/releases/v2.5.0.md](docs/releases/v2.5.0.md) for full details.
-
-### Added
-
-- `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` as first-class models, with bare `gpt-5.6` aliased to Sol. Per-tier defaults mirror the upstream Codex catalog (Sol `low`, Terra and Luna `medium`), and the tiers ship in `config/codex-modern.json` with a 372,000-token context window ([#625](https://github.com/ndycode/codex-multi-auth/pull/625))
-- Reasoning tiers `max` (all three tiers) and `ultra` (Sol and Terra only). `ultra` is a client-side subagent-delegation tier that upstream rewrites to `max` before sending, so it is accepted in config and emitted as `max`; `WireReasoningEffort` excludes it so it cannot reach the request path ([#625](https://github.com/ndycode/codex-multi-auth/pull/625))
-- Cost estimation for the new tiers: Sol `$5`/`$30`, Terra `$2.50`/`$15`, Luna `$1`/`$6` per 1M input/output tokens ([#625](https://github.com/ndycode/codex-multi-auth/pull/625))
-
-### Fixed
-
-- `gpt-5.1-codex-max` is no longer rerouted to `gpt-5.1-codex`. Its id ends in `-max`, which the new `max` effort suffix would otherwise have stripped ([#625](https://github.com/ndycode/codex-multi-auth/pull/625))
-- Unrecognised `gpt-5.6-*` identifiers no longer silently resolve to `gpt-5.5`, which meant a `gpt-5.6-sol` request ran GPT-5.5 ([#625](https://github.com/ndycode/codex-multi-auth/pull/625))
-- No GPT-5.6 tier accepts `none` or `minimal` reasoning effort; those are coerced up to a supported effort instead of being sent and rejected ([#625](https://github.com/ndycode/codex-multi-auth/pull/625))
-- `.codex-plugin/plugin.json` had drifted to `2.3.3` and is realigned to the package version
-
-## [2.4.0] - 2026-07-09
-
-Adds per-invocation account forcing for the `codex-multi-auth-codex` wrapper. No change to existing routing, rotation, storage, or auth-flow behavior when the new flag/env var is unused.
-See [docs/releases/v2.4.0.md](docs/releases/v2.4.0.md) for full details.
-
-### Added
-
-- `codex-multi-auth-codex --account <index|email|id>` (and the equivalent `CODEX_MULTI_AUTH_FORCE_ACCOUNT` env var) forces a single forwarded Codex invocation onto one account. The pin is ephemeral and fail-hard: it applies to only that run's rotation-proxy instance, never mutates the persisted `switch` pin, never rotates, and errors instead of spilling onto another account when the target is unavailable or the runtime rotation proxy is disabled ([#623](https://github.com/ndycode/codex-multi-auth/issues/623), [#624](https://github.com/ndycode/codex-multi-auth/pull/624))
-
-## [2.3.3] - 2026-06-19
-
-Security and durability hardening from a deep stress audit of the rotation, persistence, and SSE-handling paths. No feature changes; routing, account-selection, and the normal auth flow are unchanged.
-See [docs/releases/v2.3.3.md](docs/releases/v2.3.3.md) for full details.
-
-### Fixed
-
-- Unbounded rate-limit window: a hostile or buggy upstream `retry-after`/quota-reset value could wedge an account unavailable for years. Retry/quota windows are now clamped to `MAX_RATE_LIMIT_DELAY_MS` (7 days), centrally in the account rate-limit setter and at source in `getQuotaNearExhaustionWaitMs` (H1)
-- Refresh-lease ownership: a slow owner whose lease expired and was stolen would unlink the new owner's lock on release, collapsing cross-process mutual exclusion. The lock now carries a per-owner nonce and `release()` only unlinks when it still matches (H2)
-- Cross-process token clobber: a routine `saveToDisk` rewrote the whole in-memory pool and could revert a single-use refresh token another process had just rotated. The save now reconciles token material from disk, adopting a strictly-newer on-disk token (H3)
-- Transient 429 over-deferral: a 30–60s 429 benched an account for the full 2h cap by folding the benign weekly window into the wait. Only genuinely-exhausted windows now count toward a 429 deferral (H4)
-- Forecast wait/recommendation: `getLiveQuotaWaitMs` took a blind max of both quota windows, overstating the wait and inverting the recommended account. It now filters to exhausted windows under usage pressure (a 429 still honors all windows) (H5)
-- SSE failures misreported as success: a mid-stream `error`, or a `response.failed` event, returned the raw SSE body at HTTP 200 — recorded as an account success and skipping rotation/retry. These now route to a synthesized non-2xx (H6/H7)
-- SSE `data:` parsing required a trailing space after the colon; spec-valid `data:value` lines were dropped (M1)
-- V1→V3 storage migration discarded the migrated account bodies, losing the scalar `rateLimitResetTime` → map `rateLimitResetTimes` conversion, so a rate-limited account looked immediately available on upgrade (M3)
-- Local-client-token store: temp-file write + rename without an `fsync` could truncate the store on crash/power-loss. The temp file is now fsynced before rename (L3)
-- OAuth `expires_in`/`expires` accepted any number; a zero/negative value minted an already-expired token and triggered a tight refresh loop. Both now require a positive integer (I1)
-- Log scrubber now masks the project's own `cma_local_…` bearer tokens in free text, alongside the existing JWT/hex/`sk-`/`Bearer` patterns (I2)
-
-### Correctness note
-
-- `response.incomplete` (e.g. hitting `max_output_tokens` or a content filter) is treated as a normal early stop: its partial response is delivered at HTTP 200 and counts as a healthy account, distinct from the `response.failed` failure path.
-
-## [2.3.2] - 2026-06-16
-
-Self-healing recovery for an orphaned runtime-proxy app-bind. No runtime-rotation, storage, or auth behavior changed.
-See [docs/releases/v2.3.2.md](docs/releases/v2.3.2.md) for full details.
-
-### Fixed
-
-- Orphaned app-bind: when `config.toml` was left bound to `codex-multi-auth-runtime-proxy` but the app-bind state/backup files were gone, `rotation status` reported "not configured" and `unbind-app` was a no-op, leaving Codex routed to a dead proxy port. `unbind-app` now self-heals (restoring the provider, falling back to `openai` with no backup), `getAppBindStatus` exposes `unmanagedBind`, and status surfaces "bound but unmanaged" (#614, #615)
-- Duplicate `model_provider` key in the no-backup recovery path for half-orphaned configs (proxy block present, top-level provider already native) — produced invalid TOML; the restore now never inserts a second top-level `model_provider` (#615)
-
-## [2.3.1] - 2026-06-16
-
-Adds the read-only `codex-multi-auth history` command. No runtime, storage, or auth behavior changed.
-See [docs/releases/v2.3.1.md](docs/releases/v2.3.1.md) for full details.
-
-### Added
-
-- `codex-multi-auth history` (`list` / `show <id>`, both with `--json`) lists local Codex sessions across all providers by reading `<codex-home>/sessions` rollout files directly, bypassing the `model_provider` filtering that hides threads in `codex resume` while runtime rotation or app bind is active. Fixes the "history not shared across accounts" report — the split is by provider name, not account (#612, #613)
-
-## [2.3.0] - 2026-06-15
-
-First stable cut of the `2.3.0` line. Promotes the `2.3.0-beta` series to stable and adds three runtime-rotation durability fixes landed after `beta.3`.
-See [docs/releases/v2.3.0.md](docs/releases/v2.3.0.md) for full details.
-
-### Fixed
-
-- Stale-runtime recovery deadlock: the rotation proxy returned a permanent `503 "All managed Codex accounts are temporarily unavailable"` even with healthy accounts, because persisted per-account transient state (cooldowns, rate-limit windows) was restored on reload and the recovery guard refused to run against it (#606, #607)
-- Cooldown not persisted when an account has no resolvable `accountId` — a restart inside the window dropped the cooldown and re-selected the broken account (#608)
-- Rate-limit window not persisted in the short-retry 429 path — same durability gap as the missing-accountId branch, in the runtime fetch loop (#609)
+Tracking release: merges the community-submitted `client_version` fix
+for OAuth model discovery. Runtime behavior is identical to `2.20.0`.
+[Full notes](docs/releases/v2.21.0.md).
 
 ### Notes
 
-- Published under the `latest` dist-tag (`npm i -g codex-multi-auth`).
-- Includes everything from the `2.3.0-beta.1` → `2.3.0-beta.3` prereleases.
+- [#734](https://github.com/ndycode/codex-multi-auth/pull/734) independently
+  diagnosed and fixed the same upstream `client_version` requirement as
+  [#735](https://github.com/ndycode/codex-multi-auth/pull/735) (which shipped
+  in `2.20.0`). Both PRs resolved to the same shipped implementation, so the
+  merge records the contributor's work without changing behavior.
 
----
+## [2.20.0] - 2026-10-11
 
-## [2.3.0-beta.3] - 2026-06-11
-
-Stream backpressure fix, deduplication fixpoint, retry-loop consolidation, typed errors, 20 new test suites, dead code pruned.
-See [docs/releases/v2.3.0-beta.3.md](docs/releases/v2.3.0-beta.3.md) for full details.
-
-### Fixed
-
-- Stream forwarding stalling for slow clients (backpressure not respected)
-- Multi-tier account deduplication requiring more than one pass
-- Storage spy cascades in test suite from leaked `fs` mocks
-
-### Improved
-
-- `CodexValidationError` on rotation-proxy startup guards (#586)
-- `StorageError` on unreadable config save aborts (#588)
-- Last two hand-rolled retry loops migrated to shared `withRetry`
-- 20 new direct test suites; property-based dedup coverage
-
----
-
-## [2.3.0-beta.2] - 2026-06-11
-
-Repository audit (34 PRs), 4 correctness bug fixes, security hardening, and major
-`codex-manager.ts` / `runtime-rotation-proxy.ts` decomposition.
-See [docs/releases/v2.3.0-beta.2.md](docs/releases/v2.3.0-beta.2.md) for full details.
-
-### Fixed
-
-- Sequential scheduling pointer corruption: `persistRuntimeActiveAccount` advanced
-  the drain-first primary in legacy routing mode even when `schedulingStrategy:
-  "sequential"` was set, breaking the #509 invariant
-- Flagged accounts lost `workspaces`/`currentWorkspaceIndex` on flag→restore
-  round-trip due to `normalizeFlaggedStorage` omitting those fields
-- Quota cache wipe on transient disk failure: dead `catch` in
-  `refreshQuotaCacheForMenu` caused empty-load to save only current-run entries
-- Expired token forwarded after failed refresh commit when
-  `commitRefreshedAuthOnce` returned `null`
-
-### Security
-
-- Temp-file staging paths now use `crypto.randomBytes` instead of `Math.random()`
-- CI action steps pinned to exact commit SHAs
-- Private account response headers blocked by prefix match (not allowlist)
-- Stream stall `withTimeout` ordering fixed: reject before `onTimeout`
-
----
-
-## [2.2.2] - 2026-06-03
-
-Patch release for a stale runtime-overlay false positive in `forecast --live`.
-See [docs/releases/v2.2.2.md](docs/releases/v2.2.2.md) for full details.
-
-### Fixed
-
-- `forecast --live` no longer marks working accounts as unavailable when a
-  time-bounded runtime overlay reason (`rate-limited`, `cooling-down:...`)
-  persists on disk after its window has expired; the overlay is now
-  cross-referenced against the time-aware disk state before being applied, and
-  `doctor`'s `forecast-runtime-alignment` warning clears with it (#507)
-- a successful request now clears that account's persisted runtime skip reason
-  via `recordRuntimeAccountRecovery`, so non-time-bounded reasons such as
-  `token-exhausted` (which the forecast cannot validate against disk) no longer
-  linger after the account recovers (#507)
-
-## [2.1.3] - 2026-05-01
-
-Patch release for Codex Desktop app-bind history visibility and merged-main
-runtime session repair. See [docs/releases/v2.1.3.md](docs/releases/v2.1.3.md)
-for full details.
-
-### Fixed
-
-- repaired successful wrapper-launched session index writes when official Codex
-  emits rollout-store noise for missing thread entries
-- serialized concurrent local session-index repair using the existing
-  shadow-home lock and atomic index replacement
-- kept failed forwarded runs from writing synthetic session-index entries
-- resolved app-bind status paths from the active status state before printing
-  Desktop history and speed-control guidance
-
-### Documentation
-
-- documented the Codex Desktop history workaround:
-  `codex-multi-auth rotation unbind-app` or `codex-multi-auth rotation disable`
-- documented Codex-owned model speed control through
-  `model_reasoning_effort`
-
-## [2.1.2] - 2026-04-30
-
-Patch release for conflict-free installs alongside the official Codex CLI.
-See [docs/releases/v2.1.2.md](docs/releases/v2.1.2.md) for full details.
-
-### Changed
-
-- removed the published global `codex` executable from `codex-multi-auth`
-  so npm no longer collides with official or Homebrew-owned Codex installs
-- added `codex-multi-auth-codex` as the explicit forwarding wrapper
-  executable for users who still want this package's Codex wrapper
-- kept account-management commands available through `codex-multi-auth ...`
-
-## [2.1.1] - 2026-04-29
-
-Patch release for the local governance command router and bridge token JSON
-output. See [docs/releases/v2.1.1.md](docs/releases/v2.1.1.md) for full
-details.
-
-### Fixed
-
-- route all `codex auth` local governance and bridge subcommands through the
-  multi-auth wrapper instead of falling through to the official Codex CLI
-- return valid JSON for `codex auth bridge token list --json` when no local
-  bridge tokens are configured
-
-## [2.1.0] - 2026-04-29
-
-Stable release for local usage governance and the local bridge. See [docs/releases/v2.1.0.md](docs/releases/v2.1.0.md) for full details.
+Luna Reserve arrives as a first-class routing fallback, direct model
+discovery self-heals its now-required client version, and usage rows
+stop losing token counts on headerless SSE streams.
+[Full notes](docs/releases/v2.20.0.md).
 
 ### Added
 
-- local JSONL usage ledger, `codex auth usage`, budgets, account policies, routing profiles, model capability views, and `codex auth monitor`
-- runtime policy enforcement before account selection in runtime proxy and plugin-host paths, with exactly-once local usage rows for request outcomes
-- optional loopback-only local bridge for `/health`, `/v1/models`, and `/v1/responses`
-- hashed local bridge client tokens and deterministic integration snippets using `CODEX_MULTI_AUTH_LOCAL_KEY`
+- First-class Luna Reserve (`gpt-reserve`) support: registered as a
+  Luna-compatible model with the Luna reasoning ladder and tool
+  capabilities, parsed from the official multi-bucket
+  `rateLimitsByLimitId` response by `limitName: "gpt-reserve"`, and
+  reported through an additive `lunaReserve` object in
+  `limits --json --refresh` (offered/available, used/remaining %,
+  window duration, reset timestamp, limit ID, normal Luna slug). An
+  absent bucket reports unknown rather than 0%, and a genuine quota
+  429 on a Luna model falls back to `gpt-reserve` without spending
+  reset credits or feeding ordinary quota bookkeeping
+  ([#732](https://github.com/ndycode/codex-multi-auth/pull/732))
+
+### Fixed
+
+- `check` OAuth model discovery no longer fails with HTTP 400 on
+  fresh installs: the now-required `client_version` query parameter
+  falls back to the installed `codex --version` when the inventory
+  has no stored version, and the detected value is persisted for the
+  next check ([#733](https://github.com/ndycode/codex-multi-auth/issues/733),
+  [#735](https://github.com/ndycode/codex-multi-auth/pull/735))
+- Responses SSE bodies without a reliable `Content-Type` are sniffed
+  via a bounded 4 KiB prefix instead of being parsed as one JSON
+  document, so usage-ledger rows carry real token counts and stream
+  completion checks still run
+  ([#731](https://github.com/ndycode/codex-multi-auth/pull/731))
+
+## [2.19.1] - 2026-10-06
+
+Light-terminal readability plus a full dependency and toolchain refresh:
+the login dashboard gains a terminal background mode
+(`auto`/`dark`/`light`), all five open Dependabot advisories are
+resolved, and the runtime now requires Node.js `22.19.0` or later.
+[Full notes](docs/releases/v2.19.1.md).
+
+### Changed
+
+- **Node.js floor raised to `>=22.19.0`** (was `>=18.17.0`): undici 8
+  and Vitest 5 both require Node 22, and Node 20 is end-of-life. CI now
+  tests on Node 22.x and 24.x ([#730](https://github.com/ndycode/codex-multi-auth/pull/730))
+- Runtime dependencies: `hono` 4.13.9 → 4.13.13, `ws` 8.21.3 → 8.22.0,
+  `zod` 4.4.3 → 4.6.5, `undici` 6.29.0 → 8.11.2 ([#730](https://github.com/ndycode/codex-multi-auth/pull/730))
+- Dev toolchain: Vitest 4 → 5.0.2, ESLint 10.0 → 10.12,
+  typescript-eslint 8.56 → 8.71.1, lint-staged 16 → 17.6, fast-check
+  4.5 → 4.10, `@types/node` 20 → 26. TypeScript is split deliberately:
+  `typescript` 6.0.3 keeps the JS compiler API (eslint, tsserver, tests)
+  while `tsgo` (typescript 7.0.2, native) runs `build` and `typecheck`
+  via an explicit path ([#730](https://github.com/ndycode/codex-multi-auth/pull/730))
+- GitHub Actions pins moved to current SHAs: checkout v7, setup-node v7,
+  upload/download-artifact v7/v8, codeql-action v4.38.2 ([#730](https://github.com/ndycode/codex-multi-auth/pull/730))
+- `ProxyAgent` pins `allowH2: false` so undici 8's H2-by-default ALPN
+  negotiation keeps the upstream wire protocol at HTTP/1.1 ([#730](https://github.com/ndycode/codex-multi-auth/pull/730))
+
+### Fixed
+
+- Dashboard title, account labels, section labels, and help text are
+  readable on light terminal themes: a persisted `uiColorMode` dashboard
+  setting (`auto`/`dark`/`light`, default `auto`), a
+  `CODEX_TUI_COLOR_MODE` process override, and `COLORFGBG`
+  auto-detection pick light-mode foreground tokens across truecolor,
+  ansi256, and ansi16 profiles ([#729](https://github.com/ndycode/codex-multi-auth/pull/729))
+- Muted prompt text no longer stacks the `dim` attribute on the muted
+  foreground in light mode, which previously made secondary text faint
+  again ([#729](https://github.com/ndycode/codex-multi-auth/pull/729))
+- Light-mode ansi16 `muted` uses normal black: bright black
+  (`ansi16(90)`) maps to mid-gray in common palettes, which was the
+  original contrast failure ([#729](https://github.com/ndycode/codex-multi-auth/pull/729))
+
+### Security
+
+- All five open Dependabot advisories resolved, `npm audit` clean:
+  `source-map-js` <1.2.2 (high, indexed source-map event-loop DoS),
+  `brace-expansion` 4.x <5.0.12 (quadratic-expansion ReDoS),
+  `vitest`/`@vitest/mocker` 2.1.0–4.1.11 (redirect-mock path traversal /
+  arbitrary file read), and `@humanfs/node` <0.16.8 (recursive copy
+  follows symlinks outside the source tree) — all dev-graph only ([#730](https://github.com/ndycode/codex-multi-auth/pull/730))
+- `hono` stays pinned at 4.13.13, `brace-expansion` override at 5.0.12,
+  and `undici` is now the exact-pinned `8.11.2` (see `SECURITY.md` for
+  rationale) ([#730](https://github.com/ndycode/codex-multi-auth/pull/730))
+
+## [2.19.0] - 2026-10-02
+
+Subscription visibility and launch performance: `status`, `list`, and
+`check accounts` report the selected workspace, observed plan, and first-use
+priming state per account, with opt-in priming for unused Pro Max
+subscriptions — and the shadow Codex home no longer reads multi-gigabyte
+linked SQLite files into memory on every launch and cleanup.
+[Full notes](docs/releases/v2.19.0.md).
+
+### Added
+
+- Per-account subscription status on `status` (text and `--json`), `list`,
+  and `check accounts`: selected workspace, observed plan label, `autoPrime`
+  setting, first-use priming state, and observation freshness ([#726](https://github.com/ndycode/codex-multi-auth/pull/726))
+- `check accounts --prime` opt-in first-use priming for unused personal
+  subscriptions; automatic priming for `autoPrime` policy accounts now
+  recognizes `promax`/Pro 500 ([#726](https://github.com/ndycode/codex-multi-auth/pull/726))
+- `byWorkspace` quota-cache namespace keyed by hashed record+workspace
+  identity so organization members sharing an `accountId` cannot collide;
+  token-only accounts derive workspace identity from the access token ([#726](https://github.com/ndycode/codex-multi-auth/pull/726))
+
+### Fixed
+
+- Linked shadow-home SQLite files (main database plus `-wal`/`-shm`
+  sidecars) are no longer read into memory for launch snapshots or
+  sync-back — the shadow path is the original file itself ([#727](https://github.com/ndycode/codex-multi-auth/pull/727))
+- Forked rollouts index and display by their first `session_meta`; the
+  parent's appended metadata no longer hijacks the rollout id ([#727](https://github.com/ndycode/codex-multi-auth/pull/727))
+- Concurrent quota-cache writes no longer lose priming outcomes:
+  `primingObservedAt` merges evidence independently of the quota timestamp,
+  an overlapping timeout cannot erase a completion, and a genuinely newer
+  observation still retires stale evidence ([#726](https://github.com/ndycode/codex-multi-auth/pull/726))
+- Strict policy reads reject malformed `autoPrime`/`paused`/`drained` rows;
+  load failures surface as `unknown` instead of `off` ([#726](https://github.com/ndycode/codex-multi-auth/pull/726))
+- Disabled or invalid workspace selections never fall back to a sibling
+  workspace or the stored binding, including token-only accounts ([#726](https://github.com/ndycode/codex-multi-auth/pull/726))
+
+### Security
+
+- `undici` 6.28.0 → 6.29.0: high-severity fixes for WebSocket
+  permessage-deflate decompression DoS, response splitting via the retry
+  interceptor, and unrequested WebSocket subprotocol DoS
+
+## [2.18.0] - 2026-09-30
+
+Model-catalog update tracking upstream `openai/codex@b1e72963`: GPT-6.1 Sol
+becomes the default model, the retiring `gpt-5.5` family migrates to its named
+replacements ahead of the 2026-10-14 OAuth shutdown, and the leaked
+`gpt-6-astra-aeon` slug retires onto the flagship.
+[Full notes](docs/releases/v2.18.0.md).
+
+### Added
+
+- `gpt-6.1-sol` support across the model map, resolver, reasoning-effort
+  ladder (low–ultra, default `low`), capability profile, pricing card,
+  config templates, and the standalone `scripts/codex.js` wrapper.
+  `gpt-6.1-sol` is now `DEFAULT_MODEL`, mirroring upstream commit
+  `b1e72963` which made it the catalog's priority-1 model.
+
+### Changed
+
+- Retired `gpt-5.5` and `gpt-5.5-pro` (including dated snapshot ids):
+  they now resolve to `gpt-6-sol` and `gpt-6-astra` respectively, matching
+  OpenAI's migration targets ahead of the 2026-10-14 OAuth shutdown.
+- Retired `gpt-6-astra-aeon` (never a durable catalog id): resolves to
+  `gpt-6-astra`.
+- Unsupported-model fallback chain re-floored away from `gpt-5.5`:
+  `gpt-6.1-sol → gpt-6-sol → gpt-5.6-sol → gpt-6-luna`, with the pro tier
+  stepping `gpt-6-astra → gpt-6-sol` first.
+- `gpt-5` and unknown GPT-5-ish requests now land on `gpt-5.6-sol`;
+  `gpt-5.4` routes to `gpt-6-sol`, `gpt-5.4-mini`/`nano` to `gpt-6-luna`,
+  and `gpt-5.4-pro` to `gpt-6-astra`.
+- Pricing for retired ids is resolved through the replacement model's
+  rate card.
+- Context-window estimates table emptied deliberately: models with
+  uncertain Codex-vs-API limits (`gpt-6.1-sol`, `gpt-6-*`, `gpt-5.6-*`,
+  Daybreak) return `null` unless a user override is supplied, rather than
+  inventing a window.
+
+### Fixed
+
+- Usage pricing resolves bare aliases (`gpt-6.1`, `gpt-6`, `gpt-5.6`,
+  `astra`) and effort-suffixed ids through the exact alias map, so raw
+  ledger rows price at the canonical card instead of failing a
+  `maxCostUsd` budget closed.
+- Wrapper forward bound raised to 5 spawns so the deepest supported-model
+  staircase (`gpt-6.1-sol → … → gpt-5.6-luna`) completes on the last
+  allowed forward, matching the plugin host's outbound-attempt budget.
+
+## [2.17.3] - 2026-09-28
+
+Eighteen-PR review-and-hardening stack: OAuth redaction and boundary-trust
+fixes, cross-process CAS for governance stores, clock-skew-safe merges,
+credential-signature backup rotation, V1 migration preservation, reset-backend
+discovery for the relocated ChatGPT layout, plus perf, packaging, property and
+chaos test coverage. [Full notes](docs/releases/v2.17.3.md).
+
+### Security
+
+- Close OAuth log-redaction gaps in body and URL scrubbers — bearer ordering,
+  fragments, nested query values, encoded separators, token-like hostnames,
+  JSON key names, chunked entropy scrubbing ([#719](https://github.com/ndycode/codex-multi-auth/pull/719))
+- Enforce trust at library boundaries: audit-log `0600` re-assertion,
+  malformed token-digest rejection, Windows root-relative override refusal,
+  `AbortSignal.any` listener-leak fix ([#710](https://github.com/ndycode/codex-multi-auth/pull/710))
+- Close regex DoS on overlong email labels and timer-overflow near-zero
+  failover clamp ([#721](https://github.com/ndycode/codex-multi-auth/pull/721))
+
+### Fixed
+
+- Cross-process CAS for JSON governance stores under the directory lock ([#713](https://github.com/ndycode/codex-multi-auth/pull/713))
+- Hybrid `updatedAt` floor so clock skew cannot lose writes ([#723](https://github.com/ndycode/codex-multi-auth/pull/723))
+- Backup rotation keyed by credential signature; chained pending-auth healing ([#712](https://github.com/ndycode/codex-multi-auth/pull/712))
+- V1→V3 migration preserves hybrid-era fields and per-family indexes ([#717](https://github.com/ndycode/codex-multi-auth/pull/717))
+- `constructor`/`__proto__` keys safe in budget and routing merges ([#714](https://github.com/ndycode/codex-multi-auth/pull/714))
+- Wrapper signal relay and dead-owner shadow-home sweep safety ([#720](https://github.com/ndycode/codex-multi-auth/pull/720))
+- Active-account sync fingerprints canonical plus mirror files ([#711](https://github.com/ndycode/codex-multi-auth/pull/711))
+- Relocated ChatGPT backend discovery; ambiguous reset identities rejected ([#724](https://github.com/ndycode/codex-multi-auth/pull/724))
+
+### Performance
+
+- Linear account dedup via incremental identity indexes ([#708](https://github.com/ndycode/codex-multi-auth/pull/708))
+- Cached runtime policy stores with fingerprint validation ([#709](https://github.com/ndycode/codex-multi-auth/pull/709))
+- Fewer transform allocations; non-throwing breaker probe ([#716](https://github.com/ndycode/codex-multi-auth/pull/716))
+
+### Packaging
+
+- Ship `skills/`; live `brace-expansion` pin via self-ref override ([#722](https://github.com/ndycode/codex-multi-auth/pull/722))
+- Smaller tarball, faster typecheck, slimmer forward-path imports ([#711](https://github.com/ndycode/codex-multi-auth/pull/711))
+
+### Tests
+
+- Property coverage for storage/transformer/SSE/budget/redaction ([#714](https://github.com/ndycode/codex-multi-auth/pull/714))
+- Real fs/net fault injection and live concurrency chaos suites ([#715](https://github.com/ndycode/codex-multi-auth/pull/715))
+
+### Docs
+
+- Living documentation rewritten from audited architecture ([#718](https://github.com/ndycode/codex-multi-auth/pull/718))
+- Release hygiene: v2.17.1 notes restored, links re-aligned ([#707](https://github.com/ndycode/codex-multi-auth/pull/707))
+
+## [2.17.2] - 2026-09-28
+
+Version resync over 2.17.1 — no functional changes. 2.17.1 was prepared but
+never published; the fixes below shipped in the published 2.17.2 artifact.
+This release re-aligns the package version, changelog, and release-notes
+filenames. [Full notes](docs/releases/v2.17.2.md).
+
+## [2.17.1] - 2026-09-28
+
+Automatic subscription priming observes each selected workspace on its own
+record, shared-organization accounts no longer share one quota entry, and
+concurrent quota writes merge instead of clobbering. App-bind cleanup now
+works on non-English POSIX systems. [Full notes](docs/releases/v2.17.1.md).
+
+### Fixed
+
+- Automatic first-use checks prime each account's selected workspace
+  independently; quota observations are keyed by credential record and exact
+  workspace, so shared-organization accounts no longer collide and a
+  Personal-workspace check no longer deletes a valid organization entry
+  ([#706](https://github.com/ndycode/codex-multi-auth/pull/706))
+- Quota cache saves merge against a pre-edit baseline under the file lock, so
+  an older session's save can no longer discard another process's workspace
+  observation ([#706](https://github.com/ndycode/codex-multi-auth/pull/706))
+- Pending rotated credentials carry `recordId`, keeping the account's identity
+  key stable through a refresh that only persisted through the journal
+  ([#706](https://github.com/ndycode/codex-multi-auth/pull/706))
+- `unbind-app` and helper cleanup now stop owned processes on non-English
+  POSIX locales; the `ps -o lstart=` identity probe pins `LC_ALL=C`, so it
+  parses on every system instead of failing and leaking live routers
+
+## [2.17.0] - 2026-09-26
+
+Codex CLI 0.156+ no longer refuses org-sourced accounts, and an opt-in native desktop binding adds capability-aware routing, API/ZDR pools, reset credits and Responses WebSockets. [Full notes](docs/releases/v2.17.0.md).
+
+### Added
+
+- With runtime rotation on, interactive `mcodex resume` lists sessions across
+  providers, including desktop sessions saved under `openai` that Codex's own
+  picker hides. Explicit ids, `--last`, remote and non-interactive invocations
+  keep native behaviour, and a failed discovery falls back to the native
+  picker. Needs a Codex version with app-server `thread/list`
+  ([#699](https://github.com/ndycode/codex-multi-auth/pull/699))
+- `rotation bind-app --native` keeps the desktop app on its real OpenAI login
+  (Remote Control pairing keeps working) while inference routes through the
+  account pool. Requires `cli_auth_credentials_store = "file"`;
+  `--custom-provider` and `unbind-app` roll it back
+  ([#702](https://github.com/ndycode/codex-multi-auth/pull/702))
+- Native mode routes each request only to an account and workspace whose
+  catalog advertises the requested model, effort and speed, serves Responses
+  over WebSockets, and schedules subscriptions by a 5% reserve, priority tier
+  and earliest reset. Catalog outages never block inference
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- A `switch` pin stays strict in native mode: tiers, the reserve and automatic
+  reset redemption apply only when nothing is pinned, and a model the pinned
+  account doesn't advertise is refused with 403
+  `model_not_available_in_account_catalog`
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- `login --api` adds API and ZDR credentials as explicit `api/<model>` and
+  `zdr/<model>` pools that fail closed and are never a fallback for
+  subscription requests. `api-routes.json` stores the keys in plain text
+  (mode 0600 on macOS/Linux; Windows relies on your user profile's ACLs)
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- `account priority <index> <0..9>` (default 1) and `resets list|redeem|auto`
+  for earned subscription reset credits; `resets auto last-resort` redeems
+  only when every eligible subscription is blocked, `manual` (the default)
+  never does
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- Subscription priming, opt-in only: `check --prime`, or per-account
+  `account auto-prime <index> on|off` (default off, every 15 minutes while a
+  router runs). Priming uses subscription quota
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- `check accounts|resets|capabilities` runs one part of `check`
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- `status --json` adds `apiAccounts`, `totalAccountCount`, `selectionMode`,
+  `modelInventory`, and per-account priority, `autoPrime`,
+  `lastInferenceRequestAt`, reset-credit and forecast fields
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- `fix --live` rebinds an org-sourced account the backend no longer
+  authorizes, reports `rebound-unauthorized-workspace`, and resyncs
+  `~/.codex/auth.json` when the active account changed
+  ([#701](https://github.com/ndycode/codex-multi-auth/pull/701))
+
+### Changed
+
+- New logins pick a unique Personal workspace over an organization default.
+  With several workspaces and no unique Personal one, an interactive login asks
+  and a non-interactive login keeps the automatic choice and warns with `--org`
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- `login` checks the chosen workspace against `wham/accounts/check` (10-second
+  timeout, fails open). An unauthorized automatic choice falls back to the
+  backend's default; an explicit `--org` is saved as chosen but `auth.json`
+  gets the authorized default
+  ([#701](https://github.com/ndycode/codex-multi-auth/pull/701))
+- Plain `check` also refreshes reset credits and model discovery. Billable API
+  capability probes reuse results younger than 15 minutes; only
+  `check capabilities` forces them
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- `check` rejects unknown arguments with exit 1 (2.16.0 ignored them), so
+  scripts passing extra flags to `check` need updating
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- `ws` (8.21.3) is a new runtime dependency. Downgrading below 2.17.0 drops
+  account priority tiers on the next policy write; see `docs/upgrade.md`
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+
+### Fixed
+
+- `~/.codex/auth.json` no longer gets an `org-...` id as `tokens.account_id`,
+  which Codex CLI 0.156+ refuses on every request ("selected workspace missing
+  from routing discovery"). The token's `chatgpt_account_id` is written
+  instead, a stale org id from an older release is rewritten, and a switch no
+  longer carries the previous account's workspace id onto new tokens
+  ([#703](https://github.com/ndycode/codex-multi-auth/pull/703), for
+  [#700](https://github.com/ndycode/codex-multi-auth/issues/700))
+- `best --live`, `forecast --live` and `report --live` keep an explicit or
+  org-sourced workspace binding across a token refresh instead of overwriting
+  it with the token's default
+  ([#701](https://github.com/ndycode/codex-multi-auth/pull/701))
+- A refreshed token whose `accounts.json` write keeps failing (Windows
+  EBUSY/EPERM) is kept live and journaled to
+  `<accounts-file>.pending-auth.json` instead of being discarded after the old
+  refresh token was already spent
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- On macOS and Linux, the `codex app` app-server shim in
+  `~/.codex/multi-auth/app-server-shims/` runs the original Node in place
+  instead of a hard link or copy, which current Homebrew Node could not start
+  from, so the desktop app's app-server launch failed
+  ([#705](https://github.com/ndycode/codex-multi-auth/pull/705))
+- A quota reset header too large to represent (e.g. a 308-digit
+  `reset-after-seconds`) no longer reads as a window that never resets: reset
+  times are capped at 7 days ahead, and `formatWaitTime` prints `unknown`
+  instead of `NaNs` / `Infinitym NaNs`
+  ([45b7dd20](https://github.com/ndycode/codex-multi-auth/commit/45b7dd20))
+- Windows: a `codex.cmd` npm shim on PATH is launchable when package and
+  `npm root -g` lookup both miss
+  ([ad59405c](https://github.com/ndycode/codex-multi-auth/commit/ad59405c))
+- Windows: `CODEX_MULTI_AUTH_REAL_CODEX_BIN` pointing at `codex.cmd` or its sh
+  shim resolves to the package's `codex.js` instead of failing every launch
+  ([933c1ff7](https://github.com/ndycode/codex-multi-auth/commit/933c1ff7))
+
+### Security
+
+- `hono` pinned to `4.13.9` (2.16.0 shipped `4.12.33`, inside the `<=4.13.4`
+  range of seven advisories including GHSA-8j4g-w8fx-2239) and the dev-only
+  `nanoid` to `3.3.18` for GHSA-2v37-7h3g-55p8
+  ([#704](https://github.com/ndycode/codex-multi-auth/pull/704))
+
+## [2.16.0] - 2026-09-23
+
+GPT-6 Sol and Luna are supported, and every retired model now runs on its named replacement. [Full notes](docs/releases/v2.16.0.md).
+
+### Added
+
+- `gpt-6-sol` and `gpt-6-luna` with the upstream catalog's reasoning ladders,
+  published standard and Fast pricing, and config template entries. Before this,
+  both silently ran GPT-6 Astra
+  ([#696](https://github.com/ndycode/codex-multi-auth/pull/696))
+
+### Changed
+
+- Retired models (every codex model, `gpt-5.1`, `gpt-5.2`, the `gpt-5.4`
+  family, `gpt-5-mini`/`nano`, the `*-chat-latest` snapshots) now resolve to
+  the replacement OpenAI names, are removed from the templates, and are priced
+  at the replacement's rate. The fallback floor is `gpt-5.5` and the quota
+  probe no longer tries retired models. Codex ids now use the `gpt-5.2` prompt
+  family and rotation bucket
+  ([#697](https://github.com/ndycode/codex-multi-auth/pull/697),
+  [#698](https://github.com/ndycode/codex-multi-auth/pull/698))
+
+### Fixed
+
+- GPT-6 requests with more than 272K input tokens are priced at the published
+  long-context rate instead of the cheaper short-context rate
+  ([#696](https://github.com/ndycode/codex-multi-auth/pull/696))
+- `status -m <codex model>` reads the account family the runtime proxy
+  actually keys, not the unused `codex` slot
+  ([#698](https://github.com/ndycode/codex-multi-auth/pull/698))
+
+## [2.15.0] - 2026-09-17
+
+Image generation and editing now run through the authenticated runtime rotation proxy, and built-in `image_gen` is exposed to Codex 0.154.0 sessions without native-auth fallback. [Full notes](docs/releases/v2.15.0.md).
+
+### Added
+
+- The runtime proxy accepts `POST /images/generations` and `POST /images/edits`
+  (with `/v1` aliases) and forwards request bodies unchanged to the upstream
+  image endpoints, reusing bearer authentication, account rotation, managed
+  OAuth refresh, and usage accounting. Image requests get a minimum five-minute
+  upstream-header timeout and are not replayed on ambiguous transport failures
+  ([#694](https://github.com/ndycode/codex-multi-auth/pull/694))
+- Provider configuration adds a non-secret
+  `x-openai-actor-authorization=codex-multi-auth-local` compatibility marker,
+  stripped case-insensitively at the upstream boundary, so Codex 0.154.0 exposes
+  its built-in `image_gen` tool for runtime-rotation sessions
+  ([#695](https://github.com/ndycode/codex-multi-auth/pull/695))
+
+## [2.14.0] - 2026-09-09
+
+A long-running task no longer dies when the backend reports that the selected model is at capacity: the runtime proxy waits it out and re-sends instead of burning through the account pool. [Full notes](docs/releases/v2.14.0.md).
+
+### Added
+
+- The runtime proxy waits out a "selected model is at capacity" response instead
+  of rotating. There was no handling for this error before: it fell into the
+  generic `status >= 500` branch, which cools the account down and rotates. That
+  is the wrong shape, because capacity is a property of the MODEL rather than of
+  an account, so every account in the pool fails identically, the rotation
+  leaves server-error cooldowns on healthy accounts on the way past, the
+  transient-attempt budget runs out within seconds and the request ends as a
+  pool-exhausted 503. The wait backs off 2s, 5s, 15s, 30s then 60s, an upstream
+  `retry-after` wins when one is sent, and the whole thing stops at a wall-clock
+  deadline that covers the upstream calls too, not just the time asleep. The
+  responding account is left completely unpenalized: its pool token is refunded
+  and it is never marked rate limited or cooled down. A client disconnect during
+  a wait abandons the request rather than sending another upstream call for a
+  response nobody is reading
+  ([#692](https://github.com/ndycode/codex-multi-auth/pull/692), closing
+  [#689](https://github.com/ndycode/codex-multi-auth/issues/689))
+- `CODEX_MULTI_AUTH_MODEL_CAPACITY_RETRY_MS` sets that deadline: 10 minutes by
+  default, 1 hour maximum, `0` to restore the previous rotate-and-fail
+  behaviour. An unparseable value falls back to the default rather than
+  disabling, so a typo cannot silently switch the feature off
+  ([#692](https://github.com/ndycode/codex-multi-auth/pull/692))
+
+## [2.13.0] - 2026-09-08
+
+A machine-readable quota snapshot, an explicit loopback upstream for the runtime proxy, and a manual `switch` that actually revalidates a rate-limited account. [Full notes](docs/releases/v2.13.0.md).
+
+### Added
+
+- `codex-multi-auth limits --json [--refresh]` prints a stable quota snapshot for
+  local integrations, so nothing has to scrape terminal output or read the
+  internal cache file. Cached mode makes no network requests; `--refresh` reuses
+  the dashboard's sequential refresh and its five-minute freshness floor. The
+  payload carries `schemaVersion: 1`, a `selection` block naming the pin, the
+  per-family active index and the resulting `routedIndex`, and one row per
+  account. Absent provider values are explicit JSON `null`, access tokens and
+  probe-model names are never emitted, and account emails are masked in `label`
+  exactly as `forecast --json` masks them
+  ([#688](https://github.com/ndycode/codex-multi-auth/pull/688), closing
+  [#687](https://github.com/ndycode/codex-multi-auth/issues/687))
+- `CODEX_MULTI_AUTH_RUNTIME_PROXY_UPSTREAM_BASE_URL` routes the runtime rotation
+  proxy through an explicit local upstream for operators chaining it into a local
+  inspection proxy. The value must be HTTP with a numeric loopback host
+  (`127.0.0.0/8` or `[::1]`) and an explicit port; a name such as `localhost` is
+  rejected because the OS resolves it at connect time and the request carries the
+  managed OAuth bearer token. It fails closed: an invalid value, a proxy that
+  cannot start, or runtime rotation being disabled all exit non-zero on a
+  request-bearing invocation rather than falling back to the direct backend
+  ([#690](https://github.com/ndycode/codex-multi-auth/pull/690))
+
+### Fixed
+
+- `switch <n>` clears the selected account's rate-limit windows in the same
+  atomic write that sets the pin. After an out-of-band quota reset the markers
+  survived, so the runtime proxy kept treating the account as blocked and
+  deferring or returning 503 until the recorded window expired on its own: the
+  one command meant to say "use this account now" could not unblock it. A 429
+  that raced the switch is still preserved; one recorded earlier is not
+  ([#691](https://github.com/ndycode/codex-multi-auth/pull/691))
+- The runtime proxy drops the switched account's cached quota observations when
+  it observes a new selection generation. It previously cleared session affinity
+  and nothing else, so a pre-switch reading kept driving preemptive deferrals
+  against the account just selected
+  ([#691](https://github.com/ndycode/codex-multi-auth/pull/691))
+- A failed debounced save re-arms with backoff and a bounded retry count. The
+  debounce timer clears itself before the save runs, so one transient failure,
+  such as a Windows antivirus scanner holding `accounts.json` open, silently
+  discarded every rate-limit window, cooldown and rotated refresh token recorded
+  since the last successful write
+  ([#691](https://github.com/ndycode/codex-multi-auth/pull/691))
+- `flushPendingSave()` logs a failure and resolves instead of rejecting.
+  `RuntimeRotationProxy.close` awaits it with no catch, so a save failure during
+  teardown aborted the rest of proxy shutdown
+  ([#691](https://github.com/ndycode/codex-multi-auth/pull/691))
+- Every reader of `affinityGeneration`, and the increment itself, now require a
+  safe integer. The counter is how a running proxy notices a selection change,
+  and past 2^53 `Math.max(counter, disk) + 1` equals the counter, so one hand
+  edit or corrupted write to a 16-digit value froze it: each later switch wrote
+  the same number and no proxy ever observed another selection change. A poisoned
+  counter is dropped, so the next write repairs it to 1
+
+## [2.12.0] - 2026-09-04
+
+Effort suffixes resolve to one key per model, usage is priced by service tier instead of assuming standard rates, and a class of lookup defect where a prototype member name was mistaken for a model id is closed. [Full notes](docs/releases/v2.12.0.md).
+
+### Added
+
+- Service-tier aware pricing. Every rate in `MODEL_PRICING` is a STANDARD-tier
+  rate and the estimator had no tier input, so a session billed at OpenAI's Fast
+  tier was priced at half its cost and a `maxCostUsd` cap could overrun without
+  tripping. The tier is read off the Responses payload (both the bare object and
+  the stream-event shape), carried on `UsageTokenCounts` so it reaches the ledger
+  through every existing path, and applied at Astra's published Fast rate of $20
+  / $100 per 1M. A tier with no published rate is reported as unknown cost rather
+  than approximated, so a budget fails closed exactly as it does for an unpriced
+  model ([#686](https://github.com/ndycode/codex-multi-auth/pull/686))
+- `gpt-6-astra` carries a cached-input rate of $1 standard and $2 on Fast. It
+  shipped without one in 2.11.0, which made Astra the only row in the table
+  billing cached tokens at the FULL input rate: a tenfold over-statement on a
+  cache-heavy session that trips a cost cap far too early. The 90% cached
+  discount is a uniform platform rate every other row already encodes at
+  input/10 ([#686](https://github.com/ndycode/codex-multi-auth/pull/686))
+
+### Fixed
+
+- `max` and `ultra` effort suffixes are stripped from a model id, so
+  `gpt-6-astra-ultra` no longer keys separately from the model it routes to. Four
+  call sites stripped only `none|minimal|low|medium|high|xhigh`, a set that
+  predates GPT-5.6: the entitlement cache blocked the same account and model pair
+  twice under two keys, the capability policy recorded outcomes under a key the
+  matrix never reads, and the fallback chain found no row for an effort-suffixed
+  model. The shared `stripModelEffortSuffix` derives its set from
+  `REASONING_EFFORTS` and names the one real exception, `codex-max` and
+  `gpt-5.1-codex-max`, whose final segment is part of the model NAME
+  ([#685](https://github.com/ndycode/codex-multi-auth/pull/685))
+- The service tier survives the runtime recorder and a ledger round-trip.
+  `createRuntimeUsageRecorder` rebuilds the ledger input field by field and
+  `normalizeParsedUsageRow` rebuilds only the numeric token fields, so a Fast
+  response through the runtime proxy, the default path, priced at the standard
+  rate, and a persisted Fast row read back as standard
+  ([#686](https://github.com/ndycode/codex-multi-auth/pull/686))
+- A response reporting its tier as `fast` is recognised. The upstream catalog
+  names the tier `priority` and displays it as "Fast", so either spelling can
+  arrive; unmapped it became `unknown` and failed a cost budget closed on a tier
+  that does have a rate ([#686](https://github.com/ndycode/codex-multi-auth/pull/686))
+- `normalizeUsageLedgerRow` validates the service tier instead of accepting any
+  truthy value. Every other field in that normaliser is checked against its
+  allowed set, and the ledger read path already rejected an unknown tier, which
+  left the write path as the only unvalidated way onto a row
+
+## [2.11.0] - 2026-09-04
+
+GPT-6 Astra and the Daybreak cyber models are first-class, and five defects found while wiring them up are fixed. [Full notes](docs/releases/v2.11.0.md).
+
+### Added
+
+- GPT-6 Astra is a first-class model family. `gpt-6-astra` and the long-horizon
+  `gpt-6-astra-aeon` each resolve to their own canonical id with the frontier
+  reasoning ladder (`low` through `max`, plus `ultra`, which is rewritten to
+  `max` on the wire exactly as upstream Codex does). Bare `gpt-6` and `astra`
+  resolve to the flagship, and `none`/`minimal` are coerced up to `low` because
+  Astra does not accept them. A dedicated GPT-6 resolver claims every id the
+  alias table does not name, including the `gpt-6-astra-pro` plan tier, dated
+  snapshots, and any tier OpenAI adds later, so an unrecognised GPT-6 id can
+  never fall through to GPT-5.5. That silent downgrade is the exact failure
+  v2.5.0 had to fix for GPT-5.6, one major version down. `aeon` deliberately
+  keeps its own id rather than collapsing into the flagship: it is a
+  behaviourally different model, not a rename. Both shipped config templates
+  carry the two models, and the `codex-multi-auth-codex` wrapper mirrors the
+  same map, with a model-by-effort parity suite pinning the two together
+- The Daybreak cyber models from the upstream Codex catalog
+  (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, plus `daybreak-blue`
+  and `daybreak-red` shorthands) resolve to their own ids. Their slugs carry
+  neither a `codex` nor a `gpt 5` token, so every resolver declined them and
+  asking for the cyber-permissive model silently ran GPT-5.5. An unrecognised
+  Daybreak id resolves to `blue`, the defensive variant, so a typo cannot
+  upgrade a caller into the permissive one. They stay out of the picker
+  templates, matching their `visibility: hide` upstream
+- `gpt-6-astra` is priced at its published launch rate, $10 per 1M input and $50
+  per 1M output on the standard service tier. No cached-input rate was
+  published, so cached tokens bill at the full input rate, which over-states
+  cost and makes a `maxCostUsd` budget trip early rather than late. OpenAI's
+  Fast service tier is 2x standard, and no row in this table has ever carried a
+  service-tier dimension, so a session billed at that tier is under-counted by
+  half for Astra exactly as it already is for `gpt-5.6-sol` and every other
+  priced model. Nothing in this repo selects that tier: `fastSession` is a local
+  latency setting that lowers reasoning effort, not OpenAI's billed Fast mode.
+  `gpt-6-astra-aeon` and both Daybreak models
+  have no published rate and are listed in `UNPRICED_ROUTABLE_MODELS` rather
+  than guessed at, so a cost budget fails closed while they are in the window
+- An unsupported-model fallback chain for Astra: `gpt-6-astra` steps to
+  `gpt-5.6-sol`, and `gpt-6-astra-aeon` steps to the flagship first, since that
+  is still GPT-6 Astra without the long-horizon behaviour. Astra rolls out org
+  by org, so an account that is not entitled yet gets a real unsupported-model
+  response for it. The chain is opt-in (`fallbackOnUnsupportedCodexModel`
+  defaults to `false`) and fires only on that response, so it never swaps the
+  model out from under a request the account could have served
+- `gpt-5.6-sol` gains its own chain entry to `gpt-5.5`. The chain is walked one
+  hop at a time (`index.ts` reassigns the model and passes that as the next
+  `requestedModel`), so a model with no entry of its own ends the walk. GPT-5.6
+  shipped without one, which would have stranded the Astra path a rung short of
+  a model every account has. Terra and Luna stay without entries: nothing steps
+  into them
+- All four new models are listed in `UNESTIMATED_ROUTABLE_MODELS`. OpenAI
+  published two different context windows for Astra on launch day, 1.05M for the
+  API surface and 272K for Codex, and this wrapper talks to the Codex backend.
+  Set `contextBudgetGuardModelWindowOverrides` once you know your real ceiling
+
+### Fixed
+
+- The `codex-multi-auth-codex` wrapper resolves codex model ids that its
+  explicit list does not name, matching lib. Its final clause tested
+  `model === "codex"` where `resolveCodexCatalogModel` tests for the `codex`
+  substring, so ids such as `gpt-6-codex` resolved to nothing in the wrapper
+  while lib resolved them to the current codex model
+- The wrapper buckets Daybreak ids into the `gpt-5.2` prompt family for status
+  instead of returning no family at all. Their slug matched none of
+  `resolveModelFamilyForStatus`'s branches
+- `resolveModelFamilyForStatus` strips the provider prefix before classifying.
+  Every branch is a `startsWith`, and `resolveStatusModel` forwards the raw
+  `--model` value, so `openai/gpt-6` matched none of them and status routing
+  fell back to `activeIndex` instead of the family index. This affected
+  `openai/gpt-5.6-sol` and `openai/gpt-5.1` the same way before GPT-6 existed
+- `gpt6`, written with no separator, resolves to Astra rather than GPT-5.5.
+  `tokenizeModelId` splits on non-alphanumeric runs, so it produced a single
+  `gpt6` token, the `gpt` + `6` pair never formed, and the id fell to
+  `DEFAULT_MODEL` while still passing `capability-policy`'s catalog gate. Gate
+  and resolver now agree on it
+- The `codex-multi-auth-codex` wrapper retries the GPT-6 rows too. It keeps its
+  own `WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN`, which shipped without them, so
+  `codex-multi-auth-codex --model gpt-6-astra` on an unentitled account exited
+  with the failure code while the plugin-host path retried, and the docs
+  advertised the retry for both. A parity test now pins the GPT-6 rows across
+  the two tables. Note the wrapper's retry has always been unconditional rather
+  than gated on `fallbackOnUnsupportedCodexModel`; it prints the swap to stderr,
+  and the docs now say which path gates it and which does not
+- The bare-`astra` branch of the GPT-6 resolver is anchored to a GPT-6 version
+  token or to an id with no GPT version at all. It existed for picker labels
+  such as `Astra Pro`, but it also claimed any id merely containing `astra`, so
+  a `gpt-4-astra-x` would have run the frontier model for a caller who named
+  GPT-4
+- `capability-policy`'s catalog gate matches the tokenizer's separator rule.
+  It tested a hand-picked `[-_\s]` where `tokenizeModelId` splits on any run of
+  non-alphanumerics, so `gpt.6-turbo` and `gpt---5` kept their raw string as the
+  policy key while routing resolved them to a canonical model, leaving the store
+  tracking a key no request reads. It is still narrow enough that `gpt-4o`,
+  `gpt-4.5-preview` and `gpt.4-turbo` do not reach the resolver
+
+- Prototype member names are no longer mistaken for model ids. Model strings
+  reach several lookup tables raw from the caller, so `constructor`,
+  `__proto__` and `toString` indexed them and came back truthy. Three
+  consequences, all fixed: `estimateUsageCostUsd` returned `NaN` rather than
+  `null`, which silently made a `maxCostUsd` cap unenforceable because
+  `NaN >= limit` is false; the unsupported-model fallback chain threw
+  `TypeError: targets is not iterable` inside the request path; and
+  `models --model <name>` emitted a row whose normalizedModel, promptFamily
+  and capabilities were all undefined. The fallback chains are now
+  null-prototype objects, which also stops an `unsupportedCodexFallbackChain`
+  key of `__proto__` reassigning the object's prototype
+
+## [2.10.0] - 2026-08-31
+
+A pinned account gets a real bounded retry instead of a single attempt, and a new opt-in guard can pause a session before it overflows the model's context window. [Full notes](docs/releases/v2.10.0.md).
+
+### Added
+
+- Context Budget Guard, experimental and shipping **disabled**. Enable it from Settings → Experimental or with `contextBudgetGuardEnabled`. It tracks how full each session's context window is from the tokens each turn actually carries (`input_tokens` plus the reasoning-stripped output, never `total_tokens`) and answers the next request locally with a `/compact` notice once usage crosses `contextBudgetGuardHardPercent`, before that request costs an upstream round-trip. A soft threshold attaches a non-blocking `x-codex-context-budget-percent` header instead. Window sizes are best-effort estimates, not published facts, so `contextBudgetGuardModelWindowOverrides` always wins and a model with no estimate is skipped rather than guessed at. The pause is one-shot per measurement: it drops what it recorded as it fires, so the `/compact` turn it asks for is never blocked by it ([#681](https://github.com/ndycode/codex-multi-auth/pull/681))
+
+### Fixed
+
+- A pinned request retries a transient upstream failure instead of returning `codex_pinned_account_unavailable` on the first one. Every transient branch cools the account down before the next selection pass, and selection refuses a cooling-down pin, so the retry budget could never be spent. A pinned retry now waives that account's own cooldown, and only from the second pass of the same request, with 250ms/500ms/1s backoff and a cap of `min(retryAllAccountsMaxRetries + 1, 4)` upstream attempts. Rate limits, open circuits, disabled accounts and policy blocks all still stop it, the cooldown still applies to every other request and still sets `retry_after_ms`, and a pin already cooling down on arrival is still refused without an upstream call ([#683](https://github.com/ndycode/codex-multi-auth/pull/683))
+- A pinned request is no longer refused by the local token bucket. That bucket spreads load across the selectable pool, and a pin has no alternative account, so a drained bucket could only reject a request the pinned account could serve. Circuit-breaker admission still applies, and the bucket is neither consumed nor refunded for a pin ([#682](https://github.com/ndycode/codex-multi-auth/pull/682))
+- `account_skip_reasons` names the admission gate that actually rejected a request. The reason was re-derived from account state afterwards, which reports the first blocker it finds — so a drained bucket on a cooling-down account was reported as the cooldown, and a rejection from a half-open circuit whose probe another request had just claimed was reported as an exhausted bucket ([#682](https://github.com/ndycode/codex-multi-auth/pull/682))
+- A context-window override below 1 token is dropped instead of being stored as a window of zero. `contextBudgetGuardModelWindowOverrides` validated positivity on the raw value and floored afterwards, so any value in `(0, 1)` was accepted by the schema and then silently ignored ([#681](https://github.com/ndycode/codex-multi-auth/pull/681))
+
+## [2.9.2] - 2026-08-30
+
+A maintenance release with no runtime, CLI, or configuration changes: `npm run typecheck:scripts` failed on every clean checkout. [Full notes](docs/releases/v2.9.2.md).
+
+### Fixed
+
+- `npm run typecheck:scripts` builds generated output before it runs the compiler. `scripts/codex-multi-auth.js` imports `../dist/lib/codex-manager.js` and `tsconfig.scripts.json` typechecks that file with `checkJs`, so on a fresh clone the script stopped with `TS2307: Cannot find module '../dist/lib/codex-manager.js'`. The build now lives in the script itself, matching `pack:check`, `coverage`, `bench:runtime-path` and `generate:schema`, which covers all three CI call sites and a clean local tree in one place ([#680](https://github.com/ndycode/codex-multi-auth/pull/680), thanks [@smpark00](https://github.com/smpark00))
+
+### Changed
+
+- `CONTRIBUTING.md` lists `npm run typecheck:scripts` in the documented local gate, now that it works from a clean checkout ([#680](https://github.com/ndycode/codex-multi-auth/pull/680))
+- The `validate` CI job drops a build step made redundant by the script change, leaving per-job compile counts unchanged, and `test/ci-workflows.test.ts` derives its build-ordering guard over every job in `ci.yml` instead of a hardcoded pair, reading steps by YAML key position so a commented-out or `if:`-guarded build cannot satisfy it ([#680](https://github.com/ndycode/codex-multi-auth/pull/680))
+
+## [2.9.1] - 2026-08-28
+
+A `--cost` budget can no longer be silently defeated by the models most worth capping, and refreshing one account from the login dashboard stops disturbing the others. [Full notes](docs/releases/v2.9.1.md).
+
+### Added
+
+- `codex-multi-auth login --account <index|email|account_id>` re-authenticates exactly one saved account, leaving the active selection, every per-family rotation position, and a manual `switch` pin untouched. The write is refused if the OAuth identity is not the account you named, so the previous credentials stay intact. Implies `--preserve-selection`, and cannot be combined with `--org` ([#679](https://github.com/ndycode/codex-multi-auth/pull/679), thanks [@fnmendez](https://github.com/fnmendez))
+
+### Fixed
+
+- A `--cost` budget is enforced for models with no published price instead of counting them as free. 2.9.0 fixed the guard comparing `0 >= limit`, but eight of the fifteen routable model ids (`gpt-5.4-pro`, `gpt-5.5-pro`, `gpt-5.2-pro`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5.1` — every `pro` tier among them) had no `MODEL_PRICING` entry, so their rows priced to `null`, aggregated as `$0.00`, and a cost cap never fired: two million tokens on `gpt-5.5-pro` passed a `--cost 1` cap. Usage summaries now carry `unpricedRequests` and a `--cost` limit fails closed with `cost limit cannot be evaluated`. The missing rates are deliberately not guessed — a wrong figure would move the trip point rather than fix it ([fe9b0d1](https://github.com/ndycode/codex-multi-auth/commit/fe9b0d16))
+- A plain `login` no longer resets every model family's rotation position onto the account just signed in. Families track which account they are on independently, so one that had rotated away from a rate-limited account kept its own position; adding an account discarded that. Families that were following the global selection still follow it ([fe9b0d1](https://github.com/ndycode/codex-multi-auth/commit/fe9b0d16))
+- Refreshing an account from the login dashboard no longer rewrites the native `~/.codex/auth.json` unconditionally. Refreshing account 3 while account 1 was active handed plain `codex` account 3's credentials, silently switching accounts; the sync now runs only when the refreshed account is the one Codex is using — which also means refreshing the active account does update it, where a selection-preserving refresh previously left it on expired tokens ([#679](https://github.com/ndycode/codex-multi-auth/pull/679))
+- Refreshing a disabled account no longer returns it to rotation. The merge set `enabled: true` unconditionally, so topping up a credential silently undid a deliberate disable; a targeted refresh now preserves the flag and says the account is still out of rotation ([#679](https://github.com/ndycode/codex-multi-auth/pull/679))
+
+## [2.9.0] - 2026-08-25
+
+`budget set --cost` and `--tokens` were accepted but never enforced, a dead network path counted against account health, and account removal left live sessions routed to the wrong account. [Full notes](docs/releases/v2.9.0.md).
+
+### Added
+
+- The usage ledger records real token counts and cost. Both the runtime rotation proxy and the plugin host read the upstream `usage` object out of the response as it streams past, so `codex-multi-auth usage` reports actual consumption instead of zeros ([#678](https://github.com/ndycode/codex-multi-auth/pull/678))
+- Transport failures emit a trace-correlated `proxyLog.error` line. That path never throws, so it previously produced no structured log entry at all ([#677](https://github.com/ndycode/codex-multi-auth/pull/677))
+
+### Fixed
+
+- `maxTokens` and `maxCostUsd` budget limits are enforced. Every ledger row recorded zero tokens and zero cost, so the guard compared `0 >= limit` and never fired — `budget set --cost 50` allowed unlimited spend, with only `--requests` doing anything ([#678](https://github.com/ndycode/codex-multi-auth/pull/678))
+- Reasoning tokens are subtracted out of the output bucket before recording. The upstream reports `output_tokens` inclusive of `output_tokens_details.reasoning_tokens` while the cost estimator prices the two as disjoint, so recording both raw would bill reasoning twice and trip a cost cap early ([#678](https://github.com/ndycode/codex-multi-auth/pull/678))
+- A streaming request's ledger row is written when the stream ends rather than when the handler returns, which is the only point at which its token counts exist. A client that disconnects mid-stream still records a row, without counts ([#678](https://github.com/ndycode/codex-multi-auth/pull/678))
+- An upstream transport failure before response headers no longer feeds the account's circuit breaker or health tracker. A socket reset, TLS drop, or fetch timeout is a property of the network path, not of the account, and three of them used to open that account's breaker for ~30s during an outage that affected every account equally ([#677](https://github.com/ndycode/codex-multi-auth/pull/677))
+- Deleting an account, restoring a backup, and the automatic removal of revoked-token accounts bump `affinityGeneration`. Session affinity is keyed by account index, so without the bump a running proxy kept routing in-flight conversations to whatever account slid into the vacated slot ([#678](https://github.com/ndycode/codex-multi-auth/pull/678))
+- Two accounts with neither an `accountId` nor an email no longer share one account-policy entry. Both hashed the literal `"unknown"`, so pausing, draining, or tagging one applied to all of them; the key now falls back to the refresh token and remains independent of account position ([#678](https://github.com/ndycode/codex-multi-auth/pull/678))
+- `withStreamingFailover` respects consumer backpressure. It enqueued every chunk as fast as the upstream delivered it, so a slow client buffered the whole response in memory — a 50-chunk stream was fully drained for a consumer that had read one chunk ([#678](https://github.com/ndycode/codex-multi-auth/pull/678))
+- A transport failure records a runtime skip reason for the account it happened on, instead of clearing the skip-reason overlay that `forecast` and `report` read ([#677](https://github.com/ndycode/codex-multi-auth/pull/677))
+
+## [2.8.7] - 2026-08-21
+
+`codex "your prompt"` took the slow shadow-home startup path, prompt text after `--` was parsed as configuration, and the pinned-account 503 called every recovery deadline a limit reset. [Full notes](docs/releases/v2.8.7.md).
+
+### Fixed
+
+- A root TUI launch carrying the optional initial prompt (`codex "your prompt"`) keeps the canonical `CODEX_HOME`. It was classified as a subcommand launch and took the shadow home, whose omitted SQLite state made Codex rebuild its whole thread index from rollouts before submitting the prompt you had already typed ([#674](https://github.com/ndycode/codex-multi-auth/pull/674))
+- A prompt forced with `--` is treated as a prompt, so `codex -- exec` opens a session whose prompt is the word "exec" rather than dispatching the exec subcommand — matching how Codex itself parses it ([#674](https://github.com/ndycode/codex-multi-auth/pull/674))
+- The launcher no longer reads flags out of prompt text: `--account`, `-m`/`--model`, and `--config=` written after a `--` are left alone instead of being stripped, treated as settings, or rewritten in place on a retry ([#674](https://github.com/ndycode/codex-multi-auth/pull/674))
+- Wrapper-injected options are placed on the option side of `--` instead of appended. Appending put them in the subcommand's positional list, so `codex exec -- ...` failed with `unexpected argument '-c' found`, `codex sandbox -- echo hi` passed the pair to the sandboxed command, and `codex mcp add t -- echo hi` wrote it into that server's stored `args` in `config.toml` ([#674](https://github.com/ndycode/codex-multi-auth/pull/674))
+- The pinned-account 503 words its recovery deadline by the blocker actually holding the account — circuit breaker, cooldown, or rate limit — instead of calling every deadline a recorded limit reset, which made provider outages read as blown subscription quotas ([#676](https://github.com/ndycode/codex-multi-auth/pull/676))
+- That wording is taken from the pin's live runtime state rather than the retry loop's selection verdict, so the common case where the pinned account 429s mid-request no longer reports the internal token `already-attempted` with a deadline attributed to nothing ([#676](https://github.com/ndycode/codex-multi-auth/pull/676))
+- The quota phrasing is used only when the rate limit is what bounds recovery; when a cooldown or breaker ends later, the deadline is worded neutrally ([#676](https://github.com/ndycode/codex-multi-auth/pull/676))
+
+### Changed
+
+- `docs/development/ARCHITECTURE.md` and `docs/development/CONFIG_FLOW.md` describe the interactive-TUI branch as covering prompt-bearing launches, matching the routing the wrapper now performs ([#674](https://github.com/ndycode/codex-multi-auth/pull/674))
+
+## [2.8.6] - 2026-08-16
+
+`forecast --model` reported an account `ready` while every request to it failed, and the pinned-account 503 told forced pins to run a command that clears nothing. [Full notes](docs/releases/v2.8.6.md).
+
+### Fixed
+
+- `forecast`, `best`, and `report` with `--model` check that model's prompt family instead of a hardwired `codex` family. An account held down by a live limit for the family you asked about no longer reports `ready` with no reasons ([#670](https://github.com/ndycode/codex-multi-auth/pull/670))
+- Those commands no longer report a delay caused by a rate limit on a *different* model in the same family — availability now uses exactly the two keys account selection consults ([#670](https://github.com/ndycode/codex-multi-auth/pull/670))
+- When a family-wide and a model-specific limit are both active, the reported wait is the later one rather than the earlier, so the stated time is actually usable ([#670](https://github.com/ndycode/codex-multi-auth/pull/670))
+- A recorded `rate-limited` state backed by a live limit for the requested family is no longer discarded as stale ([#670](https://github.com/ndycode/codex-multi-auth/pull/670))
+- The pinned-account 503 no longer advises `unpin` for a pin set by `--account` / `CODEX_MULTI_AUTH_FORCE_ACCOUNT`, which `unpin` cannot clear. Forced pins are told to relaunch ([#671](https://github.com/ndycode/codex-multi-auth/pull/671))
+- That 503 now reports when the account recovers, taking the latest of its rate limit, cooldown, and circuit-breaker deadline ([#671](https://github.com/ndycode/codex-multi-auth/pull/671))
+- A permanently blocked pin — disabled, no enabled workspace, invalidated token, policy block — reports no recovery time instead of a deadline that expires into another 503 ([#671](https://github.com/ndycode/codex-multi-auth/pull/671))
+- That suppression now also holds when the request itself is what disabled the account, which previously surfaced as `already-attempted` and hid the block ([#671](https://github.com/ndycode/codex-multi-auth/pull/671))
+- A corrupt timestamp in stored account state no longer turns the pinned 503 into a generic 500 carrying no account index, reason, or skip map ([#671](https://github.com/ndycode/codex-multi-auth/pull/671))
+
+### Added
+
+- `pin_source`, `reset_at`, and `retry_after_ms` on `codex_pinned_account_unavailable` responses ([#671](https://github.com/ndycode/codex-multi-auth/pull/671))
+
+### Changed
+
+- `docs/reference/error-contracts.md` documents the new fields, both pin kinds, and how `retry_after_ms` differs between the pinned and pool-exhausted codes ([#671](https://github.com/ndycode/codex-multi-auth/pull/671))
+
+## [2.8.5] - 2026-08-13
+
+Background rotation helpers never shut down — 183 of them at 5.58 GB on one machine, the oldest 33 hours past a 12-hour timeout. [Full notes](docs/releases/v2.8.5.md).
+
+### Fixed
+
+- Helpers no longer treat a reused process ID as a live launcher. Owner identity is now process ID plus start time ([#663](https://github.com/ndycode/codex-multi-auth/issues/663), [#664](https://github.com/ndycode/codex-multi-auth/pull/664))
+- Each helper writes its own status file instead of all of them overwriting one, so `rotation status` no longer reports a random helper ([#663](https://github.com/ndycode/codex-multi-auth/issues/663), [#664](https://github.com/ndycode/codex-multi-auth/pull/664))
+- Helper metadata is cleaned up on exit and swept on the next launch, instead of accumulating forever — 701 leftover files on one machine ([#663](https://github.com/ndycode/codex-multi-auth/issues/663), [#664](https://github.com/ndycode/codex-multi-auth/pull/664))
+- Helpers left behind by a short-lived command are reaped in 15 minutes rather than 12 hours ([#665](https://github.com/ndycode/codex-multi-auth/pull/665))
+- That reaper no longer kills a live `codex app` session that is simply idle between messages ([#669](https://github.com/ndycode/codex-multi-auth/pull/669))
+- `rotation unbind-app` no longer strands owner files it can't pair with a status record ([#666](https://github.com/ndycode/codex-multi-auth/issues/666), [#669](https://github.com/ndycode/codex-multi-auth/pull/669))
+- `rotation status` can no longer name one helper on its status line while marking a different helper's account as current ([#667](https://github.com/ndycode/codex-multi-auth/issues/667), [#669](https://github.com/ndycode/codex-multi-auth/pull/669))
+- A stale status file with a reused process ID no longer counts as a running helper ([#667](https://github.com/ndycode/codex-multi-auth/issues/667), [#669](https://github.com/ndycode/codex-multi-auth/pull/669))
+- Malformed process IDs in status files are rejected instead of being probed ([#667](https://github.com/ndycode/codex-multi-auth/issues/667), [#669](https://github.com/ndycode/codex-multi-auth/pull/669))
+
+### Added
+
+- `CODEX_MULTI_AUTH_APP_ROTATION_MAX_LIFETIME_MS` — hard cap on helper lifetime, default 24h, `0` disables ([#664](https://github.com/ndycode/codex-multi-auth/pull/664))
+- `CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS` — shorter timeout for a helper whose launcher died and that never served a request, default 15m, `0` keeps the full idle timeout ([#665](https://github.com/ndycode/codex-multi-auth/pull/665), [#669](https://github.com/ndycode/codex-multi-auth/pull/669))
+
+### Changed
+
+- Helper status files are now per-process: `runtime-rotation-app-helper.<pid>.json`. The old shared path is still read but no longer written ([#664](https://github.com/ndycode/codex-multi-auth/pull/664))
+- The stale-metadata sweep runs after the helper spawns, so it no longer delays `codex app` or TUI startup ([#669](https://github.com/ndycode/codex-multi-auth/pull/669))
+- `rotation unbind-app` stops helpers in parallel instead of one at a time ([#669](https://github.com/ndycode/codex-multi-auth/pull/669))
+
+### Security
+
+- Removed the deprecated `@openauthjs/openauth` dependency. PKCE is now generated directly from `node:crypto` per RFC 7636 ([#661](https://github.com/ndycode/codex-multi-auth/pull/661))
+- Test-only failure hooks in the published wrapper now require an explicit opt-in, so a stray environment variable can't arm one ([#668](https://github.com/ndycode/codex-multi-auth/issues/668), [#669](https://github.com/ndycode/codex-multi-auth/pull/669))
+
+## [2.8.4] - 2026-08-12
+
+`codex app-server` didn't work at all with rotation on, which is the default. [Full notes](docs/releases/v2.8.4.md).
+
+### Fixed
+
+- `app-server` refused to start on any machine that had run one before, and served a frozen thread list when it did start. It now uses your real Codex home rather than a mirrored copy ([#659](https://github.com/ndycode/codex-multi-auth/issues/659), [#662](https://github.com/ndycode/codex-multi-auth/pull/662))
+- The CLI shim `app-server` didn't need was setting `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` on everything the server spawned, so nested commands ran unrotated and billed the wrong account ([#662](https://github.com/ndycode/codex-multi-auth/pull/662))
+- A short-lived `app-server` left a helper process running for 12 hours after exit ([#662](https://github.com/ndycode/codex-multi-auth/pull/662))
+- A helper that couldn't start surfaced as an unhandled-rejection stack trace, leaking a temporary directory. It's now a one-line error and exit 1 ([#662](https://github.com/ndycode/codex-multi-auth/pull/662))
+
+### Changed
+
+- A rotation proxy that can't start now fails `app-server` outright rather than silently running it unrotated — a wrong-account bill is invisible, a failed start isn't ([#662](https://github.com/ndycode/codex-multi-auth/pull/662))
+
+## [2.8.3] - 2026-08-09
+
+### Fixed
+
+- Quota windows with no label, duration, or reset time are hidden instead of rendering as a permanent `100%` ([#657](https://github.com/ndycode/codex-multi-auth/pull/657))
+
+## [2.8.2] - 2026-08-09
+
+Five fixes across login, uninstall, diagnostics, and quota. [Full notes](docs/releases/v2.8.2.md).
+
+### Fixed
+
+- Manual and incognito login now show the complete authorization URL, so pasting the callback back no longer fails with a state-mismatch error ([#652](https://github.com/ndycode/codex-multi-auth/issues/652))
+- Uninstall instructions pointed at the old scoped package name, which can't remove what's installed ([#653](https://github.com/ndycode/codex-multi-auth/issues/653))
+- `why-selected` showed a winning account the rotation proxy would never have picked. It now runs the same gates as the real thing ([#654](https://github.com/ndycode/codex-multi-auth/issues/654))
+- Accounts with a revoked token are marked `token-invalid — re-login needed` and stay out of rotation instead of rejoining after a cooldown ([#655](https://github.com/ndycode/codex-multi-auth/issues/655))
+- Exhausted weekly and monthly quotas wait for the real reset instead of retrying after a flat two hours and hitting an immediate `429` ([#656](https://github.com/ndycode/codex-multi-auth/issues/656))
+- Rotation helpers verify they own a process before shutting it down, so an unrelated process is never mistaken for one of ours ([#658](https://github.com/ndycode/codex-multi-auth/pull/658))
+
+## [2.8.1] - 2026-08-02
+
+### Fixed
+
+- `mcodex resume` and `fork` hung on a blank screen. They were using a temporary copy of your Codex home that deliberately omits the session database, so the thread you asked for genuinely wasn't there ([#647](https://github.com/ndycode/codex-multi-auth/issues/647), [#648](https://github.com/ndycode/codex-multi-auth/pull/648))
+- The shell prompt didn't always come back after an interrupted Codex exit ([#648](https://github.com/ndycode/codex-multi-auth/pull/648))
+- `--help` no longer starts a rotation proxy and leaves a background helper behind ([#648](https://github.com/ndycode/codex-multi-auth/pull/648))
+
+### Security
+
+- `hono` 4.12.21 → 4.12.33: JSX context leaking between requests, XSS via the `cx()` escaping bypass ([#650](https://github.com/ndycode/codex-multi-auth/pull/650))
+- `undici` 6.25.0 → 6.28.0: Set-Cookie injection, WebSocket fragment DoS, keep-alive queue poisoning, SameSite downgrade. Staying on 6.x deliberately — 7.x would raise the Node floor to 20 ([#650](https://github.com/ndycode/codex-multi-auth/pull/650))
+
+## [2.8.0] - 2026-07-28
+
+### Fixed
+
+- macOS stopped asking for the login keychain on every launch. The official CLI reads `cli_auth_credentials_store` from `config.toml`, and we only wrote it during a login or switch — so a third-party front-end running the official binary kept hitting the keychain ([#641](https://github.com/ndycode/codex-multi-auth/issues/641), [#642](https://github.com/ndycode/codex-multi-auth/pull/642))
+- Interactive sessions no longer reindex your session history on every launch. They run against your real Codex home instead of a temporary copy ([#639](https://github.com/ndycode/codex-multi-auth/pull/639), [#643](https://github.com/ndycode/codex-multi-auth/pull/643))
+- `doctor --fix` can repair the credential store directly, and reports correctly on a machine with no accounts yet ([#642](https://github.com/ndycode/codex-multi-auth/pull/642))
+
+### Changed
+
+- `cli_auth_credentials_store` is written on first run and re-checked on startup, not just during a login or switch. Opt out with `CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE=0` ([#642](https://github.com/ndycode/codex-multi-auth/pull/642))
+- Two interactive sessions can now run at once against the same state, the same as running the official CLI twice ([#639](https://github.com/ndycode/codex-multi-auth/pull/639))
+
+## [2.7.1] - 2026-07-24
+
+A bug hunt. Two of these could route to the wrong account or stall refreshes machine-wide. [Full notes](docs/releases/v2.7.1.md).
+
+### Fixed
+
+- A manual pin could route to a different account than the one you pinned. Pins are held by position, and account removal only remapped the active index — so removing a revoked account silently shifted your pin ([#638](https://github.com/ndycode/codex-multi-auth/pull/638))
+- One failed refresh blocked refreshes for every process for 20 seconds, because failures were cached alongside successes ([#637](https://github.com/ndycode/codex-multi-auth/pull/637))
+- A refresh waiting on the shared lease could be evicted and start a second refresh for the same token, which fails with `invalid_grant` on a healthy account ([#637](https://github.com/ndycode/codex-multi-auth/pull/637))
+- Monthly (Codex Business) windows were labelled `5h` ([#635](https://github.com/ndycode/codex-multi-auth/issues/635), [#636](https://github.com/ndycode/codex-multi-auth/pull/636))
+- An account at 100% used with no reset time could still be recommended as your best option ([#637](https://github.com/ndycode/codex-multi-auth/pull/637))
+- Exhaustion was decided on a rounded percentage, so `99.6%` used benched an account that still had quota ([#637](https://github.com/ndycode/codex-multi-auth/pull/637))
+- `import` and legacy migration dropped your pin and reset the affinity counter ([#637](https://github.com/ndycode/codex-multi-auth/pull/637))
+- Session trimming cut the leading instructions it had just decided to keep ([#637](https://github.com/ndycode/codex-multi-auth/pull/637))
+- A timed-out request never got its token back, gradually starving the bucket ([#637](https://github.com/ndycode/codex-multi-auth/pull/637))
+- Project- and profile-scoped budgets never applied — stored under a normalised key, looked up with the raw one ([#637](https://github.com/ndycode/codex-multi-auth/pull/637))
+
+## [2.7.0] - 2026-07-23
+
+### Added
+
+- `check` now shows when each quota window resets, not just how much is left ([#633](https://github.com/ndycode/codex-multi-auth/issues/633))
+
+### Fixed
+
+- Quota percentages kept their red/yellow/green colouring once a reset time was appended ([#633](https://github.com/ndycode/codex-multi-auth/issues/633))
+
+## [2.6.1] - 2026-07-14
+
+### Fixed
+
+- OAuth login on WSL. No browser ever opened, because WSL reports itself as Linux and `xdg-open` isn't installed there. It now opens the Windows browser ([#630](https://github.com/ndycode/codex-multi-auth/issues/630))
+- The manual-paste clipboard copied to the distro's clipboard rather than the Windows one you paste from ([#630](https://github.com/ndycode/codex-multi-auth/issues/630))
+- A lost OAuth callback now explains the Windows/WSL port conflict instead of just timing out ([#630](https://github.com/ndycode/codex-multi-auth/issues/630))
+
+## [2.6.0] - 2026-07-11
+
+### Added
+
+- Diagnostics probe with GPT-5.6, falling back for accounts without access ([#627](https://github.com/ndycode/codex-multi-auth/issues/627))
+
+### Fixed
+
+- GPT-5.6 now appears in older Codex builds' model pickers ([#626](https://github.com/ndycode/codex-multi-auth/issues/626))
+- Upgrades no longer miss newly shipped models — the config installer merged the provider block shallowly, so an upgraded config never gained anything new ([#626](https://github.com/ndycode/codex-multi-auth/issues/626))
+- The wrapper understands GPT-5.6. It re-implements the model map and never got the v2.5.0 work, so `gpt-5.6-*` requests silently resolved to `gpt-5.5` ([#626](https://github.com/ndycode/codex-multi-auth/issues/626))
+
+### Changed
+
+- `pidOffsetEnabled` defaults on, so parallel agents spread across accounts instead of all picking the same one and cascading into `429`s ([#628](https://github.com/ndycode/codex-multi-auth/issues/628))
+
+## [2.5.0] - 2026-07-10
+
+### Added
+
+- GPT-5.6 (Sol, Terra, Luna) as first-class models, plus the `max` and `ultra` reasoning tiers above `xhigh`. `ultra` is rewritten to `max` before the request is sent, matching upstream
+
+### Fixed
+
+- `gpt-5.1-codex-max` is a model id, not Codex at max effort — it was nearly rerouted onto plain `gpt-5.1-codex`
+- Unrecognised `gpt-5.6-*` ids silently ran GPT-5.5
+
+## [2.4.0] - 2026-07-09
+
+### Added
+
+- `codex-multi-auth-codex --account <index|email|id>` forces one invocation onto a single account. Ephemeral (never touches your saved pin) and fail-hard (never silently uses a different account) ([#623](https://github.com/ndycode/codex-multi-auth/issues/623), [#624](https://github.com/ndycode/codex-multi-auth/pull/624))
+
+## [2.3.3] - 2026-06-19
+
+Nine fixes across rate limiting, refresh, streaming, and storage. [Full notes](docs/releases/v2.3.3.md).
+
+### Fixed
+
+- A single bad `retry-after` could bench an account for 31 years. Windows are now clamped to 7 days ([#617](https://github.com/ndycode/codex-multi-auth/pull/617))
+- A slow refresh could delete a lock it no longer owned, leaving two processes refreshing at once — and since refresh tokens are single-use, logging the account out ([#617](https://github.com/ndycode/codex-multi-auth/pull/617))
+- A routine save could revert a freshly rotated token, permanently breaking that account's next refresh ([#617](https://github.com/ndycode/codex-multi-auth/pull/617))
+- A transient `429` benched an account for hours by folding the healthy weekly window into the retry delay ([#617](https://github.com/ndycode/codex-multi-auth/pull/617))
+- `forecast` recommended a strictly worse account, because it took the longest of both quota windows rather than the binding one ([#617](https://github.com/ndycode/codex-multi-auth/pull/617))
+- Upstream streaming failures were reported to the client as success, with the account recorded as healthy and retry suppressed ([#617](https://github.com/ndycode/codex-multi-auth/pull/617), [#618](https://github.com/ndycode/codex-multi-auth/pull/618))
+- The SSE parser required a space after `data:`, so a spec-valid line parsed as zero events ([#617](https://github.com/ndycode/codex-multi-auth/pull/617))
+- The V1→V3 storage migration discarded migrated account bodies, so a rate-limited account read as available and could burst `429`s ([#619](https://github.com/ndycode/codex-multi-auth/pull/619))
+- OAuth `expires_in` accepted zero and negative values, minting an already-expired token and driving a tight refresh loop ([#619](https://github.com/ndycode/codex-multi-auth/pull/619))
+
+## [2.3.2] - 2026-06-16
+
+### Fixed
+
+- An orphaned app-bind left `config.toml` pointing at a dead proxy with no CLI way out. `rotation unbind-app` now self-heals without a backup, and `rotation status` reports "bound but unmanaged" instead of "not configured" ([#614](https://github.com/ndycode/codex-multi-auth/pull/614))
+
+## [2.3.1] - 2026-06-16
+
+### Added
+
+- `codex-multi-auth history` lists every local Codex session regardless of provider. `codex resume` filters by the provider recorded in each session, so rotation hides sessions created under the native provider — the files were always there ([#612](https://github.com/ndycode/codex-multi-auth/issues/612))
+
+## [2.3.0] - 2026-06-15
+
+### Fixed
+
+- A permanent `503` that wedged rotation even with healthy accounts. Recovery reloaded from disk, restoring the same state that had wedged the pool, and the guard refused to run in exactly the situation it existed for ([#606](https://github.com/ndycode/codex-multi-auth/issues/606), [#607](https://github.com/ndycode/codex-multi-auth/pull/607))
+- Two cooldown paths changed account state without scheduling the write, so a restart dropped it ([#608](https://github.com/ndycode/codex-multi-auth/pull/608), [#609](https://github.com/ndycode/codex-multi-auth/pull/609))
+
+## [2.3.0-beta.3] - 2026-06-11
+
+### Fixed
+
+- Streaming stalled indefinitely for slow clients, buffering without bound
+- Account deduplication needed more than one pass; it now loops until stable
+
+### Security
+
+- Atomic writes use `crypto.randomBytes` for temporary filenames instead of `Math.random()` ([#517](https://github.com/ndycode/codex-multi-auth/issues/517))
+
+## [2.3.0-beta.2] - 2026-06-11
+
+### Added
+
+- Opt-in `sequential` scheduling drains one account before moving to the next, so quota windows stagger instead of resetting together ([#509](https://github.com/ndycode/codex-multi-auth/issues/509))
+
+### Fixed
+
+- Drain-first mode advanced its pointer on a transient fallback, breaking the invariant it exists for
+- An expired token could be forwarded after a successful refresh, producing a `401` and a wrong invalidation cooldown
+- Flagged-account restore dropped workspaces, so a multi-workspace account lost its list permanently
+- A transient disk failure during quota-cache reload wiped every other account's data
+- Login reported `Added account` when it had updated or rebound an existing one ([#512](https://github.com/ndycode/codex-multi-auth/issues/512))
+- `login --manual` reported every failure as `Cancelled`, including a malformed URL and a state mismatch ([#512](https://github.com/ndycode/codex-multi-auth/issues/512))
+
+### Security
+
+- CI workflow steps pinned to exact commit SHAs ([#519](https://github.com/ndycode/codex-multi-auth/issues/519))
+- Response headers under our own namespace are blocked by prefix, so a header added later is blocked by default ([#546](https://github.com/ndycode/codex-multi-auth/issues/546))
+
+## [2.2.2] - 2026-06-03
+
+### Fixed
+
+- `forecast` reported working accounts as unavailable. `token-exhausted` has no natural expiry and nothing cleared it, so it lingered indefinitely — a successful request now clears it
+
+## [2.1.3] - 2026-05-01
+
+### Fixed
+
+- Wrapper-launched sessions repair `session_index.jsonl` after known thread-store write damage, serialised so concurrent sessions can't collide
+- App-bind status warnings resolve the active status path before printing guidance
+
+## [2.1.2] - 2026-04-30
+
+### Removed
+
+- The global `codex` bin, which collided with the official Codex npm, native, and Homebrew installs. `codex-multi-auth` and `codex-multi-auth-codex` are unchanged
+
+## [2.1.1] - 2026-04-29
+
+### Fixed
+
+- `usage`, `account`, `budget`, `bridge`, `integrations`, `models`, and `monitor` were falling through to the official Codex CLI instead of being handled locally
+- `bridge token list --json` returned invalid JSON on an empty store, and included token hashes
+
+## [2.1.0] - 2026-04-29
+
+### Added
+
+- Local-only usage ledger, account policy metadata, routing profiles, and budget guards
+- Model and account capability matrix, with policy evaluated before account selection
+- Optional loopback-only bridge with `/health`, `/v1/models`, and `/v1/responses`
+- `rotation reset-rate-limits` to clear stale runtime timers
 
 ## [2.0.1] - 2026-04-25
 
 ### Changed
 
-- runtime rotation now defaults on for request-bearing wrapper-launched Codex sessions
-- package install/update now self-heals supported packaged app binds and app launcher routing by default, with environment opt-outs
-- installed packages now show best-effort daily manual update notices when npm has a newer release; update with `npm install -g codex-multi-auth@latest`
-- aligned active documentation with the 2.x wrapper-first architecture, default-on runtime Responses proxy, reversible Codex app bind, and historical audit snapshot boundaries
-- updated live quota probes, model normalization, and shipped templates to prefer current documented OpenAI models (`gpt-5.5` general, `gpt-5.3-codex` Codex) while keeping legacy `gpt-5-codex` requests as compatibility aliases
-- removed deprecated `gpt-5.1-codex*` selectors from shipped config templates; those inputs now route to the current documented Codex model when encountered for compatibility
+- Runtime rotation is enabled by default. Opt out with `rotation disable`, `codexRuntimeRotationProxy=false`, or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`
+
+### Fixed
+
+- Install and update self-heal the packaged app bind and launcher routing
 
 ## [2.0.0] - 2026-04-25
 
-Major release for the official Codex runtime rotation proxy and hardened app/shadow-home runtime path. See [docs/releases/v2.0.0.md](docs/releases/v2.0.0.md) for full details.
-
 ### Added
 
-- loopback-only Responses API runtime rotation proxy for official Codex sessions
-- `codexRuntimeRotationProxy`, `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=1`, and `codex auth rotation enable|disable|status`
-- runtime rotation support for wrapper-launched `codex app` and `codex app-server`
+- The runtime rotation proxy: failover across accounts mid-session, without restarting Codex. Loopback-only with an authenticated local client key
+- `rotation enable|disable|status|bind-app|unbind-app`, with app binding fully reversible
 
 ### Fixed
 
-- stripped stale decoded upstream `content-encoding` metadata before proxy responses reach local Codex clients
-- retried and cleaned up shadow-home sync locks when owner metadata writes fail transiently or permanently
-- resumed `process.stdin` during app-server protocol cleanup so retry attempts cannot inherit paused stdin
+- The proxy left a stale `content-encoding` header on responses it had decoded
 
 ## [1.3.2] - 2026-04-24
 
-Patch release for TTY-safe forwarded Codex runs after the `v1.3.1` GPT-5.5 rollout. See [docs/releases/v1.3.2.md](docs/releases/v1.3.2.md) for full details.
-
 ### Fixed
 
-- terminal-attached forwarded `codex` runs inherit stdio instead of piping stdout and stderr
-- non-TTY forwarded runs keep captured output for unsupported-model fallback handling
-- synchronous Windows `spawn()` failures use the existing clean wrapper failure path
+- Interactive forwarded sessions were capturing output, which broke TTY use. TTY sessions now inherit terminal stdio; non-TTY runs still capture so model-fallback can inspect errors ([#437](https://github.com/ndycode/codex-multi-auth/pull/437))
 
 ## [1.3.1] - 2026-04-24
 
-Patch release for the GPT-5.5 rollout and runtime compatibility cleanup.
+### Added
 
-- keep `gpt-5.5` and `gpt-5.5-pro` as first-attempt models
-- fall back to `gpt-5.4` only after real unsupported-model responses on ChatGPT Codex surfaces
-- harden the wrapper retry path for both unsupported-model and no-access error shapes
-- validate native `gpt-5.5` on official Codex `0.124.0` while preserving deterministic fallback on older or non-entitled runtimes
+- GPT-5.5 and GPT-5.5 Pro as first-attempt models, with deterministic fallback for older runtimes and accounts without access ([#435](https://github.com/ndycode/codex-multi-auth/pull/435))
+
+### Fixed
+
+- Model fallback now only triggers on a real upstream unsupported-model or no-access response ([#435](https://github.com/ndycode/codex-multi-auth/pull/435))
 
 ## [1.3.0] - 2026-04-17
 
-Phase 1 post-audit hardening: 20 focused PRs + 7 audit-fix commits + 1 follow-up PR (#413). 3527 tests (+182 from v1.2.7). Zero breaking changes, one opt-in flag (`routingMutex`). See [docs/releases/v1.3.0.md](docs/releases/v1.3.0.md) for full details.
-
 ### Added
 
-- `routingMutex` plugin config flag (PR-N / R4) with values `"enabled" | "legacy"` (default `"legacy"`). When `"enabled"`, cursor-mutation sites in the account pool (`markSwitchedLocked`, `markAccountCoolingDownLocked`, `setActiveIndexLocked`) are serialized through a promise-chain async mutex in `lib/routing-mutex.ts`, closing the TOCTOU race described in design items D-02/D-09. The flag defaults to `"legacy"` for one full release cycle so existing deployments see zero behavior change; users can opt in via settings or the `CODEX_AUTH_ROUTING_MUTEX=enabled` environment variable. A new `SelectionRecord` type is threaded out of the rotation decision path so the fetch loop can hand structured selection metadata to observability, why-selected, and failure-policy consumers.
-- `codex auth why-selected [--now|--last] [--json]` diagnostic command surfacing per-candidate hybrid scoring breakdown (PR-P).
-- `codex auth verify [--paths|--flagged|--all] [--json]` self-test command walking the storage path resolution chain and exercising the `resolvePath()` sandbox (PR-P). `verify-flagged` retained as back-compat alias.
-- Zod `safeParseJson<T>(raw, schema, context)` helper; 12 storage-read sites migrated to schema-validated JSON parsing with `AnyAccountStorageSchema` as authoritative normalizer (PR-L / AUDIT-M20).
-- New types exported: `SelectionRecord`, `HybridSelectionCandidateTrace`, `HybridSelectionTraceResult`, `FlaggedAccountStorageV1Schema`, `AccountsJournalEntrySchema`.
-- `docs/audits/MASTER_AUDIT.md` + `docs/audits/evidence/findings-index.json` published (PR #393).
-- Phase 1 regression suite locking in audit invariants (PKCE S256, state entropy, SSE failover) (PR-S / AUDIT-L01).
+- `why-selected` explains which account rotation picked and why ([#410](https://github.com/ndycode/codex-multi-auth/pull/410))
+- `verify --paths` for path-safety inspection ([#410](https://github.com/ndycode/codex-multi-auth/pull/410))
+- A feature-flagged routing mutex for safer concurrent selection, off by default ([#412](https://github.com/ndycode/codex-multi-auth/pull/412))
 
-### Changed
+### Fixed
 
-- `resolvePath()` now rejects lookalike-prefix paths (e.g. `HomeX` vs `Home/`) via `path.relative()` comparison, closing a sandbox-escape class (PR-A / AUDIT-C1 / AUDIT-H1).
-- OAuth URLs redacted in user-facing login output to prevent token leakage through clipboard or terminal scrollback (PR-B / AUDIT-H4).
-- OAuth callback host unified through `AUTH_REDIRECT` SSOT (`127.0.0.1:1455`) across bind, copy, and HTML; 4 duplicate hardcoded sites removed (PR-C / AUDIT-H5 / M14 / M30).
-- Hybrid selector now returns `null` when no accounts are available instead of a stale fallback (PR-D / AUDIT-H2).
-- Short-429 retry marks the account unavailable BEFORE the retry sleep, closing a TOCTOU race between two requests targeting the same rate-limited account (PR-E / AUDIT-H3).
-- Active-account pointer normalized on disable/remove; residual `removeAccount` last-in-family dangle resolved in follow-up #413 (PR-F / #413 / AUDIT-H10).
-- Recovery storage migrated to atomic write + retry-safe delete pattern; atomic write migration completed for `injectTextPart` / `prependThinkingPart`; `renameSync` retries on `EBUSY`/`EPERM` (PR-H / audit-fix `f877c85` / AUDIT-M01).
-- Account-clear ordering writes the reset marker BEFORE deletion and retries `EPERM` on read (PR-I / AUDIT-M04 / M05).
-- Per-project vs CLI-sync config conflict surfaced to the user instead of silently bypassing project-scoped isolation (PR-J / AUDIT-M09).
-- Malformed SSE JSON chunks surface as structured warnings instead of silent buffer drops; 10MB buffer cap documented; deprecation/sunset headers logged uniformly across success and failure paths (PR-K / AUDIT-H9 / M16 / M18 / M34).
-- `lib/codex-manager/settings-hub.ts` (808 LOC) split into 5 focused sub-modules under `lib/codex-manager/settings-hub/` (`dashboard`, `backend`, `experimental`, `shared`, `index`), each <500 LOC; original file retained as a 9-line re-export stub for test compatibility (PR-M / AUDIT-M24 / G-01 / JN-03).
-- `getAccountHealth()` now reads the tracker directly; field-name drift vs `ManagedAccount` documented (PR-O / AUDIT-M08 / D-04).
-- `npm run pack:check` builds first; tests migrated to `os.tmpdir()`; 6 stray `tmp*` directories removed from repo root (PR-G / AUDIT-H7 / M31).
-- Dual-linter scope documented: ESLint in lint-staged, Biome manual, CI enforcement via `ci.yml` + `pr-ci.yml`; husky `prepare` hook side effect documented (PR-T / audit-fix `d9f7253` / AUDIT-M21 / M22 / M23 partial).
-- `lib/AGENTS.md` staleness fixed; `docs/reference/storage-paths.md` `deriveProjectKey` typo corrected (PR-Q / AUDIT-H8 / M32 / L04).
-
-### Rollout plan
-
-- v1.3.0: `routingMutex` shipped with default `"legacy"`. Advanced users opt in via config or env.
-- v1.4.0: evaluate enablement based on telemetry and flip default to `"enabled"`.
+- Post-audit hardening across OAuth URL redaction, redirect-URI handling, selector null handling, short-`429` retry ordering, recovery writes, and malformed SSE warnings
 
 ## [0.1.8] - 2026-03-11
 
-### Fixed
-
-- Hardened flagged-account reset recovery so intentional clears remain authoritative even when the primary flagged file survives an initial delete failure.
-- Removed the fresh-worktree `npm test` dependency on prebuilt `dist/` output by validating config precedence directly from source imports.
-- Tightened model-matrix smoke classification so unsupported account/runtime capabilities are reported as non-blocking skips instead of false release failures.
-- Restored backup metadata, restore assessment, and transaction-safe named backup export behavior after merging the experimental settings and backend primitive stacks.
-
-### Changed
-
-- Codex CLI sync remains mirror-only, preserving canonical multi-auth storage as the single source of truth while still allowing mirror-file selection updates.
-- Experimental settings flows, backend primitive extraction, and wrapper non-TTY docs now ship in the stable branch.
-- Release validation now includes broader merged-feature regression coverage spanning unified settings, flagged reset suppression, mirror-only Codex CLI sync, experimental sync, named backup export, and wrapper/docs behavior.
-
 ### Added
 
-- Cross-feature regression coverage for merged release behavior in `test/release-main-prs-regression.test.ts`.
-- Preview-first `oc-chatgpt-multi-auth` sync orchestration, named backup export flows, and target-detection coverage promoted from the stacked settings/sync branches.
+- Codex CLI sync: target detection, import adapters, named backup wrappers, and sync orchestration. Codex CLI state stays mirror-only ([#72](https://github.com/ndycode/codex-multi-auth/pull/72))
+
+### Fixed
+
+- Cleared accounts could revive themselves when the initial delete partially failed ([#71](https://github.com/ndycode/codex-multi-auth/pull/71))
 
 ## [0.1.7] - 2026-03-03
 
-### Fixed
-
-- Hardened Windows global command routing so multi-auth survives stock Codex npm shim takeovers across `codex.bat`, `codex.cmd`, and `codex.ps1`.
-- Strengthened account recovery by promoting discovered real backups when the primary storage file is synthetic fixture data.
-- Hardened Codex auth sync writes by including complete token shape (`access_token`, `refresh_token`, `id_token`) in active account payloads.
-
-### Changed
-
-- Added invocation-path-first shim resolution and stock-shim signature replacement to reduce stale launcher routing on Windows.
-- Added PowerShell profile guard installation so new PowerShell sessions keep resolving `codex` to the multi-auth wrapper.
-
 ### Added
 
-- Visible package version in the dashboard header (`Accounts Dashboard (vX.Y.Z)`).
+- The first consolidated `codex-multi-auth` release, bringing runtime, TUI, account management, and docs into one package ([#4](https://github.com/ndycode/codex-multi-auth/pull/4), [#14](https://github.com/ndycode/codex-multi-auth/pull/14))
+- Rotating backup fallback, and automatic promotion of a real backup when primary storage holds fixture data ([#29](https://github.com/ndycode/codex-multi-auth/pull/29))
+- Hardened Windows command routing across `codex.bat`, `codex.cmd`, and `codex.ps1` ([#27](https://github.com/ndycode/codex-multi-auth/pull/27))
+
+### Fixed
+
+- Codex CLI account switching stabilised, and storage identity fixed across worktree branch changes ([#27](https://github.com/ndycode/codex-multi-auth/pull/27), [#28](https://github.com/ndycode/codex-multi-auth/pull/28))
 
 ## [0.1.6] - 2026-03-03
 
 ### Fixed
 
-- Improved runtime path selection when account storage is available only through recovery artifacts.
-- Added backup discovery recovery so non-standard backup files can restore `openai-codex-accounts.json` automatically.
-- Aligned Codex CLI sync default paths with `CODEX_HOME` to prevent auth writes from going to a different profile directory.
-- Hardened switch-sync reporting so account switches fail fast when required Codex auth persistence does not complete.
-
-### Changed
-
-- Multi-auth now treats backup and WAL signals as valid storage indicators during runtime directory selection.
+- Updates could reset your accounts when storage was only reachable through recovery artifacts
+- Codex CLI sync wrote auth to a different profile directory than `CODEX_HOME`
+- Account switches now fail fast when the required Codex auth write doesn't complete
 
 ## [0.1.5] - 2026-03-03
 
 ### Fixed
 
-- Removed forced `process.exit(...)` from wrapper entrypoints to prevent Windows libuv shutdown assertions after `codex auth` commands.
-- Updated model-matrix execution for current Codex CLI behavior (`exec`, non-interactive JSON mode, no deprecated `run` or `--port` flow).
-- Tightened model-matrix result classification to avoid false negatives from permissive output text matching.
-
-### Changed
-
-- Windows `.cmd` matrix execution now resolves to the Node script entry where possible, preventing shell argument flattening issues.
-
-### Added
-
-- Regression coverage for `.cmd` wrapper resolution and matrix script helper behavior under Windows path formats.
+- A Windows crash (`UV_HANDLE_CLOSING`) on wrapper shutdown, after the command had already completed
 
 ## [0.1.4] - 2026-03-03
 
 ### Fixed
 
-- Stabilized `codex auth switch <index>` and host sync reporting so local multi-auth selection remains deterministic under sync failures.
-- Hardened refresh token normalization and refresh queue stale or timeout recovery paths.
-
-### Added
-
-- Expanded regression coverage across auth, refresh queue reliability, docs integrity, retry or backoff handling, and CLI routing.
+- Stuck refresh lanes and duplicate refresh churn, via token normalisation and stale/timeout recovery
+- `switch <index>` keeps local selection deterministic and reports sync failures clearly
 
 ## [0.1.3] - 2026-03-03
 
 ### Fixed
 
-- `codex auth switch <index>` now succeeds locally even when Codex host-state sync is unavailable.
-- Removed false-negative switch failures in environments where Codex no longer exposes JSON sync files (`accounts.json` and `auth.json`).
-- Clarified switch output to explicitly state local multi-auth routing remains active when host sync cannot be completed.
-
-### Added
-
-- CLI regression coverage for local-switch success when Codex auth sync returns unavailable or failure.
+- `switch <index>` reported failure when only the optional Codex host-state sync was unavailable — the local switch had succeeded
 
 ## [0.1.2] - 2026-03-03
 
-### Fixed
-
-- Added staged rotating backup recovery and startup cleanup for stale `*.bak(.N).rotate.*.tmp` artifacts.
-- Added retry and backoff around staged backup rename commits to tolerate transient Windows locks.
-- Removed invalid filesystem retry codes and constrained backup-copy retries to real Node filesystem errors.
-- Hardened Windows home resolution order and `HOMEPATH` normalization to avoid drive-relative paths.
-- Fixed account storage identity handling across worktree branch changes and covered realpath fallback branches.
-
-### Changed
-
-- Backup rotation now stages candidate snapshots before commit, preserving historical chain integrity if latest-copy fails.
-- Recovery path now prioritizes WAL then backup candidates with deterministic `.bak` -> `.bak.1` -> `.bak.2` cascade.
-- Storage recovery paths and rotation tests expanded for parallel ordering and failure-mode determinism.
-
 ### Added
 
-- Regression coverage for `.bak.2` fallback when newer backups are unreadable.
-- Regression coverage for transient `EPERM` and `EBUSY` retry branches in backup copy and staged rename flows.
-- Startup cleanup path for orphaned rotating backup staging artifacts.
+- Rotating backup recovery across `.bak`, `.bak.1`, and `.bak.2`, staged then committed so a failure can't leave a partial history chain
+- Startup cleanup for orphaned staging files from interrupted writes, which could otherwise sit around holding token material
+
+### Fixed
+
+- Windows home resolution now tries `USERPROFILE` → `HOME` → `HOMEDRIVE`+`HOMEPATH` → `homedir()`
 
 ## [0.1.1] - 2026-03-01
 
 ### Fixed
 
-- OAuth callback host canonicalized to `127.0.0.1:1455` across auth constants and user-facing guidance.
-- Account email dedup is now case-insensitive via `normalizeEmailKey()` (trim + lowercase).
-- `codex` bin wrapper lazy-loads auth runtime so clean global installs avoid early module-load failures.
-- Per-project account storage is shared across linked Git worktrees via `resolveProjectStorageIdentityRoot`.
-- Legacy worktree-keyed accounts auto-migrate to canonical repo-shared storage, while legacy files are retained on persist failure.
-- Windows filesystem safety: `removeWithRetry` with `EBUSY`, `EPERM`, and `ENOTEMPTY` backoff added to `scripts/repo-hygiene.js` and test cleanup.
-- Stream failover tests use fake timers for deterministic assertions.
-- Coverage gate stabilized by excluding integration-heavy files and adding targeted branch tests.
+- The OAuth callback is pinned to `127.0.0.1:1455` rather than `localhost`, which never arrived on machines resolving IPv6 first
+- A clean global install could fail at startup; the `codex` bin now lazy-loads the auth runtime
 
 ### Changed
 
-- CLI settings hub extracted from `lib/codex-manager.ts` into `lib/codex-manager/settings-hub.ts`.
-- Settings panel `Q` hotkey changed from save-and-back to cancel without save; theme live-preview restores baseline on cancel.
-- Documentation architecture updated to dual-track navigation for operators and maintainers.
-- Command, settings, storage, privacy, and troubleshooting references aligned for stronger runtime parity.
-- Governance templates upgraded for production-grade issue and PR hygiene.
-- `auth fix` help text now shows `--live` and `--model` flags.
-
-### Added
-
-- `scripts/repo-hygiene.js` for deterministic repo cleanup and hygiene checks.
-- `lib/storage/paths.ts` for worktree identity resolution, commondir and gitdir validation, forged pointer rejection, and Windows UNC support.
-- Archived pre-`0.1.0` historical changelog in `docs/releases/legacy-pre-0.1-history.md`.
-- `docs/development/CLI_UI_DEEPSEARCH_AUDIT.md` as the settings extraction audit trail.
-- PR template and modernized issue templates.
-- 87 test files and 2071 tests.
+- Account emails dedupe case-insensitively
+- Per-project storage is shared across linked Git worktrees
+- The settings hub was split into five focused modules; `Q` now cancels without saving
 
 ## [0.1.0] - 2026-02-27
 
 ### Added
 
-- Stable Codex-first multi-account OAuth workflow.
-- Unified `codex auth ...` command family for login, switching, diagnostics, and reporting.
-- Dashboard settings hub and backend reliability controls.
-- Rotation and resilience modules for refresh, quota deferral, and failover.
-
-### Validation
-
-- `npm run lint`
-- `npm run typecheck`
-- `npm test`
-- `npm run build`
+- The first stable release: multi-account OAuth for Codex
+- The `codex auth ...` command family for login, switching, diagnostics, and reporting
+- Dashboard settings hub and backend reliability controls
+- Rotation and resilience modules for refresh, quota deferral, and failover
 
 ## Legacy History
 
-Historical entries from pre-`0.1.0` internal iteration cycles are preserved in:
-
-- `docs/releases/legacy-pre-0.1-history.md`
+Pre-`0.1.0` iteration history is archived in [`docs/releases/legacy-pre-0.1-history.md`](docs/releases/legacy-pre-0.1-history.md).
 
 ---
 
@@ -554,3 +1245,18 @@ Historical entries from pre-`0.1.0` internal iteration cycles are preserved in:
 [1.3.2]: https://github.com/ndycode/codex-multi-auth/releases/tag/v1.3.2
 [2.0.1]: https://github.com/ndycode/codex-multi-auth/releases/tag/v2.0.1
 [2.0.0]: https://github.com/ndycode/codex-multi-auth/releases/tag/v2.0.0
+## [2.26.1] - 2026-11-13
+
+Native catalog discovery, login synchronization, and runtime rotation now handle
+recent Codex CLI changes safely. The release includes fixes from [#765](https://github.com/ndycode/codex-multi-auth/pull/765), [#766](https://github.com/ndycode/codex-multi-auth/pull/766), and [#767](https://github.com/ndycode/codex-multi-auth/pull/767).
+[Full notes](docs/releases/v2.26.1.md).
+
+## Fixed
+
+- Rotation provider arguments are inserted before the command separator, so
+  forwarded native CLI arguments remain intact. ([#765](https://github.com/ndycode/codex-multi-auth/pull/765))
+- Native login changes are adopted by running state without losing account
+  synchronization. ([#766](https://github.com/ndycode/codex-multi-auth/pull/766))
+- Catalog probes use the installed Codex version, recover from rejected probes,
+  and retry shared requests without leaking stale version state. ([#767](https://github.com/ndycode/codex-multi-auth/pull/767))
+

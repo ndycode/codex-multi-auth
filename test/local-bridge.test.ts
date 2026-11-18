@@ -97,10 +97,14 @@ describe("local bridge", () => {
 
 		const health = await fetch(`${server.baseUrl}/health`);
 		expect(health.status).toBe(200);
-		expect(await health.json()).toMatchObject({
+		const healthBody = await health.json();
+		expect(healthBody).toMatchObject({
 			ok: true,
 			service: "codex-multi-auth-local-bridge",
 		});
+		// /health answers unauthenticated liveness probes, so it must not echo
+		// the internal upstream routing target back to callers.
+		expect(healthBody).not.toHaveProperty("runtimeBaseUrl");
 
 		const models = await fetch(`${server.baseUrl}/v1/models`);
 		expect(models.status).toBe(200);
@@ -334,4 +338,32 @@ describe("local bridge", () => {
 		expect(headers.get("cookie")).toBeNull();
 		expect(headers.get("proxy-authorization")).toBeNull();
 	});
+});
+
+it.each([true, false])("authenticates native Decisions forwarding (authorized=%s)", async authorized => {
+ const calls: Array<{url:string;init?:RequestInit}> = [];
+ const payload = {model:"zdr/fixture",input:"fixture",questions:[{type:"predicate",instructions:"check"}]};
+ const answer = {answers:[{type:"predicate",probability:1}],usage:{input_tokens:1,output_tokens:0,total_tokens:1}};
+ const server = await startLocalBridge({runtimeBaseUrl:"http://127.0.0.1:9999",runtimeClientApiKey:"runtime-fixture",verifyBearerToken:vi.fn().mockResolvedValue(authorized?{id:"fixture"}:null),fetchImpl:async(input,init)=>{calls.push({url:String(input),init});return Response.json(answer);}});
+ openServers.push(server);
+ const response=await fetch(`${server.baseUrl}/v1/decisions`,{method:"POST",headers:{authorization:"Bearer local-fixture","content-type":"application/json"},body:JSON.stringify(payload)});
+ expect(response.status).toBe(authorized?200:401);
+ expect(calls).toHaveLength(authorized?1:0);
+ if(authorized){expect(await response.json()).toEqual(answer);expect(calls[0].url).toBe("http://127.0.0.1:9999/v1/decisions");expect(new Headers(calls[0].init?.headers).get("authorization")).toBe("Bearer runtime-fixture");expect(JSON.parse(Buffer.from(calls[0].init?.body as ArrayBuffer).toString())).toEqual(payload);expect(calls[0].init?.signal).toBeInstanceOf(AbortSignal);}
+});
+
+it("propagates a disconnected Decisions caller to upstream cancellation", async () => {
+ let started!: () => void;
+ const ready = new Promise<void>(resolve => { started=resolve; });
+ let upstreamSignal: AbortSignal | null | undefined;
+ const server = await startLocalBridge({runtimeBaseUrl:"http://127.0.0.1:9999",requireAuth:false,fetchImpl:async(_input,init)=>{
+  upstreamSignal=init?.signal;started();
+  return new Promise((_resolve,reject)=>{upstreamSignal?.addEventListener("abort",()=>reject(Error("cancelled")),{once:true});});
+ }});
+ openServers.push(server);
+ const controller=new AbortController();
+ const pending=fetch(`${server.baseUrl}/v1/decisions`,{method:"POST",body:"{}",signal:controller.signal});
+ const rejected=expect(pending).rejects.toThrow();
+ await ready;controller.abort();await rejected;
+ await vi.waitFor(()=>expect(upstreamSignal?.aborted).toBe(true));
 });

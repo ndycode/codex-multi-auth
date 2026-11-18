@@ -84,13 +84,33 @@ describe("chooseAccount pinned selection (issue #474)", () => {
 		expect(markSwitched).not.toHaveBeenCalled();
 	});
 
+	it("reselects a healthy pin that this request already tried", () => {
+		const accountManager = manager();
+		const markSwitched = vi.spyOn(accountManager, "markSwitched");
+		const skipReasons = new Map<number, string>();
+
+		const selected = chooseAccount({
+			...baseParams(accountManager),
+			attemptedIndexes: new Set([1]),
+			pinnedIndex: 1,
+			skipReasons,
+		});
+
+		expect(selected?.index).toBe(1);
+		expect(skipReasons.has(1)).toBe(false);
+		expect(markSwitched).not.toHaveBeenCalled();
+	});
+
 	it.each([
+		["missing", { pinnedIndex: 7, attemptedIndexes: new Set([7]) }],
 		[
-			"already-attempted",
-			{ pinnedIndex: 1, attemptedIndexes: new Set([1]) },
+			"policy-blocked",
+			{
+				pinnedIndex: 1,
+				attemptedIndexes: new Set([1]),
+				policy: policyWith([1]),
+			},
 		],
-		["missing", { pinnedIndex: 7 }],
-		["policy-blocked", { pinnedIndex: 1, policy: policyWith([1]) }],
 	] as const)(
 		"refuses the pin with reason %s instead of falling back",
 		(reason, overrides) => {
@@ -116,6 +136,7 @@ describe("chooseAccount pinned selection (issue #474)", () => {
 
 		const selected = chooseAccount({
 			...baseParams(accountManager),
+			attemptedIndexes: new Set([1]),
 			pinnedIndex: 1,
 			skipReasons,
 		});
@@ -132,6 +153,7 @@ describe("chooseAccount pinned selection (issue #474)", () => {
 
 		const selected = chooseAccount({
 			...baseParams(accountManager),
+			attemptedIndexes: new Set([1]),
 			pinnedIndex: 1,
 			skipReasons,
 		});
@@ -149,6 +171,7 @@ describe("chooseAccount pinned selection (issue #474)", () => {
 
 		const selected = chooseAccount({
 			...baseParams(accountManager),
+			attemptedIndexes: new Set([1]),
 			pinnedIndex: 1,
 			skipReasons,
 		});
@@ -169,6 +192,7 @@ describe("chooseAccount pinned selection (issue #474)", () => {
 
 		const selected = chooseAccount({
 			...baseParams(accountManager),
+			attemptedIndexes: new Set([1]),
 			pinnedIndex: 1,
 			skipReasons,
 		});
@@ -363,4 +387,202 @@ describe("chooseAccount sequential mode (issue #509)", () => {
 		expect(markSwitched).not.toHaveBeenCalled();
 		expect(skipReasons.get(0)).toBe("already-attempted");
 	});
+});
+
+
+describe("capability-aware priority tiers",()=>{
+ it("tries the first eligible tier before affinity or the preferred active account",()=>{
+  const m=manager();const policy={...policyWith(),priorityByAccount:{0:2,1:0,2:1}};
+  const selected=chooseAccount({...baseParams(m),policy,preferredIndex:0});
+  expect(selected?.index).toBe(1);
+ });
+ it("falls through unsupported, exhausted and already-attempted accounts",()=>{
+  const m=manager();const policy={...policyWith([0]),priorityByAccount:{0:0,1:1,2:2}};
+  expect(chooseAccount({...baseParams(m),policy,preferredIndex:0})?.index).toBe(1);
+  expect(chooseAccount({...baseParams(m),policy,preferredIndex:0,attemptedIndexes:new Set([1])})?.index).toBe(2);
+  vi.spyOn(m,"getAccountRuntimeSkipReason").mockImplementation(i=>i===1?"rate-limited":null);
+  expect(chooseAccount({...baseParams(m),policy,preferredIndex:0})?.index).toBe(2);
+ });
+ it("prefers the selected account within a tier and never mutates policy eligibility",()=>{
+  const m=manager();const policy={...policyWith(),priorityByAccount:{0:1,1:1,2:2}};
+  expect(chooseAccount({...baseParams(m),policy,preferredIndex:1})?.index).toBe(1);
+  expect(policy.blockedAccountIndexes.size).toBe(0);
+ });
+});
+
+describe("sequential order within priority tiers", () => {
+	const quota = (remainingPercent: number, resetHours: number) => ({
+		plan: "subscription" as const,
+		remainingPercent,
+		resetAtMs: NOW + resetHours * 3_600_000,
+		urgency: null,
+		exhausted: remainingPercent === 0,
+		observedAt: NOW,
+	});
+
+	it.each([
+		["sequential", 0, 1],
+		["hybrid", 1, 0],
+	] as const)("%s respects its account ordering strategy", (schedulingStrategy, expected, preferredIndex) => {
+		const accountManager = manager();
+		const markSwitched = vi.spyOn(accountManager, "markSwitched");
+		const policy = { ...policyWith(), priorityByAccount: { 0: 0, 1: 0, 2: 1 } };
+		const selected = chooseAccount({
+			...baseParams(accountManager),
+			policy,
+			preferredIndex,
+			schedulingStrategy,
+			subscriptionQuotaByAccount: { 0: quota(100, 5), 1: quota(50, 1), 2: quota(90, 168) },
+		});
+
+		expect(selected?.index).toBe(expected);
+		expect(markSwitched).not.toHaveBeenCalled();
+	});
+
+	it.each([undefined, 1])("keeps the active cursor for default priorities with preference %s", (preferredIndex) => {
+		const storage = storageWith(3);
+		storage.activeIndexByFamily = { [FAMILY]: 1 };
+		const accountManager = new AccountManager(undefined, storage);
+		const policy = { ...policyWith(), priorityByAccount: { 0: 1, 1: 1, 2: 1 } };
+		const selected = chooseAccount({
+			...baseParams(accountManager), policy, preferredIndex, schedulingStrategy: "sequential",
+			subscriptionQuotaByAccount: { 0: quota(100, 1), 1: quota(50, 5), 2: quota(90, 168) },
+		});
+		expect(selected?.index).toBe(1);
+		expect(accountManager.getActiveIndexForFamily(FAMILY)).toBe(1);
+	});
+
+	it("returns to the earlier configured account after it recovers", () => {
+		const accountManager = manager(3, { 0: { rateLimitResetTimes: { [FAMILY]: NOW + 600_000 } } });
+		const policy = { ...policyWith(), priorityByAccount: { 0: 0, 1: 0, 2: 1 } };
+		const params = { ...baseParams(accountManager), policy, preferredIndex: 1, schedulingStrategy: "sequential" as const };
+		expect(chooseAccount(params)?.index).toBe(1);
+		const first = accountManager.getAccountByIndex(0);
+		if (!first) throw new Error("fixture account missing");
+		delete first.rateLimitResetTimes[FAMILY];
+		expect(chooseAccount({ ...params, attemptedIndexes: new Set() })?.index).toBe(0);
+	});
+
+	it.each([
+		["healthy", 50, 0, 1],
+		["exhausted", 0, 2, 2],
+		["reserved", 5, 2, 2],
+	] as const)("retries a %s default-priority account with the correct primary", (_state, remainingPercent, expected, primary) => {
+		const storage = storageWith(3);
+		storage.activeIndexByFamily = { [FAMILY]: 1 };
+		const accountManager = new AccountManager(undefined, storage);
+		const policy = { ...policyWith(), priorityByAccount: { 0: 1, 1: 1, 2: 1 } };
+		const params = {
+			...baseParams(accountManager), policy, preferredIndex: 1, schedulingStrategy: "sequential" as const,
+			subscriptionQuotaByAccount: { 0: quota(100, 1), 1: quota(remainingPercent, 5), 2: quota(90, 168) },
+		};
+		expect(chooseAccount({ ...params, attemptedIndexes: new Set([1]) })?.index).toBe(expected);
+		expect(accountManager.getAccountByIndex(expected)?.lastUsed).toBe(NOW);
+		expect(accountManager.getActiveIndexForFamily(FAMILY)).toBe(primary);
+		expect(chooseAccount(params)?.index).toBe(primary);
+	});
+
+	it("uses saved order even when quota measurements are unavailable", () => {
+		const accountManager = manager();
+		const policy = { ...policyWith(), priorityByAccount: { 0: 0, 1: 0, 2: 1 } };
+		expect(chooseAccount({ ...baseParams(accountManager), policy, preferredIndex: 1, schedulingStrategy: "sequential" })?.index).toBe(0);
+	});
+
+	it("updates saved-order activity without moving the cursor", () => {
+		const storage = storageWith(3);
+		storage.activeIndexByFamily = { [FAMILY]: 2 };
+		const accountManager = new AccountManager(undefined, storage);
+		const markSwitched = vi.spyOn(accountManager, "markSwitched");
+		const policy = { ...policyWith(), priorityByAccount: { 0: 0, 1: 0, 2: 1 } };
+		const selected = chooseAccount({ ...baseParams(accountManager), policy, preferredIndex: 2, schedulingStrategy: "sequential" });
+		expect(selected?.index).toBe(0);
+		expect(selected?.lastUsed).toBe(NOW);
+		expect(accountManager.getActiveIndexForFamily(FAMILY)).toBe(2);
+		expect(markSwitched).not.toHaveBeenCalled();
+	});
+
+	it.each(["attempted", "rate-limited", "disabled", "paused", "reserve", "exhausted"])(
+		"falls back in saved order when the first account is %s",
+		(reason) => {
+			const accountManager = manager(3, {
+				0: {
+					enabled: reason !== "disabled",
+					rateLimitResetTimes: reason === "rate-limited" ? { [FAMILY]: NOW + 600_000 } : {},
+				},
+			});
+			const policy = { ...policyWith(reason === "paused" ? [0] : []), priorityByAccount: { 0: 0, 1: 0, 2: 1 } };
+			const params = {
+				...baseParams(accountManager),
+				policy,
+				preferredIndex: 0,
+				schedulingStrategy: "sequential" as const,
+				attemptedIndexes: new Set(reason === "attempted" ? [0] : []),
+				subscriptionQuotaByAccount: { 0: quota(reason === "reserve" ? 5 : reason === "exhausted" ? 0 : 100, 1), 1: quota(50, 5), 2: quota(90, 2) },
+			};
+			expect(chooseAccount(params)?.index).toBe(1);
+			expect(chooseAccount({ ...params, attemptedIndexes: new Set([0, 1]) })?.index).toBe(2);
+			expect(chooseAccount({ ...params, attemptedIndexes: new Set([0, 1, 2]) })).toBeNull();
+			expect(policy.blockedAccountIndexes).toEqual(new Set(reason === "paused" ? [0] : []));
+		});
+
+	it("keeps priority tiers and explicit pins ahead of saved order", () => {
+		const accountManager = manager();
+		const policy = { ...policyWith(), priorityByAccount: { 0: 2, 1: 0, 2: 1 } };
+		const params = { ...baseParams(accountManager), policy, preferredIndex: 0, schedulingStrategy: "sequential" as const };
+		expect(chooseAccount(params)?.index).toBe(1);
+		expect(chooseAccount({ ...params, pinnedIndex: 2 })?.index).toBe(2);
+	});
+});
+
+describe("app-bind pin first with fallback", () => {
+ it("tries an eligible pin before earlier configured tiers then falls back in tier order", () => {
+  const m=manager();const policy={...policyWith(),priorityByAccount:{0:8,1:1,2:2}};
+  const params={...baseParams(m),policy,fallbackPinnedIndex:0};
+  expect(chooseAccount(params)?.index).toBe(0);
+  expect(chooseAccount({...params,attemptedIndexes:new Set([0])})?.index).toBe(1);
+  expect(chooseAccount({...params,attemptedIndexes:new Set([0,1])})?.index).toBe(2);
+  expect(policy.priorityByAccount).toEqual({0:8,1:1,2:2});
+ });
+ it.each(["unsupported", "disabled", "cooldown", "missing"])("skips a %s pin without preventing fallback", (reason) => {
+  const m=manager(3,reason==="disabled"?{0:{enabled:false}}:{});
+  const policy={...policyWith(reason==="unsupported"?[0]:[]),priorityByAccount:{0:8,1:1,2:2}};
+  if(reason==="cooldown")vi.spyOn(m,"getAccountRuntimeSkipReason").mockImplementation(i=>i===0?"cooling-down:test":null);
+  expect(chooseAccount({...baseParams(m),policy,fallbackPinnedIndex:reason==="missing"?9:0})?.index).toBe(1);
+ });
+ it("does not override an explicit strict invocation pin", () => {
+  expect(chooseAccount({...baseParams(manager()),pinnedIndex:2,fallbackPinnedIndex:0})?.index).toBe(2);
+ });
+});
+
+it("picks the earliest reset regardless of where an unmeasured account sits in storage",()=>{
+ const m=manager();const policy={...policyWith(),priorityByAccount:{0:1,1:1,2:1}};
+ const q=(hours:number)=>({plan:"subscription" as const,remainingPercent:20,resetAtMs:NOW+hours*3600000,urgency:null,exhausted:false,observedAt:NOW});
+ // [B reset 24h, U unmeasured, A reset 1h]
+ expect(chooseAccount({...baseParams(m),policy,subscriptionQuotaByAccount:{0:q(24),2:q(1)}})?.index).toBe(2);
+});
+
+it("uses subscription quota order inside a tier before active-account preference",()=>{
+ const m=manager();const policy={...policyWith(),priorityByAccount:{0:1,1:1,2:1}};
+ const q=(urgency:number)=>({plan:"subscription" as const,remainingPercent:20,resetAtMs:NOW+3600000/urgency,urgency,exhausted:false,observedAt:NOW});
+ expect(chooseAccount({...baseParams(m),policy,preferredIndex:0,subscriptionQuotaByAccount:{0:q(1),1:q(20),2:q(10)}})?.index).toBe(1);
+ expect(chooseAccount({...baseParams(m),policy,fallbackPinnedIndex:0,subscriptionQuotaByAccount:{0:q(1),1:q(20),2:q(10)}})?.index).toBe(0);
+});
+
+it("keeps five percent reserved across tiers and a native pin, then uses it as subscription-only last resort",()=>{
+ const m=manager();const policy={...policyWith(),priorityByAccount:{0:1,1:8,2:1}};
+ const q=(remainingPercent:number)=>({plan:"subscription" as const,remainingPercent,resetAtMs:NOW+3600000,urgency:remainingPercent,exhausted:remainingPercent===0,observedAt:NOW});
+ const params={...baseParams(m),policy,fallbackPinnedIndex:0,subscriptionQuotaByAccount:{0:q(5),1:q(20),2:q(0)}};
+ expect(chooseAccount(params)?.index).toBe(1);
+ expect(chooseAccount({...params,attemptedIndexes:new Set([1])})?.index).toBe(0);
+ expect(chooseAccount({...params,attemptedIndexes:new Set([0,1])})).toBeNull();
+});
+
+it("keeps native pin and configured tiers ahead of an unused subscription",()=>{
+ const m=manager();const policy={...policyWith(),priorityByAccount:{0:1,1:9,2:1}};
+ const q=(remainingPercent:number)=>({plan:"subscription" as const,remainingPercent,resetAtMs:NOW+3600000,urgency:remainingPercent,exhausted:false,observedAt:NOW});
+ const params={...baseParams(m),policy,fallbackPinnedIndex:0,subscriptionQuotaByAccount:{0:q(20),1:q(100),2:q(50)}};
+ expect(chooseAccount(params)?.index).toBe(0);
+ expect(chooseAccount({...params,fallbackPinnedIndex:null})?.index).toBe(2);
+ expect(chooseAccount({...params,attemptedIndexes:new Set([1])})?.index).toBe(0);
+ expect(chooseAccount({...params,policy:{...policy,blockedAccountIndexes:new Set([1])}})?.index).toBe(0);
 });

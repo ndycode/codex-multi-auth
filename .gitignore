@@ -1,4 +1,5 @@
 node_modules/
+*.tsbuildinfo
 bun.lockb
 pnpm-lock.yaml
 dist/
@@ -38,3 +39,6 @@ test-results.md
 
 # Rust
 /target
+
+# worktrees (git worktree add .worktrees/...)
+.worktrees/

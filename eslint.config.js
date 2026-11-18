@@ -5,7 +5,7 @@ import { createTypeScriptImportResolver } from "eslint-import-resolver-typescrip
 
 export default [
   {
-    ignores: ["dist/**", "coverage/**", "node_modules/**", "winston/**", ".tmp*/**", "vendor/**", "*.cjs", "*.mjs", "!scripts/**/*.mjs"],
+    ignores: ["dist/**", "coverage/**", "node_modules/**", "winston/**", ".tmp*/**", ".worktrees/**", "vendor/**", "*.cjs", "*.mjs", "!scripts/**/*.mjs"],
   },
   {
     files: ["index.ts", "lib/**/*.ts"],

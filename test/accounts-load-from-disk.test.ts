@@ -343,3 +343,78 @@ describe("AccountManager loadFromDisk", () => {
     expect(selected?.refreshToken).toBe("stale-1");
   });
 });
+
+// The plugin host saves accounts from an explicit field list; a field missing
+// there is silently dropped on the next save.
+describe("AccountManager and the Codex CLI mirror", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    storageMocks.saveAccounts.mockResolvedValue(undefined);
+    storageMocks.withAccountStorageTransaction.mockImplementation(
+      async (handler) =>
+        handler(null, async (storage) => {
+          await storageMocks.saveAccounts(storage);
+        }),
+    );
+    codexCliSyncMocks.syncAccountStorageFromCodexCli.mockResolvedValue({
+      changed: false,
+      storage: null,
+    });
+    codexCliStateMocks.loadCodexCliState.mockResolvedValue(null);
+    codexCliWriterMocks.setCodexCliActiveSelection.mockResolvedValue(true);
+  });
+
+  const mirror = { forAccountId: "ws-team", accountId: "ws-authorized" };
+
+  it("keeps the mirror across a load and save round trip", async () => {
+    const now = Date.now();
+    storageMocks.loadAccounts.mockResolvedValue({
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        {
+          refreshToken: "refresh-team",
+          accountId: "ws-team",
+          accountIdSource: "manual" as const,
+          codexCliMirror: mirror,
+          addedAt: now,
+          lastUsed: now,
+        },
+      ],
+    });
+
+    const manager = await AccountManager.loadFromDisk();
+    await manager.saveToDisk();
+
+    const saved = storageMocks.saveAccounts.mock.calls.at(-1)?.[0] as {
+      accounts: Array<{ codexCliMirror?: unknown }>;
+    };
+    expect(saved.accounts[0]?.codexCliMirror).toEqual(mirror);
+  });
+
+  it("syncs the mirror id when rotation writes the Codex CLI selection", async () => {
+    const now = Date.now();
+    storageMocks.loadAccounts.mockResolvedValue({
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        {
+          refreshToken: "refresh-team",
+          accessToken: "access-team",
+          accountId: "ws-team",
+          accountIdSource: "manual" as const,
+          codexCliMirror: mirror,
+          addedAt: now,
+          lastUsed: now,
+        },
+      ],
+    });
+
+    const manager = await AccountManager.loadFromDisk();
+    await manager.syncCodexCliActiveSelectionForIndex(0);
+
+    expect(codexCliWriterMocks.setCodexCliActiveSelection).toHaveBeenLastCalledWith(
+      expect.objectContaining({ accountId: "ws-authorized" }),
+    );
+  });
+});

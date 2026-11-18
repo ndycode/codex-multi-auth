@@ -9,6 +9,9 @@ export const PLUGIN_NAME = "codex-multi-auth";
 /** Base URL for ChatGPT backend API */
 export const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 
+/** Backend model used for the separately metered Luna Reserve allowance. */
+export const LUNA_RESERVE_MODEL = "gpt-reserve" as const;
+
 /** Dummy API key used for OpenAI SDK (actual auth via OAuth) */
 export const DUMMY_API_KEY = "chatgpt-oauth";
 
@@ -55,6 +58,7 @@ export const URL_PATHS = {
 	MODELS: "/models",
 	RESPONSES: "/responses",
 	CODEX_RESPONSES: "/codex/responses",
+	TRANSCRIBE: "/transcribe",
 } as const;
 
 /** JWT claim path for ChatGPT account ID */
@@ -133,3 +137,40 @@ export type ModelReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
 /** Effort levels the Responses API actually accepts. */
 export type WireReasoningEffort = Exclude<ModelReasoningEffort, "ultra">;
+
+/**
+ * Model ids whose final segment is an effort word but is part of the NAME.
+ *
+ * `codex-max` and `gpt-5.1-codex-max` are models. Stripping their trailing
+ * `-max` as if it were an effort suffix renames them to `codex` and
+ * `gpt-5.1-codex`, which silently retargets the unsupported-model fallback
+ * chain and splits their cache keys. This is the reason the strippers below
+ * omitted `max` and `ultra` for so long; naming the exception is what lets them
+ * be added.
+ */
+const EFFORT_SUFFIX_EXEMPT_PATTERN = /codex-max$/i;
+
+/**
+ * Trailing `-<effort>` on a model id, derived from REASONING_EFFORTS so a new
+ * tier cannot be added to the union and missed here.
+ */
+const EFFORT_SUFFIX_PATTERN = new RegExp(
+	`-(${REASONING_EFFORTS.join("|")})$`,
+	"i",
+);
+
+/**
+ * Strip a trailing reasoning-effort suffix from a model id.
+ *
+ * Callers use this to collapse `gpt-5.6-sol-max` and `gpt-6-astra-ultra` onto
+ * the model they actually route to, so cache keys, policy keys and fallback
+ * chain lookups all agree on one id per model. Ids exempted above are returned
+ * untouched.
+ */
+export function stripModelEffortSuffix(modelId: string): string {
+	if (EFFORT_SUFFIX_EXEMPT_PATTERN.test(modelId)) return modelId;
+	return modelId.replace(EFFORT_SUFFIX_PATTERN, "");
+}
+
+/** Maximum lifetime of a local quota rejection before upstream revalidation. */
+export const RATE_LIMIT_CACHE_TTL_MS = 60 * 60_000;

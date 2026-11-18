@@ -1,4 +1,8 @@
-﻿import { isBrowserLaunchSuppressed } from "../auth/browser.js";
+import { runApiLoginMenu } from "./api-login-menu.js";
+import { sanitizeEmail, getAccountIdCandidates } from "../accounts.js";
+import { resolveOrgOverride } from "../auth/org-override.js";
+import { chooseLoginWorkspace } from "./login-workspace-choice.js";
+import { isBrowserLaunchSuppressed } from "../auth/browser.js";
 import { promptAddAnotherAccount, promptLoginMode } from "../cli.js";
 import { ACCOUNT_LIMITS } from "../constants.js";
 import { loadDashboardDisplaySettings } from "../dashboard-settings.js";
@@ -6,6 +10,8 @@ import { createLogger } from "../logger.js";
 import { loadQuotaCache } from "../quota-cache.js";
 import { resolveActiveIndex } from "../runtime/account-status.js";
 import {
+	type AccountMetadataV3,
+	type AccountStorageV3,
 	clearAccounts,
 	formatStorageErrorHint,
 	getNamedBackups,
@@ -16,6 +22,7 @@ import {
 	setStoragePath,
 	StorageError,
 } from "../storage.js";
+import { CodexValidationError } from "../errors.js";
 import { UI_COPY } from "../ui/ui-copy.js";
 import { confirm } from "../ui/confirm.js";
 import { stylePromptText } from "./formatters/index.js";
@@ -26,6 +33,7 @@ import {
 	printUsage,
 } from "./help.js";
 import { runActionPanel } from "./login-action-panel.js";
+import { clearAccountsAndCredentialSidecars } from "../storage/credential-sidecars.js";
 import {
 	handleManageAction,
 	promptBackupRestoreMode,
@@ -48,6 +56,10 @@ import {
 	runSignInFlow,
 	syncSelectionToCodex,
 } from "./login-oauth.js";
+import {
+	applyAuthorizedAccountConstraint,
+	fetchAuthorizedAccounts,
+} from "../auth/account-access.js";
 import { persistAndSyncSelectedAccount } from "./persist-selected-account.js";
 import {
 	type RepairCommandDeps,
@@ -103,7 +115,31 @@ async function drainPendingMenuQuotaRefresh(
 const log = createLogger("codex-manager");
 
 async function clearAccountsAndReset(): Promise<void> {
-	await clearAccounts();
+	await clearAccountsAndCredentialSidecars(clearAccounts);
+}
+
+/** @internal */
+export function resolveLoginAccountTarget(
+	storage: AccountStorageV3,
+	identifier: string,
+): AccountMetadataV3 | null {
+	if (/^[1-9]\d*$/.test(identifier)) {
+		const byIndex = storage.accounts[Number(identifier) - 1];
+		return byIndex ?? null;
+	}
+
+	const byAccountId = storage.accounts.filter(
+		(account) => account.accountId === identifier,
+	);
+	if (byAccountId.length === 1) return byAccountId[0] ?? null;
+	if (byAccountId.length > 1) return null;
+
+	const email = sanitizeEmail(identifier);
+	if (!email) return null;
+	const byEmail = storage.accounts.filter(
+		(account) => sanitizeEmail(account.email) === email,
+	);
+	return byEmail.length === 1 ? (byEmail[0] ?? null) : null;
 }
 
 /** @internal */
@@ -111,6 +147,7 @@ export async function runAuthLogin(
 	args: string[],
 	deps: LoginFlowDeps,
 ): Promise<number> {
+	if (args.length === 1 && args[0] === "--api") return runApiLoginMenu();
 	const parsedArgs = parseAuthLoginArgs(args);
 	if (!parsedArgs.ok) {
 		if (parsedArgs.reason === "error") {
@@ -227,7 +264,7 @@ async function runLoginDashboardLoop(
 				"Quick Check",
 				"Checking local session + live status",
 				async () => {
-					await runHealthCheck({ forceRefresh: false, liveProbe: true });
+					await runHealthCheck({ forceRefresh: false, liveProbe: true, discoverModels: true });
 				},
 				displaySettings,
 			);
@@ -239,7 +276,7 @@ async function runLoginDashboardLoop(
 				"Deep Check",
 				"Refreshing and testing all accounts",
 				async () => {
-					await runHealthCheck({ forceRefresh: true, liveProbe: true });
+					await runHealthCheck({ forceRefresh: true, liveProbe: true, discoverModels: true });
 				},
 				displaySettings,
 			);
@@ -269,6 +306,11 @@ async function runLoginDashboardLoop(
 			);
 			continue;
 		}
+		if (menuResult.mode === "api-models") {
+			await drainPendingMenuQuotaRefresh(menuState);
+			await runApiLoginMenu();
+			continue;
+		}
 		if (menuResult.mode === "settings") {
 			clearMenuQuotaAutoRefreshSkip(menuState);
 			await configureUnifiedSettings(displaySettings);
@@ -294,7 +336,7 @@ async function runLoginDashboardLoop(
 				async () => {
 					await clearAccountsAndReset();
 					console.log(
-						"Cleared saved accounts from active storage. Recovery snapshots remain available.",
+						"Cleared saved accounts and API credentials. Account recovery snapshots remain available.",
 					);
 				},
 				displaySettings,
@@ -341,7 +383,11 @@ async function runAuthLoginFlow(
 	// (--device-auth, --manual, --no-browser), they want to add a new account
 	// directly. Skipping the dashboard menu keeps `login --device-auth`
 	// usable from scripts and matches the documented behavior of the help text.
-	const explicitSignInMode = loginOptions.deviceAuth || loginOptions.manual;
+	const explicitSignInMode =
+		loginOptions.deviceAuth ||
+		loginOptions.manual ||
+		loginOptions.preserveSelection ||
+		Boolean(loginOptions.account);
 	loginFlow: while (true) {
 		const existingStorage = await loadAccounts();
 		if (
@@ -357,6 +403,26 @@ async function runAuthLoginFlow(
 
 		const refreshedStorage = await loadAccounts();
 		let existingCount = refreshedStorage?.accounts.length ?? 0;
+		const expectedAccount = loginOptions.account
+			? refreshedStorage
+				? resolveLoginAccountTarget(refreshedStorage, loginOptions.account)
+				: null
+			: undefined;
+		if (loginOptions.account && !expectedAccount) {
+			console.error(
+				"The requested Codex account is missing or ambiguous. No login was started.",
+			);
+			return 1;
+		}
+		// Positional hint for the write, re-verified (never trusted) inside the
+		// storage transaction. resolveLoginAccountTarget hands back a row out of
+		// this very array, so indexOf is an exact identity lookup.
+		const expectedAccountIndex =
+			expectedAccount && refreshedStorage
+				? refreshedStorage.accounts.indexOf(expectedAccount)
+				: -1;
+		// A non-empty pool already forces a fresh sign-in, and a resolved target
+		// implies the pool was non-empty, so it adds no condition of its own.
 		let forceNewLogin = existingCount > 0;
 		let onboardingBackupDiscoveryWarning: string | null = null;
 		const loadNamedBackupsForOnboarding = async (): Promise<
@@ -460,6 +526,13 @@ async function runAuthLoginFlow(
 								parsed: targetIndex + 1,
 								switchReason: "restore",
 								preserveActiveIndexByFamily: true,
+								// A restore replaces the whole account list, so every
+								// index moves. Session affinity remembers accounts BY
+								// INDEX, so without this a live proxy keeps routing
+								// in-flight sessions to whatever now occupies the old
+								// slot. `switch`/`best` already bump for a single
+								// move; a restore moves everything. See issue #474.
+								bumpAffinityGeneration: true,
 							});
 							console.log(
 								UI_COPY.oauth.restoreBackupLoaded(
@@ -526,9 +599,87 @@ async function runAuthLoginFlow(
 				return 1;
 			}
 
-			const resolved = resolveAccountSelection(tokenResult, loginOptions.org);
-			const persistOutcome = await persistAccountPool([resolved], false);
-			await syncSelectionToCodex(resolved);
+			let resolved: ReturnType<typeof resolveAccountSelection>;
+			let persistResult: Awaited<ReturnType<typeof persistAccountPool>>;
+			try {
+				const workspaceOverride = expectedAccount || resolveOrgOverride(loginOptions.org)
+					? loginOptions.org
+					: await chooseLoginWorkspace(getAccountIdCandidates(tokenResult.access, tokenResult.idToken));
+				if (workspaceOverride === null) {
+					// Same as an OAuth cancel: back to the dashboard when it launched
+					// this sign-in, otherwise exit.
+					if (!explicitSignInMode && existingCount > 0) {
+						console.log(stylePromptText("Cancelled. Account was not saved.", "muted"));
+						continue loginFlow;
+					}
+					console.log("Cancelled. Account was not saved.");
+					return 0;
+				}
+				resolved = resolveAccountSelection(tokenResult, workspaceOverride, expectedAccount?.accountId);
+				// The workspace list comes from token claims, which can name an
+				// organization these credentials hold no live authorization for. Codex
+				// CLI >= 0.156.0 checks that against wham/accounts/check and refuses
+				// every request with "selected workspace missing from routing
+				// discovery", so ask the same question before persisting the id.
+				// A targeted re-auth is skipped: persistAccountPool identity-checks it
+				// and would reject a rewritten id.
+				if (!expectedAccount && resolved.accountIdOverride) {
+					const authorized = await fetchAuthorizedAccounts(tokenResult.access);
+					const constrained = applyAuthorizedAccountConstraint(
+						resolved,
+						authorized,
+					);
+					if (constrained.result?.changed) {
+						if (resolved.accountIdSource === "manual") {
+							// `--org` / CODEX_AUTH_ACCOUNT_ID is explicit intent, so the saved
+							// binding is kept as chosen. Codex CLI would refuse it though, so
+							// every ~/.codex/auth.json writer gets the authorized id through
+							// the saved CodexCliMirror instead.
+							resolved = {
+								...resolved,
+								codexCliMirror: {
+									forAccountId: resolved.accountIdOverride,
+									accountId: constrained.result.accountId,
+								},
+							};
+							console.warn(
+								"Warning: the workspace you selected is not authorized for these credentials. It is saved as chosen, but the Codex CLI auth file gets the backend's default account instead, because Codex CLI 0.156+ refuses unauthorized workspaces.",
+							);
+						} else {
+							resolved = { ...constrained.selection, codexCliMirror: null };
+							console.warn(
+								"Warning: the automatically selected workspace is not authorized for these credentials; using the account the backend reports as default instead. Re-authenticate while that workspace is active in ChatGPT to bind it.",
+							);
+						}
+					} else if (authorized?.accountIds.includes(resolved.accountIdOverride.trim())) {
+						// The id is authorized now: drop a mirror left by an earlier login.
+						// Without an answer (fail open) the saved mirror is kept.
+						resolved = { ...resolved, codexCliMirror: null };
+					}
+				}
+
+				persistResult = await persistAccountPool([resolved], false, {
+					preserveSelection: loginOptions.preserveSelection,
+					expectedAccount: expectedAccount ?? undefined,
+					expectedAccountIndex:
+						expectedAccountIndex >= 0 ? expectedAccountIndex : undefined,
+				});
+			} catch (error) {
+				if (error instanceof CodexValidationError) {
+					console.error(`${expectedAccount ? "Re-authentication" : "Login"} failed: ${error.message}`);
+					return 1;
+				}
+				throw error;
+			}
+			// Publish to ~/.codex/auth.json exactly when this write owns the
+			// selection. Skipping the sync whenever --preserve-selection was passed
+			// stranded the native CLI on the expired tokens of the very account the
+			// user had just refreshed, and nothing downstream repaired it: the
+			// drift check compares identity, not tokens, so a same-identity refresh
+			// never looks like drift.
+			if (!persistResult || persistResult.isActiveAccount) {
+				await syncSelectionToCodex(resolved);
+			}
 
 			const latestStorage = await loadAccounts();
 			const count = latestStorage?.accounts.length ?? 1;
@@ -539,12 +690,17 @@ async function runAuthLoginFlow(
 			// same-email login that maps onto an existing entry updates or
 			// rebinds it instead of growing the pool (issue #512).
 			const outcomeMessage =
-				persistOutcome === "rebound"
+				persistResult?.outcome === "rebound"
 					? `Rebound workspace for existing account. Total: ${count}`
-					: persistOutcome === "updated"
+					: persistResult?.outcome === "updated"
 						? `Updated existing account. Total: ${count}`
 						: `Added account. Total: ${count}`;
 			console.log(outcomeMessage);
+			if (persistResult && !persistResult.accountEnabled) {
+				console.log(
+					`Account ${persistResult.accountIndex + 1} is still disabled and stays out of rotation. Re-enable it from the manage menu in "codex-multi-auth login".`,
+				);
+			}
 			console.log("Next steps:");
 			console.log("  codex-multi-auth status  Check that the wrapper is active.");
 			console.log(
@@ -553,6 +709,9 @@ async function runAuthLoginFlow(
 			console.log(
 				"  codex-multi-auth list    Review saved accounts before switching.",
 			);
+			if (loginOptions.preserveSelection) {
+				return 0;
+			}
 			if (count >= ACCOUNT_LIMITS.MAX_ACCOUNTS) {
 				console.log(
 					`Reached maximum account limit (${ACCOUNT_LIMITS.MAX_ACCOUNTS}).`,

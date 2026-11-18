@@ -1,18 +1,21 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
 	chmodSync,
+	closeSync,
 	copyFileSync,
 	cpSync,
 	existsSync,
 	linkSync,
 	mkdirSync,
 	mkdtempSync,
+	openSync,
 	readdirSync,
 	renameSync,
 	readFileSync,
+	readSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -20,13 +23,16 @@ import {
 } from "node:fs";
 import { rm as rmAsync } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { homedir, tmpdir } from "node:os";
-import { basename, delimiter, dirname, join, resolve as resolvePath, sep } from "node:path";
+import { constants as osConstants, homedir, tmpdir } from "node:os";
+import { basename, delimiter, dirname, isAbsolute, join, resolve as resolvePath, sep } from "node:path";
 import process from "node:process";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+	isFullyQualifiedBinOverride,
+	isWindowsShimPath,
 	resolveRealCodexBin as resolveRealCodexBinFromEnvironment,
+	resolveWindowsShimPackageEntry,
 	splitPathEntries,
 } from "./codex-bin-resolver.js";
 import { normalizeAuthAlias, shouldHandleMultiAuthAuth } from "./codex-routing.js";
@@ -63,6 +69,11 @@ const SHADOW_HOME_STATE_FILE_SET = new Set(SHADOW_HOME_STATE_FILES);
 const SHADOW_HOME_CONFIG_FILE = "config.toml";
 const SHADOW_HOME_SYNC_LOCK_DIR = ".codex-multi-auth-shadow-sync.lock";
 const SHADOW_HOME_SYNC_STATE_FILE = ".codex-multi-auth-shadow-sync-state.json";
+// Housekeeping marker written into every shadow home ({pid, createdAt, and the
+// forwarded child's pid once spawned}) so the next launch can tell a dead
+// owner's leftover from a home still in use. It is never mirrored in from the
+// real home nor synced back into it.
+const SHADOW_HOME_OWNER_FILE = ".codex-multi-auth-owner.json";
 const APP_SERVER_ACCOUNT_DISPLAY_NAME = "codex-multi-auth";
 const RUNTIME_CONSTANTS = await loadRuntimeConstants();
 const RUNTIME_ROTATION_PROXY_PROVIDER_ID =
@@ -74,9 +85,44 @@ const APP_RUNTIME_HELPER_OWNER_PID_ENV =
 	"CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID";
 const APP_RUNTIME_HELPER_REAL_CODEX_HOME_ENV =
 	"CODEX_MULTI_AUTH_REAL_CODEX_HOME";
+const APP_RUNTIME_HELPER_USE_CANONICAL_HOME_ENV =
+	"CODEX_MULTI_AUTH_APP_ROTATION_USE_CANONICAL_HOME";
+const APP_RUNTIME_HELPER_INSTALL_APP_SERVER_SHIM_ENV =
+	"CODEX_MULTI_AUTH_APP_ROTATION_INSTALL_APP_SERVER_SHIM";
+const APP_RUNTIME_HELPER_PROVIDER_ID_ENV =
+	"CODEX_MULTI_AUTH_APP_ROTATION_PROVIDER_ID";
+const RUNTIME_ROTATION_PROXY_UPSTREAM_BASE_URL_ENV =
+	"CODEX_MULTI_AUTH_RUNTIME_PROXY_UPSTREAM_BASE_URL";
+const APP_SERVER_CONFIG_ARGS_ENV =
+	"CODEX_MULTI_AUTH_APP_SERVER_CONFIG_ARGS_JSON";
 const APP_RUNTIME_HELPER_STATUS_FILE =
 	RUNTIME_CONSTANTS.APP_RUNTIME_HELPER_STATUS_FILE;
+const APP_RUNTIME_HELPER_OWNER_FILE =
+	RUNTIME_CONSTANTS.APP_RUNTIME_HELPER_OWNER_FILE;
 const DEFAULT_APP_RUNTIME_HELPER_IDLE_MS = 12 * 60 * 60 * 1000;
+// Absolute ceiling on a helper's life, independent of the idle tracker. The
+// idle reaper depends on activity accounting being correct; any bug there —
+// PID reuse briefly reviving a dead owner is the observed one — previously
+// produced an *unbounded* leak because nothing else bounded the process.
+const DEFAULT_APP_RUNTIME_HELPER_MAX_LIFETIME_MS = 24 * 60 * 60 * 1000;
+// A helper whose launcher is gone is not idle in the same sense as one whose
+// launcher is sitting at a prompt: nobody is coming back to it unless a
+// detached consumer picked it up. The detach grace below hands helpers off
+// optimistically — every launcher that exits cleanly within the window leaves
+// its helper running — so short forwarded commands strand helpers that then
+// hold the full idle timeout with no owner and no traffic. This window is the
+// idle timeout that applies from the moment the owner is confirmed dead, and
+// it only ever fires with zero open client connections, so a consumer that
+// really did take the handoff is never reaped out from under.
+const DEFAULT_APP_RUNTIME_HELPER_DETACHED_IDLE_MS = 15 * 60 * 1000;
+const APP_RUNTIME_HELPER_OWNER_START_TIME_ENV =
+	"CODEX_MULTI_AUTH_APP_ROTATION_OWNER_START_TIME_MS";
+// Re-verify owner identity (not just PID liveness) at most this often; a
+// process spawn per tick would cost more than the leak it prevents.
+const APP_RUNTIME_HELPER_OWNER_IDENTITY_RECHECK_MS = 60_000;
+// Status telemetry heartbeat: the tick's job is the timeout check, so status
+// is republished only on change, plus a heartbeat so freshness readers work.
+const APP_RUNTIME_HELPER_STATUS_HEARTBEAT_MS = 60_000;
 const DEFAULT_APP_RUNTIME_HELPER_DETACH_GRACE_MS = 5_000;
 const APP_RUNTIME_HELPER_LAUNCH_TIMEOUT_MS = 15_000;
 const APP_SERVER_SHIM_DIR_NAME = "app-server-shims";
@@ -86,25 +132,48 @@ const DEFAULT_STATUS_QUOTA_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 const STATUS_QUOTA_REFRESH_LOCK_STALE_MS = 10 * 60 * 1000;
 const STATUS_QUOTA_REFRESH_LOCK_DIR = "status-quota-refresh.lock";
 const STARTUP_UPDATE_NOTICE_TIMED_OUT = Symbol("startup-update-notice-timed-out");
-let shadowHomeCleanupBusyFailuresRemaining = Number.parseInt(
-	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_CLEANUP_BUSY_FAILURES ?? "0",
-	10,
+
+// This wrapper is published (`package.json` ships `scripts/codex.js`), so every
+// fault injector below runs in users' installs. Two guards keep them inert
+// there. The first is an explicit opt-in: a single, greppable switch that must
+// be set alongside any counter, so one stray counter in a shell profile or a CI
+// environment cannot arm anything. The second is a strict parse — `parseInt`
+// happily reads "2abc" as 2 and "1e3" as 1, which is how a value that was never
+// meant to be a count arms an injector — so only a plain run of digits counts
+// and everything else is zero. Zero means "never inject".
+const TEST_FAULT_INJECTION_ENV = "CODEX_MULTI_AUTH_TEST_FAULT_INJECTION";
+
+function resolveTestFaultInjectionCount(name, env = process.env) {
+	if (env[TEST_FAULT_INJECTION_ENV] !== "1") return 0;
+	const raw = (env[name] ?? "").trim();
+	if (!/^\d+$/.test(raw)) return 0;
+	const parsed = Number.parseInt(raw, 10);
+	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+let shadowHomeCleanupBusyFailuresRemaining = resolveTestFaultInjectionCount(
+	"CODEX_MULTI_AUTH_TEST_SHADOW_CLEANUP_BUSY_FAILURES",
 );
-let shadowHomeCleanupPreflightReadBusyFailuresRemaining = Number.parseInt(
-	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_PREFLIGHT_READ_BUSY_FAILURES ?? "0",
-	10,
+let shadowHomeCleanupPreflightReadBusyFailuresRemaining =
+	resolveTestFaultInjectionCount(
+		"CODEX_MULTI_AUTH_TEST_SHADOW_PREFLIGHT_READ_BUSY_FAILURES",
+	);
+let shadowHomeSyncLockRecreateStaleCount = resolveTestFaultInjectionCount(
+	"CODEX_MULTI_AUTH_TEST_SHADOW_LOCK_RECREATE_STALE_COUNT",
 );
-let shadowHomeSyncLockRecreateStaleCount = Number.parseInt(
-	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_LOCK_RECREATE_STALE_COUNT ?? "0",
-	10,
+let shadowHomeSyncMetadataBusyFailuresRemaining = resolveTestFaultInjectionCount(
+	"CODEX_MULTI_AUTH_TEST_SHADOW_SYNC_METADATA_BUSY_FAILURES",
 );
-let shadowHomeSyncMetadataBusyFailuresRemaining = Number.parseInt(
-	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_SYNC_METADATA_BUSY_FAILURES ?? "0",
-	10,
-);
-let shadowHomeSyncLockOwnerWriteFailuresRemaining = Number.parseInt(
-	process.env.CODEX_MULTI_AUTH_TEST_SHADOW_LOCK_OWNER_WRITE_FAILURES ?? "0",
-	10,
+let shadowHomeSyncLockOwnerWriteFailuresRemaining =
+	resolveTestFaultInjectionCount(
+		"CODEX_MULTI_AUTH_TEST_SHADOW_LOCK_OWNER_WRITE_FAILURES",
+	);
+let appServerShimFileCleanupBusyFailuresRemaining =
+	resolveTestFaultInjectionCount(
+		"CODEX_MULTI_AUTH_TEST_APP_SERVER_SHIM_FILE_CLEANUP_BUSY_FAILURES",
+	);
+let appServerShimCopyBusyFailuresRemaining = resolveTestFaultInjectionCount(
+	"CODEX_MULTI_AUTH_TEST_APP_SERVER_SHIM_COPY_BUSY_FAILURES",
 );
 const shadowHomeCleanupRetryMarkerDir =
 	(process.env.CODEX_MULTI_AUTH_TEST_SHADOW_RETRY_MARKER_DIR ?? "").trim();
@@ -114,10 +183,100 @@ let warnedShadowHomeSqliteLinkFailure = false;
 const warnedShadowHomeLinkOnlyDirectoryFailures = new Set();
 const warnedShadowHomeSqliteSidecarPlaceholderFailures = new Set();
 
+/**
+ * True only for a NUMERIC loopback literal, as `new URL().hostname` reports it.
+ *
+ * A name is deliberately not enough. `localhost` is resolved by the OS at
+ * connect time, so an /etc/hosts or Windows hosts entry can point it at a
+ * routable address, and the upstream request carries the managed OAuth bearer
+ * token and the request body. WHATWG URL always reports an IPv6 host in its
+ * bracketed form, so `::1` is only ever seen here as `[::1]`.
+ */
+function isLoopbackUrlHostname(hostname) {
+	if (hostname === "[::1]") {
+		return true;
+	}
+	const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+	if (!ipv4) {
+		return false;
+	}
+	const octets = ipv4.slice(1).map((part) => Number(part));
+	if (octets.some((octet) => !Number.isInteger(octet) || octet > 255)) {
+		return false;
+	}
+	// The whole 127.0.0.0/8 block is loopback, not just 127.0.0.1.
+	return octets[0] === 127;
+}
+
+/**
+ * Whether the raw URL text carries an explicit `:port`.
+ *
+ * `new URL()` erases a port that matches the scheme default, so
+ * `http://127.0.0.1:80/x` reports `parsed.port === ""` and a `!parsed.port`
+ * check would reject a perfectly valid, explicitly-ported loopback URL.
+ */
+function hasExplicitUrlPort(raw) {
+	const withoutScheme = raw.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, "");
+	const authority = withoutScheme.split(/[/?#]/, 1)[0] ?? "";
+	// Strip userinfo first, or a password containing ':' reads as a port.
+	const hostAndPort = authority.slice(authority.lastIndexOf("@") + 1);
+	if (hostAndPort.startsWith("[")) {
+		const close = hostAndPort.indexOf("]");
+		return close !== -1 && /^:\d+$/.test(hostAndPort.slice(close + 1));
+	}
+	const colon = hostAndPort.indexOf(":");
+	return colon !== -1 && /^:\d+$/.test(hostAndPort.slice(colon));
+}
+
+function resolveRuntimeRotationProxyUpstreamBaseUrl(env = process.env) {
+	const raw = (env[RUNTIME_ROTATION_PROXY_UPSTREAM_BASE_URL_ENV] ?? "").trim();
+	if (!raw) {
+		return undefined;
+	}
+
+	let parsed;
+	try {
+		parsed = new URL(raw);
+	} catch {
+		throw new Error(
+			`${RUNTIME_ROTATION_PROXY_UPSTREAM_BASE_URL_ENV} must be an absolute loopback HTTP URL.`,
+		);
+	}
+
+	if (
+		parsed.protocol !== "http:" ||
+		!isLoopbackUrlHostname(parsed.hostname.toLowerCase()) ||
+		!(parsed.port || hasExplicitUrlPort(raw)) ||
+		parsed.username ||
+		parsed.password ||
+		parsed.search ||
+		parsed.hash
+	) {
+		throw new Error(
+			`${RUNTIME_ROTATION_PROXY_UPSTREAM_BASE_URL_ENV} must use HTTP with a numeric loopback host (127.0.0.0/8 or [::1]; a name such as "localhost" is not accepted because it can resolve off-host), an explicit port, and no credentials, query, or fragment.`,
+		);
+	}
+
+	return parsed.toString().replace(/\/$/, "");
+}
+
+/**
+ * @param clientApiKey Shared secret the wrapper and proxy authenticate with.
+ * @param upstreamBaseUrl Already-resolved upstream, or undefined for the
+ * default backend. Callers pass the value they resolved rather than the env, so
+ * one launch never parses (and never re-reports) the same variable twice.
+ */
+function createRuntimeRotationProxyOptions(clientApiKey, upstreamBaseUrl) {
+	return upstreamBaseUrl
+		? { clientApiKey, upstreamBaseUrl }
+		: { clientApiKey };
+}
+
 async function loadRuntimeConstants() {
 	const fallback = {
 		RUNTIME_ROTATION_PROXY_PROVIDER_ID: `${APP_SERVER_ACCOUNT_DISPLAY_NAME}-runtime-proxy`,
 		APP_RUNTIME_HELPER_STATUS_FILE: "runtime-rotation-app-helper.json",
+		APP_RUNTIME_HELPER_OWNER_FILE: "runtime-rotation-app-helper-owner.json",
 	};
 	try {
 		const mod = await import("../dist/lib/runtime-constants.js");
@@ -130,6 +289,10 @@ async function loadRuntimeConstants() {
 				typeof mod.APP_RUNTIME_HELPER_STATUS_FILE === "string"
 					? mod.APP_RUNTIME_HELPER_STATUS_FILE
 					: fallback.APP_RUNTIME_HELPER_STATUS_FILE,
+			APP_RUNTIME_HELPER_OWNER_FILE:
+				typeof mod.APP_RUNTIME_HELPER_OWNER_FILE === "string"
+					? mod.APP_RUNTIME_HELPER_OWNER_FILE
+					: fallback.APP_RUNTIME_HELPER_OWNER_FILE,
 		};
 	} catch {
 		// Keep wrapper startup resilient when dist has not been built yet.
@@ -165,6 +328,39 @@ function removeDirectoryWithRetry(targetPath) {
 			sleepSync(SHADOW_HOME_CLEANUP_BACKOFF_MS[attempt]);
 		}
 	}
+}
+
+function withSynchronousFileOperationRetry(operation) {
+	for (
+		let attempt = 0;
+		attempt <= SHADOW_HOME_CLEANUP_BACKOFF_MS.length;
+		attempt += 1
+	) {
+		try {
+			return operation();
+		} catch (error) {
+			if (
+				!isRetryableShadowHomeCleanupError(error) ||
+				attempt === SHADOW_HOME_CLEANUP_BACKOFF_MS.length
+			) {
+				throw error;
+			}
+			sleepSync(SHADOW_HOME_CLEANUP_BACKOFF_MS[attempt]);
+		}
+	}
+}
+
+function maybeThrowSimulatedAppServerShimFileError(kind) {
+	const remaining =
+		kind === "copy"
+			? appServerShimCopyBusyFailuresRemaining
+			: appServerShimFileCleanupBusyFailuresRemaining;
+	if (remaining <= 0) return;
+	if (kind === "copy") appServerShimCopyBusyFailuresRemaining -= 1;
+	else appServerShimFileCleanupBusyFailuresRemaining -= 1;
+	const error = new Error(`simulated app-server shim ${kind} EBUSY`);
+	error.code = "EBUSY";
+	throw error;
 }
 
 /**
@@ -329,6 +525,14 @@ function extractForcedAccountFlag(args) {
 	let sawFlag = false;
 	for (let index = 0; index < args.length; index += 1) {
 		const arg = args[index];
+		// `--` ends option parsing: everything after it is Codex's root
+		// `[PROMPT]` text. A `--account` spelled in there is the user's prompt,
+		// not a launcher flag — stripping it would both mangle the prompt and
+		// silently pin the run to an account nobody selected.
+		if (arg === "--") {
+			strippedArgs.push(...args.slice(index));
+			break;
+		}
 		if (arg === "--account") {
 			sawFlag = true;
 			const next = args[index + 1];
@@ -474,16 +678,36 @@ async function applyForcedAccountSelection(rawArgs, env = process.env) {
 }
 
 function resolveModelFamilyForStatus(model) {
-	const normalized = typeof model === "string" ? model.trim().toLowerCase() : "";
-	// GPT-5.6 general tiers share the gpt-5.2 prompt family (see
-	// lib/request/helpers/model-map.ts MODEL_PROFILES). Check before the generic
-	// gpt-5 catch-all, which would otherwise mis-bucket them as codex.
-	if (normalized.startsWith("gpt-5.6")) return "gpt-5.2";
-	if (normalized.startsWith("gpt-5.2")) return "gpt-5.2";
-	if (normalized.startsWith("gpt-5.1")) return "gpt-5.1";
-	if (normalized.includes("codex-max")) return "codex-max";
-	if (normalized.includes("codex")) return "codex";
-	if (normalized.startsWith("gpt-5")) return "gpt-5-codex";
+	// `resolveStatusModel` hands over the raw `--model` / `-m` value or the
+	// config value verbatim, so a provider-qualified id arrives intact. Every
+	// branch below is a `startsWith`, so `openai/gpt-6` used to match none of
+	// them and return null, dropping status routing back to `activeIndex`
+	// instead of the family index. Strip the prefix once, for all of them.
+	const normalized =
+		typeof model === "string"
+			? stripProviderPrefix(model.trim()).toLowerCase()
+			: "";
+	// GPT-6 Astra and the Daybreak cyber models share the gpt-5.2 prompt family
+	// with the GPT-5.6 general tiers (see lib/request/helpers/model-map.ts
+	// MODEL_PROFILES). Daybreak has to be checked explicitly: its slug matches
+	// none of the branches below, so it used to fall through to `null` and get
+	// bucketed against no family at all.
+	if (
+		(normalized.startsWith("gpt-6") || normalized.startsWith("astra")) &&
+		!normalized.includes("codex")
+	) {
+		return "gpt-5.2";
+	}
+	if (normalized.includes("daybreak")) return "gpt-5.2";
+	// The proxy keys a /codex/responses request by `getModelFamily(model)`
+	// (lib/runtime-rotation-proxy.ts), i.e. the replacement's prompt family.
+	// Every codex model is retired and runs on `gpt-5.6-sol`/`terra`, and every
+	// live or retired general GPT-5 id runs on a model in the gpt-5.2 family, so
+	// status reads that family. The old `codex`/`codex-max`/`gpt-5.1`/
+	// `gpt-5-codex` answers named keys the proxy does not write for these ids.
+	if (normalized.includes("codex") || normalized.startsWith("gpt-5")) {
+		return "gpt-5.2";
+	}
 	return null;
 }
 
@@ -1083,12 +1307,43 @@ async function loadRuntimeConfigTomlModule() {
 	}
 }
 
+// Reconciles the persisted `cli_auth_credentials_store` in ~/.codex/config.toml
+// to "file" before forwarding.
+//
+// `buildForwardArgs` already appends `-c cli_auth_credentials_store="file"`, but
+// that only covers the process this wrapper spawns. Third-party front-ends
+// (CodexBar and friends) exec the official binary directly and read config.toml
+// instead, so a config still pointing at "keychain" keeps producing macOS login
+// keychain prompts (issue #641). Running the reconcile here self-heals a config
+// that something else flipped back — e.g. a fresh official `codex login`.
+//
+// Idempotent: the lib helper returns without writing when the value is already
+// "file", so this adds no write amplification on the common path.
+async function ensurePersistedCodexFileAuthStore() {
+	const forceFileAuthStore = (process.env.CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE ?? "1").trim() !== "0";
+	if (!forceFileAuthStore) return;
+
+	try {
+		const mod = await import("../dist/lib/codex-cli/writer.js");
+		if (typeof mod.ensureCodexCliFileAuthStore !== "function") return;
+		await mod.ensureCodexCliFileAuthStore();
+	} catch (error) {
+		if (isModuleNotFoundError(error)) return;
+		// Best effort only. A read-only or locked config.toml (Windows
+		// EPERM/EBUSY) must never block the wrapped command: the per-invocation
+		// `-c` override still protects this run.
+	}
+}
+
 async function autoSyncManagerActiveSelectionIfEnabled() {
 	const enabled = (process.env.CODEX_MULTI_AUTH_AUTO_SYNC_ON_STARTUP ?? "1").trim() !== "0";
 	if (!enabled) return;
 
 	try {
-		const mod = await import("../dist/lib/codex-manager.js");
+		// Slim entry point: importing dist/lib/codex-manager.js here would pull
+		// the whole command/dispatch/settings graph (~126 modules incl. zod)
+		// onto every forwarded invocation's cold-start path.
+		const mod = await import("../dist/lib/codex-manager/active-account-sync.js");
 		if (typeof mod.autoSyncActiveAccountToCodex !== "function") {
 			return;
 		}
@@ -1105,9 +1360,29 @@ async function autoSyncManagerActiveSelectionIfEnabled() {
 function resolveRealCodexBin() {
 	const override = (process.env.CODEX_MULTI_AUTH_REAL_CODEX_BIN ?? "").trim();
 	if (override.length > 0) {
+		// Fully-qualified = absolute AND drive-qualified on Windows: a
+		// root-relative override like "\bin\codex.exe" resolves against the cwd's
+		// drive and could exec a planted file (CWE-426).
+		if (!isFullyQualifiedBinOverride(override, process.platform)) {
+			console.error(
+				`CODEX_MULTI_AUTH_REAL_CODEX_BIN must be a fully-qualified absolute path (a drive-qualified or UNC path on Windows), got: ${override}`,
+			);
+			return null;
+		}
 		if (!existsSync(override)) {
 			console.error(
 				`CODEX_MULTI_AUTH_REAL_CODEX_BIN is set but missing: ${override}`,
+			);
+			return null;
+		}
+		if (
+			process.platform === "win32" &&
+			isWindowsShimPath(override) &&
+			!resolveWindowsShimPackageEntry(override)
+		) {
+			console.error(
+				`CODEX_MULTI_AUTH_REAL_CODEX_BIN points at a script shim that cannot be launched directly on Windows: ${override}\n` +
+					"Point it at codex.exe or @openai/codex/bin/codex.js instead.",
 			);
 			return null;
 		}
@@ -1129,27 +1404,76 @@ const MODEL_ACCESS_DENIED_PATTERN =
 	/the model [`'"]([^`'"]+)[`'"] does not exist or you do not have access to it/i;
 const DIRECT_UNSUPPORTED_MODEL_PATTERN =
 	/['"]([^'"]+)['"]\s+model is not supported when using codex with a chatgpt account/i;
-const CURRENT_CODEX_MODEL = "gpt-5.3-codex";
-const LEGACY_CODEX_MODEL = "gpt-5-codex";
+// Every codex model is retired; codex ids run on the replacement OpenAI names
+// for them. Mirrors lib/request/helpers/model-map.ts CURRENT_CODEX_MODEL and
+// RETIRED_MODEL_REPLACEMENTS, pinned in parity by test/retired-models.test.ts.
+const CURRENT_CODEX_MODEL = "gpt-5.6-sol";
+const CODEX_MINI_REPLACEMENT_MODEL = "gpt-5.6-terra";
+const RETIRED_MODEL_REPLACEMENTS = {
+	// `gpt-6-astra-aeon` never appeared in the bundled Codex catalog or the
+	// public model docs — a Statsig-flag leak, now dead — so it aliases the
+	// flagship it was a variant of.
+	"gpt-6-astra-aeon": "gpt-6-astra",
+	// `gpt-5.5` leaves ChatGPT/Codex OAuth on 2026-10-14 (the catalog names
+	// GPT-6 Sol as the migration target); `gpt-5.5-pro` left the bundled
+	// catalog earlier and is API-only, so it goes to the frontier flagship.
+	"gpt-5.5": "gpt-6-sol",
+	"gpt-5.5-2026-04-23": "gpt-6-sol",
+	"gpt-5.5-20260423": "gpt-6-sol",
+	"gpt-5.5-pro": "gpt-6-astra",
+	"gpt-5.5-pro-2026-04-23": "gpt-6-astra",
+	"gpt-5.5-pro-20260423": "gpt-6-astra",
+	"gpt-5.4": "gpt-6-sol",
+	"gpt-5.4-mini": "gpt-6-luna",
+	"gpt-5.4-nano": "gpt-6-luna",
+	"gpt-5.4-pro": "gpt-6-astra",
+	"gpt-5.2": "gpt-5.6-sol",
+	"gpt-5.2-pro": "gpt-6-astra",
+	"gpt-5.1": "gpt-5.6-sol",
+	"gpt-5-mini": "gpt-5.6-terra",
+	"gpt-5-nano": "gpt-5.6-luna",
+	"gpt-5-chat-latest": "gpt-5.6-sol",
+	"gpt-5.1-chat-latest": "gpt-5.6-sol",
+	"gpt-5.2-chat-latest": "gpt-5.6-sol",
+	"gpt-5.3-chat-latest": "gpt-5.6-sol",
+	"gpt-5.3-codex": CURRENT_CODEX_MODEL,
+	"gpt-5.3-codex-spark": CURRENT_CODEX_MODEL,
+	"gpt-5.2-codex": CURRENT_CODEX_MODEL,
+	"gpt-5.1-codex": CURRENT_CODEX_MODEL,
+	"gpt-5.1-codex-max": CURRENT_CODEX_MODEL,
+	"gpt-5-codex": CURRENT_CODEX_MODEL,
+	"codex-max": CURRENT_CODEX_MODEL,
+	"gpt-5.1-codex-mini": CODEX_MINI_REPLACEMENT_MODEL,
+	"gpt-5-codex-mini": CODEX_MINI_REPLACEMENT_MODEL,
+	"codex-mini-latest": CODEX_MINI_REPLACEMENT_MODEL,
+};
+// Mirrors lib/request/error-classification.ts
+// `DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN`. This table is walked differently
+// from lib's: `resolveUnsupportedModelRetryTarget` keys on the model named in
+// the error output and falls back to the original requested model, with
+// `attemptedModels` accumulating, so a row's later entries ARE reachable here.
+// The explicit rows and the retired-id spread are pinned in parity by
+// test/codex-model-resolution.test.ts; `gpt-6-luna` closes the general walks
+// because it ships on the most plans of any catalog model.
 const WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN = {
-	"gpt-5": ["gpt-5.5"],
-	"gpt-5-pro": ["gpt-5.5-pro"],
-	"gpt-5-chat-latest": ["gpt-5.5"],
-	"gpt-5.5": ["gpt-5.4"],
-	"gpt-5.5-pro": ["gpt-5.4"],
-	"gpt-5.5-2026-04-23": ["gpt-5.4"],
-	"gpt-5.5-pro-2026-04-23": ["gpt-5.4"],
-	"gpt-5.5-20260423": ["gpt-5.4"],
-	"gpt-5.5-pro-20260423": ["gpt-5.4"],
-	"gpt-5.3-codex-spark": [CURRENT_CODEX_MODEL],
-	"codex-max": [CURRENT_CODEX_MODEL],
-	"gpt-5.1-codex-max": [CURRENT_CODEX_MODEL],
-	"codex-mini-latest": [CURRENT_CODEX_MODEL],
-	"gpt-5-codex-mini": [CURRENT_CODEX_MODEL],
-	"gpt-5.1-codex-mini": [CURRENT_CODEX_MODEL],
-	[LEGACY_CODEX_MODEL]: [CURRENT_CODEX_MODEL],
-	"gpt-5.2-codex": [CURRENT_CODEX_MODEL],
-	"gpt-5.1-codex": [CURRENT_CODEX_MODEL],
+	"gpt-6.1-sol": ["gpt-6-sol"],
+	"gpt-6.1-terra": ["gpt-5.6-terra"],
+	"gpt-6-astra": ["gpt-6-sol"],
+	"gpt-6-sol": ["gpt-5.6-sol"],
+	"gpt-6-luna": ["gpt-5.6-luna"],
+	"gpt-5.6-sol": ["gpt-6-luna"],
+	"gpt-5.6-luna": ["gpt-5.6-sol"],
+	"gpt-5.6-terra": ["gpt-5.6-sol"],
+	"gpt-5": ["gpt-5.6-sol"],
+	"gpt-5-pro": ["gpt-6-astra"],
+	// A retired id still reaches the backend verbatim and is rejected; one hop
+	// to its named replacement turns that into a working request.
+	...Object.fromEntries(
+		Object.entries(RETIRED_MODEL_REPLACEMENTS).map(([retired, replacement]) => [
+			retired,
+			[replacement],
+		]),
+	),
 };
 
 function canonicalizeRequestedModelName(model) {
@@ -1245,6 +1569,9 @@ function replaceRequestedModel(args, nextModel) {
 	const nextArgs = [...args];
 	for (let i = 0; i < nextArgs.length; i += 1) {
 		const arg = nextArgs[i];
+		// Past `--` the tokens are the user's prompt. Rewriting one in place
+		// would edit the prompt text itself before re-forwarding it.
+		if (arg === "--") break;
 		if ((arg === "--model" || arg === "-m") && typeof nextArgs[i + 1] === "string") {
 			nextArgs[i + 1] = nextModel;
 			return nextArgs;
@@ -1523,11 +1850,23 @@ function forwardToRealCodexOnce(
 			? createAppServerAccountReadProtocolProxy()
 			: null;
 		let cleanupProtocolProxy = () => {};
+		let detachSignalRelay = () => {};
+		let signalForceTimer = null;
+		// Set the moment finalization begins so a repeated signal during cleanup
+		// can exit with the result already decided instead of the default
+		// disposition, which would look like a signal death and truncate
+		// shadow-home sync-back mid-write.
+		let finalizedExitCode = null;
 		const finalize = async (exitCode) => {
 			if (settled) {
 				return;
 			}
 			settled = true;
+			finalizedExitCode = exitCode;
+			if (signalForceTimer !== null) {
+				clearTimeout(signalForceTimer);
+				signalForceTimer = null;
+			}
 			cleanupProtocolProxy();
 			protocolProxy?.flushOutput();
 			try {
@@ -1535,6 +1874,11 @@ function forwardToRealCodexOnce(
 			} catch {
 				// Best-effort cleanup only.
 			}
+			// The relay stays installed until cleanup has run: a repeated signal
+			// landing mid-finalize exits with the decided code (see
+			// onRelayedSignal) rather than a default kill that truncates
+			// shadow-home sync-back.
+			detachSignalRelay();
 			if (captureOutput && stdout.length > 0) {
 				const filteredStdout = filterKnownForwardedCodexStderr(stdout);
 				if (filteredStdout.length > 0) {
@@ -1583,6 +1927,68 @@ function forwardToRealCodexOnce(
 			failLaunch(error);
 			return;
 		}
+
+		// The forwarded child can outlive this wrapper — SIGKILL can neither be
+		// caught nor relayed — so the shadow-home owner marker names the child
+		// too; otherwise the next launch's sweep would see only the dead wrapper
+		// PID and reap a home a live child is still writing to.
+		recordShadowHomeChildPid(env.CODEX_HOME, child?.pid);
+
+		// Relay terminal signals to the forwarded child. Without this the child
+		// outlives the wrapper whenever a signal targets the wrapper PID
+		// directly (kill, launcher, monitor) rather than the process group, and
+		// the shadow-home cleanup inside finalize never runs.
+		const signalRelayHandlers = new Map();
+		// The first relayed signal decides the exit result: once the force-kill
+		// fallback SIGKILLs the child, its `close` event reports SIGKILL, which
+		// would mask the SIGTERM the caller actually sent (137 instead of 143).
+		let relayedSignal = null;
+		const onRelayedSignal = (signal) => {
+			if (settled) {
+				// Finalization is already running. A repeated signal here is the
+				// caller escalating (Ctrl-C again, a monitor's follow-up TERM):
+				// exit with the result finalization produced rather than hang on
+				// a slow cleanup — but never with signal-death semantics, which
+				// is what the pre-handler default would have reported.
+				process.exit(finalizedExitCode ?? 1);
+			}
+			relayedSignal ??= signal;
+			try {
+				child?.kill(signal);
+			} catch {
+				// Best-effort forward only.
+			}
+			if (signalForceTimer !== null) {
+				return;
+			}
+			// If the child ignores the signal, force-kill it — but leave
+			// finalization to the child's "close" event, so shadow-home sync and
+			// removal run only after the child is reaped and its stdio drained.
+			signalForceTimer = setTimeout(() => {
+				signalForceTimer = null;
+				try {
+					child?.kill("SIGKILL");
+				} catch {
+					// Best-effort only.
+				}
+			}, 1_000);
+			signalForceTimer.unref?.();
+		};
+		// `on`, not `once`: the handlers stay installed until finalization, so a
+		// repeated signal while a child still ignores the first keeps relaying
+		// instead of falling back to the default disposition — which would kill
+		// the wrapper before it can reap the child or clean the shadow home.
+		for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+			const handler = () => onRelayedSignal(signal);
+			signalRelayHandlers.set(signal, handler);
+			process.on(signal, handler);
+		}
+		detachSignalRelay = () => {
+			for (const [signal, handler] of signalRelayHandlers) {
+				process.removeListener(signal, handler);
+			}
+			signalRelayHandlers.clear();
+		};
 
 		if (proxyAppServerAccountRead && protocolProxy) {
 			let stdinClosed = false;
@@ -1654,9 +2060,16 @@ function forwardToRealCodexOnce(
 		});
 
 		child.once("close", (code, signal) => {
-			if (signal) {
-				const signalNumber = signal === "SIGINT" ? 130 : 1;
-				finalize(signalNumber);
+			const reportedSignal = relayedSignal ?? signal;
+			if (reportedSignal) {
+				const signalNumber = osConstants.signals?.[reportedSignal];
+				finalize(
+					typeof signalNumber === "number"
+						? 128 + signalNumber
+						: reportedSignal === "SIGINT"
+							? 130
+							: 1,
+				);
 				return;
 			}
 			finalize(typeof code === "number" ? code : 1);
@@ -1665,11 +2078,16 @@ function forwardToRealCodexOnce(
 }
 
 async function forwardToRealCodex(codexBin, rawArgs, baseEnv = process.env) {
+	sweepStaleShadowHomes(baseEnv);
 	let currentArgs = [...rawArgs];
 	let lastExitCode = 1;
 	const attemptedModels = new Set();
 
-	for (let attempt = 0; attempt < 4; attempt += 1) {
+	// Five forwards: the deepest supported-model staircase (gpt-6.1-sol ->
+	// gpt-6-sol -> gpt-5.6-sol -> gpt-6-luna -> gpt-5.6-luna) spends exactly
+	// the shared per-request attempt budget of 5 the plugin host uses. With 4
+	// the terminal model was unreachable from the new default.
+	for (let attempt = 0; attempt < 5; attempt += 1) {
 		const requestedModel = extractRequestedModel(currentArgs);
 		if (requestedModel) {
 			attemptedModels.add(requestedModel);
@@ -1686,6 +2104,10 @@ async function forwardToRealCodex(codexBin, rawArgs, baseEnv = process.env) {
 			compatibility,
 			rawArgs,
 		);
+		if (runtimeProxyContext.startupError) {
+			console.error(runtimeProxyContext.startupError);
+			return 1;
+		}
 		const result = await forwardToRealCodexOnce(
 			codexBin,
 			runtimeProxyContext.args,
@@ -1735,6 +2157,11 @@ async function forwardToRealCodex(codexBin, rawArgs, baseEnv = process.env) {
 function hasCliAuthCredentialsStoreOverride(args) {
 	for (let i = 0; i < args.length; i += 1) {
 		const arg = args[i];
+		// Everything after `--` is the root `[PROMPT]` positional, not options:
+		// a prompt whose text spells `--config=cli_auth_credentials_store=...` is
+		// not a caller override, and treating it as one would silently drop the
+		// file auth store this wrapper depends on.
+		if (arg === "--") break;
 		if (arg === "-c" || arg === "--config") {
 			const next = args[i + 1];
 			if (!next || !next.includes("=")) continue;
@@ -1760,21 +2187,16 @@ function hasCliAuthCredentialsStoreOverride(args) {
 // and its GPT-5 normalization helpers.
 // This wrapper runs before the TypeScript build, so it cannot import that source.
 const SUPPORTED_REASONING_EFFORTS_BY_MODEL = {
-	[CURRENT_CODEX_MODEL]: ["low", "medium", "high", "xhigh"],
+	"gpt-6-astra": ["low", "medium", "high", "xhigh", "max", "ultra"],
+	"gpt-6.1-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
+	"gpt-6.1-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
+	"gpt-6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
+	"gpt-6-luna": ["low", "medium", "high", "xhigh", "max"],
+	"gpt-daybreak-blue-latest": ["low", "medium", "high", "xhigh", "max", "ultra"],
+	"gpt-daybreak-red-latest": ["low", "medium", "high", "xhigh", "max", "ultra"],
 	"gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
 	"gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
 	"gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
-	"gpt-5.5": ["none", "low", "medium", "high", "xhigh"],
-	"gpt-5.5-pro": ["medium", "high", "xhigh"],
-	"gpt-5.4": ["none", "low", "medium", "high", "xhigh"],
-	"gpt-5.4-pro": ["medium", "high", "xhigh"],
-	"gpt-5.4-mini": ["medium"],
-	"gpt-5.4-nano": ["medium"],
-	"gpt-5.2-pro": ["medium", "high", "xhigh"],
-	"gpt-5.2": ["none", "low", "medium", "high", "xhigh"],
-	"gpt-5.1": ["none", "low", "medium", "high"],
-	"gpt-5-mini": ["medium"],
-	"gpt-5-nano": ["medium"],
 };
 
 const REASONING_FALLBACKS = {
@@ -1805,13 +2227,9 @@ const REASONING_ALIAS_VARIANTS = [
 	"xhigh",
 ];
 const REQUESTED_MODEL_ALIASES = new Map();
-const DEFAULT_GENERAL_GPT5_MODEL = "gpt-5.5";
-const GPT_5_5_CANONICAL_MODEL = "gpt-5.5";
-const GPT_5_5_PRO_CANONICAL_MODEL = "gpt-5.5-pro";
-const GPT_5_5_RELEASE_MODEL = "gpt-5.5-2026-04-23";
-const GPT_5_5_PRO_RELEASE_MODEL = "gpt-5.5-pro-2026-04-23";
-const GPT_5_5_RELEASE_COMPAT_MODEL = "gpt-5.5-20260423";
-const GPT_5_5_PRO_RELEASE_COMPAT_MODEL = "gpt-5.5-pro-20260423";
+// The general GPT-5 landing spot: with 5.5 retired, the newest living 5.x
+// flagship is 5.6 Sol. Mirrors lib/request/helpers/model-map.ts.
+const DEFAULT_GENERAL_GPT5_MODEL = "gpt-5.6-sol";
 // GPT-5.6 tiers. Sol and Terra expose `ultra`; Luna stops at `max`. No tier
 // accepts `none`/`minimal`. Bare `gpt-5.6` aliases to the flagship (Sol).
 const GPT_5_6_SOL_MODEL = "gpt-5.6-sol";
@@ -1820,33 +2238,71 @@ const GPT_5_6_LUNA_MODEL = "gpt-5.6-luna";
 const GPT_5_6_FLAGSHIP_ALIAS = "gpt-5.6";
 const GPT_5_6_SOL_TERRA_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 const GPT_5_6_LUNA_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+// GPT-6 Astra (2026-09-03): the frontier flagship. Same frontier effort
+// ladder as 5.6 (no `none`/`minimal`, `ultra` at the top). Bare `gpt-6` ->
+// flagship. The leaked `aeon` long-horizon variant was never catalog-listed
+// and is retired; its ids alias the flagship.
+const GPT_6_ASTRA_MODEL = "gpt-6-astra";
+const GPT_6_FLAGSHIP_ALIAS = "gpt-6";
+const GPT_6_ASTRA_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
+// GPT-6 Sol and Luna (upstream catalog, 2026-09-22). Sol reaches `ultra`, Luna
+// stops at `max`. No GPT-6 Terra. Mirrors lib/request/helpers/model-map.ts.
+const GPT_6_SOL_MODEL = "gpt-6-sol";
+const GPT_6_LUNA_MODEL = "gpt-6-luna";
+const GPT_6_SOL_EFFORTS = GPT_6_ASTRA_EFFORTS;
+const GPT_6_LUNA_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+// GPT-6.1 Sol (upstream catalog, 2026-09-29): the first 6.1 release, added as
+// the catalog's default model. Bare `gpt-6.1` aliases to it, matching the
+// bare-alias convention.
+const GPT_6_1_SOL_MODEL = "gpt-6.1-sol";
+const GPT_6_1_FLAGSHIP_ALIAS = "gpt-6.1";
+const GPT_6_1_SOL_EFFORTS = GPT_6_ASTRA_EFFORTS;
+// GPT-6.1 Terra (upstream catalog, Codex CLI 0.165.0, 2026-10-27): low..ultra,
+// `low` default. Mirrors lib/request/helpers/model-map.ts.
+const GPT_6_1_TERRA_MODEL = "gpt-6.1-terra";
+const GPT_6_1_TERRA_EFFORTS = GPT_6_ASTRA_EFFORTS;
+// Daybreak cyber models from the upstream Codex catalog. `red` is the
+// cyber-permissive variant, `blue` the defensive one.
+const DAYBREAK_BLUE_MODEL = "gpt-daybreak-blue-latest";
+const DAYBREAK_RED_MODEL = "gpt-daybreak-red-latest";
+const DAYBREAK_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
+// Retired minors map to the replacement OpenAI names for them. Mirrors lib.
 const GENERAL_GPT5_VERSION_CATALOG = {
 	1: {
-		base: "gpt-5.1",
+		base: GPT_5_6_SOL_MODEL,
+		pro: GPT_6_ASTRA_MODEL,
 	},
 	2: {
-		base: "gpt-5.2",
-		pro: "gpt-5.2-pro",
+		base: GPT_5_6_SOL_MODEL,
+		pro: GPT_6_ASTRA_MODEL,
 	},
 	4: {
-		base: DEFAULT_GENERAL_GPT5_MODEL,
-		pro: "gpt-5.4-pro",
-		mini: "gpt-5.4-mini",
-		nano: "gpt-5.4-nano",
+		base: GPT_6_SOL_MODEL,
+		pro: GPT_6_ASTRA_MODEL,
+		mini: GPT_6_LUNA_MODEL,
+		nano: GPT_6_LUNA_MODEL,
 	},
 	5: {
-		base: GPT_5_5_CANONICAL_MODEL,
-		pro: GPT_5_5_PRO_CANONICAL_MODEL,
-		mini: "gpt-5-mini",
-		nano: "gpt-5-nano",
+		base: GPT_6_SOL_MODEL,
+		pro: GPT_6_ASTRA_MODEL,
+		mini: GPT_5_6_TERRA_MODEL,
+		nano: GPT_5_6_LUNA_MODEL,
 	},
 };
-const GENERAL_GPT5_STABLE_VARIANTS = GENERAL_GPT5_VERSION_CATALOG[5];
+// Unknown future 5.x minors land on the newest generation the line still
+// serves — deliberately NOT `gpt-6-sol`, since an id naming a 5.x minor keeps
+// its generation. Mirrors lib GENERAL_GPT5_STABLE_VARIANTS.
+const GENERAL_GPT5_STABLE_VARIANTS = {
+	base: GPT_5_6_SOL_MODEL,
+	pro: GPT_6_ASTRA_MODEL,
+	mini: GPT_5_6_TERRA_MODEL,
+	nano: GPT_5_6_LUNA_MODEL,
+};
 const GENERAL_GPT5_GENERIC_VARIANTS = {
 	base: DEFAULT_GENERAL_GPT5_MODEL,
-	pro: GPT_5_5_PRO_CANONICAL_MODEL,
-	mini: "gpt-5-mini",
-	nano: "gpt-5-nano",
+	pro: GPT_6_ASTRA_MODEL,
+	mini: GPT_5_6_TERRA_MODEL,
+	nano: GPT_5_6_LUNA_MODEL,
 };
 
 function addRequestedModelAlias(alias, normalizedModel) {
@@ -1966,43 +2422,11 @@ function renameFileWithRetry(sourcePath, destinationPath, expectedDestinationSta
 }
 
 function seedRequestedModelAliases() {
-	addRequestedModelReasoningAliases(
-		GPT_5_5_CANONICAL_MODEL,
-		GPT_5_5_CANONICAL_MODEL,
-	);
-	addRequestedModelReasoningAliases(
-		GPT_5_5_RELEASE_MODEL,
-		GPT_5_5_CANONICAL_MODEL,
-	);
-	addRequestedModelReasoningAliases(
-		GPT_5_5_RELEASE_COMPAT_MODEL,
-		GPT_5_5_CANONICAL_MODEL,
-	);
-	addRequestedModelReasoningAliases(
-		GPT_5_5_PRO_CANONICAL_MODEL,
-		GPT_5_5_PRO_CANONICAL_MODEL,
-	);
-	addRequestedModelReasoningAliases(
-		GPT_5_5_PRO_RELEASE_MODEL,
-		GPT_5_5_PRO_CANONICAL_MODEL,
-	);
-	addRequestedModelReasoningAliases(
-		GPT_5_5_PRO_RELEASE_COMPAT_MODEL,
-		GPT_5_5_PRO_CANONICAL_MODEL,
-	);
-	addRequestedModelReasoningAliases("gpt-5.4", "gpt-5.4");
-	addRequestedModelReasoningAliases("gpt-5.4-pro", "gpt-5.4-pro");
-	addRequestedModelReasoningAliases("gpt-5.4-mini", "gpt-5.4-mini");
-	addRequestedModelReasoningAliases("gpt-5.4-nano", "gpt-5.4-nano");
-	addRequestedModelReasoningAliases("gpt-5.2-pro", "gpt-5.2-pro");
-	addRequestedModelReasoningAliases("gpt-5-pro", GPT_5_5_PRO_CANONICAL_MODEL);
-	addRequestedModelReasoningAliases("gpt-5.2", "gpt-5.2");
-	addRequestedModelReasoningAliases("gpt-5.1", "gpt-5.1");
+	// `gpt-5` and `gpt-5-pro` are the last un-versioned ids upstream published;
+	// with 5.5 retired the 5.x flagship is Sol 5.6 and the pro tier is Astra.
+	// 5.5's own dated and suffixed forms come from the retired table below.
+	addRequestedModelReasoningAliases("gpt-5-pro", GPT_6_ASTRA_MODEL);
 	addRequestedModelReasoningAliases("gpt-5", DEFAULT_GENERAL_GPT5_MODEL);
-	addRequestedModelReasoningAliases("gpt-5-mini", "gpt-5-mini");
-	addRequestedModelReasoningAliases("gpt-5-nano", "gpt-5-nano");
-	addRequestedModelReasoningAliases("gpt-5.1-chat-latest", "gpt-5.1");
-	addRequestedModelReasoningAliases("gpt-5-chat-latest", DEFAULT_GENERAL_GPT5_MODEL);
 	addRequestedModelEffortAliases(
 		GPT_5_6_SOL_MODEL,
 		GPT_5_6_SOL_MODEL,
@@ -2023,17 +2447,71 @@ function seedRequestedModelAliases() {
 		GPT_5_6_SOL_MODEL,
 		GPT_5_6_SOL_TERRA_EFFORTS,
 	);
-	addRequestedModelReasoningAliases(CURRENT_CODEX_MODEL, CURRENT_CODEX_MODEL);
-	addRequestedModelReasoningAliases("gpt-5.3-codex-spark", CURRENT_CODEX_MODEL);
-	addRequestedModelReasoningAliases(LEGACY_CODEX_MODEL, CURRENT_CODEX_MODEL);
-	addRequestedModelReasoningAliases("gpt-5.2-codex", CURRENT_CODEX_MODEL);
-	addRequestedModelReasoningAliases("gpt-5.1-codex", CURRENT_CODEX_MODEL);
+	addRequestedModelEffortAliases(
+		GPT_6_ASTRA_MODEL,
+		GPT_6_ASTRA_MODEL,
+		GPT_6_ASTRA_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		GPT_6_FLAGSHIP_ALIAS,
+		GPT_6_ASTRA_MODEL,
+		GPT_6_ASTRA_EFFORTS,
+	);
+	addRequestedModelEffortAliases("astra", GPT_6_ASTRA_MODEL, GPT_6_ASTRA_EFFORTS);
+	// `astra-aeon` was only ever a leaked slug and is retired now, so the name
+	// resolves to the flagship. Its `gpt-6-astra-aeon` form comes from the
+	// retired table, not from a dedicated registration.
+	addRequestedModelEffortAliases(
+		"astra-aeon",
+		GPT_6_ASTRA_MODEL,
+		GPT_6_ASTRA_EFFORTS,
+	);
+	// No bare `sol`/`luna` aliases: those already mean the 5.6 tiers.
+	addRequestedModelEffortAliases(GPT_6_SOL_MODEL, GPT_6_SOL_MODEL, GPT_6_SOL_EFFORTS);
+	addRequestedModelEffortAliases(
+		GPT_6_LUNA_MODEL,
+		GPT_6_LUNA_MODEL,
+		GPT_6_LUNA_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		GPT_6_1_SOL_MODEL,
+		GPT_6_1_SOL_MODEL,
+		GPT_6_1_SOL_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		GPT_6_1_FLAGSHIP_ALIAS,
+		GPT_6_1_SOL_MODEL,
+		GPT_6_1_SOL_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		GPT_6_1_TERRA_MODEL,
+		GPT_6_1_TERRA_MODEL,
+		GPT_6_1_TERRA_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		DAYBREAK_BLUE_MODEL,
+		DAYBREAK_BLUE_MODEL,
+		DAYBREAK_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		DAYBREAK_RED_MODEL,
+		DAYBREAK_RED_MODEL,
+		DAYBREAK_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		"daybreak-blue",
+		DAYBREAK_BLUE_MODEL,
+		DAYBREAK_EFFORTS,
+	);
+	addRequestedModelEffortAliases(
+		"daybreak-red",
+		DAYBREAK_RED_MODEL,
+		DAYBREAK_EFFORTS,
+	);
+	for (const [retired, replacement] of Object.entries(RETIRED_MODEL_REPLACEMENTS)) {
+		addRequestedModelReasoningAliases(retired, replacement);
+	}
 	addRequestedModelAlias("gpt_5_codex", CURRENT_CODEX_MODEL);
-	addRequestedModelReasoningAliases("codex-max", CURRENT_CODEX_MODEL);
-	addRequestedModelReasoningAliases("gpt-5.1-codex-max", CURRENT_CODEX_MODEL);
-	addRequestedModelAlias("codex-mini-latest", CURRENT_CODEX_MODEL);
-	addRequestedModelReasoningAliases("gpt-5-codex-mini", CURRENT_CODEX_MODEL);
-	addRequestedModelReasoningAliases("gpt-5.1-codex-mini", CURRENT_CODEX_MODEL);
 }
 
 seedRequestedModelAliases();
@@ -2078,46 +2556,84 @@ function resolveStableGeneralGpt5Variant(variant) {
 	return fallback;
 }
 
+// The final clause is a catch-all on the `codex` substring, matching
+// `resolveCodexCatalogModel` in lib/request/helpers/model-map.ts. It used to be
+// an exact `normalized === "codex"` check, so any codex id the explicit list
+// above did not name (`gpt-6-codex`, `gpt-5.7-codex`, …) resolved to nothing in
+// the wrapper while lib resolved it to the current codex model — a silent drift
+// between the two, which is exactly what test/codex-model-resolution.test.ts
+// exists to prevent.
 function resolveCodexRequestedModel(normalized) {
-	if (
-		normalized.includes("gpt-5.1-codex-max") ||
-		normalized.includes("gpt 5.1 codex max") ||
-		normalized.includes("codex-max")
-	) {
-		return CURRENT_CODEX_MODEL;
+	// Every codex model is retired: a mini codex id goes to Terra, any other id
+	// carrying `codex` to Sol. Mirrors lib resolveCodexCatalogModel.
+	if (!normalized.includes("codex")) return "";
+	if (/codex[- ]mini(?!mal)/.test(normalized)) {
+		return CODEX_MINI_REPLACEMENT_MODEL;
 	}
-	if (
-		normalized.includes("gpt-5.1-codex-mini") ||
-		normalized.includes("gpt 5.1 codex mini") ||
-		normalized.includes("gpt-5-codex-mini") ||
-		normalized.includes("gpt 5 codex mini") ||
-		normalized.includes("codex-mini-latest")
-	) {
-		return CURRENT_CODEX_MODEL;
-	}
-	if (
-		normalized.includes("gpt-5.3-codex-spark") ||
-		normalized.includes("gpt 5.3 codex spark") ||
-		normalized.includes("gpt-5.3-codex") ||
-		normalized.includes("gpt 5.3 codex") ||
-		normalized.includes("gpt-5.2-codex") ||
-		normalized.includes("gpt 5.2 codex") ||
-		normalized.includes("gpt-5.1-codex") ||
-		normalized.includes("gpt 5.1 codex") ||
-		normalized.includes("gpt-5-codex") ||
-		normalized.includes("gpt 5 codex") ||
-		normalized === "codex"
-	) {
-		return CURRENT_CODEX_MODEL;
-	}
-
-	return "";
+	return CURRENT_CODEX_MODEL;
 }
 
 // Resolve GPT-5.6 identifiers, including ones that are not exact aliases (e.g. a
 // future `gpt-5.6-terra-fast`). Without this the general GPT-5 resolver sees
 // minor `6`, finds no catalog entry, and silently falls back to 5.5. Unknown
 // tiers resolve to Sol, matching OpenAI's bare `gpt-5.6` alias.
+// Resolve GPT-6 identifiers that are not exact aliases (a dated snapshot, the
+// `gpt-6-astra-pro` plan tier, or a tier OpenAI adds later). Without this the
+// general GPT-5 resolver never matches (it needs a `gpt 5` token pair) and the
+// id falls through to the default — running 6.1 Sol for a caller who asked for
+// a different model. `aeon` resolves to the flagship it was a leaked variant
+// of. Mirrors lib/request/helpers/model-map.ts.
+function resolveGpt6RequestedModel(stripped) {
+	const tokens = tokenizeRequestedModel(stripped);
+	const gptIndex = tokens.indexOf("gpt");
+	const versionToken = gptIndex === -1 ? undefined : tokens[gptIndex + 1];
+	// `gpt6` with no separator tokenizes as one token, so the `gpt` + `6` pair
+	// never forms; mirror lib and claim it here.
+	const gpt6Index = tokens.indexOf("gpt6");
+	const isGpt6 = versionToken === "6" || gpt6Index !== -1;
+	// A 6.1 minor shows up as the token after `6` (`gpt-6.1-sol`) or after
+	// `gpt6` (`gpt6.1-sol`); both forms land on the 6.1 generation, not on the
+	// 6.0 tier the trailing `sol`/`luna` tokens name.
+	const isGpt61 =
+		(isGpt6 && gptIndex !== -1 && tokens[gptIndex + 2] === "1") ||
+		(gpt6Index !== -1 && tokens[gpt6Index + 1] === "1");
+	// A bare `astra` token counts too: picker labels and OpenAI's own material
+	// say "Astra" with no `gpt-6` prefix, so `Astra Pro` arrives with no version
+	// tokens and would otherwise miss every branch and land on the default.
+	// Anchored so an id naming a different GPT major version, `gpt-4-astra-x`,
+	// is not claimed for the frontier model.
+	const namesOtherGptVersion =
+		versionToken !== undefined &&
+		/^\d+$/.test(versionToken) &&
+		versionToken !== "6";
+	const isAstra = tokens.includes("astra") && !namesOtherGptVersion;
+	if ((!isGpt6 && !isAstra) || tokens.includes("codex")) {
+		return "";
+	}
+	if (tokens.includes("aeon")) return GPT_6_ASTRA_MODEL;
+	if (isAstra) return GPT_6_ASTRA_MODEL;
+	// A `terra` token picks 6.1 Terra; every other unrecognised 6.1 id is Sol.
+	if (isGpt61) return tokens.includes("terra") ? GPT_6_1_TERRA_MODEL : GPT_6_1_SOL_MODEL;
+	// `terra` goes to Sol: there is no GPT-6 Terra, and upstream migrates
+	// `gpt-5.6-terra` users to Sol.
+	if (tokens.includes("luna")) return GPT_6_LUNA_MODEL;
+	if (tokens.includes("sol") || tokens.includes("terra")) return GPT_6_SOL_MODEL;
+	return GPT_6_ASTRA_MODEL;
+}
+
+// Daybreak slugs carry neither a `codex` nor a `gpt 5` token, so every other
+// resolver declines them and they would reach the 5.5 default. An unrecognised
+// Daybreak id resolves to `blue`, the more restricted of the two, so a typo
+// cannot silently upgrade a caller into the cyber-permissive model.
+function resolveDaybreakRequestedModel(stripped) {
+	const tokens = tokenizeRequestedModel(stripped);
+	if (!tokens.includes("daybreak")) {
+		return "";
+	}
+	if (tokens.includes("red")) return DAYBREAK_RED_MODEL;
+	return DAYBREAK_BLUE_MODEL;
+}
+
 function resolveGpt56RequestedModel(stripped) {
 	const tokens = tokenizeRequestedModel(stripped);
 	const gptIndex = tokens.indexOf("gpt");
@@ -2175,10 +2691,28 @@ function normalizeRequestedModel(model) {
 	if (exactMatch) {
 		return exactMatch;
 	}
+	// Mirrors lib: retry the alias lookup without a `-max`/`-ultra` suffix.
+	const withoutTopEffort = normalized.replace(/-(max|ultra)$/, "");
+	if (withoutTopEffort !== normalized) {
+		const effortlessMatch = REQUESTED_MODEL_ALIASES.get(withoutTopEffort);
+		if (effortlessMatch) {
+			return effortlessMatch;
+		}
+	}
+
+	const daybreakModel = resolveDaybreakRequestedModel(stripped);
+	if (daybreakModel) {
+		return daybreakModel;
+	}
 
 	const codexModel = resolveCodexRequestedModel(normalized);
 	if (codexModel) {
 		return codexModel;
+	}
+
+	const gpt6Model = resolveGpt6RequestedModel(stripped);
+	if (gpt6Model) {
+		return gpt6Model;
 	}
 
 	const gpt56Model = resolveGpt56RequestedModel(stripped);
@@ -2233,6 +2767,10 @@ function coerceReasoningEffortForModel(model, effort) {
 function extractRequestedModel(args) {
 	for (let i = 0; i < args.length; i += 1) {
 		const arg = args[i];
+		// Past `--` every token is root `[PROMPT]` text; a `-m` in there names
+		// no model, and reading one would coerce reasoning config for a model
+		// the user never requested.
+		if (arg === "--") break;
 		if (arg === "--model" || arg === "-m") {
 			const next = args[i + 1];
 			if (typeof next === "string" && next.trim().length > 0) {
@@ -2303,6 +2841,8 @@ function rewriteReasoningConfigArgs(rawArgs) {
 	const nextArgs = [...rawArgs];
 	for (let i = 0; i < nextArgs.length; i += 1) {
 		const arg = nextArgs[i];
+		// Past `--` a `-c key=value` pair is prompt text, not a config override.
+		if (arg === "--") break;
 		if ((arg === "-c" || arg === "--config") && typeof nextArgs[i + 1] === "string") {
 			nextArgs[i + 1] = rewriteReasoningConfigAssignment(
 				nextArgs[i + 1],
@@ -2637,6 +3177,24 @@ function isFileLike(path) {
 	}
 }
 
+function isSameFile(leftPath, rightPath) {
+	try {
+		const left = statSync(leftPath, { bigint: true });
+		const right = statSync(rightPath, { bigint: true });
+		return left.dev === right.dev && left.ino === right.ino;
+	} catch {
+		return false;
+	}
+}
+
+// A SQLite file materialized by link is the original file itself, so its shadow
+// and original snapshots can never differ and sync-back is always a no-op.
+// Snapshotting it would only read the whole database (often several GB) into
+// memory on every launch and again on cleanup.
+function isLinkedSqliteShadowHomeFile(name, shadowPath, originalPath) {
+	return shouldMaterializeFileIntoShadowHome(name) && isSameFile(shadowPath, originalPath);
+}
+
 function mirrorDirectoryIntoShadowHome(sourcePath, destinationPath) {
 	try {
 		if ((process.env.CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_DIR_COPY ?? "").trim() === "1") {
@@ -2867,6 +3425,7 @@ function collectShadowHomeSyncFileNames(shadowCodexHome, syncFileNames) {
 			if (
 				name === SHADOW_HOME_CONFIG_FILE ||
 				name === SHADOW_HOME_SYNC_STATE_FILE ||
+				name === SHADOW_HOME_OWNER_FILE ||
 				syncFileNames.has(name)
 			) {
 				continue;
@@ -2980,12 +3539,15 @@ function syncAdditionalShadowHomeFiles(
 			continue;
 		}
 		const shadowPath = join(shadowCodexHome, name);
+		const originalPath = join(originalCodexHome, name);
+		if (isLinkedSqliteShadowHomeFile(name, shadowPath, originalPath)) {
+			continue;
+		}
 		const shadowState = captureShadowHomeState(shadowPath);
 		if (!shadowState.exists || shadowState.unreadable) {
 			continue;
 		}
 
-		const originalPath = join(originalCodexHome, name);
 		const originalSnapshot =
 			originalFileStates.get(name) ?? { exists: false, content: null };
 		const currentOriginalState = captureShadowHomeState(originalPath);
@@ -3018,6 +3580,8 @@ function createShadowHomeMirror(
 		options.linkOnlyDirectoryPredicate ?? (() => false);
 	const originalFileStates = new Map();
 	const copiedDirectoryNames = new Set();
+	const materializedFileNames = [];
+	const linkedSqliteFileNames = new Set();
 	const rememberSyncFile = (name) => {
 		if (!originalFileStates.has(name)) {
 			originalFileStates.set(
@@ -3038,6 +3602,7 @@ function createShadowHomeMirror(
 				name === SHADOW_HOME_CONFIG_FILE ||
 				name === SHADOW_HOME_SYNC_STATE_FILE ||
 				name === SHADOW_HOME_SYNC_LOCK_DIR ||
+				name === SHADOW_HOME_OWNER_FILE ||
 				skipMirrorPredicate(name)
 			) {
 				continue;
@@ -3077,7 +3642,12 @@ function createShadowHomeMirror(
 					continue;
 				}
 				if (fileLike) {
-					rememberSyncFile(name);
+					if (shouldMaterializeFile && !isKnownStateFile) {
+						// Snapshot after the loop, once links exist, so linked SQLite is never read.
+						materializedFileNames.push(name);
+					} else {
+						rememberSyncFile(name);
+					}
 					if (isKnownStateFile) {
 						copyFileSync(sourcePath, destinationPath);
 						tightenFile(destinationPath);
@@ -3102,12 +3672,45 @@ function createShadowHomeMirror(
 				// launch; auth/config files still get handled explicitly.
 			}
 		}
+		for (const name of materializedFileNames) {
+			if (
+				isLinkedSqliteShadowHomeFile(
+					name,
+					join(shadowCodexHome, name),
+					join(originalCodexHome, name),
+				)
+			) {
+				// Remember the link identity now: if the original is replaced later,
+				// the shadow hard link no longer matches it, but there is still nothing
+				// to sync back and re-checking at cleanup would read both files in full.
+				linkedSqliteFileNames.add(name);
+				if (isSqliteMainFile(name)) {
+					// Sidecars linked alongside the main file skip their own readdir entry.
+					for (const sidecarName of [`${name}-wal`, `${name}-shm`]) {
+						if (
+							isLinkedSqliteShadowHomeFile(
+								sidecarName,
+								join(shadowCodexHome, sidecarName),
+								join(originalCodexHome, sidecarName),
+							)
+						) {
+							linkedSqliteFileNames.add(sidecarName);
+						}
+					}
+				}
+			} else {
+				rememberSyncFile(name);
+			}
+		}
 	}
 
 	return () => {
 		let releaseLock = () => {};
 		try {
 			const names = collectShadowHomeSyncFileNames(shadowCodexHome, syncFileNames);
+			for (const name of linkedSqliteFileNames) {
+				names.delete(name);
+			}
 			releaseLock = acquireShadowHomeSyncLock(originalCodexHome);
 			syncShadowHomeAuthBundle(
 				originalCodexHome,
@@ -3208,7 +3811,16 @@ function parseRuntimeRotationProxyEnv(value) {
 	return undefined;
 }
 
+function hasNativeAppBinding(env = process.env) {
+	try {
+		const config = readFileSync(join(resolveCodexHomeDir(env), "config.toml"), "utf8");
+		return config.includes("# codex-multi-auth native provider begin") &&
+			extractConfigAssignmentValue(config, "model_provider") === "openai";
+	} catch { return false; }
+}
+
 async function isRuntimeRotationProxyEnabled(rawArgs, baseEnv = process.env) {
+	if (hasNativeAppBinding(baseEnv)) return false;
 	if ((baseEnv.CODEX_MULTI_AUTH_BYPASS ?? "").trim() === "1") {
 		return false;
 	}
@@ -3258,6 +3870,175 @@ function resolveRuntimeRotationProxyOriginalCodexHome(baseEnv) {
 	return override || resolveCodexHomeDir(baseEnv);
 }
 
+// Markerless dirs are pre-sweeper leftovers (or crashed-before-mark runs);
+// 24h is generous next to any real session so a live shadow is never reaped.
+const STALE_SHADOW_HOME_AGE_MS = 24 * 60 * 60 * 1000;
+// A recorded PID is an identity, not just a liveness token: the owning process
+// necessarily started before its marker was written, so a process now holding
+// the PID that started meaningfully later is a different process — the PID was
+// recycled. Same rule sweepStaleRuntimeRotationAppHelperMetadata uses.
+const SHADOW_HOME_OWNER_SKEW_MS = 60_000;
+let staleShadowHomeSweepDone = false;
+
+function writeShadowHomeOwnerMarker(shadowDir) {
+	try {
+		writeFileSync(
+			join(shadowDir, SHADOW_HOME_OWNER_FILE),
+			JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
+			{ mode: 0o600 },
+		);
+	} catch {
+		// Best-effort only; a missing marker just defers reaping to the age rule.
+	}
+}
+
+// Once the forwarded child exists it is recorded alongside the wrapper PID: a
+// wrapper that dies ungracefully (SIGKILL cannot be relayed) leaves a marker
+// whose wrapper PID is dead while the child may still be running against the
+// shadow home. Only markers this process wrote are updated — a foreign or
+// leaked marker is left for the sweep's own rules.
+function recordShadowHomeChildPid(shadowDir, childPid) {
+	if (typeof shadowDir !== "string" || shadowDir.trim().length === 0) {
+		return;
+	}
+	if (typeof childPid !== "number" || !Number.isFinite(childPid)) {
+		return;
+	}
+	try {
+		const ownerPath = join(shadowDir, SHADOW_HOME_OWNER_FILE);
+		if (!existsSync(ownerPath)) {
+			return;
+		}
+		const owner = JSON.parse(readFileSync(ownerPath, "utf8"));
+		if (owner?.pid !== process.pid) {
+			return;
+		}
+		writeFileSync(
+			ownerPath,
+			JSON.stringify({
+				...owner,
+				childPid,
+				childRecordedAt: Date.now(),
+			}),
+			{ mode: 0o600 },
+		);
+	} catch {
+		// Best-effort only; a missing child record just shortens retention.
+	}
+}
+
+function isShadowHomeStale(shadowDir, probeStartTime) {
+	const ownerPath = join(shadowDir, SHADOW_HOME_OWNER_FILE);
+	if (existsSync(ownerPath)) {
+		try {
+			const owner = JSON.parse(readFileSync(ownerPath, "utf8"));
+			if (typeof owner?.pid === "number" && Number.isFinite(owner.pid)) {
+				const recordedProcessAlive = (pid, recordedAt) => {
+					if (typeof pid !== "number" || !Number.isFinite(pid)) {
+						return false;
+					}
+					if (!isProcessAlive(pid)) {
+						return false;
+					}
+					if (
+						typeof recordedAt !== "number" ||
+						!Number.isFinite(recordedAt)
+					) {
+						// No marker timestamp to check identity against — bare liveness.
+						return true;
+					}
+					const actualStartTimeMs = probeStartTime(pid);
+					if (actualStartTimeMs === null || actualStartTimeMs === undefined) {
+						// Identity unknowable (Windows, no ps, probe budget spent) —
+						// retaining a maybe-live home beats reaping a live one.
+						return true;
+					}
+					return actualStartTimeMs <= recordedAt + SHADOW_HOME_OWNER_SKEW_MS;
+				};
+				if (recordedProcessAlive(owner.pid, owner.createdAt)) {
+					return false;
+				}
+				// The wrapper that owned this home is gone, but a killed wrapper
+				// can leave its forwarded child running against the shadow home;
+				// the home is only orphaned once the child is gone too.
+				if (
+					recordedProcessAlive(
+						owner.childPid,
+						owner.childRecordedAt ?? owner.createdAt,
+					)
+				) {
+					return false;
+				}
+				return true;
+			}
+		} catch {
+			// Corrupt marker — fall through to the age rule.
+		}
+	}
+	try {
+		return Date.now() - statSync(shadowDir).mtimeMs > STALE_SHADOW_HOME_AGE_MS;
+	} catch {
+		return false;
+	}
+}
+
+function sweepStaleShadowHomes(baseEnv) {
+	if (staleShadowHomeSweepDone) {
+		return;
+	}
+	staleShadowHomeSweepDone = true;
+	const candidates = [
+		{
+			root: join(
+				resolveCodexHomeDir(baseEnv),
+				"multi-auth",
+				"runtime-shadow-homes",
+			),
+			prefix: "codex-multi-auth-runtime-home-",
+		},
+		{ root: tmpdir(), prefix: "codex-multi-auth-home-" },
+	];
+	// Identity probes are memoized per PID and bounded: at most a handful of
+	// `ps` spawns run per launch, and only for markers whose PID is still live —
+	// dead-PID markers, the common case after a crash, never probe at all.
+	const probedStartTimes = new Map();
+	let probeBudget = 20;
+	const probeStartTime = (pid) => {
+		if (probedStartTimes.has(pid)) {
+			return probedStartTimes.get(pid);
+		}
+		if (probeBudget <= 0) {
+			return undefined;
+		}
+		probeBudget -= 1;
+		const startTime = readProcessStartTimeMs(pid);
+		probedStartTimes.set(pid, startTime);
+		return startTime;
+	};
+	for (const { root, prefix } of candidates) {
+		let entries;
+		try {
+			entries = readdirSync(root, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		for (const entry of entries) {
+			if (!entry.isDirectory() || !entry.name.startsWith(prefix)) {
+				continue;
+			}
+			const shadowDir = join(root, entry.name);
+			if (!isShadowHomeStale(shadowDir, probeStartTime)) {
+				continue;
+			}
+			try {
+				removeDirectoryWithRetry(shadowDir);
+			} catch {
+				// Best-effort sweep; a busy shadow is retried on the next launch.
+			}
+		}
+	}
+}
+
 function createRuntimeRotationShadowHome(originalCodexHome) {
 	const shadowRoot = join(
 		originalCodexHome,
@@ -3265,7 +4046,11 @@ function createRuntimeRotationShadowHome(originalCodexHome) {
 		"runtime-shadow-homes",
 	);
 	mkdirSync(shadowRoot, { recursive: true });
-	return mkdtempSync(join(shadowRoot, "codex-multi-auth-runtime-home-"));
+	const shadowDir = mkdtempSync(
+		join(shadowRoot, "codex-multi-auth-runtime-home-"),
+	);
+	writeShadowHomeOwnerMarker(shadowDir);
+	return shadowDir;
 }
 
 function parseHookStateTableKey(line) {
@@ -3490,6 +4275,76 @@ function createRuntimeRotationProxyCodexHome(
 	};
 }
 
+function canonicalConfigSetsRealtimeSidebandBaseUrl(codexHome, configTomlModule) {
+	if (typeof configTomlModule.configHasTopLevelRealtimeSidebandBaseUrl !== "function") {
+		return false;
+	}
+	try {
+		return configTomlModule.configHasTopLevelRealtimeSidebandBaseUrl(
+			readFileSync(join(codexHome, "config.toml"), "utf8"),
+		);
+	} catch {
+		// No readable config means nothing to preserve.
+		return false;
+	}
+}
+
+function createRuntimeRotationProxyCanonicalCodexHome(
+	baseEnv,
+	proxyBaseUrl,
+	clientApiKey,
+	configTomlModule,
+	providerId = RUNTIME_ROTATION_PROXY_PROVIDER_ID,
+) {
+	const originalCodexHome = resolveRuntimeRotationProxyOriginalCodexHome(baseEnv);
+	// Codex reserves the built-in `openai` provider ID and rejects a
+	// `[model_providers.openai]` table before the TUI can load a session. The
+	// built-in provider has a dedicated top-level base URL setting, so use that
+	// for native OpenAI rollouts and keep `model_provider=openai` for resume
+	// catalog compatibility. Custom provider IDs still use the normal provider
+	// table because they are not reserved by Codex.
+	const configAssignments = providerId === "openai"
+		? [
+				`openai_base_url=${configTomlModule.tomlStringLiteral(proxyBaseUrl)}`,
+				"disable_response_storage=false",
+			]
+		: (() => {
+				const providerTable = `model_providers.${providerId}`;
+				return [
+					`${providerTable}.name=${configTomlModule.tomlStringLiteral(APP_SERVER_ACCOUNT_DISPLAY_NAME)}`,
+					`${providerTable}.base_url=${configTomlModule.tomlStringLiteral(proxyBaseUrl)}`,
+					`${providerTable}.env_key=${configTomlModule.tomlStringLiteral("OPENAI_API_KEY")}`,
+					`${providerTable}.requires_openai_auth=false`,
+					`${providerTable}.http_headers.x-openai-actor-authorization=${configTomlModule.tomlStringLiteral("codex-multi-auth-local")}`,
+					`${providerTable}.wire_api=${configTomlModule.tomlStringLiteral("responses")}`,
+					"disable_response_storage=false",
+				];
+			})();
+	// Voice sideband sockets otherwise go straight to the OpenAI realtime API
+	// with the local proxy token; route them through the proxy (#750). A
+	// sideband URL the user configured themselves wins.
+	if (!canonicalConfigSetsRealtimeSidebandBaseUrl(originalCodexHome, configTomlModule)) {
+		configAssignments.push(
+			`experimental_realtime_ws_base_url=${configTomlModule.tomlStringLiteral(proxyBaseUrl)}`,
+		);
+	}
+	const configArgs = configAssignments.flatMap((assignment) => ["-c", assignment]);
+
+	return {
+		args: configArgs,
+		env: {
+			...baseEnv,
+			CODEX_HOME: originalCodexHome,
+			OPENAI_API_KEY: clientApiKey,
+			CODEX_MULTI_AUTH_DIR: resolveRuntimeRotationOriginalMultiAuthDir(
+				originalCodexHome,
+				baseEnv,
+			),
+		},
+		cleanup: () => {},
+	};
+}
+
 function appendNodeImportOption(nodeOptions, preloadPath) {
 	const importOption = `--import=${pathToFileURL(preloadPath).href}`;
 	const trimmed = (nodeOptions ?? "").trim();
@@ -3504,15 +4359,26 @@ function createRuntimeRotationAppServerPreloadSource(wrapperScriptPath) {
 		"",
 		`const wrapperScriptPath = ${JSON.stringify(wrapperScriptPath)};`,
 		`const accountLabelEnv = ${JSON.stringify(APP_SERVER_ACCOUNT_LABEL_ENV)};`,
+		`const configArgsEnv = ${JSON.stringify(APP_SERVER_CONFIG_ARGS_ENV)};`,
+		"let configArgs = [];",
+		"try {",
+		'  const parsed = JSON.parse(process.env[configArgsEnv] ?? "[]");',
+		"  if (Array.isArray(parsed)) {",
+		'    configArgs = parsed.filter((arg) => typeof arg === "string");',
+		"  }",
+		"} catch {",
+		"  // Ignore malformed internal metadata and preserve app-server startup.",
+		"}",
 		"const rawArgs = process.argv.slice(1);",
 		"const firstArg = rawArgs[0] ?? \"\";",
 		'if (basename(firstArg).toLowerCase() === "app-server") {',
-		'  const args = ["app-server", ...rawArgs.slice(1)];',
+		'  const args = ["app-server", ...rawArgs.slice(1), ...configArgs];',
 		"  const env = {",
 		"    ...process.env,",
 		'    CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",',
 		"    [accountLabelEnv]: \"1\",",
 		"  };",
+		"  delete env[configArgsEnv];",
 		"  const child = spawn(process.execPath, [wrapperScriptPath, ...args], {",
 		"    stdio: \"inherit\",",
 		"    env,",
@@ -3558,7 +4424,7 @@ function sweepStaleRuntimeRotationAppServerShimDirs(shimRootDir) {
 	}
 }
 
-function installRuntimeRotationAppServerCliShim(forwardedEnv) {
+function installRuntimeRotationAppServerCliShim(forwardedEnv, configArgs = []) {
 	const shadowCodexHome = forwardedEnv.CODEX_HOME;
 	if (!shadowCodexHome) {
 		throw new Error("runtime app-server shim requires CODEX_HOME");
@@ -3578,16 +4444,28 @@ function installRuntimeRotationAppServerCliShim(forwardedEnv) {
 	const preloadPath = join(shimDir, "codex-multi-auth-app-server-preload.mjs");
 	try {
 		try {
-			rmSync(executablePath, { force: true });
+			withSynchronousFileOperationRetry(() => {
+				maybeThrowSimulatedAppServerShimFileError("cleanup");
+				rmSync(executablePath, { force: true });
+			});
 		} catch {
-			// Best-effort stale shim cleanup only.
+			// Best-effort stale shim cleanup only; the copy below will report a
+			// persistent failure without leaving a partially-created helper.
 		}
-		try {
-			linkSync(process.execPath, executablePath);
-		} catch {
-			copyFileSync(process.execPath, executablePath);
-		}
-		if (process.platform !== "win32") {
+		if (process.platform === "win32") {
+			// A running hard-linked node.exe prevents helper cleanup on Windows.
+			withSynchronousFileOperationRetry(() => {
+				maybeThrowSimulatedAppServerShimFileError("copy");
+				copyFileSync(process.execPath, executablePath);
+			});
+		} else {
+			// Relocating Node breaks installations with executable-relative shared
+			// libraries (including Homebrew). Invoke the original image in place.
+			const quotedNode = "'" + process.execPath.replace(/'/g, "'\\''") + "'";
+			withSynchronousFileOperationRetry(() => {
+				maybeThrowSimulatedAppServerShimFileError("copy");
+				writeFileSync(executablePath, `#!/bin/sh\nexec ${quotedNode} "$@"\n`, { mode: 0o755 });
+			});
 			chmodSync(executablePath, 0o755);
 		}
 		writeFileSync(
@@ -3615,13 +4493,42 @@ function installRuntimeRotationAppServerCliShim(forwardedEnv) {
 	);
 	forwardedEnv.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY = "0";
 	forwardedEnv[APP_SERVER_ACCOUNT_LABEL_ENV] = "1";
+	if (configArgs.length > 0) {
+		forwardedEnv[APP_SERVER_CONFIG_ARGS_ENV] = JSON.stringify(configArgs);
+	} else {
+		delete forwardedEnv[APP_SERVER_CONFIG_ARGS_ENV];
+	}
 	return shimDir;
 }
 
-function resolveRuntimeRotationAppHelperStatusPath(env = process.env) {
+// With a helper PID the path is per-helper, mirroring the owner files below —
+// N concurrent helpers each publish their own status instead of last-writer-
+// winning one shared file. Without a PID it is the legacy shared path, kept
+// only so readers can still see a helper from before this change.
+function resolveRuntimeRotationAppHelperStatusPath(env = process.env, helperPid) {
 	const multiAuthDir =
 		resolveOriginalMultiAuthDir(env) ?? join(resolveCodexHomeDir(env), "multi-auth");
-	return join(multiAuthDir, APP_RUNTIME_HELPER_STATUS_FILE);
+	const statusFileName =
+		typeof helperPid === "number" && Number.isInteger(helperPid) && helperPid > 0
+			? APP_RUNTIME_HELPER_STATUS_FILE.replace(
+					/\.json$/i,
+					`.${helperPid}.json`,
+				)
+			: APP_RUNTIME_HELPER_STATUS_FILE;
+	return join(multiAuthDir, statusFileName);
+}
+
+function resolveRuntimeRotationAppHelperOwnerPath(env = process.env, helperPid) {
+	const multiAuthDir =
+		resolveOriginalMultiAuthDir(env) ?? join(resolveCodexHomeDir(env), "multi-auth");
+	const ownerFileName =
+		typeof helperPid === "number" && Number.isInteger(helperPid) && helperPid > 0
+			? APP_RUNTIME_HELPER_OWNER_FILE.replace(
+					/\.json$/i,
+					`.${helperPid}.json`,
+				)
+			: APP_RUNTIME_HELPER_OWNER_FILE;
+	return join(multiAuthDir, ownerFileName);
 }
 
 function writeOwnerOnlyJsonFileAtomicSync(targetPath, payload) {
@@ -3681,6 +4588,96 @@ function resolveRuntimeRotationAppHelperOwnerPid(env = process.env) {
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function resolveRuntimeRotationAppHelperMaxLifetimeMs(env = process.env) {
+	const parsed = Number.parseInt(
+		env.CODEX_MULTI_AUTH_APP_ROTATION_MAX_LIFETIME_MS ?? "",
+		10,
+	);
+	// 0 disables the ceiling explicitly; anything unset or invalid gets the
+	// default rather than unbounded life.
+	return Number.isFinite(parsed) && parsed >= 0
+		? parsed
+		: DEFAULT_APP_RUNTIME_HELPER_MAX_LIFETIME_MS;
+}
+
+function resolveRuntimeRotationAppHelperOwnerStartTimeMs(env = process.env) {
+	const parsed = Number.parseInt(
+		env[APP_RUNTIME_HELPER_OWNER_START_TIME_ENV] ?? "",
+		10,
+	);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+// `lstart` is strftime-formatted and locale-sensitive; Date.parse on a
+// localized string is implementation-defined and can yield NaN, which would
+// silently disable the identity check. Both readers pin the C locale so both
+// sides of every comparison parse the same shape.
+function parseProcessStartTimeOutput(out) {
+	const trimmed = (out ?? "").trim();
+	if (!trimmed) return null;
+	const parsed = Date.parse(trimmed);
+	return Number.isFinite(parsed) ? parsed : null;
+}
+
+// The kernel's start time for a PID, in epoch ms — the identity that survives
+// PID reuse. Null on platforms without `ps` (Windows) or for a PID that is
+// already gone; callers must treat null as "identity unknown" and fall back
+// to bare liveness rather than declaring the process dead. Synchronous —
+// launcher/sweep use only; the helper's tick uses the async variant below.
+//
+// Windows short-circuits rather than spawning: there is no `ps` there, so the
+// probe could only ever fail, and it is not called once — the launcher probes
+// itself on every launch and the sweep probes up to `probeBudget` candidates.
+// Paying a process spawn per probe to learn nothing is the whole cost. Windows
+// therefore runs on bare liveness, and the 24h lifetime ceiling is what bounds
+// a leak there.
+function readProcessStartTimeMs(pid) {
+	if (process.platform === "win32") return null;
+	try {
+		return parseProcessStartTimeOutput(
+			execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "ignore"],
+				env: { ...process.env, LC_ALL: "C" },
+				timeout: 2_000,
+			}),
+		);
+	} catch {
+		return null;
+	}
+}
+
+// Async variant for the helper's status tick, which runs on the live rotation
+// proxy's event loop: a wedged `ps` must stall a background probe, never an
+// in-flight Responses stream. Same parse, same C locale, same null contract,
+// and the same Windows short-circuit.
+function readProcessStartTimeMsAsync(pid, onResult) {
+	if (process.platform === "win32") {
+		onResult(null);
+		return;
+	}
+	let child;
+	try {
+		child = execFile(
+			"ps",
+			["-o", "lstart=", "-p", String(pid)],
+			{
+				encoding: "utf8",
+				env: { ...process.env, LC_ALL: "C" },
+				timeout: 2_000,
+			},
+			(error, stdout) => {
+				onResult(error ? null : parseProcessStartTimeOutput(stdout));
+			},
+		);
+	} catch {
+		onResult(null);
+		return;
+	}
+	// The probe must not keep the helper's event loop referenced on shutdown.
+	child.unref?.();
+}
+
 function isProcessAlive(pid) {
 	try {
 		process.kill(pid, 0);
@@ -3690,8 +4687,109 @@ function isProcessAlive(pid) {
 	}
 }
 
-function isRuntimeRotationAppHelperOwnerAlive(pid) {
-	return isProcessAlive(pid);
+// `kill(pid, 0)` answers "does *a* process hold this integer", never "is this
+// still my owner". PIDs recycle, and a helper that mistakes a recycled PID for
+// its owner pushes its idle deadline forward — a ratchet, because one false
+// "alive" is never corrected by later true "dead"s, which is how helpers were
+// observed running 33 hours past a 12-hour timeout. Identity is the owner's
+// process start time, captured by the launcher at spawn: a recycled PID
+// necessarily has a later start time, so the match fails and the helper
+// correctly sees a dead owner. When the start time is unknown (no `ps`, or a
+// pre-upgrade launcher), behavior degrades to the bare liveness check.
+//
+// The verdict is deliberately three-valued. "No owner PID was recorded" and
+// "the owner is confirmed dead" are different facts, and collapsing them into
+// one `false` makes a helper launched without an owner — invoked directly, or
+// spawned by a pre-upgrade launcher that sets no owner PID — start the
+// detached clock on its very first tick and reap itself while it is still
+// serving. `unknown` means neither branch fires, which is exactly what the
+// pre-#664 `if (ownerPid && isAlive(ownerPid))` guard did.
+const OWNER_ALIVE = "alive";
+const OWNER_DEAD = "dead";
+const OWNER_UNKNOWN = "unknown";
+
+function createRuntimeRotationAppHelperOwnerLivenessCheck(
+	ownerPid,
+	expectedStartTimeMs,
+	recheckIntervalMs = APP_RUNTIME_HELPER_OWNER_IDENTITY_RECHECK_MS,
+) {
+	let lastIdentityCheckedAt = 0;
+	let lastIdentityVerdict = true;
+	let probeInFlight = false;
+	return (currentTime) => {
+		if (!ownerPid) {
+			return OWNER_UNKNOWN;
+		}
+		if (!isProcessAlive(ownerPid)) {
+			return OWNER_DEAD;
+		}
+		if (expectedStartTimeMs === null) {
+			return OWNER_ALIVE;
+		}
+		// The probe is asynchronous and single-flight: the tick runs on the live
+		// proxy's event loop, so it always answers from the last verdict and the
+		// probe updates it in the background — a stale verdict is tolerated by
+		// design (one recheck window against a 12h timeout), and single-flight
+		// means a wedged `ps` holds one child, not one per tick.
+		if (
+			!probeInFlight &&
+			currentTime - lastIdentityCheckedAt >= recheckIntervalMs
+		) {
+			lastIdentityCheckedAt = currentTime;
+			probeInFlight = true;
+			readProcessStartTimeMsAsync(ownerPid, (actualStartTimeMs) => {
+				probeInFlight = false;
+				// A failed read is "identity unknown", not "owner dead": under the
+				// process-table pressure this fix exists for, fork itself can fail,
+				// and declaring a live owner dead would kill the proxy out from
+				// under an active session. Keep the verdict and retry next window.
+				if (actualStartTimeMs !== null) {
+					lastIdentityVerdict = actualStartTimeMs === expectedStartTimeMs;
+				}
+			});
+		}
+		return lastIdentityVerdict ? OWNER_ALIVE : OWNER_DEAD;
+	};
+}
+
+function resolveRuntimeRotationAppHelperTickMs(idleTimeoutMs, detachedIdleMs) {
+	const shortestWindowMs =
+		detachedIdleMs > 0 ? Math.min(idleTimeoutMs, detachedIdleMs) : idleTimeoutMs;
+	return Math.min(1_000, Math.max(50, Math.floor(shortestWindowMs / 2)));
+}
+
+// `lastIdentityVerdict` starts optimistic, so the first tick reports the owner
+// alive while the async `ps` probe is still in flight, and a helper adopted by
+// a recycled owner PID keeps refreshing its activity clock until the first
+// recheck lands. Against the 12h default that is deliberate and harmless. It
+// stops being harmless the moment the windows are compressed: a 60s recheck
+// pinned against a 250ms idle override — how the lifecycle tests run — is
+// longer than the entire window under test, so whether the verdict ever flips
+// comes down to probe timing. Scaling the recheck to the shortest window that
+// can fire makes the flip a property of the code rather than a race, and
+// production is untouched because both defaults are hours.
+function resolveRuntimeRotationAppHelperOwnerRecheckMs(
+	idleTimeoutMs,
+	detachedIdleMs,
+) {
+	const shortestWindowMs =
+		detachedIdleMs > 0 ? Math.min(idleTimeoutMs, detachedIdleMs) : idleTimeoutMs;
+	return Math.min(
+		APP_RUNTIME_HELPER_OWNER_IDENTITY_RECHECK_MS,
+		Math.max(50, Math.floor(shortestWindowMs / 4)),
+	);
+}
+
+function resolveRuntimeRotationAppHelperDetachedIdleMs(env = process.env) {
+	const parsed = Number.parseInt(
+		env.CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS ?? "",
+		10,
+	);
+	// 0 disables the detached window explicitly, leaving a stranded helper on
+	// the full idle timeout — the pre-fix behavior, for anyone who depends on it.
+	return Number.isFinite(parsed) && parsed >= 0
+		? parsed
+		: DEFAULT_APP_RUNTIME_HELPER_DETACHED_IDLE_MS;
 }
 
 function resolveRuntimeRotationAppHelperDetachGraceMs(env = process.env) {
@@ -3715,6 +4813,7 @@ function pickRuntimeRotationAppHelperEnv(env) {
 		"CODEX_MULTI_AUTH_REAL_CODEX_BIN",
 		"CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY",
 		APP_SERVER_ACCOUNT_LABEL_ENV,
+		APP_SERVER_CONFIG_ARGS_ENV,
 	]) {
 		if (env[name]) {
 			picked[name] = env[name];
@@ -3728,18 +4827,216 @@ function pickRuntimeRotationAppHelperEnv(env) {
 
 function writeRuntimeRotationAppHelperStatus(payload, env = process.env) {
 	try {
-		const statusPath = resolveRuntimeRotationAppHelperStatusPath(env);
+		const statusPath = resolveRuntimeRotationAppHelperStatusPath(
+			env,
+			payload?.pid,
+		);
 		writeOwnerOnlyJsonFileAtomicSync(statusPath, payload);
 	} catch {
 		// Best-effort status only; the helper must not fail because telemetry is unavailable.
 	}
 }
 
+let helperMetadataCleanupBusyFailuresRemaining = resolveTestFaultInjectionCount(
+	"CODEX_MULTI_AUTH_TEST_HELPER_METADATA_CLEANUP_BUSY_FAILURES",
+);
+
+function maybeThrowSimulatedHelperMetadataFileError() {
+	if (
+		Number.isFinite(helperMetadataCleanupBusyFailuresRemaining) &&
+		helperMetadataCleanupBusyFailuresRemaining > 0
+	) {
+		helperMetadataCleanupBusyFailuresRemaining -= 1;
+		const error = new Error("simulated EBUSY");
+		error.code = "EBUSY";
+		throw error;
+	}
+}
+
+// Windows can hold a transient lock on a file another process just closed, so
+// every metadata deletion goes through the shared retry rather than a bare
+// rmSync — a swallowed EBUSY here is how stale files outlive their sweep.
+function removeHelperMetadataFileWithRetry(targetPath) {
+	try {
+		withSynchronousFileOperationRetry(() => {
+			maybeThrowSimulatedHelperMetadataFileError();
+			rmSync(targetPath, { force: true });
+		});
+	} catch {
+		// Best-effort metadata cleanup only; the next sweep retries.
+	}
+}
+
+function removeRuntimeRotationAppHelperOwnerFile(env = process.env, helperPid) {
+	removeHelperMetadataFileWithRetry(
+		resolveRuntimeRotationAppHelperOwnerPath(env, helperPid),
+	);
+}
+
+// Owner and status files are written per helper PID and removed on clean
+// helper exit; a killed helper leaves its files behind. This sweep runs when a
+// launcher starts the next helper, mirroring the app-server shim-dir sweep:
+// any per-PID metadata whose helper is no longer alive is stale, as is the
+// legacy shared status file once the PID recorded inside it is dead. Terminal
+// status stamps ("idle-timeout", "stopped") therefore survive until the next
+// helper launch — long enough to be read, without accumulating forever.
+function sweepStaleRuntimeRotationAppHelperMetadata(env = process.env) {
+	const multiAuthDir =
+		resolveOriginalMultiAuthDir(env) ?? join(resolveCodexHomeDir(env), "multi-auth");
+	let entries = [];
+	try {
+		entries = readdirSync(multiAuthDir, { withFileTypes: true });
+	} catch {
+		return;
+	}
+	// The same filename contract as `runtimeHelperPerPidPattern` in
+	// lib/runtime-constants.ts, re-derived here from the same two constants
+	// rather than imported: this wrapper has to keep working before `dist/` is
+	// built (see `loadRuntimeConstants`), and a sweep that silently matched
+	// nothing because an import failed would delete nothing and report success.
+	// A change to the shape there is a change here.
+	const perPidPattern = (baseName) =>
+		new RegExp(
+			`^${baseName.replace(/\.json$/i, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.(\\d+)\\.json$`,
+			"i",
+		);
+	const statusPattern = perPidPattern(APP_RUNTIME_HELPER_STATUS_FILE);
+	const ownerPattern = perPidPattern(APP_RUNTIME_HELPER_OWNER_FILE);
+	// A live kill(pid, 0) is not proof the helper is alive — the PID may have
+	// been recycled since a SIGKILLed helper left its files behind, and a
+	// recycled PID would otherwise shield the stale file from every future
+	// sweep. When the file records when its helper started, a current process
+	// whose kernel start time is meaningfully later cannot be that helper.
+	// Identity probes are bounded: results are memoized per PID for the sweep
+	// (the same PID backs both a status and an owner file), and at most a
+	// handful of `ps` spawns run per launch — candidates past the cap are
+	// treated as not-dead and the next launch finishes the work. Dead-PID
+	// files, the overwhelming majority after a leak, never probe at all.
+	const probedStartTimes = new Map();
+	let probeBudget = 20;
+	const probeStartTime = (pid) => {
+		if (probedStartTimes.has(pid)) return probedStartTimes.get(pid);
+		if (probeBudget <= 0) return undefined;
+		probeBudget -= 1;
+		const startTime = readProcessStartTimeMs(pid);
+		probedStartTimes.set(pid, startTime);
+		return startTime;
+	};
+	const isSweepCandidateDead = (pid, filePath) => {
+		if (!isProcessAlive(pid)) return true;
+		let recordedAt = null;
+		try {
+			const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+			if (parsed && typeof parsed === "object") {
+				recordedAt =
+					typeof parsed.startedAt === "number"
+						? parsed.startedAt
+						: typeof parsed.createdAt === "number"
+							? parsed.createdAt
+							: null;
+			}
+		} catch {
+			return false;
+		}
+		if (recordedAt === null) return false;
+		const actualStartTimeMs = probeStartTime(pid);
+		if (actualStartTimeMs === null || actualStartTimeMs === undefined) {
+			return false;
+		}
+		return actualStartTimeMs > recordedAt + 60_000;
+	};
+	// Classifying a file as stale and deleting it are two moments, and a PID
+	// freed between them can be handed to a helper starting right now — which
+	// then republishes this exact path before the delete lands, and the sweep
+	// erases a live helper's metadata: invisible to `rotation status`, to
+	// runtime account resolution, and to `unbind-app`, reapable only by its own
+	// timers. Deleting only a file whose mtime still matches what was
+	// classified closes that window; a file rewritten underneath us is by
+	// definition not the one judged dead.
+	const removeIfUnchanged = (entryPath, classifiedMtimeMs) => {
+		if (classifiedMtimeMs !== null) {
+			let currentMtimeMs = null;
+			try {
+				currentMtimeMs = statSync(entryPath).mtimeMs;
+			} catch {
+				return;
+			}
+			if (currentMtimeMs !== classifiedMtimeMs) return;
+		}
+		removeHelperMetadataFileWithRetry(entryPath);
+	};
+	for (const entry of entries) {
+		if (!entry.isFile()) continue;
+		const match =
+			statusPattern.exec(entry.name) ?? ownerPattern.exec(entry.name);
+		if (!match) continue;
+		const pid = Number.parseInt(match[1], 10);
+		if (!Number.isInteger(pid) || pid <= 0) continue;
+		const entryPath = join(multiAuthDir, entry.name);
+		let classifiedMtimeMs = null;
+		try {
+			classifiedMtimeMs = statSync(entryPath).mtimeMs;
+		} catch {
+			continue;
+		}
+		if (!isSweepCandidateDead(pid, entryPath)) continue;
+		removeIfUnchanged(entryPath, classifiedMtimeMs);
+	}
+	const legacyStatusPath = join(multiAuthDir, APP_RUNTIME_HELPER_STATUS_FILE);
+	try {
+		const legacyMtimeMs = statSync(legacyStatusPath).mtimeMs;
+		const parsed = JSON.parse(readFileSync(legacyStatusPath, "utf8"));
+		const legacyPid =
+			parsed && typeof parsed === "object" && Number.isInteger(parsed.pid)
+				? parsed.pid
+				: null;
+		if (
+			legacyPid === null ||
+			legacyPid <= 0 ||
+			isSweepCandidateDead(legacyPid, legacyStatusPath)
+		) {
+			removeIfUnchanged(legacyStatusPath, legacyMtimeMs);
+		}
+	} catch {
+		// Missing or unreadable legacy status; nothing to sweep.
+	}
+}
+
+function writeRuntimeRotationAppHelperOwner(
+	identityToken,
+	helperPid,
+	env = process.env,
+) {
+	if (
+		typeof helperPid !== "number" ||
+		!Number.isInteger(helperPid) ||
+		helperPid < 1
+	) {
+		return;
+	}
+	try {
+		writeOwnerOnlyJsonFileAtomicSync(
+			resolveRuntimeRotationAppHelperOwnerPath(env, helperPid),
+			{
+				version: 1,
+				kind: "codex-app-runtime-rotation-helper-owner",
+				identityToken,
+				launcherPid: process.pid,
+				createdAt: Date.now(),
+			},
+		);
+	} catch {
+		// Best-effort metadata; an unavailable owner file must never stop the helper.
+	}
+}
+
 function createRuntimeRotationAppHelperStatus({
 	proxyServer,
 	startedAt,
+	identityToken,
 	idleTimeoutMs,
 	lastActivityAt,
+	idleExpiresAt,
 	state,
 }) {
 	const proxyStatus =
@@ -3757,14 +5054,23 @@ function createRuntimeRotationAppHelperStatus({
 		kind: "codex-app-runtime-rotation-helper",
 		state,
 		pid: process.pid,
+		scriptPath: process.argv[1] ?? null,
+		identityToken: identityToken || null,
 		startedAt,
 		updatedAt: Date.now(),
 		baseUrl: proxyServer?.baseUrl ?? null,
 		idleTimeoutMs,
-		idleExpiresAt: lastActivityAt + idleTimeoutMs,
+		// The reaper's real deadline, which is the detached window once the owner
+		// is gone. Reporting the raw idle timeout there would tell `rotation
+		// status` a helper has 12h left when it has minutes.
+		idleExpiresAt:
+			typeof idleExpiresAt === "number"
+				? idleExpiresAt
+				: lastActivityAt + idleTimeoutMs,
 		totalRequests: proxyStatus.totalRequests ?? 0,
 		upstreamRequests: proxyStatus.upstreamRequests ?? 0,
 		retries: proxyStatus.retries ?? 0,
+		lunaReserveFallbacks: proxyStatus.lunaReserveFallbacks ?? 0,
 		rotations: proxyStatus.rotations ?? 0,
 		lastAccountIndex,
 		lastAccountLabel,
@@ -3774,28 +5080,105 @@ function createRuntimeRotationAppHelperStatus({
 	};
 }
 
-async function runRuntimeRotationAppHelper() {
+async function runRuntimeRotationAppHelper(identityToken = "") {
 	let proxyServer = null;
-	let shadowContext = null;
+	let runtimeContext = null;
 	let appServerShimDir = null;
 	let statusTimer = null;
 	let closing = false;
 	const startedAt = Date.now();
 	const idleTimeoutMs = resolveRuntimeRotationAppHelperIdleMs();
+	const maxLifetimeMs = resolveRuntimeRotationAppHelperMaxLifetimeMs();
+	const detachedIdleMs = resolveRuntimeRotationAppHelperDetachedIdleMs();
 	const ownerPid = resolveRuntimeRotationAppHelperOwnerPid();
+	const isOwnerAlive = createRuntimeRotationAppHelperOwnerLivenessCheck(
+		ownerPid,
+		resolveRuntimeRotationAppHelperOwnerStartTimeMs(),
+		resolveRuntimeRotationAppHelperOwnerRecheckMs(idleTimeoutMs, detachedIdleMs),
+	);
 	let lastActivityAt = startedAt;
 	let lastRequestCount = 0;
+	let lastPublishedToken = null;
+	let lastPublishedAt = 0;
+	// When the owner was first confirmed dead. Null while it is alive, and reset
+	// to null if a later probe revives the verdict, so a transient "dead" cannot
+	// ratchet the detached deadline the way the old liveness check ratcheted the
+	// idle one.
+	let ownerGoneSince = null;
+	// A detached consumer holding a socket is evidence the handoff was real,
+	// so it blocks the detached reap even with no requests in flight. The
+	// absence of that evidence is not evidence of absence, and this fails
+	// open on purpose: a proxy that cannot report connections reads as zero,
+	// so the detached window still reaps it on activity alone. Erring the
+	// other way — treating "unknown" as "someone is attached" — would restore
+	// the leak for any shape that stopped answering.
+	const countOpenConnections = () => {
+		if (typeof proxyServer?.getOpenConnectionCount !== "function") return 0;
+		const open = proxyServer.getOpenConnectionCount();
+		// Only a positive count of sockets is evidence of a consumer. Anything
+		// else — negative, fractional, NaN, Infinity — is "unknown", and unknown
+		// degrades exactly the way a missing method does. Comparing a garbage
+		// reading against 0 directly would block the reap forever and silently
+		// restore the leak this exists to close, which is the one direction the
+		// fix cannot afford to fail in.
+		return Number.isSafeInteger(open) && open > 0 ? open : 0;
+	};
+	// The deadline the reaper will actually enforce, which is the earlier of the
+	// idle timeout and — once the owner is gone — the detached window.
+	const resolveIdleDeadline = () =>
+		ownerGoneSince !== null && detachedIdleMs > 0
+			? Math.min(
+					lastActivityAt + idleTimeoutMs,
+					Math.max(lastActivityAt, ownerGoneSince) + detachedIdleMs,
+				)
+			: lastActivityAt + idleTimeoutMs;
+	// Freshness readers tolerate hours of staleness, but tests run the whole
+	// lifecycle in milliseconds — heartbeat at least once per idle window.
+	//
+	// The detached window counts too. `publishToken` deliberately zeroes
+	// `idleExpiresAt` so a deadline that moves every tick is not a reason to
+	// rewrite the file, which means the published deadline only catches up on a
+	// heartbeat. Once the owner dies the real deadline collapses from the idle
+	// timeout to the detached window, so a heartbeat pinned to the idle window
+	// alone would leave `rotation status` advertising a 12-hour deadline for a
+	// helper that is seconds from exiting — worse under a short
+	// CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS override, where the helper
+	// can vanish before the file is ever corrected.
+	const statusHeartbeatMs = Math.min(
+		APP_RUNTIME_HELPER_STATUS_HEARTBEAT_MS,
+		idleTimeoutMs,
+		detachedIdleMs > 0 ? detachedIdleMs : Number.POSITIVE_INFINITY,
+	);
 
-	const publishStatus = (state) => {
-		writeRuntimeRotationAppHelperStatus(
-			createRuntimeRotationAppHelperStatus({
-				proxyServer,
-				startedAt,
-				idleTimeoutMs,
-				lastActivityAt,
-				state,
-			}),
-		);
+	const publishStatus = (state, { force = false } = {}) => {
+		const payload = createRuntimeRotationAppHelperStatus({
+			proxyServer,
+			startedAt,
+			identityToken,
+			idleTimeoutMs,
+			lastActivityAt,
+			idleExpiresAt: resolveIdleDeadline(),
+			state,
+		});
+		// `updatedAt` moves every call and `idleExpiresAt` moves every tick the
+		// owner is alive; neither is a reason to rewrite the file. Everything
+		// else changing — state, traffic counters, account fields — is.
+		const publishToken = JSON.stringify({
+			...payload,
+			updatedAt: 0,
+			idleExpiresAt: 0,
+		});
+		const now = Date.now();
+		if (
+			!force &&
+			publishToken === lastPublishedToken &&
+			now - lastPublishedAt < statusHeartbeatMs
+		) {
+			return;
+		}
+		lastPublishedToken = publishToken;
+		lastPublishedAt = now;
+		writeRuntimeRotationAppHelperStatus(payload);
 	};
 
 	const cleanup = async (state = "stopped") => {
@@ -3813,12 +5196,16 @@ async function runRuntimeRotationAppHelper() {
 				}
 				appServerShimDir = null;
 			}
-			shadowContext?.cleanup?.();
+			runtimeContext?.cleanup?.();
 		} finally {
 			try {
 				await proxyServer?.close?.();
 			} finally {
-				publishStatus(state);
+				// The terminal stamp is always written; the next launcher's sweep
+				// removes it once this PID is dead. The owner file has no
+				// post-mortem value, so it goes now.
+				publishStatus(state, { force: true });
+				removeRuntimeRotationAppHelperOwnerFile(process.env, process.pid);
 			}
 		}
 	};
@@ -3843,14 +5230,54 @@ async function runRuntimeRotationAppHelper() {
 			throw new Error("runtime rotation config helpers are unavailable");
 		}
 		const clientApiKey = createRuntimeRotationProxyClientApiKey();
-		proxyServer = await proxyModule.startRuntimeRotationProxy({ clientApiKey });
-		shadowContext = createRuntimeRotationProxyCodexHome(
-			process.env,
-			proxyServer.baseUrl,
-			clientApiKey,
-			configTomlModule,
+		proxyServer = await proxyModule.startRuntimeRotationProxy(
+			createRuntimeRotationProxyOptions(
+				clientApiKey,
+				resolveRuntimeRotationProxyUpstreamBaseUrl(),
+			),
 		);
-		appServerShimDir = installRuntimeRotationAppServerCliShim(shadowContext.env);
+		const useCanonicalHome =
+			(process.env[APP_RUNTIME_HELPER_USE_CANONICAL_HOME_ENV] ?? "").trim() ===
+			"1";
+		runtimeContext = useCanonicalHome
+			? createRuntimeRotationProxyCanonicalCodexHome(
+					process.env,
+					proxyServer.baseUrl,
+					clientApiKey,
+					configTomlModule,
+					process.env[APP_RUNTIME_HELPER_PROVIDER_ID_ENV] ?? RUNTIME_ROTATION_PROXY_PROVIDER_ID,
+				)
+			: createRuntimeRotationProxyCodexHome(
+					process.env,
+					proxyServer.baseUrl,
+					clientApiKey,
+					configTomlModule,
+				);
+		// The shim only exists so a Codex process that spawns its own
+		// `codex app-server` through `CODEX_CLI_PATH` — the desktop app — gets that
+		// spawn routed back through the wrapper. Installing it is not free and not
+		// inert: it copies the node image into a per-pid directory and stamps
+		// `CODEX_CLI_PATH`, `NODE_OPTIONS` and `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`
+		// onto the environment every forwarded child inherits. A wrapper-invoked
+		// `app-server` is already launched with the rotation overrides on its own
+		// command line, so it must not pay for or inherit any of that (#659).
+		const installAppServerShim =
+			(process.env[APP_RUNTIME_HELPER_INSTALL_APP_SERVER_SHIM_ENV] ?? "1").trim() !==
+			"0";
+		if (installAppServerShim) {
+			const providerId = process.env[APP_RUNTIME_HELPER_PROVIDER_ID_ENV] ?? RUNTIME_ROTATION_PROXY_PROVIDER_ID;
+			const appServerConfigArgs = useCanonicalHome
+				? [
+						...(runtimeContext.args ?? []),
+						"-c",
+						`model_provider=${configTomlModule.tomlStringLiteral(providerId)}`,
+					]
+				: [];
+			appServerShimDir = installRuntimeRotationAppServerCliShim(
+				runtimeContext.env,
+				appServerConfigArgs,
+			);
+		}
 		lastRequestCount = proxyServer.getStatus?.().totalRequests ?? 0;
 		publishStatus("running");
 		process.stdout.write(
@@ -3858,8 +5285,12 @@ async function runRuntimeRotationAppHelper() {
 				type: "ready",
 				pid: process.pid,
 				baseUrl: proxyServer.baseUrl,
-				statusPath: resolveRuntimeRotationAppHelperStatusPath(),
-				env: pickRuntimeRotationAppHelperEnv(shadowContext.env),
+				statusPath: resolveRuntimeRotationAppHelperStatusPath(
+					process.env,
+					process.pid,
+				),
+				args: runtimeContext.args ?? [],
+				env: pickRuntimeRotationAppHelperEnv(runtimeContext.env),
 			})}\n`,
 		);
 
@@ -3870,14 +5301,51 @@ async function runRuntimeRotationAppHelper() {
 				lastRequestCount = requestCount;
 				lastActivityAt = currentTime;
 			}
-			if (ownerPid && isRuntimeRotationAppHelperOwnerAlive(ownerPid)) {
+			const ownerVerdict = isOwnerAlive(currentTime);
+			if (ownerVerdict === OWNER_ALIVE) {
 				lastActivityAt = currentTime;
+				ownerGoneSince = null;
+			} else if (ownerVerdict === OWNER_DEAD && ownerGoneSince === null) {
+				ownerGoneSince = currentTime;
 			}
 			publishStatus("running");
 			if (currentTime - lastActivityAt >= idleTimeoutMs) {
 				exitAfterCleanup("idle-timeout", 0);
+			} else if (
+				ownerGoneSince !== null &&
+				detachedIdleMs > 0 &&
+				currentTime >= resolveIdleDeadline() &&
+				requestCount === 0 &&
+				countOpenConnections() === 0
+			) {
+				// The launcher is gone, nothing is connected, nothing has been
+				// proxied for the detached window, and nothing has *ever* been
+				// proxied: this helper was stranded by a launcher that exited, not
+				// handed to a consumer that wants it.
+				//
+				// The never-served gate is what separates the two. An open socket
+				// is not a durable signal — the proxy leaves `keepAliveTimeout` at
+				// Node's 5s default, so a `codex app` session that is merely idle
+				// between turns has zero sockets within seconds, and the socket
+				// check alone would reap the live proxy out from under the desktop
+				// app after the detached window. A helper that has served even one
+				// request was genuinely handed off; from then on the idle timeout
+				// and the lifetime ceiling bound it, exactly as they did before the
+				// detached reap existed.
+				exitAfterCleanup("owner-gone", 0);
+			} else if (
+				maxLifetimeMs > 0 &&
+				currentTime - startedAt >= maxLifetimeMs
+			) {
+				// The ceiling is deliberately unconditional on activity: it exists
+				// for exactly the case where activity accounting is wrong.
+				exitAfterCleanup("max-lifetime", 0);
 			}
-		}, Math.min(1_000, Math.max(50, Math.floor(idleTimeoutMs / 2))));
+			// Tick against the shortest window that can fire, so a short detached
+			// window is enforced at its own resolution rather than the idle
+			// timeout's. Both defaults are far above 2s, so production still ticks
+			// once a second.
+		}, resolveRuntimeRotationAppHelperTickMs(idleTimeoutMs, detachedIdleMs));
 	} catch (error) {
 		process.stdout.write(
 			`${JSON.stringify({
@@ -3901,6 +5369,9 @@ function waitForRuntimeRotationAppHelperExit(helper, timeoutMs = 2_000) {
 			if (settled) return;
 			settled = true;
 			if (timer) clearTimeout(timer);
+			// Drop the listener when the timeout wins, so a helper that outlives the
+			// graceful window does not keep a live reference back into this process.
+			helper.off?.("close", finish);
 			resolve();
 		};
 		timer = setTimeout(finish, timeoutMs);
@@ -3908,19 +5379,52 @@ function waitForRuntimeRotationAppHelperExit(helper, timeoutMs = 2_000) {
 	});
 }
 
-function stopRuntimeRotationAppHelper(helper) {
-	if (!helper || helper.killed) {
-		return Promise.resolve();
-	}
-	try {
-		helper.kill("SIGTERM");
-	} catch {
-		return Promise.resolve();
-	}
-	return waitForRuntimeRotationAppHelperExit(helper);
+function hasRuntimeRotationAppHelperExited(helper) {
+	return helper.exitCode !== null || helper.signalCode !== null;
 }
 
-function startRuntimeRotationAppHelper(baseContext) {
+// Releases every handle the helper still holds in this process. The helper is
+// spawned with piped stdio, so those pipes keep the parent event loop alive on
+// their own — destroying and unref-ing them is what actually lets `mcodex` return
+// to the shell when the child ignores or outlives SIGTERM (#647).
+function releaseRuntimeRotationAppHelperResources(helper) {
+	helper.stdout?.destroy();
+	helper.stderr?.destroy();
+	try {
+		helper.unref();
+	} catch {
+		// Best-effort only.
+	}
+}
+
+async function stopRuntimeRotationAppHelper(helper) {
+	if (!helper) {
+		return;
+	}
+	if (hasRuntimeRotationAppHelperExited(helper)) {
+		releaseRuntimeRotationAppHelperResources(helper);
+		return;
+	}
+	if (!helper.killed) {
+		try {
+			helper.kill("SIGTERM");
+		} catch {
+			releaseRuntimeRotationAppHelperResources(helper);
+			return;
+		}
+	}
+	await waitForRuntimeRotationAppHelperExit(helper);
+	if (!hasRuntimeRotationAppHelperExited(helper)) {
+		try {
+			helper.kill("SIGKILL");
+		} catch {
+			// Best-effort force-stop once the graceful shutdown window has elapsed.
+		}
+	}
+	releaseRuntimeRotationAppHelperResources(helper);
+}
+
+function startRuntimeRotationAppHelper(baseContext, options = {}) {
 	const realCodexHome =
 		baseContext.originalCodexHome ??
 		resolveRuntimeRotationProxyOriginalCodexHome(baseContext.env);
@@ -3928,23 +5432,56 @@ function startRuntimeRotationAppHelper(baseContext) {
 		let stdoutBuffer = "";
 		let stderrBuffer = "";
 		let settled = false;
+		const identityToken = randomBytes(24).toString("hex");
+		// The launcher states its own identity — PID plus kernel start time — so
+		// the helper's owner-liveness check can tell "my launcher" from a later
+		// process that recycled the PID. An empty value (no `ps` on this
+		// platform) leaves the helper on the bare liveness check.
+		const launcherStartTimeMs = readProcessStartTimeMs(process.pid);
+		const helperEnv = {
+			...baseContext.env,
+			CODEX_MULTI_AUTH_DIR: resolveRuntimeRotationOriginalMultiAuthDir(
+				realCodexHome,
+				baseContext.env,
+			),
+			// PID and start time are two halves of one identity and must describe
+			// the same process: both always come from this launcher's own capture,
+			// never from an inherited environment value, which would marry this
+			// PID to another process's start time and make the helper declare its
+			// live owner dead at the first recheck.
+			[APP_RUNTIME_HELPER_OWNER_PID_ENV]: String(process.pid),
+			[APP_RUNTIME_HELPER_OWNER_START_TIME_ENV]:
+				launcherStartTimeMs !== null ? String(launcherStartTimeMs) : "",
+			[APP_RUNTIME_HELPER_REAL_CODEX_HOME_ENV]: realCodexHome,
+			[APP_RUNTIME_HELPER_USE_CANONICAL_HOME_ENV]:
+				options.useCanonicalHome === true ? "1" : "0",
+			[APP_RUNTIME_HELPER_INSTALL_APP_SERVER_SHIM_ENV]:
+				options.installAppServerShim === false ? "0" : "1",
+			[APP_RUNTIME_HELPER_PROVIDER_ID_ENV]:
+				options.providerId ?? RUNTIME_ROTATION_PROXY_PROVIDER_ID,
+		};
 		const helper = spawn(
 			process.execPath,
-			[fileURLToPath(import.meta.url), INTERNAL_RUNTIME_ROTATION_APP_HELPER_ARG],
+			[
+				fileURLToPath(import.meta.url),
+				INTERNAL_RUNTIME_ROTATION_APP_HELPER_ARG,
+				identityToken,
+			],
 			{
-				env: {
-					...baseContext.env,
-					CODEX_MULTI_AUTH_DIR: resolveRuntimeRotationOriginalMultiAuthDir(
-						realCodexHome,
-						baseContext.env,
-					),
-					[APP_RUNTIME_HELPER_OWNER_PID_ENV]: String(process.pid),
-					[APP_RUNTIME_HELPER_REAL_CODEX_HOME_ENV]: realCodexHome,
-				},
+				env: helperEnv,
 				stdio: ["ignore", "pipe", "pipe"],
 				detached: true,
 			},
 		);
+		writeRuntimeRotationAppHelperOwner(identityToken, helper.pid, helperEnv);
+		// Swept after the spawn, never before it. The sweep is synchronous and
+		// unbounded — a readdir, a readFileSync and an rmSync per candidate, plus
+		// bounded `ps` probes — and the state it exists to clean up (hundreds of
+		// stale files, a loaded process table) is exactly the state that makes it
+		// slow. Running it first put all of that latency in front of `codex app`
+		// and TUI startup; running it here lets the helper boot in parallel with
+		// it. Nothing about spawning depends on the sweep having finished.
+		sweepStaleRuntimeRotationAppHelperMetadata(helperEnv);
 		let timeout = null;
 		const finish = (result) => {
 			if (settled) return;
@@ -3963,6 +5500,12 @@ function startRuntimeRotationAppHelper(baseContext) {
 		}, APP_RUNTIME_HELPER_LAUNCH_TIMEOUT_MS);
 		helper.stdout?.setEncoding("utf8");
 		helper.stdout?.on("data", (chunk) => {
+			// Keep consuming after startup settles so the helper never blocks on a
+			// full pipe, but stop accumulating: `app-server` holds this parent open
+			// for the resident server's whole life, so a buffer that only ever grows
+			// is a leak, and re-parsing the retained ready line on every later chunk
+			// is pure waste.
+			if (settled) return;
 			stdoutBuffer += chunk;
 			const newlineIndex = stdoutBuffer.indexOf("\n");
 			if (newlineIndex < 0) return;
@@ -3985,6 +5528,7 @@ function startRuntimeRotationAppHelper(baseContext) {
 		});
 		helper.stderr?.setEncoding("utf8");
 		helper.stderr?.on("data", (chunk) => {
+			if (settled) return;
 			stderrBuffer += chunk;
 		});
 		helper.once("error", fail);
@@ -4004,32 +5548,85 @@ async function createRuntimeRotationAppHelperContext(
 	configTomlModule,
 	options = {},
 ) {
+	const { helper, message } = await startRuntimeRotationAppHelper(
+		baseContext,
+		options,
+	);
+	// Start the grace clock once the helper is ready, not before it is launched.
+	// Launching is bounded by APP_RUNTIME_HELPER_LAUNCH_TIMEOUT_MS (15s), so a
+	// cold or loaded machine could otherwise burn the whole 5s window before the
+	// forwarded command had run at all, and `codex app` — which relies on the
+	// window rather than an explicit `detachOnExit` — would kill the helper it
+	// had just handed the desktop app off to.
 	const startedAt = Date.now();
-	const { helper, message } = await startRuntimeRotationAppHelper(baseContext);
 	const helperEnv = message.env ?? {};
+	const helperShimDir =
+		typeof helperEnv.CODEX_CLI_PATH === "string" &&
+		helperEnv.CODEX_CLI_PATH.length > 0
+			? helperEnv.CODEX_CLI_PATH
+			: null;
+	const helperArgs = Array.isArray(message.args)
+		? message.args.filter((arg) => typeof arg === "string")
+		: [];
 	const detachGraceMs = resolveRuntimeRotationAppHelperDetachGraceMs(baseContext.env);
 
+	// An explicit `detachOnExit: false` is a decision, not a default: a resident
+	// server owns its proxy for its whole lifetime, and leaving the helper behind
+	// on a short-lived run — a client attaches, runs one query, disconnects —
+	// strands it for the full idle timeout with nobody left to refresh its
+	// activity clock. Only an unset `detachOnExit` falls back to the grace window.
 	const cleanup = async ({ exitCode } = {}) => {
 		const livedMs = Date.now() - startedAt;
-		if (exitCode === 0 && (options.detachOnExit === true || livedMs < detachGraceMs)) {
+		const detachWithinGrace =
+			options.detachOnExit !== false && livedMs < detachGraceMs;
+		if (exitCode === 0 && (options.detachOnExit === true || detachWithinGrace)) {
 			helper.stdout?.destroy();
 			helper.stderr?.destroy();
 			helper.unref();
 			return;
 		}
-		await stopRuntimeRotationAppHelper(helper);
+		try {
+			await stopRuntimeRotationAppHelper(helper);
+		} finally {
+			// The helper normally removes its app-server shim before exiting. On
+			// Windows, a descendant may still hold the copied codex.exe briefly
+			// after the helper closes, so retry the parent-owned cleanup once the
+			// helper shutdown path has completed as well.
+			if (helperShimDir) {
+				try {
+					removeDirectoryWithRetry(helperShimDir);
+				} catch {
+					// Best-effort cleanup; stale helper directories are swept on the
+					// next runtime app launch.
+				}
+			}
+		}
 	};
 
+	const providerId = options.providerId ?? RUNTIME_ROTATION_PROXY_PROVIDER_ID;
+	const injectedArgs = [
+		...helperArgs,
+		"-c",
+		`model_provider=${configTomlModule.tomlStringLiteral(providerId)}`,
+	];
 	return {
-		args: [
-			...baseContext.args,
-			"-c",
-			`model_provider=${configTomlModule.tomlStringLiteral(RUNTIME_ROTATION_PROXY_PROVIDER_ID)}`,
-		],
+		// Root TUI argv can end in the optional `[PROMPT]` positional, and `--`
+		// binds everything after it to that positional — overrides appended
+		// there would become prompt text, so the interactive branch asks for
+		// them to be injected ahead of the prompt instead.
+		args:
+			options.injectArgsBeforeRootPrompt === true
+				? insertArgsBeforeRootPrompt(baseContext.args, injectedArgs)
+				: insertArgsBeforeForwardedSeparator(baseContext.args, injectedArgs),
 		env: {
 			...baseContext.env,
 			...helperEnv,
 		},
+		// Without the app-server shim there is no `CODEX_MULTI_AUTH_APP_SERVER_ACCOUNT_LABEL`
+		// in the forwarded environment, so the caller has to ask for the
+		// `account/read` / `getAuthStatus` / `account/rateLimits/read` rewriting
+		// explicitly. Only the shadow branch used to set it.
+		proxyAppServerAccountRead: options.proxyAppServerAccountRead === true,
 		cleanup: async (details) => {
 			try {
 				await cleanup(details);
@@ -4044,30 +5641,130 @@ async function createRuntimeRotationProxyContextIfEnabled(
 	baseContext,
 	rawArgs,
 ) {
+	// Resolve the configured upstream BEFORE the enabled gate. Every path that
+	// leaves this function with `baseContext` forwards Responses traffic, and its
+	// managed OAuth bearer token, straight to the real backend. An explicit
+	// upstream is a routing requirement rather than a rotation preference, so
+	// `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`, `CODEX_MULTI_AUTH_BYPASS=1`, a
+	// missing `dist/lib/config.js` or a disabled setting must all fail closed
+	// here instead of silently reaching chatgpt.com.
+	let configuredUpstreamBaseUrl;
+	try {
+		configuredUpstreamBaseUrl =
+			resolveRuntimeRotationProxyUpstreamBaseUrl(baseContext.env);
+	} catch (error) {
+		baseContext.cleanup?.();
+		return {
+			startupError: `codex-multi-auth runtime rotation upstream is invalid: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		};
+	}
+	// The one exception is a subcommand that never reaches the backend at all
+	// (`--version`, `login`, ...): there is no traffic to misroute, so it passes
+	// through with the upstream simply unused.
+	const requireConfiguredUpstream =
+		configuredUpstreamBaseUrl !== undefined &&
+		shouldUseRuntimeRoutingForForwardedArgs(rawArgs);
+
 	const enabled = await isRuntimeRotationProxyEnabled(rawArgs, baseContext.env);
 	if (!enabled) {
+		if (requireConfiguredUpstream) {
+			baseContext.cleanup?.();
+			return {
+				startupError: `codex-multi-auth runtime rotation is disabled, so ${RUNTIME_ROTATION_PROXY_UPSTREAM_BASE_URL_ENV} cannot be honored and requests would go to the direct backend instead. Enable runtime rotation or unset that variable.`,
+			};
+		}
 		return baseContext;
 	}
 
 	const configTomlModule = await loadRuntimeConfigTomlModule();
 	if (!configTomlModule) {
+		if (requireConfiguredUpstream) {
+			baseContext.cleanup?.();
+			return {
+				startupError:
+					"codex-multi-auth runtime rotation config helpers are unavailable; configured upstream routing cannot continue.",
+			};
+		}
 		console.error(
 			"codex-multi-auth runtime rotation config helpers are unavailable; continuing without runtime rotation.",
 		);
 		return baseContext;
 	}
 
-	if (isCodexAppCommand(rawArgs)) {
-		return createRuntimeRotationAppHelperContext(baseContext, configTomlModule);
+	// A helper that cannot start is a hard failure for these branches — unlike the
+	// shadow path below, there is no rotation-off shape left to degrade into. Turn
+	// it into a diagnostic and a nonzero exit rather than an unhandled rejection,
+	// and release the compatibility shadow home the caller already built.
+	const startAppHelperContext = async (options) => {
+		try {
+			return await createRuntimeRotationAppHelperContext(
+				baseContext,
+				configTomlModule,
+				options,
+			);
+		} catch (error) {
+			try {
+				baseContext.cleanup?.();
+			} catch {
+				// Best-effort cleanup only; report the original failure.
+			}
+			return {
+				startupError: `codex-multi-auth runtime rotation helper failed to start: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			};
+		}
+	};
+
+	// `app-server` is a resident process, and the shadow home cannot host one: the
+	// mirror links directories, so Codex's lstat-strict check on
+	// `<CODEX_HOME>/app-server-control` refuses to start, and a server that does
+	// start serves every attached client a frozen snapshot of the thread index for
+	// its whole life. Same reasoning that moved `resume`/`fork` in #648 (#659).
+	if (isCodexAppServerCommand(rawArgs)) {
+		return startAppHelperContext({
+			// A resident server owns its proxy for its whole lifetime.
+			detachOnExit: false,
+			useCanonicalHome: true,
+			// Nothing here spawns `codex app-server` through `CODEX_CLI_PATH`; the
+			// server is launched with the rotation overrides already on its command
+			// line. See the shim gate in `runRuntimeRotationAppHelper`.
+			installAppServerShim: false,
+			proxyAppServerAccountRead: true,
+		});
 	}
-	if (isCodexInteractiveTuiCommand(rawArgs)) {
-		return createRuntimeRotationAppHelperContext(baseContext, configTomlModule, {
+	if (isCodexAppCommand(rawArgs)) {
+		return startAppHelperContext();
+	}
+	// Classify once: each predicate re-walks the whole argv, and the root-TUI
+	// answer is needed twice below.
+	const isRootTuiLaunch = isCodexInteractiveTuiCommand(rawArgs);
+	if (isRootTuiLaunch || isCodexInteractiveResumeCommand(rawArgs)) {
+		const resumeProvider = resolveResumeSessionProvider(rawArgs, baseContext.env);
+		return startAppHelperContext({
 			detachOnExit: true,
+			useCanonicalHome: true,
+			providerId: resumeProvider === "openai" ? "openai" : RUNTIME_ROTATION_PROXY_PROVIDER_ID,
+			// Root TUI launches may carry the optional `[PROMPT]` positional
+			// (possibly forced by `--`); the provider overrides must stay on the
+			// option side of it. `resume`/`fork` keep the appended ordering their
+			// argv has always forwarded with — their tokens are subcommand args,
+			// not the root prompt.
+			injectArgsBeforeRootPrompt: isRootTuiLaunch,
 		});
 	}
 
 	const proxyModule = await loadRuntimeRotationProxyModule();
 	if (!proxyModule) {
+		if (requireConfiguredUpstream) {
+			baseContext.cleanup?.();
+			return {
+				startupError:
+					"codex-multi-auth runtime rotation proxy is unavailable; configured upstream routing cannot continue.",
+			};
+		}
 		console.error(
 			"codex-multi-auth runtime rotation proxy is unavailable; continuing without runtime rotation.",
 		);
@@ -4078,7 +5775,12 @@ async function createRuntimeRotationProxyContextIfEnabled(
 	let shadowContext;
 	try {
 		const clientApiKey = createRuntimeRotationProxyClientApiKey();
-		proxyServer = await proxyModule.startRuntimeRotationProxy({ clientApiKey });
+		proxyServer = await proxyModule.startRuntimeRotationProxy(
+			createRuntimeRotationProxyOptions(
+				clientApiKey,
+				configuredUpstreamBaseUrl,
+			),
+		);
 		shadowContext = createRuntimeRotationProxyCodexHome(
 			baseContext.env,
 			proxyServer.baseUrl,
@@ -4090,6 +5792,14 @@ async function createRuntimeRotationProxyContextIfEnabled(
 			await proxyServer?.close?.();
 		} catch {
 			// Best-effort cleanup only.
+		}
+		if (requireConfiguredUpstream) {
+			baseContext.cleanup?.();
+			return {
+				startupError: `codex-multi-auth runtime rotation proxy failed to start with configured upstream: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			};
 		}
 		console.error(
 			`codex-multi-auth runtime rotation proxy failed to start; continuing without runtime rotation: ${error instanceof Error ? error.message : String(error)}`,
@@ -4109,12 +5819,19 @@ async function createRuntimeRotationProxyContextIfEnabled(
 		}
 	};
 
+	const providerArgs = [
+		"-c",
+		`model_provider=${configTomlModule.tomlStringLiteral(RUNTIME_ROTATION_PROXY_PROVIDER_ID)}`,
+	];
 	return {
-		args: [
-			...baseContext.args,
-			"-c",
-			`model_provider=${configTomlModule.tomlStringLiteral(RUNTIME_ROTATION_PROXY_PROVIDER_ID)}`,
-		],
+		// Same separator rule as buildForwardArgs: everything after a `--`
+		// belongs to the subcommand's positional list (or the root `[PROMPT]`),
+		// where Codex rejects an appended `-c` outright (`exec` errors with
+		// "unexpected argument '-c' found"). Insert on the option side instead.
+		args:
+			findForwardedCommand(baseContext.args) === null
+				? insertArgsBeforeRootPrompt(baseContext.args, providerArgs)
+				: insertArgsBeforeForwardedSeparator(baseContext.args, providerArgs),
 		env: shadowContext.env,
 		cleanup,
 		proxyAppServerAccountRead: isCodexAppServerCommand(rawArgs),
@@ -4153,90 +5870,257 @@ function isPureHelpOrVersionArgs(rawArgs) {
 	);
 }
 
+// Hoisted: every argv walk calls consumesNextArg once per token, and a Set
+// rebuilt per call allocated this list on every one of them.
+const OPTIONS_CONSUMING_NEXT_ARG = new Set([
+	"-c",
+	"--config",
+	"--enable",
+	"--disable",
+	"--listen",
+	"--remote",
+	"--remote-auth-token-env",
+	"--ws-auth",
+	"--ws-token-file",
+	"--ws-token-sha256",
+	"--ws-shared-secret-file",
+	"--ws-issuer",
+	"--ws-audience",
+	"--ws-max-clock-skew-seconds",
+	"--download-url",
+	"-i",
+	"--image",
+	"-m",
+	"--model",
+	"--local-provider",
+	"-p",
+	"--profile",
+	"-s",
+	"--sandbox",
+	"-a",
+	"--ask-for-approval",
+	"-C",
+	"--cd",
+	"--add-dir",
+	"--output-schema",
+	"--color",
+	"-o",
+	"--output-last-message",
+]);
+
 function consumesNextArg(arg) {
-	return new Set([
-		"-c",
-		"--config",
-		"--enable",
-		"--disable",
-		"--listen",
-		"--remote",
-		"--remote-auth-token-env",
-		"--ws-auth",
-		"--ws-token-file",
-		"--ws-token-sha256",
-		"--ws-shared-secret-file",
-		"--ws-issuer",
-		"--ws-audience",
-		"--ws-max-clock-skew-seconds",
-		"--download-url",
-		"-i",
-		"--image",
-		"-m",
-		"--model",
-		"--local-provider",
-		"-p",
-		"--profile",
-		"-s",
-		"--sandbox",
-		"-a",
-		"--ask-for-approval",
-		"-C",
-		"--cd",
-		"--add-dir",
-		"--output-schema",
-		"--color",
-		"-o",
-		"--output-last-message",
-	]).has(arg);
+	return OPTIONS_CONSUMING_NEXT_ARG.has(arg);
+}
+
+// Codex's root grammar is `codex [OPTIONS] [PROMPT]` / `codex [OPTIONS]
+// <COMMAND> [ARGS]`, so the first positional is only a command when it names a
+// real root subcommand — otherwise it is the optional initial prompt of an
+// interactive TUI launch. The allowlist mirrors `codex --help`; treating an
+// unknown positional as a prompt matches native Codex, where an unrecognized
+// token also falls through to the prompt positional rather than erroring as a
+// bad subcommand. Routing predicates all resolve through this map so aliases
+// classify like their canonical command.
+//
+// A real root subcommand missing from this set is misrouted, not merely
+// misnamed: it classifies as an interactive prompt and takes the app-helper
+// branch with `detachOnExit: true`, so a short-lived command leaves a detached
+// helper and its loopback proxy idling until the rotation idle timeout. Keep
+// the set in sync with the upstream grammar — clap publishes the authoritative
+// root list in its own completions, so
+//   codex completion bash | grep -oE 'opts="[^"]*"' | grep ' exec '
+// prints every root command (and alias) for the installed codex-cli.
+
+const CODEX_ROOT_COMMAND_ALIASES = new Map([
+	["e", "exec"],
+	["a", "apply"],
+]);
+const CODEX_ROOT_COMMANDS = new Set([
+	"exec",
+	"review",
+	"login",
+	"logout",
+	"mcp",
+	"plugin",
+	"mcp-server",
+	"app-server",
+	"remote-control",
+	"app",
+	"completion",
+	"update",
+	"doctor",
+	"sandbox",
+	"debug",
+	"apply",
+	"resume",
+	"archive",
+	"delete",
+	"migrate-rollouts",
+	"unarchive",
+	"fork",
+	"cloud",
+	"exec-server",
+	"features",
+	"help",
+	"auth",
+	// Hidden root subcommands: absent from `codex --help`, but real — each is
+	// documented by `codex help <name>`.
+	"responses-api-proxy",
+	"cloud-tasks",
+	"execpolicy",
+	// Internal stdio/UDS relay. Hidden like the three above, and short-lived:
+	// omitting it classified `codex stdio-to-uds <socket>` as a root prompt,
+	// which took the detached app-helper branch and leaked a helper per call.
+	"stdio-to-uds",
+]);
+
+function resolveCodexRootCommand(token) {
+	const command = CODEX_ROOT_COMMAND_ALIASES.get(token) ?? token;
+	return CODEX_ROOT_COMMANDS.has(command) ? command : null;
+}
+
+// `-i/--image` is greedy (`<FILE>...`): native Codex consumes every following
+// free token up to the next option-like token, so a prompt can only follow the
+// image list after another option or a `--`. Every argv walker below skips the
+// same span, or the wrapper would disagree with native Codex about where the
+// positional side starts.
+function consumesRemainingFreeArgs(arg) {
+	return arg === "-i" || arg === "--image";
+}
+
+function skipOptionValueSpan(args, i) {
+	const arg = args[i];
+	if (consumesRemainingFreeArgs(arg)) {
+		let end = i;
+		while (
+			end + 1 < args.length &&
+			typeof args[end + 1] === "string" &&
+			args[end + 1].length > 0 &&
+			(args[end + 1] === "-" || !args[end + 1].startsWith("-"))
+		) {
+			end += 1;
+		}
+		return end;
+	}
+	return consumesNextArg(arg) ? i + 1 : i;
+}
+
+/**
+ * The single definition of where an argv's option side ends. Walking from
+ * `startIndex`, skips option flags and the values they consume — including a
+ * greedy `-i a.png b.png` span — and reports what stopped the walk:
+ *
+ * - `index`: the first free (positional) token, or null when there is none.
+ * - `terminatorIndex`: the bare `--` that ended option parsing, or null.
+ * - `boundary`: where option-side content ends, i.e. the positional, the
+ *   `--`, or `args.length`. This is where injected overrides belong.
+ *
+ * Callers keep their own policy for `--` (the root grammar binds everything
+ * after it to `[PROMPT]`; a subcommand's does not), but they must not keep
+ * their own copy of the walk: a classifier and an injector that disagree by
+ * one token put a `-c` override into prompt text or read prompt text as a
+ * subcommand.
+ */
+function findRootPositional(args, startIndex = 0) {
+	if (!Array.isArray(args)) {
+		return { index: null, terminatorIndex: null, boundary: 0 };
+	}
+	for (let i = startIndex; i < args.length; i += 1) {
+		const arg = args[i];
+		if (typeof arg !== "string" || arg.length === 0) continue;
+		if (arg === "--") {
+			return { index: null, terminatorIndex: i, boundary: i };
+		}
+		if (arg.startsWith("--config=")) {
+			continue;
+		}
+		if (arg.startsWith("--") || (arg.startsWith("-") && arg !== "-")) {
+			i = skipOptionValueSpan(args, i);
+			continue;
+		}
+		return { index: i, terminatorIndex: null, boundary: i };
+	}
+	return { index: null, terminatorIndex: null, boundary: args.length };
 }
 
 function findForwardedCommand(rawArgs) {
 	if (!Array.isArray(rawArgs) || rawArgs.length === 0) {
 		return null;
 	}
-	for (let i = 0; i < rawArgs.length; i += 1) {
-		const arg = rawArgs[i];
-		if (typeof arg !== "string" || arg.length === 0) continue;
-		if (arg === "--") {
-			return i + 1 < rawArgs.length
-				? { command: rawArgs[i + 1], index: i + 1 }
-				: null;
+	// `--` ends option parsing: everything after it binds to the root
+	// `[PROMPT]` positional, never to a subcommand, even when the text happens
+	// to spell a command name. `findRootPositional` reports it as a terminator
+	// and yields no positional, which settles the launch as interactive.
+	//
+	// Native Codex fills the root `[PROMPT]` slot with the first free token and
+	// still tries a later one as a subcommand (`codex hello exec …` runs exec),
+	// so an unknown positional keeps the scan going.
+	for (
+		let cursor = findRootPositional(rawArgs, 0);
+		cursor.index !== null;
+		cursor = findRootPositional(rawArgs, cursor.index + 1)
+	) {
+		const command = resolveCodexRootCommand(rawArgs[cursor.index]);
+		if (command !== null) {
+			return { command, index: cursor.index };
 		}
-		if (arg.startsWith("--config=")) {
-			continue;
-		}
-		if (arg.startsWith("--") || (arg.startsWith("-") && arg !== "-")) {
-			if (consumesNextArg(arg)) {
-				i += 1;
-			}
-			continue;
-		}
-		return { command: arg, index: i };
 	}
 
 	return null;
 }
 
-function findForwardedSubcommand(rawArgs, commandIndex) {
-	for (let i = commandIndex + 1; i < rawArgs.length; i += 1) {
-		const arg = rawArgs[i];
-		if (typeof arg !== "string" || arg.length === 0) continue;
-		if (arg === "--") {
-			return i + 1 < rawArgs.length ? rawArgs[i + 1] : null;
-		}
-		if (arg.startsWith("--config=")) {
-			continue;
-		}
-		if (arg.startsWith("--") || (arg.startsWith("-") && arg !== "-")) {
-			if (consumesNextArg(arg)) {
-				i += 1;
-			}
-			continue;
-		}
-		return arg;
+// Inserts option-side args ahead of the root `[PROMPT]` positional (or the
+// `--` that forces one), so injected overrides cannot be read as prompt text.
+// With no positional at all this is a plain append, which keeps bare-TUI argv
+// byte-identical to the pre-insertion shape.
+function insertArgsBeforeRootPrompt(baseArgs, injectedArgs) {
+	const { boundary } = findRootPositional(baseArgs);
+	return [
+		...baseArgs.slice(0, boundary),
+		...injectedArgs,
+		...baseArgs.slice(boundary),
+	];
+}
+
+// Inserts args before a `--` separator when one is present, else appends.
+// Subcommand argv keeps its leading subcommand token — `resume`/`fork` argv is
+// pinned to it — but anything appended past a `--` lands in the subcommand's
+// own positional list: Codex rejects that outright for `exec`/`review`
+// ("unexpected argument '-c' found"), and worse, silently forwards it as
+// arguments for `sandbox` and into the stored config for `mcp add`. The
+// separator bounds the append.
+function insertArgsBeforeForwardedSeparator(baseArgs, injectedArgs) {
+	// Deliberately not `findRootPositional`: that reports where the option side
+	// ends, stopping at the first positional, and a subcommand's own arguments
+	// are positionals — it would answer `exec` for `exec -- hi`. The question
+	// here is only where the separator sits, and a bare `indexOf` answers it
+	// exactly: clap never consumes `--` as an option value (`codex --cd -- hi`
+	// is "a value is required for '--cd'"), so the first `--` is always the
+	// separator, and it always follows the subcommand token because
+	// `findForwardedCommand` returns null the moment it sees one.
+	const separatorIndex = baseArgs.indexOf("--");
+	if (separatorIndex === -1) {
+		return [...baseArgs, ...injectedArgs];
 	}
-	return null;
+	return [
+		...baseArgs.slice(0, separatorIndex),
+		...injectedArgs,
+		...baseArgs.slice(separatorIndex),
+	];
+}
+
+function findForwardedSubcommand(rawArgs, commandIndex) {
+	const { index, terminatorIndex } = findRootPositional(
+		rawArgs,
+		commandIndex + 1,
+	);
+	// Unlike the root grammar, a subcommand's `--` still precedes its own
+	// positional args, so the token after it is the nested subcommand.
+	if (terminatorIndex !== null) {
+		return terminatorIndex + 1 < rawArgs.length
+			? rawArgs[terminatorIndex + 1]
+			: null;
+	}
+	return index === null ? null : rawArgs[index];
 }
 
 function hasHelpFlagAfterCommand(rawArgs, commandIndex) {
@@ -4244,8 +6128,8 @@ function hasHelpFlagAfterCommand(rawArgs, commandIndex) {
 		const arg = rawArgs[i];
 		if (arg === "--") return false;
 		if (arg === "--help" || arg === "-h" || arg === "help") return true;
-		if (typeof arg === "string" && consumesNextArg(arg)) {
-			i += 1;
+		if (typeof arg === "string") {
+			i = skipOptionValueSpan(rawArgs, i);
 		}
 	}
 	return false;
@@ -4259,8 +6143,125 @@ function isCodexAppServerCommand(rawArgs) {
 	return findForwardedCommand(rawArgs)?.command === "app-server";
 }
 
+// True for every root TUI launch: bare `codex [OPTIONS]`, and `codex
+// [OPTIONS] [PROMPT]` with the optional initial prompt — including a prompt
+// forced by `--`. Both shapes start the same interactive session and need the
+// canonical home, or Codex stalls rebuilding the omitted thread index inside
+// the shadow mirror before it can submit the already-delivered prompt.
 function isCodexInteractiveTuiCommand(rawArgs) {
 	return findForwardedCommand(rawArgs) === null;
+}
+
+// `resume` and `fork` are interactive TUI entry points that happen to carry a
+// forwarded subcommand, so the bare-invocation predicate above misses them. They
+// must not take the shadow-home transport: the shadow mirror deliberately omits the
+// runtime SQLite state (`isRuntimeRotationShadowHomeOmittedEntry`), so the requested
+// thread is absent from the shadow session index and the resumed TUI hangs on a
+// blank screen (#647).
+function isCodexInteractiveResumeCommand(rawArgs) {
+	const command = findForwardedCommand(rawArgs)?.command;
+	return command === "resume" || command === "fork";
+}
+
+// Codex filters the resume catalog by the active model provider. Keep an
+// existing native `openai` rollout visible by using the local proxy under the
+// same provider name for this invocation. This only changes the transport
+// endpoint; account selection still happens inside the rotation proxy.
+// `fork` resolves the source session's provider the same way so a forked
+// native rollout keeps `model_provider=openai` instead of being re-labeled.
+function resolveResumeSessionProvider(rawArgs, env = process.env) {
+	const command = findForwardedCommand(rawArgs);
+	if (command?.command !== "resume" && command?.command !== "fork") return null;
+	let requestedId = null;
+	let useLast = false;
+	let showAll = false;
+	for (let index = command.index + 1; index < rawArgs.length; index += 1) {
+		const arg = rawArgs[index];
+		if (arg === "--") break;
+		if (arg === "--last") { useLast = true; continue; }
+		if (arg === "--all") { showAll = true; continue; }
+		if (arg === "--help" || arg === "-h") return null;
+		if (consumesNextArg(arg)) {
+			index += 1;
+			continue;
+		}
+		if (typeof arg === "string" && arg.startsWith("-")) continue;
+		// With `--last`, a positional token is the prompt (`resume --last "…"`),
+		// not a session id — keep scanning instead of rejecting the lookup.
+		if (!/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(arg)) {
+			if (useLast) continue;
+			return null;
+		}
+		requestedId = arg;
+		break;
+	}
+	if (!requestedId && !useLast) return null;
+	const sessionsRoot = join(resolveCodexHomeDir(env), "sessions");
+	const targetSuffix = requestedId ? `-${requestedId}.jsonl`.toLowerCase() : null;
+	const currentDirectory = process.cwd();
+	const candidates = [];
+	const collectRollouts = (directory) => {
+		let entries;
+		try { entries = readdirSync(directory, { withFileTypes: true }); } catch { return; }
+		for (const entry of entries) {
+			const path = join(directory, entry.name);
+			if (entry.isDirectory()) {
+				collectRollouts(path);
+			} else if (entry.isFile() && (!targetSuffix || entry.name.toLowerCase().endsWith(targetSuffix))) {
+				let mtimeMs = 0;
+				try { mtimeMs = statSync(path).mtimeMs; } catch { /* partial rollout */ }
+				candidates.push({ path, mtimeMs });
+			}
+		}
+	};
+	collectRollouts(sessionsRoot);
+	candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+	// A rollout's provider and cwd live in its first `session_meta` record, so a
+	// bounded header read is enough — loading whole multi-MB transcripts just to
+	// pick a provider would multiply resume's startup cost (#743 review).
+	for (const candidate of candidates) {
+		const meta = readRolloutSessionMeta(candidate.path);
+		if (!meta) continue;
+		// Without `--all`, Codex's `--last` picks the newest session recorded in
+		// the current directory; a newer rollout elsewhere must not win it.
+		if (!requestedId && !showAll && meta.cwd !== currentDirectory) continue;
+		return typeof meta.model_provider === "string" ? meta.model_provider : null;
+	}
+	return null;
+}
+
+function readRolloutSessionMeta(path) {
+	let fd;
+	try {
+		fd = openSync(path, "r");
+		const buffer = Buffer.alloc(64 * 1024);
+		const bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
+		const head = buffer.toString("utf8", 0, bytesRead);
+		for (const line of head.split(/\r?\n/).slice(0, 12)) {
+			if (!line.trim()) continue;
+			let record;
+			try {
+				record = JSON.parse(line);
+			} catch {
+				// The bounded read can cut a line mid-record; earlier records
+				// already parsed still count.
+				break;
+			}
+			if (record?.type === "session_meta" && record.payload && typeof record.payload === "object") {
+				return {
+					model_provider: record.payload.model_provider,
+					cwd: typeof record.payload.cwd === "string" ? record.payload.cwd : null,
+				};
+			}
+		}
+	} catch {
+		return null;
+	} finally {
+		if (fd !== undefined) {
+			try { closeSync(fd); } catch { /* best effort */ }
+		}
+	}
+	return null;
 }
 
 function shouldUseRuntimeRoutingForForwardedArgs(rawArgs) {
@@ -4273,7 +6274,14 @@ function shouldUseRuntimeRoutingForForwardedArgs(rawArgs) {
 
 	const command = findForwardedCommand(rawArgs);
 	if (!command) {
-		return true;
+		// A help flag alongside a root prompt (`codex "prompt" --help`) prints
+		// help and exits clean, so it must skip the transport for the same
+		// reason as the request-command help forms below: the interactive
+		// branch detaches its helper on a clean exit, and a helper started
+		// just to print help would idle until its detached timeout. The scan
+		// stops at `--`, so help-looking text inside a forced prompt still
+		// routes normally.
+		return !hasHelpFlagAfterCommand(rawArgs, -1);
 	}
 
 	const requestCommands = new Set(["exec", "review", "resume", "fork", "app"]);
@@ -4302,7 +6310,17 @@ function shouldUseRuntimeRoutingForForwardedArgs(rawArgs) {
 		);
 	}
 
-	if (command.command === "app" && hasHelpFlagAfterCommand(rawArgs, command.index)) {
+	// Request commands still print their help without making a single model
+	// request, so the help form skips the transport entirely: no proxy, no shadow
+	// home, no detached helper. This matters most for the interactive commands,
+	// which detach their helper on a clean exit — help always exits clean, so
+	// `resume --help` would otherwise strand a helper until its idle timeout. It is
+	// keyed off the help flag rather than the command, so a real run still routes
+	// through rotation, and it matches how `app-server` help is handled above (#647).
+	if (
+		requestCommands.has(command.command) &&
+		hasHelpFlagAfterCommand(rawArgs, command.index)
+	) {
 		return false;
 	}
 	if (requestCommands.has(command.command)) {
@@ -4319,7 +6337,16 @@ function shouldTrackForwardedRuntimeObservability(rawArgs) {
 }
 
 function shouldCaptureForwardedOutputForArgs(rawArgs, env) {
-	if (isCodexAppServerCommand(rawArgs)) {
+	// Codex's TUI and resume/fork commands require their child stdout to remain
+	// a terminal. Capturing them into a pipe (even when an explicit retry
+	// override is set) makes the official CLI abort with "stdout is not a
+	// terminal" before it can load the requested session. Interactive commands
+	// never use the wrapper's non-interactive unsupported-model retry parser.
+	if (
+		isCodexAppServerCommand(rawArgs) ||
+		isCodexInteractiveTuiCommand(rawArgs) ||
+		isCodexInteractiveResumeCommand(rawArgs)
+	) {
 		return false;
 	}
 	return shouldCaptureForwardedCodexOutput(env);
@@ -4434,6 +6461,7 @@ function createCompatibilityCodexHome(
 	}
 
 	const shadowCodexHome = mkdtempSync(join(tmpdir(), "codex-multi-auth-home-"));
+	writeShadowHomeOwnerMarker(shadowCodexHome);
 	let syncShadowHomeStateBack = () => {};
 	const cleanup = () => {
 		try {
@@ -4484,8 +6512,13 @@ function createCompatibilityCodexHome(
 	};
 }
 
-function buildForwardArgs(rawArgs) {
-	const { args: compatibilityArgs, requestedModel } = rewriteReasoningConfigArgs(rawArgs);
+function buildForwardArgs(rawArgs, { preserveNativeSettings = false } = {}) {
+	// Native app binding keeps the caller's model and reasoning settings verbatim;
+	// it still needs the file auth store, because the router authenticates the
+	// desktop token it reads from auth.json.
+	const { args: compatibilityArgs, requestedModel } = preserveNativeSettings
+		? { args: [...rawArgs], requestedModel: extractRequestedModel(rawArgs) }
+		: rewriteReasoningConfigArgs(rawArgs);
 	const forceFileAuthStore = (process.env.CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE ?? "1").trim() !== "0";
 	if (!forceFileAuthStore) {
 		return { args: compatibilityArgs, requestedModel };
@@ -4494,12 +6527,16 @@ function buildForwardArgs(rawArgs) {
 		return { args: compatibilityArgs, requestedModel };
 	}
 
+	const authStoreArgs = ["-c", 'cli_auth_credentials_store="file"'];
 	return {
-		args: [
-			...compatibilityArgs,
-			"-c",
-			'cli_auth_credentials_store="file"',
-		],
+		// A root launch may end in the `[PROMPT]` positional — possibly forced
+		// by `--`, where an appended `-c` pair would be read as prompt text —
+		// so the override is inserted on the option side of the prompt there.
+		// Subcommand argv keeps the appended ordering it has always forwarded.
+		args:
+			findForwardedCommand(compatibilityArgs) === null
+				? insertArgsBeforeRootPrompt(compatibilityArgs, authStoreArgs)
+				: insertArgsBeforeForwardedSeparator(compatibilityArgs, authStoreArgs),
 		requestedModel,
 	};
 }
@@ -4567,7 +6604,13 @@ function parseRolloutIndexEntry(rolloutPath) {
 		if (typeof record?.timestamp === "string") {
 			updatedAt = record.timestamp;
 		}
-		if (record?.type === "session_meta" && typeof record.payload?.id === "string") {
+		// Forked rollouts append the parent's session_meta after their own, so
+		// only the first one names this rollout.
+		if (
+			!hasSessionMeta &&
+			record?.type === "session_meta" &&
+			typeof record.payload?.id === "string"
+		) {
 			id = record.payload.id;
 			hasSessionMeta = true;
 		}
@@ -4989,12 +7032,39 @@ function ensureWindowsShellShimGuards() {
 	}
 }
 
+export function getResumePickerRequest(args, cwd = process.cwd()) {
+	const baseCwd = cwd;
+	const command = findForwardedCommand(args);
+	if (command?.command !== "resume" || findForwardedSubcommand(args, command.index)) return null;
+	const configArgs = [];
+	let showAll = false;
+	let includeNonInteractive = false;
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i];
+		if (arg === "--") break;
+		if (consumesNextArg(arg) && args[i + 1] === undefined) return null;
+		if (["--last", "--help", "-h", "--remote"].includes(arg) || arg.startsWith("--remote=")) return null;
+		if (arg === "--all") showAll = true;
+		if (arg === "--include-non-interactive") includeNonInteractive = true;
+		if (arg === "-C" || arg === "--cd") cwd = resolvePath(baseCwd, args[i + 1]);
+		else if (arg.startsWith("--cd=")) cwd = resolvePath(baseCwd, arg.slice(5));
+		else if (arg.startsWith("-C") && arg.length > 2) cwd = resolvePath(baseCwd, arg.slice(2));
+		if (["-c", "--config", "-p", "--profile", "--enable", "--disable"].includes(arg)) {
+			configArgs.push(arg, args[i + 1]);
+		} else if (/^--(config|profile|enable|disable)=/.test(arg) || /^-[cp].+/.test(arg)) {
+			configArgs.push(arg);
+		}
+		i = skipOptionValueSpan(args, i);
+	}
+	return { commandIndex: command.index, cwd, configArgs, showAll, includeNonInteractive };
+}
+
 async function main() {
 	hydrateCliVersionEnv();
 
 	const rawArgs = process.argv.slice(2);
 	if (rawArgs[0] === INTERNAL_RUNTIME_ROTATION_APP_HELPER_ARG) {
-		return runRuntimeRotationAppHelper();
+		return runRuntimeRotationAppHelper(rawArgs[1] ?? "");
 	}
 
 	const normalizedArgs = normalizeAuthAlias(rawArgs);
@@ -5029,7 +7099,9 @@ async function main() {
 			[
 				"Could not locate the official Codex CLI.",
 				"Install it with npm, Homebrew, or an official native release so `codex` is on PATH.",
-				"Or set CODEX_MULTI_AUTH_REAL_CODEX_BIN to the full path of either codex or @openai/codex/bin/codex.js.",
+				process.platform === "win32"
+					? "Or set CODEX_MULTI_AUTH_REAL_CODEX_BIN to the full path of codex.exe or @openai/codex/bin/codex.js."
+					: "Or set CODEX_MULTI_AUTH_REAL_CODEX_BIN to the full path of either codex or @openai/codex/bin/codex.js.",
 			].join("\n"),
 		);
 		return 1;
@@ -5038,13 +7110,44 @@ async function main() {
 	// Resolve `--account` / CODEX_MULTI_AUTH_FORCE_ACCOUNT before forwarding: strip
 	// the launcher-only flag from the Codex args and publish the resolved pin, or
 	// fail hard so a forced account can never silently fall back to another one.
+	if (hasNativeAppBinding(process.env)) {
+        const forced = resolveForcedAccountSelector(rawArgs, process.env);
+        if (forced.error || forced.selector !== null) {
+            console.error(forced.error ?? "Native app binding uses the persistent inference selection. Use codex-multi-auth switch instead of --account.");
+            return 1;
+        }
+        delete process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX;
+        // Best effort: a locked or read-only config.toml (Windows EPERM/EBUSY)
+        // must not block the launch; the per-invocation override below still applies.
+        await ensurePersistedCodexFileAuthStore();
+        const { args: nativeArgs } = buildForwardArgs(forced.strippedArgs, { preserveNativeSettings: true });
+        const result = await forwardToRealCodexOnce(realCodexBin, nativeArgs, process.env);
+        return result.exitCode;
+    }
 	const forcedAccount = await applyForcedAccountSelection(rawArgs, process.env);
 	if (forcedAccount.error) {
 		console.error(forcedAccount.error);
 		return 1;
 	}
-	const forwardArgs = forcedAccount.forwardArgs;
+	const forwardArgs = [...forcedAccount.forwardArgs];
 
+
+	if (process.stdin.isTTY && process.stdout.isTTY && !bypass) {
+		const pickerRequest = getResumePickerRequest(forwardArgs);
+		if (pickerRequest && await isRuntimeRotationProxyEnabled(forwardArgs)) {
+			try {
+				const { pickResumeThread } = await import("../dist/lib/runtime/resume-picker.js");
+				const id = await pickResumeThread({ ...pickerRequest, codexBin: realCodexBin });
+				if (!id) return 0;
+				forwardArgs.splice(pickerRequest.commandIndex + 1, 0, id);
+			} catch (error) {
+				// Discovery is optional: fall back to native `codex resume` with the original args.
+				console.error(`Could not list saved Codex sessions: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+	}
+
+	await ensurePersistedCodexFileAuthStore();
 	await autoSyncManagerActiveSelectionIfEnabled();
 	await maybePrintForwardStatusLine(forwardArgs);
 	maybeRefreshQuotaCacheInBackground();
@@ -5061,10 +7164,13 @@ async function main() {
 // lib/request/helpers/model-map.ts (see test/codex-model-resolution.test.ts,
 // which asserts wrapper<->lib parity).
 export {
+	isRuntimeRotationProxyEnabled,
 	normalizeRequestedModel,
 	coerceReasoningEffortForModel,
 	resolveModelFamilyForStatus,
 	canonicalizeRequestedModelName,
+	WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN,
+	RETIRED_MODEL_REPLACEMENTS,
 };
 
 // Run the wrapper only when actually launched (as the `codex-multi-auth-codex`

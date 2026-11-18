@@ -6,6 +6,7 @@
 import { decodeJWT } from "./auth.js";
 import { JWT_CLAIM_PATH } from "../constants.js";
 import { isRecord } from "../utils.js";
+import type { CodexCliMirror } from "../storage/public-types.js";
 import type { AccountIdSource, JWTPayload } from "../types.js";
 
 /**
@@ -219,19 +220,35 @@ function collectCandidatesFromPayload(
  * Removes duplicate candidates by accountId.
  */
 function uniqueCandidates(candidates: AccountIdCandidate[]): AccountIdCandidate[] {
-	const seen = new Set<string>();
-	const result: AccountIdCandidate[] = [];
+	const byId = new Map<string, AccountIdCandidate>();
 	for (const candidate of candidates) {
-		if (seen.has(candidate.accountId)) continue;
-		seen.add(candidate.accountId);
-		result.push(candidate);
+		const kept = byId.get(candidate.accountId);
+		if (!kept) {
+			byId.set(candidate.accountId, { ...candidate });
+			continue;
+		}
+		const wasPersonal = isPersonalAccountCandidate(kept);
+		if (kept.isPersonal === undefined && candidate.isPersonal !== undefined) {
+			kept.isPersonal = candidate.isPersonal;
+		}
+		if (!wasPersonal && isPersonalAccountCandidate(candidate) && kept.isPersonal !== false) {
+			kept.label = candidate.label;
+		}
 	}
-	return result;
+	return [...byId.values()];
+}
+
+/** Explicit metadata wins over the conventional Personal display name. */
+export function isPersonalAccountCandidate(candidate: AccountIdCandidate): boolean {
+	return candidate.isPersonal === true ||
+		(candidate.isPersonal !== false && /^Personal(?:\s*\(|\s*\[|$)/i.test(candidate.label.trim()));
 }
 
 /**
  * Select the best workspace candidate for OAuth account binding.
- * Preference order:
+ * Prefer a uniquely identifiable Personal workspace. Ambiguous CLI logins
+ * require an explicit choice before reaching this fallback selector.
+ * Fallback order when no unique Personal candidate exists:
  * 1) org default that is not personal
  * 2) org default (any)
  * 3) id_token candidate
@@ -243,6 +260,8 @@ export function selectBestAccountCandidate(
 	candidates: AccountIdCandidate[],
 ): AccountIdCandidate | undefined {
 	if (candidates.length === 0) return undefined;
+	const personal = candidates.filter(isPersonalAccountCandidate);
+	if (personal.length === 1) return personal[0];
 
 	const orgDefaultNonPersonal = candidates.find(
 		(candidate) =>
@@ -283,6 +302,109 @@ export function extractAccountId(accessToken?: string): string | undefined {
 	const decoded = decodeJWT(accessToken);
 	const accountId = decoded?.[JWT_CLAIM_PATH]?.chatgpt_account_id;
 	return typeof accountId === "string" && accountId.trim() ? accountId : undefined;
+}
+
+/**
+ * Maps a stored account id to the value Codex CLI accepts as tokens.account_id.
+ * Codex CLI >= 0.156 checks that field against the token's ChatGPT workspaces;
+ * an OpenAI platform org id ("org-...") is never one of them, so it resolves to
+ * the token's chatgpt_account_id claim instead, or undefined without a claim.
+ * The auth.json writer and every stored-vs-auth.json comparison must share
+ * this mapping, or org-sourced accounts read as permanently drifted.
+ */
+/** Whether an id is an OpenAI platform org id ("org-..."), never a ChatGPT workspace. */
+export function isOpenAiOrgId(accountId: string | undefined): boolean {
+	return /^org-/i.test(accountId?.trim() ?? "");
+}
+
+/** Preserve the native client's org-alias mapping; this is not workspace fallback. */
+export function nativeWorkspaceIdentity(
+	account: { access?: string; codexCliMirror?: CodexCliMirror },
+	storedId: string | undefined,
+): string | undefined {
+	const id = storedId?.trim();
+	if (!id) return undefined;
+	if (!isOpenAiOrgId(id)) return id;
+	const native = codexCliAccountIdFor({ accountId: id, codexCliMirror: account.codexCliMirror }, account.access);
+	return native && !isOpenAiOrgId(native) ? native : undefined;
+}
+
+export function resolveCodexAuthAccountId(
+	accountId: string | undefined,
+	accessToken?: string,
+	idToken?: string,
+): string | undefined {
+	const trimmed = accountId?.trim();
+	if (!trimmed) return undefined;
+	if (!isOpenAiOrgId(trimmed)) return trimmed;
+	return extractAccountId(accessToken) ?? extractAccountId(idToken);
+}
+
+/**
+ * The account id to hand the ~/.codex/auth.json writer for a saved account,
+ * and to compare against that file. Applies the account's live
+ * {@link CodexCliMirror} first, then resolveCodexAuthAccountId's org-id
+ * substitution. An org id without a token claim is returned unchanged so the
+ * writer can still drop it. Every auth.json writer and drift check goes
+ * through this; a raw `account.accountId` there writes back an id Codex CLI
+ * refuses.
+ */
+export function codexCliAccountIdFor(
+	account: { accountId?: string; codexCliMirror?: CodexCliMirror },
+	accessToken?: string,
+	idToken?: string,
+): string | undefined {
+	const accountId = account.accountId?.trim();
+	const mirror = account.codexCliMirror;
+	const selected =
+		accountId && mirror && mirror.forAccountId === accountId
+			? mirror.accountId
+			: account.accountId;
+	return resolveCodexAuthAccountId(selected, accessToken, idToken) ?? selected;
+}
+
+interface CodexAccountIdentity {
+	accountId?: string;
+	accessToken?: string;
+}
+
+/**
+ * The Codex CLI state's active account id with the access token of the
+ * snapshot it came from, so an "org-..." id (the legacy accounts.json keeps
+ * the raw id) can be resolved against that account's own token.
+ */
+export function codexCliActiveIdentity(state: {
+	activeAccountId?: string;
+	accounts?: ReadonlyArray<CodexAccountIdentity & { isActive?: boolean }>;
+}): CodexAccountIdentity {
+	const accountId = state.activeAccountId?.trim();
+	const accounts = state.accounts ?? [];
+	const snapshot =
+		accounts.find((entry) => !!accountId && entry.accountId?.trim() === accountId) ??
+		accounts.find((entry) => entry.isActive);
+	return { accountId, accessToken: snapshot?.accessToken };
+}
+
+/**
+ * Whether two account ids name the same Codex account. Equal raw ids match;
+ * otherwise each side goes through resolveCodexAuthAccountId with its own
+ * token, so a stored "org-..." id matches the workspace id the writer put in
+ * auth.json. Unresolvable ids (org id, no claim) never match a different id.
+ * Equal org ids still differ when both tokens name different workspaces.
+ */
+export function codexAuthAccountIdsMatch(
+	left: CodexAccountIdentity,
+	right: CodexAccountIdentity,
+): boolean {
+	const leftId = left.accountId?.trim();
+	const rightId = right.accountId?.trim();
+	if (!leftId || !rightId) return false;
+	const leftResolved = resolveCodexAuthAccountId(leftId, left.accessToken);
+	const rightResolved = resolveCodexAuthAccountId(rightId, right.accessToken);
+	if (leftId === rightId) {
+		return !leftResolved || !rightResolved || leftResolved === rightResolved;
+	}
+	return !!leftResolved && leftResolved === rightResolved;
 }
 
 /**

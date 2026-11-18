@@ -677,3 +677,608 @@ describe("cleanupToolDefinitions", () => {
     expect(namespaceTools[1]).toEqual({ type: "tool_search", max_num_results: 2 });
   });
 });
+
+describe("cleanupToolDefinitions fused-path parity", () => {
+  const fnTool = (parameters: Record<string, unknown>): RequestToolDefinition =>
+    ({
+      type: "function",
+      function: { name: "f", parameters },
+    }) as unknown as RequestToolDefinition;
+
+  const parametersOf = (tool: unknown): Record<string, unknown> =>
+    (tool as { function: { parameters: Record<string, unknown> } }).function
+      .parameters;
+
+  it("removes an empty required array when a properties object exists", () => {
+    const tools = [fnTool({
+      type: "object",
+      properties: { a: { type: "string" } },
+      required: [],
+    })];
+
+    const result = cleanupToolDefinitions(tools) as unknown[];
+    // The legacy cleanup deleted `required` whenever no entries survived,
+    // including an already-empty array — the clean-path check must not
+    // return such a schema unchanged.
+    expect(result[0]).not.toBe(tools[0]);
+    expect(parametersOf(result[0]).required).toBeUndefined();
+    expect(parametersOf(result[0])).toEqual({
+      type: "object",
+      properties: { a: { type: "string" } },
+    });
+  });
+
+  it("removes an empty required array on a properties array", () => {
+    const tools = [fnTool({
+      type: "object",
+      properties: [],
+      required: [],
+    })];
+
+    const result = cleanupToolDefinitions(tools) as unknown[];
+    expect(parametersOf(result[0]).required).toBeUndefined();
+    expect(parametersOf(result[0]).properties).toHaveProperty("_placeholder");
+  });
+
+  it("keeps an empty required array when there is no properties object", () => {
+    const tools = [fnTool({ type: "string", required: [] })];
+
+    const result = cleanupToolDefinitions(tools) as unknown[];
+    // Legacy left `required` untouched without a properties object, so the
+    // clean path is correct to return the identical tool here.
+    expect(result[0]).toBe(tools[0]);
+    expect(parametersOf(result[0]).required).toEqual([]);
+  });
+
+  it("keeps a fully-valid required array unchanged on the clean path", () => {
+    const tools = [fnTool({
+      type: "object",
+      properties: { a: { type: "string" } },
+      required: ["a"],
+    })];
+
+    const result = cleanupToolDefinitions(tools) as unknown[];
+    expect(result[0]).toBe(tools[0]);
+    expect(parametersOf(result[0]).required).toEqual(["a"]);
+  });
+
+  it("never invokes an enumerable getter during inspection", () => {
+    let reads = 0;
+    const parameters: Record<string, unknown> = {
+      type: "object",
+      properties: { a: { type: "string" } },
+    };
+    Object.defineProperty(parameters, "required", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        reads += 1;
+        if (reads > 1) throw new Error(`getter read ${reads}`);
+        return ["missing"];
+      },
+    });
+    const tools = [fnTool(parameters)];
+
+    const result = cleanupToolDefinitions(tools) as unknown[];
+    // Legacy behavior: a single JSON.stringify read resolves the getter;
+    // the invalid entry then removes `required` entirely.
+    expect(reads).toBe(1);
+    expect(parametersOf(result[0]).required).toBeUndefined();
+    expect(parametersOf(result[0])).toEqual({
+      type: "object",
+      properties: { a: { type: "string" } },
+    });
+  });
+
+  it("captures the first-read value of a stateful getter like JSON.stringify", () => {
+    let reads = 0;
+    const parameters: Record<string, unknown> = {
+      type: "object",
+      properties: { a: { type: "string" } },
+      required: ["missing"], // dirty: forces a clone
+    };
+    Object.defineProperty(parameters, "x_custom", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        reads += 1;
+        return `v${reads}`;
+      },
+    });
+    const tools = [fnTool(parameters)];
+
+    const result = cleanupToolDefinitions(tools) as unknown[];
+    expect(parametersOf(result[0]).x_custom).toBe("v1");
+    expect(reads).toBe(1);
+  });
+
+  it("routes accessors on nested schema nodes through the legacy path", () => {
+    let reads = 0;
+    const propSchema: Record<string, unknown> = { type: "string" };
+    Object.defineProperty(propSchema, "title", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        reads += 1;
+        if (reads > 1) throw new Error(`nested getter read ${reads}`);
+        return "Doc";
+      },
+    });
+    const tools = [fnTool({
+      type: "object",
+      properties: { a: propSchema },
+    })];
+
+    const result = cleanupToolDefinitions(tools) as unknown[];
+    const a = (parametersOf(result[0]).properties as Record<string, unknown>).a;
+    expect(reads).toBe(1);
+    expect(a).toEqual({ type: "string" });
+  });
+
+  it("routes array-element accessors through the legacy path", () => {
+    let reads = 0;
+    const required: unknown[] = ["a"];
+    Object.defineProperty(required, "1", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        reads += 1;
+        if (reads > 1) throw new Error(`array accessor read ${reads}`);
+        return "missing";
+      },
+    });
+    const tools = [fnTool({
+      type: "object",
+      properties: { a: { type: "string" } },
+      required,
+    })];
+
+    const result = cleanupToolDefinitions(tools) as unknown[];
+    expect(reads).toBe(1);
+    expect(parametersOf(result[0]).required).toEqual(["a"]);
+  });
+
+  it("does not double-read an accessor `properties` map", () => {
+    let reads = 0;
+    const parameters: Record<string, unknown> = {
+      type: "object",
+      required: ["ghost"],
+    };
+    Object.defineProperty(parameters, "properties", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        reads += 1;
+        if (reads > 1) throw new Error(`properties read ${reads}`);
+        return { a: { type: "string" } };
+      },
+    });
+    const tools = [fnTool(parameters)];
+
+    const result = cleanupToolDefinitions(tools) as unknown[];
+    expect(reads).toBe(1);
+    expect(parametersOf(result[0]).required).toBeUndefined();
+    expect(parametersOf(result[0]).properties).toEqual({
+      a: { type: "string" },
+    });
+  });
+
+  it("returns the tool unchanged when a proxy get trap throws mid-clone", () => {
+    // The proxy reports plain data descriptors but throws on `title` reads;
+    // the fused clone must fail over to the JSON round-trip, which throws at
+    // the same point and leaves the tool untouched — identical outcomes.
+    const proxied = new Proxy(
+      { type: "string", title: "T" },
+      {
+        get(target, prop, receiver) {
+          if (prop === "title") throw new Error("get trap");
+          return Reflect.get(target, prop, receiver);
+        },
+      },
+    );
+    const tools = [fnTool({
+      type: "object",
+      properties: { a: proxied },
+    })];
+
+    const result = cleanupToolDefinitions(tools);
+    expect(result![0]).toBe(tools[0]);
+  });
+
+  it("cleans schemas behind a transparent proxy like the JSON round-trip", () => {
+    const tools = [fnTool({
+      type: "object",
+      properties: new Proxy(
+        { a: { type: "string", title: "T" } },
+        {},
+      ) as unknown as Record<string, unknown>,
+    })];
+
+    const result = cleanupToolDefinitions(tools) as unknown[];
+    const a = (parametersOf(result[0]).properties as Record<string, unknown>).a;
+    expect(a).toEqual({ type: "string" });
+  });
+});
+
+describe("cleanupToolDefinitions legacy differential corpus", () => {
+  // Exact copies of the pre-optimization implementation: every tool paid a
+  // JSON.stringify+parse clone followed by in-place cleanup. Kept as the
+  // oracle so the inspect/fused-clone fast paths can be diffed against the
+  // semantics they replaced, including throw and return-unchanged behavior.
+  const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+
+  const legacyCleanupSchema = (schema: Record<string, unknown>): void => {
+    if (!schema || typeof schema !== "object") return;
+
+    if (schema.properties && typeof schema.properties === "object") {
+      const properties = schema.properties as Record<string, unknown>;
+      for (const key of Object.keys(properties)) {
+        if (properties[key] === undefined) {
+          delete properties[key];
+        }
+      }
+    }
+
+    if (Array.isArray(schema.anyOf)) {
+      const anyOf = schema.anyOf as Record<string, unknown>[];
+      const allConst = anyOf.every((opt) => "const" in opt);
+      if (allConst && anyOf.length > 0) {
+        const enumValues = anyOf.map((opt) => opt.const);
+        schema.enum = enumValues;
+        delete schema.anyOf;
+
+        if (!schema.type) {
+          const firstVal = enumValues[0];
+          if (typeof firstVal === "string") schema.type = "string";
+          else if (typeof firstVal === "number") schema.type = "number";
+          else if (typeof firstVal === "boolean") schema.type = "boolean";
+        }
+      }
+    }
+
+    if (Array.isArray(schema.type)) {
+      const types = schema.type as string[];
+      const isNullable = types.includes("null");
+      const nonNullTypes = types.filter((t) => t !== "null");
+
+      if (nonNullTypes.length > 0) {
+        schema.type = nonNullTypes[0];
+        if (isNullable) {
+          const desc = (schema.description as string) || "";
+          if (!desc.toLowerCase().includes("nullable")) {
+            schema.description = desc ? `${desc} (nullable)` : "(nullable)";
+          }
+        }
+      }
+    }
+
+    if (
+      Array.isArray(schema.required) &&
+      schema.properties &&
+      typeof schema.properties === "object"
+    ) {
+      const properties = schema.properties as Record<string, unknown>;
+      const required = schema.required as string[];
+
+      const validRequired = required.filter((key: string) =>
+        Object.prototype.hasOwnProperty.call(properties, key),
+      );
+
+      if (validRequired.length === 0) {
+        delete schema.required;
+      } else if (validRequired.length !== required.length) {
+        schema.required = validRequired;
+      }
+    }
+
+    if (
+      schema.type === "object" &&
+      (!schema.properties || Object.keys(schema.properties as object).length === 0)
+    ) {
+      schema.properties = {
+        _placeholder: {
+          type: "boolean",
+          description: "This property is a placeholder and should be ignored.",
+        },
+      };
+    }
+
+    delete schema.additionalProperties;
+    delete schema.const;
+    delete schema.title;
+    delete schema.$schema;
+
+    if (schema.properties && typeof schema.properties === "object") {
+      const props = schema.properties as Record<string, Record<string, unknown>>;
+      for (const key in props) {
+        const prop = props[key];
+        if (prop !== undefined) {
+          legacyCleanupSchema(prop);
+        }
+      }
+    }
+
+    if (schema.items && typeof schema.items === "object") {
+      legacyCleanupSchema(schema.items as Record<string, unknown>);
+    }
+  };
+
+  const legacyCleanupTool = (tool: unknown): unknown => {
+    if (!isPlainRecord(tool)) return tool;
+    if (tool.type === "function") {
+      const functionDef = tool.function;
+      if (!isPlainRecord(functionDef)) return tool;
+      const parameters = functionDef.parameters;
+      if (!isPlainRecord(parameters)) return tool;
+      let cleanedParameters: Record<string, unknown>;
+      try {
+        cleanedParameters = JSON.parse(JSON.stringify(parameters)) as Record<
+          string,
+          unknown
+        >;
+      } catch {
+        return tool;
+      }
+      legacyCleanupSchema(cleanedParameters);
+      return {
+        ...tool,
+        function: { ...functionDef, parameters: cleanedParameters },
+      };
+    }
+    if (tool.type === "namespace" && Array.isArray(tool.tools)) {
+      return {
+        ...tool,
+        tools: tool.tools.map((nested: unknown) => legacyCleanupTool(nested)),
+      };
+    }
+    return tool;
+  };
+
+  const deepObject = (depth: number): Record<string, unknown> => {
+    const root: Record<string, unknown> = {
+      type: "object",
+      properties: { leaf: { type: "string", title: "deep" } },
+    };
+    let node = root;
+    for (let i = 0; i < depth; i++) {
+      const next: Record<string, unknown> = {
+        type: "object",
+        properties: { child: node },
+      };
+      node = next;
+    }
+    return node;
+  };
+
+  const sparseEnum: unknown[] = [];
+  sparseEnum[1] = 1; // hole at index 0
+
+  const protoKeyed = JSON.parse(
+    '{"type":"object","properties":{"__proto__":{"type":"string","title":"x"}},"required":["__proto__","ghost"]}',
+  ) as Record<string, unknown>;
+
+  const corpus: Array<[string, Record<string, unknown>]> = [
+    ["clean schema", {
+      type: "object",
+      properties: { a: { type: "string" }, b: { type: "number" } },
+      required: ["a", "b"],
+    }],
+    ["empty required array with properties", {
+      type: "object",
+      properties: { a: { type: "string" } },
+      required: [],
+    }],
+    ["empty required array without properties", {
+      type: "string",
+      required: [],
+    }],
+    ["required partially invalid", {
+      type: "object",
+      properties: { a: { type: "string" } },
+      required: ["a", "ghost"],
+    }],
+    ["required entirely invalid", {
+      type: "object",
+      properties: { a: { type: "string" } },
+      required: ["ghost"],
+    }],
+    ["required non-string entries", {
+      type: "object",
+      properties: { a: { type: "string" }, "1": { type: "number" } },
+      required: [1, "a", null, true, "ghost"],
+    }],
+    ["required non-array object", {
+      type: "object",
+      properties: { a: { type: "string" } },
+      required: { 0: "a", length: 1 },
+    }],
+    ["required length vs properties array", {
+      type: "object",
+      properties: [],
+      required: ["length"],
+    }],
+    ["empty properties object gets placeholder", {
+      type: "object",
+      properties: {},
+    }],
+    ["missing properties gets placeholder", { type: "object" }],
+    ["string properties stays", { type: "object", properties: "str" }],
+    ["numeric properties becomes placeholder", { type: "object", properties: 5 }],
+    ["null properties becomes placeholder", { type: "object", properties: null }],
+    ["properties array of schemas", {
+      type: "object",
+      properties: [{ type: "string", title: "x" }],
+    }],
+    ["properties array with primitive", {
+      type: "object",
+      properties: ["nope", { type: "string" }],
+    }],
+    ["anyOf flattens to enum", {
+      type: "object",
+      properties: { s: { anyOf: [{ const: "a" }, { const: "b" }] } },
+    }],
+    ["anyOf mixed survives", {
+      type: "object",
+      properties: { m: { anyOf: [{ const: "a" }, { type: "string" }] } },
+    }],
+    ["anyOf empty survives", {
+      type: "object",
+      properties: { e: { anyOf: [] } },
+    }],
+    ["anyOf primitives throw", {
+      type: "object",
+      properties: { p: { anyOf: [1, 2] } },
+    }],
+    ["nullable type array", {
+      type: "object",
+      properties: {
+        a: { type: ["string", "null"], description: "Name" },
+        b: { type: ["null"] },
+        c: { type: ["string", "number"] },
+        d: { type: [] },
+      },
+    }],
+    ["nullable already annotated", {
+      type: "object",
+      properties: { a: { type: ["string", "null"], description: "is nullable" } },
+    }],
+    ["all unsupported keywords", {
+      type: "object",
+      properties: { a: { type: "string", const: "x", title: "t" } },
+      additionalProperties: false,
+      $schema: "draft",
+      title: "root",
+      const: 1,
+    }],
+    ["items object cleaned", {
+      type: "object",
+      properties: {
+        a: { type: "array", items: { type: "string", title: "x" } },
+      },
+    }],
+    ["items array elements not cleaned", {
+      type: "object",
+      properties: {
+        a: { type: "array", items: [{ type: "string", title: "x" }] },
+      },
+    }],
+    ["items primitive survives", {
+      type: "object",
+      properties: { a: { type: "array", items: "weird" } },
+    }],
+    ["nested object recursion", {
+      type: "object",
+      properties: {
+        n: {
+          type: "object",
+          properties: { i: { type: ["number", "null"] } },
+          required: ["i", "ghost"],
+          additionalProperties: true,
+        },
+      },
+    }],
+    ["__proto__ property key", protoKeyed],
+    ["arbitrary subtree fidelity", {
+      type: "object",
+      properties: { a: { type: "string" } },
+      extra: { nested: { deep: [1, 2.5, { x: "y" }, null, true] } },
+    }],
+    ["undefined property value dropped", {
+      type: "object",
+      properties: { a: { type: "string" }, gone: undefined },
+      required: ["gone"],
+    }],
+    ["all-undefined properties placeholder", {
+      type: "object",
+      properties: { a: undefined, b: undefined },
+    }],
+    ["NaN default becomes null", {
+      type: "object",
+      properties: { a: { type: "string", default: Number.NaN } },
+    }],
+    ["negative zero becomes zero", {
+      type: "object",
+      properties: { a: { type: "number", default: -0 } },
+    }],
+    ["bigint value returns tool unchanged", {
+      type: "object",
+      properties: { a: { type: "string", big: 1n } },
+    }],
+    ["function value dropped", {
+      type: "object",
+      properties: { a: { type: "string", fn: () => 1 } },
+    }],
+    ["symbol value dropped", {
+      type: "object",
+      properties: { a: { type: "string", sym: Symbol("s") } },
+    }],
+    ["sparse enum becomes null-padded", {
+      type: "object",
+      properties: { a: { type: "number", enum: sparseEnum } },
+    }],
+    ["toJSON value rewritten", {
+      type: "object",
+      properties: {
+        a: { type: "string", toJSON: () => ({ type: "number" }) },
+      },
+    }],
+    ["null-prototype schema node", Object.assign(Object.create(null), {
+      type: "object",
+      properties: { a: { type: "string" } },
+      title: "np",
+    })],
+    ["date value serializes via toJSON", {
+      type: "object",
+      properties: { a: { type: "string", when: new Date(0) } },
+    }],
+    ["deep nesting under the walk limit", deepObject(400)],
+    ["deep nesting over the walk limit", deepObject(600)],
+    ["huge enum array", {
+      type: "object",
+      properties: { a: { enum: Array.from({ length: 5000 }, (_, i) => i) } },
+    }],
+    ["huge required array", {
+      type: "object",
+      properties: { a: { type: "string" } },
+      required: new Array(2000).fill("a").concat(["ghost"]),
+    }],
+    ["required symbol entry", {
+      type: "object",
+      properties: { a: { type: "string" } },
+      required: [Symbol("s")],
+    }],
+    ["key order preserved", {
+      description: "first",
+      type: "object",
+      properties: { z: { type: "string" }, a: { type: "string" } },
+      required: ["z", "a"],
+      deprecated: true,
+    }],
+  ];
+
+  for (const [name, parameters] of corpus) {
+    it(`matches legacy clone+cleanup: ${name}`, () => {
+      const tool = {
+        type: "function",
+        function: { name: "f", parameters },
+      } as unknown as RequestToolDefinition;
+
+      let expected: string;
+      try {
+        expected = JSON.stringify(legacyCleanupTool(tool));
+      } catch (err) {
+        expected = `THREW:${(err as Error).name}`;
+      }
+
+      let actual: string;
+      try {
+        actual = JSON.stringify(cleanupToolDefinitions([tool])![0]);
+      } catch (err) {
+        actual = `THREW:${(err as Error).name}`;
+      }
+
+      expect(actual).toBe(expected);
+    });
+  }
+});

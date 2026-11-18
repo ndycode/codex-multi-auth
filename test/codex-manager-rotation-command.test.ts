@@ -3,12 +3,14 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AccountManager } from "../lib/accounts.js";
+import { workspaceQuotaKey } from "../lib/accounts/rate-limits.js";
 import { runRotationCommand } from "../lib/codex-manager/commands/rotation.js";
 import type { RotationCommandDeps } from "../lib/codex-manager/commands/rotation.js";
 import type { AppBindResult, AppBindStatus } from "../lib/runtime/app-bind.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 import type { PluginConfig } from "../lib/types.js";
 import { withFileOperationRetry } from "../scripts/install-codex-auth-utils.js";
+import { withDeadPid, withLivePid } from "./helpers/owned-pids.js";
 
 const originalRuntimeRotationProxyEnv =
 	process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY;
@@ -305,6 +307,17 @@ afterEach(async () => {
 });
 
 describe("codex-multi-auth rotation command", () => {
+	it("reports only the selected workspace's rate-limit status", async () => {
+		const now=Date.now(),storage=createStorage(now);
+		storage.accounts=storage.accounts.slice(0,1);
+		Object.assign(storage.accounts[0]!,{enabled:true,accountId:"a",workspaces:[{id:"a"},{id:"b"}],currentWorkspaceIndex:1,rateLimitResetTimes:{[workspaceQuotaKey("codex","a")]:now+60000},coolingDownUntil:undefined});
+		const {deps,infos}=createDeps({storage,now});
+		expect(await runRotationCommand(["status"],deps)).toBe(0);
+		expect(infos.join("\n")).not.toContain("rate-limited:");
+		storage.accounts[0]!.currentWorkspaceIndex=0;infos.length=0;
+		expect(await runRotationCommand(["status"],deps)).toBe(0);
+		expect(infos.join("\n")).toContain("rate-limited:1m 0s");
+	});
 	it("enables and disables the runtime rotation proxy setting", async () => {
 		const { deps, savePluginConfigMock, infos } = createDeps();
 
@@ -435,6 +448,101 @@ describe("codex-multi-auth rotation command", () => {
 				pid: process.pid,
 				totalRequests: 12,
 				rotations: 3,
+				updatedAt: Date.now(),
+			})}\n`,
+			"utf8",
+		);
+		const { deps, infos } = createDeps({ storage: null });
+
+		await expect(runRotationCommand(["status"], deps)).resolves.toBe(0);
+
+		expect(infos.join("\n")).toContain("Codex app helper: not running");
+	});
+
+	it("prefers the newest live per-PID helper status and counts the others", async () => {
+		const root = await createTempRoot("codex-rotation-helper-per-pid-");
+		process.env.CODEX_MULTI_AUTH_DIR = root;
+		await mkdir(root, { recursive: true });
+		const now = Date.now();
+		// A live per-PID helper (this test's own PID is alive), a second live
+		// helper record on the legacy shared path, and a dead per-PID record
+		// that must count for nothing.
+		//
+		// Both the second live PID and the dead PID belong to processes this test
+		// owns. The second one used to be `process.ppid` — the vitest pool
+		// process, which the test neither controls nor keeps alive, so whether
+		// the count read `(+1 more running)` or `(+0 more running)` depended on
+		// the pool implementation and on that process surviving the run (#668).
+		await withLivePid(async (secondLivePid) => {
+			await withDeadPid(async (deadPid) => {
+				await writeFile(
+					join(root, `runtime-rotation-app-helper.${process.pid}.json`),
+					`${JSON.stringify({
+						version: 1,
+						kind: "codex-app-runtime-rotation-helper",
+						state: "running",
+						pid: process.pid,
+						totalRequests: 7,
+						rotations: 2,
+						idleExpiresAt: now + 60_000,
+						updatedAt: now,
+					})}\n`,
+					"utf8",
+				);
+				await writeFile(
+					join(root, "runtime-rotation-app-helper.json"),
+					`${JSON.stringify({
+						version: 1,
+						kind: "codex-app-runtime-rotation-helper",
+						state: "running",
+						pid: secondLivePid,
+						totalRequests: 1,
+						rotations: 0,
+						updatedAt: now - 5_000,
+					})}\n`,
+					"utf8",
+				);
+				await writeFile(
+					join(root, `runtime-rotation-app-helper.${deadPid}.json`),
+					`${JSON.stringify({
+						version: 1,
+						kind: "codex-app-runtime-rotation-helper",
+						state: "running",
+						pid: deadPid,
+						updatedAt: now,
+					})}\n`,
+					"utf8",
+				);
+				const { deps, infos } = createDeps({ storage: null });
+
+				await expect(runRotationCommand(["status"], deps)).resolves.toBe(0);
+
+				const output = infos.join("\n");
+				// Newest live helper wins the line; the dead PID is not counted.
+				expect(output).toContain(
+					`Codex app helper: running pid=${process.pid}`,
+				);
+				expect(output).toContain("requests=7");
+				expect(output).toContain("(+1 more running)");
+			});
+		});
+	});
+
+	it("treats a max-lifetime helper record as not running even when its PID is alive", async () => {
+		// "max-lifetime" is a terminal state the ceiling exit publishes; a live
+		// kill(pid, 0) on a terminal record proves nothing — the PID may be
+		// recycled, which is the exact gate this fix stopped trusting.
+		const root = await createTempRoot("codex-rotation-helper-max-lifetime-");
+		process.env.CODEX_MULTI_AUTH_DIR = root;
+		await mkdir(root, { recursive: true });
+		await writeFile(
+			join(root, `runtime-rotation-app-helper.${process.pid}.json`),
+			`${JSON.stringify({
+				version: 1,
+				kind: "codex-app-runtime-rotation-helper",
+				state: "max-lifetime",
+				pid: process.pid,
+				totalRequests: 4,
 				updatedAt: Date.now(),
 			})}\n`,
 			"utf8",
@@ -598,6 +706,28 @@ describe("codex-multi-auth rotation command", () => {
 			expect(storage.accounts[1].rateLimitResetTimes).toEqual({});
 			expect(storage.accounts[2].rateLimitResetTimes).toEqual({});
 			expect(infos.join("\n")).toContain("Cleared 2/3 account(s)");
+		});
+
+		it.each([[[]], [["--json"]]])("redacts the workspace id in a cleared workspace key %j", async (extra) => {
+			const now = Date.now();
+			const workspaceId = "9f3c2a1b-7d4e-4c8a-b1f0-5e6d7c8b9a0f";
+			const storage = buildStorageWithLimits(now);
+			storage.accounts = [{
+				...storage.accounts[0]!,
+				accountId: workspaceId,
+				workspaces: [{ id: workspaceId, enabled: true }],
+				currentWorkspaceIndex: 0,
+				rateLimitResetTimes: { [workspaceQuotaKey("codex", workspaceId)]: now + 60_000 },
+			}];
+			const { deps, infos } = createDeps({ storage, now });
+
+			await expect(runRotationCommand(["reset-rate-limits", ...extra], deps)).resolves.toBe(0);
+
+			const output = infos.join("\n");
+			expect(output).toContain("id:***9a0f");
+			expect(output).toContain("codex (workspace ***9a0f)");
+			expect(output).not.toContain(workspaceId);
+			expect(storage.accounts[0]!.rateLimitResetTimes).toEqual({});
 		});
 
 		it("dry-run reports changes without saving", async () => {
@@ -1040,5 +1170,187 @@ describe("codex-multi-auth rotation command", () => {
 			expect(storage.accounts[0].coolingDownUntil).toBeUndefined();
 			expect(storage.accounts[1].rateLimitResetTimes).toEqual({});
 		});
+	});
+});
+
+describe("native bind CLI", () => {
+    it("preserves an explicitly recorded custom provider through reset", async () => {
+        const {deps,bindCodexAppMock}=createDeps({storage:createStorage(Date.now())});
+        const status=(await bindCodexAppMock()).status;
+        if(!status.state)throw Error("Missing fixture state");
+        status.state.nativeOpenai=false; deps.getCodexAppBindStatus=async()=>status; bindCodexAppMock.mockClear();
+        expect(await runRotationCommand(["reset-runtime"],deps)).toBe(0);
+        expect(bindCodexAppMock).toHaveBeenCalledWith({nativeOpenai:false});
+    });
+
+	it("preserves native mode and reference account through runtime reset", async () => {
+		const { deps, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		const status = (await bindCodexAppMock()).status;
+		if (!status.state) throw Error("Missing fixture state");
+		status.state.nativeOpenai = true;
+		status.state.catalogAccount = { email: "reference@example.com", accountId: "reference" };
+		deps.getCodexAppBindStatus = async () => status;
+		bindCodexAppMock.mockClear();
+		expect(await runRotationCommand(["reset-runtime"], deps)).toBe(0);
+		expect(bindCodexAppMock).toHaveBeenCalledWith({ nativeOpenai: true, catalogAccount: status.state.catalogAccount });
+	});
+
+	it("selects native mode and resolves a catalog reference to stable identity", async () => {
+		const { deps, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		expect(await runRotationCommand(["bind-app", "--native", "--catalog-account", "2"], deps)).toBe(0);
+		expect(bindCodexAppMock).toHaveBeenCalledWith({ nativeOpenai: true, catalogAccount: { email: "second@example.com", accountId: "acc_second" } });
+	});
+	it.each([["--catalog-account", "2"], ["--native", "--catalog-account", "1"], ["--native", "--custom-provider"], ["--native", "--catalog-account", "2abc"]].map(flags => ({ flags })))("rejects invalid bind selection $flags before mutation", async ({ flags }) => {
+		const { deps, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) }); expect(await runRotationCommand(["bind-app", ...flags], deps)).toBe(1); expect(bindCodexAppMock).not.toHaveBeenCalled();
+	});
+	it("supports explicit return to the custom provider", async () => {
+		const { deps, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) }); expect(await runRotationCommand(["bind-app", "--custom-provider"], deps)).toBe(0); expect(bindCodexAppMock).toHaveBeenCalledWith({ nativeOpenai: false });
+	});
+});
+
+describe("catalog reference shared storage",()=>{
+ it.each(["/projects/example", "C:\\projects\\example"])("restores project scope %s",async initial=>{
+  const {deps,bindCodexAppMock}=createDeps({storage:createStorage(Date.now())});
+  let scope:string|null=initial;
+  deps.getStoragePath=()=>scope; deps.setStoragePath=value=>{scope=value;};
+  deps.loadAccounts=async()=>{expect(scope).toBeNull(); await Promise.resolve(); expect(scope).toBeNull(); return createStorage(Date.now());};
+  expect(await runRotationCommand(["bind-app","--native","--catalog-account","2"],deps)).toBe(0);
+  expect(scope).toBe(initial); expect(bindCodexAppMock).toHaveBeenCalled();
+ });
+ it("restores project scope on a failed catalog account read",async()=>{
+  const {deps}=createDeps({storage:createStorage(Date.now())}); let scope:string|null="/projects/example";
+  deps.getStoragePath=()=>scope;deps.setStoragePath=value=>{scope=value;};
+  deps.loadAccounts=async()=>{throw Error("read failed");};
+  await expect(runRotationCommand(["bind-app","--native","--catalog-account","2"],deps)).rejects.toThrow("read failed");
+  expect(scope).toBe("/projects/example");
+ });
+});
+
+describe("app bind upstream proxy (#753)", () => {
+	it("passes a validated upstream to bind-app", async () => {
+		const { deps, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		expect(await runRotationCommand(["bind-app", "--upstream", "http://127.0.0.1:8787/"], deps)).toBe(0);
+		expect(bindCodexAppMock).toHaveBeenCalledWith({ upstreamBaseUrl: "http://127.0.0.1:8787" });
+	});
+
+	it("clears the upstream with --no-upstream", async () => {
+		const { deps, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		expect(await runRotationCommand(["bind-app", "--native", "--no-upstream"], deps)).toBe(0);
+		expect(bindCodexAppMock).toHaveBeenCalledWith({ nativeOpenai: true, upstreamBaseUrl: null });
+	});
+
+	it.each([
+		["https://headroom.example:8787"],
+		["http://localhost:8787"],
+		["http://127.0.0.1"],
+		["http://user:pass@127.0.0.1:8787"],
+		["http://10.0.0.5:8787"],
+		[""],
+	])("rejects the upstream %s before binding", async (url) => {
+		const { deps, bindCodexAppMock, errors } = createDeps({ storage: createStorage(Date.now()) });
+		expect(await runRotationCommand(["bind-app", "--upstream", url], deps)).toBe(1);
+		expect(bindCodexAppMock).not.toHaveBeenCalled();
+		expect(errors.at(-1)).toMatch(/upstream/i);
+	});
+
+	it("rejects conflicting upstream flags", async () => {
+		const { deps, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		expect(await runRotationCommand(["bind-app", "--upstream", "http://127.0.0.1:8787", "--no-upstream"], deps)).toBe(1);
+		expect(bindCodexAppMock).not.toHaveBeenCalled();
+	});
+
+	it("keeps the upstream through a native reset-runtime", async () => {
+		const { deps, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		const status = (await bindCodexAppMock()).status;
+		if (!status.state) throw Error("Missing fixture state");
+		status.state.nativeOpenai = true;
+		status.state.catalogAccount = { email: "reference@example.com", accountId: "reference" };
+		status.state.upstreamBaseUrl = "http://127.0.0.1:8787";
+		deps.getCodexAppBindStatus = async () => status;
+		bindCodexAppMock.mockClear();
+		expect(await runRotationCommand(["reset-runtime"], deps)).toBe(0);
+		expect(bindCodexAppMock).toHaveBeenCalledWith({
+			nativeOpenai: true,
+			catalogAccount: status.state.catalogAccount,
+			upstreamBaseUrl: "http://127.0.0.1:8787",
+		});
+	});
+
+	it("keeps the upstream through reset-runtime", async () => {
+		const { deps, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		const status = (await bindCodexAppMock()).status;
+		if (!status.state) throw Error("Missing fixture state");
+		status.state.upstreamBaseUrl = "http://127.0.0.1:8787";
+		deps.getCodexAppBindStatus = async () => status;
+		bindCodexAppMock.mockClear();
+		expect(await runRotationCommand(["reset-runtime"], deps)).toBe(0);
+		expect(bindCodexAppMock).toHaveBeenCalledWith({ nativeOpenai: false, upstreamBaseUrl: "http://127.0.0.1:8787" });
+	});
+});
+
+describe("app bind restart warnings (#748)", () => {
+	it("does not report a clean restart when the old router did not stop", async () => {
+		const { deps, infos, errors, unbindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		const unbound = await unbindCodexAppMock();
+		unbindCodexAppMock.mockResolvedValueOnce({
+			...unbound,
+			warnings: ["runtime router (pid 4242) did not stop; continuing cleanup"],
+		});
+		const resetSpy = vi.spyOn(AccountManager, "resetVolatileRuntimeState");
+		try {
+			expect(await runRotationCommand(["reset-runtime"], deps)).toBe(0);
+		} finally {
+			resetSpy.mockRestore();
+		}
+		expect(infos).not.toContain("Codex app bind restarted.");
+		expect(errors[0]).toBe("Codex app bind restarted with warnings:");
+		expect(errors[1]).toBe("  - runtime router (pid 4242) did not stop; continuing cleanup");
+		expect(errors[2]).toMatch(/codex-app-router/);
+	});
+
+	it("includes warnings in reset-runtime json", async () => {
+		const { deps, infos, bindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		const bound = await bindCodexAppMock();
+		bindCodexAppMock.mockResolvedValueOnce({ ...bound, warnings: ["launchctl bootout failed (exit 5)"] });
+		const resetSpy = vi.spyOn(AccountManager, "resetVolatileRuntimeState");
+		try {
+			expect(await runRotationCommand(["reset-runtime", "--json"], deps)).toBe(0);
+		} finally {
+			resetSpy.mockRestore();
+		}
+		expect(JSON.parse(infos.at(-1) ?? "{}")).toMatchObject({
+			ok: true,
+			appBindRestarted: true,
+			warnings: ["launchctl bootout failed (exit 5)"],
+		});
+	});
+
+	it("prints warnings from rotation enable and disable", async () => {
+		const previous = process.env.CODEX_MULTI_AUTH_APP_BIND_INSTALL;
+		process.env.CODEX_MULTI_AUTH_APP_BIND_INSTALL = "1";
+		const { deps, errors, bindCodexAppMock, unbindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		const bound = await bindCodexAppMock();
+		const unbound = await unbindCodexAppMock();
+		bindCodexAppMock.mockResolvedValueOnce({ ...bound, warnings: ["launchctl bootout failed (exit 5)"] });
+		unbindCodexAppMock.mockResolvedValueOnce({ ...unbound, warnings: ["runtime router (pid 9) did not stop; continuing cleanup"] });
+		try {
+			expect(await runRotationCommand(["enable"], deps)).toBe(0);
+			expect(await runRotationCommand(["disable"], deps)).toBe(0);
+		} finally {
+			if (previous === undefined) delete process.env.CODEX_MULTI_AUTH_APP_BIND_INSTALL;
+			else process.env.CODEX_MULTI_AUTH_APP_BIND_INSTALL = previous;
+		}
+		expect(errors).toContain("Codex app unbind completed with warnings:");
+		expect(errors).toContain("  - runtime router (pid 9) did not stop; continuing cleanup");
+		expect(errors).toContain("Codex app bind completed with warnings:");
+		expect(errors).toContain("  - launchctl bootout failed (exit 5)");
+	});
+
+	it("prints unbind-app warnings", async () => {
+		const { deps, errors, unbindCodexAppMock } = createDeps({ storage: createStorage(Date.now()) });
+		const unbound = await unbindCodexAppMock();
+		unbindCodexAppMock.mockResolvedValueOnce({ ...unbound, warnings: ["runtime router (pid 7) did not stop; continuing cleanup"] });
+		expect(await runRotationCommand(["unbind-app"], deps)).toBe(0);
+		expect(errors).toContain("Codex app unbind completed with warnings:");
 	});
 });

@@ -241,8 +241,14 @@ describe("unified settings", () => {
 
 		const backupPath = `${getUnifiedSettingsPath()}.bak`;
 		const copySpy = vi.spyOn(fs, "copyFile");
+		const realRename = fs.rename.bind(fs);
 		const renameSpy = vi.spyOn(fs, "rename");
-		renameSpy.mockImplementation(async () => {
+		renameSpy.mockImplementation(async (...args) => {
+			// The cross-process lock publishes by rename too; only fail the
+			// settings write.
+			if (String(args[1]).endsWith(".write-lock")) {
+				return realRename(...args);
+			}
 			const error = new Error("busy") as NodeJS.ErrnoException;
 			error.code = "EBUSY";
 			throw error;
@@ -295,9 +301,18 @@ describe("unified settings", () => {
 			},
 		};
 		const copySpy = vi.spyOn(fs, "copyFile");
+		const realRename = fs.rename.bind(fs);
 		const renameSpy = vi.spyOn(fs, "rename");
 		let injectedConcurrentWrite = false;
-		renameSpy.mockImplementationOnce(async () => {
+		renameSpy.mockImplementation(async (...args) => {
+			// The cross-process lock publishes by rename too; the concurrent
+			// write injects on the first SETTINGS rename only.
+			if (
+				String(args[1]).endsWith(".write-lock") ||
+				injectedConcurrentWrite
+			) {
+				return realRename(...args);
+			}
 			injectedConcurrentWrite = true;
 			await fs.writeFile(
 				getUnifiedSettingsPath(),
@@ -477,15 +492,27 @@ describe("unified settings", () => {
 	it("retries async rename on retryable fs errors", async () => {
 		const { saveUnifiedPluginConfig, loadUnifiedPluginConfigSync } =
 			await import("../lib/unified-settings.js");
+		const realRename = fs.rename.bind(fs);
 		const renameSpy = vi.spyOn(fs, "rename");
-		renameSpy.mockImplementationOnce(async () => {
+		let injected = false;
+		renameSpy.mockImplementation(async (...args) => {
+			// The cross-process lock publishes by rename too; inject once on the
+			// settings rename only and count just those calls.
+			if (String(args[1]).endsWith(".write-lock") || injected) {
+				return realRename(...args);
+			}
+			injected = true;
 			const error = new Error("busy") as NodeJS.ErrnoException;
 			error.code = "EBUSY";
 			throw error;
 		});
 		try {
 			await saveUnifiedPluginConfig({ codexMode: true, retries: 1 });
-			expect(renameSpy).toHaveBeenCalledTimes(2);
+			expect(
+				renameSpy.mock.calls.filter(
+					(args) => !String(args[1]).endsWith(".write-lock"),
+				),
+			).toHaveLength(2);
 			expect(loadUnifiedPluginConfigSync()).toEqual({
 				codexMode: true,
 				retries: 1,
@@ -573,8 +600,16 @@ describe("unified settings", () => {
 		const { saveUnifiedPluginConfig, getUnifiedSettingsPath } = await import(
 			"../lib/unified-settings.js"
 		);
+		const realRename = fs.rename.bind(fs);
 		const renameSpy = vi.spyOn(fs, "rename");
-		renameSpy.mockImplementationOnce(async () => {
+		let injected = false;
+		renameSpy.mockImplementation(async (...args) => {
+			// Let the cross-process lock publish through; the settings rename
+			// fails once with a non-retryable code.
+			if (String(args[1]).endsWith(".write-lock") || injected) {
+				return realRename(...args);
+			}
+			injected = true;
 			const error = new Error("denied") as NodeJS.ErrnoException;
 			error.code = "EACCES";
 			throw error;
@@ -601,15 +636,25 @@ describe("unified settings", () => {
 	it("retries async rename on windows-style EPERM lock", async () => {
 		const { saveUnifiedPluginConfig, loadUnifiedPluginConfigSync } =
 			await import("../lib/unified-settings.js");
+		const realRename = fs.rename.bind(fs);
 		const renameSpy = vi.spyOn(fs, "rename");
-		renameSpy.mockImplementationOnce(async () => {
+		let injected = false;
+		renameSpy.mockImplementation(async (...args) => {
+			if (String(args[1]).endsWith(".write-lock") || injected) {
+				return realRename(...args);
+			}
+			injected = true;
 			const error = new Error("perm") as NodeJS.ErrnoException;
 			error.code = "EPERM";
 			throw error;
 		});
 		try {
 			await saveUnifiedPluginConfig({ codexMode: true, retries: 2 });
-			expect(renameSpy).toHaveBeenCalledTimes(2);
+			expect(
+				renameSpy.mock.calls.filter(
+					(args) => !String(args[1]).endsWith(".write-lock"),
+				),
+			).toHaveLength(2);
 			expect(loadUnifiedPluginConfigSync()).toEqual({
 				codexMode: true,
 				retries: 2,
@@ -623,8 +668,12 @@ describe("unified settings", () => {
 		const { saveUnifiedPluginConfig, getUnifiedSettingsPath } = await import(
 			"../lib/unified-settings.js"
 		);
+		const realRename = fs.rename.bind(fs);
 		const renameSpy = vi.spyOn(fs, "rename");
-		renameSpy.mockImplementation(async () => {
+		renameSpy.mockImplementation(async (...args) => {
+			if (String(args[1]).endsWith(".write-lock")) {
+				return realRename(...args);
+			}
 			const error = new Error("perm locked") as NodeJS.ErrnoException;
 			error.code = "EPERM";
 			throw error;

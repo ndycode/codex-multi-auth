@@ -244,6 +244,7 @@ describe("ensureFirstRunSetup", () => {
 		const markerPath = createMarkerPath();
 		const bindCodexApp = vi.fn(async () => "completed" as const);
 		const installLauncher = vi.fn(async () => "completed" as const);
+		const enforceAuthStore = vi.fn(async () => "completed" as const);
 
 		const result = await ensureFirstRunSetup({
 			env: {},
@@ -251,16 +252,307 @@ describe("ensureFirstRunSetup", () => {
 			markerPath,
 			bindCodexApp,
 			installLauncher,
+			enforceAuthStore,
 		});
 
-		expect(result).toEqual({ ran: true, appBind: "completed", launcher: "completed" });
+		expect(result).toEqual({
+			ran: true,
+			appBind: "completed",
+			launcher: "completed",
+			authStore: "completed",
+		});
 		expect(bindCodexApp).toHaveBeenCalledTimes(1);
 		expect(installLauncher).toHaveBeenCalledTimes(1);
+		expect(enforceAuthStore).toHaveBeenCalledTimes(1);
 		expect(existsSync(markerPath)).toBe(true);
 		const marker = JSON.parse(readFileSync(markerPath, "utf8")) as Record<string, unknown>;
 		expect(marker.version).toBe(FIRST_RUN_MARKER_VERSION);
 		expect(marker.appBind).toBe("completed");
 		expect(marker.launcher).toBe("completed");
+		expect(marker.authStore).toBe("completed");
+	});
+
+	// Regression guard for #641: a keychain-backed config.toml is what makes the
+	// official CLI (and third-party front-ends driving it) raise repeated macOS
+	// login-keychain prompts, so first run must pin it to the file store even
+	// when the user never switches or logs in through the manager.
+	it("pins the Codex CLI credential store to file on first run", async () => {
+		const markerPath = createMarkerPath();
+		const configPath = path.join(
+			mkdtempSync(path.join(tmpdir(), "codex-first-run-config-")),
+			"config.toml",
+		);
+		writeFileSync(configPath, 'cli_auth_credentials_store = "keychain"\n');
+		const previousConfigPath = process.env.CODEX_CLI_CONFIG_PATH;
+		process.env.CODEX_CLI_CONFIG_PATH = configPath;
+
+		try {
+			const result = await ensureFirstRunSetup({
+				env: {},
+				installedContext: true,
+				markerPath,
+				bindCodexApp: async () => "skipped" as const,
+				installLauncher: async () => "skipped" as const,
+			});
+
+			expect(result).toEqual({
+				ran: true,
+				appBind: "skipped",
+				launcher: "skipped",
+				authStore: "completed",
+			});
+			expect(readFileSync(configPath, "utf8")).toContain(
+				'cli_auth_credentials_store = "file"',
+			);
+		} finally {
+			if (previousConfigPath === undefined) delete process.env.CODEX_CLI_CONFIG_PATH;
+			else process.env.CODEX_CLI_CONFIG_PATH = previousConfigPath;
+		}
+	});
+
+	it("reports the auth-store step as failed without blocking the rest of setup", async () => {
+		const markerPath = createMarkerPath();
+
+		const result = await ensureFirstRunSetup({
+			env: {},
+			installedContext: true,
+			markerPath,
+			bindCodexApp: async () => "completed" as const,
+			installLauncher: async () => "completed" as const,
+			enforceAuthStore: async () => {
+				throw new Error("config.toml is locked");
+			},
+		});
+
+		expect(result).toEqual({
+			ran: true,
+			appBind: "completed",
+			launcher: "completed",
+			authStore: "failed",
+		});
+		const marker = JSON.parse(readFileSync(markerPath, "utf8")) as Record<string, unknown>;
+		expect(marker.authStore).toBe("failed");
+		// Left pre-v2 so the next invocation replays the step via the migration
+		// path; app bind and launcher stay done.
+		expect(marker.version).toBe(1);
+		expect(marker.appBind).toBe("completed");
+	});
+
+	it("replays only the auth-store step after initial setup failed it", async () => {
+		const markerPath = createMarkerPath();
+		const bindCodexApp = vi.fn(async () => "completed" as const);
+		const installLauncher = vi.fn(async () => "completed" as const);
+		const enforceAuthStore = vi
+			.fn<() => Promise<"completed">>()
+			.mockRejectedValueOnce(new Error("config.toml is locked"))
+			.mockResolvedValueOnce("completed");
+
+		const deps = {
+			env: {},
+			installedContext: true,
+			markerPath,
+			bindCodexApp,
+			installLauncher,
+			enforceAuthStore,
+		};
+
+		await ensureFirstRunSetup(deps);
+		const second = await ensureFirstRunSetup(deps);
+
+		expect(second).toEqual({
+			ran: false,
+			reason: "migrated",
+			authStore: "completed",
+		});
+		expect(enforceAuthStore).toHaveBeenCalledTimes(2);
+		expect(bindCodexApp).toHaveBeenCalledTimes(1);
+		expect(installLauncher).toHaveBeenCalledTimes(1);
+		const marker = JSON.parse(readFileSync(markerPath, "utf8")) as Record<
+			string,
+			unknown
+		>;
+		expect(marker.version).toBe(FIRST_RUN_MARKER_VERSION);
+		expect(marker.authStore).toBe("completed");
+	});
+
+	// Bumping FIRST_RUN_MARKER_VERSION alone would do nothing: setup
+	// short-circuits on marker existence, so already-installed users — exactly
+	// the population hitting repeated keychain prompts — would never get the
+	// auth-store step.
+	describe("v1 marker migration", () => {
+		function writeMarker(markerPath: string, payload: unknown): void {
+			mkdirSync(path.dirname(markerPath), { recursive: true });
+			writeFileSync(markerPath, `${JSON.stringify(payload)}\n`, "utf8");
+		}
+
+		it("replays only the auth-store step for a v1 marker", async () => {
+			const markerPath = createMarkerPath();
+			writeMarker(markerPath, {
+				version: 1,
+				startedAt: 111,
+				completedAt: 222,
+				appBind: "completed",
+				launcher: "failed",
+			});
+			const bindCodexApp = vi.fn(async () => "completed" as const);
+			const installLauncher = vi.fn(async () => "completed" as const);
+			const enforceAuthStore = vi.fn(async () => "completed" as const);
+
+			const result = await ensureFirstRunSetup({
+				env: {},
+				installedContext: true,
+				markerPath,
+				bindCodexApp,
+				installLauncher,
+				enforceAuthStore,
+			});
+
+			expect(result).toEqual({
+				ran: false,
+				reason: "migrated",
+				authStore: "completed",
+			});
+			expect(enforceAuthStore).toHaveBeenCalledTimes(1);
+			// Rerunning these would reinstall shortcuts the user may have removed.
+			expect(bindCodexApp).not.toHaveBeenCalled();
+			expect(installLauncher).not.toHaveBeenCalled();
+
+			const marker = JSON.parse(readFileSync(markerPath, "utf8")) as Record<
+				string,
+				unknown
+			>;
+			expect(marker.version).toBe(FIRST_RUN_MARKER_VERSION);
+			expect(marker.authStore).toBe("completed");
+			expect(marker.appBind).toBe("completed");
+			expect(marker.launcher).toBe("failed");
+			expect(marker.startedAt).toBe(111);
+		});
+
+		it("does not migrate again once the marker is current", async () => {
+			const markerPath = createMarkerPath();
+			const enforceAuthStore = vi.fn(async () => "completed" as const);
+			const deps = {
+				env: {},
+				installedContext: true,
+				markerPath,
+				bindCodexApp: async () => "skipped" as const,
+				installLauncher: async () => "skipped" as const,
+				enforceAuthStore,
+			};
+
+			writeMarker(markerPath, { version: 1 });
+			await ensureFirstRunSetup(deps);
+			const second = await ensureFirstRunSetup(deps);
+
+			expect(second).toEqual({ ran: false, reason: "already-done" });
+			expect(enforceAuthStore).toHaveBeenCalledTimes(1);
+		});
+
+		it("treats an unreadable marker as pre-v2 without rerunning full setup", async () => {
+			const markerPath = createMarkerPath();
+			mkdirSync(path.dirname(markerPath), { recursive: true });
+			writeFileSync(markerPath, "{ truncated", "utf8");
+			const bindCodexApp = vi.fn(async () => "completed" as const);
+
+			const result = await ensureFirstRunSetup({
+				env: {},
+				installedContext: true,
+				markerPath,
+				bindCodexApp,
+				installLauncher: async () => "completed" as const,
+				enforceAuthStore: async () => "completed" as const,
+			});
+
+			expect(result).toEqual({
+				ran: false,
+				reason: "migrated",
+				authStore: "completed",
+			});
+			expect(bindCodexApp).not.toHaveBeenCalled();
+			const marker = JSON.parse(readFileSync(markerPath, "utf8")) as Record<
+				string,
+				unknown
+			>;
+			expect(marker.version).toBe(FIRST_RUN_MARKER_VERSION);
+		});
+
+		// Recording the current version after a failed step would strand the user:
+		// one transient Windows EPERM/EBUSY on a locked config.toml would leave
+		// the CLI on keychain mode forever, which is the symptom being fixed.
+		it("keeps the marker pre-v2 when the auth-store step fails, then retries", async () => {
+			const markerPath = createMarkerPath();
+			writeMarker(markerPath, { version: 1 });
+			const enforceAuthStore = vi
+				.fn<() => Promise<"completed">>()
+				.mockRejectedValueOnce(new Error("config.toml is locked"))
+				.mockResolvedValueOnce("completed");
+
+			const first = await ensureFirstRunSetup({
+				env: {},
+				installedContext: true,
+				markerPath,
+				enforceAuthStore,
+			});
+
+			expect(first).toEqual({
+				ran: false,
+				reason: "migrated",
+				authStore: "failed",
+			});
+			const afterFailure = JSON.parse(
+				readFileSync(markerPath, "utf8"),
+			) as Record<string, unknown>;
+			expect(afterFailure.version).toBe(1);
+			expect(afterFailure.authStore).toBe("failed");
+
+			// The lock clears; the next invocation must retry and converge.
+			const second = await ensureFirstRunSetup({
+				env: {},
+				installedContext: true,
+				markerPath,
+				enforceAuthStore,
+			});
+
+			expect(second).toEqual({
+				ran: false,
+				reason: "migrated",
+				authStore: "completed",
+			});
+			expect(enforceAuthStore).toHaveBeenCalledTimes(2);
+			const afterRetry = JSON.parse(readFileSync(markerPath, "utf8")) as Record<
+				string,
+				unknown
+			>;
+			expect(afterRetry.version).toBe(FIRST_RUN_MARKER_VERSION);
+			expect(afterRetry.authStore).toBe("completed");
+		});
+
+		// The migration takes no exclusive claim; it relies on both the config
+		// rewrite and the marker write being idempotent and atomic.
+		it("converges when two processes migrate concurrently", async () => {
+			const markerPath = createMarkerPath();
+			writeMarker(markerPath, { version: 1, appBind: "completed" });
+			const deps = {
+				env: {},
+				installedContext: true,
+				markerPath,
+				enforceAuthStore: async () => "completed" as const,
+			};
+
+			const results = await Promise.all([
+				ensureFirstRunSetup(deps),
+				ensureFirstRunSetup(deps),
+			]);
+
+			expect(results.every((result) => !result.ran)).toBe(true);
+			const marker = JSON.parse(readFileSync(markerPath, "utf8")) as Record<
+				string,
+				unknown
+			>;
+			expect(marker.version).toBe(FIRST_RUN_MARKER_VERSION);
+			expect(marker.authStore).toBe("completed");
+			expect(marker.appBind).toBe("completed");
+		});
 	});
 
 	it("skips setup on the second run once the marker exists", async () => {
@@ -273,6 +565,7 @@ describe("ensureFirstRunSetup", () => {
 			markerPath,
 			bindCodexApp,
 			installLauncher,
+			enforceAuthStore: async () => "skipped" as const,
 		};
 
 		await ensureFirstRunSetup(deps);
@@ -293,6 +586,7 @@ describe("ensureFirstRunSetup", () => {
 			markerPath,
 			bindCodexApp,
 			installLauncher,
+			enforceAuthStore: async () => "skipped" as const,
 		};
 
 		const results = await Promise.all([
@@ -318,9 +612,15 @@ describe("ensureFirstRunSetup", () => {
 			installLauncher: async () => {
 				throw new Error("launcher exploded");
 			},
+			enforceAuthStore: async () => "skipped" as const,
 		});
 
-		expect(result).toEqual({ ran: true, appBind: "failed", launcher: "failed" });
+		expect(result).toEqual({
+			ran: true,
+			appBind: "failed",
+			launcher: "failed",
+			authStore: "skipped",
+		});
 		expect(existsSync(markerPath)).toBe(true);
 		const marker = JSON.parse(readFileSync(markerPath, "utf8")) as Record<string, unknown>;
 		expect(marker.appBind).toBe("failed");

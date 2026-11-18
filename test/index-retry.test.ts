@@ -164,6 +164,10 @@ vi.mock("../lib/accounts.js", async () => {
 			return accountManagerState.accounts.length;
 		}
 
+		getAccountsSnapshot() {
+			return accountManagerState.accounts.map((account) => ({ ...account }));
+		}
+
 		getCurrentOrNextForFamily() {
 			if (accountManagerState.accountSelections.length > 0) {
 				return accountManagerState.accountSelections.shift() ?? null;

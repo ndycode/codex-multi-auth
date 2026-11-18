@@ -418,6 +418,115 @@ describe("syncCodexCliActiveSelectionIfDrifted", () => {
 		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
 	});
 
+	it("treats an org id as aligned with the token workspace id the writer stores (#700)", async () => {
+		const accessToken = `h.${Buffer.from(
+			JSON.stringify({
+				"https://api.openai.com/auth": { chatgpt_account_id: "ws-uuid-1" },
+			}),
+		).toString("base64url")}.s`;
+		loadCodexCliStateMock.mockResolvedValue({ activeAccountId: "ws-uuid-1" });
+
+		const result = await syncCodexCliActiveSelectionIfDrifted(
+			storageWith([account("a", { accountId: "org-AbC123", accessToken })]),
+		);
+
+		expect(result).toBe(false);
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+	});
+
+	it("reports drift for equal org ids whose tokens name different workspaces (#700)", async () => {
+		const tokenFor = (workspace: string) =>
+			`h.${Buffer.from(
+				JSON.stringify({
+					"https://api.openai.com/auth": { chatgpt_account_id: workspace },
+				}),
+			).toString("base64url")}.s`;
+		loadCodexCliStateMock.mockResolvedValue({
+			activeAccountId: "org-AbC123",
+			accounts: [
+				{ accountId: "org-AbC123", accessToken: tokenFor("ws-team"), isActive: true },
+			],
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValue(true);
+
+		const result = await syncCodexCliActiveSelectionIfDrifted(
+			storageWith([
+				account("a", { accountId: "org-AbC123", accessToken: tokenFor("ws-personal") }),
+			]),
+		);
+
+		expect(result).toBe(true);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("matches a raw org id kept by the legacy accounts.json (#700)", async () => {
+		const accessToken = `h.${Buffer.from(
+			JSON.stringify({
+				"https://api.openai.com/auth": { chatgpt_account_id: "ws-uuid-1" },
+			}),
+		).toString("base64url")}.s`;
+		loadCodexCliStateMock.mockResolvedValue({
+			activeAccountId: "org-AbC123",
+			accounts: [{ accountId: "org-AbC123", accessToken, isActive: true }],
+		});
+
+		const result = await syncCodexCliActiveSelectionIfDrifted(
+			storageWith([account("a", { accountId: "org-AbC123", accessToken })]),
+		);
+
+		expect(result).toBe(false);
+		expect(setCodexCliActiveSelectionMock).not.toHaveBeenCalled();
+	});
+
+	it("still reports drift when an org id resolves to a different workspace (#700)", async () => {
+		const accessToken = `h.${Buffer.from(
+			JSON.stringify({
+				"https://api.openai.com/auth": { chatgpt_account_id: "ws-uuid-1" },
+			}),
+		).toString("base64url")}.s`;
+		loadCodexCliStateMock.mockResolvedValue({ activeAccountId: "ws-other" });
+		setCodexCliActiveSelectionMock.mockResolvedValue(true);
+
+		const result = await syncCodexCliActiveSelectionIfDrifted(
+			storageWith([account("a", { accountId: "org-AbC123", accessToken })]),
+		);
+
+		expect(result).toBe(true);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not let a matching email hide an unresolvable org id (#700)", async () => {
+		loadCodexCliStateMock.mockResolvedValue({
+			activeAccountId: "ws-other",
+			activeEmail: "a@example.com",
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValue(true);
+
+		const result = await syncCodexCliActiveSelectionIfDrifted(
+			storageWith([
+				account("a", { accountId: "org-AbC123", accessToken: "opaque-access" }),
+			]),
+		);
+
+		expect(result).toBe(true);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("treats an org account_id stored in auth.json itself as drift (#700)", async () => {
+		loadCodexCliStateMock.mockResolvedValue({
+			activeAccountId: "org-AbC123",
+			authFileAccountId: "ORG-AbC123",
+		});
+		setCodexCliActiveSelectionMock.mockResolvedValue(true);
+
+		const result = await syncCodexCliActiveSelectionIfDrifted(
+			storageWith([account("a", { accountId: "org-AbC123" })]),
+		);
+
+		expect(result).toBe(true);
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("does nothing when there is no CLI state to compare against", async () => {
 		loadCodexCliStateMock.mockResolvedValue(null);
 

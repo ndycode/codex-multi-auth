@@ -18,12 +18,25 @@ export async function saveAccountsToDisk(
 		computeSha256: (value: string) => string;
 		writeJournal: (content: string, path: string) => Promise<void>;
 		writeTemp: (tempPath: string, content: string) => Promise<void>;
-		statTemp: (tempPath: string) => Promise<{ size: number }>;
+		statTemp: (tempPath: string) => Promise<{
+			size: number;
+			mtimeMs?: number;
+			ctimeMs?: number;
+			ino?: number;
+		}>;
 		renameTempToPath: (tempPath: string) => Promise<void>;
 		cleanupResetMarker: () => Promise<void>;
 		cleanupWal: () => Promise<void>;
 		cleanupTemp: (tempPath: string) => Promise<void>;
-		onSaved: () => void;
+		onSaved: (
+			stats: {
+				size: number;
+				mtimeMs?: number;
+				ctimeMs?: number;
+				ino?: number;
+			},
+			contentSha256: string,
+		) => void;
 		logWarn: (message: string, details: Record<string, unknown>) => void;
 		logError: (message: string, details: Record<string, unknown>) => void;
 		createStorageError: (error: unknown) => Error;
@@ -72,7 +85,10 @@ export async function saveAccountsToDisk(
 
 		await params.renameTempToPath(tempPath);
 		await params.cleanupResetMarker();
-		params.onSaved();
+		// The temp file's stat fields survive the rename onto the primary path,
+		// so together with the content hash they are a free record of what this
+		// process last wrote — no extra stat of the destination is needed.
+		params.onSaved(stats, params.computeSha256(content));
 		await params.cleanupWal();
 	} catch (error) {
 		await params.cleanupTemp(tempPath);

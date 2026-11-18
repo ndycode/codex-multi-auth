@@ -1,6 +1,10 @@
 import { homedir } from "node:os";
-import { join, normalize, win32 } from "node:path";
+import { join as nativeJoin, normalize, win32 } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
+
+function join(...parts: string[]): string {
+	return (process.platform === "win32" ? win32.join : nativeJoin)(...parts);
+}
 
 function firstNonEmpty(values: Array<string | undefined>): string | null {
 	for (const value of values) {

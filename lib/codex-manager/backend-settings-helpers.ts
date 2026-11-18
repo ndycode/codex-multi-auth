@@ -4,6 +4,7 @@ import {
 	BACKEND_NUMBER_OPTION_BY_KEY,
 	BACKEND_NUMBER_OPTIONS,
 	BACKEND_TOGGLE_OPTIONS,
+	EXPERIMENTAL_TOGGLE_KEYS,
 	type BackendNumberSettingKey,
 	type BackendNumberSettingOption,
 	type BackendSettingFocusKey,
@@ -32,6 +33,9 @@ export function backendSettingsSnapshot(
 	for (const option of BACKEND_NUMBER_OPTIONS) {
 		snapshot[option.key] =
 			config[option.key] ?? BACKEND_DEFAULTS[option.key] ?? option.min;
+	}
+	for (const key of EXPERIMENTAL_TOGGLE_KEYS) {
+		snapshot[key] = config[key] ?? BACKEND_DEFAULTS[key] ?? false;
 	}
 	return snapshot;
 }
@@ -143,6 +147,12 @@ export function buildBackendConfigPatch(
 		const value = config[option.key];
 		if (typeof value === "number" && Number.isFinite(value)) {
 			patch[option.key] = clampBackendNumber(option, value);
+		}
+	}
+	for (const key of EXPERIMENTAL_TOGGLE_KEYS) {
+		const value = config[key];
+		if (typeof value === "boolean") {
+			patch[key] = value;
 		}
 	}
 	return patch;

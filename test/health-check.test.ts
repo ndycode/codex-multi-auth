@@ -1,3 +1,7 @@
+vi.mock("../lib/account-policy.js", async importOriginal => ({...await importOriginal<typeof import("../lib/account-policy.js")>(), loadAccountPolicyStore: vi.fn(async () => ({version: 1, accounts: {}}))}));
+const discoveryMocks=vi.hoisted(()=>({resets:vi.fn(),models:vi.fn()}));
+vi.mock("../lib/runtime/account-reset-credits.js",()=>({refreshAndPrintResetCredits:discoveryMocks.resets}));
+vi.mock("../lib/runtime/model-discovery-status.js",()=>({refreshAndPrintModelInventory:discoveryMocks.models}));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QuotaCacheData } from "../lib/quota-cache.js";
 import type { AccountMetadataV3, AccountStorageV3 } from "../lib/storage.js";
@@ -239,6 +243,7 @@ describe("runHealthCheck live probe", () => {
 		await runHealthCheck({ liveProbe: true });
 
 		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledExactlyOnceWith({
+			primeUnusedSubscription: false,
 			accountId: "acc_a",
 			accessToken: "access-a",
 			model: inspectRequestedModel(DEFAULT_LIVE_PROBE_MODEL).normalized,
@@ -318,4 +323,101 @@ describe("runHealthCheck live probe", () => {
 		// The check still completed and reported availability.
 		expect(logged()).toContain("1 Codex available");
 	});
+});
+
+it("checks usable accounts concurrently while committing results in account order",async()=>{
+ loadAccountsMock.mockResolvedValue(storageWith([account("one"),account("two"),account("three"),account("four")]));
+ let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+ const started:string[]=[];
+ fetchCodexQuotaSnapshotMock.mockImplementation(async ({accountId}:{accountId:string})=>{
+  started.push(accountId);if(accountId==="acc_one") await gate;return snapshot();
+ });
+ const pending=runHealthCheck({liveProbe:true});
+ try{await vi.waitFor(()=>expect(started).toContain("acc_four"),{timeout:5000});}
+ finally{release();await pending;}
+ expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(4);
+ expect(logged()).toContain("Checking account probes");
+ const rows=[...logged().matchAll(/(?:one|two|three|four)@example\.com/g)].map(match=>match[0]);
+ expect(rows).toEqual(["one@example.com","two@example.com","three@example.com","four@example.com"]);
+ // Priming is opt-in (`check --prime`); a plain or scheduled check never starts quota windows.
+ expect(fetchCodexQuotaSnapshotMock.mock.calls.every(([options])=>options.primeUnusedSubscription===false)).toBe(true);
+ fetchCodexQuotaSnapshotMock.mockClear();
+ await runHealthCheck({liveProbe:true,primeUnusedSubscription:true});
+ expect(fetchCodexQuotaSnapshotMock.mock.calls.every(([options])=>options.primeUnusedSubscription===true)).toBe(true);
+
+});
+
+describe("runHealthCheck with a Codex CLI mirror", () => {
+	it("syncs the active account's mirror id, not the saved explicit id", async () => {
+		loadAccountsMock.mockResolvedValue(
+			storageWith([
+				account("a", {
+					accountId: "ws-team",
+					accountIdSource: "manual",
+					codexCliMirror: { forAccountId: "ws-team", accountId: "ws-authorized" },
+				}),
+			]),
+		);
+
+		await runHealthCheck();
+
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ accountId: "ws-authorized" }),
+		);
+	});
+});
+
+it("continues model discovery when reset-credit persistence fails",async()=>{
+ loadAccountsMock.mockResolvedValue(storageWith([account("one")]));
+ discoveryMocks.resets.mockRejectedValueOnce(Error("state locked"));
+ await expect(runHealthCheck({discoverModels:true})).resolves.toBeUndefined();
+ expect(discoveryMocks.models).toHaveBeenCalled();expect(logged()).toContain("could not be refreshed");
+});
+
+it.each([false, true])("labels and caches the selected Personal workspace in check (refresh=%s)", async forceRefresh => {
+ const a = account("scope", {workspaces: [{id:"org", name:"Business"},{id:"personal", name:"Personal (role:owner)"}], currentWorkspaceIndex:1});
+ loadAccountsMock.mockResolvedValue(storageWith([a]));
+ queuedRefreshMock.mockResolvedValue({type:"success", access:a.accessToken, refresh:a.refreshToken, expires:REAL_NOW+3600000});
+ fetchCodexQuotaSnapshotMock.mockResolvedValue({...snapshot(), planType:"promax", primingFailure:"timed out"});
+ await runHealthCheck({liveProbe:true, forceRefresh});
+ expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledWith(expect.objectContaining({accountId:"personal"}));
+ expect(logged()).toContain("Personal · Pro 500 · Auto-prime OFF · Priming failed");
+ const saved = saveQuotaCacheMock.mock.calls.at(-1)![0];
+ expect(Object.values(saved.byWorkspace)).toContainEqual(expect.objectContaining({planType:"promax",primingFailure:"timed out"}));
+});
+
+it("does not probe a disabled selected workspace through its stored binding", async () => {
+ loadAccountsMock.mockResolvedValue(storageWith([account("scope", {workspaces:[{id:"personal",name:"Personal",enabled:false}]} )]));
+ await runHealthCheck({liveProbe:true});
+ expect(fetchCodexQuotaSnapshotMock).not.toHaveBeenCalled();
+});
+
+it.each([false,true])("probes and reads canonical Personal quota in health checks (refresh=%s)", async forceRefresh => {
+ const access=`e30.${Buffer.from(JSON.stringify({"https://api.openai.com/auth":{chatgpt_account_id:"native-personal"}})).toString("base64url")}.fixture`;
+ const a=account("alias",{accessToken:access,workspaces:[{id:"org-personal",name:"Personal",enabled:true}]});
+ loadAccountsMock.mockResolvedValue(storageWith([a]));
+ queuedRefreshMock.mockResolvedValue({type:"success",access,refresh:a.refreshToken,expires:REAL_NOW+3600000});
+ fetchCodexQuotaSnapshotMock.mockResolvedValue(snapshot());
+ await runHealthCheck({liveProbe:true,forceRefresh});
+ expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({accountId:"native-personal",accessToken:access}));
+ const {findQuotaCacheEntryForAccount}=await import("../lib/quota-readiness.js");
+ const saved:QuotaCacheData=saveQuotaCacheMock.mock.calls.at(-1)![0];
+ expect(findQuotaCacheEntryForAccount(saved,a,[a])?.primary.usedPercent).toBe(10);
+ expect(a.workspaces?.[0]?.id).toBe("org-personal");
+});
+
+
+it("shows unknown auto-prime when a real policy read fails", async () => {
+ const {promises:fs} = await import("node:fs");
+ const policies = await import("../lib/account-policy.js");
+ const real = await vi.importActual<typeof policies>("../lib/account-policy.js");
+ const read = fs.readFile.bind(fs);
+ const spy = vi.spyOn(fs,"readFile").mockImplementation((...args: Parameters<typeof fs.readFile>) => String(args[0]) === real.getAccountPolicyPath() ? Promise.reject(Object.assign(new Error("fixture denied"), {code:"EACCES"})) : read(...args));
+ vi.mocked(policies.loadAccountPolicyStore).mockImplementationOnce(real.loadAccountPolicyStore);
+ loadAccountsMock.mockResolvedValue(storageWith([account("policy")]));
+ fetchCodexQuotaSnapshotMock.mockResolvedValue(snapshot());
+ try {
+  await runHealthCheck({liveProbe:true});
+  expect(logged()).toContain("Auto-prime unknown");
+ } finally {spy.mockRestore();}
 });

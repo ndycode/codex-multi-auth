@@ -1,0 +1,153 @@
+import { describe, expect, it } from "vitest";
+import { MODEL_PROFILES } from "../lib/request/helpers/model-map.js";
+import {
+	getEffectiveContextWindow,
+	listEstimatedModelContextWindows,
+	UNESTIMATED_ROUTABLE_MODELS,
+} from "../lib/context-budget/model-context-windows.js";
+
+/**
+ * Drift guard for the context-window estimate table, mirroring
+ * `test/usage-pricing-coverage.test.ts`. A routable model that is neither
+ * estimated nor consciously unestimated would silently return `null` from
+ * `getEffectiveContextWindow` — which is safe (the guard no-ops) but hides a
+ * gap a reviewer should see and decide on explicitly.
+ */
+describe("context budget window coverage", () => {
+	const estimated = new Set(Object.keys(listEstimatedModelContextWindows()));
+	const acknowledgedUnestimated = new Set<string>(UNESTIMATED_ROUTABLE_MODELS);
+	const routable = [
+		...new Set(
+			Object.values(MODEL_PROFILES).map((profile) => profile.normalizedModel),
+		),
+	];
+
+	it("accounts for every routable model as estimated or knowingly unestimated", () => {
+		const unaccounted = routable.filter(
+			(model) => !estimated.has(model) && !acknowledgedUnestimated.has(model),
+		);
+		expect(
+			unaccounted,
+			"new routable model(s) with no context-window estimate: add a best-effort entry to ESTIMATED_MODEL_CONTEXT_WINDOWS, or list them in UNESTIMATED_ROUTABLE_MODELS to accept that the context budget guard cannot evaluate them without a user-supplied override",
+		).toEqual([]);
+	});
+
+	it("keeps the unestimated list free of models that are now estimated or gone", () => {
+		const stale = [...acknowledgedUnestimated].filter(
+			(model) => estimated.has(model) || !routable.includes(model),
+		);
+		expect(
+			stale,
+			"UNESTIMATED_ROUTABLE_MODELS entries that are now estimated or no longer routable; delete them",
+		).toEqual([]);
+	});
+
+	it("never claims an estimate it does not have", () => {
+		for (const model of acknowledgedUnestimated) {
+			expect(estimated.has(model), `${model} is in both lists`).toBe(false);
+		}
+	});
+
+	it("lets an explicit override win even for an unestimated model", () => {
+		const [unestimatedModel] = UNESTIMATED_ROUTABLE_MODELS;
+		const window = getEffectiveContextWindow(unestimatedModel, {
+			[unestimatedModel]: 123_456,
+		});
+		expect(window).toEqual({ tokens: 123_456, source: "override" });
+	});
+
+	it("returns null for an unestimated model with no override", () => {
+		const [unestimatedModel] = UNESTIMATED_ROUTABLE_MODELS;
+		expect(getEffectiveContextWindow(unestimatedModel, undefined)).toBeNull();
+	});
+
+	/**
+	 * The checks above validate the CANONICAL key space
+	 * (`profile.normalizedModel`). The guard is never handed one of those: the
+	 * rotation proxy copies `body.model` verbatim, so the lookup has to work on
+	 * the raw ids clients actually send. Looking those up straight against the
+	 * table returned null for Codex CLI's own default model.
+	 *
+	 * Every canonical target on this list is unestimated — upstream publishes
+	 * disagreeing Codex and API numbers for all of them — so each resolves to
+	 * `null` rather than a fabricated window. The override tests below prove
+	 * the raw-string lookup path itself still works.
+	 */
+	it("resolves the raw client model strings the runtime actually passes", () => {
+		for (const raw of [
+			"gpt-5",
+			"gpt-5-high",
+			"gpt-5.5-high",
+			"gpt-5.5-2026-04-23",
+			"gpt-5-pro",
+			"GPT-5.5",
+			"openai/gpt-5.5",
+			"gpt-6.1-sol",
+			"openai/gpt-6.1",
+		]) {
+			expect(
+				getEffectiveContextWindow(raw, undefined),
+				`${raw} resolved to something other than null`,
+			).toBeNull();
+		}
+	});
+
+	it("does not estimate a retired id from the model it now runs on", () => {
+		// Retired codex ids run on gpt-5.6-sol, which is deliberately unestimated,
+		// so they resolve to no window rather than the retired model's 260k.
+		for (const raw of [
+			"gpt-5-codex",
+			"gpt-5.1-codex",
+			"gpt-5.3-codex-high",
+			"gpt-5.1-codex-max",
+		]) {
+			expect(getEffectiveContextWindow(raw, undefined), raw).toBeNull();
+		}
+	});
+
+	it("still refuses to invent a window for a model it does not know", () => {
+		// resolveNormalizedModel() would fall back to DEFAULT_MODEL here; the
+		// exact/alias-only resolver must not.
+		expect(getEffectiveContextWindow("totally-made-up-model", undefined)).toBeNull();
+	});
+
+	it("prefers an override keyed by the raw string over the canonical estimate", () => {
+		expect(getEffectiveContextWindow("gpt-5-codex", { "gpt-5-codex": 99_000 })).toEqual({
+			tokens: 99_000,
+			source: "override",
+		});
+	});
+
+	it("never returns a zero-token window for a sub-1 override", () => {
+		// The schema accepts any positive number. Checking `override > 0` on the
+		// RAW value admits anything in (0, 1), which then floors to 0 and returned
+		// `{ tokens: 0 }` -- breaking the contract that an unresolvable window is
+		// null, and handing a caller that trusts it a division by zero.
+		for (const value of [0.5, 0.9, 0.0001]) {
+			expect(
+				getEffectiveContextWindow("gpt-5.6-sol", { "gpt-5.6-sol": value }),
+				`override ${value}`,
+			).toBeNull();
+		}
+		// With no estimate to fall through to, a sub-1 override resolves to
+		// null rather than shadowing a real value with zero.
+		expect(getEffectiveContextWindow("gpt-5.5", { "gpt-5.5": 0.5 })).toBeNull();
+		// 1 and above still resolve as overrides.
+		expect(getEffectiveContextWindow("gpt-5.5", { "gpt-5.5": 1.9 })).toEqual({
+			tokens: 1,
+			source: "override",
+		});
+	});
+
+	it("applies an override keyed by the canonical id to an alias of it", () => {
+		// `gpt-5` is an alias of `gpt-5.6-sol`, so an override keyed by the
+		// canonical id applies to it.
+		expect(
+			getEffectiveContextWindow("gpt-5", { "gpt-5.6-sol": 88_000 }),
+		).toEqual({ tokens: 88_000, source: "override" });
+		// A retired id picks up an override keyed by its replacement.
+		expect(
+			getEffectiveContextWindow("gpt-5-codex", { "gpt-5.6-sol": 88_000 }),
+		).toEqual({ tokens: 88_000, source: "override" });
+	});
+});

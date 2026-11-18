@@ -30,7 +30,7 @@ export interface WhySelectedCommandDeps {
 	resolveActiveIndex: (storage: AccountStorageV3, family?: "codex") => number;
 	selectAccountTraced: (
 		storage: AccountStorageV3,
-	) => HybridSelectionTraceResult;
+	) => HybridSelectionTraceResult | Promise<HybridSelectionTraceResult>;
 	loadRuntimeObservabilitySnapshot?: () => Promise<WhySelectedRuntimeSnapshot | null>;
 	sanitizeEmail?: (email: string | undefined) => string | undefined;
 	logInfo?: (message: string) => void;
@@ -138,7 +138,7 @@ export async function runWhySelectedCommand(
 		return 1;
 	}
 
-	const trace = deps.selectAccountTraced(storage);
+	const trace = await deps.selectAccountTraced(storage);
 	const candidates = trace.candidates.map((candidate) =>
 		buildCandidateRecord(storage, candidate, sanitizeEmail),
 	);

@@ -25,7 +25,13 @@ function makeDeps(store: AccountPolicyStore) {
 		setStoragePath: vi.fn(),
 		loadAccounts: vi.fn(async () => makeStorage()),
 		loadPolicyStore: vi.fn(async () => store),
-		savePolicyStore: vi.fn(async () => undefined),
+		// Test seam for the mutation path: applies the caller's mutation to the
+		// fixture store the way updateAccountPolicyStore does under the lock.
+		updatePolicyStore: vi.fn(
+			async (
+				mutate: (store: AccountPolicyStore) => { result: unknown; dirty: boolean },
+			) => mutate(store).result,
+		),
 		logInfo: vi.fn(),
 		logError: vi.fn(),
 		getNow: () => 123,
@@ -46,7 +52,7 @@ describe("account command", () => {
 			paused: true,
 			updatedAt: 123,
 		});
-		expect(deps.savePolicyStore).toHaveBeenCalledTimes(2);
+		expect(deps.updatePolicyStore).toHaveBeenCalledTimes(2);
 	});
 
 	it("sets weight, drain state, and note", async () => {
@@ -106,3 +112,45 @@ describe("account command", () => {
 	});
 });
 
+
+ it("sets and reports an account priority tier",async()=>{
+  const store:AccountPolicyStore={version:1,accounts:{}};const deps=makeDeps(store);
+  expect(await runAccountCommand(["priority","1","2"],deps)).toBe(0);
+  const key=getAccountPolicyKey(makeStorage().accounts[0]!,0);
+  expect(store.accounts[key]?.priority).toBe(2);
+  deps.logInfo.mockClear();await runAccountCommand(["policy","list","--json"],deps);
+  expect(JSON.parse(String(deps.logInfo.mock.calls[0]?.[0])).accounts[0].priority).toBe(2);
+ });
+ it.each(["-1","10","1.5","2junk",""])("rejects invalid priority %s",async(value)=>{
+  const deps=makeDeps({version:1,accounts:{}});
+  expect(await runAccountCommand(["priority","1",value],deps)).toBe(1);
+  expect(deps.updatePolicyStore).not.toHaveBeenCalled();
+ });
+it("configures per-account automatic priming without enabling it for other accounts",async()=>{
+ const store:AccountPolicyStore={version:1,accounts:{}};const deps=makeDeps(store);
+ expect(await runAccountCommand(["auto-prime","1","on"],deps)).toBe(0);
+ const key=getAccountPolicyKey(makeStorage().accounts[0]!);
+ expect(store.accounts[key]).toMatchObject({autoPrime:true});
+ expect(await runAccountCommand(["policy","list","--json"],deps)).toBe(0);
+ expect(JSON.parse(deps.logInfo.mock.calls.at(-1)![0]).accounts[0].autoPrime).toBe(true);
+ expect(await runAccountCommand(["auto-prime","1","off"],deps)).toBe(0);
+ expect(store.accounts[key]).toMatchObject({autoPrime:false});
+ expect(await runAccountCommand(["auto-prime","1","yes"],deps)).toBe(1);
+ expect(await runAccountCommand(["auto-prime","1","on","extra"],deps)).toBe(1);
+});
+
+ it("toggles and reports emergency-only without changing pause or priority", async()=>{
+  const store:AccountPolicyStore={version:1,accounts:{}};const deps=makeDeps(store);
+  await runAccountCommand(["priority","1","3"],deps);
+  await runAccountCommand(["pause","1"],deps);
+  expect(await runAccountCommand(["emergency-only","1","on"],deps)).toBe(0);
+  const key=getAccountPolicyKey(makeStorage().accounts[0]!,0);
+  expect(store.accounts[key]).toMatchObject({emergencyOnly:true,paused:true,priority:3});
+  deps.logInfo.mockClear();await runAccountCommand(["policy","list","--json"],deps);
+  expect(JSON.parse(String(deps.logInfo.mock.calls[0]?.[0])).accounts[0].emergencyOnly).toBe(true);
+  expect(await runAccountCommand(["emergency-only","1","off"],deps)).toBe(0);
+  expect(store.accounts[key]?.emergencyOnly).toBe(false);
+  const writes=deps.updatePolicyStore.mock.calls.length;
+  expect(await runAccountCommand(["emergency-only","1","yes"],deps)).toBe(1);
+  expect(deps.updatePolicyStore).toHaveBeenCalledTimes(writes);
+ });

@@ -7,6 +7,8 @@ import {
 	isRateLimitedForFamily,
 	isRateLimitedForQuotaKey,
 	parseRateLimitReason,
+	workspaceQuotaKey,
+	selectedQuotaLimits,
 	type RateLimitedEntity,
 } from "../lib/accounts/rate-limits.js";
 
@@ -17,6 +19,34 @@ function entityWith(resetTimes: Record<string, number | undefined>): RateLimited
 }
 
 describe("account rate-limit helpers", () => {
+	it("retains workspace deadlines through serialization and selection changes", () => {
+		vi.useFakeTimers(); vi.setSystemTime(NOW);
+		const entity: RateLimitedEntity = JSON.parse(JSON.stringify({accountId:"a", workspaces:[{id:"a"},{id:"b"}],currentWorkspaceIndex:0,
+			rateLimitResetTimes:{[workspaceQuotaKey("codex","b")]:NOW+60_000,[workspaceQuotaKey("codex:model-a","a")]:NOW+10_000}}));
+		expect(isRateLimitedForFamily(entity,"codex","model-b")).toBe(false);
+		expect(isRateLimitedForFamily(entity,"codex","model-a")).toBe(true);
+		expect(selectedQuotaLimits(entity)).toEqual({"codex:model-a":NOW+10_000});
+		entity.currentWorkspaceIndex=1;
+		expect(isRateLimitedForFamily(entity,"codex","model-b")).toBe(true);
+		expect(isRateLimitedForFamily(entity,"codex","gpt-reserve")).toBe(false);
+		expect(selectedQuotaLimits(entity)).toEqual({codex:NOW+60_000});
+		vi.advanceTimersByTime(60_000);
+		expect(isRateLimitedForFamily(entity,"codex","model-b")).toBe(false);
+	});
+	it("resolves a selected organization alias to its native workspace deadline", () => {
+		vi.useFakeTimers(); vi.setSystemTime(NOW);
+		const entity: RateLimitedEntity={accountId:"org-personal",codexCliMirror:{forAccountId:"org-personal",accountId:"a"},
+			rateLimitResetTimes:{[workspaceQuotaKey("codex","a")]:NOW+10_000}};
+		expect(isRateLimitedForFamily(entity,"codex")).toBe(true);
+		expect(selectedQuotaLimits(entity)).toEqual({codex:NOW+10_000});
+	});
+	it("retains legacy global blockers beside workspace deadlines", () => {
+		vi.useFakeTimers(); vi.setSystemTime(NOW);
+		const entity: RateLimitedEntity={accountId:"a",
+			rateLimitResetTimes:{[workspaceQuotaKey("codex","a")]:NOW+10_000,codex:NOW+20_000}};
+		expect(isRateLimitedForFamily(entity,"codex")).toBe(true);
+		expect(selectedQuotaLimits(entity)).toEqual({codex:NOW+20_000});
+	});
 	afterEach(() => {
 		vi.useRealTimers();
 	});
@@ -142,6 +172,19 @@ describe("account rate-limit helpers", () => {
 			);
 		});
 
+		it("keeps Luna Reserve independent from a family-wide ordinary quota limit", () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(NOW);
+			const ordinaryBlocked = entityWith({ "gpt-5.2": NOW + 60_000 });
+			expect(isRateLimitedForFamily(ordinaryBlocked, "gpt-5.2", "gpt-reserve")).toBe(false);
+
+			const reserveBlocked = entityWith({
+				"gpt-5.2": NOW + 60_000,
+				"gpt-5.2:gpt-reserve": NOW + 30_000,
+			});
+			expect(isRateLimitedForFamily(reserveBlocked, "gpt-5.2", "gpt-reserve")).toBe(true);
+		});
+
 		it("prunes expired entries as a side effect before answering", () => {
 			vi.useFakeTimers();
 			vi.setSystemTime(NOW);
@@ -170,5 +213,12 @@ describe("account rate-limit helpers", () => {
 		])("formats %dms as %j", (ms, expected) => {
 			expect(formatWaitTime(ms)).toBe(expected);
 		});
+	});
+});
+
+describe("formatWaitTime with non-finite input", () => {
+	it.each([Number.POSITIVE_INFINITY, Number.NaN])("returns a readable string for %s", async (ms) => {
+		const { formatWaitTime } = await import("../lib/accounts/rate-limits.js");
+		expect(formatWaitTime(ms)).not.toMatch(/NaN|Infinity/);
 	});
 });

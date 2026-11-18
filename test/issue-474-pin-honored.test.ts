@@ -602,7 +602,7 @@ describe("issue #474 — manual pin honored by runtime proxy", () => {
 			expect(skipReasons.get(5)).toBe("missing");
 		});
 
-		it("records 'already-attempted' when the pinned index was already tried", () => {
+		it("reselects a healthy pinned account when the index was already tried", () => {
 			const now = Date.now();
 			const storage = createStorage(now, 3);
 			const accountManager = new AccountManager(undefined, storage);
@@ -621,8 +621,8 @@ describe("issue #474 — manual pin honored by runtime proxy", () => {
 				skipReasons,
 			});
 
-			expect(result).toBeNull();
-			expect(skipReasons.get(0)).toBe("already-attempted");
+			expect(result?.index).toBe(0);
+			expect(skipReasons.has(0)).toBe(false);
 		});
 
 		it("records 'workspace-disabled' when every workspace on the pinned account is disabled", () => {
@@ -825,4 +825,3 @@ describe("issue #474 — manual pin honored by runtime proxy", () => {
 		});
 	});
 });
-

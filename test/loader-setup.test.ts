@@ -23,8 +23,18 @@ describe("loader runtime setup", () => {
 			applyPreemptiveQuotaSettings: () => {
 				calls.push("quota");
 			},
+			applyContextBudgetGuardSettings: () => {
+				calls.push("contextBudget");
+			},
 		});
 
-		expect(calls).toEqual(["ui", "scope", "session", "guardian", "quota"]);
+		expect(calls).toEqual([
+			"ui",
+			"scope",
+			"session",
+			"guardian",
+			"quota",
+			"contextBudget",
+		]);
 	});
 });

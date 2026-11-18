@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { createHash } from "node:crypto";
 import {
 	createState,
 	parseAuthorizationInput,
@@ -214,6 +215,14 @@ describe("Auth Module", () => {
 
 			expect(flow.pkce).toHaveProperty("challenge");
 			expect(flow.pkce).toHaveProperty("verifier");
+			expect(flow.pkce.verifier.length).toBeGreaterThanOrEqual(43);
+			expect(flow.pkce.verifier.length).toBeLessThanOrEqual(128);
+			expect(flow.pkce.verifier).toMatch(/^[A-Za-z0-9_-]+$/);
+			expect(flow.pkce.challenge).toBe(
+				createHash("sha256")
+					.update(flow.pkce.verifier)
+					.digest("base64url"),
+			);
 			expect(flow.state).toMatch(/^[a-f0-9]{32}$/);
 		});
 
@@ -293,9 +302,160 @@ describe("Auth Module", () => {
 			expect(redacted).toContain("response_type=code");
 		});
 
-		it("returns original input when url parsing fails", () => {
-			const raw = "not-a-url";
-			expect(redactOAuthUrlForLog(raw)).toBe(raw);
+		it("collapses unparseable input to a placeholder so raw text never logs", () => {
+			const raw = "not-a-url code=secretvalue123&state=abc";
+			expect(redactOAuthUrlForLog(raw)).toBe("<unparseable-url>");
+		});
+
+		it("redacts query keys case-insensitively", () => {
+			const raw = "https://x/cb?CODE=SecretCode123&State=St8Val&ok=1";
+			const out = redactOAuthUrlForLog(raw);
+			expect(out).not.toContain("SecretCode123");
+			expect(out).not.toContain("St8Val");
+			expect(out).toContain("ok=1");
+		});
+
+		it("redacts sensitive params in the fragment", () => {
+			const raw =
+				"https://x/cb#access_token=AT_ch_abcdefghijklmnopqrstuvwx&state=s9&ok=1";
+			const out = redactOAuthUrlForLog(raw);
+			expect(out).not.toContain("AT_ch_abcdefghijklmnopqrstuvwx");
+			expect(out).not.toContain("state=s9");
+			expect(out).toContain("ok=1");
+		});
+
+		it("redacts params in nested URL values", () => {
+			const inner = "https://inner/cb?code=InnerSecret99&ok=1";
+			const raw = `https://x/cb?redirect_uri=${encodeURIComponent(inner)}&state=outer`;
+			const out = redactOAuthUrlForLog(raw);
+			expect(out).not.toContain("InnerSecret99");
+			expect(out).not.toContain("state=outer");
+		});
+
+		it("masks userinfo credentials", () => {
+			const out = redactOAuthUrlForLog(
+				"https://user:p%40ssw0rd@auth.example.com/oauth?x=1",
+			);
+			expect(out).not.toContain("p%40ssw0rd");
+			expect(out).not.toContain("user:");
+		});
+
+		it("scrubs token-shaped values in the path", () => {
+			const out = redactOAuthUrlForLog(
+				"https://x/cb/RT_ch_abcdefghijklmnopqrstuvwxyz0123456789/end",
+			);
+			expect(out).not.toContain("RT_ch_abcdefghijklmnopqrstuvwxyz0123456789");
+		});
+
+		it("scrubs a sensitive key=value prefix inside a route-style fragment", () => {
+			// The fragment "route" prefix sits before the `?` and is not part of
+			// the parsed frag params — `code` must still be scrubbed there.
+			const out = redactOAuthUrlForLog("https://x/cb#code=secret99?ok=1");
+			expect(out).not.toContain("secret99");
+			expect(out).toContain("ok=1");
+		});
+
+		it("scrubs token-shaped values in fragment route paths", () => {
+			const token = "RT_ch_abcdefghijklmnopqrstuvwxyz0123";
+			const out = redactOAuthUrlForLog(`https://x/cb#/r/${token}/x?ok=1`);
+			expect(out).not.toContain(token);
+			expect(out).toContain("ok=1");
+		});
+
+		it("scrubs embedded secrets in non-sensitive top-level query values", () => {
+			const out = redactOAuthUrlForLog(
+				"https://x/cb?msg=refresh_token%3Dsekret12345&ok=1",
+			);
+			expect(out).not.toContain("sekret12345");
+			expect(out).toContain("ok=1");
+		});
+
+		it("scrubs bearer tokens inside non-sensitive query values", () => {
+			const out = redactOAuthUrlForLog(
+				"https://x/cb?error_description=Bearer%20abc123def456&ok=1",
+			);
+			expect(out).not.toContain("abc123def456");
+			expect(out).toContain("Bearer+***REDACTED***");
+		});
+
+		it("scrubs non-sensitive values inside nested URLs at depth 0", () => {
+			const inner = "https://inner/cb?msg=code%3Dsecval99&ok=1";
+			const raw = `https://x/cb?redirect_uri=${encodeURIComponent(inner)}`;
+			const out = redactOAuthUrlForLog(raw);
+			expect(out).not.toContain("secval99");
+		});
+
+		it("does not over-redact non-sensitive query values", () => {
+			const raw =
+				"https://x/cb?ok=1&error_code=E429&device_code=E429x&client_id=app_EMoamEEZ73f0CkXaXp7hrann&response_type=code";
+			const out = redactOAuthUrlForLog(raw);
+			expect(out).toContain("error_code=E429");
+			expect(out).toContain("device_code=E429x");
+			expect(out).toContain("client_id=app_EMoamEEZ73f0CkXaXp7hrann");
+			expect(out).toContain("response_type=code");
+		});
+
+		it("masks token-shaped hostname labels", () => {
+			const out = redactOAuthUrlForLog(
+				"https://RT_ch_abcdefghijklmnopqrstuvwxyz0123456789.evil.com/cb?ok=1",
+			);
+			expect(out.toLowerCase()).not.toContain(
+				"rt_ch_abcdefghijklmnopqrstuvwxyz0123456789",
+			);
+		});
+
+		it("redacts credential-like and compound-suffix query keys", () => {
+			const out = redactOAuthUrlForLog(
+				"https://x/cb?api_key=keyval99&authorization=authz99&assertion=assert99&client_assertion=cass99&id_token_hint=hint99&secret=secval99&x-api-key=xkey99&x-refresh-token=xrt99&x-client-secret=xcs99&ok=1",
+			);
+			for (const leaked of [
+				"keyval99",
+				"authz99",
+				"assert99",
+				"cass99",
+				"hint99",
+				"secval99",
+				"xkey99",
+				"xrt99",
+				"xcs99",
+			]) {
+				expect(out).not.toContain(leaked);
+			}
+			expect(out).toContain("ok=1");
+		});
+
+		it("keeps lookalike query keys unredacted", () => {
+			const out = redactOAuthUrlForLog(
+				"https://x/cb?token_type=Bearer&session_state=sess99&csrf_token=csrftok99&nonce=nonce99&api_keys=aks99&secret_hint=shint99&x-session-state=xss99&error_code=E429&ok=1",
+			);
+			for (const kept of [
+				"token_type=Bearer",
+				"session_state=sess99",
+				"csrf_token=csrftok99",
+				"nonce=nonce99",
+				"api_keys=aks99",
+				"secret_hint=shint99",
+				"x-session-state=xss99",
+				"error_code=E429",
+				"ok=1",
+			]) {
+				expect(out).toContain(kept);
+			}
+		});
+
+		it("scrubs secrets hidden in a fully percent-encoded fragment", () => {
+			// #code%3D... encodes the `=` so the raw hash hides the param shape.
+			const out = redactOAuthUrlForLog("https://x/cb#code%3Dsecval99&ok=1");
+			expect(out).not.toContain("secval99");
+			expect(out).toContain("ok=1");
+		});
+
+		it("scrubs double-encoded secrets inside non-sensitive query values", () => {
+			const out = redactOAuthUrlForLog(
+				"https://x/cb?msg=code%253Dsecval99&ok=1",
+			);
+			expect(out).not.toContain("secval99");
+			expect(out).toContain("ok=1");
 		});
 	});
 
@@ -849,6 +1009,220 @@ describe("Auth Module", () => {
 			const out = sanitizeOAuthResponseBodyForLog(body);
 			expect(out).not.toContain(OPAQUE_REFRESH);
 			expect(out).toContain("***REDACTED***");
+		});
+
+		it("masks keys case-insensitively in JSON bodies", () => {
+			const body = JSON.stringify({
+				REFRESH_TOKEN: OPAQUE_REFRESH,
+				State: "statevalue123",
+				CODE: "authcode456",
+			});
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toContain(OPAQUE_REFRESH);
+			expect(out).not.toContain("statevalue123");
+			expect(out).not.toContain("authcode456");
+		});
+
+		it("masks device-flow secrets (device_auth_id, user_code, authorization_code)", () => {
+			const body = JSON.stringify({
+				device_auth_id: "dvid_secret_123456",
+				user_code: "ABCD-EFGH",
+				authorization_code: "authz_code_secret",
+				interval: 5,
+			});
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toContain("dvid_secret_123456");
+			expect(out).not.toContain("ABCD-EFGH");
+			expect(out).not.toContain("authz_code_secret");
+			expect(out).toContain('"interval":5');
+		});
+
+		it("masks code_challenge and client_secret", () => {
+			const body = JSON.stringify({
+				code_challenge: "challenge_value_xyz",
+				client_secret: "clientsec12345",
+			});
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toContain("challenge_value_xyz");
+			expect(out).not.toContain("clientsec12345");
+		});
+
+		it("scrubs secrets embedded in error_description free text", () => {
+			const body = JSON.stringify({
+				error: "invalid_grant",
+				error_description:
+					"failed: code=emb3dd3dc0de and state=emb3dd3dst4te retry",
+			});
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toContain("emb3dd3dc0de");
+			expect(out).not.toContain("emb3dd3dst4te");
+			expect(out).toContain("invalid_grant");
+		});
+
+		it("scrubs Bearer tokens embedded in string fields", () => {
+			const body = JSON.stringify({
+				error_description:
+					"use Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdef here",
+			});
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+			expect(out).toContain("Bearer ***REDACTED***");
+		});
+
+		it("scrubs device-flow secrets in urlencoded fallback text", () => {
+			const body =
+				"error=slow_down&device_auth_id=dvid777&user_code=WXYZ-1234&next=ok";
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toContain("dvid777");
+			expect(out).not.toContain("WXYZ-1234");
+			expect(out).toContain("next=ok");
+		});
+
+		it("does not over-redact error_code or csrf_token in urlencoded text", () => {
+			const body = "error_code=E429&csrf_token=csrfval123&state=stval456";
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).toContain("error_code=E429");
+			expect(out).toContain("csrf_token=csrfval123");
+			expect(out).not.toContain("stval456");
+		});
+
+		it("masks separator-varied sensitive keys in malformed JSON", () => {
+			// The fallback used to match literal key spellings only, so a
+			// `client-secret`/`client secret` spelling slipped through.
+			for (const body of [
+				`{"client-secret":"short123"`,
+				`{"client secret":"short123"`,
+				`{"CLIENT-SECRET":"short123"`,
+				`{'client-secret':'short123'}`,
+				`{"ACCESS TOKEN":"tok12345"`,
+			]) {
+				const out = sanitizeOAuthResponseBodyForLog(body);
+				expect(out).not.toContain("short123");
+				expect(out).not.toContain("tok12345");
+				expect(out).toContain("***REDACTED***");
+			}
+		});
+
+		it("masks short values on separator-varied keys in malformed JSON", () => {
+			const out = sanitizeOAuthResponseBodyForLog(`{"client-secret":"ab"`);
+			expect(out).not.toContain('"ab"');
+			expect(out).toContain("***REDACTED***");
+		});
+
+		it("scrubs percent-encoded separators in fallback text", () => {
+			for (const [body, secret] of [
+				["state%3Dst8val123", "st8val123"],
+				["access%20token=tok12345", "tok12345"],
+				["msg=refresh_token%3Dsekret12345", "sekret12345"],
+			] as const) {
+				const out = sanitizeOAuthResponseBodyForLog(body);
+				expect(out).not.toContain(secret);
+				expect(out).toContain("***REDACTED***");
+			}
+		});
+
+		it("does not leave a bearer token stranded behind a key=value prefix", () => {
+			// The key-shaped pass consumed the literal word "Bearer" as its
+			// value, leaving the JWT behind it intact; Bearer must run first.
+			const body =
+				"access-token: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sigpart";
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+			expect(out).not.toContain("sigpart");
+		});
+
+		it("does not over-redact lookalike keys in malformed JSON", () => {
+			const out = sanitizeOAuthResponseBodyForLog(
+				`{"error_code":"E500","opcode":"x9"`,
+			);
+			expect(out).toContain('"error_code":"E500"');
+			expect(out).toContain('"opcode":"x9"');
+		});
+
+		it("survives a 10 MB token-charset body without leaking a raw run", () => {
+			// Regression: an uncapped value quantifier overflowed the regex
+			// backtrack stack (RangeError) on megabyte-scale homogeneous input.
+			const body = "a".repeat(10_000_000);
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).not.toMatch(/[A-Za-z0-9_-]{32}/);
+		});
+
+		it("survives a 10 MB token-charset value inside a JSON field", () => {
+			const body = JSON.stringify({
+				error: "server_error",
+				payload: "a".repeat(10_000_000),
+			});
+			const out = sanitizeOAuthResponseBodyForLog(body);
+			expect(out).toContain("server_error");
+			expect(out).not.toMatch(/[A-Za-z0-9_-]{32}/);
+		});
+
+		it("masks credential-like keys in parsed JSON bodies", () => {
+			const out = sanitizeOAuthResponseBodyForLog(
+				JSON.stringify({
+					api_key: "keyval9999",
+					authorization: "authz9999",
+					assertion: "assert9999",
+					client_assertion: "cass9999",
+					secret: "secval9999",
+					id_token_hint: "hint9999",
+					error_code: "E500",
+				}),
+			);
+			for (const leaked of [
+				"keyval9999",
+				"authz9999",
+				"assert9999",
+				"cass9999",
+				"secval9999",
+				"hint9999",
+			]) {
+				expect(out).not.toContain(leaked);
+			}
+			expect(out).toContain("E500");
+		});
+
+		it("masks compound credential keys and a token smuggled as a key name", () => {
+			const smuggledToken = "RT_ch_abcdefghijklmnopqrstuvwxyz0123456789";
+			const out = sanitizeOAuthResponseBodyForLog(
+				JSON.stringify({
+					"x-api-key": "xkey99999",
+					"x-refresh-token": "xrt99999",
+					"x-client-secret": "xcs99999",
+					[smuggledToken]: "value",
+					token_type: "Bearer",
+					session_state: "sess9999",
+				}),
+			);
+			expect(out).not.toContain("xkey99999");
+			expect(out).not.toContain("xrt99999");
+			expect(out).not.toContain("xcs99999");
+			expect(out).not.toContain(smuggledToken);
+			expect(out).toContain('"token_type":"Bearer"');
+			expect(out).toContain("sess9999");
+		});
+
+		it("keeps __proto__ as ordinary data in parsed JSON", () => {
+			const out = sanitizeOAuthResponseBodyForLog(
+				`{"__proto__":{"token":"tokval999"},"ok":"v"}`,
+			);
+			expect(out).toContain("__proto__");
+			expect(out).not.toContain("tokval999");
+			expect(out).toContain('"ok":"v"');
+		});
+
+		it("masks credential-like keys and double-encoded separators in fallback text", () => {
+			for (const [body, leaked] of [
+				["api-key: kval99999", "kval99999"],
+				["credentials=cred99999", "cred99999"],
+				["assertion: assert99999", "assert99999"],
+				[`{"CODE":"upper99999"`, "upper99999"],
+				["code%253Dsecval999", "secval999"],
+			] as const) {
+				const out = sanitizeOAuthResponseBodyForLog(body);
+				expect(out).not.toContain(leaked);
+				expect(out).toContain("***REDACTED***");
+			}
 		});
 	});
 

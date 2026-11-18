@@ -1,22 +1,21 @@
 # codex-multi-auth Architecture
 
-Public overview of how `codex-multi-auth` fits around the official Codex CLI: account manager, optional forwarding wrappers, local storage, runtime Responses rotation, local governance, optional bridge, reversible app bind, and optional plugin-host path.
+How `codex-multi-auth` fits around the official Codex CLI: which binaries exist, what each one does, how a forwarded request travels through the loopback rotation proxy to a managed account, and where state lives.
+
+For the maintainer-level module map, see [development/ARCHITECTURE.md](development/ARCHITECTURE.md).
 
 ---
 
 ## The Short Version
 
-`codex-multi-auth` is a multi-account OAuth manager for the official `@openai/codex` CLI.
+`codex-multi-auth` is a multi-account OAuth manager for the official `@openai/codex` CLI. It keeps a pool of ChatGPT-backed Codex accounts on disk, picks the healthiest one for each request, and keeps the official CLI in charge of everything else.
 
-- `codex-multi-auth ...` commands are handled locally by the account manager.
-- `codex-multi-auth-codex ...` is the optional forwarding wrapper for official Codex CLI commands.
-- `mcodex ...` is a convenience launcher over that wrapper (`--monitor`, `--tmux` / `-t`).
-- The package does **not** publish a global `codex` binary; that name stays owned by the official Codex install path.
-- Account, settings, quota, usage, policy, backup, and diagnostic state live under `~/.codex/multi-auth`.
-- Runtime rotation is **default-on** for request-bearing sessions launched through this package's wrapper or app bind.
-- When runtime rotation is enabled, forwarded Codex CLI/app sessions can send Responses traffic through a localhost-only proxy that selects managed accounts per request.
-- Local governance (usage ledger, budgets, account pause/drain, routing profiles, capability matrix) is enforced at runtime via `evaluateRuntimePolicy` on the rotation path.
-- The plugin-host entrypoint remains available for advanced host integrations, but it is not required for normal CLI use.
+- `codex-multi-auth ...` runs the local account manager (login, switch, health, repair, governance).
+- `codex-multi-auth-codex ...` is the opt-in forwarding wrapper: `auth ...` commands stay local, everything else is forwarded to the official Codex CLI with runtime rotation applied.
+- `mcodex ...` is a convenience launcher over that same wrapper.
+- The package does **not** publish a global `codex` binary; that name stays owned by the official Codex install.
+- Runtime rotation is **default-on**: request-bearing sessions launched through the wrapper (or the packaged-app bind) send Responses traffic through a localhost-only proxy that selects a managed account per request.
+- All state — accounts, settings, quota cache, usage ledger, policies, backups — lives under `~/.codex/multi-auth`. Official Codex state stays under `~/.codex`.
 
 ---
 
@@ -26,239 +25,159 @@ Public overview of how `codex-multi-auth` fits around the official Codex CLI: ac
 
 | Binary | Script | Role |
 | --- | --- | --- |
-| `codex-multi-auth` | `scripts/codex-multi-auth.js` | Account manager only. Bare subcommands (`status`, `login`, …) normalize to the local auth manager. |
-| `codex-multi-auth-codex` | `scripts/codex.js` | Wrapper: `auth ...` stays local; every other command forwards to official Codex with optional runtime rotation and a shadow `CODEX_HOME`. |
-| `mcodex` | `scripts/mcodex.js` | Convenience over `codex.js`: default forward, `--monitor` (live `list` via `watch`), `--tmux` / `-t` (optional `--live-accounts`). |
-| `codex-multi-auth-app-launcher` | `scripts/codex-app-launcher.js` | Desktop launcher helper for supported user-level shortcuts / managed macOS wrapper apps. |
+| `codex-multi-auth` | `scripts/codex-multi-auth.js` | Account manager only. Bare subcommands normalize to `auth` subcommands, so `codex-multi-auth status` and `codex-multi-auth auth status` are the same call. |
+| `codex-multi-auth-codex` | `scripts/codex.js` | Wrapper/forwarder. `auth ...` runs locally; every other command resolves the real official Codex binary and forwards to it, with runtime rotation wired in when enabled. |
+| `mcodex` | `scripts/mcodex.js` | Convenience launcher. Forwards to `codex.js`; adds `--monitor` (watch `codex-multi-auth list`) and `--tmux` / `-t` session helpers. Contains no account logic. |
+| `codex-multi-auth-app-launcher` | `scripts/codex-app-launcher.js` | OS-level launcher routing: retargets supported user-level shortcuts or installs a managed wrapper app. |
 
-The standalone manager normalizes bare account-manager commands, so both `codex-multi-auth status` and `codex-multi-auth auth status` reach the same local manager. The forwarding wrapper handles `auth ...` locally, forwards every other command to the official Codex CLI, and injects runtime-rotation provider settings when rotation is enabled.
+A fifth shipped script, `scripts/codex-app-router.js`, is the persistent localhost router used by the packaged-app bind — it is spawned, not a bin.
 
 ---
 
-## Main Components
+## The Request Path, End to End
+
+The default rotation path for a forwarded request-bearing command (for example `codex-multi-auth-codex exec "…"`):
+
+```text
+You
+ |
+ | codex-multi-auth-codex exec "..."      (or mcodex, or the bound Codex app)
+ v
+scripts/codex.js  ─── auth ...? ──yes──> local account manager (lib/codex-manager.ts)
+ |
+ | no: resolve official Codex binary
+ | build shadow CODEX_HOME (or canonical home + -c overrides for TUI/resume/app-server)
+ | model_provider = "codex-multi-auth-runtime-proxy", base_url = http://127.0.0.1:<port>
+ | inject per-launch client key via OPENAI_API_KEY
+ v
+Official Codex CLI ──POST /responses──>
+ |
+ v
+Runtime rotation proxy (loopback only)
+ |
+ | 1. authenticate client (per-launch key, timing-safe compare)
+ | 2. gate method/path/body (Responses, models, images, transcription, web search, voice calls, thread-goal only)
+ | 3. evaluateRuntimePolicy: model allow/deny, budgets, pause/drain, tags
+ | 4. choose account: pin → priority → sequential|affinity → hybrid → scan
+ | 5. refresh access token if inside the 60s skew window
+ | 6. forward upstream (redirects never followed)
+ | 7. on retryable failure mark + rotate to next eligible account
+ v
+https://chatgpt.com/backend-api (official upstream)
+ |
+ | stream back: strip hop-by-hop + private headers, scan usage, record ledger row
+ v
+Your terminal
+```
+
+Details worth knowing:
+
+- **Loopback only.** The proxy refuses non-loopback binds and authenticates every request with a random per-launch key. Your account tokens are injected upstream; they never appear in client-facing responses.
+- **Auth before routing.** An unauthenticated request gets `401 runtime_rotation_proxy_unauthorized` before the path is even inspected.
+- **Redirects are never followed** (`redirect: "error"`), so a Bearer token cannot be exfiltrated to a redirected host.
+- **Failure is never a silent hang.** Transient failures rotate to another account; true exhaustion returns `503 codex_runtime_rotation_pool_exhausted` with per-account skip reasons and `retry_after_ms`, and points at `codex-multi-auth rotation status`.
+- **Two homes.** Non-interactive commands get a throwaway shadow `CODEX_HOME` (state synced back on exit). Interactive TUI, `resume`/`fork`, and `app-server` run against the canonical `CODEX_HOME` with the provider injected as `-c` overrides, so session history is not copied and reindexed on every launch. `codex app` also gets a shadow home through the app-helper context unless `CODEX_MULTI_AUTH_APP_ROTATION_USE_CANONICAL_HOME=1`.
+- **Opt-out.** `codex-multi-auth rotation disable` or `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0` returns to plain forwarding.
+
+### Account selection, in one breath
+
+Per request the proxy tries, in order: a soft pin left by `codex-multi-auth switch`, policy priority tiers (lower `account priority` numbers first), a hard pin from `--account`/`CODEX_MULTI_AUTH_FORCE_ACCOUNT`, the sequential stick-until-exhausted cursor, session affinity (20-minute sticky sessions), a hybrid score (`health*2 + tokens*5 + hoursSinceUsed*2 + capability boost`), and finally a linear scan. An account is skipped when it is disabled, workspace-disabled, token-invalid, rate-limited, cooling down, or has an open circuit breaker.
+
+When any policy priority differs from the default `1`, sequential scheduling uses saved account list order within the eligible tier instead of quota reset ranking or active-account preference. Runtime policy supplies priority `1` for every account by default; an all-default map preserves the healthy active cursor. Exhaustion and reserve filtering still apply before the tier is selected.
+
+---
+
+## Components
 
 ### 1. Account manager
 
-`lib/codex-manager.ts` and `lib/codex-manager/commands/` provide the local dashboard and CLI surface, including:
+`codex-multi-auth <command>` dispatches to `lib/codex-manager.ts` + `lib/codex-manager/commands/`:
 
-| Area | Examples |
+| Area | Commands |
 | --- | --- |
-| Accounts | `login`, `list`, `status`, `switch`, `unpin`, `workspace` |
+| Accounts | `login`, `list`, `status`, `switch <index>`, `unpin`, `workspace` |
 | Health / selection | `check`, `forecast`, `best`, `report`, `why-selected` |
-| Repair | `fix`, `doctor`, `verify` / `verify-flagged` |
-| Rotation | `rotation status\|enable\|disable\|bind-app\|unbind-app\|…` |
-| Governance | `usage`, `budget`, `account` (tag/weight/pause/drain), `models`, `monitor` |
+| Repair | `fix`, `doctor`, `verify`, `verify-flagged` |
+| Rotation | `rotation status\|enable\|disable\|bind-app\|unbind-app\|reset-runtime` |
+| Governance | `usage`, `budget`, `account` (tag/weight/priority/pause/drain/note), `models`, `monitor` |
 | Bridge / integrations | `bridge token …`, `integrations` |
-| Sessions | `history` (provider-agnostic local rollout browser) |
-| Config / debug | `config`, `init-config`, `debug bundle`, `uninstall` |
+| Sessions / config | `history`, `config explain`, `init-config`, `debug bundle`, `uninstall` |
 
-### 2. Optional wrapper + shadow `CODEX_HOME`
+On an interactive terminal with a populated pool, bare `codex-multi-auth login` opens the dashboard instead of a bare sign-in; `--device-auth` covers headless/remote logins, and `--manual`/`--no-browser` prints a paste-back flow. The OAuth callback server binds port `1455` on both `::1` and `127.0.0.1` — the registered redirect URI is fixed, so a conflict on either family is fatal rather than silently degraded.
 
-`codex-multi-auth-codex` (`scripts/codex.js`):
+### 2. Wrapper and shadow `CODEX_HOME`
 
-- Resolves the real official Codex binary on `PATH`.
-- Handles multi-auth `auth` subcommands locally.
-- Forwards non-auth commands to official Codex.
-- For request-bearing sessions with runtime rotation enabled, creates a temporary shadow `CODEX_HOME`, writes a local provider (`codex-multi-auth-runtime-proxy`), and starts a loopback proxy for that process.
-- Keeps forwarded sessions on file-backed auth state unless the caller opts out.
-- Supports ephemeral force-pin: `codex-multi-auth-codex --account <index|email|id>` (or `CODEX_MULTI_AUTH_FORCE_ACCOUNT`) for a single invocation only — never mutates the persisted `switch` pin.
+`codex-multi-auth-codex` resolves the real official Codex binary (env override → installed package → global npm root → `PATH`), then:
 
-`mcodex` is a thin convenience entry over the same wrapper script (spawned via `node` + sibling `codex.js`, not via a PATH shim).
+- reconciles `cli_auth_credentials_store = "file"` in `~/.codex/config.toml` so forwarded sessions use file-backed auth (opt out with `CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE=0`),
+- resolves an ephemeral `--account <index|email|id>` / `CODEX_MULTI_AUTH_FORCE_ACCOUNT` pin (never mutates the persisted `switch` pin),
+- starts the loopback rotation proxy and points the Codex provider config at it,
+- spawns official Codex (with bounded retries and an unsupported-model fallback chain), and
+- syncs refreshed official state back out of the shadow home on exit.
 
 ### 3. Runtime rotation proxy
 
-When `codexRuntimeRotationProxy` is enabled (default), the wrapper starts a loopback Responses-compatible proxy and points a temporary shadow config at the local provider:
+`lib/runtime-rotation-proxy.ts`, provider id `codex-multi-auth-runtime-proxy`. It forwards only these routes: `POST /responses` (+ `/codex/`, `/v1/` aliases), `GET /models` (+ `/v1`), [image generation/edit routes](reference/image-routes.md), `POST /transcribe`, `POST /alpha/search` (Codex web search, forwarded to `/codex/alpha/search`), native voice call creation (`POST /live`, `/realtime/calls`, + `/v1` and `/codex` aliases, translated from Codex's multipart shape to the ChatGPT backend JSON shape at `/codex/realtime/calls`), and `GET|POST /thread/goal/*`. The voice call's sideband WebSocket (`/v1/live/<call_id>` or `/v1/realtime?call_id=`) is relayed to the OpenAI realtime API with the account that created the call; the bound config points `experimental_realtime_ws_base_url` at the proxy for this. Everything else is a 404. `/transcribe` forwards the multipart audio bytes and original `Content-Type` boundary unchanged while replacing local client credentials with managed ChatGPT OAuth; ambiguous transport/upstream failures are not replayed across accounts. Bodies are capped at 64 MiB — for `/transcribe` the cap applies to the encoded multipart upload. gzip/deflate/br/zstd request encodings are decoded on the JSON routes only; `/transcribe` forwards the original bytes and `Content-Encoding` untouched.
 
-`codex-multi-auth-runtime-proxy`
+Per request it applies policy before picking an account, refreshes tokens through a deduplicating queue (one in-flight refresh per token, cross-process leases so two CLIs do not double-refresh), classifies upstream responses into rotation marks (rate-limit, cooldown, circuit breaker, workspace disable, token invalidation), and streams successful bytes back with stall detection and backpressure. Runtime counters land in `runtime-observability.json` for `status`, `report`, `monitor`, `rotation status`, and `why-selected`.
 
-The proxy:
+For API/ZDR routes, live catalog discovery and the daily opt-in checker share persisted capability evidence through `lib/runtime/persisted-api-capabilities.ts`. A credential/model lock covers reload, bounded probes, and atomic persistence, so competing consumers reuse the completed result. General capability evidence lasts 15 minutes; confirmed program evidence has its own 24-hour expiry. Request policy remains separate from probe evidence.
 
-- accepts only local authenticated client requests (per-process client token)
-- forwards Responses API, model discovery, and thread-goal routes (`/responses`, `/models`, `/thread/goal/*`, and `/codex/...` variants)
-- authenticates local clients with a per-process token via `Authorization: Bearer` or `x-api-key` (timing-safe compare); refuses non-loopback binds
-- caps request bodies at 64 MiB
-- replaces upstream auth headers with the selected managed account (no account emails in client-facing headers)
-- runs `evaluateRuntimePolicy` before account selection (pause/drain, budgets, routing profiles, capability matrix)
-- rotates accounts on rate limits, auth refresh failures, network errors, and server errors before response bytes are streamed
-- strips hop-by-hop and stale decoded response headers before returning data to the local Codex client
-- records runtime status for `codex-multi-auth status`, `codex-multi-auth report`, and `codex-multi-auth rotation status`
-- appends redacted usage ledger rows after request completion or failure
+Each stored route has an internal capability epoch that changes when its credential or explicit probe policy changes, or when it is removed and re-added. Discovery and unrelated route edits preserve it. Legacy records receive an epoch before paid checks; read-only fallbacks can use matching cached evidence without a migration write. Results are revalidated before persistence or retention, so an in-flight check cannot restore evidence after a credential wipe. Explicit forced checks may atomically replace a parse-invalid probe cache; access errors and automatic checks never authorize that repair.
 
 ### 4. Local governance
 
-Local-only controls under `~/.codex/multi-auth`:
+File-backed, local-only, and enforced on the rotation path by `evaluateRuntimePolicy` (`lib/policy/runtime-policy.ts`):
 
-| Concern | Storage / module | CLI |
+| Concern | Storage under `~/.codex/multi-auth` | CLI |
 | --- | --- | --- |
-| Usage ledger | `usage/usage-ledger.jsonl` | `codex-multi-auth usage` |
+| Usage ledger | `usage/usage-ledger.jsonl` (+ rotated archives) | `codex-multi-auth usage` |
 | Budget guards | `budget-guards.json` | `codex-multi-auth budget` |
-| Account policy (tags, weight, pause, drain, notes) | `account-policies.json` | `codex-multi-auth account …` |
-| Routing profiles | `routing-profiles.json` | project-aware resolution + `monitor` |
-| Model / account capability matrix | derived + capability policy cache | `codex-multi-auth models` |
-| Aggregated operator view | runtime observability + above | `codex-multi-auth monitor` |
+| Account policy (tags, weight, priority, pause/drain, notes) | `account-policies.json` | `codex-multi-auth account …` |
+| Routing profiles (per-project allow/deny, tag weights, budget key) | `routing-profiles.json` | file-only writes; `monitor` reads |
+| Quota snapshots | `quota-cache.json` | `limits`, `check`, `forecast --live`, `report` |
+| Operator view | runtime observability + all of the above | `codex-multi-auth monitor` |
 
-**Pause and drain are enforced at runtime.** `evaluateRuntimePolicy` marks paused or drained accounts as blocked for rotation selection on the runtime proxy (and plugin-host) path. Budgets are best-effort guards (eventually consistent under concurrency); they are not a hard multi-process reservation system.
+Budgets are **advisory**: evaluations read a pre-request ledger snapshot, so racing requests can briefly overshoot a limit. Ledger rows are redacted — hashed account identity and request metadata, never prompts or credentials.
 
-### 5. Local bridge + client tokens
+### 5. Local bridge (optional)
 
-Optional loopback bridge (`lib/local-bridge.ts`) exposes `/health`, `/v1/models`, and `/v1/responses`, forwarding to a configured runtime base URL.
+`lib/local-bridge.ts` exposes a loopback-only OpenAI-compatible surface (`/health`, `/v1/models`, `/v1/responses`) that forwards to a runtime proxy base URL. Client tokens are `cma_local_*` values; only SHA-256 hashes and prefixes are stored in `local-client-tokens.json`, and the plaintext is shown once at `codex-multi-auth bridge token create|rotate`.
 
-- Client tokens are `cma_local_*` values; only SHA-256 hashes and prefixes are stored (`local-client-tokens.json`).
-- Manage tokens with `codex-multi-auth bridge token create|list|rotate|revoke`.
-- Plain token is shown only once at create/rotate.
-- Integration snippet helpers: `codex-multi-auth integrations`.
+### 6. Storage and project pools
 
-### 6. Storage V3, project pools, worktree identity
+Account storage uses the V3 format (`AccountStorageV3`) under the multi-auth root:
 
-Account storage uses the V3 on-disk format (`AccountStorageV3`).
+- Global pool: `~/.codex/multi-auth/openai-codex-accounts.json`
+- Per-project pools: `~/.codex/multi-auth/projects/<project-key>/openai-codex-accounts.json`, keyed by repo identity root so linked Git worktrees share one pool
+- Durability: write-ahead journal (`.wal`), temp-file-then-rename writes `0600`, and a throttled `.bak`/`.bak.1`/`.bak.2` rotation, plus named backups under `backups/`
+- Recovery: flagged-account sidecar (`openai-codex-flagged-accounts.json`), pending-auth journal, and `verify`/`fix`/`doctor` repair commands
 
-- Default pool: `~/.codex/multi-auth/openai-codex-accounts.json`
-- Optional project-scoped pools: `~/.codex/multi-auth/projects/<project-key>/…`
-- Linked Git worktrees share repo identity so account pools are not split per worktree path
-- WAL, `.bak` snapshots, named backups, and flagged-account recovery support repair flows
-- Selected account can be synced into official Codex CLI files under `~/.codex` so plain forwarded Codex commands keep the intended account
+The active selection is mirrored into the official `~/.codex/auth.json` / `accounts.json` so plain forwarded Codex commands keep the intended account.
 
-### 7. Reversible app bind
+### 7. Reversible packaged-app bind
 
-`lib/runtime/app-bind.ts` and `scripts/codex-app-router.js` support packaged Codex desktop app routing:
+`codex-multi-auth rotation bind-app` backs up the real `~/.codex/config.toml`, points the packaged Codex desktop app at a persistent localhost router (`scripts/codex-app-router.js`), and installs a user-level startup entry. `rotation unbind-app` / `rotation disable` restores the backup. Official app binaries are never patched.
 
-- real Codex `config.toml` is backed up before modification
-- a localhost router is started for the app
-- a user login startup entry keeps the router available
-- `codex-multi-auth rotation disable` or `codex-multi-auth rotation unbind-app` restores the backup and removes the startup entry
-- official app binaries are **not** patched
+### 8. Lazy first-run setup
 
-`codex-multi-auth-app-launcher` retargets supported user-level shortcuts or creates a managed macOS wrapper app.
+`npm` postinstall is notice-only. On the first `codex-multi-auth` invocation from a durable global install, `lib/runtime/first-run.ts` claims `first-run-setup.json` once and runs three best-effort steps: app bind, launcher install, and the `cli_auth_credentials_store` pin. Skipped under CI, `npx`, and project-local installs; failures never block the command.
 
-### 8. Lazy first-run setup (shipped)
+### 9. Plugin-host entry (compatibility)
 
-`npm` postinstall is **notice-only** (no app detection or filesystem mutation). App bind and launcher setup run once on the first `codex-multi-auth` invocation from a durable global install, recorded in:
-
-`~/.codex/multi-auth/first-run-setup.json`
-
-- Skipped for CI, `npx`, and project-local installs (marker is not consumed in those cases).
-- Opt-outs: `CODEX_MULTI_AUTH_APP_BIND` / `CODEX_MULTI_AUTH_APP_BIND_INSTALL`, `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL`.
-- Failures are best-effort and never block the command.
-
-### 9. Optional plugin-host runtime
-
-The package root still exports the plugin-host entrypoint for integrations that load `index.ts`.
-
-That path reuses the same account pool for:
-
-- request transformation
-- token refresh
-- retry and failover
-- session affinity
-- live account sync
-- quota-aware selection
-- the same runtime policy evaluation surface as the rotation proxy
-
-Normal `codex-multi-auth ...` usage and wrapper forwarding do not require this host mode.
-
----
-
-## Request Flow
-
-### Account manager
-
-```text
-Terminal user
-  |
-  | codex-multi-auth status|login|forecast|…
-  v
-scripts/codex-multi-auth.js
-  |
-  | bare cmds normalize to auth manager
-  v
-lib/codex-manager.ts + commands/
-  |
-  v
-~/.codex/multi-auth (accounts, settings, caches, governance)
-```
-
-### Forwarding wrapper (no rotation / non-request path)
-
-```text
-Terminal user
-  |
-  | codex-multi-auth-codex …   or   mcodex …
-  v
-scripts/codex.js  (mcodex forwards here)
-  |
-  | auth … → local manager
-  | else → official Codex CLI
-  v
-Official Codex CLI
-```
-
-### Default runtime rotation path
-
-```text
-Terminal user or Codex app
-  |
-  v
-codex-multi-auth-codex wrapper / app bind / mcodex
-  |
-  | shadow CODEX_HOME + provider: codex-multi-auth-runtime-proxy
-  v
-localhost Responses proxy (client token)
-  |
-  | evaluateRuntimePolicy → select managed account
-  | replace Authorization with account token
-  v
-Official Codex / ChatGPT-backed backend
-  |
-  | usage ledger row (redacted)
-  v
-Local client
-```
-
-### Optional local bridge
-
-```text
-Local client (curl / script / tool)
-  |
-  | Bearer cma_local_*
-  v
-local bridge (loopback: /health, /v1/models, /v1/responses)
-  |
-  | runtime client token
-  v
-runtime rotation proxy (or configured runtime base URL)
-  |
-  v
-Official backend via selected managed account
-```
-
-### Optional plugin-host path
-
-```text
-Plugin host
-  |
-  v
-codex-multi-auth plugin runtime (index.ts)
-  |
-  | same account pool + refresh / retry / failover / policy
-  v
-Codex or ChatGPT-backed request flow
-```
+The package root still exports a plugin-host runtime (`index.ts`) for hosts that load plugins: it reuses the same pool, refresh queue, request transformer, and policy evaluation. Normal `codex-multi-auth ...` use does not require it.
 
 ---
 
 ## Design Constraints
 
-- The official OAuth flow remains the source of authentication.
-- The canonical command family is `codex-multi-auth ...`.
-- The package does not publish a global `codex` binary.
-- The OAuth callback port remains `1455` (provider-registered redirect URI).
-- Runtime rotation is default-on and localhost-only.
+- The official OAuth flow remains the source of authentication; the callback port stays `1455`.
+- The canonical command family is `codex-multi-auth ...`; no global `codex` bin is published.
+- Runtime rotation is default-on, loopback-only, and authenticated with a per-launch client key.
+- Proxied Responses requests are forced to `stream: true` and `store: false` (stateless compatibility), with `reasoning.encrypted_content` included, unless background-response compatibility is explicitly enabled.
 - Credentials and governance state stay local under `~/.codex/multi-auth`.
-- Pause/drain and other runtime policy checks apply on the rotation/proxy path via `evaluateRuntimePolicy`.
 - The desktop app bind is reversible and does not patch official app files.
-- First-run app integration is lazy (postinstall is notice-only).
-- Local storage and repair tooling target personal operator workflows, not hosted multi-user services.
-- Default general model routing uses `gpt-5.5`; diagnostic live/quota probes lead with `gpt-5.6-sol`.
+- Default general model routing uses `gpt-6.1-sol`; diagnostic live/quota probes lead with `gpt-5.6-sol`.
 
 ---
 
@@ -266,8 +185,8 @@ Codex or ChatGPT-backed request flow
 
 - [getting-started.md](getting-started.md)
 - [features.md](features.md)
-- [faq.md](faq.md)
 - [configuration.md](configuration.md)
+- [faq.md](faq.md)
 - [reference/commands.md](reference/commands.md)
 - [reference/storage-paths.md](reference/storage-paths.md)
 - [development/ARCHITECTURE.md](development/ARCHITECTURE.md)

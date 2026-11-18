@@ -57,30 +57,41 @@ const extractHostContext = (contentText: string): string | null => {
 	return contentText.slice(earliestIndex).trimStart();
 };
 
-export function isHostSystemPrompt(
-	item: InputItem,
-	cachedPrompt: string | null,
-): boolean {
-	const isSystemRole = item.role === "developer" || item.role === "system";
-	if (!isSystemRole) return false;
+interface CachedPromptParts {
+	trimmed: string;
+	prefix: string;
+}
 
-	const contentText = getContentText(item);
+/**
+ * Normalizes the cached host prompt once per filter pass so the per-item
+ * checks do not re-trim/re-slice the same string.
+ */
+const prepareCachedPrompt = (
+	cachedPrompt: string | null,
+): CachedPromptParts | null => {
+	if (!cachedPrompt) return null;
+	const trimmed = cachedPrompt.trim();
+	return { trimmed, prefix: trimmed.substring(0, 200) };
+};
+
+const isHostPromptContent = (
+	contentText: string,
+	cached: CachedPromptParts | null,
+): boolean => {
 	if (!contentText) return false;
 
-	if (cachedPrompt) {
+	if (cached) {
 		const contentTrimmed = contentText.trim();
-		const cachedTrimmed = cachedPrompt.trim();
-		if (contentTrimmed === cachedTrimmed) {
+		if (contentTrimmed === cached.trimmed) {
 			return true;
 		}
 
-		if (contentTrimmed.startsWith(cachedTrimmed)) {
+		if (contentTrimmed.startsWith(cached.trimmed)) {
 			return true;
 		}
 
 		const contentPrefix = contentTrimmed.substring(0, 200);
-		const cachedPrefix = cachedTrimmed.substring(0, 200);
-		if (contentPrefix === cachedPrefix) {
+		if (contentPrefix === cached.prefix) {
 			return true;
 		}
 	}
@@ -88,6 +99,19 @@ export function isHostSystemPrompt(
 	const normalized = contentText.trimStart().toLowerCase();
 	return HOST_PROMPT_SIGNATURES.some((signature) =>
 		normalized.startsWith(signature),
+	);
+};
+
+export function isHostSystemPrompt(
+	item: InputItem,
+	cachedPrompt: string | null,
+): boolean {
+	const isSystemRole = item.role === "developer" || item.role === "system";
+	if (!isSystemRole) return false;
+
+	return isHostPromptContent(
+		getContentText(item),
+		prepareCachedPrompt(cachedPrompt),
 	);
 }
 
@@ -97,21 +121,41 @@ export function filterHostSystemPromptsWithCachedPrompt(
 ): InputItem[] | undefined {
 	if (!Array.isArray(input)) return input;
 
-	return input.flatMap((item) => {
-		if (item.role === "user") return [item];
+	const cached = prepareCachedPrompt(cachedPrompt);
+	// Copy-on-write: most items pass through untouched, so the result array is
+	// only materialized once an item is actually dropped or rewritten.
+	let filtered: InputItem[] | null = null;
+	for (let i = 0; i < input.length; i++) {
+		// flatMap skips sparse holes entirely; an explicit `undefined` element
+		// still reaches the callback and throws on `.role` — mirrored below.
+		if (!(i in input)) {
+			if (filtered === null) filtered = input.slice(0, i);
+			continue;
+		}
+		const item = input[i] as InputItem;
+		const isSystemRole =
+			item.role === "developer" || item.role === "system";
 
-		if (!isHostSystemPrompt(item, cachedPrompt)) {
-			return [item];
+		if (!isSystemRole) {
+			if (filtered !== null) filtered.push(item);
+			continue;
 		}
 
 		const contentText = getContentText(item);
-		const preservedContext = extractHostContext(contentText);
-		if (preservedContext) {
-			return [replaceContentText(item, preservedContext)];
+		if (!isHostPromptContent(contentText, cached)) {
+			if (filtered !== null) filtered.push(item);
+			continue;
 		}
 
-		return [];
-	});
+		const preservedContext = extractHostContext(contentText);
+		if (filtered === null) {
+			filtered = input.slice(0, i);
+		}
+		if (preservedContext) {
+			filtered.push(replaceContentText(item, preservedContext));
+		}
+	}
+	return filtered ?? input;
 }
 
 const getCallId = (item: InputItem): string | null => {
@@ -130,12 +174,15 @@ const convertOrphanedOutputToMessage = (
 			? ((item as { name?: string }).name as string)
 			: "tool";
 	const labelCallId = callId ?? "unknown";
+	// Read `.output` once: the catch fallback must use the same value —
+	// re-reading a throwing getter inside the catch would just re-throw.
+	const out = (item as { output?: unknown }).output;
 	let text: string;
 	try {
-		const out = (item as { output?: unknown }).output;
-		text = typeof out === "string" ? out : JSON.stringify(out);
+		text =
+			typeof out === "string" ? out : (JSON.stringify(out) ?? "");
 	} catch {
-		text = String((item as { output?: unknown }).output ?? "");
+		text = String(out ?? "");
 	}
 	if (text.length > 16000) {
 		text = text.slice(0, 16000) + "\n...[truncated]";
@@ -179,35 +226,44 @@ export const normalizeOrphanedToolOutputs = (
 	const { functionCallIds, localShellCallIds, customToolCallIds } =
 		collectCallIds(input);
 
-	return input.map((item) => {
+	// Copy-on-write: items pass through by reference until an output actually
+	// needs converting; an unchanged input returns the original array instead
+	// of a per-item `map` copy.
+	let mapped: InputItem[] | null = null;
+	for (let i = 0; i < input.length; i++) {
+		const item = input[i] as InputItem;
+		let converted = item;
+
 		if (item.type === "function_call_output") {
 			const callId = getCallId(item);
 			const hasMatch =
 				!!callId &&
 				(functionCallIds.has(callId) || localShellCallIds.has(callId));
 			if (!hasMatch) {
-				return convertOrphanedOutputToMessage(item, callId);
+				converted = convertOrphanedOutputToMessage(item, callId);
 			}
-		}
-
-		if (item.type === "custom_tool_call_output") {
+		} else if (item.type === "custom_tool_call_output") {
 			const callId = getCallId(item);
 			const hasMatch = !!callId && customToolCallIds.has(callId);
 			if (!hasMatch) {
-				return convertOrphanedOutputToMessage(item, callId);
+				converted = convertOrphanedOutputToMessage(item, callId);
 			}
-		}
-
-		if (item.type === "local_shell_call_output") {
+		} else if (item.type === "local_shell_call_output") {
 			const callId = getCallId(item);
 			const hasMatch = !!callId && localShellCallIds.has(callId);
 			if (!hasMatch) {
-				return convertOrphanedOutputToMessage(item, callId);
+				converted = convertOrphanedOutputToMessage(item, callId);
 			}
 		}
 
-		return item;
-	});
+		if (converted !== item && mapped === null) {
+			mapped = input.slice(0, i);
+		}
+		if (mapped !== null) {
+			mapped.push(converted);
+		}
+	}
+	return mapped ?? input;
 };
 
 const CANCELLED_TOOL_OUTPUT = "Operation cancelled by user";
@@ -229,10 +285,15 @@ const collectOutputCallIds = (input: InputItem[]): Set<string> => {
 
 export const injectMissingToolOutputs = (input: InputItem[]): InputItem[] => {
 	const outputCallIds = collectOutputCallIds(input);
-	const result: InputItem[] = [];
+	// Copy-on-write: items pass through by reference; the result array is only
+	// materialized when a synthetic output is actually injected.
+	let result: InputItem[] | null = null;
 
-	for (const item of input) {
-		result.push(item);
+	for (let i = 0; i < input.length; i++) {
+		const item = input[i] as InputItem;
+		if (result !== null) {
+			result.push(item);
+		}
 
 		if (
 			item.type === "function_call" ||
@@ -248,6 +309,9 @@ export const injectMissingToolOutputs = (input: InputItem[]): InputItem[] => {
 							? "local_shell_call_output"
 							: "custom_tool_call_output";
 
+				if (result === null) {
+					result = input.slice(0, i + 1);
+				}
 				result.push({
 					type: outputType,
 					call_id: callId,
@@ -257,7 +321,7 @@ export const injectMissingToolOutputs = (input: InputItem[]): InputItem[] => {
 		}
 	}
 
-	return result;
+	return result ?? input;
 };
 
 

@@ -37,15 +37,15 @@ describe("model capability matrix", () => {
 	it("builds model/account availability from existing model profiles", () => {
 		const matrix = buildModelCapabilityMatrix({
 			storage: storage(),
-			models: ["gpt-5.3-codex"],
+			models: ["gpt-5.6-sol"],
 			now: 100,
 		});
-		expect(matrix.models).toEqual(["gpt-5.3-codex"]);
+		expect(matrix.models).toEqual(["gpt-5.6-sol"]);
 		expect(matrix.entries[0]).toMatchObject({
 			accountIndex: 1,
 			accountLabel: "Account 1",
-			normalizedModel: "gpt-5.3-codex",
-			promptFamily: "gpt-5-codex",
+			normalizedModel: "gpt-5.6-sol",
+			promptFamily: "gpt-5.2",
 			available: true,
 		});
 		expect(matrix.entries[0]?.accountKey).toMatch(/^sha256:/);
@@ -60,17 +60,17 @@ describe("model capability matrix", () => {
 			email: "owner@example.com",
 			index: 0,
 		});
-		capabilityPolicy.recordUnsupported(entitlementKey, "gpt-5.3-codex", 100);
+		capabilityPolicy.recordUnsupported(entitlementKey, "gpt-5.6-sol", 100);
 		const matrix = buildModelCapabilityMatrix({
 			storage: storage(),
-			models: ["gpt-5.3-codex"],
+			models: ["gpt-5.6-sol"],
 			capabilityPolicy,
 			quotaCache: {
 				byAccountId: {
 					acct_1: {
 						updatedAt: 100,
 						status: 429,
-						model: "gpt-5.3-codex",
+						model: "gpt-5.6-sol",
 						primary: {},
 						secondary: {},
 					},
@@ -96,11 +96,11 @@ describe("model capability matrix", () => {
 			email: "owner@example.com",
 			index: 0,
 		});
-		capabilityPolicy.recordUnsupported(entitlementKey, "gpt-5.3-codex", 100);
+		capabilityPolicy.recordUnsupported(entitlementKey, "gpt-5.6-sol", 100);
 
 		const matrix = buildModelCapabilityMatrix({
 			storage: storage(),
-			models: ["gpt-5.3-codex"],
+			models: ["gpt-5.6-sol"],
 			capabilityPolicy,
 			now: 100,
 		});
@@ -123,11 +123,11 @@ describe("model capability matrix", () => {
 			email: "owner@example.com",
 			index: 0,
 		});
-		capabilityPolicy.recordFailure(entitlementKey, "gpt-5.3-codex", 100);
+		capabilityPolicy.recordFailure(entitlementKey, "gpt-5.6-sol", 100);
 
 		const matrix = buildModelCapabilityMatrix({
 			storage: storage(),
-			models: ["gpt-5.3-codex"],
+			models: ["gpt-5.6-sol"],
 			capabilityPolicy,
 			now: 100,
 		});
@@ -143,13 +143,13 @@ describe("model capability matrix", () => {
 			email: "owner@example.com",
 			index: 0,
 		});
-		capabilityPolicy.recordFailure(entitlementKey, "gpt-5.3-codex", 100);
+		capabilityPolicy.recordFailure(entitlementKey, "gpt-5.6-sol", 100);
 		// recordSuccess decrements failures (→0) and adds a success → net positive.
-		capabilityPolicy.recordSuccess(entitlementKey, "gpt-5.3-codex", 100);
+		capabilityPolicy.recordSuccess(entitlementKey, "gpt-5.6-sol", 100);
 
 		const matrix = buildModelCapabilityMatrix({
 			storage: storage(),
-			models: ["gpt-5.3-codex"],
+			models: ["gpt-5.6-sol"],
 			capabilityPolicy,
 			now: 100,
 		});
@@ -170,12 +170,12 @@ describe("model capability matrix", () => {
 		});
 		const matrix = buildModelCapabilityMatrix({
 			storage: baseStorage,
-			models: ["gpt-5.3-codex"],
+			models: ["gpt-5.6-sol"],
 			entitlements: {
 				accounts: {
 					[entitlementKey]: [
 						{
-							model: "gpt-5.3-codex",
+							model: "gpt-5.6-sol",
 							blockedUntil: 200,
 							reason: "plan-entitlement",
 							updatedAt: 100,

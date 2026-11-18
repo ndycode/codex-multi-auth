@@ -1,9 +1,53 @@
 import { promises as fs } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { hostname, tmpdir } from "node:os";
+import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const RETRYABLE_REMOVE_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+
+// The JSON store lock is a `<path>.write-lock` DIRECTORY holding one owner
+// file named `<host16>.<pid>.<uuid>` (lib/storage/file-lock.ts). Seed a
+// foreign-held lock by writing that owner entry directly; `realpath` mirrors
+// the lock's canonicalized parent so tmpdir symlink aliases match.
+const testHost = createHash("sha256")
+  .update(hostname())
+  .digest("hex")
+  .slice(0, 16);
+
+async function seedForeignLock(
+  targetPath: string,
+  pid: number,
+): Promise<string> {
+  const lockDir = join(
+    await fs.realpath(dirname(targetPath)),
+    `${basename(targetPath)}.write-lock`,
+  );
+  await fs.mkdir(lockDir, { recursive: true });
+  await fs.writeFile(join(lockDir, `${testHost}.${pid}.${randomUUID()}`), "", {
+    flag: "wx",
+  });
+  return lockDir;
+}
+
+// A pid guaranteed dead at seed time: a spawned-and-reaped child stays dead
+// for the test's duration (hardcoded pids are unreliable — 999999 was a live
+// pid on the CI host).
+function deadPid(): number {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const pid = spawnSync(process.execPath, ["-e", ""]).pid;
+    if (pid === undefined) continue;
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code === "ESRCH") {
+        return pid;
+      }
+    }
+  }
+  throw Error("could not obtain a dead pid for the seeded lock");
+}
 
 async function removeWithRetry(
   targetPath: string,
@@ -297,19 +341,9 @@ describe("plugin config save paths", () => {
     process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
     await fs.writeFile(configPath, JSON.stringify({ preserved: 1 }), "utf8");
 
-    // Seed a STALE foreign-owned lock (different owner, already expired). Our
-    // save must take it over, complete, and clean up.
-    const lockPath = `${configPath}.lock`;
-    await fs.writeFile(
-      lockPath,
-      `${JSON.stringify({
-        pid: 999999,
-        owner: "other-owner-token",
-        acquiredAt: Date.now() - 60_000,
-        expiresAt: Date.now() - 30_000,
-      })}\n`,
-      "utf8",
-    );
+    // Seed a stale foreign-owned lock whose owner PID is DEAD. Our save must
+    // recover it, complete, and clean up.
+    const lockDir = await seedForeignLock(configPath, deadPid());
 
     const { savePluginConfig } = await import("../lib/config.js");
     await savePluginConfig({ fastSession: true });
@@ -321,7 +355,7 @@ describe("plugin config save paths", () => {
     expect(parsed.fastSession).toBe(true);
     expect(parsed.preserved).toBe(1);
     // Our own lock is released after the save.
-    await expect(fs.access(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(lockDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("does not delete a live foreign lock and times out instead (config-18)", async () => {
@@ -329,35 +363,26 @@ describe("plugin config save paths", () => {
     process.env.CODEX_MULTI_AUTH_CONFIG_PATH = configPath;
     await fs.writeFile(configPath, JSON.stringify({ preserved: 1 }), "utf8");
 
-    // Seed a LIVE foreign-owned lock (different owner, not expired). Our save
-    // must respect it (wait then time out) and must NOT delete the other
-    // owner's lockfile.
-    const lockPath = `${configPath}.lock`;
-    const foreignPayload = `${JSON.stringify({
-      pid: 999999,
-      owner: "other-owner-token",
-      acquiredAt: Date.now(),
-      expiresAt: Date.now() + 60_000,
-    })}\n`;
-    await fs.writeFile(lockPath, foreignPayload, "utf8");
+    // Seed a foreign-owned lock whose owner PID is ALIVE. A live owner is
+    // never evicted — our save must wait, then fail closed with ELOCKTIMEOUT
+    // without touching the other owner's lock entry.
+    const lockDir = await seedForeignLock(configPath, process.pid);
+    const foreignEntries = await fs.readdir(lockDir);
 
     const { savePluginConfig } = await import("../lib/config.js");
     await expect(savePluginConfig({ fastSession: true })).rejects.toMatchObject({
       code: "ELOCKTIMEOUT",
     });
 
-    // The foreign lock is untouched (same owner token, not stomped).
-    const lockAfter = JSON.parse(await fs.readFile(lockPath, "utf8")) as {
-      owner?: string;
-    };
-    expect(lockAfter.owner).toBe("other-owner-token");
+    // The foreign lock is untouched.
+    expect(await fs.readdir(lockDir)).toEqual(foreignEntries);
     // And our save did not partially apply.
     const parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Record<
       string,
       unknown
     >;
     expect(parsed.fastSession).toBeUndefined();
-    await fs.rm(lockPath, { force: true });
+    await fs.rm(lockDir, { recursive: true, force: true });
   }, 15_000);
 
   it("writes through unified settings when env path is unset", async () => {

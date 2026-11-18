@@ -107,6 +107,67 @@ describe("experimental settings prompt", () => {
 		});
 	});
 
+	it("returns draft on save and toggles the context budget guard", async () => {
+		const select = vi
+			.fn()
+			.mockResolvedValueOnce({ type: "toggle-context-budget-guard" })
+			.mockResolvedValueOnce({ type: "save" });
+
+		const result = await promptExperimentalSettingsMenu({
+			initialConfig: {
+				proactiveRefreshGuardian: false,
+				proactiveRefreshIntervalMs: 60000,
+				contextBudgetGuardEnabled: false,
+			},
+			isInteractive: () => true,
+			ui: { theme: {} } as never,
+			cloneBackendPluginConfig: (config) => ({ ...config }),
+			select,
+			getExperimentalSelectOptions: vi.fn(() => ({})),
+			mapExperimentalMenuHotkey: vi.fn(),
+			mapExperimentalStatusHotkey: vi.fn(),
+			formatDashboardSettingState: (enabled) => (enabled ? "on" : "off"),
+			copy: {
+				experimentalSync: "Sync",
+				experimentalBackup: "Backup",
+				experimentalRefreshGuard: "Guard",
+				experimentalRefreshInterval: "Interval",
+				experimentalDecreaseInterval: "Dec",
+				experimentalIncreaseInterval: "Inc",
+				experimentalContextBudgetGuard: "Budget Guard",
+				saveAndBack: "Save",
+				backNoSave: "Back",
+				experimentalHelpMenu: "help",
+				experimentalBackupPrompt: "name",
+				back: "Back",
+				experimentalHelpStatus: "status",
+				experimentalApplySync: "Apply",
+				experimentalHelpPreview: "preview",
+			},
+			input: process.stdin,
+			output: process.stdout,
+			runNamedBackupExport: vi.fn(),
+			loadAccounts: vi.fn(),
+			loadExperimentalSyncTarget: vi.fn(),
+			planOcChatgptSync: vi.fn(),
+			applyOcChatgptSync: vi.fn(),
+			getTargetKind: vi.fn(),
+			getTargetDestination: vi.fn(),
+			getTargetDetection: vi.fn(),
+			getTargetErrorMessage: vi.fn(),
+			getPlanKind: vi.fn(),
+			getPlanBlockedReason: vi.fn(),
+			getPlanPreview: vi.fn(),
+			getAppliedLabel: vi.fn(),
+		});
+
+		expect(result).toEqual({
+			proactiveRefreshGuardian: false,
+			proactiveRefreshIntervalMs: 60000,
+			contextBudgetGuardEnabled: true,
+		});
+	});
+
 	it("renders the refresh-interval label at sub-minute granularity", async () => {
 		const baseCopy = {
 			experimentalSync: "Sync",

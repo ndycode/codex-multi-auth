@@ -1,6 +1,7 @@
 import { existsSync, promises as fs, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
+import { parseIntegerEnv } from "./env-parsing.js";
 import { StorageError } from "./errors.js";
 import { withFileOperationRetry, withRetry } from "./fs-retry.js";
 import { createLogger } from "./logger.js";
@@ -108,6 +109,7 @@ import {
 import { getNamedBackupsEntry } from "./storage/named-backups-entry.js";
 import {
 	getStoragePathState,
+	setStoragePathDirectState,
 	setStoragePathState,
 } from "./storage/path-state.js";
 import {
@@ -143,8 +145,18 @@ import {
 	isStorageLockHeld,
 	runInTransactionSnapshotContext,
 	withAccountStorageTransaction as runWithAccountStorageTransaction,
-	withStorageLock,
+	withStorageLock as withProcessStorageLock,
 } from "./storage/transactions.js";
+import { withFileTransactionLock } from "./storage/file-lock.js";
+import { mergeAccountSnapshot } from "./storage/snapshot-merge.js";
+import { applyPendingAuth, clearPendingAuth, prunePendingAuth, recordPendingAuth } from "./storage/pending-auth.js";
+export { recordPendingAuth };
+const loadedAccountSnapshots = new WeakMap<AccountStorageV3, AccountStorageV3>();
+
+function withStorageLock<T>(action: () => Promise<T>): Promise<T> {
+	const path = getStoragePath();
+	return withProcessStorageLock(() => withFileTransactionLock(path, action));
+}
 
 export type {
 	StorageHealthSummary,
@@ -168,6 +180,99 @@ const BACKUP_COPY_MAX_ATTEMPTS = 5;
 const BACKUP_COPY_BASE_DELAY_MS = 10;
 let storageBackupEnabled = true;
 let lastAccountsSaveTimestamp = 0;
+/**
+ * Default minimum age of the newest rotating `.bak` snapshot before a save
+ * pays for another full 3-slot rotation. Rotating backups are crash-recovery
+ * insurance, not a changelog: inside the window the primary-write path skips
+ * ~6 fs ops and ~2x payload bytes of staged copies per save. A credential
+ * change (account count or refresh-token set) still forces a fresh slot — a
+ * backup that predates an in-window rotation can only offer spent tokens — a
+ * missing `.bak` always rotates, and
+ * `CODEX_AUTH_STORAGE_BACKUP_MIN_INTERVAL_MS=0` restores the legacy
+ * rotate-on-every-save behavior.
+ */
+const ACCOUNTS_BACKUP_MIN_INTERVAL_DEFAULT_MS = 30_000;
+
+function backupRotationMinIntervalMs(): number {
+	const parsed = parseIntegerEnv(
+		process.env.CODEX_AUTH_STORAGE_BACKUP_MIN_INTERVAL_MS,
+	);
+	if (parsed === undefined) {
+		return ACCOUNTS_BACKUP_MIN_INTERVAL_DEFAULT_MS;
+	}
+	return Math.max(0, parsed);
+}
+
+/**
+ * Fingerprint of the primary accounts file as last seen by THIS process — a
+ * stat taken before a primary read (paired with the sha256 of the content
+ * actually parsed, when available), or the temp-file stat and content hash
+ * carried over our own atomic rename (recorded for free in `onSaved`).
+ * Compared against the live primary on baseline-less saves to spot a foreign
+ * write; keyed by path so a `setStoragePath*` switch can never borrow another
+ * file's history.
+ */
+type PrimaryFileFingerprint = {
+	mtimeMs?: number;
+	ctimeMs?: number;
+	size?: number;
+	ino?: number;
+	/** sha256 of the exact bytes read or written, when known. */
+	sha256?: string;
+};
+const lastKnownPrimaryState = new Map<string, PrimaryFileFingerprint>();
+const baselinelessSaveWarnedPaths = new Set<string>();
+
+function notePrimaryState(
+	path: string,
+	stats:
+		| { mtimeMs?: number; ctimeMs?: number; size?: number; ino?: number }
+		| undefined,
+	sha256?: string,
+): void {
+	if (!stats && sha256 === undefined) return;
+	const fingerprint: PrimaryFileFingerprint = { sha256 };
+	if (stats) {
+		if (Number.isFinite(stats.mtimeMs)) fingerprint.mtimeMs = stats.mtimeMs;
+		if (Number.isFinite(stats.ctimeMs)) fingerprint.ctimeMs = stats.ctimeMs;
+		if (Number.isFinite(stats.size)) fingerprint.size = stats.size;
+		// ino can exceed 2^53 on some filesystems; a lossy value would compare
+		// equal for two different files, so only record exact integers.
+		if (Number.isSafeInteger(stats.ino)) fingerprint.ino = stats.ino;
+	}
+	if (
+		fingerprint.mtimeMs === undefined &&
+		fingerprint.ctimeMs === undefined &&
+		fingerprint.size === undefined &&
+		fingerprint.ino === undefined &&
+		fingerprint.sha256 === undefined
+	) {
+		return;
+	}
+	lastKnownPrimaryState.set(path, fingerprint);
+}
+
+/**
+ * Metadata-only identity check, used when no content hash was recorded. A
+ * foreign write bumps ctime on POSIX even when the writer preserves mtime
+ * (utimes), and a rename-replacement changes ino — together they catch the
+ * equal-mtime collisions a mtime-only comparison missed.
+ */
+function primaryFingerprintMatches(
+	last: PrimaryFileFingerprint,
+	stats: { mtimeMs: number; ctimeMs: number; size: number; ino: number },
+): boolean {
+	return (
+		last.mtimeMs !== undefined &&
+		last.ctimeMs !== undefined &&
+		last.size !== undefined &&
+		last.ino !== undefined &&
+		last.mtimeMs === stats.mtimeMs &&
+		last.ctimeMs === stats.ctimeMs &&
+		last.size === stats.size &&
+		last.ino === stats.ino
+	);
+}
 
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
 
@@ -325,6 +430,218 @@ async function createRotatingAccountsBackup(path: string): Promise<void> {
 			}
 		}
 	}
+}
+
+/**
+ * Credential-relevant shape of an account list for the throttle trigger:
+ * entry count plus the set of refresh tokens. A write that changes either is
+ * the case where the pre-write state earns a fresh backup slot even inside
+ * the window — a rotated refresh token spends its predecessor upstream, so a
+ * backup that predates several in-window rotations can only offer spent
+ * credentials to recovery. Pure metadata churn (lastUsed, health fields)
+ * still skips.
+ */
+type AccountCredentialSignature = {
+	count: number;
+	refreshTokens: Set<string>;
+};
+
+function credentialSignatureOf(
+	accounts: readonly unknown[],
+): AccountCredentialSignature {
+	const refreshTokens = new Set<string>();
+	for (const account of accounts) {
+		if (
+			isRecord(account) &&
+			typeof account.refreshToken === "string" &&
+			account.refreshToken.length > 0
+		) {
+			refreshTokens.add(account.refreshToken);
+		}
+	}
+	return { count: accounts.length, refreshTokens };
+}
+
+function sameCredentialSignature(
+	a: AccountCredentialSignature,
+	b: AccountCredentialSignature,
+): boolean {
+	if (a.count !== b.count || a.refreshTokens.size !== b.refreshTokens.size) {
+		return false;
+	}
+	for (const token of a.refreshTokens) {
+		if (!b.refreshTokens.has(token)) return false;
+	}
+	return true;
+}
+
+/**
+ * Cheap credential-signature probe for the throttle trigger. Reads and parses
+ * only the top-level `accounts` shape — far cheaper than the staged copies a
+ * rotation costs, and it runs at most once per save inside the throttle
+ * window. Returns null when the signature cannot be determined so the caller
+ * rotates rather than skipping a snapshot it cannot rule out.
+ */
+async function readOnDiskCredentialSignature(
+	path: string,
+): Promise<AccountCredentialSignature | null> {
+	try {
+		const parsed: unknown = JSON.parse(await fs.readFile(path, "utf-8"));
+		if (isRecord(parsed) && Array.isArray(parsed.accounts)) {
+			return credentialSignatureOf(parsed.accounts);
+		}
+	} catch {
+		// Missing or unparsable primary: fall through to the null sentinel.
+	}
+	return null;
+}
+
+/**
+ * Refresh tokens still present in a recovery source: rotating and discovered
+ * `.bak*` snapshots plus any WAL journal payload. Pending rotated credentials
+ * whose spent token a restore could still resurface must survive pruning, so
+ * recovering a throttle-stale backup self-heals to the newest credential via
+ * `applyPendingAuth` instead of reviving a token that was spent upstream.
+ * Best-effort: unreadable or unparseable sources contribute nothing.
+ */
+async function collectRestorableRefreshTokens(path: string): Promise<string[]> {
+	const tokens: string[] = [];
+	const collectContent = (raw: string): void => {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return;
+		}
+		if (!isRecord(parsed) || !Array.isArray(parsed.accounts)) return;
+		for (const account of parsed.accounts) {
+			if (
+				isRecord(account) &&
+				typeof account.refreshToken === "string" &&
+				account.refreshToken.length > 0
+			) {
+				tokens.push(account.refreshToken);
+			}
+		}
+	};
+	for (const candidate of await getAccountsBackupRecoveryCandidatesWithDiscovery(
+		path,
+	)) {
+		try {
+			collectContent(await fs.readFile(candidate, "utf-8"));
+		} catch {
+			// An unreadable candidate contributes nothing.
+		}
+	}
+	try {
+		const walEntry: unknown = JSON.parse(
+			await fs.readFile(getAccountsWalPath(path), "utf-8"),
+		);
+		if (isRecord(walEntry) && typeof walEntry.content === "string") {
+			collectContent(walEntry.content);
+		}
+	} catch {
+		// No usable WAL payload.
+	}
+	return tokens;
+}
+
+/**
+ * Gate around `createRotatingAccountsBackup` that throttles rotation churn.
+ * Rotates when the newest `.bak` is missing (always preserve at least one
+ * recovery snapshot), when it is older than `backupRotationMinIntervalMs()`,
+ * or when the incoming write changes the stored credential signature
+ * (account count or refresh-token set) — the case where the pre-write state
+ * is worth a fresh slot even inside the window.
+ * `expectedOnDiskAccounts` lets callers that already read the primary under
+ * the lock (the three-way merge path) skip the signature probe.
+ */
+async function rotateAccountsBackupIfDue(
+	path: string,
+	nextAccounts: readonly AccountMetadataV3[],
+	expectedOnDiskAccounts: readonly AccountMetadataV3[] | null | undefined,
+): Promise<void> {
+	const latestBackupPath = getAccountsBackupPath(path);
+	let newestBackupAgeMs: number | null = null;
+	try {
+		newestBackupAgeMs = Date.now() - (await fs.stat(latestBackupPath)).mtimeMs;
+	} catch {
+		// Missing or unreadable newest backup: rotate so >=1 snapshot exists.
+		newestBackupAgeMs = null;
+	}
+	const minIntervalMs = backupRotationMinIntervalMs();
+	// Age is clamped at 0: a backup whose mtime lands fractionally ahead of
+	// Date.now() (fs timestamp granularity vs. the clock) is "fresh", and the
+	// clamp also keeps `minIntervalMs = 0` meaning "always rotate".
+	if (newestBackupAgeMs !== null && Math.max(0, newestBackupAgeMs) < minIntervalMs) {
+		const onDiskSignature = expectedOnDiskAccounts !== undefined
+			? credentialSignatureOf(expectedOnDiskAccounts ?? [])
+			: await readOnDiskCredentialSignature(path);
+		if (
+			onDiskSignature !== null &&
+			sameCredentialSignature(
+				onDiskSignature,
+				credentialSignatureOf(nextAccounts),
+			)
+		) {
+			log.debug("Skipping account backup rotation inside throttle window", {
+				path,
+				backupPath: latestBackupPath,
+				newestBackupAgeMs,
+				minIntervalMs,
+			});
+			return;
+		}
+	}
+	await createRotatingAccountsBackup(path);
+}
+
+/**
+ * Warn (once per storage path per process) when a save without a merge
+ * baseline is about to overwrite a primary this process did not last read or
+ * write — the cheap signature of "concurrent modification, no baseline"
+ * (last-writer-wins). The WeakMap baseline in `saveAccounts` cannot attach to
+ * raw `structuredClone` copies, so this is the residual guard for untracked
+ * objects. First-ever saves (no primary), empty primaries, and files whose
+ * content (or full stat tuple, when no hash was recorded) matches our last
+ * read/write stay quiet; the write is never blocked.
+ */
+async function warnOnBaselinelessSave(path: string): Promise<void> {
+	if (baselinelessSaveWarnedPaths.has(path)) return;
+	// No primary on disk (or an unreadable one): nothing exists to silently
+	// lose, so the first-ever save stays quiet.
+	const stats = await fs.stat(path).catch(() => undefined);
+	if (!stats?.isFile() || stats.size === 0) return;
+	const last = lastKnownPrimaryState.get(path);
+	if (last !== undefined) {
+		if (last.sha256 !== undefined) {
+			// Content-exact check: identical bytes mean nothing was lost to a
+			// foreign write regardless of timestamp granularity or an mtime-
+			// preserving writer, and different bytes mean one landed even when
+			// every stat field coincidentally matches.
+			const currentSha256 = await fs
+				.readFile(path, "utf-8")
+				.then((raw) => computeSha256(raw))
+				.catch(() => undefined);
+			if (currentSha256 !== undefined) {
+				if (currentSha256 === last.sha256) return;
+			} else if (primaryFingerprintMatches(last, stats)) {
+				// Content unreadable mid-check: fall back to the metadata tuple.
+				return;
+			}
+		} else if (primaryFingerprintMatches(last, stats)) {
+			return;
+		}
+	}
+	baselinelessSaveWarnedPaths.add(path);
+	const message =
+		"Saving account storage without a merge baseline over a primary file this process did not last read or write; a concurrent writer's changes may be overwritten (last-writer-wins). Load via loadAccounts() or clone via cloneTrackedAccountStorage() so the three-way merge can run.";
+	log.warn("Baseline-less account save over externally modified primary", {
+		path,
+	});
+	process.emitWarning(message, {
+		code: "CODEX_MULTI_AUTH_BASELINELESS_SAVE",
+	});
 }
 
 function isRotatingBackupTempArtifact(
@@ -606,7 +923,7 @@ export function setStoragePath(projectPath: string | null): void {
 }
 
 export function setStoragePathDirect(path: string | null): void {
-	setStoragePathState({
+	setStoragePathDirectState({
 		currentStoragePath: path,
 		currentLegacyProjectStoragePath: null,
 		currentLegacyWorktreeStoragePath: null,
@@ -661,7 +978,17 @@ export async function restoreAccountsFromBackup(
 				normalizeAccountStorage,
 				isRecord,
 			}),
-		saveAccounts,
+		saveAccounts: async (storage) => {
+			// An explicit restore is a deliberate overwrite of the current
+			// primary, like the crash-recovery persists: record the file being
+			// replaced so the baseline-less-save guard neither misreports it as
+			// a foreign write nor spends the once-per-path warning on it.
+			notePrimaryState(
+				getStoragePath(),
+				await fs.stat(getStoragePath()).catch(() => undefined),
+			);
+			await saveAccounts(storage);
+		},
 	});
 }
 
@@ -725,8 +1052,19 @@ async function migrateLegacyProjectStorageIfNeeded(options?: {
 	}
 
 	const loadCurrentStorageForMigration =
-		async (): Promise<AccountStorageV3 | null> =>
-			loadNormalizedStorageFromPath(
+		async (): Promise<AccountStorageV3 | null> => {
+			// Stat before the read so a migration persist of the merged content
+			// counts as a state this process knows (baseline-less-save guard).
+			// Recorded even when the parse fails: a migration persist that
+			// replaces an unreadable current file is a deliberate overwrite, not
+			// a foreign modification to warn about.
+			let stats: Awaited<ReturnType<typeof fs.stat>> | undefined;
+			try {
+				stats = await fs.stat(currentStoragePath);
+			} catch {
+				stats = undefined;
+			}
+			const storage = await loadNormalizedStorageFromPath(
 				currentStoragePath,
 				"current account storage",
 				{
@@ -740,6 +1078,9 @@ async function migrateLegacyProjectStorageIfNeeded(options?: {
 					},
 				},
 			);
+			notePrimaryState(currentStoragePath, stats);
+			return storage;
+		};
 	const readLiveCurrentStorageIfExportMode = async (): Promise<{
 		exists: boolean;
 		storage: AccountStorageV3 | null;
@@ -1076,21 +1417,344 @@ export function resolveAccountSelectionIndex<
 	return clampIndex(fallbackIndex, accounts.length);
 }
 
+type DedupIndexEntry = {
+	index: number;
+	lastUsed: number;
+	addedAt: number;
+};
+
+/**
+ * Total "newest" order over surviving entries, identical to folding
+ * selectNewestAccount left-to-right over the survivor array: higher
+ * `lastUsed` wins, then higher `addedAt`, then — the fold's behavior on a
+ * full tie — the later array position. Reducing the fold to one comparison
+ * over (lastUsed, addedAt, index) is what lets each identity lookup be
+ * answered from an incrementally maintained index instead of a linear scan.
+ */
+function compareDedupIndexEntries(
+	a: DedupIndexEntry,
+	b: DedupIndexEntry,
+): number {
+	if (a.lastUsed !== b.lastUsed) return a.lastUsed - b.lastUsed;
+	if (a.addedAt !== b.addedAt) return a.addedAt - b.addedAt;
+	return a.index - b.index;
+}
+
+/**
+ * Incremental "newest surviving owner" index for one identity facet value
+ * (a composite accountId+email pair, an email key, or a refresh token).
+ * Survivor slots join when appended, refresh their freshness when a
+ * newest-wins merge replaces the account stored in the slot, and leave when
+ * a replacement drops the facet. A max-heap with lazy deletion answers the
+ * argmax query in amortized O(log n): stale heap entries are popped on
+ * first sight, so every join/update/leave is paid for exactly once.
+ */
+class DedupNewestIndex {
+	private readonly liveEntries = new Map<number, DedupIndexEntry>();
+	private readonly heap: DedupIndexEntry[] = [];
+
+	get size(): number {
+		return this.liveEntries.size;
+	}
+
+	set(index: number, account: Pick<AccountLike, "addedAt" | "lastUsed">): void {
+		const entry: DedupIndexEntry = {
+			index,
+			lastUsed: account.lastUsed || 0,
+			addedAt: account.addedAt || 0,
+		};
+		this.liveEntries.set(index, entry);
+		const heap = this.heap;
+		let slot = heap.length;
+		heap.push(entry);
+		while (slot > 0) {
+			const parent = (slot - 1) >> 1;
+			const parentEntry = heap[parent];
+			if (
+				parentEntry === undefined ||
+				compareDedupIndexEntries(parentEntry, entry) >= 0
+			) {
+				break;
+			}
+			heap[slot] = parentEntry;
+			slot = parent;
+		}
+		heap[slot] = entry;
+	}
+
+	delete(index: number): void {
+		this.liveEntries.delete(index);
+	}
+
+	newestIndex(): number | undefined {
+		const heap = this.heap;
+		while (heap.length > 0) {
+			const top = heap[0];
+			if (top !== undefined && this.liveEntries.get(top.index) === top) {
+				return top.index;
+			}
+			this.dropHeapTop();
+		}
+		return undefined;
+	}
+
+	private dropHeapTop(): void {
+		const heap = this.heap;
+		const last = heap.pop();
+		if (last === undefined || heap.length === 0) return;
+		heap[0] = last;
+		let slot = 0;
+		for (;;) {
+			const left = slot * 2 + 1;
+			const right = left + 1;
+			let best = slot;
+			let bestEntry = heap[best] ?? last;
+			const leftEntry = left < heap.length ? heap[left] : undefined;
+			if (
+				leftEntry !== undefined &&
+				compareDedupIndexEntries(leftEntry, bestEntry) > 0
+			) {
+				best = left;
+				bestEntry = leftEntry;
+			}
+			const rightEntry = right < heap.length ? heap[right] : undefined;
+			if (
+				rightEntry !== undefined &&
+				compareDedupIndexEntries(rightEntry, bestEntry) > 0
+			) {
+				best = right;
+			}
+			if (best === slot) break;
+			const slotEntry = heap[slot];
+			const bestValue = heap[best];
+			if (bestValue !== undefined) heap[slot] = bestValue;
+			if (slotEntry !== undefined) heap[best] = slotEntry;
+			slot = best;
+		}
+	}
+}
+
+type DedupEmailIndex = {
+	newest: DedupNewestIndex;
+	// Multiset of the owners' non-empty accountIds, for the ambiguous
+	// email-only refusal (more than one distinct id including the
+	// candidate's own => no safe match).
+	accountIds: Map<string, number>;
+};
+
+type DedupRefreshIndex = {
+	newest: DedupNewestIndex;
+	// Owner accountId/emailKey multisets, for the compatibility vetoes a
+	// refresh-token match applies before picking a survivor.
+	accountIds: Map<string, number>;
+	emailKeys: Map<string, number>;
+};
+
+function bumpIdentityCount(
+	counts: Map<string, number>,
+	key: string | undefined,
+	delta: number,
+): void {
+	if (!key) return;
+	const next = (counts.get(key) ?? 0) + delta;
+	if (next <= 0) {
+		counts.delete(key);
+	} else {
+		counts.set(key, next);
+	}
+}
+
+function dedupCompositeKey(ref: AccountIdentityRef): string | undefined {
+	if (!ref.accountId || !ref.emailKey) return undefined;
+	// JSON encoding keeps the pair unambiguous even for adversarial strings.
+	return JSON.stringify([ref.accountId, ref.emailKey]);
+}
+
+/**
+ * One dedup pass in O(n log n): every candidate is matched against the
+ * surviving array through four incrementally maintained indexes (composite
+ * accountId+email, email, refresh token, accountId) that apply the same
+ * tier precedence and vetoes as the linear findMatchingAccountIndex scans
+ * they replace. A newest-wins replacement re-keys every index the loser
+ * owned, so the indexes always describe the current survivor array.
+ */
 function deduplicateAccountsByIdentityPass<T extends AccountLike>(
 	accounts: readonly T[],
 ): T[] {
 	const deduplicated: T[] = [];
+	const refs: AccountIdentityRef[] = [];
+	const compositeIndexes = new Map<string, DedupNewestIndex>();
+	const emailIndexes = new Map<string, DedupEmailIndex>();
+	const refreshIndexes = new Map<string, DedupRefreshIndex>();
+	const accountIdOwners = new Map<string, Set<number>>();
+
+	const addToIndexes = (
+		index: number,
+		account: T,
+		ref: AccountIdentityRef,
+	): void => {
+		const compositeKey = dedupCompositeKey(ref);
+		if (compositeKey !== undefined) {
+			let newest = compositeIndexes.get(compositeKey);
+			if (!newest) {
+				newest = new DedupNewestIndex();
+				compositeIndexes.set(compositeKey, newest);
+			}
+			newest.set(index, account);
+		}
+		if (ref.emailKey !== undefined) {
+			let bucket = emailIndexes.get(ref.emailKey);
+			if (!bucket) {
+				bucket = { newest: new DedupNewestIndex(), accountIds: new Map() };
+				emailIndexes.set(ref.emailKey, bucket);
+			}
+			bucket.newest.set(index, account);
+			bumpIdentityCount(bucket.accountIds, ref.accountId, 1);
+		}
+		if (ref.refreshToken !== undefined) {
+			let bucket = refreshIndexes.get(ref.refreshToken);
+			if (!bucket) {
+				bucket = {
+					newest: new DedupNewestIndex(),
+					accountIds: new Map(),
+					emailKeys: new Map(),
+				};
+				refreshIndexes.set(ref.refreshToken, bucket);
+			}
+			bucket.newest.set(index, account);
+			bumpIdentityCount(bucket.accountIds, ref.accountId, 1);
+			bumpIdentityCount(bucket.emailKeys, ref.emailKey, 1);
+		}
+		if (ref.accountId !== undefined) {
+			let owners = accountIdOwners.get(ref.accountId);
+			if (!owners) {
+				owners = new Set();
+				accountIdOwners.set(ref.accountId, owners);
+			}
+			owners.add(index);
+		}
+	};
+
+	const removeFromIndexes = (index: number, ref: AccountIdentityRef): void => {
+		const compositeKey = dedupCompositeKey(ref);
+		if (compositeKey !== undefined) {
+			compositeIndexes.get(compositeKey)?.delete(index);
+		}
+		if (ref.emailKey !== undefined) {
+			const bucket = emailIndexes.get(ref.emailKey);
+			if (bucket) {
+				bucket.newest.delete(index);
+				bumpIdentityCount(bucket.accountIds, ref.accountId, -1);
+			}
+		}
+		if (ref.refreshToken !== undefined) {
+			const bucket = refreshIndexes.get(ref.refreshToken);
+			if (bucket) {
+				bucket.newest.delete(index);
+				bumpIdentityCount(bucket.accountIds, ref.accountId, -1);
+				bumpIdentityCount(bucket.emailKeys, ref.emailKey, -1);
+			}
+		}
+		if (ref.accountId !== undefined) {
+			accountIdOwners.get(ref.accountId)?.delete(index);
+		}
+	};
+
 	for (const account of accounts) {
 		if (!account) continue;
-		const existingIndex = findMatchingAccountIndex(deduplicated, account);
+		const candidateRef = toAccountIdentityRef(account);
+		let existingIndex: number | undefined;
+
+		// Tier 1: composite accountId + email match.
+		if (candidateRef.accountId && candidateRef.emailKey) {
+			const compositeKey = dedupCompositeKey(candidateRef);
+			if (compositeKey !== undefined) {
+				existingIndex = compositeIndexes.get(compositeKey)?.newestIndex();
+			}
+		}
+
+		// Tier 2: safe email match. Refuse when the email's owners plus the
+		// candidate carry more than one distinct accountId.
+		if (existingIndex === undefined && candidateRef.emailKey) {
+			const bucket = emailIndexes.get(candidateRef.emailKey);
+			if (bucket && bucket.newest.size > 0) {
+				const distinctAccountIds =
+					bucket.accountIds.size +
+					(candidateRef.accountId &&
+					!bucket.accountIds.has(candidateRef.accountId)
+						? 1
+						: 0);
+				if (distinctAccountIds <= 1) {
+					existingIndex = bucket.newest.newestIndex();
+				}
+			}
+		}
+
+		// Tier 3: compatible refresh-token match. Refuse on an owner whose
+		// accountId or emailKey conflicts with the candidate's, and on an
+		// ambiguous refresh-only candidate with more than one owner.
+		if (existingIndex === undefined && candidateRef.refreshToken) {
+			const bucket = refreshIndexes.get(candidateRef.refreshToken);
+			if (bucket && bucket.newest.size > 0) {
+				const accountIdConflict =
+					candidateRef.accountId !== undefined &&
+					(bucket.accountIds.size > 1 ||
+						(bucket.accountIds.size === 1 &&
+							!bucket.accountIds.has(candidateRef.accountId)));
+				const emailKeyConflict =
+					candidateRef.emailKey !== undefined &&
+					(bucket.emailKeys.size > 1 ||
+						(bucket.emailKeys.size === 1 &&
+							!bucket.emailKeys.has(candidateRef.emailKey)));
+				const ambiguous =
+					candidateRef.accountId === undefined &&
+					candidateRef.emailKey === undefined &&
+					bucket.newest.size > 1;
+				if (!accountIdConflict && !emailKeyConflict && !ambiguous) {
+					existingIndex = bucket.newest.newestIndex();
+				}
+			}
+		}
+
+		// Tier 4: unique-accountId fallback. The dedup pass runs
+		// findMatchingAccountIndex with default options, so the fallback is
+		// only reachable for candidates that also carry an email key; a sole
+		// owner still loses on a conflicting email key.
+		if (
+			existingIndex === undefined &&
+			candidateRef.accountId &&
+			candidateRef.emailKey
+		) {
+			const owners = accountIdOwners.get(candidateRef.accountId);
+			if (owners && owners.size === 1) {
+				const only = owners.values().next();
+				if (!only.done) {
+					const ownerEmailKey = refs[only.value]?.emailKey;
+					if (
+						ownerEmailKey === undefined ||
+						ownerEmailKey === candidateRef.emailKey
+					) {
+						existingIndex = only.value;
+					}
+				}
+			}
+		}
+
 		if (existingIndex === undefined) {
+			const index = deduplicated.length;
 			deduplicated.push(account);
+			refs.push(candidateRef);
+			addToIndexes(index, account, candidateRef);
 			continue;
 		}
-		deduplicated[existingIndex] = selectNewestAccount(
-			deduplicated[existingIndex],
-			account,
-		);
+
+		const current = deduplicated[existingIndex];
+		if (selectNewestAccount(current, account) === current) continue;
+		deduplicated[existingIndex] = account;
+		const previousRef = refs[existingIndex];
+		refs[existingIndex] = candidateRef;
+		if (previousRef) removeFromIndexes(existingIndex, previousRef);
+		addToIndexes(existingIndex, account, candidateRef);
 	}
 	return deduplicated;
 }
@@ -1204,12 +1868,27 @@ export function normalizeAccountStorage(
 	// transforms — most importantly the scalar `rateLimitResetTime` -> map
 	// `rateLimitResetTimes` conversion — so a rate-limited V1 account would be
 	// treated as immediately available on upgrade and burst 429s (stress audit M3).
-	const validAccounts = baseStorage.accounts.filter(
-		(account): account is AccountMetadataV3 =>
-			isRecord(account) &&
-			typeof account.refreshToken === "string" &&
-			!!account.refreshToken.trim(),
-	);
+	const validAccounts = baseStorage.accounts
+		.filter(
+			(account): account is AccountMetadataV3 =>
+				isRecord(account) &&
+				typeof account.refreshToken === "string" &&
+				!!account.refreshToken.trim(),
+		)
+		.map((account) => {
+			const invalidationTimestamp = account.authInvalidatedAt;
+			if (
+				typeof invalidationTimestamp === "number" &&
+				Number.isFinite(invalidationTimestamp) &&
+				invalidationTimestamp > 0
+			) {
+				return account;
+			}
+			const normalized = { ...account };
+			delete normalized.authInvalidatedAt;
+			delete normalized.authInvalidationErrorCode;
+			return normalized;
+		});
 
 	const deduplicatedAccounts = deduplicateAccounts(validAccounts);
 
@@ -1275,7 +1954,8 @@ export function normalizeAccountStorage(
 		if (
 			typeof raw !== "number" ||
 			!Number.isFinite(raw) ||
-			!Number.isInteger(raw) ||
+			// See readAffinityGenerationFromDisk: an unsafe integer wedges the bump.
+			!Number.isSafeInteger(raw) ||
 			raw < 0
 		) {
 			log.warn("Dropping invalid affinityGeneration from storage", {
@@ -1323,7 +2003,11 @@ export function readAffinityGenerationFromDisk(path: string): number {
 		if (
 			typeof generation === "number" &&
 			Number.isFinite(generation) &&
-			Number.isInteger(generation) &&
+			// Safe, not merely integral: past 2^53 `Math.max(gen, disk) + 1 === gen`,
+			// so `bumpStorageAffinityGeneration` silently stops advancing and no
+			// running proxy ever observes another `switch`. Rejecting the value
+			// lets the next bump write 1 and repair the file.
+			Number.isSafeInteger(generation) &&
 			generation >= 0
 		) {
 			return generation;
@@ -1335,47 +2019,121 @@ export function readAffinityGenerationFromDisk(path: string): number {
 }
 
 /**
+ * Advance the session-affinity generation so a running runtime proxy drops its
+ * sticky session→account bindings on the next request.
+ *
+ * Session affinity remembers an account by ITS INDEX, so any mutation that
+ * reshuffles the pool (removing an account, restoring a backup) silently
+ * re-points every live session at a different account until the generation
+ * changes. `switch`/`best`/`unpin` already bump it; the reshuffling paths are
+ * the ones that need it most, because they move every index at once.
+ *
+ * Re-reads the on-disk generation first so concurrent CLI processes do not lose
+ * increments via lost-update on the load+mutate pair. `Math.max` keeps the
+ * counter monotonic: an extra bump only costs one additional affinity
+ * invalidation, while a missed bump lets the proxy cling to the wrong account.
+ * See issue #474.
+ */
+export function bumpStorageAffinityGeneration(
+	storage: { affinityGeneration?: number },
+	storagePath?: string | null,
+): number {
+	let diskGeneration = 0;
+	try {
+		const path = storagePath ?? getStoragePath();
+		if (path) diskGeneration = readAffinityGenerationFromDisk(path);
+	} catch {
+		// No resolvable storage path (never configured). The in-memory counter
+		// is still bumped below; only the lost-update guard is unavailable.
+	}
+	// Guard the in-memory side too, not just the disk read. Past 2^53
+	// `Math.max(gen, disk) + 1 === gen`, so an unsafe value here would write the
+	// same generation forever and no running proxy would observe another
+	// `switch`. Treating it as 0 makes the next write repair the counter.
+	const rawInMemory = storage.affinityGeneration ?? 0;
+	const inMemoryGeneration =
+		Number.isSafeInteger(rawInMemory) && rawInMemory >= 0 ? rawInMemory : 0;
+	const next = Math.max(inMemoryGeneration, diskGeneration) + 1;
+	storage.affinityGeneration = next;
+	return next;
+}
+
+/**
  * Synchronously reads both the top-level `pinnedAccountIndex` and
  * `affinityGeneration` fields from the accounts storage file. Used by
  * `AccountManager.buildStorageSnapshot` to refresh from disk just before
  * persisting routine state (rate-limit hits, cooldowns, etc.) so a CLI
  * `switch`/`unpin` that landed between proxy startup and the save is not
  * clobbered. Returns `pinnedAccountIndex: undefined` and
- * `affinityGeneration: 0` on any failure. See issue #474.
+ * `affinityGeneration: 0` on any failure by default. See issue #474.
+ *
+ * `strict` callers additionally need to know when the metadata could not be
+ * OBSERVED AT ALL, because persisting a stale in-memory pin over a newer disk
+ * pin is exactly the #474 regression. Strict mode therefore throws for the two
+ * cases where a newer selection may be hiding behind the failure:
+ *   - the file exists but cannot be read (EBUSY/EPERM/EACCES: on Windows an AV
+ *     scanner or indexer can hold accounts.json open), and
+ *   - the bytes are not valid JSON (a torn read of a concurrent atomic write).
+ *
+ * A MISSING file and a successfully parsed file with INVALID field values are
+ * deliberately not failures, in either mode. Neither can be concealing a newer
+ * pin (there is no file, or we can see the whole file and the field is
+ * unusable), and both are self-repaired by the very write that follows. Making
+ * them throw would wedge persistence permanently, since recreating or repairing
+ * storage goes through the same save path, and it would take every rate-limit
+ * window, cooldown and rotated refresh token in memory down with it.
  */
-export function readPinAndGenFromDisk(path: string): {
+export function readPinAndGenFromDisk(
+	path: string,
+	options?: { strict?: boolean },
+): {
 	pinnedAccountIndex: number | undefined;
 	affinityGeneration: number;
 } {
+	const unselected = {
+		pinnedAccountIndex: undefined,
+		affinityGeneration: 0,
+	} as const;
 	if (!existsSync(path)) {
-		return { pinnedAccountIndex: undefined, affinityGeneration: 0 };
+		return { ...unselected };
 	}
+	let parsed: unknown;
 	try {
-		const bytes = readFileSync(path);
-		const parsed = JSON.parse(bytes.toString("utf8")) as {
-			pinnedAccountIndex?: unknown;
-			affinityGeneration?: unknown;
-		};
-		const rawPin = parsed.pinnedAccountIndex;
-		const pinnedAccountIndex =
-			typeof rawPin === "number" &&
-			Number.isFinite(rawPin) &&
-			Number.isInteger(rawPin) &&
-			rawPin >= 0
-				? rawPin
-				: undefined;
-		const rawGen = parsed.affinityGeneration;
-		const affinityGeneration =
-			typeof rawGen === "number" &&
-			Number.isFinite(rawGen) &&
-			Number.isInteger(rawGen) &&
-			rawGen >= 0
-				? rawGen
-				: 0;
-		return { pinnedAccountIndex, affinityGeneration };
-	} catch {
-		return { pinnedAccountIndex: undefined, affinityGeneration: 0 };
+		parsed = JSON.parse(readFileSync(path, "utf8"));
+	} catch (error) {
+		// The file was deleted or renamed between existsSync and the read; same
+		// reasoning as the missing-file branch above.
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return { ...unselected };
+		}
+		if (options?.strict) {
+			throw new Error("Unable to read account selection metadata", {
+				cause: error,
+			});
+		}
+		return { ...unselected };
 	}
+	if (!isRecord(parsed)) {
+		return { ...unselected };
+	}
+	const rawPin = parsed.pinnedAccountIndex;
+	const pinnedAccountIndex =
+		typeof rawPin === "number" &&
+		Number.isFinite(rawPin) &&
+		Number.isInteger(rawPin) &&
+		rawPin >= 0
+			? rawPin
+			: undefined;
+	const rawGen = parsed.affinityGeneration;
+	const affinityGeneration =
+		typeof rawGen === "number" &&
+		Number.isFinite(rawGen) &&
+		// See readAffinityGenerationFromDisk: an unsafe integer wedges the bump.
+		Number.isSafeInteger(rawGen) &&
+		rawGen >= 0
+			? rawGen
+			: 0;
+	return { pinnedAccountIndex, affinityGeneration };
 }
 
 /**
@@ -1384,7 +2142,9 @@ export function readPinAndGenFromDisk(path: string): {
  * @returns AccountStorageV3 if file exists and is valid, null otherwise
  */
 export async function loadAccounts(): Promise<AccountStorageV3 | null> {
-	return loadAccountsInternal(saveAccounts);
+	const storage = await applyPendingAuth(getStoragePath(), await loadAccountsInternal(saveAccounts));
+	if (storage) loadedAccountSnapshots.set(storage, structuredClone(storage));
+	return storage;
 }
 
 export async function getBackupMetadata(): Promise<BackupMetadata> {
@@ -1586,12 +2346,25 @@ async function loadAccountsInternal(
 		? await migrateLegacyProjectStorageIfNeeded({ persist: persistMigration })
 		: null;
 
+	// Stat BEFORE the primary read: this fingerprint is the state this process
+	// can claim to know. A writer racing the read makes the record stale, which
+	// is the safe direction for the baseline-less-save guard — never claim
+	// knowledge of content we may not have parsed.
+	let primaryStatsBeforeRead: Awaited<ReturnType<typeof fs.stat>> | undefined;
 	try {
-		const { normalized, storedVersion, schemaErrors } =
+		primaryStatsBeforeRead = await fs.stat(path);
+	} catch {
+		primaryStatsBeforeRead = undefined;
+	}
+	try {
+		const { normalized, storedVersion, schemaErrors, contentSha256 } =
 			await loadAccountsFromPath(path, {
 				normalizeAccountStorage,
 				isRecord,
 			});
+		if (normalized) {
+			notePrimaryState(path, primaryStatsBeforeRead, contentSha256);
+		}
 		if (schemaErrors.length > 0) {
 			log.warn("Account storage schema validation warnings", {
 				errors: schemaErrors.slice(0, 5),
@@ -1672,6 +2445,12 @@ async function loadAccountsInternal(
 
 		return normalized;
 	} catch (error) {
+		// The primary could not be parsed (or read). Whatever file we stat'd is
+		// the state the WAL/backup recovery persists below deliberately replace,
+		// so record it as known — otherwise those intentional recovery saves
+		// would emit the baseline-less-overwrite warning and spend the
+		// once-per-path guard meant for genuine foreign writes.
+		notePrimaryState(path, primaryStatsBeforeRead);
 		const code = (error as NodeJS.ErrnoException).code;
 		if (existsSync(resetMarkerPath)) {
 			return createEmptyStorageWithMetadata(false, "intentional-reset");
@@ -1795,7 +2574,26 @@ async function loadAccountsForExport(): Promise<AccountStorageV3 | null> {
 	}
 }
 
-async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
+async function saveAccountsUnlocked(
+	storage: AccountStorageV3,
+	options?: { expectedOnDiskAccounts?: readonly AccountMetadataV3[] | null },
+): Promise<void> {
+	await saveAccountsUnlockedToDisk(storage, options);
+	// A persisted (or superseded) pending rotated credential is no longer needed —
+	// unless a restorable backup/WAL snapshot still carries the token it replaces,
+	// in which case the entry stays so a stale-backup recovery self-heals.
+	const path = getStoragePath();
+	await prunePendingAuth(path, storage, () =>
+		collectRestorableRefreshTokens(path),
+	).catch((error) => {
+		log.warn("Failed to prune pending rotated credentials", { code: typeof (error as NodeJS.ErrnoException).code === "string" && /^[A-Z_]{1,40}$/.test((error as NodeJS.ErrnoException).code ?? "") ? (error as NodeJS.ErrnoException).code : "INVALID_PENDING_AUTH" });
+	});
+}
+
+async function saveAccountsUnlockedToDisk(
+	storage: AccountStorageV3,
+	options?: { expectedOnDiskAccounts?: readonly AccountMetadataV3[] | null },
+): Promise<void> {
 	const path = getStoragePath();
 	const resetMarkerPath = getIntentionalResetMarkerPath(path);
 	const walPath = getAccountsWalPath(path);
@@ -1841,7 +2639,12 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 				path,
 				"Detected synthetic fixture-like account payload. Use explicit account import/login commands instead.",
 			),
-		createRotatingAccountsBackup,
+		createRotatingAccountsBackup: (targetPath) =>
+			rotateAccountsBackupIfDue(
+				targetPath,
+				storage.accounts,
+				options?.expectedOnDiskAccounts,
+			),
 		computeSha256,
 		writeJournal: async (content: string, journalPath: string) => {
 			const journalEntry: AccountsJournalEntry = {
@@ -1901,8 +2704,9 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 				// Ignore cleanup failure.
 			}
 		},
-		onSaved: () => {
+		onSaved: (stats, contentSha256) => {
 			lastAccountsSaveTimestamp = Date.now();
+			notePrimaryState(path, stats, contentSha256);
 		},
 		logWarn: (message: string, details: Record<string, unknown>) => {
 			log.warn(message, details);
@@ -1935,6 +2739,40 @@ function cloneFlaggedStorageForPersistence(
 		accounts: structuredClone(storage?.accounts ?? []),
 	};
 }
+/** Code for a merge base that cannot be read; distinct from an ESTALE edit conflict. */
+export const ACCOUNT_STORAGE_UNREADABLE = "EACCOUNTSUNREADABLE";
+
+async function loadPrimaryAccountsForMerge(): Promise<AccountStorageV3 | null> {
+	const path = getStoragePath();
+	if (existsSync(getIntentionalResetMarkerPath(path))) {
+		return createEmptyStorageWithMetadata(false, "intentional-reset");
+	}
+	try {
+		const { normalized } = await loadAccountsFromPath(path, {
+			normalizeAccountStorage,
+			isRecord,
+		});
+		if (!normalized) throw new Error("Invalid primary account storage");
+		// The merge base must carry pending rotated credentials too, or a merge
+		// would keep the spent token that is still on disk.
+		return applyPendingAuth(path, normalized);
+	} catch (cause) {
+		const code = (cause as NodeJS.ErrnoException).code;
+		// The journal is written before the primary and removed after it, so a
+		// journal beside a missing primary is the newest state, not a stale
+		// backup. Without one, the deletion is authoritative.
+		if (code === "ENOENT") return applyPendingAuth(path, await loadAccountsFromJournal(path, { silent: true }));
+		// A locked or torn primary may hold newer state than any backup, so it is
+		// never replaced by a recovered copy here.
+		throw Object.assign(
+			new Error(
+				`Account storage could not be read${typeof code === "string" ? ` (${code})` : ""}; nothing was saved.`,
+			),
+			{ code: ACCOUNT_STORAGE_UNREADABLE, cause },
+		);
+	}
+}
+
 export async function withAccountStorageTransaction<T>(
 	handler: (
 		current: AccountStorageV3 | null,
@@ -1943,7 +2781,7 @@ export async function withAccountStorageTransaction<T>(
 ): Promise<T> {
 	return runWithAccountStorageTransaction(handler, {
 		getStoragePath,
-		loadCurrent: () => loadAccountsInternal(saveAccountsUnlocked),
+		loadCurrent: loadPrimaryAccountsForMerge,
 		saveAccounts: saveAccountsUnlocked,
 	});
 }
@@ -1961,7 +2799,7 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 	return withStorageLock(async () => {
 		const storagePath = getStoragePath();
 		const state = {
-			snapshot: await loadAccountsInternal(saveAccountsUnlocked),
+			snapshot: await loadPrimaryAccountsForMerge(),
 			storagePath,
 			active: true,
 		};
@@ -1974,15 +2812,20 @@ export async function withAccountAndFlaggedStorageTransaction<T>(
 			const previousAccounts = cloneAccountStorageForPersistence(
 				state.snapshot,
 			);
-			const nextAccounts = cloneAccountStorageForPersistence(accountStorage);
+			const baseline = loadedAccountSnapshots.get(accountStorage);
+			const nextAccounts = cloneAccountStorageForPersistence(baseline ? mergeAccountSnapshot(baseline, state.snapshot, accountStorage) : accountStorage);
 			const nextFlagged = cloneFlaggedStorageForPersistence(flaggedStorage);
-			await saveAccountsUnlocked(nextAccounts);
+			await saveAccountsUnlocked(nextAccounts, {
+				expectedOnDiskAccounts: state.snapshot?.accounts,
+			});
 			try {
 				await saveFlaggedAccountsUnlocked(nextFlagged);
 				state.snapshot = nextAccounts;
 			} catch (error) {
 				try {
-					await saveAccountsUnlocked(previousAccounts);
+					await saveAccountsUnlocked(previousAccounts, {
+						expectedOnDiskAccounts: state.snapshot?.accounts,
+					});
 					state.snapshot = previousAccounts;
 				} catch (rollbackError) {
 					const combinedError = new AggregateError(
@@ -2054,11 +2897,50 @@ export async function withFlaggedStorageTransaction<T>(
  * @param storage - Account storage data to save
  * @throws StorageError with platform-aware hints on failure
  */
+/**
+ * Clone a loaded working snapshot without losing its optimistic-concurrency baseline.
+ *
+ * Baseline contract: `saveAccounts` only runs the three-way merge
+ * (`mergeAccountSnapshot` against a fresh `loadPrimaryAccountsForMerge` read)
+ * when the saved object is registered in `loadedAccountSnapshots` — and that
+ * WeakMap is keyed by OBJECT IDENTITY, so registration does not survive
+ * `structuredClone`, `JSON.parse(JSON.stringify(...))`, spread copies, or
+ * manual reconstruction. A baseline-less save writes the object as-is
+ * (last-writer-wins): concurrent changes are neither merged nor flagged with
+ * ESTALE, and when the primary on disk differs from the state this process
+ * last read or wrote the save additionally emits a one-time baseline-less
+ * overwrite warning. Use this helper — or mutate the loaded object in place —
+ * to keep the merge armed.
+ */
+export function cloneTrackedAccountStorage(storage: AccountStorageV3): AccountStorageV3 {
+ const clone = structuredClone(storage);
+ const baseline = loadedAccountSnapshots.get(storage);
+ if (baseline) loadedAccountSnapshots.set(clone, structuredClone(baseline));
+ return clone;
+}
+
 export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
 	return saveAccountsEntry({
 		storage,
 		withStorageLock,
-		saveUnlocked: saveAccountsUnlocked,
+		saveUnlocked: async proposed => {
+			const baseline = loadedAccountSnapshots.get(proposed);
+			const current = baseline ? await loadPrimaryAccountsForMerge() : null;
+			if (!baseline) {
+				// Without a baseline the three-way merge cannot run — this write is
+				// last-writer-wins. Warn (once) if the primary changed underneath us.
+				await warnOnBaselinelessSave(getStoragePath());
+			}
+			const snapshot = baseline ? mergeAccountSnapshot(baseline, current, proposed) : proposed;
+			await saveAccountsUnlocked(snapshot, {
+				expectedOnDiskAccounts: current?.accounts,
+			});
+			if (baseline) {
+				for (const key of Object.keys(proposed)) Reflect.deleteProperty(proposed, key);
+				Object.assign(proposed, structuredClone(snapshot));
+				loadedAccountSnapshots.set(proposed, structuredClone(snapshot));
+			}
+		},
 	});
 }
 
@@ -2068,7 +2950,7 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  */
 export async function clearAccounts(): Promise<void> {
 	const path = getStoragePath();
-	return clearAccountsEntry({
+	await clearAccountsEntry({
 		path,
 		withStorageLock,
 		resetMarkerPath: getIntentionalResetMarkerPath(path),
@@ -2080,6 +2962,8 @@ export async function clearAccounts(): Promise<void> {
 			log.error(message, details);
 		},
 	});
+	// Pending rotated credentials belong to the cleared pool.
+	await clearPendingAuth(path);
 }
 
 export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {

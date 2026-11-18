@@ -61,7 +61,7 @@ export {
  * diagnostics all agree on the same effective model.
  *
  * @param model - Original model name (e.g., "gpt-5-codex-low", "openai/gpt-5.3-codex")
- * @returns Normalized model name (e.g., "gpt-5.3-codex", "gpt-5.5", "gpt-5.4")
+ * @returns Normalized model name (e.g., "gpt-5.6-sol", "gpt-6.1-sol", "gpt-6-astra")
  */
 export function normalizeModel(model: string | undefined): string {
 	return resolveNormalizedModel(model);
@@ -573,25 +573,33 @@ export function filterInput(
 ): InputItem[] | undefined {
 	if (!Array.isArray(input)) return input;
 	const stripIds = options?.stripIds ?? true;
-	const filtered: InputItem[] = [];
-	for (const item of input) {
-		if (!item || typeof item !== "object") {
-			continue;
-		}
-		// Remove AI SDK constructs not supported by Codex API.
-		if (item.type === "item_reference") {
+	// Copy-on-write: items pass through by reference until the first drop or
+	// ID strip, so inputs with no ids never allocate a clone per item.
+	let filtered: InputItem[] | null = null;
+	for (let i = 0; i < input.length; i++) {
+		const item = input[i];
+		if (!item || typeof item !== "object" || item.type === "item_reference") {
+			// Drop AI SDK constructs not supported by Codex API (and holes).
+			if (filtered === null) {
+				filtered = input.slice(0, i);
+			}
 			continue;
 		}
 		// Strip IDs from all items (Codex API stateless mode).
 		if (stripIds && "id" in item) {
 			const { id: _omit, ...itemWithoutId } = item;
 			void _omit;
+			if (filtered === null) {
+				filtered = input.slice(0, i);
+			}
 			filtered.push(itemWithoutId as InputItem);
 			continue;
 		}
-		filtered.push(item);
+		if (filtered !== null) {
+			filtered.push(item);
+		}
 	}
-	return filtered;
+	return filtered ?? input;
 }
 
 /**
@@ -691,13 +699,25 @@ export interface FastSessionInputTrimPlan {
 	};
 }
 
+// `[^\S\n]` is every whitespace except newline: `\s` between the anchor and the
+// marker could span blank lines, and on whitespace-heavy multi-MB payloads the
+// `^|\n` + `\s*` combination backtracked per position (a >20s stall observed on
+// an all-whitespace body). Confining the run to a single line keeps the scan
+// linear while matching the same "line starts with a list marker" shapes.
+const MARKDOWN_LIST_ITEM_PATTERN =
+	/(^|\n)[^\S\n]*(?:[-*]|\d+\.)[^\S\n]+\S/;
+
+function hasMarkdownListItem(text: string): boolean {
+	return MARKDOWN_LIST_ITEM_PATTERN.test(text);
+}
+
 function isTrivialLatestPrompt(text: string): boolean {
 	const normalized = text.trim();
 	if (!normalized) return false;
 	if (normalized.length > 220) return false;
 	if (normalized.includes("\n")) return false;
 	if (normalized.includes("```")) return false;
-	if (/(^|\n)\s*(?:[-*]|\d+\.)\s+\S/m.test(normalized)) return false;
+	if (hasMarkdownListItem(normalized)) return false;
 	if (/https?:\/\//i.test(normalized)) return false;
 	if (/\|.+\|/.test(normalized)) return false;
 
@@ -711,7 +731,7 @@ function isStructurallyComplexPrompt(text: string): boolean {
 
 	const lineCount = normalized.split(/\r?\n/).filter(Boolean).length;
 	if (lineCount >= 3) return true;
-	if (/(^|\n)\s*(?:[-*]|\d+\.)\s+\S/m.test(normalized)) return true;
+	if (hasMarkdownListItem(normalized)) return true;
 	if (/\|.+\|/.test(normalized)) return true;
 	return false;
 }
@@ -1056,10 +1076,11 @@ export async function transformRequestBody(
 						}) ?? inputItems;
 			}
 
-		// Debug: Log original input message IDs before filtering
-		const originalIds = inputItems
-			.filter((item) => item.id)
-			.map((item) => item.id);
+		// Debug: collect original input message IDs before filtering (single pass).
+		const originalIds: Array<InputItem["id"]> = [];
+		for (const item of inputItems) {
+			if (item?.id) originalIds.push(item.id);
+		}
 		if (originalIds.length > 0) {
 			logDebug(
 				`Filtering ${originalIds.length} message IDs from input:`,
@@ -1072,18 +1093,23 @@ export async function transformRequestBody(
 		}) ?? inputItems;
 		body.input = inputItems;
 
-		// istanbul ignore next -- filterInput always removes IDs in stateless mode; this is defensive debug code
-		const remainingIds = (body.input || [])
-			.filter((item) => item.id)
-			.map((item) => item.id);
-		// istanbul ignore if -- filterInput always removes IDs in stateless mode; background mode intentionally preserves them
-		if (remainingIds.length > 0 && !backgroundModeRequested) {
-			logWarn(
-				`WARNING: ${remainingIds.length} IDs still present after filtering:`,
-				remainingIds,
-			);
-		} else if (originalIds.length > 0) {
-			logDebug(`Successfully removed all ${originalIds.length} message IDs`);
+		// IDs surviving the filter are always a subset of the originals, so the
+		// second scan only runs when an ID was present beforehand. In stateless
+		// mode filterInput removes every ID, so the warn branch stays defensive.
+		if (originalIds.length > 0) {
+			const remainingIds: Array<InputItem["id"]> = [];
+			for (const item of body.input) {
+				if (item?.id) remainingIds.push(item.id);
+			}
+			// istanbul ignore next -- filterInput always removes IDs in stateless mode; this is defensive debug code
+			if (remainingIds.length > 0 && !backgroundModeRequested) {
+				logWarn(
+					`WARNING: ${remainingIds.length} IDs still present after filtering:`,
+					remainingIds,
+				);
+			} else {
+				logDebug(`Successfully removed all ${originalIds.length} message IDs`);
+			}
 		}
 
 		if (resolvedCodexMode) {

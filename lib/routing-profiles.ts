@@ -8,7 +8,15 @@ import {
 	resolveProjectStorageIdentityRoot,
 } from "./storage/paths.js";
 import { isRecord, sleep } from "./utils.js";
-import { tempPathFor } from "./temp-path.js";
+import {
+	getJsonStoreFileMtimeMs,
+	resetJsonStoreWriteQueuesForTests,
+	stampUpdatedAt,
+	withJsonStoreCasRetry,
+	withJsonStoreFileLock,
+	withJsonStoreWriteQueue,
+	writeJsonStoreFileAtomicWithRetry,
+} from "./storage/json-store-lock.js";
 
 export interface RoutingProfile {
 	projectKey: string;
@@ -38,7 +46,6 @@ export interface ProjectRoutingProfileContext {
 
 const ROUTING_PROFILES_FILE_NAME = "routing-profiles.json";
 const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
-let writeQueue: Promise<void> = Promise.resolve();
 
 function isRetryableFsError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -102,13 +109,25 @@ function normalizeProfile(key: string, value: unknown): RoutingProfile | null {
 	};
 }
 
+// Profile keys are caller/project-derived strings — including, via a crafted
+// store file or a literal upsert, Object.prototype member names such as
+// "constructor" or "__proto__". On a plain object, reading an absent key
+// resolves an inherited member ({}.constructor === Object), which made a
+// same-named profile look "already present" to the merge and silently dropped
+// the incoming entry; writing "__proto__" invokes the setter and mutates the
+// prototype instead of storing anything. Null-prototype maps make every key a
+// plain data slot regardless of name.
+function newProfilesMap(): Record<string, RoutingProfile> {
+	return Object.create(null) as Record<string, RoutingProfile>;
+}
+
 function emptyStore(): RoutingProfileStore {
-	return { version: 1, profiles: {} };
+	return { version: 1, profiles: newProfilesMap() };
 }
 
 function normalizeStore(value: unknown): RoutingProfileStore {
 	if (!isRecord(value) || value.version !== 1) return emptyStore();
-	const profiles: Record<string, RoutingProfile> = {};
+	const profiles = newProfilesMap();
 	if (isRecord(value.profiles)) {
 		for (const [key, raw] of Object.entries(value.profiles)) {
 			const profile = normalizeProfile(key, raw);
@@ -153,46 +172,121 @@ export async function loadRoutingProfileStore(): Promise<RoutingProfileStore> {
 	}
 }
 
+/**
+ * Per-key merge of the caller's normalized store over the freshest on-disk
+ * store. Profiles carry `updatedAt`; the newer entry wins per key so a save
+ * built on a stale snapshot cannot resurrect an older profile over a
+ * concurrent process's newer one. Keys the caller does not carry are
+ * preserved (upsert-only store — nothing deletes entries), matching the
+ * config save's patch-over-fresh-read semantics.
+ *
+ * When `baseline` (the caller's pre-edit snapshot) is supplied, entries
+ * identical to it are untouched carried copies and skipped entirely, so a
+ * stale snapshot row can never be re-stamped over a raced write. Entries
+ * that differ are deliberate writes and must not lose purely on timestamp:
+ * the upsert-time floor stamps against the caller's snapshot, but a
+ * concurrent writer can land a still-newer entry before this merge runs, so
+ * the merge re-stamps against the freshest on-disk entry instead of
+ * silently dropping the edit. Without a baseline every supplied entry is a
+ * plain `updatedAt >=` upsert.
+ */
+function mergeRoutingProfiles(
+	current: RoutingProfileStore,
+	incoming: RoutingProfileStore,
+	baseline: RoutingProfileStore | undefined,
+): RoutingProfileStore {
+	const merged: RoutingProfileStore = {
+		version: 1,
+		profiles: Object.assign(newProfilesMap(), current.profiles),
+	};
+	const same = (
+		a: RoutingProfile | undefined,
+		b: RoutingProfile | undefined,
+	): boolean => JSON.stringify(a) === JSON.stringify(b);
+	for (const [key, profile] of Object.entries(incoming.profiles)) {
+		const existing = merged.profiles[key];
+		if (!baseline) {
+			if (!existing || profile.updatedAt >= existing.updatedAt) {
+				merged.profiles[key] = profile;
+			}
+			continue;
+		}
+		if (same(profile, baseline.profiles[key])) continue;
+		profile.updatedAt = stampUpdatedAt(profile.updatedAt, existing?.updatedAt);
+		merged.profiles[key] = profile;
+	}
+	return merged;
+}
+
 export async function saveRoutingProfileStore(
 	store: RoutingProfileStore,
+	baseline?: RoutingProfileStore,
 ): Promise<void> {
 	const path = getRoutingProfilesPath();
-	const payload = normalizeStore(store);
-	const task = async (): Promise<void> => {
-		await fs.mkdir(getCodexMultiAuthDir(), { recursive: true, mode: 0o700 });
-		const tempPath = tempPathFor(path);
-		let moved = false;
-		try {
-			await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, {
-				encoding: "utf8",
-				mode: 0o600,
+	const incoming = normalizeStore(store);
+	// Normalize at invocation like `incoming`: later caller-side mutation of
+	// `baseline` must not shift which entries the merge counts as deliberate.
+	const prior = baseline ? normalizeStore(baseline) : undefined;
+	// Per-path promise queue serializes writers inside THIS process; the
+	// lock directory closes the same window against OTHER processes. Inside the lock
+	// every attempt re-stats (CAS), re-reads the freshest on-disk store, and
+	// merges this call's entries over it — so a save that raced a concurrent
+	// write reloads-and-retries rather than blindly overwriting it.
+	await withJsonStoreWriteQueue(path, async () => {
+		await withJsonStoreFileLock(path, async () => {
+			await withJsonStoreCasRetry(async () => {
+				const expectedMtimeMs = await getJsonStoreFileMtimeMs(path);
+				const current = await loadRoutingProfileStore();
+				const merged = mergeRoutingProfiles(current, incoming, prior);
+				await fs.mkdir(getCodexMultiAuthDir(), {
+					recursive: true,
+					mode: 0o700,
+				});
+				await writeJsonStoreFileAtomicWithRetry(path, merged, {
+					expectedMtimeMs,
+					mode: 0o600,
+				});
 			});
-			for (let attempt = 0; attempt < 5; attempt += 1) {
-				try {
-					await fs.rename(tempPath, path);
-					moved = true;
-					return;
-				} catch (error) {
-					if (!isRetryableFsError(error) || attempt >= 4) throw error;
-					await sleep(10 * 2 ** attempt);
+		});
+	});
+}
+
+/**
+ * Run a routing-profile read→mutate→write inside the write queue (in-process
+ * serialization) AND the cross-process lock directory, with mtime CAS retry:
+ * every attempt re-reads the freshest on-disk store and re-applies `mutate`
+ * before writing — so a mutation is applied to the latest committed state
+ * rather than merged by whole-record `updatedAt`, which can drop or clobber
+ * a concurrent process's change to the same profile. `mutate` must be
+ * re-appliable across retries (apply precomputed work onto the store it is
+ * handed, don't capture mutated state). Prefer this over load→upsert→save
+ * whenever the caller is mutating rather than importing a foreign store.
+ */
+export async function updateRoutingProfileStore<T>(
+	mutate: (store: RoutingProfileStore) => { result: T; dirty: boolean },
+): Promise<T> {
+	const path = getRoutingProfilesPath();
+	return withJsonStoreWriteQueue(path, () =>
+		withJsonStoreFileLock(path, () =>
+			withJsonStoreCasRetry(async () => {
+				const expectedMtimeMs = await getJsonStoreFileMtimeMs(path);
+				const store = await loadRoutingProfileStore();
+				const { result, dirty } = mutate(store);
+				if (dirty) {
+					await fs.mkdir(getCodexMultiAuthDir(), {
+						recursive: true,
+						mode: 0o700,
+					});
+					await writeJsonStoreFileAtomicWithRetry(
+						path,
+						normalizeStore(store),
+						{ expectedMtimeMs, mode: 0o600 },
+					);
 				}
-			}
-		} finally {
-			if (!moved) {
-				try {
-					await fs.unlink(tempPath);
-				} catch {
-					// Best-effort temp cleanup.
-				}
-			}
-		}
-	};
-	const queued = writeQueue.catch(() => undefined).then(task);
-	writeQueue = queued.then(
-		() => undefined,
-		() => undefined,
+				return result;
+			}),
+		),
 	);
-	await queued;
 }
 
 export function createDefaultRoutingProfile(input: {
@@ -221,14 +315,22 @@ export function upsertRoutingProfile(
 	mutate?: (profile: RoutingProfile) => void,
 	now = Date.now(),
 ): RoutingProfile {
-	const next = structuredClone(
-		store.profiles[profile.projectKey] ?? profile,
-	);
+	// store.profiles may be a caller-built plain object, so absent-key reads
+	// need an own-property check and "__proto__" needs a setter-safe write.
+	const existing = Object.hasOwn(store.profiles, profile.projectKey)
+		? store.profiles[profile.projectKey]
+		: undefined;
+	const next = structuredClone(existing ?? profile);
 	mutate?.(next);
-	next.updatedAt = now;
+	next.updatedAt = stampUpdatedAt(now, existing?.updatedAt);
 	const normalized = normalizeProfile(profile.projectKey, next);
 	if (!normalized) throw new Error("Invalid routing profile");
-	store.profiles[profile.projectKey] = normalized;
+	Object.defineProperty(store.profiles, profile.projectKey, {
+		value: normalized,
+		writable: true,
+		enumerable: true,
+		configurable: true,
+	});
 	return normalized;
 }
 
@@ -259,6 +361,6 @@ export async function resolveProjectRoutingProfile(
 }
 
 export function resetRoutingProfileWriteQueueForTests(): void {
-	writeQueue = Promise.resolve();
+	resetJsonStoreWriteQueuesForTests(getRoutingProfilesPath());
 }
 

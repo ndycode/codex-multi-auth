@@ -1,4 +1,5 @@
-import { CODEX_BASE_URL } from "./constants.js";
+import { CODEX_BASE_URL, MAX_RATE_LIMIT_DELAY_MS } from "./constants.js";
+import { fetchWithProxy } from "./request/proxy-fetch.js";
 import { createCodexHeaders, getUnsupportedCodexModelInfo } from "./request/fetch-helpers.js";
 import {
 	QUOTA_PROBE_MODEL_CHAIN,
@@ -8,7 +9,8 @@ import { CodexUnavailableError, isCodexUnavailableError } from "./errors.js";
 import { getCodexInstructions } from "./prompts/codex.js";
 import { mutateRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import type { RequestBody } from "./types.js";
-import { isRecord } from "./utils.js";
+import { combineSignals, isRecord } from "./utils.js";
+import { FirstUseProbeError, finishSubscriptionFirstUse, needsSubscriptionFirstUse } from "./runtime/subscription-first-use.js";
 
 /**
  * Human-readable note shown when a live probe fails solely because the account
@@ -49,6 +51,11 @@ export interface CodexQuotaWindow {
 }
 
 export interface CodexQuotaSnapshot {
+	/** Time quota headers were observed, before consuming the response stream. */
+	observedAt?: number;
+	primingCompleted?: boolean;
+	primingObservedAt?: number;
+	primingFailure?: FirstUseProbeError["reason"];
 	status: number;
 	planType?: string;
 	activeLimit?: number;
@@ -105,6 +112,13 @@ function parseFiniteIntHeader(headers: Headers, name: string): number | undefine
  * Security: does not emit or persist header values; callers must redact any sensitive tokens before storing or logging headers.
  */
 function parseResetAtMs(headers: Headers, prefix: string): number | undefined {
+	const raw = parseUnboundedResetAtMs(headers, prefix);
+	// A bogus header (finite, but overflowing once scaled to ms) must not read as
+	// a window that never resets.
+	return raw === undefined || Number.isNaN(raw) ? undefined : Math.min(raw, Date.now() + MAX_RATE_LIMIT_DELAY_MS);
+}
+
+function parseUnboundedResetAtMs(headers: Headers, prefix: string): number | undefined {
 	const resetAfterSeconds = parseFiniteIntHeader(headers, `${prefix}-reset-after-seconds`);
 	if (typeof resetAfterSeconds === "number" && resetAfterSeconds > 0) {
 		return Date.now() + resetAfterSeconds * 1000;
@@ -343,6 +357,8 @@ export function formatQuotaSnapshotLine(snapshot: CodexQuotaSnapshot): string {
 }
 
 export interface ProbeCodexQuotaOptions {
+	signal?: AbortSignal;
+	primeUnusedSubscription?: boolean;
 	accountId: string;
 	accessToken: string;
 	model?: string;
@@ -377,9 +393,11 @@ export async function fetchCodexQuotaSnapshot(
 	let sawOtherFailure = false;
 
 	for (const model of models) {
+		options.signal?.throwIfAborted();
 		attemptedAnyModel = true;
 		try {
 			const instructions = await getCodexInstructions(model);
+			options.signal?.throwIfAborted();
 			const probeBody: RequestBody = {
 				model,
 				stream: true,
@@ -413,11 +431,14 @@ export async function fetchCodexQuotaSnapshot(
 					snapshot.diagnosticProbeRequests += 1;
 					snapshot.runtimeMetrics.diagnosticProbeRequests += 1;
 				});
-				response = await fetch(`${CODEX_BASE_URL}/codex/responses`, {
+				response = await fetchWithProxy(`${CODEX_BASE_URL}/codex/responses`, {
 					method: "POST",
 					headers,
 					body: JSON.stringify(probeBody),
-					signal: controller.signal,
+					// combineSignals wraps AbortSignal.any with null-tolerance:
+					// the composite detaches from a long-lived caller signal once
+					// this probe completes, instead of pinning a listener on it.
+					signal: options.signal ? combineSignals(controller.signal, options.signal) : controller.signal,
 				});
 			} finally {
 				clearTimeout(timeout);
@@ -425,12 +446,23 @@ export async function fetchCodexQuotaSnapshot(
 
 			const snapshotBase = parseQuotaSnapshotBase(response.headers, response.status);
 			if (snapshotBase) {
+				const observedAt = Date.now();
+				if (options.primeUnusedSubscription && needsSubscriptionFirstUse(snapshotBase, observedAt)) {
+					try {
+						await finishSubscriptionFirstUse(response, timeoutMs);
+						return { ...snapshotBase, observedAt, model, primingObservedAt: Date.now(), primingCompleted: true };
+					} catch (error) {
+						// Keep valid quota data without retrying an accepted inference.
+						if (error instanceof FirstUseProbeError) return { ...snapshotBase, observedAt, model, primingObservedAt: Date.now(), primingFailure: error.reason };
+						throw error;
+					}
+				}
 				try {
 					await response.body?.cancel();
 				} catch {
 					// Best effort cancellation.
 				}
-				return { ...snapshotBase, model };
+				return { ...snapshotBase, observedAt, model };
 			}
 
 			if (!response.ok) {
@@ -463,6 +495,8 @@ export async function fetchCodexQuotaSnapshot(
 			sawOtherFailure = true;
 			lastError = new Error("Codex response did not include quota headers");
 		} catch (error) {
+			options.signal?.throwIfAborted();
+			if (error instanceof FirstUseProbeError) throw error;
 			sawOtherFailure = true;
 			lastError = error instanceof Error ? error : new Error(String(error));
 		}

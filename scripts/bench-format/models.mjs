@@ -2,10 +2,10 @@ import { spawnSync } from "node:child_process";
 import { resolveCodexExecutable } from "./codex-host.mjs";
 
 const FALLBACK_OPENAI_CODEX_STABLE = [
-  "openai/gpt-5.3-codex",
-  "openai/gpt-5.4",
-  "openai/gpt-5.4-mini",
-  "openai/gpt-5.5",
+  "openai/gpt-6.1-sol",
+  "openai/gpt-6-sol",
+  "openai/gpt-6-luna",
+  "openai/gpt-5.6-sol",
 ];
 
 const OPENAI_CODEX_PREFIXES = ["openai/", "openai-multi/"];

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, delimiter, dirname, extname, isAbsolute, join, relative } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, posix, relative, win32 } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -55,6 +55,29 @@ function defaultResolvePackageBin(moduleUrl) {
 	}
 }
 
+// spawn() without a shell cannot run these on Windows: `.cmd`/`.bat` are
+// EINVAL, `.ps1` is not an executable image, and an extensionless file
+// (npm's `#!/bin/sh` shim) is ENOENT even when it is a real PE image. Going through cmd.exe instead would put every
+// forwarded argument through cmd's quoting rules.
+export function isWindowsShimPath(candidatePath) {
+	const extension = win32.extname(candidatePath).toLowerCase();
+	return extension === "" || extension === ".cmd" || extension === ".bat" || extension === ".ps1";
+}
+
+// npm's Windows shims sit in the prefix dir and run
+// `<prefix>\node_modules\@openai\codex\bin\codex.js`.
+export function resolveWindowsShimPackageEntry(shimPath, existsSyncImpl = existsSync) {
+	const entry = win32.join(
+		win32.dirname(shimPath),
+		"node_modules",
+		"@openai",
+		"codex",
+		"bin",
+		"codex.js",
+	);
+	return existsSyncImpl(entry) ? entry : null;
+}
+
 function resolveWindowsCmdPath(env) {
 	const comSpec = (env.ComSpec ?? env.COMSPEC ?? "").trim();
 	if (comSpec.length > 0) return comSpec;
@@ -67,12 +90,27 @@ function resolveWindowsCmdPath(env) {
 	return "cmd.exe";
 }
 
-export function splitPathEntries(pathValue) {
+// win32.isAbsolute("\bin\codex.exe") is true for a root-relative path with no
+// drive — it resolves against the CURRENT drive, so the existence check would
+// probe (and a forwarder would exec) whatever file lives at "<cwd's
+// drive>\bin\codex.exe". CWE-426: a binary override must be drive-qualified
+// (C:\...) or a UNC/device path (\\server\share\..., \\?\...), never a bare
+// "\" or "/" root. POSIX keeps plain absolute-path semantics.
+export function isFullyQualifiedBinOverride(candidatePath, platform) {
+	if (platform === "win32") {
+		if (!win32.isAbsolute(candidatePath)) return false;
+		const root = win32.parse(candidatePath).root;
+		return root !== "\\" && root !== "/";
+	}
+	return posix.isAbsolute(candidatePath);
+}
+
+export function splitPathEntries(pathValue, platform = process.platform) {
 	if (typeof pathValue !== "string" || pathValue.trim().length === 0) {
 		return [];
 	}
 	return pathValue
-		.split(delimiter)
+		.split(platform === "win32" ? ";" : ":")
 		.map((entry) => entry.trim())
 		.filter((entry) => entry.length > 0);
 }
@@ -85,7 +123,12 @@ function resolveCandidateExecutableNames(platform) {
 	if (platform !== "win32") {
 		return [resolvePathExecutableName(platform)];
 	}
-	return ["codex.exe", "codex"];
+	// npm on Windows puts `codex.cmd` plus an extensionless `#!/bin/sh` shim in
+	// the prefix dir and the package under `<prefix>\node_modules`. Neither shim
+	// can be spawned without a shell (`.cmd` is EINVAL, the sh script ENOENT),
+	// so launch the package entry the shims point at before falling back to an
+	// extensionless `codex`.
+	return ["codex.exe", win32.join("node_modules", "@openai", "codex", "bin", "codex.js"), "codex"];
 }
 
 function resolveCodexExecutableFromPath(
@@ -97,7 +140,7 @@ function resolveCodexExecutableFromPath(
 ) {
 	for (const entry of pathEntries) {
 		for (const executableName of resolveCandidateExecutableNames(platform)) {
-			const candidate = join(entry, executableName);
+			const candidate = (platform === "win32" ? win32 : posix).join(entry, executableName);
 			if (!existsSyncImpl(candidate)) {
 				continue;
 			}
@@ -134,7 +177,7 @@ function resolveCodexExecutableFromSystemPath(
 	selfScriptPath,
 	realpathSyncImpl,
 ) {
-	const pathEntries = splitPathEntries(env.PATH ?? env.Path ?? "");
+	const pathEntries = splitPathEntries(env.PATH ?? env.Path ?? "", platform);
 	const fromEnvPath = resolveCodexExecutableFromPath(
 		pathEntries,
 		platform,
@@ -207,8 +250,16 @@ export function resolveRealCodexBin(options = {}) {
 
 	const override = (env.CODEX_MULTI_AUTH_REAL_CODEX_BIN ?? "").trim();
 	if (override.length > 0) {
-		if (existsSyncImpl(override)) return createResolvedCodexBin(override);
-		return null;
+		// The override is the binary every forwarded command execs, so require a
+		// fully-qualified absolute path: a relative one resolves against the
+		// caller's cwd, and on Windows a root-relative one resolves against the
+		// cwd's DRIVE — either could silently exec a planted file.
+		if (!isFullyQualifiedBinOverride(override, platform) || !existsSyncImpl(override)) return null;
+		if (platform === "win32" && isWindowsShimPath(override)) {
+			const entry = resolveWindowsShimPackageEntry(override, existsSyncImpl);
+			return entry ? createResolvedCodexBin(entry) : null;
+		}
+		return createResolvedCodexBin(override);
 	}
 
 	const resolved = resolvePackageBin(moduleUrl);

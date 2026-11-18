@@ -173,4 +173,52 @@ describe("storage parser helpers", () => {
 		expect(account?.rateLimitResetTimes?.codex).toBe(future);
 	});
 
+	it("keeps V3-era fields on a version:1 file through the disk load path", async () => {
+		// Hybrid files are real (the flagged-accounts store is version:1 with
+		// full V3 rows; hand edits can flip the version field too). Previously
+		// the strict V1 schema stripped these fields at the Zod boundary and
+		// migrateV1ToV3 dropped whatever it did not name.
+		const filePath = `${process.cwd()}/tmp-storage-parser-v1-hybrid.json`;
+		const future = Date.now() + 60_000;
+		await fs.writeFile(
+			filePath,
+			JSON.stringify({
+				version: 1,
+				activeIndex: 0,
+				activeIndexByFamily: { codex: 1 },
+				pinnedAccountIndex: 1,
+				affinityGeneration: 7,
+				accounts: [
+					{ refreshToken: "rt-a", addedAt: 1, lastUsed: 1 },
+					{
+						refreshToken: "rt-b",
+						addedAt: 2,
+						lastUsed: 2,
+						rateLimitResetTimes: { codex: future },
+						workspaces: [{ id: "w1", enabled: true }],
+						recordId: "rec-b",
+					},
+				],
+			}),
+			"utf8",
+		);
+		try {
+			const result = await loadAccountsFromPath(filePath, {
+				normalizeAccountStorage,
+				isRecord,
+			});
+			const normalized = result.normalized;
+			expect(normalized?.version).toBe(3);
+			const account = normalized?.accounts[1];
+			expect(account?.rateLimitResetTimes?.codex).toBe(future);
+			expect(account?.workspaces).toEqual([{ id: "w1", enabled: true }]);
+			expect(account?.recordId).toBe("rec-b");
+			expect(normalized?.activeIndexByFamily?.codex).toBe(1);
+			expect(normalized?.pinnedAccountIndex).toBe(1);
+			expect(normalized?.affinityGeneration).toBe(7);
+		} finally {
+			await fs.rm(filePath, { force: true });
+		}
+	});
+
 });

@@ -1,16 +1,35 @@
 # Config Fields Reference
 
-Complete field inventory for runtime configuration and display settings.
+Complete field and environment-variable inventory for runtime configuration, display settings, the wrapper, and the runtime rotation proxy. Every `pluginConfig` row lists the persisted field, its type, its `DEFAULT_PLUGIN_CONFIG` value, and the environment variable whose value overrides it at read time.
+
+Boolean env overrides accept `1`/`0`, `true`/`false`, `yes`/`no` (case-insensitive); unparseable values are ignored with a one-time warning. Enum env overrides accept only the listed values (trimmed, lowercased). Numeric env overrides are clamped to the bounds shown in the default column.
+
+Maintainer walkthrough of how these resolve: [CONFIG_FLOW.md](CONFIG_FLOW.md). User-facing guide: [../configuration.md](../configuration.md).
 
 * * *
 
-## Canonical Settings File
+## Paths and roots
 
-Primary settings file:
+| Variable | Purpose |
+| --- | --- |
+| `CODEX_MULTI_AUTH_DIR` | Override the multi-auth root directory (`~/.codex/multi-auth` by default). Settings, accounts, cache, logs, governance state, and the app-helper status files all resolve under it |
+| `CODEX_HOME` | Official Codex home. When set to a non-default path, the multi-auth root resolves strictly to `$CODEX_HOME/multi-auth` — no cross-root scan for existing pools |
+| `CODEX_MULTI_AUTH_CONFIG_PATH` | Alternate pluginConfig file. Load: used only when set **and the file exists**. Save: always the preferred target while set. `config explain` reports it as the active source |
+| `CODEX_CLI_AUTH_PATH` | Override the official `auth.json` path (`lib/codex-cli/state.ts`) |
+| `CODEX_CLI_ACCOUNTS_PATH` | Override the official `accounts.json` path |
+| `CODEX_CLI_CONFIG_PATH` | Override the official `config.toml` path |
+| `OC_CODEX_MULTI_AUTH_DIR` | Explicit root for the `~/.opencode`-style multi-auth account-store detection (`lib/oc-chatgpt-target-detection.ts`); overrides both the global and project-scoped candidate scan. Legacy `OC_CHATGPT_MULTI_AUTH_DIR` is still accepted as a fallback |
+| `CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME` | Codex home used by packaged-app bind helpers instead of the resolved one |
+| `CODEX_MULTI_AUTH_APP_LAUNCHER_WINDOWS_DESKTOP_DIR` | Windows desktop shortcut search root for launcher routing |
+| `CODEX_MULTI_AUTH_APP_LAUNCHER_MACOS_DIR` | macOS managed wrapper app install directory |
+| `CODEX_MULTI_AUTH_REAL_CODEX_HOME` | Internal: original Codex home pointer passed to runtime helpers when a shadow `CODEX_HOME` is in play |
+| `CODEX_MULTI_AUTH_REAL_CODEX_BIN` | Force the official Codex binary path (absolute path required; relative values are rejected) |
+| `CODEX_MULTI_AUTH_USAGE_CODEX_BIN` | Codex binary used for usage/native-rate-limit lookups; must be an absolute path that exists |
+| `CODEX_BIN` | Benchmark scripts only (`scripts/bench-format/`, `scripts/test-model-matrix.js`): Codex binary under test |
 
-- `~/.codex/multi-auth/settings.json`
+### Settings file
 
-Top-level shape:
+Canonical settings file: `<multi-auth root>/settings.json` with a `.bak` sibling for recovery. Top-level shape:
 
 ```json
 {
@@ -19,6 +38,8 @@ Top-level shape:
   "pluginConfig": { "...": "..." }
 }
 ```
+
+`version` is forced to `1` on write. The two sections are independent; unknown top-level keys survive a save. Reads fall back to `.bak` when the primary is unreadable; writes take a queue + `wx` lockfile, snapshot a backup, then temp-write + rename with `EBUSY`/`EPERM` retries (see [Concurrency and Windows notes](#concurrency-and-windows-notes)).
 
 * * *
 
@@ -37,171 +58,262 @@ Used only for host plugin mode through the host runtime config file.
 
 * * *
 
-## `pluginConfig` Fields
+## `pluginConfig` fields
 
-`pluginConfig` is the persisted compatibility name for runtime settings. These fields are used by the wrapper/account manager, runtime rotation proxy, and optional plugin-host path depending on feature area.
+`pluginConfig` is the persisted compatibility name for runtime settings, stored in the `pluginConfig` section of `settings.json` (or in the `CODEX_MULTI_AUTH_CONFIG_PATH` file / a legacy config file). Every field has a `get*` accessor in `lib/config.ts` that resolves **env → config value → hardcoded default → clamp**, so the env column below is the per-process override that wins over the file.
 
 ### Core UX
 
-| Key | Default |
-| --- | --- |
-| `codexMode` | `true` |
-| `codexRuntimeRotationProxy` | `true` |
-| `codexTuiV2` | `true` |
-| `codexTuiColorProfile` | `truecolor` |
-| `codexTuiGlyphMode` | `ascii` |
+| Field | Type | Default | Env override |
+| --- | --- | --- | --- |
+| `codexMode` | boolean | `true` | `CODEX_MODE` |
+| `codexRuntimeRotationProxy` | boolean | `true` | `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY` |
+| `codexTuiV2` | boolean | `true` | `CODEX_TUI_V2` |
+| `codexTuiColorProfile` | enum | `truecolor` | `CODEX_TUI_COLOR_PROFILE` (`truecolor`\|`ansi16`\|`ansi256`) |
+| `codexTuiGlyphMode` | enum | `ascii` | `CODEX_TUI_GLYPHS` (`ascii`\|`unicode`\|`auto`; `auto` resolves via `WT_SESSION`/`TERM_PROGRAM`/`TERM`) |
 
-`codexRuntimeRotationProxy` enables the wrapper/app local Responses proxy path. It is enabled by default and can be overridden per process with `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY`.
+`codexRuntimeRotationProxy` enables the wrapper/app local Responses proxy path — see [../configuration.md](../configuration.md#runtime-rotation-proxy).
 
-### Fast Session
+### Fast session
 
-| Key | Default |
-| --- | --- |
-| `fastSession` | `false` |
-| `fastSessionStrategy` | `hybrid` |
-| `fastSessionMaxInputItems` | `30` |
+| Field | Type | Default | Env override |
+| --- | --- | --- | --- |
+| `fastSession` | boolean | `false` | `CODEX_AUTH_FAST_SESSION` |
+| `fastSessionStrategy` | enum | `hybrid` | `CODEX_AUTH_FAST_SESSION_STRATEGY` (`hybrid`\|`always`) |
+| `fastSessionMaxInputItems` | number | `30` | `CODEX_AUTH_FAST_SESSION_MAX_INPUT_ITEMS` (min `8`; schema range 8–200) |
 
-### Retry / Fallback / Rotation
+### Retry, fallback, and scheduling
 
-| Key | Default |
-| --- | --- |
-| `schedulingStrategy` | `hybrid` |
-| `retryAllAccountsRateLimited` | `false` |
-| `retryAllAccountsMaxWaitMs` | `0` |
-| `retryAllAccountsMaxRetries` | `0` |
-| `unsupportedCodexPolicy` | `strict` |
-| `fallbackOnUnsupportedCodexModel` | `false` |
-| `fallbackToGpt52OnUnsupportedGpt53` | `true` |
-| `unsupportedCodexFallbackChain` | `{}` |
+| Field | Type | Default | Env override |
+| --- | --- | --- | --- |
+| `schedulingStrategy` | enum | `hybrid` | `CODEX_AUTH_SCHEDULING_STRATEGY` (`hybrid`\|`sequential`) |
+| `retryAllAccountsRateLimited` | boolean | `false` | `CODEX_AUTH_RETRY_ALL_RATE_LIMITED` |
+| `retryAllAccountsMaxWaitMs` | number | `0` | `CODEX_AUTH_RETRY_ALL_MAX_WAIT_MS` (min `0`) |
+| `retryAllAccountsMaxRetries` | number | `0` | `CODEX_AUTH_RETRY_ALL_MAX_RETRIES` (min `0`) |
+| `unsupportedCodexPolicy` | enum | `strict` | `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY` (`strict`\|`fallback`); legacy boolean `CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL` still honored (`true`→`fallback`, `false`→`strict`) |
+| `fallbackOnUnsupportedCodexModel` | boolean | `false` | Legacy companion to `unsupportedCodexPolicy`; effective value resolves through the same policy chain (env policy → config policy → legacy env → legacy bool → `strict`) |
+| `fallbackToGpt52OnUnsupportedGpt53` | boolean | `true` | `CODEX_AUTH_FALLBACK_GPT53_TO_GPT52` |
+| `unsupportedCodexFallbackChain` | record | `{}` | none (per-model map; no env override) |
+| `routingMutex` | enum | `legacy` | `CODEX_AUTH_ROUTING_MUTEX` (`legacy`\|`enabled`) |
 
-`schedulingStrategy` selects how the runtime proxy picks an account per request. `hybrid` (default) keeps the weighted health/token/freshness selection that spreads load across all available accounts. `sequential` (drain-first) sticks to one active account and only advances to the next available account once the current one is fully exhausted (rate-limited / cooling down / circuit-open); earlier accounts become eligible again as soon as their quota window recovers, staggering recovery across the pool. A manual pin still overrides this, and sequential mode intentionally ignores per-session affinity so all new requests follow the single active account. Overridable per-process via `CODEX_AUTH_SCHEDULING_STRATEGY`.
+`schedulingStrategy` picks how the runtime proxy selects an account per request. `hybrid` keeps the weighted health/token/freshness selection that spreads load across accounts. `sequential` (drain-first) sticks to one active account until it is fully exhausted, then advances; earlier accounts become eligible again as soon as their quota window recovers. A manual pin still wins, and sequential mode ignores per-session affinity.
 
-### Token / Recovery
+`routingMutex` serializes account selection + cursor advance on the proxy hot path *within one process*. `"legacy"` (default) runs selection inline for historical performance; `"enabled"` takes a process-local reentrant async mutex around selection commits. It does nothing across separate processes — see [Concurrency and Windows notes](#concurrency-and-windows-notes).
 
-| Key | Default |
-| --- | --- |
-| `tokenRefreshSkewMs` | `60000` |
-| `sessionRecovery` | `true` |
-| `autoResume` | `true` |
-| `responseContinuation` | `false` |
-| `backgroundResponses` | `false` |
-| `proactiveRefreshGuardian` | `true` |
-| `proactiveRefreshIntervalMs` | `60000` |
-| `proactiveRefreshBufferMs` | `300000` |
-| `tokenInvalidationCooldownMs` | `300000` |
-| `minRotationIntervalMs` | `60000` |
+### Token refresh and recovery
 
-`tokenRefreshSkewMs` refreshes access tokens this many milliseconds before expiry so cross-process refresh coordination has headroom. Cross-process refresh uses lease/state files (`lib/refresh-lease.ts`, `lib/refresh-queue.ts`) so concurrent processes do not stampede the same refresh token.
+| Field | Type | Default | Env override |
+| --- | --- | --- | --- |
+| `tokenRefreshSkewMs` | number | `60000` | `CODEX_AUTH_TOKEN_REFRESH_SKEW_MS` (min `0`) |
+| `sessionRecovery` | boolean | `true` | `CODEX_AUTH_SESSION_RECOVERY` |
+| `autoResume` | boolean | `true` | `CODEX_AUTH_AUTO_RESUME` |
+| `responseContinuation` | boolean | `false` | `CODEX_AUTH_RESPONSE_CONTINUATION` |
+| `backgroundResponses` | boolean | `false` | `CODEX_AUTH_BACKGROUND_RESPONSES` |
+| `proactiveRefreshGuardian` | boolean | `true` | `CODEX_AUTH_PROACTIVE_GUARDIAN` |
+| `proactiveRefreshIntervalMs` | number | `60000` | `CODEX_AUTH_PROACTIVE_GUARDIAN_INTERVAL_MS` (min `5000`) |
+| `proactiveRefreshBufferMs` | number | `300000` | `CODEX_AUTH_PROACTIVE_GUARDIAN_BUFFER_MS` (min `30000`) |
 
-`tokenInvalidationCooldownMs` is the cooldown applied when an OAuth token is explicitly invalidated by upstream (distinct from a generic 401). The longer default (5 minutes) reduces cascades where rapid rotation invalidates successive tokens. Overridable via `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS`.
+`tokenRefreshSkewMs` refreshes access tokens this many milliseconds before expiry so cross-process refresh coordination has headroom. Cross-process refresh itself uses lease/state files (`lib/refresh-lease.ts`, `lib/refresh-queue.ts`) so concurrent processes do not stampede the same refresh token — its env knobs are in the [internal env](#internal-and-test-environment-variables) section.
 
-`minRotationIntervalMs` is the minimum time that must elapse between global account switches. When the last served account is still within this window and available, it receives a large selection-score boost so the proxy stays on it rather than rotating to a fresher idle account. `0` disables the throttle. Overridable via `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS`.
+`backgroundResponses` is an opt-in compatibility switch for Responses API `background: true` requests. When enabled, those requests become stateful (`store=true`) instead of following the default stateless Codex routing. Leave it off for stateless pipelines; enabling it forces `store=true`, preserves input item IDs, and loses stateless-only defaults such as fast-session trimming. Test one known `background: true` request end to end before rolling it across shared automation.
 
-`backgroundResponses` is an opt-in compatibility switch for Responses API `background: true` requests. When enabled, those requests become stateful (`store=true`) instead of following the default stateless Codex routing. Overridable via `CODEX_AUTH_BACKGROUND_RESPONSES`.
+### Storage and sync
 
-Upgrade note:
-- Leave this disabled for existing stateless pipelines that do not intentionally send `background: true`.
-- Enable it only for callers that need stateful background responses and can accept forced `store=true`, preserved input item IDs, and the loss of stateless-only defaults such as fast-session trimming.
-- After enabling it, test one known `background: true` request end to end before rolling it across shared automation.
+| Field | Type | Default | Env override |
+| --- | --- | --- | --- |
+| `perProjectAccounts` | boolean | `true` | `CODEX_AUTH_PER_PROJECT_ACCOUNTS` |
+| `storageBackupEnabled` | boolean | `true` | `CODEX_AUTH_STORAGE_BACKUP_ENABLED` |
+| `liveAccountSync` | boolean | `true` | `CODEX_AUTH_LIVE_ACCOUNT_SYNC` |
+| `liveAccountSyncDebounceMs` | number | `250` | `CODEX_AUTH_LIVE_ACCOUNT_SYNC_DEBOUNCE_MS` (min `50`) |
+| `liveAccountSyncPollMs` | number | `2000` | `CODEX_AUTH_LIVE_ACCOUNT_SYNC_POLL_MS` (min `500`) |
 
-### Storage / Sync
+### Session affinity
 
-| Key | Default |
-| --- | --- |
-| `perProjectAccounts` | `true` |
-| `storageBackupEnabled` | `true` |
-| `liveAccountSync` | `true` |
-| `liveAccountSyncDebounceMs` | `250` |
-| `liveAccountSyncPollMs` | `2000` |
+| Field | Type | Default | Env override |
+| --- | --- | --- | --- |
+| `sessionAffinity` | boolean | `true` | `CODEX_AUTH_SESSION_AFFINITY` |
+| `sessionAffinityTtlMs` | number | `1200000` | `CODEX_AUTH_SESSION_AFFINITY_TTL_MS` (min `1000`) |
+| `sessionAffinityMaxEntries` | number | `512` | `CODEX_AUTH_SESSION_AFFINITY_MAX_ENTRIES` (min `8`) |
 
-### Session Affinity
+### Reliability, timeouts, and probes
 
-| Key | Default |
-| --- | --- |
-| `sessionAffinity` | `true` |
-| `sessionAffinityTtlMs` | `1200000` |
-| `sessionAffinityMaxEntries` | `512` |
+| Field | Type | Default | Env override |
+| --- | --- | --- | --- |
+| `parallelProbing` | boolean | `false` | `CODEX_AUTH_PARALLEL_PROBING` |
+| `parallelProbingMaxConcurrency` | number | `2` | `CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY` (min `1`; schema range 1–5) |
+| `emptyResponseMaxRetries` | number | `2` | `CODEX_AUTH_EMPTY_RESPONSE_MAX_RETRIES` (min `0`) |
+| `emptyResponseRetryDelayMs` | number | `1000` | `CODEX_AUTH_EMPTY_RESPONSE_RETRY_DELAY_MS` (min `0`) |
+| `pidOffsetEnabled` | boolean | `true` | `CODEX_AUTH_PID_OFFSET_ENABLED` |
+| `fetchTimeoutMs` | number | `60000` | `CODEX_AUTH_FETCH_TIMEOUT_MS` (min `1000`) |
+| `streamStallTimeoutMs` | number | `45000` | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` (min `1000`) |
+| `networkErrorCooldownMs` | number | `6000` | `CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS` (min `0`) |
+| `serverErrorCooldownMs` | number | `4000` | `CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS` (min `0`) |
+| `tokenInvalidationCooldownMs` | number | `300000` | `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS` (min `0`) |
+| `minRotationIntervalMs` | number | `60000` | `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS` (min `0`) |
+| `rateLimitDedupWindowMs` | number | `2000` | `CODEX_AUTH_RATE_LIMIT_DEDUP_WINDOW_MS` (min `0`) |
+| `rateLimitStateResetMs` | number | `120000` | `CODEX_AUTH_RATE_LIMIT_STATE_RESET_MS` (min `1000`) |
+| `rateLimitMaxBackoffMs` | number | `60000` | `CODEX_AUTH_RATE_LIMIT_MAX_BACKOFF_MS` (min `1000`) |
+| `rateLimitShortRetryThresholdMs` | number | `5000` | `CODEX_AUTH_RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS` (min `0`) |
 
-### Reliability / Timeout / Probe
+`pidOffsetEnabled` adds a small deterministic PID-based score offset so parallel wrapper processes bias toward different accounts under high concurrency. Manual pins and health/quota scoring still take precedence. (The getter's hardcoded fallback is `false`, but the shipped `DEFAULT_PLUGIN_CONFIG` value is `true`, so the effective default is on.)
 
-| Key | Default |
-| --- | --- |
-| `parallelProbing` | `false` |
-| `parallelProbingMaxConcurrency` | `2` |
-| `emptyResponseMaxRetries` | `2` |
-| `emptyResponseRetryDelayMs` | `1000` |
-| `pidOffsetEnabled` | `true` |
-| `fetchTimeoutMs` | `60000` |
-| `streamStallTimeoutMs` | `45000` |
-| `networkErrorCooldownMs` | `6000` |
-| `serverErrorCooldownMs` | `4000` |
-| `tokenInvalidationCooldownMs` | `300000` |
-| `minRotationIntervalMs` | `60000` |
-| `routingMutex` | `legacy` |
-| `rateLimitDedupWindowMs` | `2000` |
-| `rateLimitStateResetMs` | `120000` |
-| `rateLimitMaxBackoffMs` | `60000` |
-| `rateLimitShortRetryThresholdMs` | `5000` |
+`tokenInvalidationCooldownMs` (explicit upstream revocation, 5-minute default) and `minRotationIntervalMs` (last-served bias window, `0` disables) are the anti-abuse knobs used by the runtime rotation proxy — see [../configuration.md](../configuration.md#runtime-rotation-proxy).
 
-`pidOffsetEnabled` adds a small deterministic PID-based score offset so parallel wrapper processes bias toward different accounts under high concurrency. Manual pins and health/quota scoring still take precedence. Overridable via `CODEX_AUTH_PID_OFFSET_ENABLED`.
+### Quota deferral
 
-`routingMutex` controls whether account selection + cursor advance on the runtime proxy hot path is serialized. `"legacy"` (default) runs selection inline for historical performance. `"enabled"` acquires a process-local reentrant async mutex around selection commits. Overridable via `CODEX_AUTH_ROUTING_MUTEX` (`legacy` or `enabled`).
+| Field | Type | Default | Env override |
+| --- | --- | --- | --- |
+| `preemptiveQuotaEnabled` | boolean | `true` | `CODEX_AUTH_PREEMPTIVE_QUOTA_ENABLED` |
+| `preemptiveQuotaRemainingPercent5h` | number | `5` | `CODEX_AUTH_PREEMPTIVE_QUOTA_5H_REMAINING_PCT` (0–100) |
+| `preemptiveQuotaRemainingPercent7d` | number | `5` | `CODEX_AUTH_PREEMPTIVE_QUOTA_7D_REMAINING_PCT` (0–100) |
+| `preemptiveQuotaMaxDeferralMs` | number | `7200000` | `CODEX_AUTH_PREEMPTIVE_QUOTA_MAX_DEFERRAL_MS` (min `1000`) |
 
-`tokenInvalidationCooldownMs` / `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS` and `minRotationIntervalMs` / `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS` are the anti-abuse knobs used by the runtime rotation proxy (see configuration guide).
+`preemptiveQuotaMaxDeferralMs` is the fallback delay when a near-exhausted window has missing, invalid, or stale reset data. A trusted future reset may schedule through the reset time, subject to the scheduler's seven-day safety ceiling.
 
-### Quota Deferral
+### Context Budget Guard (experimental)
 
-| Key | Default |
-| --- | --- |
-| `preemptiveQuotaEnabled` | `true` |
-| `preemptiveQuotaRemainingPercent5h` | `5` |
-| `preemptiveQuotaRemainingPercent7d` | `5` |
-| `preemptiveQuotaMaxDeferralMs` | `7200000` |
+| Field | Type | Default | Env override |
+| --- | --- | --- | --- |
+| `contextBudgetGuardEnabled` | boolean | `false` | `CODEX_AUTH_CONTEXT_BUDGET_GUARD_ENABLED` |
+| `contextBudgetGuardSoftPercent` | number | `65` | `CODEX_AUTH_CONTEXT_BUDGET_SOFT_PCT` (0–100) |
+| `contextBudgetGuardHardPercent` | number | `69` | `CODEX_AUTH_CONTEXT_BUDGET_HARD_PCT` (10–100) |
+| `contextBudgetGuardModelWindowOverrides` | record | `{}` | none (per-model map; no env override) |
+
+Ships disabled. When enabled, pauses the next forwarded request on a session once its context usage crosses `contextBudgetGuardHardPercent` of the model's context window, before the request reaches upstream — see [features.md](../features.md#context-budget-guard-experimental). `contextBudgetGuardSoftPercent` only attaches a non-blocking `x-codex-context-budget-percent` header; it never pauses a request. Window sizes come from `lib/context-budget/model-context-windows.ts`'s best-effort estimates, which are NOT verified against the ChatGPT Codex backend — set `contextBudgetGuardModelWindowOverrides` (`{ "<model>": <tokens> }`) to the real ceiling once observed; an override always wins over the built-in estimate.
+
+`contextBudgetGuardHardPercent` accepts `10`–`100`. A hard threshold below that is cleared by every measurement, which would pause every session from its first turn, so lower values are rejected by the schema and clamped by the runtime. A hard pause is one-shot per measurement: it is emitted, then the tracked usage for that session is dropped so the next request is forwarded and re-measured.
 
 ### Notifications
 
-| Key | Default |
-| --- | --- |
-| `rateLimitToastDebounceMs` | `60000` |
-| `toastDurationMs` | `5000` |
-
-### Full env override matrix (pluginConfig accessors)
-
-Every `pluginConfig` field above has a corresponding `get*` accessor in `lib/config.ts`. Common operator env names:
-
-| Env | Field |
-| --- | --- |
-| `CODEX_MODE` | `codexMode` |
-| `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY` | `codexRuntimeRotationProxy` |
-| `CODEX_TUI_V2` / `CODEX_TUI_COLOR_PROFILE` / `CODEX_TUI_GLYPHS` | TUI fields |
-| `CODEX_AUTH_FAST_SESSION*` | fast-session fields |
-| `CODEX_AUTH_RETRY_ALL_*` | all-accounts rate-limit retry fields |
-| `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY` / `CODEX_AUTH_FALLBACK_*` | unsupported-model policy |
-| `CODEX_AUTH_TOKEN_REFRESH_SKEW_MS` | `tokenRefreshSkewMs` |
-| `CODEX_AUTH_SESSION_RECOVERY` / `CODEX_AUTH_AUTO_RESUME` | recovery |
-| `CODEX_AUTH_PER_PROJECT_ACCOUNTS` | `perProjectAccounts` |
-| `CODEX_AUTH_PARALLEL_PROBING*` | parallel probing |
-| `CODEX_AUTH_EMPTY_RESPONSE_*` | empty-response retries |
-| `CODEX_AUTH_RATE_LIMIT_*` | rate-limit windows / backoff / toast debounce |
-| `CODEX_AUTH_LIVE_ACCOUNT_SYNC*` | live sync |
-| `CODEX_AUTH_SESSION_AFFINITY*` | session affinity |
-| `CODEX_AUTH_RESPONSE_CONTINUATION` / `CODEX_AUTH_BACKGROUND_RESPONSES` | response modes |
-| `CODEX_AUTH_PROACTIVE_GUARDIAN*` | refresh guardian |
-| `CODEX_AUTH_NETWORK_ERROR_COOLDOWN_MS` / `CODEX_AUTH_SERVER_ERROR_COOLDOWN_MS` | failure cooldowns |
-| `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS` / `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS` | anti-abuse |
-| `CODEX_AUTH_STORAGE_BACKUP_ENABLED` | storage backups |
-| `CODEX_AUTH_PREEMPTIVE_QUOTA_*` | preemptive quota |
-| `CODEX_AUTH_PID_OFFSET_ENABLED` / `CODEX_AUTH_ROUTING_MUTEX` / `CODEX_AUTH_SCHEDULING_STRATEGY` | selection strategy |
-| `CODEX_AUTH_FETCH_TIMEOUT_MS` / `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` | timeouts |
-| `CODEX_AUTH_TOAST_DURATION_MS` | toast duration |
-
-Cross-process refresh lease knobs: `CODEX_AUTH_REFRESH_LEASE`, `CODEX_AUTH_REFRESH_LEASE_DIR`, `CODEX_AUTH_REFRESH_LEASE_TTL_MS`, `CODEX_AUTH_REFRESH_LEASE_WAIT_MS`, `CODEX_AUTH_REFRESH_LEASE_POLL_MS`, `CODEX_AUTH_REFRESH_LEASE_RESULT_TTL_MS`.
+| Field | Type | Default | Env override |
+| --- | --- | --- | --- |
+| `rateLimitToastDebounceMs` | number | `60000` | `CODEX_AUTH_RATE_LIMIT_TOAST_DEBOUNCE_MS` (min `0`) |
+| `toastDurationMs` | number | `5000` | `CODEX_AUTH_TOAST_DURATION_MS` (min `1000`) |
 
 * * *
 
-## `dashboardDisplaySettings` Fields
+## Runtime proxy and wrapper environment
 
-### General Display
+Read by `scripts/codex.js` (the `codex-multi-auth-codex` wrapper) or the runtime rotation proxy it starts. Operator-facing rows come first; internal rows are set by the wrapper for its own child processes and are not meant to be set by hand.
+
+### Operator-facing
+
+| Variable | Purpose |
+| --- | --- |
+| `CODEX_MULTI_AUTH_BYPASS` | `1` skips local auth handling and forwards everything to official Codex |
+| `CODEX_MULTI_AUTH_FORCE_ACCOUNT` | Force one account for a single forwarded run (`index`, email, or id). Ephemeral and fail-hard; equivalent to `--account` (flag wins when both are set). Requires the runtime rotation proxy |
+| `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY` | Per-process override of `pluginConfig.codexRuntimeRotationProxy` |
+| `CODEX_MULTI_AUTH_RUNTIME_PROXY_UPSTREAM_BASE_URL` | Pin the proxy upstream to an explicit-port `http://<numeric-loopback>:<port>` URL. Setting it when the forwarded command does not route through the proxy fails closed rather than silently ignoring it. Applies to wrapper sessions; the packaged-app router uses `rotation bind-app --upstream <url>` instead |
+| `CODEX_MULTI_AUTH_MODEL_CAPACITY_RETRY_MS` | Wait-and-retry window when every account signals model capacity pressure (default `600000`, cap `3600000`, `0` disables; unparseable values fall back to the default rather than disabling) |
+| `CODEX_MULTI_AUTH_SYNC_CODEX_CLI` | `0`/`1` toggle for active-account sync into official Codex CLI files (default on). Legacy `CODEX_AUTH_SYNC_CODEX_CLI` is read only when the canonical name is unset and logs a deprecation warning |
+| `CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE` | `0` opts out of every persisted `cli_auth_credentials_store = "file"` rewrite in `~/.codex/config.toml` (first-run, switch/login sync, `doctor --fix`; `lib/codex-cli/writer.ts`) |
+| `CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE` | `0` skips the wrapper-injected `-c` file auth store override and the wrapper-startup `config.toml` reconcile |
+| `CODEX_MULTI_AUTH_AUTO_SYNC_ON_STARTUP` | `0` skips best-effort active-account sync around forwarded Codex launches |
+| `CODEX_MULTI_AUTH_STATUSLINE` | `0`/`1` toggles the forwarded-session status line (TTY default) |
+| `CODEX_MULTI_AUTH_STATUS_QUOTA_REFRESH_INTERVAL_MS` | Minimum age before the wrapper refreshes quota cache for status displays (default `600000`; `0` always refreshes) |
+| `CODEX_MULTI_AUTH_CAPTURE_FORWARD_OUTPUT` | `1`/`0` forces capture of forwarded Codex output for unsupported-model fallback handling (default: on when not a TTY or `CODEX_CI=1`) |
+| `CODEX_CI` | `1` marks CI runs for the wrapper: forces forward-output capture and silences known noisy `codex_core` log targets via `RUST_LOG` when unset |
+| `CODEX_MULTI_AUTH_DEBUG` | `1` enables verbose wrapper/debug notices (also shows the npm update notice off-TTY) |
+| `CODEX_MULTI_AUTH_UPDATE_NOTICE_STARTUP_BUDGET_MS` | Total ms budget for the daily best-effort npm version check (default `3000`; ~80% becomes the fetch timeout) |
+| `CODEX_MULTI_AUTH_CLI_VERSION` | Version string the manager publishes for the dashboard header (set by `scripts/codex-multi-auth.js --version` path) |
+| `CODEX_MULTI_AUTH_APP_BIND` | Live first-run gate: explicit `0`/`1` for the packaged Codex app bind, checked **before** `CODEX_MULTI_AUTH_APP_BIND_INSTALL` (`lib/runtime/first-run.ts`) |
+| `CODEX_MULTI_AUTH_APP_BIND_INSTALL` | `0`/`1` second gate for the packaged app bind self-heal on first durable CLI run or `rotation enable` |
+| `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL` | `0`/`1` gate for user-level launcher routing on first durable CLI run or `rotation enable` |
+| `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS` | Idle shutdown for the wrapper-launched app helper (default 12h, min `50`) |
+| `CODEX_MULTI_AUTH_APP_ROTATION_MAX_LIFETIME_MS` | Absolute ceiling on a helper's life regardless of activity (default 24h; `0` disables). Backstop that bounds the leak if activity accounting is ever wrong |
+| `CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS` | Idle window applied once a helper's launcher is confirmed dead, and only while no client connection is open and the helper has never served a request (default 15m; `0` keeps the full idle timeout) |
+| `CODEX_MULTI_AUTH_APP_ROTATION_DETACH_GRACE_MS` | Grace window before a detached helper is treated as launcher-dead (default `5000`) |
+| `CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD` | `1` installs Windows shim guards |
+| `CODEX_MULTI_AUTH_PWSH_PROFILE_GUARD` | `1` installs the PowerShell profile guard |
+| `CODEX_MULTI_AUTH_OVERWRITE_CUSTOM_BATCH_SHIM` | `1` lets the Windows shim guard overwrite custom shims |
+| `CODEX_AUTH_ACCOUNT_ID` | Account-id override for login flows; the `--org` flag wins when both are set |
+| `CODEX_AUTH_NO_BROWSER` | Suppress browser launch for automation/headless login |
+| `CODEX_SKIP_EMAIL_HYDRATE` | `1` skips the post-login email hydration pass |
+| `CODEX_AUTH_STORAGE_BACKUP_MIN_INTERVAL_MS` | Minimum interval between storage backups (default `30000`; `0` rotates on every save) |
+| `MCODEX_MONITOR_INTERVAL` | `mcodex --monitor` refresh interval in seconds (default 5, regex-validated) |
+| `MCODEX_TMUX_SESSION` | `mcodex --tmux` session name (default `mcodex`) |
+| `MCODEX_TMUX_HISTORY_LIMIT` | `mcodex --tmux` pane history limit |
+
+### Cross-process refresh lease
+
+`lib/refresh-lease.ts` / `lib/refresh-queue.ts` coordinate OAuth token refreshes across concurrent processes with lease/state files so they do not stampede the same refresh token. All six knobs are live:
+
+| Variable | Purpose |
+| --- | --- |
+| `CODEX_AUTH_REFRESH_LEASE` | `0`/`1` master toggle for the cross-process refresh lease path (default on) |
+| `CODEX_AUTH_REFRESH_LEASE_DIR` | Lease directory override |
+| `CODEX_AUTH_REFRESH_LEASE_TTL_MS` | Lease record TTL |
+| `CODEX_AUTH_REFRESH_LEASE_WAIT_MS` | How long a non-holder waits for the holder's refresh result |
+| `CODEX_AUTH_REFRESH_LEASE_POLL_MS` | Wait-loop poll interval |
+| `CODEX_AUTH_REFRESH_LEASE_RESULT_TTL_MS` | How long a completed refresh result stays readable by waiters |
+
+### Internal transport variables (set by the wrapper, not by hand)
+
+| Variable | Purpose |
+| --- | --- |
+| `CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX` | 0-based pin the wrapper publishes after resolving `--account`/`CODEX_MULTI_AUTH_FORCE_ACCOUNT`; consumed once by the runtime proxy |
+| `CODEX_MULTI_AUTH_STATUS_REFRESH_CHILD` | Marks a spawned status-refresh child process |
+| `CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID` | Owner PID the app helper uses to detect launcher death |
+| `CODEX_MULTI_AUTH_APP_ROTATION_OWNER_START_TIME_MS` | Owner process start time (epoch ms) so the helper can tell its launcher from a PID that was recycled |
+| `CODEX_MULTI_AUTH_APP_ROTATION_USE_CANONICAL_HOME` | `1` when the app helper must run against the canonical `CODEX_HOME` (interactive TUI, `resume`/`fork`, `app-server`) instead of a shadow home |
+| `CODEX_MULTI_AUTH_APP_ROTATION_INSTALL_APP_SERVER_SHIM` | `0` suppresses the app-server CLI shim in the helper; a wrapper-invoked `app-server` already carries its overrides on the command line |
+| `CODEX_MULTI_AUTH_APP_SERVER_ACCOUNT_LABEL` | Account label the app-server shim reports |
+| `CODEX_MULTI_AUTH_APP_SERVER_CONFIG_ARGS_JSON` | JSON array of `-c` provider overrides the app-server preload replays on the canonical-home path |
+| `CODEX_MULTI_AUTH_RUNTIME_SHADOW_COPY_GENERATED_DIRS` | `1`/`true`/`yes` allows copying generated runtime dirs into a shadow `CODEX_HOME` when they cannot be linked (off by default: the wrapper skips rather than duplicates active runtime data) |
+| `CODEX_MULTI_AUTH_WRAPPER_IMPORT_ONLY` | Import `scripts/codex.js` without running its main entrypoint (preload shim) |
+| `CODEX_MULTI_AUTH_NATIVE_OPENAI` | `1` marks the bound packaged app provider as native OpenAI in app-bind status (`lib/runtime/app-bind.ts`) |
+| `CODEX_CLI_PATH` | Propagated to helper children that spawn their own `codex app-server` |
+| `NODE_OPTIONS` / `OPENAI_API_KEY` / `RUST_LOG` | Propagated to forwarded/helper processes (`OPENAI_API_KEY` is a random per-process proxy client key, not a real key) |
+
+### Plugin-host-only variables
+
+Used by `index.ts` / `lib/` on the optional plugin-host path, not by the wrapper:
+
+| Variable | Purpose |
+| --- | --- |
+| `CODEX_AUTH_FAILOVER_MODE` | Failover posture (`conservative`/`balanced`/`aggressive`-style modes; sets the same-account retry budget and the stream-failover defaults below) |
+| `CODEX_AUTH_STREAM_FAILOVER_MAX` | Max stream failovers per request (per-mode default) |
+| `CODEX_AUTH_STREAM_STALL_SOFT_TIMEOUT_MS` | Soft stall timeout that triggers stream failover (min `1000`) |
+| `CODEX_AUTH_STREAM_STALL_HARD_TIMEOUT_MS` | Hard stall timeout (defaults to `streamStallTimeoutMs`; never below the soft timeout) |
+| `CODEX_AUTH_PREWARM` | `0` skips the startup prompt-template prewarm (also skipped under `VITEST`/`NODE_ENV=test`) |
+| `CODEX_THREAD_ID` | Thread-id override used as the prompt-cache key |
+| `CODEX_COLLABORATION_MODE` | `plan`\|`default` request collaboration mode (`lib/request/request-transformer.ts`) |
+| `CODEX_MULTI_AUTH_EXPOSE_ADMIN_TOOLS` | `1` exposes admin tool surface in the plugin host |
+| `CODEX_PROMPT_SOURCE_URL` / `CODEX_CODEX_PROMPT_URL` | Prompt-template source overrides (`lib/prompts/`) |
+| `ENABLE_PLUGIN_REQUEST_LOGGING` | `1` enables request logging (`lib/logger.ts`) |
+| `CODEX_PLUGIN_LOG_BODIES` | `1` logs request bodies (sensitive; see SECURITY.md) |
+| `DEBUG_CODEX_PLUGIN` | `1` enables debug logging (implied by request logging) |
+| `CODEX_PLUGIN_LOG_LEVEL` | Log level override |
+| `CODEX_CONSOLE_LOG` | `1` mirrors logs to console |
+| `FORCE_INTERACTIVE_MODE` | `1` forces non-interactive detection off (`lib/cli.ts`) |
+| `CODEX_TUI` / `CODEX_DESKTOP` | `1` marks the session as TUI/desktop for interactive detection |
+| `ELECTRON_RUN_AS_NODE` | `1` marks an Electron-as-node host for interactive detection |
+| `TERM_PROGRAM` / `WT_SESSION` / `TERM` | Terminal detection inputs (also drive `codexTuiGlyphMode` `auto`) |
+
+* * *
+
+## Internal and test environment variables
+
+### Test-only fault injectors
+
+`CODEX_MULTI_AUTH_TEST_*` names are consumed only by tests and must never be set in normal use. The family includes `CODEX_MULTI_AUTH_TEST_FAULT_INJECTION`, `CODEX_MULTI_AUTH_TEST_STARTUP_UPDATE_NOTICE_BUDGET_MS` (update-notice budget alias read after `CODEX_MULTI_AUTH_UPDATE_NOTICE_STARTUP_BUDGET_MS`), `CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_DIR_COPY`, `CODEX_MULTI_AUTH_TEST_SHADOW_RETRY_MARKER_DIR`, `CODEX_MULTI_AUTH_TEST_SHADOW_LOCK_RECREATE_STALE_COUNT`, `CODEX_MULTI_AUTH_TEST_SHADOW_LOCK_OWNER_WRITE_FAILURES`, `CODEX_MULTI_AUTH_TEST_SHADOW_PREFLIGHT_READ_BUSY_FAILURES`, `CODEX_MULTI_AUTH_TEST_SHADOW_CLEANUP_BUSY_FAILURES`, `CODEX_MULTI_AUTH_TEST_SHADOW_SYNC_METADATA_BUSY_FAILURES`, `CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_SIDECAR_PLACEHOLDER_FAILURE`, `CODEX_MULTI_AUTH_TEST_FORCE_SHADOW_SQLITE_SIDECAR_LINK_FAILURE`, `CODEX_MULTI_AUTH_TEST_APP_SERVER_SHIM_COPY_BUSY_FAILURES`, `CODEX_MULTI_AUTH_TEST_APP_SERVER_SHIM_FILE_CLEANUP_BUSY_FAILURES`, and `CODEX_MULTI_AUTH_TEST_HELPER_METADATA_CLEANUP_BUSY_FAILURES`.
+
+Benchmark scripts additionally read `CODEX_MATRIX_TIMEOUT_MS` and `CODEX_MODELS_TIMEOUT_MS` (default `30000`).
+
+### Platform and harness detection
+
+These are read, not owned, by this project — they shape behavior but are not configuration:
+
+- `HOME`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, `XDG_DATA_HOME`, `PATH`, `PATHEXT` — home/config/data path resolution on Linux/macOS/Windows.
+- `CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `BUILDKITE`, `TF_BUILD`, `TEAMCITY_VERSION`, `JENKINS_URL`, `TRAVIS`, `APPVEYOR`, `BITBUCKET_BUILD_NUMBER`, `npm_config_ignore_scripts` — first-run setup skips CI and `npm --ignore-scripts` environments (`lib/runtime/first-run.ts`).
+- `VITEST`, `NODE_ENV`, `VITEST_WORKER_ID` — test-mode gating (e.g. prewarm skip, per-worker temp roots).
+- `WSL_DISTRO_NAME`, `WSL_INTEROP` — WSL detection for OAuth callback port/browser guidance (`lib/wsl.ts`).
+
+* * *
+
+## `dashboardDisplaySettings` fields
+
+### General display
 
 | Key | Default |
 | --- | --- |
@@ -211,14 +323,14 @@ Cross-process refresh lease knobs: `CODEX_AUTH_REFRESH_LEASE`, `CODEX_AUTH_REFRE
 | `showRecommendations` | `true` |
 | `showLiveProbeNotes` | `true` |
 
-### Result Screen Behavior
+### Result screen behavior
 
 | Key | Default |
 | --- | --- |
 | `actionAutoReturnMs` | `2000` |
 | `actionPauseOnKey` | `true` |
 
-### Dashboard Fetch and Sort
+### Dashboard fetch and sort
 
 | Key | Default |
 | --- | --- |
@@ -229,7 +341,7 @@ Cross-process refresh lease knobs: `CODEX_AUTH_REFRESH_LEASE`, `CODEX_AUTH_REFRE
 | `menuSortPinCurrent` | `false` |
 | `menuSortQuickSwitchVisibleRow` | `true` |
 
-### Account Row Content
+### Account row content
 
 | Key | Default |
 | --- | --- |
@@ -242,89 +354,34 @@ Cross-process refresh lease knobs: `CODEX_AUTH_REFRESH_LEASE`, `CODEX_AUTH_REFRE
 | `menuShowDetailsForUnselectedRows` | `false` |
 | `menuStatuslineFields` | `last-used, limits, status` |
 
-### Visual Style
+### Visual style
 
 | Key | Default |
 | --- | --- |
 | `uiThemePreset` | `green` |
 | `uiAccentColor` | `green` |
+| `uiColorMode` | `auto` |
 | `menuLayoutMode` | `compact-details` |
 | `menuFocusStyle` | `row-invert` |
 | `menuHighlightCurrentRow` | `true` |
 
 * * *
 
-## Environment Overrides
+## Concurrency and Windows notes
 
-| Variable | Purpose |
-| --- | --- |
-| `CODEX_MULTI_AUTH_DIR` | Custom root for settings/accounts/cache/logs |
-| `CODEX_MULTI_AUTH_CONFIG_PATH` | Alternate config file input |
-| `CODEX_MODE` | Toggle Codex mode |
-| `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY` | Toggle localhost Responses proxy for forwarded Codex sessions (`1`/`true` to enable, `0`/`false` to disable) |
-| `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS` | Override idle timeout for the wrapper-launched Codex app runtime helper |
-| `CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID` | Internal owner PID used by the wrapper-launched app helper |
-| `CODEX_MULTI_AUTH_REAL_CODEX_HOME` | Internal original Codex home pointer used by runtime rotation helpers |
-| `CODEX_MULTI_AUTH_APP_BIND_INSTALL` | Opt out/in of packaged Codex app bind self-heal on first CLI run or rotation enable |
-| `CODEX_MULTI_AUTH_APP_BIND` | Legacy/manual app-bind override consumed by the first-run setup hook (`lib/runtime/first-run.ts`) |
-| `CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME` | Override Codex home used by packaged app bind helpers |
-| `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL` | Opt out/in of user-level app launcher routing on first CLI run or rotation enable |
-| `CODEX_MULTI_AUTH_APP_LAUNCHER_WINDOWS_DESKTOP_DIR` | Override Windows desktop shortcut search root for launcher routing |
-| `CODEX_MULTI_AUTH_APP_LAUNCHER_MACOS_DIR` | Override macOS managed wrapper app install directory |
-| `CODEX_TUI_V2` | Toggle TUI v2 |
-| `CODEX_TUI_COLOR_PROFILE` | TUI color profile |
-| `CODEX_TUI_GLYPHS` | TUI glyph mode |
-| `CODEX_AUTH_FETCH_TIMEOUT_MS` | Request timeout override |
-| `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` | Stream stall timeout override |
-| `CODEX_AUTH_SCHEDULING_STRATEGY` | Account scheduling strategy override (`hybrid` or `sequential`/drain-first) |
-| `CODEX_AUTH_TOKEN_INVALIDATION_COOLDOWN_MS` | Cooldown after explicit upstream token invalidation (`tokenInvalidationCooldownMs`) |
-| `CODEX_AUTH_MIN_ROTATION_INTERVAL_MS` | Minimum interval between global account rotations (`minRotationIntervalMs`) |
-| `CODEX_AUTH_ROUTING_MUTEX` | Routing mutex mode (`legacy` or `enabled`) |
-| `CODEX_AUTH_PID_OFFSET_ENABLED` | Toggle PID-based hybrid selection offset (`pidOffsetEnabled`) |
-| `CODEX_AUTH_BACKGROUND_RESPONSES` | Toggle background Responses compatibility (`backgroundResponses`) |
-| `CODEX_MULTI_AUTH_FORCE_ACCOUNT` | Force one account for a single forwarded `codex-multi-auth-codex` run (`index`, email, or id). Ephemeral and fail-hard; equivalent to `--account` (flag wins when both are set). Requires the runtime rotation proxy |
-| `CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX` | Internal: wrapper publishes a resolved 0-based index after `--account` / `CODEX_MULTI_AUTH_FORCE_ACCOUNT`. Runtime proxy consumes it as an ephemeral pin. Prefer `CODEX_MULTI_AUTH_FORCE_ACCOUNT` rather than setting this by hand |
-| `CODEX_MULTI_AUTH_SYNC_CODEX_CLI` | Toggle Codex CLI state sync |
-| `CODEX_MULTI_AUTH_REAL_CODEX_BIN` | Force official Codex binary path |
-| `CODEX_MULTI_AUTH_BYPASS` | Bypass local auth handling |
-| `CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE` | Opt out of wrapper-injected official Codex file-backed auth store when set to `0` |
-| `CODEX_MULTI_AUTH_AUTO_SYNC_ON_STARTUP` | Opt out of best-effort active-account sync around forwarded Codex launches when set to `0` |
-| `CODEX_MULTI_AUTH_CAPTURE_FORWARD_OUTPUT` | Force or disable capture of forwarded Codex output for unsupported-model fallback handling |
-| `CODEX_MULTI_AUTH_WINDOWS_BATCH_SHIM_GUARD` | Install Windows shim guards when enabled |
-| `CODEX_MULTI_AUTH_PWSH_PROFILE_GUARD` | Install PowerShell profile guard when enabled |
-| `CODEX_MULTI_AUTH_OVERWRITE_CUSTOM_BATCH_SHIM` | Allow Windows shim guard to overwrite custom shims when set to `1` |
-
-* * *
-
-## Runtime Rotation Architecture Fields
-
-Runtime rotation is split between persisted config, wrapper-only process env, and app-bind helper env.
-
-| Layer | Primary controls |
-| --- | --- |
-| Persisted settings | `pluginConfig.codexRuntimeRotationProxy` |
-| Per-process override | `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY` |
-| Wrapper app helper | `CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS`, internal owner/original-home env |
-| Packaged app bind | `CODEX_MULTI_AUTH_APP_BIND_INSTALL`, `CODEX_MULTI_AUTH_APP_BIND_CODEX_HOME` |
-| User launcher routing | `CODEX_MULTI_AUTH_APP_LAUNCHER_INSTALL`, launcher directory overrides |
-
-The proxy provider id is `codex-multi-auth-runtime-proxy`. It is generated through `lib/runtime-constants.ts` and the TOML rewrite helpers in `lib/runtime/config-toml.ts`.
-
-* * *
-
-## Concurrency and Windows Notes
-
-- Storage writes use temp-file + rename semantics; Windows may surface transient `EPERM`/`EBUSY` during rename.
-- Cross-process refresh coordination relies on lease/state files; avoid manually editing those files while the CLI is running.
-- Live account sync combines `fs.watch` with polling fallback to handle Windows watcher edge cases.
-- Backup/WAL artifacts may exist briefly during writes and recovery; they are part of normal safety behavior.
-- Runtime rotation shadow-home sync uses a lock directory and state metadata to avoid overwriting newer official Codex state after concurrent helper sessions.
-- If shadow-home lock owner metadata cannot be written, the wrapper removes the orphaned lock before surfacing the failure so later sync-back attempts are not skipped silently.
+- Config and settings reads retry transient `EBUSY`/`EPERM`/`EAGAIN` errors (`readFileSyncWithConfigRetry`, 5 immediate attempts) so a momentary Windows AV/indexer or editor lock does not silently fall back to defaults. On exhaustion the last error surfaces so the caller reports the source as unreadable instead of loading stale/empty content.
+- `settings.json` writes take an in-process queue plus a cross-process `wx` lockfile, snapshot a `.bak` backup, then temp-write + rename with `EBUSY`/`EPERM` retries; the async path adds an mtime compare-and-swap loop with `ESTALE` re-read/re-merge.
+- `CODEX_MULTI_AUTH_CONFIG_PATH` saves use the same queue + `wx` lockfile and an mtime CAS merge that preserves unknown keys; an unreadable target aborts with a `StorageError` (`UNREADABLE`) rather than clobbering the file.
+- Cross-process refresh coordination (`CODEX_AUTH_REFRESH_LEASE*`) uses lease files with TTL + wait/poll so two processes refreshing the same account do not stampede the refresh token.
+- `routingMutex` only serializes selection *within one process*; `pidOffsetEnabled` is the cross-process lever. Neither replaces a bigger account pool under a many-agent swarm.
+- The app-helper lifecycle knobs (`CODEX_MULTI_AUTH_APP_ROTATION_*`) exist because Windows process-launcher detachment can strand helpers: detached idle, detach grace, owner PID + start-time, and the max-lifetime backstop bound how long an orphaned helper may live.
+- Per-process env overrides apply at read time inside each `get*` accessor — a running process picks up a `process.env` change, but a separate process never sees another process's env.
 
 * * *
 
 ## Related
 
-- [CONFIG_FLOW.md](CONFIG_FLOW.md)
-- [ARCHITECTURE.md](ARCHITECTURE.md)
-- [../reference/settings.md](../reference/settings.md)
+- [CONFIG_FLOW.md](CONFIG_FLOW.md) — resolution order walkthrough
+- [../configuration.md](../configuration.md) — user-facing configuration guide
+- [../reference/settings.md](../reference/settings.md) — dashboard/settings-hub reference
+- [../reference/storage-paths.md](../reference/storage-paths.md) — every file path the runtime touches

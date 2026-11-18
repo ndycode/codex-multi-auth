@@ -1,10 +1,12 @@
 ﻿import { stdin as input, stdout as output } from "node:process";
 import { sanitizeEmail } from "../accounts.js";
 import type { promptLoginMode } from "../cli.js";
+import { CodexValidationError } from "../errors.js";
 import { MODEL_FAMILIES } from "../prompts/codex.js";
 import {
 	type AccountMetadataV3,
 	type AccountStorageV3,
+	bumpStorageAffinityGeneration,
 	findMatchingAccountIndex,
 	loadAccounts,
 	reconcilePinnedAccountIndex,
@@ -350,6 +352,12 @@ export async function handleManageAction(
 					pinnedAccount,
 					nextStorage.accounts,
 				);
+				// The splice shifts every index above the removed slot, and session
+				// affinity remembers accounts BY INDEX. Without a generation bump a
+				// live proxy keeps routing in-flight sessions to the account that
+				// slid into the old slot. Reconciling the pin is not enough — the
+				// affinity map is separate state. See issue #474.
+				bumpStorageAffinityGeneration(nextStorage);
 				await persist(nextStorage);
 				replaceManageActionStorage(storage, nextStorage);
 				deleted = true;
@@ -421,9 +429,43 @@ export async function handleManageAction(
 			return;
 		}
 
-		const resolved = resolveAccountSelection(tokenResult);
-		await persistAccountPool([resolved], false);
-		await syncSelectionToCodex(resolved);
-		console.log(`Refreshed account ${idx + 1}.`);
+		const resolved = resolveAccountSelection(
+			tokenResult,
+			undefined,
+			existing.accountId,
+		);
+		let persistResult: Awaited<ReturnType<typeof persistAccountPool>>;
+		try {
+			persistResult = await persistAccountPool([resolved], false, {
+				preserveSelection: true,
+				expectedAccount: existing,
+				expectedAccountIndex: idx,
+			});
+		} catch (error) {
+			// A mismatched sign-in (the user picked a different ChatGPT account in
+			// the browser) is a refusal, not a crash. Nothing between here and the
+			// process entrypoint catches this, so an uncaught throw would take the
+			// whole interactive dashboard down with a raw stack trace.
+			if (error instanceof CodexValidationError) {
+				console.error(`Refresh failed: ${error.message}`);
+				return;
+			}
+			throw error;
+		}
+		// Refreshing the account Codex is currently using must publish its new
+		// tokens; refreshing any other row must leave the selection alone.
+		if (!persistResult || persistResult.isActiveAccount) {
+			await syncSelectionToCodex(resolved);
+		}
+		// Report the row that was actually written. The pool can shift between the
+		// dashboard render and this transaction, so the menu index may name a
+		// different account by now.
+		const refreshedIndex = persistResult?.accountIndex ?? idx;
+		console.log(`Refreshed account ${refreshedIndex + 1}.`);
+		if (persistResult && !persistResult.accountEnabled) {
+			console.log(
+				`Account ${refreshedIndex + 1} is still disabled and stays out of rotation. Toggle it from this menu to bring it back.`,
+			);
+		}
 	}
 }

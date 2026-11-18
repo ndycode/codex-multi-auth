@@ -1,35 +1,49 @@
 import type { CapabilityPolicyStore } from "../capability-policy.js";
+import { logDebug } from "../logger.js";
 import { resolveEntitlementAccountKey } from "../entitlement-cache.js";
 import {
 	getAccountPolicyKey,
-	loadAccountPolicyStore,
 	type AccountPolicyStore,
 } from "../account-policy.js";
 import {
 	evaluateBudgetGuard,
 	getBudgetWindowStart,
-	loadBudgetGuardStore,
 	normalizeBudgetKey,
 	type BudgetGuardEvaluation,
 	type BudgetGuardStore,
+	type BudgetLimit,
+	type BudgetWindow,
 } from "../budget-guard.js";
+import type { ProjectRoutingProfileContext } from "../routing-profiles.js";
 import {
-	resolveProjectRoutingProfile,
-	type ProjectRoutingProfileContext,
-} from "../routing-profiles.js";
+	loadAccountPolicyStoreCached,
+	loadBudgetGuardStoreCached,
+	resolveProjectRoutingProfileCached,
+} from "./runtime-policy-cache.js";
 import {
 	appendUsageLedgerRow,
-	summarizeUsageLedger,
+	isUnpricedOperation,
+	readUsageLedgerRows,
+	summarizeUsageRows,
 	type UsageLedgerAppendInput,
 	type UsageLedgerOperation,
 	type UsageLedgerOutcome,
 	type UsageLedgerSource,
+	type UsageServiceTier,
+	type UsageSummary,
 } from "../usage/index.js";
 
 export interface RuntimePolicyAccount {
 	index: number;
 	accountId?: string | null;
 	email?: string | null;
+	/**
+	 * Only used to key account policy for an account with no accountId and no
+	 * email. Without it the runtime would key such an account as "unknown"
+	 * while the CLI keys it by refresh-token digest, and pause/drain/tag state
+	 * written by one would be invisible to the other.
+	 */
+	refreshToken?: string | null;
 }
 
 export interface RuntimePolicyDecision {
@@ -39,7 +53,10 @@ export interface RuntimePolicyDecision {
 	reasons: string[];
 	projectKey: string | null;
 	blockedAccountIndexes: Set<number>;
+	blockedAccountReasons?: Record<number, string>;
 	scoreBoostByAccount: Record<number, number>;
+	priorityByAccount?: Record<number, number>;
+	emergencyAccountIndexes?: Set<number>;
 	budgetEvaluations: BudgetGuardEvaluation[];
 }
 
@@ -65,17 +82,35 @@ export interface RuntimeUsageRecordInput {
 	cachedInputTokens?: number | null;
 	reasoningTokens?: number | null;
 	totalTokens?: number | null;
+	/**
+	 * Billed service tier, when upstream reported one. Carried explicitly
+	 * because the row below is rebuilt field by field: a spread from the
+	 * usage deferral reaches this input, but anything not named here is
+	 * dropped before the ledger, which would price a Fast response at the
+	 * standard rate.
+	 */
+	serviceTier?: UsageServiceTier;
 }
 
 export async function loadRuntimePolicyState(
 	startDir = process.cwd(),
 ): Promise<RuntimePolicyState> {
+	// Cached loaders: each proxied request costs a few statSync calls instead of
+	// three file reads + JSON parses + the project-root ancestor walk. Stores
+	// re-read whenever their file's mtime/size changes (or within the mtime
+	// settle window, or past the cache TTL), and the project context
+	// re-resolves when the startDir context or `.git` entry changes — so
+	// CLI-side writes are honored without per-request reparsing. See
+	// lib/policy/runtime-policy-cache.ts.
 	const [accountPolicies, budgets, project] = await Promise.all([
-		loadAccountPolicyStore(),
-		loadBudgetGuardStore(),
-		resolveProjectRoutingProfile(startDir),
+		loadAccountPolicyStoreCached(),
+		loadBudgetGuardStoreCached(),
+		resolveProjectRoutingProfileCached(startDir),
 	]);
-	return { accountPolicies, budgets, project };
+	// The caches share store objects across calls. Every caller previously
+	// received a private parse, so hand out a private clone: a caller mutating
+	// its state must not poison the cache for the next request.
+	return structuredClone({ accountPolicies, budgets, project });
 }
 
 function normalizeToken(value: string | null | undefined): string | null {
@@ -120,18 +155,34 @@ async function evaluateBudgets(input: {
 		const budgetKey = normalizeBudgetKey(input.state.project.profile.budgetKey);
 		if (budgetKey) keys.add(budgetKey);
 	}
-	const evaluations: BudgetGuardEvaluation[] = [];
+	const matchingLimits: BudgetLimit[] = [];
 	for (const key of keys) {
 		const limit = input.state.budgets.limits[key];
-		if (!limit) continue;
-		const summary = await summarizeUsageLedger({
-			since: getBudgetWindowStart(limit.window, input.now),
-			until: input.now,
-			// Budget windows (e.g. monthly) can span a ledger rotation. Without archives,
-			// rotated-out rows are dropped from the sum, under-counting spend and letting
-			// usage exceed the limit within the active window (quota-forecast-03).
-			includeArchives: true,
-		});
+		if (limit) matchingLimits.push(limit);
+	}
+	if (matchingLimits.length === 0) return [];
+	// Read + parse the ledger ONCE per evaluation, not once per matching key —
+	// each summarizeUsageLedger call used to reparse every usage-ledger*.jsonl
+	// line, making the request path O(ledger rows x budget keys). Budget
+	// windows (e.g. monthly) can span a ledger rotation, so archives are
+	// included; without them rotated-out rows are dropped from the sum,
+	// under-counting spend and letting usage exceed the limit within the
+	// active window (quota-forecast-03). Distinct windows still need distinct
+	// `since` filters, so rows are summarized per window in memory — the same
+	// summarizeUsageRows that summarizeUsageLedger applied to the same rows
+	// and query produces an identical UsageSummary.
+	const rows = await readUsageLedgerRows({ includeArchives: true });
+	const summariesByWindow = new Map<BudgetWindow, UsageSummary>();
+	const evaluations: BudgetGuardEvaluation[] = [];
+	for (const limit of matchingLimits) {
+		let summary = summariesByWindow.get(limit.window);
+		if (!summary) {
+			summary = summarizeUsageRows(rows, {
+				since: getBudgetWindowStart(limit.window, input.now),
+				until: input.now,
+			});
+			summariesByWindow.set(limit.window, summary);
+		}
 		evaluations.push(evaluateBudgetGuard(limit, summary));
 	}
 	return evaluations;
@@ -143,11 +194,15 @@ export async function evaluateRuntimePolicy(input: {
 	model: string | null;
 	capabilityPolicy?: CapabilityPolicyStore | null;
 	now?: number;
+	operation?: UsageLedgerOperation;
 }): Promise<RuntimePolicyDecision> {
 	const now = input.now ?? Date.now();
 	const reasons: string[] = [];
 	const blockedAccountIndexes = new Set<number>();
+	const blockedAccountReasons: Record<number, string> = {};
 	const scoreBoostByAccount: Record<number, number> = {};
+	const priorityByAccount: Record<number, number> = {};
+	const emergencyAccountIndexes = new Set<number>();
 	const profile = input.state.project.profile;
 
 	if (profile?.modelDenylist.length && matchesModel(profile.modelDenylist, input.model)) {
@@ -176,22 +231,42 @@ export async function evaluateRuntimePolicy(input: {
 			);
 		}
 	}
+	// Every budget window sums all ledger rows, whatever its key, so one row of
+	// unknown cost leaves every cost budget unevaluable and failing closed for
+	// all traffic until its window ends. Refuse before any upstream send.
+	if (isUnpricedOperation(input.operation)) {
+		const costBudgets = Object.values(input.state.budgets.limits)
+			.filter((limit) => limit.maxCostUsd !== undefined)
+			.map((limit) => limit.key);
+		if (costBudgets.length > 0) {
+			reasons.push(
+				`${input.operation} requests have no configured price, so recording one would leave cost budget ${costBudgets.join(", ")} unable to evaluate spend and block all requests until its window ends. Budget on --requests/--tokens instead of --cost to allow ${input.operation} requests.`,
+			);
+		}
+	}
 
 	for (const account of input.accounts) {
 		const accountKey = getAccountPolicyKey(
 			{
 				accountId: account.accountId ?? undefined,
 				email: account.email ?? undefined,
+				refreshToken: account.refreshToken ?? undefined,
 			},
 			account.index,
 		);
 		const accountPolicy = input.state.accountPolicies.accounts[accountKey];
+		priorityByAccount[account.index] = accountPolicy?.priority ?? 1;
+		if (accountPolicy?.emergencyOnly) emergencyAccountIndexes.add(account.index);
 		let boost = 0;
 		if (accountPolicy?.paused) {
 			blockedAccountIndexes.add(account.index);
+			blockedAccountReasons[account.index] = "policy: paused";
 		}
 		if (accountPolicy?.drained) {
 			blockedAccountIndexes.add(account.index);
+			blockedAccountReasons[account.index] = accountPolicy.paused
+				? "policy: paused, drained"
+				: "policy: drained";
 		}
 		if (accountPolicy) {
 			boost += (accountPolicy.weight - 1) * 2;
@@ -228,6 +303,7 @@ export async function evaluateRuntimePolicy(input: {
 		);
 		if (capabilitySnapshot && capabilitySnapshot.unsupported > 0) {
 			blockedAccountIndexes.add(account.index);
+			blockedAccountReasons[account.index] = "policy: unsupported model";
 		}
 		scoreBoostByAccount[account.index] = boost;
 	}
@@ -241,7 +317,10 @@ export async function evaluateRuntimePolicy(input: {
 		reasons,
 		projectKey: input.state.project.projectKey,
 		blockedAccountIndexes,
+		blockedAccountReasons,
 		scoreBoostByAccount,
+		priorityByAccount,
+		emergencyAccountIndexes,
 		budgetEvaluations,
 	};
 }
@@ -263,6 +342,19 @@ export function createRuntimeUsageRecorder(input: {
 		record: async (recordInput) => {
 			if (recorded) return;
 			recorded = true;
+			if (input.operation === "responses" && recordInput.outcome === "success" && ![
+				recordInput.inputTokens,
+				recordInput.outputTokens,
+				recordInput.cachedInputTokens,
+				recordInput.reasoningTokens,
+				recordInput.totalTokens,
+			].some(count => typeof count === "number" && count > 0)) {
+				// Keep diagnostics free of account identities, credentials and body data.
+				logDebug("Successful Responses request has zero or missing token usage", {
+					source: input.source,
+					operation: input.operation,
+				});
+			}
 			const account = recordInput.account;
 			const row: UsageLedgerAppendInput = {
 				source: input.source,
@@ -282,6 +374,7 @@ export function createRuntimeUsageRecorder(input: {
 				cachedInputTokens: recordInput.cachedInputTokens,
 				reasoningTokens: recordInput.reasoningTokens,
 				totalTokens: recordInput.totalTokens,
+				serviceTier: recordInput.serviceTier,
 			};
 			await append(row).catch(() => undefined);
 		},

@@ -81,6 +81,7 @@ describe("oc-chatgpt target detection", () => {
 	const originalHome = process.env.HOME;
 	const originalUserProfile = process.env.USERPROFILE;
 	const originalOverride = process.env.OC_CHATGPT_MULTI_AUTH_DIR;
+	const originalOverrideAlias = process.env.OC_CODEX_MULTI_AUTH_DIR;
 	const originalPlatform = process.platform;
 	let workDir: string;
 	let homeDir: string;
@@ -95,6 +96,7 @@ describe("oc-chatgpt target detection", () => {
 		process.env.HOME = homeDir;
 		process.env.USERPROFILE = homeDir;
 		delete process.env.OC_CHATGPT_MULTI_AUTH_DIR;
+		delete process.env.OC_CODEX_MULTI_AUTH_DIR;
 	});
 
 	afterEach(async () => {
@@ -108,6 +110,9 @@ describe("oc-chatgpt target detection", () => {
 		if (originalOverride === undefined)
 			delete process.env.OC_CHATGPT_MULTI_AUTH_DIR;
 		else process.env.OC_CHATGPT_MULTI_AUTH_DIR = originalOverride;
+		if (originalOverrideAlias === undefined)
+			delete process.env.OC_CODEX_MULTI_AUTH_DIR;
+		else process.env.OC_CODEX_MULTI_AUTH_DIR = originalOverrideAlias;
 		Object.defineProperty(process, "platform", {
 			value: originalPlatform,
 			configurable: true,
@@ -154,6 +159,52 @@ describe("oc-chatgpt target detection", () => {
 		}
 	});
 
+	it("detects the renamed oc-codex-multi-auth account file", async () => {
+		const globalRoot = join(homeDir, ".opencode");
+		await fs.mkdir(globalRoot, { recursive: true });
+		await fs.writeFile(
+			join(globalRoot, "oc-codex-multi-auth-accounts.json"),
+			"{}",
+			"utf-8",
+		);
+
+		const result = detectOcChatgptMultiAuthTarget({
+			explicitRoot: globalRoot,
+		});
+		assertTarget(result, "global", globalRoot);
+		if (result.kind === "target") {
+			expect(result.descriptor.accountPath).toBe(
+				join(globalRoot, "oc-codex-multi-auth-accounts.json"),
+			);
+			expect(result.descriptor.resolution).toBe("accounts");
+		}
+	});
+
+	it("prefers the renamed file when both account filenames exist", async () => {
+		const globalRoot = join(homeDir, ".opencode");
+		await fs.mkdir(globalRoot, { recursive: true });
+		await fs.writeFile(
+			join(globalRoot, "openai-codex-accounts.json"),
+			"{}",
+			"utf-8",
+		);
+		await fs.writeFile(
+			join(globalRoot, "oc-codex-multi-auth-accounts.json"),
+			"{}",
+			"utf-8",
+		);
+
+		const result = detectOcChatgptMultiAuthTarget({
+			explicitRoot: globalRoot,
+		});
+		assertTarget(result, "global", globalRoot);
+		if (result.kind === "target") {
+			expect(result.descriptor.accountPath).toBe(
+				join(globalRoot, "oc-codex-multi-auth-accounts.json"),
+			);
+		}
+	});
+
 	it("returns ambiguous when both global and project accounts exist", async () => {
 		const projectDir = join(workDir, "project-beta");
 		await fs.mkdir(join(projectDir, ".git"), { recursive: true });
@@ -195,7 +246,7 @@ describe("oc-chatgpt target detection", () => {
 			expect(result.descriptor.source).toBe("explicit");
 			expect(result.descriptor.resolution).toBe("signals");
 			expect(result.descriptor.accountPath).toBe(
-				join(overrideRoot, "openai-codex-accounts.json"),
+				join(overrideRoot, "oc-codex-multi-auth-accounts.json"),
 			);
 		}
 	});
@@ -227,6 +278,30 @@ describe("oc-chatgpt target detection", () => {
 			expect(result.descriptor.source).toBe("explicit");
 			expect(result.descriptor.resolution).toBe("signals");
 		}
+	});
+
+	it("accepts OC_CODEX_MULTI_AUTH_DIR as the canonical override, preferring it over the legacy name", async () => {
+		const overrideRoot = join(workDir, "codex-override-root");
+		const legacyRoot = join(workDir, "legacy-override-root");
+		await fs.mkdir(join(overrideRoot, "backups"), { recursive: true });
+		await fs.mkdir(join(legacyRoot, "backups"), { recursive: true });
+		process.env.OC_CODEX_MULTI_AUTH_DIR = overrideRoot;
+		process.env.OC_CHATGPT_MULTI_AUTH_DIR = legacyRoot;
+
+		const result = detectOcChatgptMultiAuthTarget();
+		assertTarget(result, "global", overrideRoot);
+		if (result.kind === "target") {
+			expect(result.descriptor.source).toBe("explicit");
+		}
+	});
+
+	it("falls back to the legacy OC_CHATGPT_MULTI_AUTH_DIR name when the new one is unset", async () => {
+		const legacyRoot = join(workDir, "legacy-only-root");
+		await fs.mkdir(join(legacyRoot, "backups"), { recursive: true });
+		process.env.OC_CHATGPT_MULTI_AUTH_DIR = legacyRoot;
+
+		const result = detectOcChatgptMultiAuthTarget();
+		assertTarget(result, "global", legacyRoot);
 	});
 
 	it("keeps the canonical home root global when the home path contains a projects segment", async () => {
@@ -370,14 +445,20 @@ describe("oc-chatgpt target detection", () => {
 					scope: "global",
 					source: "default-global",
 					root: canonicalRoot,
-					accountPath: join(canonicalRoot, "openai-codex-accounts.json"),
+					accountPath: join(
+						canonicalRoot,
+						"oc-codex-multi-auth-accounts.json",
+					),
 					backupRoot: join(canonicalRoot, "backups"),
 				},
 				{
 					scope: "project",
 					source: "project",
 					root: projectRoot,
-					accountPath: join(projectRoot, "openai-codex-accounts.json"),
+					accountPath: join(
+						projectRoot,
+						"oc-codex-multi-auth-accounts.json",
+					),
 					backupRoot: join(projectRoot, "backups"),
 				},
 			]);

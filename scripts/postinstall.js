@@ -33,6 +33,8 @@ const CI_ENV_KEYS = [
 export const INSTALL_NOTICE = [
 	"codex-multi-auth installed. Run `codex-multi-auth --help` to get started.",
 	"App integration (Codex app bind + launcher shortcuts) completes automatically on first run.",
+	"To remove it later, run `codex-multi-auth uninstall`, then `npm uninstall -g codex-multi-auth`.",
+	"`@ndycode/codex-multi-auth` is the legacy scoped package name; it does not remove this package.",
 ].join("\n");
 
 /**

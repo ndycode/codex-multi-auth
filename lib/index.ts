@@ -33,6 +33,7 @@ export * from "./request/failure-policy.js";
 export * from "./entitlement-cache.js";
 export * from "./preemptive-quota-scheduler.js";
 export * from "./runtime-rotation-proxy.js";
+export * from "./runtime/app-bind.js";
 export * from "./unified-settings.js";
 export * from "./capability-policy.js";
 export * from "./request/stream-failover.js";

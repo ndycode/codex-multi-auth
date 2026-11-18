@@ -5,6 +5,7 @@ import {
 	safeParseJson,
 } from "../schemas.js";
 import { withFileOperationRetry } from "../fs-retry.js";
+import { computeSha256 } from "./hash.js";
 import type { AccountStorageV3 } from "./public-types.js";
 
 export function parseAndNormalizeStorage(
@@ -51,6 +52,8 @@ export async function loadAccountsFromPath(
 	normalized: AccountStorageV3 | null;
 	storedVersion: unknown;
 	schemaErrors: string[];
+	/** sha256 of the exact bytes read, for cheap unchanged-content checks. */
+	contentSha256: string;
 }> {
 	// Retry only transient FS lock errors (EBUSY/EPERM/EACCES/…) on the primary
 	// read so a momentary Windows lock doesn't fall through to WAL/backup recovery
@@ -58,6 +61,7 @@ export async function loadAccountsFromPath(
 	// unchanged; JSON.parse runs outside the retry, so the SyntaxError → recovery
 	// contract documented above is also preserved.
 	const content = await withFileOperationRetry(() => fs.readFile(path, "utf-8"));
+	const contentSha256 = computeSha256(content);
 
 	// Run the Zod-guarded JSON boundary first. Returns null on either a
 	// `SyntaxError` or a schema mismatch; we disambiguate below so the
@@ -69,11 +73,14 @@ export async function loadAccountsFromPath(
 		"storage-parser.loadAccountsFromPath",
 	);
 	if (validated !== null) {
-		return parseAndNormalizeStorage(
-			validated,
-			deps.normalizeAccountStorage,
-			deps.isRecord,
-		);
+		return {
+			...parseAndNormalizeStorage(
+				validated,
+				deps.normalizeAccountStorage,
+				deps.isRecord,
+			),
+			contentSha256,
+		};
 	}
 
 	// `validated === null`: either SyntaxError or schema mismatch.
@@ -81,9 +88,12 @@ export async function loadAccountsFromPath(
 	// existing recovery semantics; otherwise fall through to the TS normalizer
 	// (legacy unknown-shape path, surfaced via `schemaErrors`).
 	const data = JSON.parse(content) as unknown;
-	return parseAndNormalizeStorage(
-		data,
-		deps.normalizeAccountStorage,
-		deps.isRecord,
-	);
+	return {
+		...parseAndNormalizeStorage(
+			data,
+			deps.normalizeAccountStorage,
+			deps.isRecord,
+		),
+		contentSha256,
+	};
 }

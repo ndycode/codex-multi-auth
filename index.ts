@@ -82,6 +82,10 @@ import {
 	getPreemptiveQuotaMaxDeferralMs,
 	getPreemptiveQuotaRemainingPercent5h,
 	getPreemptiveQuotaRemainingPercent7d,
+	getContextBudgetGuardEnabled,
+	getContextBudgetGuardSoftPercent,
+	getContextBudgetGuardHardPercent,
+	getContextBudgetGuardModelWindowOverrides,
 	getProactiveRefreshBufferMs,
 	getProactiveRefreshGuardian,
 	getProactiveRefreshIntervalMs,
@@ -114,6 +118,11 @@ import {
 	PROVIDER_ID,
 } from "./lib/constants.js";
 import { handleContextOverflow } from "./lib/context-overflow.js";
+import { ContextBudgetGuard } from "./lib/context-budget-guard.js";
+import {
+	buildContextBudgetHeaders,
+	createContextBudgetPauseResponse,
+} from "./lib/context-budget-response.js";
 import {
 	EntitlementCache,
 	resolveEntitlementAccountKey,
@@ -141,6 +150,15 @@ import {
 	type RuntimeUsageRecorder,
 	type RuntimeUsageRecordInput,
 } from "./lib/policy/runtime-policy.js";
+import { createStreamUsageDeferral } from "./lib/usage/stream-usage-deferral.js";
+
+/**
+ * How long a streaming request's usage-ledger row may wait for the upstream
+ * `usage` event before it is written without token counts. Long enough not to
+ * truncate a genuinely slow completion; the timer is unref'd so it never holds
+ * the process open. See createStreamUsageDeferral.
+ */
+const USAGE_STREAM_RECORD_FALLBACK_MS = 15 * 60_000;
 import {
 	getModelFamily,
 	MODEL_FAMILIES,
@@ -209,6 +227,7 @@ import {
 	normalizeRequestInit,
 	parseRequestBodyFromInit,
 } from "./lib/request/request-init.js";
+import { CURRENT_CODEX_MODEL } from "./lib/request/helpers/model-map.js";
 import { applyFastSessionDefaults } from "./lib/request/request-transformer.js";
 import { applyResponseCompaction } from "./lib/request/response-compaction.js";
 import { isEmptyResponse } from "./lib/request/response-handler.js";
@@ -264,6 +283,7 @@ import { ensureLiveAccountSyncEntry } from "./lib/runtime/live-sync-entry.js";
 import { applyLoaderRuntimeSetup } from "./lib/runtime/loader-setup.js";
 import { buildManualOAuthFlow } from "./lib/runtime/manual-oauth-flow.js";
 import { applyPreemptiveQuotaSettingsFromConfig } from "./lib/runtime/quota-settings.js";
+import { applyContextBudgetGuardSettingsFromConfig } from "./lib/runtime/context-budget-settings.js";
 import {
 	ensureLiveAccountSyncState,
 	ensureRefreshGuardianState,
@@ -282,6 +302,7 @@ import {
 } from "./lib/runtime/ui-runtime.js";
 import { verifyRuntimeFlaggedAccounts } from "./lib/runtime/verify-flagged.js";
 import { SessionAffinityStore } from "./lib/session-affinity.js";
+import { clearAccountsAndCredentialSidecars } from "./lib/storage/credential-sidecars.js";
 import { registerCleanup } from "./lib/shutdown.js";
 import {
 	type AccountStorageV3,
@@ -407,6 +428,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let sessionAffinityConfigKey: string | null = null;
 	const entitlementCache = new EntitlementCache();
 	const preemptiveQuotaScheduler = new PreemptiveQuotaScheduler();
+	const contextBudgetGuard = new ContextBudgetGuard();
 	const capabilityPolicyStore = new CapabilityPolicyStore();
 	let accountReloadInFlight: Promise<AccountManager> | null = null;
 	const exposeAdvancedCodexTools =
@@ -683,6 +705,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			getPreemptiveQuotaMaxDeferralMs,
 		});
 
+	const applyContextBudgetGuardSettings = (
+		pluginConfig: ReturnType<typeof loadPluginConfig>,
+	): void =>
+		applyContextBudgetGuardSettingsFromConfig(pluginConfig, {
+			configure: (options) => contextBudgetGuard.configure(options),
+			getContextBudgetGuardEnabled,
+			getContextBudgetGuardSoftPercent,
+			getContextBudgetGuardHardPercent,
+			getContextBudgetGuardModelWindowOverrides,
+		});
+
 	// Event handler for session recovery and account selection
 	const eventHandler = async (input: {
 		event: { type: string; properties?: unknown };
@@ -740,6 +773,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					ensureSessionAffinity,
 					ensureRefreshGuardian,
 					applyPreemptiveQuotaSettings,
+					applyContextBudgetGuardSettings,
 				});
 
 				// Only handle OAuth auth type, skip API key auth
@@ -943,6 +977,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						): Promise<Response> {
 							let usageRecorder: RuntimeUsageRecorder | null = null;
 							let usageCompletion: RuntimeUsageRecordInput | null = null;
+							// A non-streaming response reports its token counts while
+							// handleSuccessResponse is still assembling the body, so they
+							// are folded straight into usageCompletion below. A streaming
+							// one reports them only as the client drains the body, long
+							// after the `finally` that writes the row — so that row is
+							// handed to the deferral instead of written empty.
+							const usageDeferral = createStreamUsageDeferral<RuntimeUsageRecordInput>(
+								{
+									record: (completion) => {
+										void usageRecorder?.record(completion);
+									},
+									fallbackMs: USAGE_STREAM_RECORD_FALLBACK_MS,
+								},
+							);
 							try {
 								if (
 									cachedAccountManager &&
@@ -1001,6 +1049,31 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										.trim() || undefined;
 								const sessionAffinityKey =
 									threadIdCandidate ?? promptCacheKey ?? null;
+								// Context budget guard: pause BEFORE spending an upstream
+								// round-trip on a request the tracked session is already over
+								// the hard threshold for, rather than waiting on the eventual
+								// context_length_exceeded 400 that handleContextOverflow below
+								// only reacts to after the fact. Independent of which account
+								// ends up serving the request, so it runs ahead of account
+								// selection entirely rather than inside its retry loop.
+								const contextBudgetAdvisory = contextBudgetGuard.getAdvisory(
+									sessionAffinityKey ?? "",
+									Date.now(),
+									model,
+								);
+								if (contextBudgetAdvisory.level === "hard") {
+									// One-shot: this pause returns before the request is
+									// forwarded, so the onUsage hook that would lower the
+									// recorded usage never runs. Dropping the snapshot keeps
+									// the session recoverable — otherwise the `/compact` turn
+									// this message asks for is blocked by the same key.
+									contextBudgetGuard.noteHardPauseEmitted(
+										sessionAffinityKey ?? "",
+									);
+									return createContextBudgetPauseResponse(
+										contextBudgetAdvisory,
+									);
+								}
 								const sessionAffinityVersion =
 									(sessionAffinityWriteVersion += 1);
 								const effectivePromptCacheKey =
@@ -1047,13 +1120,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										model: model ?? null,
 										capabilityPolicy: capabilityPolicyStore,
 									});
-								} catch (policyError) {
-									logWarn("Runtime policy evaluation failed open.", {
-										error:
-											policyError instanceof Error
-												? policyError.message
-												: String(policyError),
-									});
+								} catch {
+									logWarn("Runtime policy evaluation failed; request blocked.");
 								}
 								usageRecorder = createRuntimeUsageRecorder({
 									source: "plugin-host",
@@ -1068,6 +1136,28 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									statusCode: null,
 									errorCode: "plugin_host_request_failed",
 								};
+								if (!runtimePolicyDecision) {
+									runtimeMetrics.failedRequests += 1;
+									runtimeMetrics.lastError = "Runtime policy unavailable";
+									syncRuntimeObservability(requestTraceId);
+									usageCompletion = {
+										outcome: "blocked",
+										statusCode: 503,
+										errorCode: "runtime_policy_unavailable",
+									};
+									return new Response(
+										JSON.stringify({
+											error: {
+												message: "Runtime policy could not be loaded for this local request.",
+												code: "runtime_policy_unavailable",
+											},
+										}),
+										{
+											status: 503,
+											headers: { "content-type": "application/json; charset=utf-8" },
+										},
+									);
+								}
 								if (runtimePolicyDecision && !runtimePolicyDecision.allowed) {
 									runtimeMetrics.failedRequests += 1;
 									runtimeMetrics.lastError = "Runtime policy blocked request";
@@ -1096,6 +1186,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									);
 								}
 
+								// This host cannot prove ordinary capacity and permitted reset
+								// recovery are exhausted, so emergency accounts stay reserved.
+								const blockedAccountIndexes = new Set([
+									...(runtimePolicyDecision?.blockedAccountIndexes ?? []),
+									...(runtimePolicyDecision?.emergencyAccountIndexes ?? []),
+								]);
 								const abortSignal = requestInit?.signal ?? init?.signal ?? null;
 								const sleep = createAbortableSleep(abortSignal);
 								const poolCooldownRemainingMs =
@@ -1274,7 +1370,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													modelFamily,
 													model,
 												) &&
-												!runtimePolicyDecision?.blockedAccountIndexes.has(
+												!blockedAccountIndexes.has(
 													preferredSessionAccountIndex,
 												)
 											) {
@@ -1301,6 +1397,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												{
 													pidOffsetEnabled,
 													scoreBoostByAccount: capabilityBoostByAccount,
+													blockedAccountIndexes,
 												},
 											);
 										}
@@ -1308,11 +1405,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											break;
 										}
 										attempted.add(account.index);
-										if (
-											runtimePolicyDecision?.blockedAccountIndexes.has(
-												account.index,
-											)
-										) {
+										if (blockedAccountIndexes.has(account.index)) {
 											continue;
 										}
 										// Log account selection for debugging rotation
@@ -1611,7 +1704,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											let response: Response;
 											const fetchStart = performance.now();
 
-											// Merge user AbortSignal with timeout (Node 18 compatible - no AbortSignal.any)
+											// Merge user AbortSignal with timeout without AbortSignal.any (keeps listeners bounded)
 											const fetchController = new AbortController();
 											const requestTimeoutMs = fetchTimeoutMs;
 											let requestTimedOut = false;
@@ -1876,7 +1969,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 													});
 
 												if (fallbackModel) {
-													const previousModel = model ?? "gpt-5.3-codex";
+													const previousModel = model ?? CURRENT_CODEX_MODEL;
 													const previousModelFamily = modelFamily;
 													attemptedUnsupportedFallbackModels.add(previousModel);
 													attemptedUnsupportedFallbackModels.add(fallbackModel);
@@ -2374,7 +2467,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												const streamFallbackCandidateOrder =
 													buildAdaptiveStreamFailoverCandidateOrder(
 														account.index,
-														accountSnapshotList as Array<
+														accountSnapshotList.filter(
+															(candidate) => !blockedAccountIndexes.has(candidate.index),
+														) as Array<
 															Pick<
 																import("./lib/accounts.js").ManagedAccount,
 																| "index"
@@ -2409,6 +2504,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																return null;
 															}
 															if (
+																	blockedAccountIndexes.has(candidateIndex) ||
 																!accountManager.isAccountAvailableForFamily(
 																	candidateIndex,
 																	modelFamily,
@@ -2740,6 +2836,22 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														);
 														storedResponseIdForSuccess = true;
 													},
+													onUsage: (usage) => {
+														usageDeferral.onUsage(usage);
+														// Responses is mostly stateless (store=false): this
+														// turn's input_tokens reflects the full conversation
+														// resent this call, so it doubles as a live read of
+														// the session's current context size. input + output, NOT
+														// total: total_tokens also counts reasoning tokens, which
+														// are not resent as context on the next turn.
+														if (sessionAffinityKey && model) {
+															contextBudgetGuard.update(sessionAffinityKey, {
+																model,
+																contextTokens: usage.inputTokens + usage.outputTokens,
+																updatedAt: Date.now(),
+															});
+														}
+													},
 													streamStallTimeoutMs,
 												},
 											);
@@ -2887,7 +2999,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 														successAccountForResponse.accountId ?? null,
 													email: successAccountForResponse.email ?? null,
 												},
+												// Already known for a non-streaming response, which
+												// reported its usage while the body was being
+												// assembled above.
+												...(usageDeferral.captured() ?? {}),
 											};
+											if (isStreaming && !usageDeferral.captured()) {
+												// Writing the row in the `finally` below would stamp
+												// zero tokens — the client has not read a byte yet —
+												// and the ledger is append-only, so the real counts
+												// could never correct it. Zero tokens is exactly what
+												// left maxTokens / maxCostUsd unenforceable here.
+												usageDeferral.defer(usageCompletion);
+												usageCompletion = null;
+											}
 											if (
 												lastCodexCliActiveSyncIndex !==
 												successAccountForResponse.index
@@ -2901,6 +3026,24 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											clearPoolExhaustionCooldown();
 											clearServerBurstCooldown();
 											syncRuntimeObservability(requestTraceId);
+											// Non-blocking: contextBudgetAdvisory reflects usage
+											// observed as of the PRIOR turn (this turn's own usage
+											// isn't known yet for a streaming body), attached as a
+											// header for `codex-multi-auth status` / the statusline
+											// rather than altering this response's body.
+											if (contextBudgetAdvisory.level === "soft") {
+												const headers = new Headers(successResponse.headers);
+												for (const [name, value] of Object.entries(
+													buildContextBudgetHeaders(contextBudgetAdvisory),
+												)) {
+													headers.set(name, value);
+												}
+												return new Response(successResponse.body, {
+													status: successResponse.status,
+													statusText: successResponse.statusText,
+													headers,
+												});
+											}
 											return successResponse;
 										}
 										if (retryNextAccountBeforeFallback) {
@@ -3222,13 +3365,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								if (menuResult.mode === "fresh") {
 									startFresh = true;
 									if (menuResult.deleteAll) {
-										await clearAccounts();
-										await clearFlaggedAccounts();
+										// Raw sk- API keys and per-account runtime state live beside the
+										// pool; they are removed even if the pool clear fails.
+										await clearAccountsAndCredentialSidecars(async () => {
+											await clearAccounts();
+											await clearFlaggedAccounts();
+										});
 										invalidateRuntimeAccountManagerCache(
 											accountManagerCacheInvalidationDeps,
 										);
 										console.log(
-											"\nCleared saved accounts from active storage. Recovery snapshots remain available. Starting fresh.\n",
+											"\nCleared saved accounts and API credentials. Account recovery snapshots remain available. Starting fresh.\n",
 										);
 									}
 									break;

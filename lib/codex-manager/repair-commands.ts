@@ -18,7 +18,17 @@ import {
 	CODEX_UNAVAILABLE_PROBE_NOTE,
 } from "../quota-probe.js";
 import { isCodexUnavailableError } from "../errors.js";
+import {
+	codexAuthAccountIdsMatch,
+	codexCliAccountIdFor,
+	codexCliActiveIdentity,
+	isOpenAiOrgId,
+} from "../auth/token-utils.js";
 import { queuedRefresh } from "../refresh-queue.js";
+import type {
+	CodexCliMirrorUpdate,
+	ConstrainedSelection,
+} from "../auth/account-access.js";
 import {
 	findMatchingAccountIndex,
 	getStoragePath,
@@ -38,7 +48,12 @@ import {
 	getCodexCliConfigPath,
 	loadCodexCliState,
 } from "../codex-cli/state.js";
-import { setCodexCliActiveSelection } from "../codex-cli/writer.js";
+import {
+	ensureCodexCliFileAuthStore,
+	readTopLevelCodexCliAuthStoreMode,
+	setCodexCliActiveSelection,
+	shouldEnforceCodexCliFileAuthStore,
+} from "../codex-cli/writer.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import { DEFAULT_PROBE_MODEL, resolveNormalizedModel } from "../request/helpers/model-map.js";
 import { loadPersistedRuntimeObservabilitySnapshot } from "../runtime/runtime-observability.js";
@@ -130,6 +145,24 @@ export interface RepairCommandDeps {
 		account: AccountMetadataV3,
 		refreshedAccountId: string | undefined,
 	) => boolean;
+	/**
+	 * Migrates an org-sourced account id the backend no longer authorizes
+	 * (Codex CLI >= 0.156.0's `wham/accounts/check`); see
+	 * lib/auth/account-access.ts for the full contract. Live-only: called from
+	 * `fix --live`, where a network round trip already happens per account.
+	 */
+	reboundUnauthorizedAccountIdentity: (
+		account: AccountMetadataV3,
+		accessToken: string,
+	) => Promise<ConstrainedSelection | null>;
+	/**
+	 * Keeps an explicit (`manual`) account's CodexCliMirror in step with the
+	 * backend's authorization; see lib/auth/account-access.ts. Live-only.
+	 */
+	refreshCodexCliMirror: (
+		account: AccountMetadataV3,
+		accessToken: string,
+	) => Promise<CodexCliMirrorUpdate | null>;
 }
 
 function printFixUsage(): void {
@@ -148,6 +181,7 @@ function printFixUsage(): void {
 			"  - Refreshes tokens for enabled accounts",
 			"  - Disables hard-failed accounts (never deletes)",
 			"  - Recommends a better current account when needed",
+			"  - With --live, rebinds an org workspace id the backend no longer authorizes",
 		].join("\n"),
 	);
 }
@@ -292,7 +326,8 @@ type FixOutcome =
 	| "healthy"
 	| "disabled-hard-failure"
 	| "warning-soft-failure"
-	| "already-disabled";
+	| "already-disabled"
+	| "rebound-unauthorized-workspace";
 
 interface FixAccountReport {
 	index: number;
@@ -316,7 +351,11 @@ function summarizeFixReports(
 	for (const report of reports) {
 		if (report.outcome === "healthy") healthy += 1;
 		else if (report.outcome === "disabled-hard-failure") disabled += 1;
-		else if (report.outcome === "warning-soft-failure") warnings += 1;
+		else if (
+			report.outcome === "warning-soft-failure" ||
+			report.outcome === "rebound-unauthorized-workspace"
+		)
+			warnings += 1;
 		else skipped += 1;
 	}
 	return { healthy, disabled, warnings, skipped };
@@ -366,6 +405,10 @@ function hasAccountStorageMutation(
 		|| before.accountId !== after.accountId
 		|| before.accountIdSource !== after.accountIdSource
 		|| before.enabled !== after.enabled
+		|| before.accountLabel !== after.accountLabel
+		|| before.currentWorkspaceIndex !== after.currentWorkspaceIndex
+		|| JSON.stringify(before.workspaces) !== JSON.stringify(after.workspaces)
+		|| JSON.stringify(before.codexCliMirror) !== JSON.stringify(after.codexCliMirror)
 	);
 }
 
@@ -409,6 +452,41 @@ function applyAccountStorageMutations(
 		target.accountId = mutation.after.accountId;
 		target.accountIdSource = mutation.after.accountIdSource;
 		target.enabled = mutation.after.enabled;
+		// Only the workspace rebind in `fix --live` moves these; copying them
+		// unconditionally would clobber a label/workspace change made on disk
+		// since this run loaded storage.
+		if (mutation.before.accountLabel !== mutation.after.accountLabel) {
+			target.accountLabel = mutation.after.accountLabel;
+		}
+		if (
+			JSON.stringify(mutation.before.codexCliMirror) !==
+			JSON.stringify(mutation.after.codexCliMirror)
+		) {
+			target.codexCliMirror = mutation.after.codexCliMirror;
+			if (!target.codexCliMirror) delete target.codexCliMirror;
+		}
+		// The pointer indexes the list, so the two move together: copying only
+		// the list would keep a pointer moved on disk meanwhile, possibly out
+		// of range of the new list.
+		if (
+			mutation.before.currentWorkspaceIndex !== mutation.after.currentWorkspaceIndex ||
+			JSON.stringify(mutation.before.workspaces) !==
+				JSON.stringify(mutation.after.workspaces)
+		) {
+			const workspaces = mutation.after.workspaces;
+			const pointer = mutation.after.currentWorkspaceIndex;
+			target.workspaces = workspaces;
+			target.currentWorkspaceIndex =
+				!workspaces ||
+				(typeof pointer === "number" && pointer >= 0 && pointer < workspaces.length)
+					? pointer
+					: Math.max(
+							0,
+							workspaces.findIndex(
+								(workspace) => workspace.id === mutation.after.accountId,
+							),
+						);
+		}
 	}
 }
 
@@ -1249,6 +1327,29 @@ export async function runFix(
 	const reports: FixAccountReport[] = [];
 	const refreshFailures = new Map<number, TokenFailure>();
 	const hardDisabledIndexes: number[] = [];
+	// A rebind mutates the account before its live probe, so a later rebind
+	// attempt on the refresh path sees a `token` source and reports nothing.
+	// Tracking it per index keeps the note on whichever report ends up final.
+	const reboundIndexes = new Set<number>();
+	// Explicit accounts whose CodexCliMirror this run set or cleared. Checked
+	// once per account even when the refresh path runs after a failed probe.
+	const mirrorUpdates = new Map<number, CodexCliMirrorUpdate | null>();
+	const checkMirror = async (index: number, accessToken: string): Promise<void> => {
+		const account = storage.accounts[index];
+		if (!account || mirrorUpdates.has(index)) return;
+		const update = await deps.refreshCodexCliMirror(account, accessToken);
+		mirrorUpdates.set(index, update);
+		if (update) accountStorageChanged = true;
+	};
+	const noteRebound = (index: number): void => {
+		reboundIndexes.add(index);
+		accountStorageChanged = true;
+		if (workingQuotaCache) {
+			quotaEmailFallbackState = deps.buildQuotaEmailFallbackState(
+				storage.accounts,
+			);
+		}
+	};
 
 	for (let i = 0; i < storage.accounts.length; i += 1) {
 		const account = storage.accounts[i];
@@ -1269,6 +1370,16 @@ export async function runFix(
 			let refreshAfterLiveProbeFailure = false;
 			if (options.live) {
 				const currentAccessToken = account.accessToken;
+				if (
+					currentAccessToken &&
+					(await deps.reboundUnauthorizedAccountIdentity(
+						account,
+						currentAccessToken,
+					))
+				) {
+					noteRebound(i);
+				}
+				if (currentAccessToken) await checkMirror(i, currentAccessToken);
 				const probeAccountId = currentAccessToken
 					? account.accountId ?? extractAccountId(currentAccessToken)
 					: undefined;
@@ -1362,6 +1473,15 @@ export async function runFix(
 					) || quotaCacheChanged;
 			}
 			if (options.live) {
+				if (
+					await deps.reboundUnauthorizedAccountIdentity(
+						account,
+						refreshResult.access,
+					)
+				) {
+					noteRebound(i);
+				}
+				await checkMirror(i, refreshResult.access);
 				const probeAccountId = account.accountId ?? nextAccountId;
 				if (probeAccountId) {
 					try {
@@ -1488,12 +1608,34 @@ export async function runFix(
 		})),
 	);
 	const recommendation = recommendForecastAccount(forecastResults);
+	for (const report of reports) {
+		const mirrorUpdate = mirrorUpdates.get(report.index);
+		if (mirrorUpdate === "set") {
+			report.message = `explicit workspace is not authorized for these credentials; Codex CLI auth uses the backend default. ${report.message}`;
+		} else if (mirrorUpdate === "cleared") {
+			report.message = `explicit workspace is authorized again; Codex CLI auth uses it. ${report.message}`;
+		}
+		if (!reboundIndexes.has(report.index)) continue;
+		report.label = formatAccountLabel(storage.accounts[report.index], report.index);
+		report.message = `workspace was not authorized for these credentials; rebound to the account's default identity. ${report.message}`;
+		if (report.outcome === "healthy") {
+			report.outcome = "rebound-unauthorized-workspace";
+		}
+	}
 	const reportSummary = summarizeFixReports(reports);
 	const accountMutations = collectAccountStorageMutations(
 		originalAccounts,
 		storage.accounts,
 	);
 
+	// ~/.codex/auth.json still carries the rejected id for the active account,
+	// and Codex CLI keeps refusing it until something rewrites that file. The
+	// mirror is taken from the committed snapshot, not this run's in-memory
+	// view, and written while the storage lock is still held: another process
+	// may switch the active account around this run, and a sync outside the
+	// lock could put the old selection back into auth.json.
+	let codexActiveSynced: boolean | null = null;
+	let committedActiveIndex = activeIndex;
 	if (accountStorageChanged && !options.dryRun) {
 		await withAccountStorageTransaction(async (loadedStorage, persist) => {
 			const nextStorage = loadedStorage
@@ -1501,13 +1643,41 @@ export async function runFix(
 				: createEmptyAccountStorage();
 			applyAccountStorageMutations(nextStorage, accountMutations);
 			await persist(nextStorage);
+			committedActiveIndex = deps.resolveActiveIndex(nextStorage, "codex");
+			const committedActive = nextStorage.accounts[committedActiveIndex];
+			const syncIndexes = [
+				...reboundIndexes,
+				...[...mirrorUpdates].filter(([, update]) => update).map(([index]) => index),
+			];
+			const isRebound =
+				committedActive !== undefined &&
+				syncIndexes.some((index) => {
+					const rebound = storage.accounts[index];
+					return (
+						rebound !== undefined &&
+						rebound.accountId === committedActive.accountId &&
+						rebound.refreshToken === committedActive.refreshToken
+					);
+				});
+			if (isRebound && committedActive.enabled !== false) {
+				codexActiveSynced = await setCodexCliActiveSelection({
+					accountId: codexCliAccountIdFor(
+						committedActive,
+						committedActive.accessToken,
+					),
+					email: committedActive.email,
+					accessToken: committedActive.accessToken,
+					refreshToken: committedActive.refreshToken,
+					expiresAt: committedActive.expiresAt,
+				});
+			}
 		});
 	}
 
 	let quotaCacheSaveError: string | null = null;
 	if (!options.dryRun && workingQuotaCache && quotaCacheChanged) {
 		try {
-			await saveQuotaCache(workingQuotaCache);
+			await saveQuotaCache(workingQuotaCache, quotaCache ?? undefined);
 		} catch (error) {
 			// Account storage was already persisted above. Surface the quota-cache
 			// save failure as a partial-success warning rather than turning the
@@ -1531,6 +1701,7 @@ export async function runFix(
 					changed,
 					quotaCacheChanged,
 					quotaCacheSaveError,
+					codexActiveSynced,
 					summary: reportSummary,
 					recommendation,
 					recommendedSwitchCommand:
@@ -1575,6 +1746,14 @@ export async function runFix(
 			),
 		);
 	}
+	if (codexActiveSynced === false) {
+		console.log(
+			deps.stylePromptText(
+				`Warning: the rebound active account could not be synced into Codex auth state; run \`codex-multi-auth switch ${committedActiveIndex + 1}\` to retry.`,
+				"warning",
+			),
+		);
+	}
 	if (display.showPerAccountRows) {
 		console.log("");
 		for (const report of reports) {
@@ -1583,7 +1762,8 @@ export async function runFix(
 					? "✓"
 					: report.outcome === "disabled-hard-failure"
 						? "✗"
-						: report.outcome === "warning-soft-failure"
+						: report.outcome === "warning-soft-failure" ||
+								report.outcome === "rebound-unauthorized-workspace"
 							? "!"
 							: "-";
 			const tone: PromptTone =
@@ -1591,7 +1771,8 @@ export async function runFix(
 					? "success"
 					: report.outcome === "disabled-hard-failure"
 						? "danger"
-						: report.outcome === "warning-soft-failure"
+						: report.outcome === "warning-soft-failure" ||
+								report.outcome === "rebound-unauthorized-workspace"
 							? "warning"
 							: "muted";
 			console.log(
@@ -1704,6 +1885,7 @@ export async function runDoctor(
 	const codexConfigFileExists = existsSync(codexConfigPath);
 	let codexAuthEmail: string | undefined;
 	let codexAuthAccountId: string | undefined;
+	let codexAuthFileAccountId: string | undefined;
 
 	addCheck({
 		key: "codex-auth-file",
@@ -1745,6 +1927,7 @@ export async function runDoctor(
 				codexAuthEmail = sanitizeEmail(
 					emailFromFile ?? extractAccountEmail(accessToken, idToken),
 				);
+				codexAuthFileAccountId = accountIdFromFile;
 				codexAuthAccountId = accountIdFromFile ?? extractAccountId(accessToken);
 				addCheck({
 					key: "codex-auth-readable",
@@ -1778,14 +1961,17 @@ export async function runDoctor(
 		details: codexConfigPath,
 	});
 
+	const supplementalFixActions: DoctorFixAction[] = [];
+	// Tracked separately from account storage: pinning the auth store is a real
+	// remediation even on a machine with no accounts yet, which is exactly the
+	// state a user hitting repeated keychain prompts tends to be in.
+	let authStoreFixChanged = false;
+
 	let codexAuthStoreMode: string | undefined;
 	if (codexConfigFileExists) {
 		try {
 			const configRaw = await fs.readFile(codexConfigPath, "utf-8");
-			const match = configRaw.match(/^\s*cli_auth_credentials_store\s*=\s*"([^"]+)"\s*$/m);
-			if (match?.[1]) {
-				codexAuthStoreMode = match[1].trim();
-			}
+			codexAuthStoreMode = readTopLevelCodexCliAuthStoreMode(configRaw) ?? undefined;
 		} catch (error) {
 			addCheck({
 				key: "codex-auth-store",
@@ -1796,6 +1982,57 @@ export async function runDoctor(
 		}
 	}
 	if (!checks.some((check) => check.key === "codex-auth-store")) {
+		// A config that is not pinned to "file" is what makes the official CLI
+		// reach into the macOS login keychain, so `--fix` repairs it directly
+		// instead of waiting for the incidental `pendingCodexActiveSync` path
+		// below, which only fires when there is an active account to mirror.
+		if (
+			options.fix &&
+			codexAuthStoreMode !== "file" &&
+			shouldEnforceCodexCliFileAuthStore()
+		) {
+			if (options.dryRun) {
+				authStoreFixChanged = true;
+				supplementalFixActions.push({
+					key: "codex-auth-store",
+					message:
+						"Prepared Codex CLI credential store pin to file in config.toml (dry-run)",
+				});
+			} else {
+				try {
+					if (await ensureCodexCliFileAuthStore(codexConfigPath)) {
+						codexAuthStoreMode = "file";
+						authStoreFixChanged = true;
+						supplementalFixActions.push({
+							key: "codex-auth-store",
+							message: "Pinned Codex CLI credential store to file in config.toml",
+						});
+					}
+				} catch (error) {
+					addCheck({
+						key: "codex-auth-store-fix",
+						severity: "warn",
+						message: "Failed to pin Codex CLI credential store to file",
+						details: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}
+		}
+
+		const authStoreDetails = [
+			codexAuthStoreMode ? `mode=${codexAuthStoreMode}` : "mode=unset",
+		];
+		if (codexAuthStoreMode !== "file" && !options.fix) {
+			authStoreDetails.push("run `codex-multi-auth doctor --fix` to pin it to file");
+		}
+		if (process.platform === "darwin" && codexAuthStoreMode === "file") {
+			// Purely informational: reading or deleting keychain items would
+			// itself raise the prompt this check exists to eliminate.
+			authStoreDetails.push(
+				"credentials saved by an earlier official `codex login` may still sit in the login keychain; they are no longer read and can be removed manually via Keychain Access",
+			);
+		}
+
 		addCheck({
 			key: "codex-auth-store",
 			severity: codexAuthStoreMode === "file" ? "ok" : "warn",
@@ -1803,7 +2040,7 @@ export async function runDoctor(
 				codexAuthStoreMode === "file"
 					? "Codex auth storage is set to file"
 					: "Codex auth storage is not explicitly set to file",
-			details: codexAuthStoreMode ? `mode=${codexAuthStoreMode}` : "mode=unset",
+			details: authStoreDetails.join("; "),
 		});
 	}
 
@@ -1824,7 +2061,6 @@ export async function runDoctor(
 	let fixChanged = false;
 	let storageFixChanged = false;
 	let structuralFixActions: DoctorFixAction[] = [];
-	const supplementalFixActions: DoctorFixAction[] = [];
 	let doctorRefreshMutation: DoctorRefreshMutation | null = null;
 	let pendingCodexActiveSync: {
 		accountId: string | undefined;
@@ -2017,10 +2253,27 @@ export async function runDoctor(
 				!!managerActiveEmail
 				&& !!codexActiveEmail
 				&& managerActiveEmail !== codexActiveEmail;
+			// A stored "org-..." id is written to auth.json as the token's
+			// workspace id, while the legacy accounts.json keeps the raw id (#700).
+			const codexActiveIdentity = codexCliState?.activeAccountId
+				? codexCliActiveIdentity(codexCliState)
+				: { accountId: codexActiveAccountId };
+			// An org account_id in auth.json itself (written before #700) is
+			// rejected by Codex CLI 0.156+, so it is never aligned.
 			const isAccountIdMismatch =
-				!!managerActiveAccountId
-				&& !!codexActiveAccountId
-				&& managerActiveAccountId !== codexActiveAccountId;
+				isOpenAiOrgId(codexAuthFileAccountId)
+				|| (!!managerActiveAccountId
+					&& !!codexActiveAccountId
+					&& !codexAuthAccountIdsMatch(
+						{
+							// As the writer would write it (CodexCliMirror applied).
+							accountId: activeAccount
+								? codexCliAccountIdFor(activeAccount, activeAccount.accessToken)
+								: managerActiveAccountId,
+							accessToken: activeAccount?.accessToken,
+						},
+						codexActiveIdentity,
+					));
 
 			addCheck({
 				key: "active-selection-sync",
@@ -2100,7 +2353,11 @@ export async function runDoctor(
 
 				if (!options.dryRun && canSyncActiveAccount) {
 					pendingCodexActiveSync = {
-						accountId: activeAccount.accountId,
+						accountId: codexCliAccountIdFor(
+							activeAccount,
+							syncAccessToken,
+							syncIdToken,
+						),
 						email: activeAccount.email,
 						accessToken: syncAccessToken,
 						refreshToken: syncRefreshToken,
@@ -2203,7 +2460,11 @@ export async function runDoctor(
 
 	const fixActions = [...structuralFixActions, ...supplementalFixActions];
 
-	if (options.fix && storageForChecks && storageForChecks.accounts.length > 0) {
+	if (
+		options.fix &&
+		((storageForChecks && storageForChecks.accounts.length > 0) ||
+			authStoreFixChanged)
+	) {
 		fixChanged = storageFixChanged || fixActions.length > 0;
 		addCheck({
 			key: "auto-fix",

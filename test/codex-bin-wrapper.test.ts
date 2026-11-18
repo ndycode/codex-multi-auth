@@ -16,6 +16,8 @@ import {
 import { tmpdir } from "node:os";
 import {
 	delimiter,
+	posix,
+	win32,
 	dirname,
 	isAbsolute,
 	join,
@@ -23,9 +25,13 @@ import {
 	resolve,
 } from "node:path";
 import process from "node:process";
+import { withDeadPid, withDeadPids, withLivePid } from "./helpers/owned-pids.js";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { RUNTIME_ROTATION_PROXY_PROVIDER_ID } from "../lib/runtime-constants.js";
+import {
+	APP_RUNTIME_HELPER_OWNER_FILE,
+	RUNTIME_ROTATION_PROXY_PROVIDER_ID,
+} from "../lib/runtime-constants.js";
 import { sleep } from "../lib/utils.js";
 import { resolveRealCodexBin } from "../scripts/codex-bin-resolver.js";
 
@@ -97,6 +103,46 @@ function createWrapperFixture(): string {
 		join(scriptDir, "install-codex-auth-utils.js"),
 	);
 	return fixtureRoot;
+}
+
+/**
+ * Stubs `dist/lib/codex-cli/writer.js` so the wrapper's startup auth-store
+ * guard has something to import. Each call drops a marker file named after the
+ * calling pid — one file per process rather than shared appends, so concurrent
+ * launches cannot race on the record itself. Throws when
+ * `CODEX_MULTI_AUTH_TEST_AUTH_STORE_FAIL` is set so the non-fatal path can be
+ * exercised. The real TOML rewrite is covered by test/codex-cli-writer.test.ts.
+ */
+function createAuthStoreWriterFixtureModule(fixtureRoot: string): string {
+	const writerDir = join(fixtureRoot, "dist", "lib", "codex-cli");
+	mkdirSync(writerDir, { recursive: true });
+	const callDir = join(fixtureRoot, "auth-store-calls");
+	mkdirSync(callDir, { recursive: true });
+	writeFileSync(
+		join(writerDir, "writer.js"),
+		[
+			'import { writeFileSync } from "node:fs";',
+			'import { join } from "node:path";',
+			"",
+			"export async function ensureCodexCliFileAuthStore(configPath) {",
+			`  writeFileSync(join(${JSON.stringify(callDir)}, String(process.pid)), String(configPath ?? "default"), "utf8");`,
+			"  if ((process.env.CODEX_MULTI_AUTH_TEST_AUTH_STORE_FAIL ?? '') === '1') {",
+			"    const error = new Error('EBUSY: resource busy or locked');",
+			"    error.code = 'EBUSY';",
+			"    throw error;",
+			"  }",
+			"  return true;",
+			"}",
+			"",
+		].join("\n"),
+		"utf8",
+	);
+	return callDir;
+}
+
+function readAuthStoreCallCount(callDir: string): number {
+	if (!existsSync(callDir)) return 0;
+	return readdirSync(callDir).length;
 }
 
 function createRuntimeObservabilityFixtureModule(fixtureRoot: string): string {
@@ -268,6 +314,7 @@ function createRuntimeRotationProxyFixtureModule(fixtureRoot: string): string {
 	writeFileSync(
 		modulePath,
 		[
+			'import { spawn } from "node:child_process";',
 			'import { appendFileSync, mkdirSync } from "node:fs";',
 			'import { dirname } from "node:path";',
 			"",
@@ -288,9 +335,33 @@ function createRuntimeRotationProxyFixtureModule(fixtureRoot: string): string {
 			"  return value.length > 0 ? value : null;",
 			"}",
 			"",
+			// Opt-in: a request counter that climbs on its own for the first N ms
+			// and then stops, standing in for a detached consumer that keeps using
+			// its proxy and later goes away. Static counters cannot express
+			// "traffic is still arriving", which is exactly what the detached
+			// reaper reads.
+			// Garbage readings have to be expressible: a proxy that answers `-1`,
+			// `NaN`, or `Infinity` must degrade to "nothing attached", never to
+			// "someone is attached forever".
+			"function readProxyOpenConnections() {",
+			"  const raw = (process.env.CODEX_MULTI_AUTH_TEST_PROXY_OPEN_CONNECTIONS ?? '').trim().toLowerCase();",
+			"  if (raw === '') return 0;",
+			"  if (raw === 'nan') return Number.NaN;",
+			"  if (raw === 'infinity') return Number.POSITIVE_INFINITY;",
+			"  const parsed = Number.parseInt(raw, 10);",
+			"  return Number.isNaN(parsed) ? 0 : parsed;",
+			"}",
+			"",
+			"const proxyStartedAt = Date.now();",
+			"function rampedRequestCount() {",
+			"  const rampMs = readOptionalNumberEnv('CODEX_MULTI_AUTH_TEST_PROXY_REQUEST_RAMP_MS');",
+			"  if (rampMs === null) return null;",
+			"  return Math.floor(Math.min(Date.now() - proxyStartedAt, rampMs) / 100);",
+			"}",
+			"",
 			"function buildStatus() {",
 			"  return {",
-			"    totalRequests: readOptionalNumberEnv('CODEX_MULTI_AUTH_TEST_PROXY_REQUESTS') ?? 0,",
+			"    totalRequests: rampedRequestCount() ?? readOptionalNumberEnv('CODEX_MULTI_AUTH_TEST_PROXY_REQUESTS') ?? 0,",
 			"    upstreamRequests: 0,",
 			"    retries: 0,",
 			"    rotations: readOptionalNumberEnv('CODEX_MULTI_AUTH_TEST_PROXY_ROTATIONS') ?? 0,",
@@ -303,8 +374,11 @@ function createRuntimeRotationProxyFixtureModule(fixtureRoot: string): string {
 			"  };",
 			"}",
 			"",
-			"export async function startRuntimeRotationProxy() {",
+			"export async function startRuntimeRotationProxy(options = {}) {",
 			"  const baseUrl = process.env.CODEX_MULTI_AUTH_TEST_PROXY_BASE_URL ?? 'http://127.0.0.1:4567';",
+			"  if ((process.env.CODEX_MULTI_AUTH_TEST_PROXY_MARKER_UPSTREAM ?? '').trim() === '1') {",
+			"    appendMarker(`upstream:${options.upstreamBaseUrl ?? ''}`);",
+			"  }",
 			// Opt-in (#623): record the forced-account pin env the proxy process actually
 			// observed, so a test can prove the value crossed the launcher -> detached
 			// app-helper boundary. Gated so it never perturbs the exact-marker assertions
@@ -316,12 +390,48 @@ function createRuntimeRotationProxyFixtureModule(fixtureRoot: string): string {
 			"    appendMarker(`codex-home-env:${process.env.CODEX_HOME ?? ''}`);",
 			"    appendMarker(`real-home-env:${process.env.CODEX_MULTI_AUTH_REAL_CODEX_HOME ?? ''}`);",
 			"  }",
+			// Opt-in (#647): the real proxy owns a listening socket, so the helper stays
+			// alive until it is closed. This fake has no such handle and would otherwise
+			// let the helper exit on its own the moment its status timer is cleared —
+			// which would silently defeat a test about helpers that refuse to stop. Hold
+			// a ref'd handle so the helper's lifetime is governed by the signal path.
+			"  const closeHangs = (process.env.CODEX_MULTI_AUTH_TEST_PROXY_CLOSE_HANG ?? '').trim() === '1';",
+			"  if (closeHangs) {",
+			"    setInterval(() => {}, 1000);",
+			"  }",
+			// Opt-in (#647): leak a detached grandchild that inherits this helper's stdio.
+			// It keeps the write end of the launcher's pipes open after the helper is
+			// gone, so the launcher never sees `close` and must release the handles
+			// itself. This reproduces the stranded-wrapper failure on every platform,
+			// including Windows, where `kill()` is always a hard terminate.
+			"  const pipeHolderMs = readOptionalNumberEnv('CODEX_MULTI_AUTH_TEST_PROXY_PIPE_HOLDER_MS');",
+			"  if (pipeHolderMs !== null) {",
+			"    const holder = spawn(process.execPath, ['-e', `setTimeout(() => {}, ${pipeHolderMs})`], {",
+			"      stdio: ['ignore', 'inherit', 'inherit'],",
+			"      detached: true,",
+			"    });",
+			"    holder.unref();",
+			"  }",
 			"  appendMarker((process.env.CODEX_MULTI_AUTH_TEST_PROXY_MARKER_PID ?? '').trim() === '1' ? `start:${baseUrl}:pid=${process.pid}` : `start:${baseUrl}`);",
 			"  return {",
 			"    host: '127.0.0.1',",
 			"    port: 4567,",
 			"    baseUrl,",
-			"    close: async () => appendMarker('close'),",
+			// Opt-in (#647): stall `close()` forever so the helper's SIGTERM handler
+			// never reaches `process.exit`. Paired with the ref'd handle installed
+			// above, this reproduces a helper that survives the graceful window and can
+			// only be stopped by force.
+			"    close: async () => {",
+			"      appendMarker('close');",
+			"      if (closeHangs) {",
+			"        await new Promise(() => {});",
+			"      }",
+			"    },",
+			// Opt-in: report open client connections, which the real proxy reads off
+			// its live socket set. The detached reap treats a connected consumer as
+			// proof the handoff was real, so a test needs to be able to say "someone
+			// is attached" without standing up a real client.
+			"    getOpenConnectionCount: () => readProxyOpenConnections(),",
 			"    getStatus: () => buildStatus(),",
 			"  };",
 			"}",
@@ -370,18 +480,41 @@ function writeAccountsFixture(codexHome: string, count: number): void {
 	);
 }
 
+// Windows stand-in for a real Codex install, laid out the way `npm i -g
+// @openai/codex` lays out its prefix: `codex.cmd` and an extensionless sh shim
+// next to `node_modules\@openai\codex\bin\codex.js`. The entry echoes whatever
+// argv it receives, so the wrapper's injected leading `-c key=value` pair is
+// accepted the way real Codex accepts it. Returns the package entry path.
+function createWindowsNpmPrefixCodexFixture(prefixDir: string, marker: string): string {
+	const entryPath = join(prefixDir, "node_modules", "@openai", "codex", "bin", "codex.js");
+	mkdirSync(dirname(entryPath), { recursive: true });
+	writeFileSync(
+		entryPath,
+		[
+			`console.log(\`${marker}:\${process.argv.slice(2).join(" ")}\`);`,
+			"process.exit(0);",
+		].join("\n"),
+		"utf8",
+	);
+	writeFileSync(
+		join(prefixDir, "codex.cmd"),
+		'@ECHO off\r\n"node" "%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n',
+		"utf8",
+	);
+	writeFileSync(
+		join(prefixDir, "codex"),
+		'#!/bin/sh\nexec node "$(dirname "$0")/node_modules/@openai/codex/bin/codex.js" "$@"\n',
+		"utf8",
+	);
+	return entryPath;
+}
+
 function createFakeNativeCodexBin(rootDir: string): string {
 	if (process.platform === "win32") {
-		const fakeBin = join(rootDir, `fake-native-codex-${createdDirs.length}.ps1`);
-		writeFileSync(
-			fakeBin,
-			[
-				'Write-Output ("FORWARDED_NATIVE:" + ($args -join " "))',
-				"exit 0",
-			].join("\r\n"),
-			"utf8",
+		return createWindowsNpmPrefixCodexFixture(
+			join(rootDir, `fake-native-codex-${createdDirs.length}`),
+			"FORWARDED_NATIVE",
 		);
-		return fakeBin;
 	}
 
 	const fakeBin = join(rootDir, `fake-native-codex-${createdDirs.length}`);
@@ -398,11 +531,6 @@ function createFakeNativeCodexBin(rootDir: string): string {
 	return fakeBin;
 }
 
-function resolveWindowsPowerShellPath(): string {
-	const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
-	return join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-}
-
 function createPathDiscoveredNativeCodexFixture(rootDir: string): {
 	args: string[];
 	binDir: string;
@@ -411,24 +539,11 @@ function createPathDiscoveredNativeCodexFixture(rootDir: string): {
 	const binDir = join(rootDir, `native-codex-bin-${createdDirs.length}`);
 	mkdirSync(binDir, { recursive: true });
 	if (process.platform === "win32") {
-		const scriptPath = join(binDir, "native-codex-marker.js");
-		writeFileSync(
-			scriptPath,
-			[
-				'console.log(`FORWARDED_NATIVE_PATH:${process.argv.slice(2).join(" ")}`);',
-				"process.exit(0);",
-			].join("\n"),
-			"utf8",
-		);
-		const nativeExePath = join(binDir, "codex.exe");
-		try {
-			linkSync(process.execPath, nativeExePath);
-		} catch {
-			copyFileSync(process.execPath, nativeExePath);
-		}
+		// The npm-installed codex.cmd a Windows user actually has on PATH.
+		createWindowsNpmPrefixCodexFixture(binDir, "FORWARDED_NATIVE_PATH");
 		return {
 			binDir,
-			args: [scriptPath, "--version"],
+			args: ["--version"],
 			expectedOutput: "FORWARDED_NATIVE_PATH:--version",
 		};
 	}
@@ -451,10 +566,19 @@ function createPathDiscoveredNativeCodexFixture(rootDir: string): {
 	};
 }
 
+// The wrapper is published, so its fault injectors stay inert unless this
+// switch is set alongside the counter (#668). Every injection helper below
+// carries it, and `runWrapper` never sets it on its own — which is what lets
+// the "production ignores the counter" test simply omit it.
+const FAULT_INJECTION_ON = {
+	CODEX_MULTI_AUTH_TEST_FAULT_INJECTION: "1",
+} as const;
+
 function injectShadowCleanupBusyFailures(
 	failuresBeforeSuccess = 2,
 ): NodeJS.ProcessEnv {
 	return {
+		...FAULT_INJECTION_ON,
 		CODEX_MULTI_AUTH_TEST_SHADOW_CLEANUP_BUSY_FAILURES: String(failuresBeforeSuccess),
 	};
 }
@@ -463,6 +587,7 @@ function injectShadowPreflightReadBusyFailures(
 	failuresBeforeSuccess = 2,
 ): NodeJS.ProcessEnv {
 	return {
+		...FAULT_INJECTION_ON,
 		CODEX_MULTI_AUTH_TEST_SHADOW_PREFLIGHT_READ_BUSY_FAILURES: String(
 			failuresBeforeSuccess,
 		),
@@ -473,6 +598,7 @@ function injectShadowSyncMetadataBusyFailures(
 	failuresBeforeSuccess = 10,
 ): NodeJS.ProcessEnv {
 	return {
+		...FAULT_INJECTION_ON,
 		CODEX_MULTI_AUTH_TEST_SHADOW_SYNC_METADATA_BUSY_FAILURES: String(
 			failuresBeforeSuccess,
 		),
@@ -481,6 +607,7 @@ function injectShadowSyncMetadataBusyFailures(
 
 function injectShadowLockRecreatedStaleCount(count = 2): NodeJS.ProcessEnv {
 	return {
+		...FAULT_INJECTION_ON,
 		CODEX_MULTI_AUTH_TEST_SHADOW_LOCK_RECREATE_STALE_COUNT: String(count),
 	};
 }
@@ -489,6 +616,7 @@ function injectShadowLockOwnerWriteFailures(
 	failuresBeforeSuccess = 1,
 ): NodeJS.ProcessEnv {
 	return {
+		...FAULT_INJECTION_ON,
 		CODEX_MULTI_AUTH_TEST_SHADOW_LOCK_OWNER_WRITE_FAILURES: String(
 			failuresBeforeSuccess,
 		),
@@ -573,6 +701,7 @@ function runWrapper(
 	fixtureRoot: string,
 	args: string[],
 	extraEnv: NodeJS.ProcessEnv = {},
+	options: { timeoutMs?: number } = {},
 ): SpawnSyncReturns<string> {
 	return spawnSync(
 		process.execPath,
@@ -580,8 +709,51 @@ function runWrapper(
 		{
 			encoding: "utf8",
 			env: buildWrapperEnv(extraEnv),
+			// Opt-in hard bound for the tests that deliberately stress the wrapper's
+			// shutdown path. `spawnSync` blocks the worker thread, so Vitest's
+			// `testTimeout` cannot interrupt it: without this, a shutdown regression
+			// hangs the whole run instead of failing an assertion. On timeout
+			// `result.error` is set, which those tests assert on.
+			...(options.timeoutMs === undefined
+				? {}
+				: { timeout: options.timeoutMs, killSignal: "SIGKILL" as const }),
 		},
 	);
+}
+
+// Generous next to the wrapper's 2s graceful-shutdown window, but far below the
+// time a stuck wrapper would otherwise block for.
+const WRAPPER_SHUTDOWN_TIMEOUT_MS = 12_000;
+
+// Vitest's default per-test timeout is 5s, which is *shorter* than the bound
+// above. Without an explicit per-test timeout, a stuck wrapper would be killed
+// by Vitest at 5s and reported as a bare "Test timed out" — the diagnostic the
+// spawn bound exists to produce would never be printed. The shutdown tests must
+// therefore outlast their own internal bounds: `spawnSync` (12s) plus the
+// process-exit polling below.
+const SHUTDOWN_TEST_TIMEOUT_MS = 30_000;
+
+function expectWrapperReturned(
+	result: SpawnSyncReturns<string>,
+	what: string,
+): void {
+	expect(
+		result.error,
+		`wrapper never returned within ${WRAPPER_SHUTDOWN_TIMEOUT_MS}ms: ${what}`,
+	).toBeUndefined();
+}
+
+// Mirrors the wrapper's own owner-identity capture: kernel start time via
+// `ps -o lstart=` under the C locale, parsed to epoch ms.
+function readOwnProcessStartTimeMs(): number | null {
+	const result = spawnSync("ps", ["-o", "lstart=", "-p", String(process.pid)], {
+		encoding: "utf8",
+		env: { ...process.env, LC_ALL: "C" },
+	});
+	const out = (result.stdout ?? "").trim();
+	if (!out) return null;
+	const parsed = Date.parse(out);
+	return Number.isFinite(parsed) ? parsed : null;
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -710,6 +882,24 @@ async function waitForFileText(
 	throw new Error(
 		`timed out waiting for ${path} to equal ${JSON.stringify(expected)}; last content: ${JSON.stringify(lastContent)}`,
 	);
+}
+
+// Windows has no SIGTERM, so a helper the wrapper stops is hard-terminated and
+// never reaches the handler that appends its own `close` marker. Asserting the
+// process is gone pins "the wrapper reaped its helper" on every platform — and
+// it fails for a *stranded* helper too, which keeps the default 12h idle window
+// and stays alive long past any timeout here.
+async function expectAppHelperReaped(markerPath: string): Promise<void> {
+	const pidMatch = readFileSync(markerPath, "utf8").match(
+		/^start:[^\n]*:pid=(\d+)$/m,
+	);
+	expect(pidMatch?.[1]).toBeTruthy();
+	const helperPid = Number(pidMatch?.[1]);
+	// Termination is asynchronous; give the OS a moment to reap the helper.
+	for (let attempt = 0; attempt < 40 && isProcessAlive(helperPid); attempt += 1) {
+		await sleep(100);
+	}
+	expect(isProcessAlive(helperPid)).toBe(false);
 }
 
 function combinedOutput(
@@ -990,6 +1180,51 @@ describe("codex bin wrapper", () => {
 		expect(output).not.toContain("--account");
 	});
 
+	// Cross-provider session discovery is optional: a Codex build without
+	// `thread/list` (or one that rejects, exits or times out) must still reach
+	// native `codex resume` instead of failing the whole launch.
+	it("falls back to native resume when the session picker fails", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const runtimeDir = join(fixtureRoot, "dist", "lib", "runtime");
+		mkdirSync(runtimeDir, { recursive: true });
+		writeFileSync(
+			join(runtimeDir, "resume-picker.js"),
+			'export async function pickResumeThread() { throw new Error("thread/list is unsupported"); }\n',
+			"utf8",
+		);
+		// The picker only runs on an interactive terminal; spawnSync pipes stdio.
+		const ttyPreload = join(fixtureRoot, "force-tty.mjs");
+		writeFileSync(
+			ttyPreload,
+			"process.stdin.isTTY = true;\nprocess.stdout.isTTY = true;\n",
+			"utf8",
+		);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+
+		const result = runWrapper(fixtureRoot, ["resume", "--all"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			NODE_OPTIONS: `--import=${pathToFileURL(ttyPreload).href}`,
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		expect(output).toContain(
+			"Could not list saved Codex sessions: thread/list is unsupported",
+		);
+		expect(result.status).toBe(0);
+		expect(output).toContain("FORWARDED:resume --all");
+	});
+
 	it.each([
 		["email", ["exec", "--account", "account-2@example.com", "status"], {}, "1"],
 		["account id", ["exec", "--account", "acc_2", "status"], {}, "1"],
@@ -1106,6 +1341,76 @@ describe("codex bin wrapper", () => {
 		// The helper process saw the resolved index (account 2 -> 0-based 1).
 		expect(readFileSync(markerPath, "utf8")).toContain("forced-index-env:1");
 		expect(output).not.toContain("--account");
+	});
+
+	// `--` makes everything after it the root `[PROMPT]` positional, so a
+	// launcher-only flag spelled inside that prompt is the user's text. The
+	// stripper walked the whole argv, so it both mangled the prompt and pinned
+	// the run to an account nobody selected — or hard-failed on a range check
+	// for a launch that contained no flag at all.
+	it("leaves a `--account` inside a `--`-forced prompt as prompt text", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeAccountsFixture(originalHome, 3);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			'console.log(`FORCED_INDEX:${process.env.CODEX_MULTI_AUTH_FORCE_ACCOUNT_INDEX ?? ""}`);',
+			"process.exit(0);",
+		]);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "--", "--account", "3", "is", "wrong"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+				OPENAI_API_KEY: undefined,
+			},
+		);
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(0);
+		// The prompt reaches Codex intact, flag tokens and all.
+		expect(output).toContain("-- --account 3 is wrong");
+		// And no pin was inferred from the user's prose.
+		expect(output).toContain("FORCED_INDEX:");
+		expect(output).not.toContain("FORCED_INDEX:2");
+	});
+
+	// Same boundary, different scanner: a `-m` inside the prompt named no
+	// model, but the wrapper read one and then rewrote it in place on the
+	// unsupported-model retry — editing the user's prompt text before
+	// re-forwarding it.
+	it("does not read or rewrite a `-m` inside a `--`-forced prompt", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeAccountsFixture(originalHome, 1);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			"process.exit(0);",
+		]);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "--", "-m", "gpt-4", "please", "fix"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+				OPENAI_API_KEY: undefined,
+			},
+		);
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(0);
+		expect(output).toContain("-- -m gpt-4 please fix");
 	});
 
 	it("repairs local session index and suppresses known Codex rollout-store noise", () => {
@@ -1272,6 +1577,58 @@ describe("codex bin wrapper", () => {
 		expect(index).not.toContain("SHOULD_NOT_BE_REPAIRED");
 	});
 
+	it("indexes forked rollouts under their own session_meta id", () => {
+		const fixtureRoot = createWrapperFixture();
+		const codexHome = join(fixtureRoot, "codex-home");
+		const parentSessionId = "019ddf58-f831-7e12-bf4a-fae1ed000021";
+		const forkedSessionId = "019ddf58-f831-7e12-bf4a-fae1ed000022";
+		mkdirSync(codexHome, { recursive: true });
+		writeFileSync(
+			join(codexHome, "session_index.jsonl"),
+			`${JSON.stringify({
+				id: parentSessionId,
+				thread_name: "Parent session",
+				updated_at: "2026-04-30T17:20:00.000Z",
+			})}\n`,
+			"utf8",
+		);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"const { mkdirSync, writeFileSync } = require('node:fs');",
+			"const { join } = require('node:path');",
+			`const parentSessionId = ${JSON.stringify(parentSessionId)};`,
+			`const forkedSessionId = ${JSON.stringify(forkedSessionId)};`,
+			"const codexHome = process.env.CODEX_HOME;",
+			"const sessionDir = join(codexHome, 'sessions', '2026', '05', '01');",
+			"mkdirSync(sessionDir, { recursive: true });",
+			"writeFileSync(",
+			"  join(sessionDir, `rollout-2026-05-01T01-21-00-${forkedSessionId}.jsonl`),",
+			"  [",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:21:00.000Z', type: 'session_meta', payload: { id: forkedSessionId, forked_from_id: parentSessionId } }),",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:21:00.000Z', type: 'session_meta', payload: { id: parentSessionId } }),",
+			"    JSON.stringify({ timestamp: '2026-04-30T17:21:01.000Z', type: 'event_msg', payload: { type: 'user_message', message: 'FORKED_SESSION' } }),",
+			"    '',",
+			"  ].join('\\n'),",
+			"  'utf8',",
+			");",
+			"process.exit(0);",
+		]);
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_HOME: codexHome,
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+		});
+
+		expect(result.status).toBe(0);
+		const entries = readFileSync(join(codexHome, "session_index.jsonl"), "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as { id: string; thread_name: string });
+		expect(entries).toContainEqual(
+			expect.objectContaining({ id: forkedSessionId, thread_name: "FORKED_SESSION" }),
+		);
+		expect(entries.filter((entry) => entry.id === parentSessionId)).toHaveLength(1);
+	});
+
 	it("serializes concurrent local session index repairs", async () => {
 		const fixtureRoot = createWrapperFixture();
 		const codexHome = join(fixtureRoot, "codex-home");
@@ -1337,13 +1694,8 @@ describe("codex bin wrapper", () => {
 	it("forwards non-auth commands to native codex executables", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeNativeCodexBin(fixtureRoot);
-		const nativeBin = process.platform === "win32" ? resolveWindowsPowerShellPath() : fakeBin;
-		const args =
-			process.platform === "win32"
-				? ["-NoProfile", "-File", fakeBin, "--version"]
-				: ["--version"];
-		const result = runWrapper(fixtureRoot, args, {
-			CODEX_MULTI_AUTH_REAL_CODEX_BIN: nativeBin,
+		const result = runWrapper(fixtureRoot, ["--version"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 		});
 
 		expect(result.status).toBe(0);
@@ -1383,6 +1735,197 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).toContain(
 			'FORWARDED:exec status -c cli_auth_credentials_store="file"',
 		);
+	});
+
+	it.each([
+		["shadow runtime", ["exec", "status"]],
+		["interactive helper", ["resume", "session-fixture"]],
+	])(
+		"forwards an explicit loopback upstream through the %s proxy",
+		async (_label, args) => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const fakeBin = createFakeCodexBin(fixtureRoot);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const markerPath = join(fixtureRoot, "proxy-marker.txt");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(
+				join(originalHome, "config.toml"),
+				'model_provider = "openai"\n',
+				"utf8",
+			);
+
+			const result = runWrapper(fixtureRoot, args, {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_RUNTIME_PROXY_UPSTREAM_BASE_URL:
+					"http://127.0.0.1:8787/backend-api",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "1000",
+				CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "150",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER_UPSTREAM: "1",
+			});
+
+			expect(result.status).toBe(0);
+			await waitForFileText(
+				markerPath,
+				[
+					"upstream:http://127.0.0.1:8787/backend-api",
+					"start:http://127.0.0.1:4567",
+					"close",
+					"",
+				].join("\n"),
+			);
+		},
+	);
+
+	it.each([
+		// An explicit default port is still an explicit port: `new URL()` erases
+		// it, so the resolved value drops back to the canonical form.
+		[
+			"http://127.0.0.1:80/backend-api",
+			"http://127.0.0.1/backend-api",
+		],
+		// The whole 127.0.0.0/8 block is loopback, not only 127.0.0.1.
+		[
+			"http://127.9.9.9:8787/backend-api",
+			"http://127.9.9.9:8787/backend-api",
+		],
+		["http://[::1]:8787/backend-api", "http://[::1]:8787/backend-api"],
+	])(
+		"accepts the loopback runtime-proxy upstream %s",
+		async (upstream, expectedForwarded) => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const fakeBin = createFakeCodexBin(fixtureRoot);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const markerPath = join(fixtureRoot, "proxy-marker.txt");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(
+				join(originalHome, "config.toml"),
+				'model_provider = "openai"\n',
+				"utf8",
+			);
+
+			const result = runWrapper(fixtureRoot, ["exec", "status"], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_RUNTIME_PROXY_UPSTREAM_BASE_URL: upstream,
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER_UPSTREAM: "1",
+			});
+
+			expect(result.status).toBe(0);
+			await waitForFileText(
+				markerPath,
+				[
+					`upstream:${expectedForwarded}`,
+					"start:http://127.0.0.1:4567",
+					"close",
+					"",
+				].join("\n"),
+			);
+		},
+	);
+
+	it("fails closed when runtime rotation is off but an upstream is configured", () => {
+		// Regression: the upstream used to be resolved only AFTER the enabled
+		// gate, so with rotation disabled the wrapper silently talked to the real
+		// backend while the operator believed traffic was pinned to their local
+		// listener.
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+			CODEX_MULTI_AUTH_RUNTIME_PROXY_UPSTREAM_BASE_URL:
+				"http://127.0.0.1:8787/backend-api",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+		});
+
+		expect(result.status).toBe(1);
+		expect(combinedOutput(result)).toContain(
+			"codex-multi-auth runtime rotation is disabled",
+		);
+		expect(result.stdout).not.toContain("FORWARDED:");
+	});
+
+	it("still runs a non-request subcommand when an upstream is configured", () => {
+		// `--version` never reaches the backend, so there is no traffic to
+		// misroute and the configured upstream is simply unused.
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["--version"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+			CODEX_MULTI_AUTH_RUNTIME_PROXY_UPSTREAM_BASE_URL:
+				"http://127.0.0.1:8787/backend-api",
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("FORWARDED:");
+	});
+
+	it.each([
+		"https://127.0.0.1:8787/backend-api",
+		"http://example.com:8787/backend-api",
+		"http://127.0.0.1/backend-api",
+		"http://user:pass@127.0.0.1:8787/backend-api",
+		"http://127.0.0.1:8787/backend-api?route=unsafe",
+		"http://127.0.0.1:8787/backend-api#unsafe",
+		// A name is not a loopback guarantee: a hosts-file entry can point
+		// `localhost` at a routable address and the upstream request carries the
+		// managed OAuth bearer token.
+		"http://localhost:8787/backend-api",
+		"http://127.0.0.1.example.com:8787/backend-api",
+		"http://[::2]:8787/backend-api",
+		"not-a-url",
+	])("fails closed for an unsafe runtime-proxy upstream: %s", (upstream) => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_RUNTIME_PROXY_UPSTREAM_BASE_URL: upstream,
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+		});
+
+		expect(result.status).toBe(1);
+		expect(combinedOutput(result)).toContain(
+			"codex-multi-auth runtime rotation upstream is invalid",
+		);
+		expect(existsSync(markerPath)).toBe(false);
+		expect(result.stdout).not.toContain("FORWARDED:");
 	});
 
 	it("starts the opt-in runtime rotation proxy with a shadow CODEX_HOME provider", () => {
@@ -1804,6 +2347,187 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("simulated SQLite sidecar placeholder failure");
 	});
 
+	it("does not read linked sqlite files when snapshotting or syncing the shadow home", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const readLogPath = join(fixtureRoot, "sqlite-reads.log");
+		const readSpyPath = join(fixtureRoot, "sqlite-read-spy.mjs");
+		writeFileSync(
+			readSpyPath,
+			[
+				'import fs from "node:fs";',
+				'import { syncBuiltinESMExports } from "node:module";',
+				"const logPath = process.env.CODEX_MULTI_AUTH_TEST_SQLITE_READ_LOG ?? '';",
+				"const originalReadFileSync = fs.readFileSync;",
+				"fs.readFileSync = function (path, ...rest) {",
+				"  if (logPath && /\\.sqlite(?:-wal|-shm)?$/i.test(String(path))) {",
+				"    fs.appendFileSync(logPath, `${String(path)}\\n`, 'utf8');",
+				"  }",
+				"  return originalReadFileSync.call(this, path, ...rest);",
+				"};",
+				"syncBuiltinESMExports();",
+			].join("\n"),
+			"utf8",
+		);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const historyPath = path.join(process.env.CODEX_HOME ?? "", "thread_history_1.sqlite");',
+			'console.log(`HISTORY_MIRRORED:${fs.existsSync(historyPath)}`);',
+			'fs.appendFileSync(historyPath, "shadow-history\\n", "utf8");',
+			'fs.appendFileSync(`${historyPath}-wal`, "shadow-history-wal\\n", "utf8");',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "thread_history_1.sqlite"), "history\n", "utf8");
+		writeFileSync(join(originalHome, "thread_history_1.sqlite-wal"), "history wal\n", "utf8");
+		writeFileSync(join(originalHome, "thread_history_1.sqlite-shm"), "history shm\n", "utf8");
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_BASE_URL: "http://127.0.0.1:4567",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "proxy-marker.txt"),
+			CODEX_MULTI_AUTH_TEST_SQLITE_READ_LOG: readLogPath,
+			NODE_OPTIONS: `--import ${pathToFileURL(readSpyPath).href}`,
+			OPENAI_API_KEY: undefined,
+		});
+
+		expect(result.status).toBe(0);
+		expect(combinedOutput(result)).toContain("HISTORY_MIRRORED:true");
+		expect(existsSync(readLogPath) ? readFileSync(readLogPath, "utf8") : "").toBe("");
+		expect(readFileSync(join(originalHome, "thread_history_1.sqlite"), "utf8")).toBe(
+			"history\nshadow-history\n",
+		);
+		expect(readFileSync(join(originalHome, "thread_history_1.sqlite-wal"), "utf8")).toBe(
+			"history wal\nshadow-history-wal\n",
+		);
+	});
+
+	it("does not read a linked sqlite file whose original was replaced during the launch", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const readLogPath = join(fixtureRoot, "sqlite-reads.log");
+		const readSpyPath = join(fixtureRoot, "sqlite-read-spy.mjs");
+		writeFileSync(
+			readSpyPath,
+			[
+				'import fs from "node:fs";',
+				'import { syncBuiltinESMExports } from "node:module";',
+				"const logPath = process.env.CODEX_MULTI_AUTH_TEST_SQLITE_READ_LOG ?? '';",
+				"const originalReadFileSync = fs.readFileSync;",
+				"fs.readFileSync = function (path, ...rest) {",
+				"  if (logPath && /\\.sqlite(?:-wal|-shm)?$/i.test(String(path))) {",
+				"    fs.appendFileSync(logPath, `${String(path)}\\n`, 'utf8');",
+				"  }",
+				"  return originalReadFileSync.call(this, path, ...rest);",
+				"};",
+				"syncBuiltinESMExports();",
+			].join("\n"),
+			"utf8",
+		);
+		// Simulate the hard-link fallback: the shadow entry becomes a hard link to the
+		// launch-time inode, then another process atomically replaces the original.
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const shadowPath = path.join(process.env.CODEX_HOME ?? "", "thread_history_1.sqlite");',
+			'const originalPath = process.env.CODEX_MULTI_AUTH_TEST_ORIGINAL_HISTORY;',
+			"fs.unlinkSync(shadowPath);",
+			"fs.linkSync(originalPath, shadowPath);",
+			'fs.writeFileSync(`${originalPath}.next`, "replaced history\\n", "utf8");',
+			"fs.renameSync(`${originalPath}.next`, originalPath);",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const originalHistoryPath = join(originalHome, "thread_history_1.sqlite");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(originalHistoryPath, "history\n", "utf8");
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_BASE_URL: "http://127.0.0.1:4567",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "proxy-marker.txt"),
+			CODEX_MULTI_AUTH_TEST_ORIGINAL_HISTORY: originalHistoryPath,
+			CODEX_MULTI_AUTH_TEST_SQLITE_READ_LOG: readLogPath,
+			NODE_OPTIONS: `--import ${pathToFileURL(readSpyPath).href}`,
+			OPENAI_API_KEY: undefined,
+		});
+
+		expect(result.status).toBe(0);
+		expect(existsSync(readLogPath) ? readFileSync(readLogPath, "utf8") : "").toBe("");
+		expect(readFileSync(originalHistoryPath, "utf8")).toBe("replaced history\n");
+	});
+
+	it("does not read linked sqlite sidecars whose originals were replaced during the launch", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const readLogPath = join(fixtureRoot, "sqlite-reads.log");
+		const readSpyPath = join(fixtureRoot, "sqlite-read-spy.mjs");
+		writeFileSync(
+			readSpyPath,
+			[
+				'import fs from "node:fs";',
+				'import { syncBuiltinESMExports } from "node:module";',
+				"const logPath = process.env.CODEX_MULTI_AUTH_TEST_SQLITE_READ_LOG ?? '';",
+				"const originalReadFileSync = fs.readFileSync;",
+				"fs.readFileSync = function (path, ...rest) {",
+				"  if (logPath && /\\.sqlite(?:-wal|-shm)?$/i.test(String(path))) {",
+				"    fs.appendFileSync(logPath, `${String(path)}\\n`, 'utf8');",
+				"  }",
+				"  return originalReadFileSync.call(this, path, ...rest);",
+				"};",
+				"syncBuiltinESMExports();",
+			].join("\n"),
+			"utf8",
+		);
+		// Sidecars are linked while the main file materializes, so their own readdir
+		// entries are skipped. Hard-link them and replace the originals mid-launch.
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const shadowPath = path.join(process.env.CODEX_HOME ?? "", "thread_history_1.sqlite");',
+			'const originalPath = process.env.CODEX_MULTI_AUTH_TEST_ORIGINAL_HISTORY;',
+			'for (const suffix of ["-wal", "-shm"]) {',
+			"  fs.unlinkSync(`${shadowPath}${suffix}`);",
+			"  fs.linkSync(`${originalPath}${suffix}`, `${shadowPath}${suffix}`);",
+			"  fs.writeFileSync(`${originalPath}${suffix}.next`, `replaced${suffix}\\n`, \"utf8\");",
+			"  fs.renameSync(`${originalPath}${suffix}.next`, `${originalPath}${suffix}`);",
+			"}",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const originalHistoryPath = join(originalHome, "thread_history_1.sqlite");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(originalHistoryPath, "history\n", "utf8");
+		writeFileSync(`${originalHistoryPath}-wal`, "history wal\n", "utf8");
+		writeFileSync(`${originalHistoryPath}-shm`, "history shm\n", "utf8");
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_BASE_URL: "http://127.0.0.1:4567",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "proxy-marker.txt"),
+			CODEX_MULTI_AUTH_TEST_ORIGINAL_HISTORY: originalHistoryPath,
+			CODEX_MULTI_AUTH_TEST_SQLITE_READ_LOG: readLogPath,
+			NODE_OPTIONS: `--import ${pathToFileURL(readSpyPath).href}`,
+			OPENAI_API_KEY: undefined,
+		});
+
+		expect(result.status).toBe(0);
+		expect(existsSync(readLogPath) ? readFileSync(readLogPath, "utf8") : "").toBe("");
+		expect(readFileSync(`${originalHistoryPath}-wal`, "utf8")).toBe("replaced-wal\n");
+		expect(readFileSync(`${originalHistoryPath}-shm`, "utf8")).toBe("replaced-shm\n");
+	});
+
 	it("inserts the runtime model provider before TOML array tables", () => {
 		const fixtureRoot = createWrapperFixture();
 		createRuntimeRotationProxyFixtureModule(fixtureRoot);
@@ -2041,23 +2765,231 @@ describe("codex bin wrapper", () => {
 		}
 	});
 
-	it("starts the opt-in runtime rotation proxy for app-server without capturing protocol stdio", () => {
+	// `app-server` used to take the shadow-home transport, which a resident server
+	// cannot live on: the mirror links directories, so Codex's lstat-strict check
+	// on `<CODEX_HOME>/app-server-control` refuses to start, and a server that does
+	// start serves every attached client a frozen snapshot of the thread index for
+	// its whole life. It now takes the canonical-home app helper, like the bare TUI
+	// and `resume`/`fork` (#659).
+	it("runs app-server on the canonical Codex home without capturing protocol stdio (#659)", async () => {
 		const fixtureRoot = createWrapperFixture();
 		createRuntimeRotationProxyFixtureModule(fixtureRoot);
 		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
 			"#!/usr/bin/env node",
 			'const fs = require("node:fs");',
 			'const path = require("node:path");',
-			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
-			'console.log(`CODEX_HOME:${process.env.CODEX_HOME ?? ""}`);',
+			"const args = process.argv.slice(2);",
+			'console.log(`FORWARDED:${args.join(" ")}`);',
+			'console.log(`HOME_IS_ORIGINAL:${process.env.CODEX_HOME === process.env.ORIGINAL_CODEX_HOME}`);',
 			'console.log(`OPENAI_API_KEY:${process.env.OPENAI_API_KEY ?? ""}`);',
+			'console.log(`KEY_IN_ARGS:${args.includes(process.env.OPENAI_API_KEY ?? "__missing__")}`);',
 			'console.log(`CODEX_CLI_PATH:${process.env.CODEX_CLI_PATH ?? ""}`);',
 			'console.log(`APP_SERVER_LABEL:${process.env.CODEX_MULTI_AUTH_APP_SERVER_ACCOUNT_LABEL ?? ""}`);',
 			'console.log(`RUNTIME_PROXY_ENV:${process.env.CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY ?? ""}`);',
 			'console.log(`NODE_OPTIONS_HAS_APP_SERVER_PRELOAD:${(process.env.NODE_OPTIONS ?? "").includes("codex-multi-auth-app-server-preload.mjs")}`);',
 			'const configPath = path.join(process.env.CODEX_HOME ?? "", "config.toml");',
-			'console.log(fs.readFileSync(configPath, "utf8"));',
+			'console.log(`CONFIG:${fs.readFileSync(configPath, "utf8")}`);',
 			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+		const result = runWrapper(fixtureRoot, ["app-server", "--listen", "stdio://"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER_PID: "1",
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		if (result.status !== 0) {
+			throw new Error(output);
+		}
+		expect(output).toContain("HOME_IS_ORIGINAL:true");
+		expect(output).toContain(
+			'FORWARDED:app-server --listen stdio:// -c cli_auth_credentials_store="file"',
+		);
+		// Rotation rides along as `-c` overrides on the command line rather than as a
+		// rewritten shadow `config.toml`, so the canonical config is never touched.
+		expect(output).toContain(
+			`model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}.name="codex-multi-auth"`,
+		);
+		expect(output).toContain(
+			`model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}.base_url=`,
+		);
+		expect(output).toContain(
+			`model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}.env_key="OPENAI_API_KEY"`,
+		);
+		expect(output).toContain(
+			`model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}.requires_openai_auth=false`,
+		);
+		expect(output).toContain(
+			`model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}.http_headers.x-openai-actor-authorization="codex-multi-auth-local"`,
+		);
+		expect(output).toContain(
+			`model_providers.${RUNTIME_ROTATION_PROXY_PROVIDER_ID}.wire_api="responses"`,
+		);
+		expect(output).toContain("disable_response_storage=false");
+		// Voice sideband sockets go back through the proxy, not to the OpenAI
+		// realtime API with the local token (#750).
+		expect(output).toMatch(/experimental_realtime_ws_base_url="http:\/\/127\.0\.0\.1:\d+"/);
+		expect(output).toContain(
+			`model_provider="${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
+		);
+		// The bearer token reaches the server through the environment, never through
+		// an argv the OS exposes to every other process on the machine.
+		expect(output).toMatch(/^OPENAI_API_KEY:[0-9a-f]{64}$/m);
+		expect(output).toContain("KEY_IN_ARGS:false");
+		expect(output).toContain('CONFIG:model_provider = "openai"');
+		expect(readFileSync(join(originalHome, "config.toml"), "utf8")).toBe(
+			'model_provider = "openai"\n',
+		);
+		// The shadow transport is gone, not merely bypassed.
+		expect(
+			existsSync(join(originalHome, "multi-auth", "runtime-shadow-homes")),
+		).toBe(false);
+		// The app-server CLI shim exists so the Codex *desktop app* can have its own
+		// `app-server` spawn intercepted through `CODEX_CLI_PATH`. A wrapper-invoked
+		// app-server already carries the overrides on its command line, so it must
+		// neither pay for the shim nor inherit the environment it stamps — most of
+		// all `CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY=0`, which every process the
+		// server spawns would otherwise inherit and use to bypass the pool.
+		expect(output).toMatch(/^CODEX_CLI_PATH:$/m);
+		expect(output).toMatch(/^APP_SERVER_LABEL:$/m);
+		expect(output).toContain("RUNTIME_PROXY_ENV:1");
+		expect(output).toContain("NODE_OPTIONS_HAS_APP_SERVER_PRELOAD:false");
+		// A resident server owns its proxy for its whole lifetime, so the helper is
+		// stopped rather than left to idle out. No shortened idle timeout here on
+		// purpose: this is a regression test for the detach clause, and a stranded
+		// helper would keep the default 12h window and stay alive.
+		await expectAppHelperReaped(markerPath);
+	}, 20_000);
+
+	// Reproduction 1 and 2 from #659, from the server's own point of view: the two
+	// canonical-home entries that the shadow mirror destroyed.
+
+	it.each([
+		["keeps a sideband URL the user configured", 'experimental_realtime_ws_base_url = "https://example.test/voice"\nmodel_provider = "openai"\n', false],
+		["replaces a sideband line an earlier bind wrote", 'experimental_realtime_ws_base_url = "http://127.0.0.1:1" # codex-multi-auth realtime sideband\nmodel_provider = "openai"\n', true],
+	])("%s on the canonical Codex home (#750)", async (_label, config, expectOverride) => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		// The stub config-toml module has no sideband helper; use the real one.
+		const distLib = join(fixtureRoot, "dist", "lib");
+		copyFileSync(join(repoRootDir, "dist", "lib", "runtime", "config-toml.js"), join(distLib, "runtime", "config-toml.js"));
+		copyFileSync(join(repoRootDir, "dist", "lib", "runtime-constants.js"), join(distLib, "runtime-constants.js"));
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), config, "utf8");
+
+		const result = runWrapper(fixtureRoot, ["app-server", "--listen", "stdio://"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "proxy-marker.txt"),
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER_PID: "1",
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		if (result.status !== 0) throw new Error(output);
+		const forwarded = output.split(/\r?\n/).find((line) => line.startsWith("FORWARDED:")) ?? "";
+		if (expectOverride) {
+			expect(forwarded).toMatch(/experimental_realtime_ws_base_url="http:\/\/127\.0\.0\.1:\d+"/);
+			expect(forwarded).not.toContain("127.0.0.1:1\"");
+		} else {
+			expect(forwarded).not.toContain("experimental_realtime_ws_base_url");
+		}
+	});
+	it("gives app-server a real app-server-control directory and the live thread index (#659)", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			"const args = process.argv.slice(2);",
+			'const home = process.env.CODEX_HOME ?? "";',
+			'console.log(`LISTEN:${args[args.indexOf("--listen") + 1] ?? ""}`);',
+			// Codex applies an lstat-strict check here and refuses to start when the
+			// path is a symlink, which is exactly what the shadow mirror made of it.
+			'const controlPath = path.join(home, "app-server-control");',
+			'const controlStat = fs.lstatSync(controlPath);',
+			"console.log(`CONTROL_IS_DIR:${controlStat.isDirectory()}`);",
+			"console.log(`CONTROL_IS_SYMLINK:${controlStat.isSymbolicLink()}`);",
+			// The shadow mirror snapshots the runtime SQLite state rather than linking
+			// it, so a resident server held a frozen copy of the thread index and threw
+			// away every thread it created (#647 is the same defect for `resume`).
+			'const statePath = path.join(home, "state_5.sqlite");',
+			'console.log(`THREAD_INDEX:${fs.readFileSync(statePath, "utf8").trim()}`);',
+			'fs.appendFileSync(statePath, "server-created-thread\\n", "utf8");',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		// Fixture-local, so concurrent workers and repeat runs cannot collide on a
+		// process-global path.
+		const socketPath = join(fixtureRoot, "app-server.sock");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(join(originalHome, "app-server-control"), { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+		writeFileSync(
+			join(originalHome, "state_5.sqlite"),
+			"canonical-thread-index\n",
+			"utf8",
+		);
+
+		const listenUrl = `unix://${socketPath.replace(/\\/g, "/")}`;
+		const result = runWrapper(
+			fixtureRoot,
+			["app-server", "--listen", listenUrl],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER_PID: "1",
+				OPENAI_API_KEY: undefined,
+			},
+		);
+
+		const output = combinedOutput(result);
+		if (result.status !== 0) {
+			throw new Error(output);
+		}
+		expect(output).toContain(`LISTEN:${listenUrl}`);
+		expect(output).toContain("CONTROL_IS_DIR:true");
+		expect(output).toContain("CONTROL_IS_SYMLINK:false");
+		expect(output).toContain("THREAD_INDEX:canonical-thread-index");
+		// What the server writes lands in the canonical home rather than in a copy
+		// that is discarded at exit.
+		expect(readFileSync(join(originalHome, "state_5.sqlite"), "utf8")).toBe(
+			"canonical-thread-index\nserver-created-thread\n",
+		);
+		await expectAppHelperReaped(markerPath);
+	}, 20_000);
+
+	// A supervised app-server that dies is the common production case, and it is
+	// the branch that actually differs from the pre-#659 detach condition. Nothing
+	// covered it before.
+	it("stops the rotation helper when app-server exits nonzero (#659)", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			"process.exit(3);",
 		]);
 		const originalHome = join(fixtureRoot, "codex-home");
 		const markerPath = join(fixtureRoot, "proxy-marker.txt");
@@ -2069,26 +3001,145 @@ describe("codex bin wrapper", () => {
 			CODEX_HOME: originalHome,
 			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
 			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER_PID: "1",
+			OPENAI_API_KEY: undefined,
+		});
+
+		expect(result.status).toBe(3);
+		await expectAppHelperReaped(markerPath);
+	}, 20_000);
+
+	// The motivating use case for #659 is one account-pinned app-server per
+	// account. The pin can only reach the proxy by environment across the detached
+	// helper boundary, so pin the crossing for this branch too (#623).
+	it("propagates the resolved --account pin into the app-server rotation helper (#659)", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "forced-app-server-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeAccountsFixture(originalHome, 3);
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			"process.exit(0);",
+		]);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["--account", "2", "app-server", "--listen", "stdio://"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER_FORCED: "1",
+				OPENAI_API_KEY: undefined,
+			},
+		);
+
+		const output = combinedOutput(result);
+		if (result.status !== 0) {
+			throw new Error(output);
+		}
+		// The helper process saw the resolved index (account 2 -> 0-based 1).
+		expect(readFileSync(markerPath, "utf8")).toContain("forced-index-env:1");
+		// The launcher-only flag never reaches the official CLI.
+		expect(output).not.toContain("--account");
+	});
+
+	// The shadow branch degrades to rotation-off when its proxy cannot start. The
+	// helper branches have no such shape to fall back to, so they fail hard — but
+	// hard has to mean a diagnostic and an exit code, not ERR_UNHANDLED_REJECTION
+	// with a raw stack trace and a leaked compatibility home (#659).
+	it("reports a clean error when the app-server rotation helper cannot start (#659)", () => {
+		const fixtureRoot = createWrapperFixture();
+		// Config helpers present, proxy module absent: the parent reaches the helper
+		// branch, and the helper dies during startup.
+		createRuntimeConfigTomlFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+		const result = runWrapper(fixtureRoot, ["app-server", "--listen", "stdio://"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
 			OPENAI_API_KEY: undefined,
 		});
 
 		const output = combinedOutput(result);
-		expect(result.status).toBe(0);
+		expect(result.status).toBe(1);
 		expect(output).toContain(
-			`FORWARDED:app-server --listen stdio:// -c cli_auth_credentials_store="file" -c model_provider="${RUNTIME_ROTATION_PROXY_PROVIDER_ID}"`,
+			"codex-multi-auth runtime rotation helper failed to start",
 		);
-		const apiKeyMatch = output.match(/^OPENAI_API_KEY:([0-9a-f]{64})$/m);
-		expect(apiKeyMatch?.[1]).toBeTruthy();
-		expect(output).toContain("requires_openai_auth = false");
-		expect(output).toContain('name = "codex-multi-auth"');
+		expect(output).not.toContain("ERR_UNHANDLED_REJECTION");
+		// Failing hard means the server never ran unrotated.
+		expect(output).not.toContain("FORWARDED:");
+	});
+
+	// `createCompatibilityCodexHome` runs *before* the transport is chosen, so a
+	// helper that cannot start has to release a shadow home it never used. That
+	// home is an `mkdtemp` under the OS temp dir — not the rotation shadow root
+	// under `<CODEX_HOME>/multi-auth/runtime-shadow-homes` — so pointing TMPDIR at
+	// the fixture is what makes the assertion deterministic and non-vacuous. Drop
+	// the `baseContext.cleanup?.()` call on the failure path and this fails; on
+	// Windows the stranded home is a locked directory the next run has to sweep.
+	it("releases the compatibility home when the app-server rotation helper cannot start (#659)", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeConfigTomlFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const controlledTmp = join(fixtureRoot, "tmp");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(controlledTmp, { recursive: true });
+		// `--model gpt-6-luna` coerces `ultra` down to `max` (Luna's ladder stops
+		// at max), which is the only thing that makes
+		// `createCompatibilityCodexHome` build a shadow mirror at all.
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\nmodel_reasoning_effort = "ultra"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["app-server", "--listen", "stdio://", "--model", "gpt-6-luna"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				TMP: controlledTmp,
+				TEMP: controlledTmp,
+				TMPDIR: controlledTmp,
+				OPENAI_API_KEY: undefined,
+			},
+		);
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(1);
 		expect(output).toContain(
-			`experimental_bearer_token = "${apiKeyMatch?.[1]}"`,
+			"codex-multi-auth runtime rotation helper failed to start",
 		);
-		expect(output).toContain('wire_api = "responses"');
-		expect(output).not.toContain("env_key");
-		expect(readFileSync(markerPath, "utf8")).toBe(
-			"start:http://127.0.0.1:4567\nclose\n",
-		);
+		expect(
+			readdirSync(controlledTmp).filter((entry) =>
+				entry.startsWith("codex-multi-auth-home-"),
+			),
+		).toEqual([]);
 	});
 
 	it("rewrites app-server account/read responses to the codex-multi-auth display name", () => {
@@ -2300,7 +3351,7 @@ describe("codex bin wrapper", () => {
 		expect(existsSync(markerPath)).toBe(false);
 	});
 
-	it("starts an automatic runtime rotation helper for codex app launches", async () => {
+	it("starts an automatic helper and retries transient app-server shim file operations", async () => {
 		const fixtureRoot = createWrapperFixture();
 		createRuntimeRotationProxyFixtureModule(fixtureRoot);
 		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
@@ -2372,6 +3423,10 @@ describe("codex bin wrapper", () => {
 			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
 			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "1000",
 			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			CODEX_MULTI_AUTH_TEST_FORCE_APP_SERVER_SHIM_COPY: "1",
+			...FAULT_INJECTION_ON,
+			CODEX_MULTI_AUTH_TEST_APP_SERVER_SHIM_FILE_CLEANUP_BUSY_FAILURES: "2",
+			CODEX_MULTI_AUTH_TEST_APP_SERVER_SHIM_COPY_BUSY_FAILURES: "2",
 			CODEX_MULTI_AUTH_TEST_PROXY_LAST_ACCOUNT_INDEX: "1",
 			CODEX_MULTI_AUTH_TEST_PROXY_LAST_ACCOUNT_LABEL:
 				"Account 2 (second@example.com, id:second)",
@@ -2402,7 +3457,7 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain("SHADOW_PLUGINS_EXISTS:true");
 		expect(output).toContain("SHADOW_SKILLS_EXISTS:true");
 		expect(output).toContain("SHADOW_MEMORY_EXISTS:true");
-		expect(output).toContain("APP_SERVER_SHIM_STATUS:0");
+		expect(output, output).toContain("APP_SERVER_SHIM_STATUS:0");
 		expect(output).toContain(
 			"APP_SERVER_SHIM_STDOUT:APP_SERVER_FORWARDED:app-server --shim-probe",
 		);
@@ -2426,9 +3481,13 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(markerPath, "utf8")).toBe(
 			"start:http://127.0.0.1:4567\nclose\n",
 		);
-		const helperStatus = JSON.parse(
-			readFileSync(join(multiAuthDir, "runtime-rotation-app-helper.json"), "utf8"),
-		) as {
+		// Status is published per helper PID; exactly one helper ran here.
+		const helperStatusFiles = readdirSync(multiAuthDir).filter((name) =>
+			/^runtime-rotation-app-helper\.\d+\.json$/.test(name),
+		);
+		expect(helperStatusFiles).toHaveLength(1);
+		const helperStatusPath = join(multiAuthDir, helperStatusFiles[0] ?? "");
+		const helperStatus = JSON.parse(readFileSync(helperStatusPath, "utf8")) as {
 			state: string;
 			totalRequests: number;
 			lastAccountIndex: number | null;
@@ -2444,10 +3503,7 @@ describe("codex bin wrapper", () => {
 		expect(helperStatus.lastAccountId).toBe("acc_second");
 		expect(helperStatus.lastAccountUpdatedAt).toBe(12345);
 		if (process.platform !== "win32") {
-			expect(
-				statSync(join(multiAuthDir, "runtime-rotation-app-helper.json")).mode &
-					0o777,
-			).toBe(0o600);
+			expect(statSync(helperStatusPath).mode & 0o777).toBe(0o600);
 		}
 		if (shadowHomeMatch?.[1]) {
 			expect(existsSync(shadowHomeMatch[1])).toBe(false);
@@ -2456,6 +3512,124 @@ describe("codex bin wrapper", () => {
 			expect(existsSync(cliPathMatch[1])).toBe(false);
 		}
 	});
+
+	it("keeps concurrent app-helper owner metadata isolated by helper PID", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"setTimeout(() => process.exit(0), 2000);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const multiAuthDir = join(fixtureRoot, "multi-auth");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const children = [1, 2].map(() =>
+			spawn(
+				process.execPath,
+				[join(fixtureRoot, "scripts", "codex.js"), "app", "."],
+				{
+					env: buildWrapperEnv({
+						CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+						CODEX_HOME: originalHome,
+						CODEX_MULTI_AUTH_DIR: multiAuthDir,
+						CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+						CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "250",
+					}),
+					stdio: ["ignore", "pipe", "pipe"],
+				},
+			),
+		);
+		for (const child of children) {
+			child.stdout?.resume();
+			child.stderr?.resume();
+		}
+
+		const waitForClose = (child: (typeof children)[number]) => {
+			if (child.exitCode !== null || child.signalCode !== null) {
+				return Promise.resolve();
+			}
+			return new Promise<void>((resolve) => {
+				const timer = setTimeout(resolve, 2_000);
+				child.once("close", () => {
+					clearTimeout(timer);
+					resolve();
+				});
+			});
+		};
+
+		let ownerFiles: string[] = [];
+		try {
+			const ownerFilePrefix = APP_RUNTIME_HELPER_OWNER_FILE.replace(
+				/\.json$/i,
+				"",
+			);
+			const ownerFilePattern = new RegExp(
+				`^${ownerFilePrefix}\\.(\\d+)\\.json$`,
+			);
+			const deadline = Date.now() + 5_000;
+			while (Date.now() < deadline) {
+				ownerFiles = existsSync(multiAuthDir)
+					? readdirSync(multiAuthDir).filter((name) =>
+							ownerFilePattern.test(name),
+						)
+					: [];
+				if (ownerFiles.length >= 2) break;
+				await sleep(25);
+			}
+
+			expect(ownerFiles).toHaveLength(2);
+			const ownerRecords = ownerFiles.map((name) =>
+				JSON.parse(readFileSync(join(multiAuthDir, name), "utf8")),
+			) as Array<{
+				identityToken: string;
+				launcherPid: number;
+			}>;
+			expect(new Set(ownerRecords.map((owner) => owner.identityToken)).size).toBe(
+				2,
+			);
+			expect(new Set(ownerRecords.map((owner) => owner.launcherPid)).size).toBe(2);
+			expect(
+				existsSync(join(multiAuthDir, APP_RUNTIME_HELPER_OWNER_FILE)),
+			).toBe(false);
+		} finally {
+			for (const child of children) {
+				try {
+					child.kill("SIGTERM");
+				} catch {
+					// The wrapper may already have exited after a failed launch.
+				}
+			}
+			await Promise.all(children.map(waitForClose));
+
+			const helperPids = new Set<number>();
+			for (const name of ownerFiles) {
+				const match = /\.(\d+)\.json$/i.exec(name);
+				if (match?.[1]) helperPids.add(Number(match[1]));
+			}
+			for (const pid of helperPids) {
+				try {
+					process.kill(pid, "SIGTERM");
+				} catch {
+					// The helper may have stopped with its launcher.
+				}
+			}
+			await sleep(500);
+			for (const pid of helperPids) {
+				if (!isProcessAlive(pid)) continue;
+				try {
+					process.kill(pid, "SIGKILL");
+				} catch {
+					// Best-effort cleanup for the detached fixture.
+				}
+			}
+		}
+	}, 15_000);
 
 	it("sweeps stale app-server shim directories when a helper starts", async () => {
 		const fixtureRoot = createWrapperFixture();
@@ -2507,45 +3681,142 @@ describe("codex bin wrapper", () => {
 		);
 	});
 
-	it("keeps app helpers alive when owner liveness probes return EPERM", async () => {
-		const fixtureRoot = createWrapperFixture();
-		createRuntimeRotationProxyFixtureModule(fixtureRoot);
-		const originalHome = join(fixtureRoot, "codex-home");
-		const multiAuthDir = join(fixtureRoot, "multi-auth");
-		const markerPath = join(fixtureRoot, "proxy-marker.txt");
-		const preloadPath = join(fixtureRoot, "owner-eperm-preload.mjs");
-		mkdirSync(originalHome, { recursive: true });
-		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
-		writeFileSync(
-			preloadPath,
-			[
-				"const originalKill = process.kill.bind(process);",
-				"process.kill = (pid, signal) => {",
-				"  if (signal === 0 && String(pid) === process.env.CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID) {",
-				'    const error = new Error("operation not permitted");',
-				'    error.code = "EPERM";',
-				"    throw error;",
-				"  }",
-				"  return originalKill(pid, signal);",
-				"};",
-			].join("\n"),
-			"utf8",
-		);
+	// Skipped on Windows because the fixture cannot construct the state it is
+	// about: the owner start time comes from `ps`, which does not exist there,
+	// so the env var is empty, the identity branch never engages, and the test
+	// would silently exercise bare liveness under a name claiming otherwise.
+	// The Windows bare-liveness path has its own coverage below.
+	it.skipIf(process.platform === "win32")(
+		"keeps app helpers alive when owner liveness probes return EPERM",
+		async () => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const multiAuthDir = join(fixtureRoot, "multi-auth");
+			const markerPath = join(fixtureRoot, "proxy-marker.txt");
+			const preloadPath = join(fixtureRoot, "owner-eperm-preload.mjs");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+			writeFileSync(
+				preloadPath,
+				[
+					"const originalKill = process.kill.bind(process);",
+					"process.kill = (pid, signal) => {",
+					"  if (signal === 0 && String(pid) === process.env.CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID) {",
+					'    const error = new Error("operation not permitted");',
+					'    error.code = "EPERM";',
+					"    throw error;",
+					"  }",
+					"  return originalKill(pid, signal);",
+					"};",
+				].join("\n"),
+				"utf8",
+			);
 
+			const helper = spawn(
+				process.execPath,
+				[join(fixtureRoot, "scripts", "codex.js"), "--codex-multi-auth-runtime-app-helper"],
+				{
+					env: buildWrapperEnv({
+						CODEX_HOME: originalHome,
+						CODEX_MULTI_AUTH_DIR: multiAuthDir,
+						CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+						CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+						CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "250",
+						CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+						// Production launchers always pass the owner's start time, so
+						// EPERM tolerance must hold on the identity branch, not just the
+						// bare-liveness fallback — and a *matching* identity is what keeps
+						// a live owner's helper alive (the false-positive direction).
+						CODEX_MULTI_AUTH_APP_ROTATION_OWNER_START_TIME_MS: String(
+							readOwnProcessStartTimeMs() ?? "",
+						),
+						CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+						NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}`,
+					}),
+					stdio: ["ignore", "pipe", "pipe"],
+				},
+			);
+			let stdout = "";
+			let stderr = "";
+			const closed = new Promise<void>((resolve) => {
+				helper.once("close", () => resolve());
+			});
+			helper.stdout?.setEncoding("utf8");
+			helper.stderr?.setEncoding("utf8");
+			helper.stdout?.on("data", (chunk: string) => {
+				stdout += chunk;
+			});
+			helper.stderr?.on("data", (chunk: string) => {
+				stderr += chunk;
+			});
+
+			try {
+				const ready = await new Promise<{ statusPath: string }>((resolve, reject) => {
+					const timeout = setTimeout(() => {
+						reject(new Error(`helper did not become ready\n${stdout}\n${stderr}`));
+					}, 5_000);
+					helper.stdout?.on("data", () => {
+						const newlineIndex = stdout.indexOf("\n");
+						if (newlineIndex < 0) return;
+						try {
+							const message = JSON.parse(stdout.slice(0, newlineIndex)) as {
+								type?: string;
+								statusPath?: string;
+							};
+							if (message.type === "ready" && message.statusPath) {
+								clearTimeout(timeout);
+								resolve({ statusPath: message.statusPath });
+							}
+						} catch (error) {
+							clearTimeout(timeout);
+							reject(error);
+						}
+					});
+					helper.once("close", () => {
+						clearTimeout(timeout);
+						reject(new Error(`helper exited before ready\n${stdout}\n${stderr}`));
+					});
+				});
+
+				await sleep(750);
+
+				expect(helper.pid).toBeTruthy();
+				expect(isProcessAlive(helper.pid ?? -1)).toBe(true);
+				const status = JSON.parse(readFileSync(ready.statusPath, "utf8")) as {
+					state: string;
+				};
+				expect(status.state).toBe("running");
+				expect(readFileSync(markerPath, "utf8")).toBe("start:http://127.0.0.1:4567\n");
+			} finally {
+				if (helper.pid && isProcessAlive(helper.pid)) {
+					helper.kill("SIGTERM");
+				}
+				await Promise.race([closed, sleep(2_000)]);
+				if (helper.pid && isProcessAlive(helper.pid)) {
+					helper.kill("SIGKILL");
+					await Promise.race([closed, sleep(2_000)]);
+				}
+			}
+		},
+	);
+
+	// Spawns a helper directly (the EPERM harness above) with the given env and
+	// waits for its ready line; the caller owns assertions and shutdown.
+	async function spawnDirectAppHelper(
+		fixtureRoot: string,
+		env: Record<string, string | undefined>,
+	): Promise<{
+		helper: ReturnType<typeof spawn>;
+		ready: { statusPath: string; pid: number };
+		closed: Promise<void>;
+		output: () => string;
+	}> {
 		const helper = spawn(
 			process.execPath,
 			[join(fixtureRoot, "scripts", "codex.js"), "--codex-multi-auth-runtime-app-helper"],
 			{
-				env: buildWrapperEnv({
-					CODEX_HOME: originalHome,
-					CODEX_MULTI_AUTH_DIR: multiAuthDir,
-					CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
-					CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
-					CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "250",
-					CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
-					CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
-					NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}`,
-				}),
+				env: buildWrapperEnv(env),
 				stdio: ["ignore", "pipe", "pipe"],
 			},
 		);
@@ -2562,11 +3833,31 @@ describe("codex bin wrapper", () => {
 		helper.stderr?.on("data", (chunk: string) => {
 			stderr += chunk;
 		});
-
-		try {
-			const ready = await new Promise<{ statusPath: string }>((resolve, reject) => {
+		// A rejection here throws before the caller reaches its try/finally, so
+		// nothing would ever call `stopDirectAppHelper` — the harness for a leak
+		// fix would leak a helper per failure, each holding a 1s status tick and,
+		// on the long-idle fixtures, a ref'd handle for a minute. Kill on the way
+		// out instead. (`close`-before-ready is already terminal.)
+		const rejectAndReap = (
+			reject: (error: Error) => void,
+			error: Error,
+		): void => {
+			if (helper.pid && isProcessAlive(helper.pid)) {
+				try {
+					helper.kill("SIGKILL");
+				} catch {
+					// Best-effort: the helper may have exited between the check and here.
+				}
+			}
+			reject(error);
+		};
+		const ready = await new Promise<{ statusPath: string; pid: number }>(
+			(resolve, reject) => {
 				const timeout = setTimeout(() => {
-					reject(new Error(`helper did not become ready\n${stdout}\n${stderr}`));
+					rejectAndReap(
+						reject,
+						new Error(`helper did not become ready\n${stdout}\n${stderr}`),
+					);
 				}, 5_000);
 				helper.stdout?.on("data", () => {
 					const newlineIndex = stdout.indexOf("\n");
@@ -2575,42 +3866,814 @@ describe("codex bin wrapper", () => {
 						const message = JSON.parse(stdout.slice(0, newlineIndex)) as {
 							type?: string;
 							statusPath?: string;
+							pid?: number;
 						};
-						if (message.type === "ready" && message.statusPath) {
+						if (message.type === "ready" && message.statusPath && message.pid) {
 							clearTimeout(timeout);
-							resolve({ statusPath: message.statusPath });
+							resolve({ statusPath: message.statusPath, pid: message.pid });
 						}
 					} catch (error) {
 						clearTimeout(timeout);
-						reject(error);
+						rejectAndReap(
+							reject,
+							error instanceof Error ? error : new Error(String(error)),
+						);
 					}
 				});
 				helper.once("close", () => {
 					clearTimeout(timeout);
 					reject(new Error(`helper exited before ready\n${stdout}\n${stderr}`));
 				});
-			});
+			},
+		);
+		return { helper, ready, closed, output: () => `${stdout}\n${stderr}` };
+	}
 
-			await sleep(750);
+	async function stopDirectAppHelper(
+		helper: ReturnType<typeof spawn>,
+		closed: Promise<void>,
+	): Promise<void> {
+		if (helper.pid && isProcessAlive(helper.pid)) {
+			helper.kill("SIGTERM");
+		}
+		await Promise.race([closed, sleep(2_000)]);
+		if (helper.pid && isProcessAlive(helper.pid)) {
+			helper.kill("SIGKILL");
+			await Promise.race([closed, sleep(2_000)]);
+		}
+	}
 
-			expect(helper.pid).toBeTruthy();
-			expect(isProcessAlive(helper.pid ?? -1)).toBe(true);
+	// The idle reaper's owner check is PID *plus* the owner's process start
+	// time. A recycled PID — a live process holding the dead launcher's integer
+	// — must not push the idle deadline forward: one false "alive" per window
+	// is a ratchet the helper never recovers from, which is how helpers were
+	// observed running 33 hours past a 12-hour timeout. Simulated here by
+	// pointing the helper at a genuinely live process (this test) with a start
+	// time that cannot match. Fails against the bare kill(pid, 0) check.
+	// POSIX-only: on Windows there is no `ps`, identity is unknowable, and the
+	// designed degradation is bare liveness — the companion test below.
+	it.skipIf(process.platform === "win32")("idles out when the owner PID is alive but its identity does not match", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const multiAuthDir = join(fixtureRoot, "multi-auth");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+		const { helper, ready, closed } = await spawnDirectAppHelper(fixtureRoot, {
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "250",
+			CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+			CODEX_MULTI_AUTH_APP_ROTATION_OWNER_START_TIME_MS: "12345",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+		});
+		try {
+			await Promise.race([closed, sleep(5_000)]);
+			expect(isProcessAlive(ready.pid)).toBe(false);
 			const status = JSON.parse(readFileSync(ready.statusPath, "utf8")) as {
 				state: string;
 			};
-			expect(status.state).toBe("running");
-			expect(readFileSync(markerPath, "utf8")).toBe("start:http://127.0.0.1:4567\n");
+			expect(status.state).toBe("idle-timeout");
 		} finally {
-			if (helper.pid && isProcessAlive(helper.pid)) {
-				helper.kill("SIGTERM");
-			}
-			await Promise.race([closed, sleep(2_000)]);
-			if (helper.pid && isProcessAlive(helper.pid)) {
-				helper.kill("SIGKILL");
-				await Promise.race([closed, sleep(2_000)]);
-			}
+			await stopDirectAppHelper(helper, closed);
 		}
 	});
+
+	// The designed Windows degradation: with no `ps`, owner identity is
+	// unknowable, and an unknowable identity must never kill a helper whose
+	// owner PID is genuinely alive — bare liveness keeps it running.
+	it.runIf(process.platform === "win32")(
+		"keeps the helper alive when owner identity is unavailable",
+		async () => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const multiAuthDir = join(fixtureRoot, "multi-auth");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+			const { helper, ready, closed } = await spawnDirectAppHelper(fixtureRoot, {
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_DIR: multiAuthDir,
+				CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "250",
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+				// A start time that cannot match: with no way to read the real one,
+				// the check must degrade to bare liveness, not declare death.
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_START_TIME_MS: "12345",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "marker.txt"),
+			});
+			try {
+				await sleep(1_000);
+				expect(isProcessAlive(ready.pid)).toBe(true);
+			} finally {
+				await stopDirectAppHelper(helper, closed);
+			}
+		},
+	);
+
+	// The detach grace hands a helper off to nobody whenever a launcher merely
+	// exits quickly — every short forwarded command strands one — and before
+	// this window those helpers held the full idle timeout (12h by default)
+	// with a dead owner, no traffic, and nothing connected. A stranded helper
+	// is garbage the moment the detached window elapses. Owner death is
+	// simulated the same way as the ratchet test: a live PID whose identity
+	// cannot match, which the liveness check correctly reads as dead.
+	it.skipIf(process.platform === "win32")(
+		"reaps a stranded helper on the detached window instead of the full idle timeout",
+		async () => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const multiAuthDir = join(fixtureRoot, "multi-auth");
+			const markerPath = join(fixtureRoot, "proxy-marker.txt");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+			const { helper, ready, closed } = await spawnDirectAppHelper(fixtureRoot, {
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_DIR: multiAuthDir,
+				CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				// Idle can never fire inside this test; only the detached window can,
+				// which is the whole point — before it existed, this helper lived on.
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+				CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "400",
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_START_TIME_MS: "12345",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			});
+			try {
+				await Promise.race([closed, sleep(5_000)]);
+				expect(isProcessAlive(ready.pid)).toBe(false);
+				const status = JSON.parse(readFileSync(ready.statusPath, "utf8")) as {
+					state: string;
+					idleExpiresAt: number;
+					updatedAt: number;
+				};
+				expect(status.state).toBe("owner-gone");
+				// The reported deadline is the one actually enforced: `rotation
+				// status` must not advertise the 60s idle window to a helper the
+				// detached window is about to reap.
+				expect(status.idleExpiresAt - status.updatedAt).toBeLessThan(60_000);
+			} finally {
+				await stopDirectAppHelper(helper, closed);
+			}
+		},
+	);
+
+	// The companion that runs everywhere, Windows included. The tests above
+	// simulate owner death with an unmatchable start time, which only POSIX can
+	// evaluate — with no `ps`, identity is unknowable and the check degrades to
+	// bare liveness. A *genuinely* dead owner PID is readable on every
+	// platform through that same bare check, so the reap itself is covered on
+	// win32 even though the identity flavor of it cannot be.
+	it("reaps a stranded helper whose owner PID is genuinely dead", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const multiAuthDir = join(fixtureRoot, "multi-auth");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+		// A PID this test owned and then killed, so "dead" is a fact rather than a
+		// sentinel integer that different platforms classify differently.
+		// `withDeadPid` is the shared version of exactly this — it waits on the
+		// child's `exit` event instead of polling liveness, and re-checks the PID
+		// was not recycled before handing it over — so the hand-rolled copy that
+		// used to live here is gone.
+		await withDeadPid(async (deadOwnerPid) => {
+			const { helper, ready, closed } = await spawnDirectAppHelper(fixtureRoot, {
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_DIR: multiAuthDir,
+				CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+				CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "400",
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(deadOwnerPid),
+				// Left unset on purpose: this is the degraded bare-liveness path.
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_START_TIME_MS: undefined,
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "marker.txt"),
+			});
+			try {
+				await Promise.race([closed, sleep(5_000)]);
+				expect(isProcessAlive(ready.pid)).toBe(false);
+				const status = JSON.parse(readFileSync(ready.statusPath, "utf8")) as {
+					state: string;
+				};
+				expect(status.state).toBe("owner-gone");
+			} finally {
+				await stopDirectAppHelper(helper, closed);
+			}
+		});
+	});
+
+	// The detached window reaps strays, not handoffs. A consumer holding a
+	// connection is the evidence that the detach was real — `codex app` hands
+	// the desktop app a proxy and exits — so an attached helper keeps the full
+	// idle timeout no matter how long its launcher has been gone.
+	it.skipIf(process.platform === "win32")(
+		"keeps a stranded helper alive while a client connection is open",
+		async () => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const multiAuthDir = join(fixtureRoot, "multi-auth");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+			const { helper, ready, closed } = await spawnDirectAppHelper(fixtureRoot, {
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_DIR: multiAuthDir,
+				CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+				CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "200",
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_START_TIME_MS: "12345",
+				CODEX_MULTI_AUTH_TEST_PROXY_OPEN_CONNECTIONS: "1",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "marker.txt"),
+			});
+			try {
+				// Many detached windows' worth of ticks with a socket held open.
+				await sleep(1_500);
+				expect(isProcessAlive(ready.pid)).toBe(true);
+			} finally {
+				await stopDirectAppHelper(helper, closed);
+			}
+		},
+	);
+
+	// The detached window reaps helpers that were *stranded*, never helpers that
+	// were handed off, and having served a request is the durable proof of a
+	// handoff. An open socket is not: the proxy leaves `keepAliveTimeout` at
+	// Node's 5s default, so a `codex app` session that is merely idle between
+	// turns holds no socket within seconds of its last turn. Reaping on the
+	// socket check alone would therefore kill the live proxy under a desktop app
+	// whose user simply stopped typing for the length of the detached window,
+	// and the next message would get ECONNREFUSED against a dead localhost port
+	// with nothing left to restart it.
+	//
+	// Every helper in the #663 report had `totalRequests: 0` — the leak is
+	// entirely a never-served phenomenon — so the narrower gate closes the leak
+	// without putting live sessions at risk. A served-then-abandoned helper falls
+	// back to the idle timeout and the lifetime ceiling, exactly as it did before
+	// the detached window existed.
+	it.skipIf(process.platform === "win32")(
+		"keeps a helper that has served traffic alive after its traffic stops",
+		async () => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const multiAuthDir = join(fixtureRoot, "multi-auth");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+			const { helper, ready, closed } = await spawnDirectAppHelper(fixtureRoot, {
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_DIR: multiAuthDir,
+				CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+				CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "400",
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_START_TIME_MS: "12345",
+				// Traffic climbs for 300ms and then freezes: one served request is
+				// all it takes, and the counter is frozen for many detached windows
+				// afterwards with no socket held.
+				CODEX_MULTI_AUTH_TEST_PROXY_REQUEST_RAMP_MS: "300",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "marker.txt"),
+			});
+			try {
+				// Several detached windows past the end of the ramp.
+				await sleep(2_500);
+				expect(isProcessAlive(ready.pid)).toBe(true);
+				const status = JSON.parse(readFileSync(ready.statusPath, "utf8")) as {
+					state: string;
+				};
+				expect(status.state).toBe("running");
+			} finally {
+				await stopDirectAppHelper(helper, closed);
+			}
+		},
+	);
+
+	// The other half of the same rule: a helper whose owner is gone and which
+	// never served anything is a stray, and the detached window still takes it.
+	it.skipIf(process.platform === "win32")(
+		"still reaps a stranded helper that never served a request",
+		async () => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const multiAuthDir = join(fixtureRoot, "multi-auth");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+			const { helper, ready, closed } = await spawnDirectAppHelper(fixtureRoot, {
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_DIR: multiAuthDir,
+				CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+				CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "400",
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_START_TIME_MS: "12345",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "marker.txt"),
+			});
+			try {
+				await Promise.race([closed, sleep(5_000)]);
+				expect(isProcessAlive(ready.pid)).toBe(false);
+				const status = JSON.parse(readFileSync(ready.statusPath, "utf8")) as {
+					state: string;
+				};
+				expect(status.state).toBe("owner-gone");
+			} finally {
+				await stopDirectAppHelper(helper, closed);
+			}
+		},
+	);
+
+	// "No owner PID was recorded" and "the owner is confirmed dead" are different
+	// facts. Collapsing them into one falsy verdict started the detached clock on
+	// the first tick for anyone invoking the helper directly — the documented
+	// reproduction in #663 — or running one spawned by a pre-upgrade launcher
+	// that sets no owner PID, and reaped it silently.
+	it.skipIf(process.platform === "win32")(
+		"does not start the detached clock for a helper launched without an owner PID",
+		async () => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const multiAuthDir = join(fixtureRoot, "multi-auth");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+			const { helper, ready, closed } = await spawnDirectAppHelper(fixtureRoot, {
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_DIR: multiAuthDir,
+				CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+				CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "400",
+				// Deliberately no CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID.
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "marker.txt"),
+			});
+			try {
+				// Many detached windows with no owner and no traffic: the idle
+				// timeout is the only clock that may apply, and it is 60s away.
+				await sleep(2_500);
+				expect(isProcessAlive(ready.pid)).toBe(true);
+				const status = JSON.parse(readFileSync(ready.statusPath, "utf8")) as {
+					state: string;
+				};
+				expect(status.state).toBe("running");
+			} finally {
+				await stopDirectAppHelper(helper, closed);
+			}
+		},
+	);
+
+	// Only a positive socket count is evidence of a consumer. A proxy that
+	// answers with garbage must not be able to pin a stranded helper alive
+	// forever — that is the leak wearing a different hat.
+	for (const [label, reading] of [
+		["a negative count", "-1"],
+		["NaN", "nan"],
+		["Infinity", "infinity"],
+	] as const) {
+		it.skipIf(process.platform === "win32")(
+			`treats ${label} from the proxy as nothing attached and still reaps`,
+			async () => {
+				const fixtureRoot = createWrapperFixture();
+				createRuntimeRotationProxyFixtureModule(fixtureRoot);
+				const originalHome = join(fixtureRoot, "codex-home");
+				const multiAuthDir = join(fixtureRoot, "multi-auth");
+				mkdirSync(originalHome, { recursive: true });
+				writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+				const { helper, ready, closed } = await spawnDirectAppHelper(fixtureRoot, {
+					CODEX_HOME: originalHome,
+					CODEX_MULTI_AUTH_DIR: multiAuthDir,
+					CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+					CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+					CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+					CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "400",
+					CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+					CODEX_MULTI_AUTH_APP_ROTATION_OWNER_START_TIME_MS: "12345",
+					CODEX_MULTI_AUTH_TEST_PROXY_OPEN_CONNECTIONS: reading,
+					CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "marker.txt"),
+				});
+				try {
+					await Promise.race([closed, sleep(5_000)]);
+					expect(isProcessAlive(ready.pid)).toBe(false);
+					const status = JSON.parse(readFileSync(ready.statusPath, "utf8")) as {
+						state: string;
+					};
+					expect(status.state).toBe("owner-gone");
+				} finally {
+					await stopDirectAppHelper(helper, closed);
+				}
+			},
+		);
+	}
+
+	// The escape hatch is a real escape hatch: 0 restores the pre-fix behavior
+	// for anyone who was depending on a stranded helper outliving its launcher
+	// without holding a connection.
+	it.skipIf(process.platform === "win32")(
+		"keeps a stranded helper on the full idle timeout when the detached window is disabled",
+		async () => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const multiAuthDir = join(fixtureRoot, "multi-auth");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+			const { helper, ready, closed } = await spawnDirectAppHelper(fixtureRoot, {
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_DIR: multiAuthDir,
+				CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+				CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "0",
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_START_TIME_MS: "12345",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "marker.txt"),
+			});
+			try {
+				await sleep(1_500);
+				expect(isProcessAlive(ready.pid)).toBe(true);
+			} finally {
+				await stopDirectAppHelper(helper, closed);
+			}
+		},
+	);
+
+	// The absolute lifetime ceiling is unconditional on activity: it exists for
+	// exactly the case where activity accounting is wrong, so a genuinely live
+	// owner must not extend a helper past it.
+	it("stops at the max-lifetime ceiling even while its owner is alive", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const multiAuthDir = join(fixtureRoot, "multi-auth");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+		const { helper, ready, closed } = await spawnDirectAppHelper(fixtureRoot, {
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			// Idle can never fire inside this test; only the ceiling can.
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+			CODEX_MULTI_AUTH_APP_ROTATION_MAX_LIFETIME_MS: "400",
+			CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+		});
+		try {
+			await Promise.race([closed, sleep(5_000)]);
+			expect(isProcessAlive(ready.pid)).toBe(false);
+			const status = JSON.parse(readFileSync(ready.statusPath, "utf8")) as {
+				state: string;
+			};
+			expect(status.state).toBe("max-lifetime");
+		} finally {
+			await stopDirectAppHelper(helper, closed);
+		}
+	});
+
+	// N helpers, N status files: each helper publishes
+	// `runtime-rotation-app-helper.<pid>.json` and never the shared legacy
+	// path, so concurrent helpers stop last-writer-winning one file and every
+	// reader can see every helper.
+	it("publishes one status file per helper PID instead of one shared file", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const multiAuthDir = join(fixtureRoot, "multi-auth");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+		const commonEnv = {
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+			CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+		};
+		const first = await spawnDirectAppHelper(fixtureRoot, {
+			...commonEnv,
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "marker-1.txt"),
+		});
+		try {
+			const second = await spawnDirectAppHelper(fixtureRoot, {
+				...commonEnv,
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "marker-2.txt"),
+			});
+			try {
+				expect(first.ready.statusPath).not.toBe(second.ready.statusPath);
+				expect(first.ready.statusPath).toContain(`.${first.ready.pid}.`);
+				expect(second.ready.statusPath).toContain(`.${second.ready.pid}.`);
+				const firstStatus = JSON.parse(
+					readFileSync(first.ready.statusPath, "utf8"),
+				) as { pid: number; state: string };
+				const secondStatus = JSON.parse(
+					readFileSync(second.ready.statusPath, "utf8"),
+				) as { pid: number; state: string };
+				expect(firstStatus.pid).toBe(first.ready.pid);
+				expect(secondStatus.pid).toBe(second.ready.pid);
+				expect(firstStatus.state).toBe("running");
+				expect(secondStatus.state).toBe("running");
+				expect(
+					existsSync(join(multiAuthDir, "runtime-rotation-app-helper.json")),
+				).toBe(false);
+			} finally {
+				await stopDirectAppHelper(second.helper, second.closed);
+			}
+		} finally {
+			await stopDirectAppHelper(first.helper, first.closed);
+		}
+	});
+
+	// One of the four defects was helpers rewriting status at 1 Hz; publishing
+	// is now change-token + heartbeat. A quiet helper's status file must not
+	// churn between ticks, or N helpers reintroduce the write storm silently.
+	it("does not rewrite an unchanged status file on every tick", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const multiAuthDir = join(fixtureRoot, "multi-auth");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+		const { helper, ready, closed } = await spawnDirectAppHelper(fixtureRoot, {
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			// Long idle: the 1s tick keeps running, but with no traffic and a
+			// 60s heartbeat nothing about the payload changes between ticks.
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+			CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(fixtureRoot, "marker.txt"),
+		});
+		try {
+			const firstMtime = statSync(ready.statusPath).mtimeMs;
+			// Several ticks pass (tick interval is 1s at this idle timeout).
+			await sleep(2_600);
+			expect(statSync(ready.statusPath).mtimeMs).toBe(firstMtime);
+		} finally {
+			await stopDirectAppHelper(helper, closed);
+		}
+	});
+
+	// Windows can hold transient locks on files another process just closed;
+	// metadata deletions retry instead of silently leaving the stale file the
+	// sweep exists to remove.
+	it("retries transient lock failures while sweeping helper metadata", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const multiAuthDir = join(fixtureRoot, "multi-auth");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(multiAuthDir, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+		const staleStatusPaths = [
+			join(multiAuthDir, "runtime-rotation-app-helper.99999996.json"),
+			join(multiAuthDir, "runtime-rotation-app-helper.99999997.json"),
+		];
+		for (const [index, path] of staleStatusPaths.entries()) {
+			writeFileSync(
+				path,
+				`{"pid":9999999${6 + index},"state":"running"}\n`,
+				"utf8",
+			);
+		}
+
+		const result = runWrapper(fixtureRoot, ["app", "."], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "250",
+			// The failure counter is process-wide: two simulated EBUSY throws land
+			// on the deletions in whatever order the sweep visits the two files.
+			// `withSynchronousFileOperationRetry` allows four attempts per call, so
+			// even the worst split (one file eating both failures) succeeds on that
+			// file's third attempt — the outcome is order-independent as long as
+			// the retry budget stays at three attempts or more. If that budget ever
+			// shrinks below three, this test fails and the sweep would silently
+			// leave stale metadata behind on transient Windows locks.
+			...FAULT_INJECTION_ON,
+			CODEX_MULTI_AUTH_TEST_HELPER_METADATA_CLEANUP_BUSY_FAILURES: "2",
+			OPENAI_API_KEY: undefined,
+		});
+		expect(result.status).toBe(0);
+		for (const path of staleStatusPaths) {
+			expect(existsSync(path)).toBe(false);
+		}
+	});
+
+	// `package.json` publishes `scripts/codex.js`, so this injector runs in every
+	// user's install. Two things keep it inert there: the counter does nothing
+	// without an explicit opt-in switch, and the value is parsed strictly —
+	// `Number.parseInt` reads "2abc" as 2 and "1e3" as 1, which is how a value
+	// that was never meant to be a count arms a fault injector (#668). Either
+	// leak would silently defeat the first N metadata deletions of every sweep,
+	// which is the exact accumulation the sweep exists to prevent.
+	it.each([
+		["without the opt-in switch", { CODEX_MULTI_AUTH_TEST_FAULT_INJECTION: undefined }],
+		["with a non-numeric counter", { ...FAULT_INJECTION_ON }],
+	] as const)(
+		"ignores the metadata-cleanup fault injector %s",
+		async (label, gateEnv) => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+				"#!/usr/bin/env node",
+				"process.exit(0);",
+			]);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const multiAuthDir = join(fixtureRoot, "multi-auth");
+			mkdirSync(originalHome, { recursive: true });
+			mkdirSync(multiAuthDir, { recursive: true });
+			writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+			const staleStatusPath = join(
+				multiAuthDir,
+				"runtime-rotation-app-helper.99999996.json",
+			);
+			writeFileSync(staleStatusPath, '{"pid":99999996,"state":"running"}\n', "utf8");
+
+			// A counter big enough to exhaust the retry budget several times over,
+			// so if it were ever honoured the sweep could not recover.
+			const result = runWrapper(fixtureRoot, ["app", "."], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_DIR: multiAuthDir,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "250",
+				...gateEnv,
+				CODEX_MULTI_AUTH_TEST_HELPER_METADATA_CLEANUP_BUSY_FAILURES:
+					label === "with a non-numeric counter" ? "99abc" : "99",
+				OPENAI_API_KEY: undefined,
+			});
+
+			expect(result.status).toBe(0);
+			expect(existsSync(staleStatusPath)).toBe(false);
+		},
+	);
+
+	// The retry budget is finite, so a file that stays locked has to be survivable
+	// rather than fatal: the sweep runs on the launcher's critical path, and a
+	// helper launch must not fail because a stale file from some other helper
+	// could not be deleted. The file simply waits for the next sweep.
+	it("leaves a permanently locked metadata file behind without failing the launch", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const multiAuthDir = join(fixtureRoot, "multi-auth");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(multiAuthDir, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+		const staleStatusPath = join(
+			multiAuthDir,
+			"runtime-rotation-app-helper.99999995.json",
+		);
+		writeFileSync(staleStatusPath, '{"pid":99999995,"state":"running"}\n', "utf8");
+
+		// Far more failures than `withSynchronousFileOperationRetry`'s budget, so
+		// every attempt on this file throws EBUSY and the retry never succeeds.
+		const result = runWrapper(fixtureRoot, ["app", "."], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "250",
+			...FAULT_INJECTION_ON,
+			CODEX_MULTI_AUTH_TEST_HELPER_METADATA_CLEANUP_BUSY_FAILURES: "999",
+			OPENAI_API_KEY: undefined,
+		});
+
+		// The launch succeeded...
+		expect(result.status).toBe(0);
+		// ...and the file it could not delete is still there for the next sweep,
+		// rather than the error having escaped into the launcher.
+		expect(existsSync(staleStatusPath)).toBe(true);
+	});
+
+	// Owner files have no post-mortem value and go with the helper; stale
+	// per-PID metadata from killed helpers — and a legacy shared status file
+	// whose recorded PID is dead — is swept when the next launcher starts a
+	// helper, which is what keeps 579-files-vs-183-helpers from recurring.
+	it("removes its owner file on exit and sweeps dead helpers' metadata on the next launch", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const multiAuthDir = join(fixtureRoot, "multi-auth");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(multiAuthDir, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+		// Metadata for a helper PID that cannot be alive, plus a legacy shared
+		// status file recording the same dead PID: all three must be swept.
+		const staleStatusPath = join(
+			multiAuthDir,
+			"runtime-rotation-app-helper.99999999.json",
+		);
+		const staleOwnerPath = join(
+			multiAuthDir,
+			"runtime-rotation-app-helper-owner.99999999.json",
+		);
+		const legacyStatusPath = join(multiAuthDir, "runtime-rotation-app-helper.json");
+		writeFileSync(staleStatusPath, '{"pid":99999999,"state":"running"}\n', "utf8");
+		writeFileSync(staleOwnerPath, '{"launcherPid":1,"identityToken":"x"}\n', "utf8");
+		writeFileSync(legacyStatusPath, '{"pid":99999999,"state":"running"}\n', "utf8");
+
+		const result = runWrapper(fixtureRoot, ["app", "."], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_DIR: multiAuthDir,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "250",
+			OPENAI_API_KEY: undefined,
+		});
+		expect(result.status).toBe(0);
+
+		// The launcher swept — after spawning its own helper, so the sweep never
+		// sits in front of `codex app` startup, and before the launch handshake,
+		// so it is complete by the time the wrapper exits.
+		expect(existsSync(staleStatusPath)).toBe(false);
+		expect(existsSync(staleOwnerPath)).toBe(false);
+		expect(existsSync(legacyStatusPath)).toBe(false);
+
+		// The launcher's own helper detached (grace window), then idles out with
+		// its owner gone; on exit it removes its owner file and leaves only its
+		// terminal status stamp.
+		const ownerPattern = /^runtime-rotation-app-helper-owner\.(\d+)\.json$/;
+		const statusPattern = /^runtime-rotation-app-helper\.(\d+)\.json$/;
+		const deadline = Date.now() + 5_000;
+		let ownerFiles: string[] = [];
+		let statusFiles: string[] = [];
+		let sawHelperMetadata = false;
+		for (;;) {
+			ownerFiles = readdirSync(multiAuthDir).filter((name) =>
+				ownerPattern.test(name),
+			);
+			statusFiles = readdirSync(multiAuthDir).filter((name) =>
+				statusPattern.test(name),
+			);
+			if (ownerFiles.length > 0 || statusFiles.length > 0) {
+				sawHelperMetadata = true;
+			}
+			const statuses = statusFiles.map(
+				(name) =>
+					JSON.parse(readFileSync(join(multiAuthDir, name), "utf8")) as {
+						state: string;
+					},
+			);
+			if (
+				sawHelperMetadata &&
+				ownerFiles.length === 0 &&
+				statuses.length > 0 &&
+				statuses.every((status) => status.state !== "running")
+			) {
+				break;
+			}
+			if (Date.now() >= deadline) {
+				throw new Error(
+					`helper metadata did not settle: owners=${JSON.stringify(ownerFiles)} statuses=${JSON.stringify(statusFiles)}`,
+				);
+			}
+			await sleep(50);
+		}
+		expect(ownerFiles).toHaveLength(0);
+		expect(statusFiles).toHaveLength(1);
+		const finalStatus = JSON.parse(
+			readFileSync(join(multiAuthDir, statusFiles[0] ?? ""), "utf8"),
+		) as { state: string };
+		expect(finalStatus.state).toBe("idle-timeout");
+	}, 15_000);
 
 	it("stops failed app helpers before unsupported-model retries", async () => {
 		const fixtureRoot = createWrapperFixture();
@@ -2645,7 +4708,7 @@ describe("codex bin wrapper", () => {
 
 		const result = runWrapper(
 			fixtureRoot,
-			["app", ".", "--model", "gpt-5.5"],
+			["app", ".", "--model", "gpt-5.6-sol"],
 			{
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_HOME: originalHome,
@@ -2664,8 +4727,8 @@ describe("codex bin wrapper", () => {
 		if (result.status !== 0) {
 			throw new Error(output);
 		}
-		expect(output).toContain("Retrying with gpt-5.4");
-		expect(output).toContain("FORWARDED:app . --model gpt-5.4");
+		expect(output).toContain("Retrying with gpt-6-luna");
+		expect(output).toContain("FORWARDED:app . --model gpt-6-luna");
 		const markerAfterRetry = readFileSync(markerPath, "utf8")
 			.trim()
 			.split(/\r?\n/);
@@ -2713,11 +4776,11 @@ describe("codex bin wrapper", () => {
 		mkdirSync(originalHome, { recursive: true });
 		writeFileSync(
 			join(originalHome, "config.toml"),
-			'model_reasoning_effort = "xhigh"\n',
+			'model_reasoning_effort = "ultra"\n',
 			"utf8",
 		);
 
-		const result = runWrapper(fixtureRoot, ["app", ".", "--model", "gpt-5.1"], {
+		const result = runWrapper(fixtureRoot, ["app", ".", "--model", "gpt-6-luna"], {
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 			CODEX_HOME: originalHome,
 			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
@@ -2731,7 +4794,7 @@ describe("codex bin wrapper", () => {
 		if (result.status !== 0) {
 			throw new Error(output);
 		}
-		expect(output).toContain("FORWARDED:app . --model gpt-5.1");
+		expect(output).toContain("FORWARDED:app . --model gpt-6-luna");
 		expect(output).toContain(
 			`CODEX_MULTI_AUTH_DIR:${join(originalHome, "multi-auth")}`,
 		);
@@ -2751,13 +4814,1064 @@ describe("codex bin wrapper", () => {
 
 		const marker = readFileSync(markerPath, "utf8");
 		expect(marker).toContain(`real-home-env:${originalHome}\n`);
+		// Status is per helper PID; the shared legacy path is no longer written.
 		expect(
-			existsSync(join(originalHome, "multi-auth", "runtime-rotation-app-helper.json")),
+			readdirSync(join(originalHome, "multi-auth")).some((name) =>
+				/^runtime-rotation-app-helper\.\d+\.json$/.test(name),
+			),
 		).toBe(true);
 		const compatibilityHomeMatch = marker.match(/^codex-home-env:(.+)$/m);
 		expect(compatibilityHomeMatch?.[1]).toBeTruthy();
 		expect(compatibilityHomeMatch?.[1]).not.toBe(originalHome);
 		expect(marker).toContain("close\n");
+	});
+
+	it("uses the canonical Codex home for interactive TUI runtime routing", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const { spawnSync } = require("node:child_process");',
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const args = process.argv.slice(2);',
+			'if (args[0] === "app-server") {',
+			'  console.log(`APP_SERVER_FORWARDED:${args.join(" ")}`);',
+			"  process.exit(0);",
+			"}",
+			'const statePath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite");',
+			'const originalState = path.join(process.env.ORIGINAL_CODEX_HOME ?? "", "state_5.sqlite");',
+			'console.log(`TUI_HOME_IS_ORIGINAL:${process.env.CODEX_HOME === process.env.ORIGINAL_CODEX_HOME}`);',
+			'console.log(`TUI_STATE_EXISTED:${fs.existsSync(statePath)}`);',
+			'fs.writeFileSync(statePath, "first-run-state\\n", "utf8");',
+			'console.log(`TUI_STATE_PERSISTED:${fs.readFileSync(originalState, "utf8").includes("first-run-state")}`);',
+			'console.log(`TUI_HAS_BASE_URL_OVERRIDE:${args.some((arg) => arg.includes("model_providers.codex-multi-auth-runtime-proxy.base_url="))}`);',
+			'console.log(`TUI_HAS_ENV_KEY_OVERRIDE:${args.includes(\'model_providers.codex-multi-auth-runtime-proxy.env_key="OPENAI_API_KEY"\')}`);',
+			'console.log(`TUI_HAS_AUTH_OVERRIDE:${args.includes("model_providers.codex-multi-auth-runtime-proxy.requires_openai_auth=false")}`);',
+			'console.log(`TUI_HAS_WIRE_OVERRIDE:${args.includes(\'model_providers.codex-multi-auth-runtime-proxy.wire_api="responses"\')}`);',
+			'console.log(`TUI_HAS_STORAGE_OVERRIDE:${args.includes("disable_response_storage=false")}`);',
+			'console.log(`TUI_KEY_IN_ARGS:${args.includes(process.env.OPENAI_API_KEY ?? "__missing__")}`);',
+			'const shimExe = path.join(process.env.CODEX_CLI_PATH ?? "", process.platform === "win32" ? "codex.exe" : "codex");',
+			'const shimResult = spawnSync(shimExe, ["app-server", "--canonical-shim"], { encoding: "utf8", env: process.env });',
+			'console.log(`TUI_SHIM_STATUS:${shimResult.status}`);',
+			'console.log(`TUI_SHIM_STDOUT:${(shimResult.stdout ?? "").trim()}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, [], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		if (result.status !== 0) {
+			throw new Error(output);
+		}
+		expect(output).toContain("TUI_HOME_IS_ORIGINAL:true");
+		expect(output).toContain("TUI_STATE_EXISTED:false");
+		expect(output).toContain("TUI_STATE_PERSISTED:true");
+		expect(output).toContain("TUI_HAS_BASE_URL_OVERRIDE:true");
+		expect(output).toContain("TUI_HAS_ENV_KEY_OVERRIDE:true");
+		expect(output).toContain("TUI_HAS_AUTH_OVERRIDE:true");
+		expect(output).toContain("TUI_HAS_WIRE_OVERRIDE:true");
+		expect(output).toContain("TUI_HAS_STORAGE_OVERRIDE:true");
+		expect(output).toContain("TUI_KEY_IN_ARGS:false");
+		expect(output, output).toContain("TUI_SHIM_STATUS:0");
+		expect(output).toContain(
+			"APP_SERVER_FORWARDED:app-server --canonical-shim",
+		);
+		expect(output).toContain(
+			"model_providers.codex-multi-auth-runtime-proxy.base_url=",
+		);
+		expect(output).toContain(
+			'model_providers.codex-multi-auth-runtime-proxy.env_key="OPENAI_API_KEY"',
+		);
+		expect(output).toContain(
+			"model_providers.codex-multi-auth-runtime-proxy.requires_openai_auth=false",
+		);
+		expect(output).toContain(
+			'model_providers.codex-multi-auth-runtime-proxy.wire_api="responses"',
+		);
+		expect(output).toContain("disable_response_storage=false");
+		expect(output).toContain(
+			'model_provider="codex-multi-auth-runtime-proxy"',
+		);
+		expect(readFileSync(join(originalHome, "state_5.sqlite"), "utf8")).toBe(
+			"first-run-state\n",
+		);
+		expect(readFileSync(join(originalHome, "config.toml"), "utf8")).toBe(
+			'model_provider = "openai"\n',
+		);
+		await waitForFileText(
+			markerPath,
+			"start:http://127.0.0.1:4567\nclose\n",
+		);
+	});
+
+	// The root grammar is `codex [OPTIONS] [PROMPT]`: an initial prompt makes the
+	// launch no less interactive, but the classifier used to read the first
+	// positional as a subcommand, so prompt-bearing launches fell through to the
+	// shadow-home transport. The shadow mirror deliberately omits the runtime
+	// SQLite state, so native Codex rebuilt the entire thread index from
+	// rollouts — a startup stall that scales with session history — before it
+	// submitted the already-delivered prompt (#673).
+	for (const promptForm of [
+		{
+			label: "a prompt after value-consuming options",
+			args: [
+				"-c",
+				'model_reasoning_effort="high"',
+				"-i",
+				"notes.png",
+				// `--cd` ends the greedy image span; without an option (or `--`)
+				// between them, native Codex reads the prompt as a second image.
+				"--cd",
+				".",
+				"Reply with exactly READY, then stop.",
+			],
+			prompt: "Reply with exactly READY, then stop.",
+			// The provider overrides are injected before the prompt, so the
+			// prompt stays the final argument with the last override beside it.
+			penultimateArg: 'model_provider="codex-multi-auth-runtime-proxy"',
+		},
+		{
+			// `--` forces the positional, so prompt text that spells a real
+			// command name must still launch the TUI: native Codex parses
+			// `codex -- exec` as the prompt "exec", not as the exec subcommand.
+			label: "a `--`-forced prompt that spells a command name",
+			args: ["--", "exec"],
+			prompt: "exec",
+			// The overrides must land on the option side of the `--`, or Codex
+			// would read them as prompt text.
+			penultimateArg: "--",
+		},
+		{
+			// `-i/--image` is greedy: native Codex consumes every free token up
+			// to the next option, so the image list must stay contiguous and the
+			// injected overrides must land after it — an override pair splitting
+			// the list would demote the second image to the prompt and make the
+			// real prompt an "unexpected argument" hard error.
+			label: "a prompt after a greedy multi-image option",
+			args: ["-i", "a.png", "b.png", "--cd", ".", "look at these"],
+			prompt: "look at these",
+			penultimateArg: 'model_provider="codex-multi-auth-runtime-proxy"',
+		},
+	] as const) {
+		it(`uses the canonical Codex home for a TUI launch with ${promptForm.label} (#673)`, async () => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+				"#!/usr/bin/env node",
+				'const fs = require("node:fs");',
+				'const path = require("node:path");',
+				"const args = process.argv.slice(2);",
+				'if (args[0] === "app-server") {',
+				'  console.log(`APP_SERVER_FORWARDED:${args.join(" ")}`);',
+				"  process.exit(0);",
+				"}",
+				"console.log(`PROMPT_HOME_IS_ORIGINAL:${process.env.CODEX_HOME === process.env.ORIGINAL_CODEX_HOME}`);",
+				// The thread index only exists in the canonical home; the shadow
+				// mirror omits it, which is what forced the startup rebuild.
+				'const statePath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite");',
+				"console.log(`PROMPT_SEES_THREAD_INDEX:${fs.existsSync(statePath)}`);",
+				`console.log(\`PROMPT_ARG_VERBATIM:\${args.includes(${JSON.stringify(
+					promptForm.prompt,
+				)})}\`);`,
+				"console.log(`PROMPT_LAST_ARG:${args[args.length - 1]}`);",
+				"console.log(`PROMPT_PENULTIMATE_ARG:${args[args.length - 2]}`);",
+				'console.log(`PROMPT_HAS_BASE_URL_OVERRIDE:${args.some((arg) => arg.includes("model_providers.codex-multi-auth-runtime-proxy.base_url="))}`);',
+				"console.log(`PROMPT_CLI_PATH_IS_SHIM:${(process.env.CODEX_CLI_PATH ?? \"\").includes(\"app-server-shims\")}`);",
+				"process.exit(0);",
+			]);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const markerPath = join(fixtureRoot, "proxy-marker.txt");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(
+				join(originalHome, "config.toml"),
+				'model_provider = "openai"\n',
+				"utf8",
+			);
+			writeFileSync(
+				join(originalHome, "state_5.sqlite"),
+				"canonical-thread-index\n",
+				"utf8",
+			);
+
+			const result = runWrapper(fixtureRoot, [...promptForm.args], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				ORIGINAL_CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+				OPENAI_API_KEY: undefined,
+			});
+
+			const output = combinedOutput(result);
+			if (result.status !== 0) {
+				throw new Error(output);
+			}
+			expect(output).toContain("PROMPT_HOME_IS_ORIGINAL:true");
+			expect(output).toContain("PROMPT_SEES_THREAD_INDEX:true");
+			expect(output).toContain("PROMPT_ARG_VERBATIM:true");
+			expect(output).toContain(`PROMPT_LAST_ARG:${promptForm.prompt}`);
+			expect(output).toContain(
+				`PROMPT_PENULTIMATE_ARG:${promptForm.penultimateArg}`,
+			);
+			// Rotation is still active: the proxy overrides ride along as `-c` args.
+			expect(output).toContain("PROMPT_HAS_BASE_URL_OVERRIDE:true");
+			expect(output).toContain("PROMPT_CLI_PATH_IS_SHIM:true");
+			// The canonical home is never rewritten on disk.
+			expect(readFileSync(join(originalHome, "config.toml"), "utf8")).toBe(
+				'model_provider = "openai"\n',
+			);
+			await waitForFileText(markerPath, "start:http://127.0.0.1:4567\nclose\n");
+		});
+	}
+
+	// Native Codex fills the root `[PROMPT]` slot with the first free token and
+	// still tries a later one as a subcommand: `codex hello exec …` runs exec.
+	// The classifier scans past unknown positionals the same way, so this stays
+	// a noninteractive exec on the isolated shadow home (#673).
+	it("classifies a command after a filled prompt slot like native Codex (#673)", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"console.log(`SHADOW_HOME_IS_ORIGINAL:${process.env.CODEX_HOME === process.env.ORIGINAL_CODEX_HOME}`);",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["hello", "exec", "echo hi"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		if (result.status !== 0) {
+			throw new Error(output);
+		}
+		expect(output).toContain("SHADOW_HOME_IS_ORIGINAL:false");
+	});
+
+	// The alias resolves through the same allowlist as its canonical command, so
+	// `codex e ...` must classify exactly like `codex exec ...` — a real
+	// noninteractive request on the isolated shadow home, not a prompt (#673).
+	it("keeps the `e` exec alias on the shadow Codex home (#673)", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"console.log(`SHADOW_HOME_IS_ORIGINAL:${process.env.CODEX_HOME === process.env.ORIGINAL_CODEX_HOME}`);",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["e", "do something"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		if (result.status !== 0) {
+			throw new Error(output);
+		}
+		expect(output).toContain("SHADOW_HOME_IS_ORIGINAL:false");
+	});
+
+	// The other alias: `a` resolves to `apply`, which makes no model requests,
+	// so it must skip the rotation transport entirely — exactly like a spelled-
+	// out `codex apply` always did, instead of routing as an unknown token (#673).
+	it("forwards the `a` apply alias without starting the rotation transport (#673)", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+			"console.log(`ALIAS_HOME_IS_ORIGINAL:${process.env.CODEX_HOME === process.env.ORIGINAL_CODEX_HOME}`);",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["a"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		if (result.status !== 0) {
+			throw new Error(output);
+		}
+		expect(existsSync(markerPath)).toBe(false);
+		expect(output).toContain("ALIAS_HOME_IS_ORIGINAL:true");
+		expect(output).toContain("FORWARDED:a");
+		expect(output).not.toContain("model_provider=");
+	});
+
+	// A hidden root subcommand (absent from `codex --help`, real per
+	// `codex help <name>`) is still a command, not a prompt: it keeps the
+	// routing fall-through it always had instead of spinning up an interactive
+	// canonical-home helper that would outlive its short clean exit (#673).
+	//
+	// The allowlist is what decides this, so a real root command missing from
+	// it is misrouted rather than merely misnamed. `stdio-to-uds` is that case:
+	// it is a genuine hidden root subcommand of codex-cli, and every invocation
+	// classified as a prompt left a detached helper idling behind it.
+	for (const args of [
+		["execpolicy", "check"],
+		["stdio-to-uds", "/tmp/codex.sock"],
+	] as const) {
+		it(`classifies the hidden \`${args[0]}\` subcommand as a command, not a prompt (#673)`, () => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+				"#!/usr/bin/env node",
+				"console.log(`SHADOW_HOME_IS_ORIGINAL:${process.env.CODEX_HOME === process.env.ORIGINAL_CODEX_HOME}`);",
+				"process.exit(0);",
+			]);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const markerPath = join(fixtureRoot, "proxy-marker.txt");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(
+				join(originalHome, "config.toml"),
+				'model_provider = "openai"\n',
+				"utf8",
+			);
+
+			const result = runWrapper(fixtureRoot, [...args], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				ORIGINAL_CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+				OPENAI_API_KEY: undefined,
+			});
+
+			const output = combinedOutput(result);
+			if (result.status !== 0) {
+				throw new Error(output);
+			}
+			expect(output).toContain("SHADOW_HOME_IS_ORIGINAL:false");
+		});
+	}
+
+	// `resume`/`fork` are interactive TUI entry points, but they carry a forwarded
+	// subcommand, so they used to fall through to the shadow-home transport. The
+	// shadow mirror omits the runtime SQLite state, so the requested thread was
+	// missing from the shadow session index and the resumed TUI hung on a blank
+	// screen (#647). Both must now reach the canonical home like the bare TUI.
+	for (const command of ["resume", "fork"] as const) {
+		it(`uses the canonical Codex home for \`${command}\` runtime routing (#647)`, async () => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+				"#!/usr/bin/env node",
+				'const fs = require("node:fs");',
+				'const path = require("node:path");',
+				"const args = process.argv.slice(2);",
+				'if (args[0] === "app-server") {',
+				'  console.log(`APP_SERVER_FORWARDED:${args.join(" ")}`);',
+				"  process.exit(0);",
+				"}",
+				"console.log(`RESUME_HOME_IS_ORIGINAL:${process.env.CODEX_HOME === process.env.ORIGINAL_CODEX_HOME}`);",
+				// The thread index only exists in the canonical home; the shadow mirror
+				// omits it, which is precisely what made resume hang.
+				'const statePath = path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite");',
+				"console.log(`RESUME_SEES_THREAD_INDEX:${fs.existsSync(statePath)}`);",
+				'console.log(`RESUME_COMMAND:${args[0]}`);',
+				'console.log(`RESUME_SESSION_ID:${args[1]}`);',
+				'console.log(`RESUME_HAS_BASE_URL_OVERRIDE:${args.some((arg) => arg.includes("model_providers.codex-multi-auth-runtime-proxy.base_url="))}`);',
+				"console.log(`RESUME_CLI_PATH_IS_SHIM:${(process.env.CODEX_CLI_PATH ?? \"\").includes(\"app-server-shims\")}`);",
+				"process.exit(0);",
+			]);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const markerPath = join(fixtureRoot, "proxy-marker.txt");
+			const sessionId = "019ddf47-2c01-7c73-9f81-ab0cd9c1d5b7";
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(
+				join(originalHome, "config.toml"),
+				'model_provider = "openai"\n',
+				"utf8",
+			);
+			writeFileSync(
+				join(originalHome, "state_5.sqlite"),
+				"canonical-thread-index\n",
+				"utf8",
+			);
+
+			const result = runWrapper(fixtureRoot, [command, sessionId], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				ORIGINAL_CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+				OPENAI_API_KEY: undefined,
+			});
+
+			const output = combinedOutput(result);
+			if (result.status !== 0) {
+				throw new Error(output);
+			}
+			expect(output).toContain("RESUME_HOME_IS_ORIGINAL:true");
+			expect(output).toContain("RESUME_SEES_THREAD_INDEX:true");
+			expect(output).toContain(`RESUME_COMMAND:${command}`);
+			expect(output).toContain(`RESUME_SESSION_ID:${sessionId}`);
+			// Rotation is still active: the proxy overrides ride along as `-c` args.
+			expect(output).toContain("RESUME_HAS_BASE_URL_OVERRIDE:true");
+			expect(output).toContain("RESUME_CLI_PATH_IS_SHIM:true");
+			// The canonical home is never rewritten on disk.
+			expect(readFileSync(join(originalHome, "config.toml"), "utf8")).toBe(
+				'model_provider = "openai"\n',
+			);
+			await waitForFileText(markerPath, "start:http://127.0.0.1:4567\nclose\n");
+		});
+	}
+
+	it("keeps a native openai rollout visible while routing its resumed requests through rotation", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"const args = process.argv.slice(2);",
+			'if (args[0] === "app-server") process.exit(0);',
+			"console.log(`PROVIDER_OPENAI:${args.includes('model_provider=\\\"openai\\\"')}`);",
+			"console.log(`OPENAI_PROXY_OVERRIDE:${args.some((arg) => arg.includes('openai_base_url='))}`);",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		const sessionId = "019ddf47-2c01-7c73-9f81-ab0cd9c1d5b7";
+		mkdirSync(join(originalHome, "sessions", "2026", "10", "16"), { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+		writeFileSync(
+			join(originalHome, "sessions", "2026", "10", "16", `rollout-2026-10-16T00-00-00-${sessionId}.jsonl`),
+			JSON.stringify({ type: "session_meta", payload: { id: sessionId, model_provider: "openai" } }) + "\n",
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["resume", sessionId], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			OPENAI_API_KEY: undefined,
+		});
+		const output = combinedOutput(result);
+		if (result.status !== 0) throw new Error(output);
+		expect(output).toContain("PROVIDER_OPENAI:true");
+		expect(output).toContain("OPENAI_PROXY_OVERRIDE:true");
+		await waitForFileText(markerPath, "start:http://127.0.0.1:4567\nclose\n");
+	});
+
+	// `codex resume --last` resumes the newest session recorded *in this
+	// directory*. A newer rollout from another project must not win the pick:
+	// its provider could differ and the resumed thread would silently switch
+	// transports mid-conversation (#743 review).
+	it("scopes `resume --last` to sessions recorded in the current directory", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"const args = process.argv.slice(2);",
+			'if (args[0] === "app-server") process.exit(0);',
+			'const provider = args.map((a) => a.match(/^model_provider=\\\\?"?([^"\\\\]+)/)).filter(Boolean).map((m) => m[1]).join(",");',
+			"console.log(`PROVIDER:${provider}`);",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		const sessionDir = join(originalHome, "sessions", "2026", "10", "16");
+		mkdirSync(sessionDir, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+		const foreignId = "019ddf47-aaaa-7c73-9f81-ab0cd9c1d5aa";
+		const localId = "019ddf47-bbbb-7c73-9f81-ab0cd9c1d5bb";
+		const foreignPath = join(sessionDir, `rollout-2026-10-16T00-00-00-${foreignId}.jsonl`);
+		const localPath = join(sessionDir, `rollout-2026-10-16T00-00-01-${localId}.jsonl`);
+		writeFileSync(foreignPath, JSON.stringify({ type: "session_meta", payload: { id: foreignId, model_provider: "custom-provider", cwd: "/elsewhere/project" } }) + "\n", "utf8");
+		writeFileSync(localPath, JSON.stringify({ type: "session_meta", payload: { id: localId, model_provider: "openai", cwd: process.cwd() } }) + "\n", "utf8");
+		// The foreign rollout is newer: an unfiltered `--last` would pick it.
+		const now = new Date();
+		utimesSync(foreignPath, now, now);
+		utimesSync(localPath, new Date(now.getTime() - 60_000), new Date(now.getTime() - 60_000));
+
+		const env = {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			OPENAI_API_KEY: undefined,
+		};
+		const scoped = runWrapper(fixtureRoot, ["resume", "--last"], env);
+		const scopedOut = combinedOutput(scoped);
+		if (scoped.status !== 0) throw new Error(scopedOut);
+		expect(scopedOut).toContain('PROVIDER:openai');
+
+		const all = runWrapper(fixtureRoot, ["resume", "--last", "--all"], env);
+		const allOut = combinedOutput(all);
+		if (all.status !== 0) throw new Error(allOut);
+		expect(allOut).not.toContain('PROVIDER:openai');
+	});
+
+	// The provider probe used to read entire rollout files; a multi-MB
+	// transcript is normal after a long session. Only a bounded prefix should
+	// be needed — the meta record is always first — so a huge file must still
+	// resolve quickly and correctly.
+	it("resolves the resume provider from a bounded prefix of a large rollout", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"const args = process.argv.slice(2);",
+			'if (args[0] === "app-server") process.exit(0);',
+			"console.log(`PROVIDER_OPENAI:${args.includes('model_provider=\\\"openai\\\"')}`);",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		const sessionDir = join(originalHome, "sessions", "2026", "10", "16");
+		mkdirSync(sessionDir, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+		const sessionId = "019ddf47-cccc-7c73-9f81-ab0cd9c1d5cc";
+		// 2 MB of transcript after the meta line: enough that a full read would
+		// be noticeable, harmless to a bounded one.
+		writeFileSync(
+			join(sessionDir, `rollout-2026-10-16T00-00-00-${sessionId}.jsonl`),
+			JSON.stringify({ type: "session_meta", payload: { id: sessionId, model_provider: "openai" } })
+				+ "\n" + "x".repeat(2 * 1024 * 1024),
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["resume", sessionId], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			OPENAI_API_KEY: undefined,
+		});
+		const output = combinedOutput(result);
+		if (result.status !== 0) throw new Error(output);
+		expect(output).toContain("PROVIDER_OPENAI:true");
+		await waitForFileText(markerPath, "start:http://127.0.0.1:4567\nclose\n");
+	});
+
+	// The rotation helper injects its own options (shim args plus
+	// `-c model_provider=...`) into subcommand argv, and appending those past a
+	// `--` hands them to the subcommand as positionals instead. The separator
+	// bounds that injection too (#673).
+	it("injects rotation helper args before a `--` on the resume path (#673)", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"const args = process.argv.slice(2);",
+			'if (args[0] === "app-server") process.exit(0);',
+			"const sep = args.indexOf(\"--\");",
+			"console.log(`SEP_INDEX:${sep}`);",
+			"console.log(`AFTER_SEP:${args.slice(sep + 1).join(\" \")}`);",
+			'console.log(`OVERRIDE_BEFORE_SEP:${args.slice(0, sep).some((a) => a.startsWith("model_provider="))}`);',
+			"console.log(`FIRST_ARG:${args[0]}`);",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["resume", "--last", "--", "do it"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		if (result.status !== 0) {
+			throw new Error(output);
+		}
+		// The subcommand still leads, the injected overrides sit on the option
+		// side, and only the user's own text survives past the separator.
+		expect(output).toContain("FIRST_ARG:resume");
+		expect(output).toContain("AFTER_SEP:do it");
+		expect(output).toContain("OVERRIDE_BEFORE_SEP:true");
+		await waitForFileText(markerPath, "start:http://127.0.0.1:4567\nclose\n");
+	});
+
+	// The rotation proxy's own `-c model_provider=...` injection appended past
+	// a `--`, so `codex exec -- "prompt"` failed with
+	// "unexpected argument '-c' found". The separator bounds that injection
+	// too, exactly like the helper args above.
+	it("injects the rotation provider before a `--` on the exec path", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"const args = process.argv.slice(2);",
+			"const sep = args.indexOf(\"--\");",
+			"console.log(`SEP_INDEX:${sep}`);",
+			"console.log(`AFTER_SEP:${args.slice(sep + 1).join(\" \")}`);",
+			"console.log(`PROVIDER_BEFORE_SEP:${args.slice(0, sep).some((a) => a.startsWith(\"model_provider=\"))}`);",
+			"console.log(`FIRST_ARG:${args[0]}`);",
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["exec", "--", "do the thing"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
+			CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+			OPENAI_API_KEY: undefined,
+		});
+
+		const output = combinedOutput(result);
+		if (result.status !== 0) {
+			throw new Error(output);
+		}
+		// The subcommand still leads, the injected provider sits on the option
+		// side, and only the user's own text survives past the separator.
+		expect(output).toContain("FIRST_ARG:exec");
+		expect(output).toContain("AFTER_SEP:do the thing");
+		expect(output).toContain("PROVIDER_BEFORE_SEP:true");
+		await waitForFileText(markerPath, "start:http://127.0.0.1:4567\nclose\n");
+	});
+
+	// Without a `--` the provider injection stays a plain append, keeping the
+	// forwarded argv byte-identical to the pre-separator-handling ordering.
+	it("appends the rotation provider at the end when there is no `--`", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+			ORIGINAL_CODEX_HOME: originalHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+			OPENAI_API_KEY: undefined,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status -c cli_auth_credentials_store="file" -c model_provider="codex-multi-auth-runtime-proxy"',
+		);
+	});
+
+	// Printing help makes no model requests, so it must not pay for the rotation
+	// transport at all. This matters most for resume/fork now that they are
+	// interactive: that branch detaches its helper on a clean exit, so a helper
+	// started for `--help` would outlive the wrapper and idle for its full timeout.
+	// `exec`/`review` never stranded anything, but they did build a whole shadow
+	// home just to print help, so every request command is covered (#647).
+	for (const command of ["resume", "fork", "exec", "review"] as const) {
+		for (const helpFlag of ["--help", "-h"] as const) {
+			it(`forwards \`${command} ${helpFlag}\` without starting the rotation transport (#647)`, () => {
+				const fixtureRoot = createWrapperFixture();
+				createRuntimeRotationProxyFixtureModule(fixtureRoot);
+				const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+					"#!/usr/bin/env node",
+					'console.log(`FORWARDED:${process.argv.slice(2).join(" ")}`);',
+					"console.log(`HELP_HOME_IS_ORIGINAL:${process.env.CODEX_HOME === process.env.ORIGINAL_CODEX_HOME}`);",
+					"process.exit(0);",
+				]);
+				const originalHome = join(fixtureRoot, "codex-home");
+				const markerPath = join(fixtureRoot, "proxy-marker.txt");
+				mkdirSync(originalHome, { recursive: true });
+				writeFileSync(
+					join(originalHome, "config.toml"),
+					'model_provider = "openai"\n',
+					"utf8",
+				);
+
+				const result = runWrapper(fixtureRoot, [command, helpFlag], {
+					CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+					CODEX_HOME: originalHome,
+					ORIGINAL_CODEX_HOME: originalHome,
+					CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+					CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+					OPENAI_API_KEY: undefined,
+				});
+
+				const output = combinedOutput(result);
+				if (result.status !== 0) {
+					throw new Error(output);
+				}
+				// No proxy was ever started, on either transport: the marker is the
+				// fixture proxy's only side effect and it is written at startup.
+				expect(existsSync(markerPath)).toBe(false);
+				expect(output).toContain("HELP_HOME_IS_ORIGINAL:true");
+				// Help reaches Codex verbatim, with no injected provider overrides.
+				expect(output).toContain(`FORWARDED:${command} ${helpFlag}`);
+				expect(output).not.toContain("model_provider=");
+			});
+		}
+	}
+
+	// The help short-circuit keys off a help flag, not the command, so a real
+	// resume must still take the rotation transport.
+	it("still routes `resume` with a session id through rotation (#647)", () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"const args = process.argv.slice(2);",
+			'if (args[0] === "app-server") process.exit(0);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["resume", "019ddf47-2c01-7c73-9f81-ab0cd9c1d5b7"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+				OPENAI_API_KEY: undefined,
+			},
+		);
+
+		if (result.status !== 0) {
+			throw new Error(combinedOutput(result));
+		}
+		expect(existsSync(markerPath)).toBe(true);
+	});
+
+	// Guards the other half of the split: non-interactive request commands must keep
+	// using the isolated shadow home, so widening the interactive classification
+	// cannot silently move `exec`/`review` onto the canonical home.
+	for (const command of ["exec", "review"] as const) {
+		it(`keeps \`${command}\` on the shadow Codex home (#647)`, () => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+				"#!/usr/bin/env node",
+				"console.log(`SHADOW_HOME_IS_ORIGINAL:${process.env.CODEX_HOME === process.env.ORIGINAL_CODEX_HOME}`);",
+				"process.exit(0);",
+			]);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const markerPath = join(fixtureRoot, "proxy-marker.txt");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(
+				join(originalHome, "config.toml"),
+				'model_provider = "openai"\n',
+				"utf8",
+			);
+
+			const result = runWrapper(fixtureRoot, [command, "do something"], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				ORIGINAL_CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+				OPENAI_API_KEY: undefined,
+			});
+
+			const output = combinedOutput(result);
+			if (result.status !== 0) {
+				throw new Error(output);
+			}
+			expect(output).toContain("SHADOW_HOME_IS_ORIGINAL:false");
+		});
+	}
+
+	// The launcher only waits two seconds for the detached helper to stop, and it
+	// reads the helper over piped stdio. When those pipes stay open past the window
+	// the wrapper's event loop never drains and the shell prompt never comes back.
+	// Here a leaked grandchild holds the write end, so `close` never fires and the
+	// launcher must destroy and unref the handles itself (#647).
+	it("returns to the shell when the app helper's stdio outlives its shutdown window (#647)", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			"const args = process.argv.slice(2);",
+			'if (args[0] === "app-server") {',
+			"  process.exit(0);",
+			"}",
+			// A nonzero Codex exit forces the launcher down the stop-the-helper path
+			// rather than the detach-on-clean-exit path.
+			"process.exit(3);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const markerPath = join(fixtureRoot, "proxy-marker.txt");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		// Comfortably longer than the bounded shutdown, and longer than the spawn
+		// timeout, so a regression trips the timeout rather than racing it.
+		const pipeHolderMs = 25_000;
+		const startedAt = Date.now();
+		const result = runWrapper(
+			fixtureRoot,
+			[],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+				CODEX_MULTI_AUTH_TEST_PROXY_PIPE_HOLDER_MS: String(pipeHolderMs),
+				OPENAI_API_KEY: undefined,
+			},
+			{ timeoutMs: WRAPPER_SHUTDOWN_TIMEOUT_MS },
+		);
+		const elapsedMs = Date.now() - startedAt;
+
+		// The wrapper came back at all, and it did so on the 2s graceful window rather
+		// than waiting out the process still holding its pipes.
+		expectWrapperReturned(result, "a leaked grandchild still holds its stdio");
+		expect(result.status).toBe(3);
+		expect(elapsedMs).toBeLessThan(WRAPPER_SHUTDOWN_TIMEOUT_MS);
+	}, SHUTDOWN_TEST_TIMEOUT_MS);
+
+	// POSIX only: the launcher must escalate to SIGKILL when the helper ignores the
+	// graceful SIGTERM. On Windows `kill()` is always an unconditional terminate, so
+	// a helper cannot ignore it and this escalation cannot be exercised there.
+	it.skipIf(process.platform === "win32")(
+		"force-stops an app helper that ignores SIGTERM (#647)",
+		async () => {
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+				"#!/usr/bin/env node",
+				"const args = process.argv.slice(2);",
+				'if (args[0] === "app-server") {',
+				"  process.exit(0);",
+				"}",
+				// A nonzero Codex exit forces the launcher down the stop-the-helper path
+				// rather than the detach-on-clean-exit path.
+				"process.exit(3);",
+			]);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const markerPath = join(fixtureRoot, "proxy-marker.txt");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(
+				join(originalHome, "config.toml"),
+				'model_provider = "openai"\n',
+				"utf8",
+			);
+
+			const startedAt = Date.now();
+			const result = runWrapper(
+				fixtureRoot,
+				[],
+				{
+					CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+					CODEX_HOME: originalHome,
+					CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+					CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+					CODEX_MULTI_AUTH_TEST_PROXY_MARKER: markerPath,
+					CODEX_MULTI_AUTH_TEST_PROXY_MARKER_PID: "1",
+					// The helper's SIGTERM handler awaits `close()`, which never resolves
+					// here, so only the force-kill fallback can stop it.
+					CODEX_MULTI_AUTH_TEST_PROXY_CLOSE_HANG: "1",
+					OPENAI_API_KEY: undefined,
+				},
+				{ timeoutMs: WRAPPER_SHUTDOWN_TIMEOUT_MS },
+			);
+			const elapsedMs = Date.now() - startedAt;
+
+			// The wrapper returned at all: before the fix this call never came back.
+			expectWrapperReturned(result, "the helper ignored SIGTERM");
+			expect(result.status).toBe(3);
+			expect(elapsedMs).toBeLessThan(WRAPPER_SHUTDOWN_TIMEOUT_MS);
+
+			const pidMatch = readFileSync(markerPath, "utf8").match(
+				/^start:[^\n]*:pid=(\d+)$/m,
+			);
+			expect(pidMatch?.[1]).toBeTruthy();
+			const helperPid = Number(pidMatch?.[1]);
+
+			// SIGKILL is asynchronous; give the OS a moment to reap the helper.
+			for (let attempt = 0; attempt < 40 && isProcessAlive(helperPid); attempt += 1) {
+				await sleep(100);
+			}
+			expect(isProcessAlive(helperPid)).toBe(false);
+		},
+		SHUTDOWN_TEST_TIMEOUT_MS,
+	);
+
+	// Canonical-home routing drops the per-session shadow copy, so two concurrent
+	// interactive sessions now share the real Codex home. That is how the stock
+	// CLI already behaves, but it has to be proven rather than assumed: neither
+	// session may lose state written by the other, and neither may fail to launch.
+	it("keeps both sessions' state when two canonical TUI sessions overlap", async () => {
+		const fixtureRoot = createWrapperFixture();
+		createRuntimeRotationProxyFixtureModule(fixtureRoot);
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			"const args = process.argv.slice(2);",
+			'if (args[0] === "app-server") {',
+			"  process.exit(0);",
+			"}",
+			'const id = process.env.CODEX_MULTI_AUTH_TEST_SESSION_ID ?? "unknown";',
+			'const home = process.env.CODEX_HOME ?? "";',
+			'console.log(`TUI_HOME_IS_ORIGINAL:${home === process.env.ORIGINAL_CODEX_HOME}`);',
+			'const sessionsDir = path.join(home, "sessions");',
+			"fs.mkdirSync(sessionsDir, { recursive: true });",
+			"const startedAt = Date.now();",
+			'fs.writeFileSync(path.join(sessionsDir, id + ".jsonl"), "session-" + id + "\\n", "utf8");',
+			"// Linger so both sessions are genuinely in-flight at the same time,",
+			"// rather than serialising by accident and proving nothing.",
+			"Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 600);",
+			'console.log(`TUI_SESSION_WINDOW:${id}:${startedAt}:${Date.now()}`);',
+			'console.log(`TUI_SESSION_DONE:${id}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_provider = "openai"\n',
+			"utf8",
+		);
+
+		const launch = (id: string) =>
+			runWrapperAsync(fixtureRoot, [], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				ORIGINAL_CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
+				CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(
+					fixtureRoot,
+					`proxy-marker-${id}.txt`,
+				),
+				CODEX_MULTI_AUTH_TEST_SESSION_ID: id,
+				OPENAI_API_KEY: undefined,
+			});
+
+		const results = await Promise.all([launch("alpha"), launch("beta")]);
+
+		for (const result of results) {
+			const output = combinedOutput(result);
+			if (result.status !== 0) {
+				throw new Error(output);
+			}
+			expect(output).toContain("TUI_HOME_IS_ORIGINAL:true");
+		}
+		expect(combinedOutput(results[0])).toContain("TUI_SESSION_DONE:alpha");
+		expect(combinedOutput(results[1])).toContain("TUI_SESSION_DONE:beta");
+
+		// Prove the sessions actually overlapped. If they serialised, the test
+		// would pass without ever exercising concurrency.
+		const windows = results.map((result) => {
+			const match = combinedOutput(result).match(
+				/TUI_SESSION_WINDOW:\w+:(\d+):(\d+)/,
+			);
+			if (!match) throw new Error("missing session window marker");
+			return { start: Number(match[1]), end: Number(match[2]) };
+		});
+		const [first, second] = windows as [
+			{ start: number; end: number },
+			{ start: number; end: number },
+		];
+		expect(first.start).toBeLessThan(second.end);
+		expect(second.start).toBeLessThan(first.end);
+
+		// Neither session's state may be lost to the other.
+		expect(
+			readFileSync(join(originalHome, "sessions", "alpha.jsonl"), "utf8"),
+		).toBe("session-alpha\n");
+		expect(
+			readFileSync(join(originalHome, "sessions", "beta.jsonl"), "utf8"),
+		).toBe("session-beta\n");
+		// The real config is still only touched via -c overrides.
+		expect(readFileSync(join(originalHome, "config.toml"), "utf8")).toBe(
+			'model_provider = "openai"\n',
+		);
 	});
 
 	it("stops detached TUI app helpers after failed launches", async () => {
@@ -2984,6 +6098,123 @@ describe("codex bin wrapper", () => {
 		expect(result.stdout).not.toContain('cli_auth_credentials_store="file"');
 	});
 
+	// Issue #641: the per-invocation `-c` override only covers the process this
+	// wrapper spawns. Third-party front-ends exec the official binary directly
+	// and read config.toml, so the persisted value has to be reconciled too or
+	// they keep raising macOS login-keychain prompts.
+	it("reconciles the persisted auth store before forwarding", () => {
+		const fixtureRoot = createWrapperFixture();
+		const callDir = createAuthStoreWriterFixtureModule(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status -c cli_auth_credentials_store="file"',
+		);
+		expect(readAuthStoreCallCount(callDir)).toBe(1);
+	});
+
+	it("skips the persisted auth-store reconcile when the opt-out env var is disabled", () => {
+		const fixtureRoot = createWrapperFixture();
+		const callDir = createAuthStoreWriterFixtureModule(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_FORCE_FILE_AUTH_STORE: "0",
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).not.toContain('cli_auth_credentials_store="file"');
+		expect(readAuthStoreCallCount(callDir)).toBe(0);
+	});
+
+	// Windows locks config.toml aggressively (EPERM/EBUSY). A failed reconcile
+	// must never block the wrapped command — the per-invocation `-c` override
+	// still protects this run.
+	it("keeps forwarding when the persisted auth-store reconcile fails", () => {
+		const fixtureRoot = createWrapperFixture();
+		const callDir = createAuthStoreWriterFixtureModule(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_MULTI_AUTH_TEST_AUTH_STORE_FAIL: "1",
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status -c cli_auth_credentials_store="file"',
+		);
+		expect(readAuthStoreCallCount(callDir)).toBe(1);
+	});
+
+	it("forwards normally when the compiled auth-store module is absent", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+
+		const result = runWrapper(fixtureRoot, ["exec", "status"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec status -c cli_auth_credentials_store="file"',
+		);
+	});
+
+	// test/AGENTS.md requires the bin wrapper's lazy-load / missing-dist paths to
+	// be covered under concurrent invocations: the auth-store guard imports
+	// dist/ on every startup, so a missing module must degrade per-process
+	// rather than letting one launch's failed import affect another.
+	it("forwards every concurrent launch when the compiled auth-store module is absent", async () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+
+		const results = await Promise.all(
+			Array.from({ length: 4 }, () =>
+				runWrapperAsync(fixtureRoot, ["exec", "status"], {
+					CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				}),
+			),
+		);
+
+		for (const result of results) {
+			expect(combinedOutput(result)).toContain(
+				'FORWARDED:exec status -c cli_auth_credentials_store="file"',
+			);
+			expect(result.status).toBe(0);
+		}
+	});
+
+	// Same shape, but with the module present: concurrent reconciles race on the
+	// same config.toml, and none of them may fail the wrapped command.
+	it("forwards every concurrent launch while reconciling the same config", async () => {
+		const fixtureRoot = createWrapperFixture();
+		const callDir = createAuthStoreWriterFixtureModule(fixtureRoot);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+
+		const results = await Promise.all(
+			Array.from({ length: 4 }, () =>
+				runWrapperAsync(fixtureRoot, ["exec", "status"], {
+					CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				}),
+			),
+		);
+
+		for (const result of results) {
+			expect(combinedOutput(result)).toContain(
+				'FORWARDED:exec status -c cli_auth_credentials_store="file"',
+			);
+			expect(result.status).toBe(0);
+		}
+		expect(readAuthStoreCallCount(callDir)).toBe(4);
+	});
+
 	it("does not double-inject file auth store when caller already set it", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
@@ -3004,6 +6235,47 @@ describe("codex bin wrapper", () => {
 		).toHaveLength(1);
 	});
 
+	// Everything after `--` is the root prompt, so prompt text that happens to
+	// spell the override is not a caller override. Scanning past `--` would let
+	// it suppress the injection and silently drop the file auth store (#673).
+	it("still injects the file auth store when the prompt text spells the override (#673)", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		// A single token, which is the only runnable shape that tripped the old
+		// scan: a two-token `-c <assignment>` prompt is surplus positionals that
+		// Codex rejects before any of this matters.
+		const result = runWrapper(
+			fixtureRoot,
+			["--", '--config=cli_auth_credentials_store="keyring"'],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		// The wrapper's own override is injected ahead of the `--`, and the
+		// prompt text reaches Codex untouched behind it.
+		expect(result.stdout).toContain(
+			'FORWARDED:-c cli_auth_credentials_store="file" -- --config=cli_auth_credentials_store="keyring"',
+		);
+	});
+
+	// Appending past a `--` puts the injected pair in the subcommand's own
+	// positional list, which Codex rejects with "unexpected argument '-c'".
+	// The separator bounds the append for subcommand argv too (#673).
+	it("injects the file auth store before a subcommand's `--` separator (#673)", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const result = runWrapper(fixtureRoot, ["exec", "--", "do the thing"], {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(
+			'FORWARDED:exec -c cli_auth_credentials_store="file" -- do the thing',
+		);
+	});
+
 	it("propagates downstream file-store write errors from forwarded wrapper execution", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
@@ -3021,7 +6293,7 @@ describe("codex bin wrapper", () => {
 		expect(combinedOutput(result)).toContain("EPERM: locked auth store");
 	});
 
-	it("creates a compatibility CODEX_HOME shadow when the requested model cannot accept xhigh defaults", () => {
+	it("creates a compatibility CODEX_HOME shadow when the requested model cannot accept the configured effort", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
 			"#!/usr/bin/env node",
@@ -3049,17 +6321,17 @@ describe("codex bin wrapper", () => {
 		writeFileSync(
 			join(originalHome, "config.toml"),
 			[
-				'model_reasoning_effort = "xhigh"',
+				'model_reasoning_effort = "ultra"',
 				'profile = "legacy-full-access"',
 				"",
 				'[profiles."legacy-full-access"]',
-				'model_reasoning_effort = "xhigh"',
+				'model_reasoning_effort = "ultra"',
 				"",
 			].join("\n"),
 			"utf8",
 		);
 
-		const result = runWrapper(fixtureRoot, ["exec", "status", "--model", "gpt-5.1"], {
+		const result = runWrapper(fixtureRoot, ["exec", "status", "--model", "gpt-6-luna"], {
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 			CODEX_HOME: originalHome,
 			CODEX_MULTI_AUTH_DIR: undefined,
@@ -3067,15 +6339,15 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(0);
 		const output = combinedOutput(result);
-		expect(output).toContain('FORWARDED:exec status --model gpt-5.1 -c cli_auth_credentials_store="file"');
+		expect(output).toContain('FORWARDED:exec status --model gpt-6-luna -c cli_auth_credentials_store="file"');
 		expect(output).not.toContain(`CODEX_HOME:${originalHome}`);
 		expect(output).toContain("CODEX_MULTI_AUTH_DIR_JSON:null");
 		expect(output).toContain("AUTH_EXISTS:true");
 		expect(output).toContain("AUTH_JSON:{}");
 		expect(output).toContain("AUTH_MODE:");
-		expect(output).toContain('model_reasoning_effort = "high"');
+		expect(output).toContain('model_reasoning_effort = "max"');
 		expect(output).toContain("CONFIG_MODE:");
-		expect(output).not.toContain('model_reasoning_effort = "xhigh"');
+		expect(output).not.toContain('model_reasoning_effort = "ultra"');
 		if (process.platform !== "win32") {
 			expect(output).toContain("AUTH_MODE:600");
 			expect(output).toContain("CONFIG_MODE:600");
@@ -3094,13 +6366,13 @@ describe("codex bin wrapper", () => {
 		mkdirSync(join(originalHome, "accounts.json"), { recursive: true });
 		writeFileSync(
 			join(originalHome, "config.toml"),
-			'model_reasoning_effort = "xhigh"\n',
+			'model_reasoning_effort = "ultra"\n',
 			"utf8",
 		);
 
 		const result = runWrapper(
 			fixtureRoot,
-			["exec", "status", "--model", "gpt-5.1"],
+			["exec", "status", "--model", "gpt-6-luna"],
 			{
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_HOME: originalHome,
@@ -3136,9 +6408,9 @@ describe("codex bin wrapper", () => {
 		mkdirSync(join(originalHome, "sessions"), { recursive: true });
 		mkdirSync(controlledTmp, { recursive: true });
 		writeFileSync(join(originalHome, "sessions", "existing.jsonl"), "existing\n", "utf8");
-		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "ultra"\n', "utf8");
 
-		const result = runWrapper(fixtureRoot, ["exec", "status", "--model", "gpt-5.1"], {
+		const result = runWrapper(fixtureRoot, ["exec", "status", "--model", "gpt-6-luna"], {
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 			CODEX_HOME: originalHome,
 			TMP: controlledTmp,
@@ -3174,11 +6446,11 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
 		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
 		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
-		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "ultra"\n', "utf8");
 
 		const result = runWrapper(
 			fixtureRoot,
-			["exec", "status", "--model", "gpt-5.1"],
+			["exec", "status", "--model", "gpt-6-luna"],
 			{
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_HOME: originalHome,
@@ -3196,6 +6468,57 @@ describe("codex bin wrapper", () => {
 		readdirSync(controlledTmp).filter((entry) =>
 			entry.startsWith("codex-multi-auth-home-"),
 		),
+		).toEqual([]);
+	});
+
+	it("never syncs the shadow-home owner marker into the real CODEX_HOME", () => {
+		const fixtureRoot = createWrapperFixture();
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"#!/usr/bin/env node",
+			'const fs = require("node:fs");',
+			'const path = require("node:path");',
+			'const home = process.env.CODEX_HOME ?? "";',
+			// Prove the marker really sat inside the shadow during the run —
+			// otherwise the absence assertion below cannot regress.
+			'console.log(`OWNER_MARKER:${fs.existsSync(path.join(home, ".codex-multi-auth-owner.json"))}`);',
+			'console.log(`HOME_NAME:${path.basename(home)}`);',
+			"process.exit(0);",
+		]);
+		const originalHome = join(fixtureRoot, "codex-home");
+		const controlledTmp = join(fixtureRoot, "tmp");
+		mkdirSync(originalHome, { recursive: true });
+		mkdirSync(controlledTmp, { recursive: true });
+		writeFileSync(
+			join(originalHome, "config.toml"),
+			'model_reasoning_effort = "ultra"\n',
+			"utf8",
+		);
+
+		const result = runWrapper(
+			fixtureRoot,
+			["exec", "status", "--model", "gpt-6-luna"],
+			{
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				TMP: controlledTmp,
+				TEMP: controlledTmp,
+				TMPDIR: controlledTmp,
+			},
+		);
+
+		expect(result.status).toBe(0);
+		const output = combinedOutput(result);
+		expect(output).toContain("OWNER_MARKER:true");
+		expect(output).toContain("HOME_NAME:codex-multi-auth-home-");
+		// The marker is sweep housekeeping for the shadow dir only; the
+		// sync-back must not leave stale wrapper-PID metadata in the real home.
+		expect(
+			existsSync(join(originalHome, ".codex-multi-auth-owner.json")),
+		).toBe(false);
+		expect(
+			readdirSync(controlledTmp).filter((entry) =>
+				entry.startsWith("codex-multi-auth-home-"),
+			),
 		).toEqual([]);
 	});
 
@@ -3228,7 +6551,7 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
 		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
 		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
-		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "ultra"\n', "utf8");
 
 		const commonEnv = {
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
@@ -3240,7 +6563,7 @@ describe("codex bin wrapper", () => {
 		};
 		const first = runWrapperAsync(
 			fixtureRoot,
-			["exec", "status", "--model", "gpt-5.1"],
+			["exec", "status", "--model", "gpt-6-luna"],
 			{
 				...commonEnv,
 				CODEX_MULTI_AUTH_TEST_SESSION_ID: "first",
@@ -3249,7 +6572,7 @@ describe("codex bin wrapper", () => {
 		);
 		const second = runWrapperAsync(
 			fixtureRoot,
-			["exec", "status", "--model", "gpt-5.1"],
+			["exec", "status", "--model", "gpt-6-luna"],
 			{
 				...commonEnv,
 				CODEX_MULTI_AUTH_TEST_SESSION_ID: "second",
@@ -3307,13 +6630,13 @@ describe("codex bin wrapper", () => {
 		);
 		writeFileSync(
 			join(originalHome, "config.toml"),
-			'model_reasoning_effort = "xhigh"\n',
+			'model_reasoning_effort = "ultra"\n',
 			"utf8",
 		);
 
 		const result = runWrapper(
 			fixtureRoot,
-			["exec", "status", "--model", "gpt-5.1"],
+			["exec", "status", "--model", "gpt-6-luna"],
 			{
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_HOME: originalHome,
@@ -3349,12 +6672,12 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
 		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
 		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
-		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "ultra"\n', "utf8");
 		const lockDir = join(originalHome, ".codex-multi-auth-shadow-sync.lock");
 
 		const result = runWrapper(
 			fixtureRoot,
-			["exec", "status", "--model", "gpt-5.1"],
+			["exec", "status", "--model", "gpt-6-luna"],
 			{
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_HOME: originalHome,
@@ -3391,12 +6714,12 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
 		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
 		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
-		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "ultra"\n', "utf8");
 		const lockDir = join(originalHome, ".codex-multi-auth-shadow-sync.lock");
 
 		const result = runWrapper(
 			fixtureRoot,
-			["exec", "status", "--model", "gpt-5.1"],
+			["exec", "status", "--model", "gpt-6-luna"],
 			{
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_HOME: originalHome,
@@ -3433,7 +6756,7 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
 		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
 		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
-		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "ultra"\n', "utf8");
 		const staleOwner = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
 			encoding: "utf8",
 			windowsHide: true,
@@ -3449,7 +6772,7 @@ describe("codex bin wrapper", () => {
 
 		const result = runWrapper(
 			fixtureRoot,
-			["exec", "status", "--model", "gpt-5.1"],
+			["exec", "status", "--model", "gpt-6-luna"],
 			{
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_HOME: originalHome,
@@ -3488,7 +6811,7 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
 		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
 		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
-		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "ultra"\n', "utf8");
 		const lockDir = join(originalHome, ".codex-multi-auth-shadow-sync.lock");
 		mkdirSync(lockDir, { recursive: true });
 		if (ownerContent !== undefined) {
@@ -3498,7 +6821,7 @@ describe("codex bin wrapper", () => {
 
 		const result = runWrapper(
 			fixtureRoot,
-			["exec", "status", "--model", "gpt-5.1"],
+			["exec", "status", "--model", "gpt-6-luna"],
 			{
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_HOME: originalHome,
@@ -3534,7 +6857,7 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
 		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
 		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
-		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "ultra"\n', "utf8");
 		const lockDir = join(originalHome, ".codex-multi-auth-shadow-sync.lock");
 		mkdirSync(lockDir, { recursive: true });
 		writeFileSync(
@@ -3545,7 +6868,7 @@ describe("codex bin wrapper", () => {
 
 		const result = runWrapper(
 			fixtureRoot,
-			["exec", "status", "--model", "gpt-5.1"],
+			["exec", "status", "--model", "gpt-6-luna"],
 			{
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_HOME: originalHome,
@@ -3576,7 +6899,7 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
 		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
 		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
-		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "ultra"\n', "utf8");
 		const lockDir = join(originalHome, ".codex-multi-auth-shadow-sync.lock");
 		mkdirSync(lockDir, { recursive: true });
 		writeFileSync(
@@ -3587,7 +6910,7 @@ describe("codex bin wrapper", () => {
 
 		const result = runWrapper(
 			fixtureRoot,
-			["exec", "status", "--model", "gpt-5.1"],
+			["exec", "status", "--model", "gpt-6-luna"],
 			{
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_HOME: originalHome,
@@ -3629,14 +6952,14 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
 		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
 		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
-		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "ultra"\n', "utf8");
 		const lockDir = join(originalHome, ".codex-multi-auth-shadow-sync.lock");
 		mkdirSync(lockDir, { recursive: true });
 
 		const startedAt = Date.now();
 		const result = runWrapper(
 			fixtureRoot,
-			["exec", "status", "--model", "gpt-5.1"],
+			["exec", "status", "--model", "gpt-6-luna"],
 			{
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_HOME: originalHome,
@@ -3677,11 +7000,11 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
 		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
 		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
-		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "ultra"\n', "utf8");
 
 		const result = runWrapper(
 			fixtureRoot,
-			["exec", "status", "--model", "gpt-5.1"],
+			["exec", "status", "--model", "gpt-6-luna"],
 			{
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_HOME: originalHome,
@@ -3749,11 +7072,11 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
 		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
 		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
-		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "ultra"\n', "utf8");
 
 		const result = runWrapper(
 			fixtureRoot,
-			["exec", "status", "--model", "gpt-5.1"],
+			["exec", "status", "--model", "gpt-6-luna"],
 			{
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_HOME: originalHome,
@@ -3796,11 +7119,11 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "auth.json"), '{"token":"original"}\n', "utf8");
 		writeFileSync(join(originalHome, "accounts.json"), '{"accounts":["original"]}\n', "utf8");
 		writeFileSync(join(originalHome, ".codex-global-state.json"), '{"last":"original"}\n', "utf8");
-		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "xhigh"\n', "utf8");
+		writeFileSync(join(originalHome, "config.toml"), 'model_reasoning_effort = "ultra"\n', "utf8");
 
 		const result = runWrapper(
 			fixtureRoot,
-			["exec", "status", "--model", "gpt-5.1"],
+			["exec", "status", "--model", "gpt-6-luna"],
 			{
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_HOME: originalHome,
@@ -3818,7 +7141,7 @@ describe("codex bin wrapper", () => {
 		expect(readFileSync(join(originalHome, ".codex-global-state.json"), "utf8").trim()).toBe('{"last":"shadow"}');
 	});
 
-	it("keeps xhigh config reasoning when deprecated mini aliases route to current Codex", () => {
+	it("keeps xhigh config reasoning when retired mini aliases route to gpt-5.6-terra", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
 			"#!/usr/bin/env node",
@@ -3879,9 +7202,9 @@ describe("codex bin wrapper", () => {
 				"exec",
 				"status",
 				"--model",
-				"gpt-5.1",
+				"gpt-6-luna",
 				"-c",
-				'model_reasoning_effort="xhigh"',
+				'model_reasoning_effort="ultra"',
 			],
 			{
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
@@ -3891,12 +7214,12 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain(
-			'FORWARDED:exec status --model gpt-5.1 -c model_reasoning_effort="high" -c cli_auth_credentials_store="file"',
+			'FORWARDED:exec status --model gpt-6-luna -c model_reasoning_effort="max" -c cli_auth_credentials_store="file"',
 		);
-		expect(result.stdout).not.toContain('model_reasoning_effort="xhigh"');
+		expect(result.stdout).not.toContain('model_reasoning_effort="ultra"');
 	});
 
-	it("keeps explicit xhigh reasoning for deprecated mini aliases routed to current Codex", () => {
+	it("keeps explicit xhigh reasoning for retired mini aliases routed to gpt-5.6-terra", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
 		const originalHome = join(fixtureRoot, "codex-home");
@@ -3926,7 +7249,7 @@ describe("codex bin wrapper", () => {
 	);
 	});
 
-	it("keeps xhigh overrides for stale bare GPT-5 aliases routed to GPT-5.5", () => {
+	it("keeps xhigh overrides for stale bare GPT-5 aliases routed to their replacements", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
 		const originalHome = join(fixtureRoot, "codex-home");
@@ -4005,11 +7328,11 @@ describe("codex bin wrapper", () => {
 
 		expect(proResult.status).toBe(0);
 		expect(proResult.stdout).toContain(
-			'FORWARDED:exec status --model gpt-5.5-pro -c model_reasoning_effort="medium" -c cli_auth_credentials_store="file"',
+			'FORWARDED:exec status --model gpt-5.5-pro -c model_reasoning_effort="low" -c cli_auth_credentials_store="file"',
 		);
 	});
 
-	it("retries GPT-5.5 aliases with gpt-5.4 after unsupported-model failures", () => {
+	it("retries GPT-5.6 Sol with gpt-6-luna after unsupported-model failures", () => {
 		const fixtureRoot = createWrapperFixture();
 		const stateDir = join(fixtureRoot, "retry-state");
 		mkdirSync(stateDir, { recursive: true });
@@ -4040,7 +7363,7 @@ describe("codex bin wrapper", () => {
 				"exec",
 				"status",
 				"--model",
-				"gpt-5.5-pro",
+				"gpt-5.6-sol",
 				"-c",
 				'model_reasoning_effort="low"',
 			],
@@ -4054,15 +7377,15 @@ describe("codex bin wrapper", () => {
 		const output = combinedOutput(result);
 		expect(result.status).toBe(0);
 		expect(output).toContain(
-			"The 'gpt-5.5-pro' model is not supported when using Codex with a ChatGPT account.",
+			"The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.",
 		);
-		expect(output).toContain("Retrying with gpt-5.4");
+		expect(output).toContain("Retrying with gpt-6-luna");
 		expect(output).toContain(
-			'FORWARDED:exec status --model gpt-5.4 -c model_reasoning_effort="low" -c cli_auth_credentials_store="file"',
+			'FORWARDED:exec status --model gpt-6-luna -c model_reasoning_effort="low" -c cli_auth_credentials_store="file"',
 		);
 	});
 
-	it("retries stale bare GPT-5 aliases with GPT-5.5 after unsupported-model failures", () => {
+	it("retries stale bare GPT-5 aliases with GPT-5.6 Sol after unsupported-model failures", () => {
 		const fixtureRoot = createWrapperFixture();
 		const stateDir = join(fixtureRoot, "retry-state-bare-gpt5");
 		mkdirSync(stateDir, { recursive: true });
@@ -4102,13 +7425,13 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain(
 			"The 'gpt-5' model is not supported when using Codex with a ChatGPT account.",
 		);
-		expect(output).toContain("Retrying with gpt-5.5");
+		expect(output).toContain("Retrying with gpt-5.6-sol");
 		expect(output).toContain(
-			'FORWARDED:exec status --model gpt-5.5 -c cli_auth_credentials_store="file"',
+			'FORWARDED:exec status --model gpt-5.6-sol -c cli_auth_credentials_store="file"',
 		);
 	});
 
-	it("retries legacy Codex aliases with the current Codex model after unsupported-model failures", () => {
+	it("retries retired Codex aliases with their replacement after unsupported-model failures", () => {
 		const fixtureRoot = createWrapperFixture();
 		const stateDir = join(fixtureRoot, "retry-state-legacy-codex");
 		mkdirSync(stateDir, { recursive: true });
@@ -4156,9 +7479,9 @@ describe("codex bin wrapper", () => {
 		expect(output).toContain(
 			"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
 		);
-		expect(output).toContain("Retrying with gpt-5.3-codex");
+		expect(output).toContain("Retrying with gpt-5.6-sol");
 		expect(output).toContain(
-			'FORWARDED:exec status -m gpt-5.3-codex -c model_reasoning_effort="xhigh" -c cli_auth_credentials_store="file"',
+			'FORWARDED:exec status -m gpt-5.6-sol -c model_reasoning_effort="xhigh" -c cli_auth_credentials_store="file"',
 		);
 	});
 
@@ -4187,7 +7510,7 @@ describe("codex bin wrapper", () => {
 		writeFileSync(join(originalHome, "auth.json"), "{}\n", "utf8");
 		writeFileSync(join(originalHome, "config.toml"), "", "utf8");
 
-		const result = runWrapper(fixtureRoot, ["exec", "status", "--model", "gpt-5.5"], {
+		const result = runWrapper(fixtureRoot, ["exec", "status", "--model", "gpt-5.6-sol"], {
 			CODEX_MULTI_AUTH_CAPTURE_FORWARD_OUTPUT: "1",
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 			CODEX_MULTI_AUTH_TEST_STATE_DIR: stateDir,
@@ -4197,9 +7520,9 @@ describe("codex bin wrapper", () => {
 		const output = combinedOutput(result);
 		expect(result.status).toBe(0);
 		expect(readFileSync(join(stateDir, "attempt.txt"), "utf8")).toBe("2");
-		expect(output).toContain("Retrying with gpt-5.4");
+		expect(output).toContain("Retrying with gpt-6-luna");
 		expect(output).toContain(
-			'FORWARDED:exec status --model gpt-5.4 -c cli_auth_credentials_store="file"',
+			'FORWARDED:exec status --model gpt-6-luna -c cli_auth_credentials_store="file"',
 		);
 	});
 
@@ -4216,11 +7539,11 @@ describe("codex bin wrapper", () => {
 			"const counterPath = path.join(process.env.CODEX_MULTI_AUTH_TEST_STATE_DIR, 'attempt.txt');",
 			"const attempt = fs.existsSync(counterPath) ? Number(fs.readFileSync(counterPath, 'utf8')) : 0;",
 			"fs.writeFileSync(counterPath, String(attempt + 1), 'utf8');",
-			"console.error(\"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.\");",
+			"console.error(\"The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.\");",
 			"process.exit(1);",
 		]);
 
-		const result = runWrapper(fixtureRoot, ["exec", "status", "--model", "gpt-5.5"], {
+		const result = runWrapper(fixtureRoot, ["exec", "status", "--model", "gpt-5.6-sol"], {
 			CODEX_MULTI_AUTH_CAPTURE_FORWARD_OUTPUT: "0",
 			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 			CODEX_MULTI_AUTH_TEST_STATE_DIR: stateDir,
@@ -4231,12 +7554,34 @@ describe("codex bin wrapper", () => {
 		expect(result.status).toBe(1);
 		expect(readFileSync(join(stateDir, "attempt.txt"), "utf8")).toBe("1");
 		expect(output).toContain(
-			"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+			"The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.",
 		);
-		expect(output).not.toContain("Retrying with gpt-5.4");
+		expect(output).not.toContain("Retrying with");
 	});
 
-	it("retries GPT-5.5 after access-denied style model errors", () => {
+	it("keeps interactive resume stdout attached even when capture is forced", () => {
+		const fixtureRoot = createWrapperFixture();
+		const originalHome = join(fixtureRoot, "codex-home");
+		mkdirSync(originalHome, { recursive: true });
+		writeFileSync(join(originalHome, "config.toml"), "", "utf8");
+		const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+			"console.error(\"The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.\");",
+			"process.exit(1);",
+		]);
+
+		const result = runWrapper(fixtureRoot, ["resume", "019ddf47-2c01-7c73-9f81-ab0cd9c1d5b7"], {
+			CODEX_MULTI_AUTH_CAPTURE_FORWARD_OUTPUT: "1",
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: originalHome,
+		});
+
+		const output = combinedOutput(result);
+		expect(result.status).toBe(1);
+		expect(output).not.toContain("Retrying with");
+	});
+
+	it("retries GPT-5.6 Sol after access-denied style model errors", () => {
 		const fixtureRoot = createWrapperFixture();
 		const stateDir = join(fixtureRoot, "retry-state-access");
 		mkdirSync(stateDir, { recursive: true });
@@ -4267,7 +7612,7 @@ describe("codex bin wrapper", () => {
 				"exec",
 				"status",
 				"--model",
-				"gpt-5.5",
+				"gpt-5.6-sol",
 				"-c",
 				'model_reasoning_effort="minimal"',
 			],
@@ -4281,11 +7626,11 @@ describe("codex bin wrapper", () => {
 		const output = combinedOutput(result);
 		expect(result.status).toBe(0);
 		expect(output).toContain(
-			"The model `gpt-5.5` does not exist or you do not have access to it.",
+			"The model `gpt-5.6-sol` does not exist or you do not have access to it.",
 		);
-		expect(output).toContain("Retrying with gpt-5.4");
+		expect(output).toContain("Retrying with gpt-6-luna");
 		expect(output).toContain(
-			'FORWARDED:exec status --model gpt-5.4 -c model_reasoning_effort="low" -c cli_auth_credentials_store="file"',
+			'FORWARDED:exec status --model gpt-6-luna -c model_reasoning_effort="low" -c cli_auth_credentials_store="file"',
 		);
 	});
 
@@ -4303,7 +7648,7 @@ describe("codex bin wrapper", () => {
 				"exec",
 				"status",
 				"--model",
-				"gpt-5.4",
+				"gpt-6-luna",
 				"-c",
 				'model_reasoning_effort="xhigh"',
 			],
@@ -4315,7 +7660,7 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain(
-			'FORWARDED:exec status --model gpt-5.4 -c model_reasoning_effort="xhigh" -c cli_auth_credentials_store="file"',
+			'FORWARDED:exec status --model gpt-6-luna -c model_reasoning_effort="xhigh" -c cli_auth_credentials_store="file"',
 		);
 	});
 
@@ -4348,7 +7693,7 @@ describe("codex bin wrapper", () => {
 
 		const result = runWrapper(
 			fixtureRoot,
-			["exec", "status", "--model", "gpt-5.4-pro"],
+			["exec", "status", "--model", "gpt-5.5-pro"],
 			{
 				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
 				CODEX_HOME: originalHome,
@@ -4357,7 +7702,7 @@ describe("codex bin wrapper", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).not.toContain(`CODEX_HOME:${originalHome}`);
-		expect(result.stdout).toContain('model_reasoning_effort = "medium"');
+		expect(result.stdout).toContain('model_reasoning_effort = "low"');
 		expect(result.stdout).not.toContain('model_reasoning_effort = "none"');
 	});
 
@@ -4453,8 +7798,8 @@ describe("codex bin wrapper", () => {
 	});
 
 	it("accepts Windows native codex paths without an .exe suffix", () => {
-		const pathEntry = join("C:", "custom", "bin");
-		const nativeCodexPath = join(pathEntry, "codex");
+		const pathEntry = win32.join("C:\\", "custom", "bin");
+		const nativeCodexPath = win32.join(pathEntry, "codex");
 		const resolved = resolveRealCodexBin({
 			env: {
 				PATH: pathEntry,
@@ -4474,9 +7819,9 @@ describe("codex bin wrapper", () => {
 	});
 
 	it("prefers Windows codex.exe over extensionless codex when both exist", () => {
-		const pathEntry = join("C:", "custom", "bin");
-		const nativeCodexExePath = join(pathEntry, "codex.exe");
-		const nativeCodexPath = join(pathEntry, "codex");
+		const pathEntry = win32.join("C:\\", "custom", "bin");
+		const nativeCodexExePath = win32.join(pathEntry, "codex.exe");
+		const nativeCodexPath = win32.join(pathEntry, "codex");
 		const resolved = resolveRealCodexBin({
 			env: {
 				PATH: pathEntry,
@@ -4496,9 +7841,182 @@ describe("codex bin wrapper", () => {
 		});
 	});
 
+	it("launches the npm package entry behind Windows codex.cmd shims on PATH", () => {
+		// npm's Windows prefix layout: codex.cmd and an extensionless sh shim, with
+		// the package under node_modules. spawn() can run neither shim without a
+		// shell, so the resolver must return the codex.js they point at.
+		const pathEntry = win32.join("C:\\", "npm-prefix");
+		const shimCmdPath = win32.join(pathEntry, "codex.cmd");
+		const shimShPath = win32.join(pathEntry, "codex");
+		const packageEntryPath = win32.join(
+			pathEntry,
+			"node_modules",
+			"@openai",
+			"codex",
+			"bin",
+			"codex.js",
+		);
+		const resolved = resolveRealCodexBin({
+			env: {
+				PATH: pathEntry,
+			},
+			argv: [process.execPath, join(repoRootDir, "scripts", "codex.js")],
+			platform: "win32",
+			moduleUrl: pathToFileURL(join(repoRootDir, "scripts", "codex.js")).href,
+			resolvePackageBin: () => null,
+			spawnSyncImpl: () => createSpawnSyncSuccess("") as SpawnSyncReturns<string>,
+			existsSyncImpl: (candidate) =>
+				candidate === shimCmdPath ||
+				candidate === shimShPath ||
+				candidate === packageEntryPath,
+		});
+
+		expect(resolved).toEqual({
+			path: packageEntryPath,
+			launchWithNode: true,
+		});
+	});
+
+	it.each([["codex.cmd"], ["codex"]])(
+		"resolves a Windows %s override to the npm package entry it shims",
+		(shimName) => {
+			const prefix = win32.join("C:\\", "npm-prefix");
+			const shimPath = win32.join(prefix, shimName);
+			const packageEntryPath = win32.join(
+				prefix,
+				"node_modules",
+				"@openai",
+				"codex",
+				"bin",
+				"codex.js",
+			);
+			const resolve = (entryExists: boolean) =>
+				resolveRealCodexBin({
+					env: { CODEX_MULTI_AUTH_REAL_CODEX_BIN: shimPath },
+					platform: "win32",
+					existsSyncImpl: (candidate) =>
+						candidate === shimPath || (entryExists && candidate === packageEntryPath),
+				});
+
+			expect(resolve(true)).toEqual({
+				path: packageEntryPath,
+				launchWithNode: true,
+			});
+			// Without a package entry there is nothing spawn() can run, so the
+			// override must not be handed to it.
+			expect(resolve(false)).toBeNull();
+		},
+	);
+
+	it.each(["linux", "darwin", "win32"] as const)(
+		"rejects a relative CODEX_MULTI_AUTH_REAL_CODEX_BIN override on %s",
+		(platform) => {
+			// The override names the binary every forwarded command execs. A
+			// relative value would resolve against the caller's cwd — a planted
+			// same-named file could be executed instead — so it is refused even
+			// when a file exists at that relative path.
+			const resolved = resolveRealCodexBin({
+				env: { CODEX_MULTI_AUTH_REAL_CODEX_BIN: join("bin", "codex.js") },
+				platform,
+				resolvePackageBin: () => null,
+				spawnSyncImpl: () => createSpawnSyncSuccess(""),
+				existsSyncImpl: () => true,
+			});
+
+			expect(resolved).toBeNull();
+		},
+	);
+
+	it.each(["\\bin\\codex.exe", "/bin/codex.exe", "\\", "/"])(
+		"rejects a Windows root-relative CODEX_MULTI_AUTH_REAL_CODEX_BIN override %s",
+		(override) => {
+			// win32.isAbsolute() accepts these, but a root-relative path resolves
+			// against the cwd's DRIVE — "<drive>:\bin\codex.exe" could be a planted
+			// file (CWE-426). The existence check does not make it drive-qualified.
+			const resolved = resolveRealCodexBin({
+				env: { CODEX_MULTI_AUTH_REAL_CODEX_BIN: override },
+				platform: "win32",
+				resolvePackageBin: () => null,
+				spawnSyncImpl: () => createSpawnSyncSuccess(""),
+				existsSyncImpl: () => true,
+			});
+
+			expect(resolved).toBeNull();
+		},
+	);
+
+	it.each(["C:\\bin\\codex.exe", "C:/bin/codex.exe", "\\\\server\\share\\codex.exe"])(
+		"accepts a fully-qualified Windows CODEX_MULTI_AUTH_REAL_CODEX_BIN override %s",
+		(override) => {
+			const resolved = resolveRealCodexBin({
+				env: { CODEX_MULTI_AUTH_REAL_CODEX_BIN: override },
+				platform: "win32",
+				resolvePackageBin: () => null,
+				spawnSyncImpl: () => createSpawnSyncSuccess(""),
+				existsSyncImpl: (candidate) => candidate === override,
+			});
+
+			expect(resolved).toEqual({
+				path: override,
+				launchWithNode: false,
+			});
+		},
+	);
+
+	it("still accepts an absolute CODEX_MULTI_AUTH_REAL_CODEX_BIN override", () => {
+		const absoluteBin = posix.join("/opt", "codex", "bin", "codex.js");
+		const resolved = resolveRealCodexBin({
+			env: { CODEX_MULTI_AUTH_REAL_CODEX_BIN: absoluteBin },
+			platform: "linux",
+			resolvePackageBin: () => null,
+			spawnSyncImpl: () => createSpawnSyncSuccess(""),
+			existsSyncImpl: (candidate) => candidate === absoluteBin,
+		});
+
+		expect(resolved).toEqual({
+			path: absoluteBin,
+			launchWithNode: true,
+		});
+	});
+
+	it.skipIf(process.platform !== "win32")(
+		"forwards through a CODEX_MULTI_AUTH_REAL_CODEX_BIN codex.cmd shim on Windows",
+		() => {
+			const fixtureRoot = createWrapperFixture();
+			const entryPath = createFakeNativeCodexBin(fixtureRoot);
+			const shimPath = join(dirname(entryPath), "..", "..", "..", "..", "codex.cmd");
+			const result = runWrapper(fixtureRoot, ["--version"], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: shimPath,
+			});
+
+			expect(result.status, result.stderr).toBe(0);
+			expect(result.stdout).toContain("FORWARDED_NATIVE:--version");
+		},
+	);
+
+	it.skipIf(process.platform !== "win32")(
+		"rejects a Windows codex.cmd override with no package entry and names what to use",
+		() => {
+			const fixtureRoot = createWrapperFixture();
+			const shimPath = join(fixtureRoot, "bare-shim", "codex.cmd");
+			mkdirSync(dirname(shimPath), { recursive: true });
+			writeFileSync(shimPath, "@ECHO off\r\nexit /b 0\r\n", "utf8");
+			const result = runWrapper(fixtureRoot, ["--version"], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: shimPath,
+			});
+
+			expect(result.status).toBe(1);
+			expect(result.stderr).toContain("cannot be launched directly on Windows");
+			expect(result.stderr).toContain(
+				"CODEX_MULTI_AUTH_REAL_CODEX_BIN to the full path of codex.exe or @openai/codex/bin/codex.js",
+			);
+			expect(result.stderr).not.toContain("Failed to launch real Codex CLI");
+		},
+	);
+
 	it("skips self-referential codex wrapper entries on PATH before native binaries", () => {
-		const wrapperScriptPath = join(
-			"C:\\test-root",
+		const wrapperScriptPath = posix.join(
+			"/test-root",
 			"npm",
 			"lib",
 			"node_modules",
@@ -4506,11 +8024,11 @@ describe("codex bin wrapper", () => {
 			"scripts",
 			"codex.js",
 		);
-		const wrapperBinPath = join("C:\\test-root", "npm", "bin", "codex");
-		const nativeCodexPath = join("C:\\test-root", "native", "bin", "codex");
+		const wrapperBinPath = posix.join("/test-root", "npm", "bin", "codex");
+		const nativeCodexPath = posix.join("/test-root", "native", "bin", "codex");
 		const resolved = resolveRealCodexBin({
 			env: {
-				PATH: [join("C:\\test-root", "npm", "bin"), join("C:\\test-root", "native", "bin")].join(delimiter),
+				PATH: [posix.join("/test-root", "npm", "bin"), posix.join("/test-root", "native", "bin")].join(":"),
 			},
 			argv: [process.execPath, wrapperScriptPath],
 			platform: "linux",
@@ -4542,7 +8060,7 @@ describe("codex bin wrapper", () => {
 		// codex.js realpath, so the exact-path guard misses it. The directory guard
 		// must still skip any candidate resolving inside the wrapper's own dir and
 		// fall through to the genuine native binary elsewhere on PATH.
-		const wrapperScriptPath = join(
+		const wrapperScriptPath = posix.join(
 			"/test-root",
 			"npm",
 			"lib",
@@ -4552,11 +8070,11 @@ describe("codex bin wrapper", () => {
 			"codex.js",
 		);
 		const wrapperDir = dirname(wrapperScriptPath);
-		const wrapperSiblingCodexPath = join(wrapperDir, "codex");
-		const nativeCodexPath = join("/test-root", "native", "bin", "codex");
+		const wrapperSiblingCodexPath = posix.join(wrapperDir, "codex");
+		const nativeCodexPath = posix.join("/test-root", "native", "bin", "codex");
 		const resolved = resolveRealCodexBin({
 			env: {
-				PATH: [wrapperDir, join("/test-root", "native", "bin")].join(delimiter),
+				PATH: [wrapperDir, posix.join("/test-root", "native", "bin")].join(posix.delimiter),
 			},
 			argv: [process.execPath, wrapperScriptPath],
 			platform: "linux",
@@ -5131,11 +8649,11 @@ describe("codex bin wrapper", () => {
 	it("syncs manager active selection before and after forwarded commands", () => {
 		const fixtureRoot = createWrapperFixture();
 		const fakeBin = createFakeCodexBin(fixtureRoot);
-		const distLibDir = join(fixtureRoot, "dist", "lib");
+		const distLibDir = join(fixtureRoot, "dist", "lib", "codex-manager");
 		const markerPath = join(fixtureRoot, "sync-marker.txt");
 		mkdirSync(distLibDir, { recursive: true });
 		writeFileSync(
-			join(distLibDir, "codex-manager.js"),
+			join(distLibDir, "active-account-sync.js"),
 			[
 				'import { appendFileSync } from "node:fs";',
 				"export async function autoSyncActiveAccountToCodex() {",
@@ -5593,4 +9111,879 @@ describe("codex bin wrapper", () => {
 			);
 		}
 	});
+
+	// ------------------------------------------------------------------
+	// Stress: the runtime behaviour, at the scale and duration #663 described.
+	// The tests above pin one helper at a time over a few hundred milliseconds.
+	// These drive many helpers, many launch cycles, and a directory already full
+	// of stale metadata — the state the reporting machine was actually in.
+	// POSIX-only for the same reason as the rest of the lifecycle suite.
+	// ------------------------------------------------------------------
+
+	function countHelperMetadata(multiAuthDir: string): {
+		status: number;
+		owner: number;
+	} {
+		let entries: string[] = [];
+		try {
+			entries = readdirSync(multiAuthDir);
+		} catch (error) {
+			// Only "the directory does not exist yet" is a legitimate zero. Any
+			// other readdir failure — a permissions change, a path that is not a
+			// directory — would otherwise be reported as a clean sweep, and the
+			// bounded-metadata test below asserts upper bounds that a false zero
+			// satisfies perfectly.
+			const code =
+				error && typeof error === "object" && "code" in error
+					? String((error as { code?: unknown }).code)
+					: "unknown";
+			if (code !== "ENOENT") throw error;
+			return { status: 0, owner: 0 };
+		}
+		return {
+			status: entries.filter((n) =>
+				/^runtime-rotation-app-helper\.\d+\.json$/.test(n),
+			).length,
+			owner: entries.filter((n) =>
+				/^runtime-rotation-app-helper-owner\.\d+\.json$/.test(n),
+			).length,
+		};
+	}
+
+	it.skipIf(process.platform === "win32")(
+		"stress: metadata stays bounded across many launch/exit cycles",
+		async () => {
+			// The reported accumulation was 10-28 helpers/hour under ordinary use,
+			// ending at 183 live helpers and 701 owner files. One launch proves
+			// nothing about that; the property is that repeating the cycle does not
+			// grow the directory without bound. Each launch sweeps what the previous
+			// one left, so the count must plateau rather than climb with the cycle
+			// count.
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+				"#!/usr/bin/env node",
+				"process.exit(0);",
+			]);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const multiAuthDir = join(fixtureRoot, "multi-auth");
+			mkdirSync(originalHome, { recursive: true });
+			mkdirSync(multiAuthDir, { recursive: true });
+			writeFileSync(
+				join(originalHome, "config.toml"),
+				'model_provider = "openai"\n',
+				"utf8",
+			);
+
+			// Before measuring accumulation, prove the fixture actually produces
+			// helpers. Every assertion below is an upper bound, so a launch path
+			// that silently never publishes metadata — a wrong env gate, a proxy
+			// fixture that never engages, `app .` short-circuiting on the fake bin
+			// — would leave every count at zero and pass the whole test while
+			// demonstrating nothing about the leak it exists to guard.
+			const probe = runWrapper(fixtureRoot, ["app", "."], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_DIR: multiAuthDir,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				// Long enough that the helper is unambiguously still alive when the
+				// probe looks for it.
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "30000",
+				CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "0",
+				OPENAI_API_KEY: undefined,
+			});
+			expect(probe.status, `${probe.stdout}\n${probe.stderr}`).toBe(0);
+			const probeCounts = countHelperMetadata(multiAuthDir);
+			expect(probeCounts.status).toBeGreaterThan(0);
+			expect(probeCounts.owner).toBeGreaterThan(0);
+			// Tear that one down before the accumulation loop starts, so it cannot
+			// be mistaken for a leaked helper later.
+			const probeEntries = readdirSync(multiAuthDir).filter((name) =>
+				name.startsWith("runtime-rotation-app-helper"),
+			);
+			for (const name of probeEntries) {
+				const match = /\.(\d+)\.json$/.exec(name);
+				const pid = match?.[1] ? Number.parseInt(match[1], 10) : null;
+				if (pid !== null && isProcessAlive(pid)) {
+					try {
+						process.kill(pid, "SIGKILL");
+					} catch {
+						// Already gone.
+					}
+				}
+				rmSync(join(multiAuthDir, name), { force: true });
+			}
+			await sleep(200);
+
+			const cycles = 30;
+			const counts: number[] = [];
+			let sawHelperDuringLoop = false;
+			for (let cycle = 0; cycle < cycles; cycle += 1) {
+				const result = runWrapper(fixtureRoot, ["app", "."], {
+					CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+					CODEX_HOME: originalHome,
+					CODEX_MULTI_AUTH_DIR: multiAuthDir,
+					CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+					// Short enough that each helper is gone well before the next
+					// launch sweeps for it.
+					CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
+					CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "150",
+					OPENAI_API_KEY: undefined,
+				});
+				expect(result.status).toBe(0);
+				await sleep(120);
+				const sample = countHelperMetadata(multiAuthDir);
+				if (sample.owner > 0 || sample.status > 0) sawHelperDuringLoop = true;
+				counts.push(sample.owner);
+			}
+
+			// Give the last cycle's helper time to exit and one more launch to sweep
+			// after it.
+			await sleep(1_000);
+			runWrapper(fixtureRoot, ["app", "."], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_DIR: multiAuthDir,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
+				CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "150",
+				OPENAI_API_KEY: undefined,
+			});
+			await sleep(1_000);
+
+			const final = countHelperMetadata(multiAuthDir);
+			const peak = Math.max(...counts);
+			// The loop has to have observed at least one helper at some point,
+			// otherwise the upper bounds below are vacuous.
+			expect(sawHelperDuringLoop).toBe(true);
+			// The pre-fix behaviour was one owner file per launch, kept forever, so
+			// the count climbed with the cycle count. A few concurrent files are
+			// expected — each helper outlives the launch that spawned it by its
+			// idle window, so a sample can catch the previous cycle's helper still
+			// running — but the number must be a function of that overlap, not of
+			// how many times the loop ran. A ceiling well under `cycles` is what
+			// separates the two; `< cycles` alone would only fail at the exact
+			// worst case.
+			expect(peak).toBeLessThan(10);
+			expect(final.owner).toBeLessThan(5);
+			expect(final.status).toBeLessThan(5);
+		},
+		240_000,
+	);
+
+	it.skipIf(process.platform === "win32")(
+		"stress: concurrent helpers keep separate status files and are all discoverable",
+		async () => {
+			// Defect 3 in #663: one shared status path, N writers at 1 Hz, last
+			// writer wins. Per-PID files are the fix; this asserts N concurrent
+			// helpers really do produce N distinct records, each naming its own PID,
+			// with none overwriting another.
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const multiAuthDir = join(fixtureRoot, "multi-auth");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(
+				join(originalHome, "config.toml"),
+				'model_provider = "openai"\n',
+				"utf8",
+			);
+
+			const helperCount = 10;
+			const spawned = await Promise.all(
+				Array.from({ length: helperCount }, (_unused, index) =>
+					spawnDirectAppHelper(fixtureRoot, {
+						CODEX_HOME: originalHome,
+						CODEX_MULTI_AUTH_DIR: multiAuthDir,
+						CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+						CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+						CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+						CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "0",
+						CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+						CODEX_MULTI_AUTH_TEST_PROXY_LAST_ACCOUNT_ID: `acc_${index}`,
+						CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(
+							fixtureRoot,
+							`marker-${index}.txt`,
+						),
+					}),
+				),
+			);
+			try {
+				// Several publish ticks, so any trampling has had time to happen.
+				await sleep(1_500);
+
+				const pids = spawned.map((s) => s.ready.pid);
+				expect(new Set(pids).size).toBe(helperCount);
+
+				for (const { ready } of spawned) {
+					expect(existsSync(ready.statusPath)).toBe(true);
+					const record = JSON.parse(readFileSync(ready.statusPath, "utf8")) as {
+						pid: number;
+						state: string;
+					};
+					// Each file describes its own helper, not whichever wrote last.
+					expect(record.pid).toBe(ready.pid);
+					expect(record.state).toBe("running");
+				}
+				// And every one of them is still alive: nothing reaped a sibling.
+				for (const pid of pids) {
+					expect(isProcessAlive(pid)).toBe(true);
+				}
+
+				const counts = countHelperMetadata(multiAuthDir);
+				expect(counts.status).toBe(helperCount);
+			} finally {
+				await Promise.all(
+					spawned.map(({ helper, closed }) =>
+						stopDirectAppHelper(helper, closed),
+					),
+				);
+			}
+		},
+		180_000,
+	);
+
+	it.skipIf(process.platform === "win32")(
+		"stress: the reap matrix reaps exactly the stranded helpers and no others",
+		async () => {
+			// The whole lifecycle contract in one run, with every configuration live
+			// at the same time so a rule that fires on the wrong one is visible as a
+			// divergence rather than as a single red test.
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const multiAuthDir = join(fixtureRoot, "multi-auth");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(
+				join(originalHome, "config.toml"),
+				'model_provider = "openai"\n',
+				"utf8",
+			);
+
+			await withDeadPid(async (deadOwnerPid) => {
+				const base = {
+					CODEX_HOME: originalHome,
+					CODEX_MULTI_AUTH_DIR: multiAuthDir,
+					CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+					CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+					CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+					CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "400",
+				};
+				const cases: Array<{
+					label: string;
+					survives: boolean;
+					env: Record<string, string | undefined>;
+				}> = [
+					{
+						label: "owner alive, never served",
+						survives: true,
+						env: {
+							...base,
+							CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+						},
+					},
+					{
+						label: "owner dead, never served",
+						survives: false,
+						env: {
+							...base,
+							CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(deadOwnerPid),
+						},
+					},
+					{
+						label: "owner dead, served traffic",
+						survives: true,
+						env: {
+							...base,
+							CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(deadOwnerPid),
+							CODEX_MULTI_AUTH_TEST_PROXY_REQUEST_RAMP_MS: "200",
+						},
+					},
+					{
+						label: "no owner recorded, never served",
+						survives: true,
+						env: { ...base },
+					},
+					{
+						label: "owner dead, socket held",
+						survives: true,
+						env: {
+							...base,
+							CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(deadOwnerPid),
+							CODEX_MULTI_AUTH_TEST_PROXY_OPEN_CONNECTIONS: "1",
+						},
+					},
+				];
+
+				const running = await Promise.all(
+					cases.map((testCase, index) =>
+						spawnDirectAppHelper(fixtureRoot, {
+							...testCase.env,
+							CODEX_MULTI_AUTH_TEST_PROXY_MARKER: join(
+								fixtureRoot,
+								`matrix-${index}.txt`,
+							),
+						}),
+					),
+				);
+				try {
+					// Many detached windows: anything that is going to be reaped has
+					// been, and anything that survives this has survived on a rule.
+					await sleep(4_000);
+
+					// Zipped off `running`, not indexed with a fallback: passing `0` to
+					// `isProcessAlive` would probe the caller's own process group on
+					// POSIX and answer true, so a missing helper would read as alive —
+					// and four of these five cases expect exactly that.
+					expect(running).toHaveLength(cases.length);
+					const actual = running.map(({ ready }, index) => {
+						const testCase = cases[index];
+						expect(testCase).toBeDefined();
+						return {
+							label: testCase?.label ?? `case-${index}`,
+							expected: testCase?.survives ?? false,
+							alive: isProcessAlive(ready.pid),
+							statusPath: ready.statusPath,
+						};
+					});
+					// Compared as a whole so a failure names every divergence at once.
+					expect(actual.map((a) => `${a.label}=${a.alive}`)).toEqual(
+						actual.map((a) => `${a.label}=${a.expected}`),
+					);
+
+					// The one that died did so for the stated reason. Looked up by
+					// label and asserted unconditionally: hardcoding an index meant
+					// reordering `cases` would silently assert `owner-gone` against a
+					// helper that was supposed to survive, and a guard around it would
+					// let the only assertion that proves *why* it died skip itself.
+					const reaped = actual.find(
+						(a) => a.label === "owner dead, never served",
+					);
+					expect(reaped).toBeDefined();
+					expect(reaped?.alive).toBe(false);
+					const status = JSON.parse(
+						readFileSync(reaped?.statusPath ?? "", "utf8"),
+					) as { state: string };
+					expect(status.state).toBe("owner-gone");
+				} finally {
+					await Promise.all(
+						running.map(({ helper, closed }) =>
+							stopDirectAppHelper(helper, closed),
+						),
+					);
+				}
+			});
+		},
+		180_000,
+	);
+
+	it.skipIf(process.platform === "win32")(
+		"stress: a launcher sweeps a directory already holding hundreds of stale files",
+		async () => {
+			// 701 orphaned owner files was the reported end state. The sweep has a
+			// probe budget and a retry ladder, both of which could in principle turn
+			// a big directory into a slow or incomplete launch. Assert it reclaims
+			// the lot and the launch still succeeds.
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+				"#!/usr/bin/env node",
+				"process.exit(0);",
+			]);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const multiAuthDir = join(fixtureRoot, "multi-auth");
+			mkdirSync(originalHome, { recursive: true });
+			mkdirSync(multiAuthDir, { recursive: true });
+			writeFileSync(
+				join(originalHome, "config.toml"),
+				'model_provider = "openai"\n',
+				"utf8",
+			);
+
+			const staleCount = 350;
+			await withDeadPids(staleCount, async (deadPids) => {
+				for (const pid of deadPids) {
+					writeFileSync(
+						join(multiAuthDir, `runtime-rotation-app-helper.${pid}.json`),
+						`${JSON.stringify({ pid, state: "running", startedAt: Date.now() })}\n`,
+						"utf8",
+					);
+					writeFileSync(
+						join(multiAuthDir, `runtime-rotation-app-helper-owner.${pid}.json`),
+						`${JSON.stringify({ identityToken: "x", createdAt: Date.now() })}\n`,
+						"utf8",
+					);
+				}
+				const before = countHelperMetadata(multiAuthDir);
+				expect(before.status).toBe(staleCount);
+				expect(before.owner).toBe(staleCount);
+
+				const startedAt = Date.now();
+				const result = runWrapper(fixtureRoot, ["app", "."], {
+					CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+					CODEX_HOME: originalHome,
+					CODEX_MULTI_AUTH_DIR: multiAuthDir,
+					CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+					CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "200",
+					CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "150",
+					OPENAI_API_KEY: undefined,
+				});
+				const elapsedMs = Date.now() - startedAt;
+
+				expect(result.status).toBe(0);
+				await sleep(600);
+				const after = countHelperMetadata(multiAuthDir);
+				// Everything stale is gone; only this launch's own helper may remain.
+				expect(after.status).toBeLessThan(3);
+				expect(after.owner).toBeLessThan(3);
+				// The launch handshake has a 15s bound; a sweep that pushed past it
+				// would fail the launch, not just be slow.
+				expect(elapsedMs).toBeLessThan(60_000);
+			});
+		},
+		240_000,
+	);
+});
+
+describe("forwarded signal relay", () => {
+	// The wrapper used to install no signal handlers on the forward path, so a
+	// signal aimed at the wrapper PID (kill, launcher, monitor) orphaned the
+	// forwarded child and skipped shadow-home cleanup entirely.
+	// Windows has no POSIX signal delivery to a wrapper PID, so `kill()` there
+	// hard-terminates the process instead of exercising the relay; these cases
+	// only make sense where kill() really sends SIGTERM/SIGINT.
+	it.skipIf(process.platform === "win32")(
+		"relays SIGTERM to the forwarded child, then runs shadow-home cleanup",
+		async () => {
+			const fixtureRoot = createWrapperFixture();
+			const childPidFile = join(fixtureRoot, "child.pid");
+			const childHomeFile = join(fixtureRoot, "child.home");
+			const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+				'const { writeFileSync } = require("node:fs");',
+				'const { join: joinPath } = require("node:path");',
+				`writeFileSync(${JSON.stringify(childPidFile)}, String(process.pid));`,
+				`writeFileSync(${JSON.stringify(childHomeFile)}, String(process.env.CODEX_HOME ?? ""));`,
+				// A state write the sync-back must carry into the real home.
+				'writeFileSync(joinPath(process.env.CODEX_HOME, "auth.json"), "{\\"token\\":\\"shadow\\"}\\n");',
+				"setTimeout(() => {}, 30_000);",
+			]);
+			const originalHome = join(fixtureRoot, "codexhome");
+			const controlledTmp = join(fixtureRoot, "tmp");
+			mkdirSync(originalHome, { recursive: true });
+			mkdirSync(controlledTmp, { recursive: true });
+			writeFileSync(
+				join(originalHome, "config.toml"),
+				'model_reasoning_effort = "ultra"\n',
+				"utf8",
+			);
+			const wrapper = spawn(
+				process.execPath,
+				[
+					join(fixtureRoot, "scripts", "codex.js"),
+					"exec",
+					"status",
+					"--model",
+					"gpt-6-luna",
+				],
+				{
+					env: buildWrapperEnv({
+						HOME: join(fixtureRoot, "home"),
+						USERPROFILE: join(fixtureRoot, "home"),
+						CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+						CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+						CODEX_HOME: originalHome,
+						TMP: controlledTmp,
+						TEMP: controlledTmp,
+						TMPDIR: controlledTmp,
+					}),
+					stdio: ["ignore", "pipe", "pipe"],
+				},
+			);
+			let wrapperStderr = "";
+			wrapper.stderr?.setEncoding("utf8");
+			wrapper.stderr?.on("data", (chunk: string) => {
+				wrapperStderr += chunk;
+			});
+			const closed = new Promise<{ status: number | null; signal: string | null }>(
+				(resolve) => {
+					wrapper.once("close", (status, signal) => resolve({ status, signal }));
+				},
+			);
+			try {
+				await waitForPath(childPidFile, 15_000);
+			} catch (error) {
+				wrapper.kill("SIGKILL");
+				await closed;
+				throw new Error(
+					`${String(error)}\nwrapper stderr:\n${wrapperStderr}`,
+				);
+			}
+			const childPid = Number(readFileSync(childPidFile, "utf8"));
+			const shadowHome = readFileSync(childHomeFile, "utf8");
+			expect(Number.isFinite(childPid)).toBe(true);
+			expect(isProcessAlive(childPid)).toBe(true);
+			// Sanity: the child really ran in a compatibility shadow home, so the
+			// cleanup assertions below exercise the signal path end to end.
+			expect(shadowHome).toContain("codex-multi-auth-home-");
+			expect(existsSync(shadowHome)).toBe(true);
+
+			wrapper.kill("SIGTERM");
+			const result = await closed;
+
+			// The forwarded child must be dead — not just eventually, but because the
+			// wrapper relayed the signal (grace bound is 1s + force-kill fallback).
+			const deadline = Date.now() + 5_000;
+			while (isProcessAlive(childPid) && Date.now() < deadline) {
+				await sleep(50);
+			}
+			expect(isProcessAlive(childPid)).toBe(false);
+			expect(result.status).toBe(143);
+			// Cleanup ran on the signal path: the shadow is gone, its state synced
+			// back, and the owner marker never leaks into the real CODEX_HOME.
+			expect(existsSync(shadowHome)).toBe(false);
+			expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe(
+				'{"token":"shadow"}',
+			);
+			expect(
+				existsSync(join(originalHome, ".codex-multi-auth-owner.json")),
+			).toBe(false);
+		},
+		SHUTDOWN_TEST_TIMEOUT_MS,
+	);
+
+	it.skipIf(process.platform === "win32")(
+		"force-kills a child that ignores the relayed signal",
+		async () => {
+			const fixtureRoot = createWrapperFixture();
+			const childPidFile = join(fixtureRoot, "child.pid");
+			const childHomeFile = join(fixtureRoot, "child.home");
+			const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+				'const { writeFileSync } = require("node:fs");',
+				'const { join: joinPath } = require("node:path");',
+				`writeFileSync(${JSON.stringify(childPidFile)}, String(process.pid));`,
+				`writeFileSync(${JSON.stringify(childHomeFile)}, String(process.env.CODEX_HOME ?? ""));`,
+				'writeFileSync(joinPath(process.env.CODEX_HOME, "auth.json"), "{\\"token\\":\\"shadow\\"}\\n");',
+				// Swallow SIGTERM so only the wrapper's SIGKILL fallback can stop it.
+				'process.on("SIGTERM", () => {});',
+				'process.on("SIGINT", () => {});',
+				"setTimeout(() => {}, 30_000);",
+			]);
+			const originalHome = join(fixtureRoot, "codexhome");
+			const controlledTmp = join(fixtureRoot, "tmp");
+			mkdirSync(originalHome, { recursive: true });
+			mkdirSync(controlledTmp, { recursive: true });
+			writeFileSync(
+				join(originalHome, "config.toml"),
+				'model_reasoning_effort = "ultra"\n',
+				"utf8",
+			);
+			const wrapper = spawn(
+				process.execPath,
+				[
+					join(fixtureRoot, "scripts", "codex.js"),
+					"exec",
+					"status",
+					"--model",
+					"gpt-6-luna",
+				],
+				{
+					env: buildWrapperEnv({
+						HOME: join(fixtureRoot, "home"),
+						USERPROFILE: join(fixtureRoot, "home"),
+						CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+						CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+						CODEX_HOME: originalHome,
+						TMP: controlledTmp,
+						TEMP: controlledTmp,
+						TMPDIR: controlledTmp,
+					}),
+					stdio: ["ignore", "pipe", "pipe"],
+				},
+			);
+			const closed = new Promise<{ status: number | null }>((resolve) => {
+				wrapper.once("close", (status) => resolve({ status }));
+			});
+			await waitForPath(childPidFile, 8_000);
+			const childPid = Number(readFileSync(childPidFile, "utf8"));
+			const shadowHome = readFileSync(childHomeFile, "utf8");
+			expect(shadowHome).toContain("codex-multi-auth-home-");
+
+			wrapper.kill("SIGTERM");
+			const result = await closed;
+
+			const deadline = Date.now() + 5_000;
+			while (isProcessAlive(childPid) && Date.now() < deadline) {
+				await sleep(50);
+			}
+			expect(isProcessAlive(childPid)).toBe(false);
+			// Still 143, not 137: the SIGKILL is the wrapper's internal fallback,
+			// and the exit result must keep reporting the signal that was relayed.
+			expect(result.status).toBe(143);
+			// Finalization waited for the child's close: the shadow home the dead
+			// child was using is removed and its state synced back on the way out.
+			expect(existsSync(shadowHome)).toBe(false);
+			expect(readFileSync(join(originalHome, "auth.json"), "utf8").trim()).toBe(
+				'{"token":"shadow"}',
+			);
+			expect(
+				existsSync(join(originalHome, ".codex-multi-auth-owner.json")),
+			).toBe(false);
+		},
+		SHUTDOWN_TEST_TIMEOUT_MS,
+	);
+
+	it.skipIf(process.platform === "win32")(
+		"keeps relaying when more signals arrive while the child ignores the first",
+		async () => {
+			const fixtureRoot = createWrapperFixture();
+			const childPidFile = join(fixtureRoot, "child.pid");
+			const childHomeFile = join(fixtureRoot, "child.home");
+			const fakeBin = createCustomFakeCodexBin(fixtureRoot, [
+				'const { writeFileSync } = require("node:fs");',
+				'const { join: joinPath } = require("node:path");',
+				`writeFileSync(${JSON.stringify(childPidFile)}, String(process.pid));`,
+				`writeFileSync(${JSON.stringify(childHomeFile)}, String(process.env.CODEX_HOME ?? ""));`,
+				// Swallow every relayed signal so only the SIGKILL fallback stops it.
+				'process.on("SIGTERM", () => {});',
+				'process.on("SIGINT", () => {});',
+				'process.on("SIGHUP", () => {});',
+				"setTimeout(() => {}, 30_000);",
+			]);
+			const originalHome = join(fixtureRoot, "codexhome");
+			const controlledTmp = join(fixtureRoot, "tmp");
+			mkdirSync(originalHome, { recursive: true });
+			mkdirSync(controlledTmp, { recursive: true });
+			writeFileSync(
+				join(originalHome, "config.toml"),
+				'model_reasoning_effort = "ultra"\n',
+				"utf8",
+			);
+			const wrapper = spawn(
+				process.execPath,
+				[
+					join(fixtureRoot, "scripts", "codex.js"),
+					"exec",
+					"status",
+					"--model",
+					"gpt-6-luna",
+				],
+				{
+					env: buildWrapperEnv({
+						HOME: join(fixtureRoot, "home"),
+						USERPROFILE: join(fixtureRoot, "home"),
+						CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+						CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+						CODEX_HOME: originalHome,
+						TMP: controlledTmp,
+						TEMP: controlledTmp,
+						TMPDIR: controlledTmp,
+					}),
+					stdio: ["ignore", "pipe", "pipe"],
+				},
+			);
+			const closed = new Promise<{ status: number | null }>((resolve) => {
+				wrapper.once("close", (status) => resolve({ status }));
+			});
+			await waitForPath(childPidFile, 8_000);
+			const childPid = Number(readFileSync(childPidFile, "utf8"));
+			const shadowHome = readFileSync(childHomeFile, "utf8");
+			expect(shadowHome).toContain("codex-multi-auth-home-");
+
+			wrapper.kill("SIGTERM");
+			await sleep(250);
+			// Still inside the 1s grace window with a live force-kill timer: a
+			// repeated signal must keep relaying rather than taking the default
+			// disposition and killing the wrapper before cleanup.
+			wrapper.kill("SIGTERM");
+			await sleep(250);
+			wrapper.kill("SIGINT");
+			const result = await closed;
+
+			const deadline = Date.now() + 5_000;
+			while (isProcessAlive(childPid) && Date.now() < deadline) {
+				await sleep(50);
+			}
+			expect(isProcessAlive(childPid)).toBe(false);
+			// The wrapper survived the repeat signals and exited on its own terms:
+			// 143 is the first relayed signal, not a signal death (status null).
+			expect(result.status).toBe(143);
+			expect(existsSync(shadowHome)).toBe(false);
+			expect(
+				existsSync(join(originalHome, ".codex-multi-auth-owner.json")),
+			).toBe(false);
+		},
+		SHUTDOWN_TEST_TIMEOUT_MS,
+	);
+});
+
+describe("stale shadow-home sweep", () => {
+	it("removes dead-owner and aged markerless shadow homes, keeps live ones", async () => {
+		const fixtureRoot = createWrapperFixture();
+		const codexHome = join(fixtureRoot, "codexhome");
+		const shadowRoot = join(
+			codexHome,
+			"multi-auth",
+			"runtime-shadow-homes",
+		);
+		mkdirSync(shadowRoot, { recursive: true });
+		const OWNER_FILE = ".codex-multi-auth-owner.json";
+
+		const deadOwnerDir = mkdtempSync(
+			join(shadowRoot, "codex-multi-auth-runtime-home-"),
+		);
+		const liveOwnerDir = mkdtempSync(
+			join(shadowRoot, "codex-multi-auth-runtime-home-"),
+		);
+		const markerlessOldDir = mkdtempSync(
+			join(shadowRoot, "codex-multi-auth-runtime-home-"),
+		);
+		const markerlessFreshDir = mkdtempSync(
+			join(shadowRoot, "codex-multi-auth-runtime-home-"),
+		);
+
+		writeFileSync(
+			join(liveOwnerDir, OWNER_FILE),
+			JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
+		);
+		const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+		utimesSync(markerlessOldDir, old, old);
+
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		await withDeadPid(async (deadPid) => {
+			writeFileSync(
+				join(deadOwnerDir, OWNER_FILE),
+				JSON.stringify({ pid: deadPid, createdAt: Date.now() - 60_000 }),
+			);
+
+			const result = runWrapper(fixtureRoot, ["exec", "do"], {
+				CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+				CODEX_HOME: codexHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+			});
+			expect(result.status).toBe(0);
+
+			expect(existsSync(deadOwnerDir)).toBe(false);
+			expect(existsSync(markerlessOldDir)).toBe(false);
+			expect(existsSync(liveOwnerDir)).toBe(true);
+			expect(existsSync(markerlessFreshDir)).toBe(true);
+		});
+	}, SHUTDOWN_TEST_TIMEOUT_MS);
+
+	it("keeps a shadow home whose owner died while its forwarded child still runs", async () => {
+		const fixtureRoot = createWrapperFixture();
+		const codexHome = join(fixtureRoot, "codexhome");
+		const shadowRoot = join(
+			codexHome,
+			"multi-auth",
+			"runtime-shadow-homes",
+		);
+		mkdirSync(shadowRoot, { recursive: true });
+		const OWNER_FILE = ".codex-multi-auth-owner.json";
+
+		const orphanedDir = mkdtempSync(
+			join(shadowRoot, "codex-multi-auth-runtime-home-"),
+		);
+		const fullyDeadDir = mkdtempSync(
+			join(shadowRoot, "codex-multi-auth-runtime-home-"),
+		);
+		const fakeBin = createFakeCodexBin(fixtureRoot);
+		const sweepEnv = {
+			CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+			CODEX_HOME: codexHome,
+			CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+		};
+
+		await withDeadPids(2, async ([deadOwnerPid, deadChildPid]) => {
+			await withLivePid(async (liveChildPid) => {
+				// A SIGKILLed wrapper leaves a marker whose owner PID is dead while
+				// the forwarded child — recorded beside it — is still running
+				// against the shadow home. Reaping it would delete live state.
+				writeFileSync(
+					join(orphanedDir, OWNER_FILE),
+					JSON.stringify({
+						pid: deadOwnerPid,
+						createdAt: Date.now() - 60_000,
+						childPid: liveChildPid,
+						childRecordedAt: Date.now(),
+					}),
+				);
+				// Owner and child both gone: genuinely orphaned, reap it now.
+				writeFileSync(
+					join(fullyDeadDir, OWNER_FILE),
+					JSON.stringify({
+						pid: deadOwnerPid,
+						createdAt: Date.now() - 60_000,
+						childPid: deadChildPid,
+						childRecordedAt: Date.now() - 30_000,
+					}),
+				);
+
+				const result = runWrapper(fixtureRoot, ["exec", "do"], sweepEnv);
+				expect(result.status).toBe(0);
+
+				expect(existsSync(orphanedDir)).toBe(true);
+				expect(existsSync(fullyDeadDir)).toBe(false);
+			});
+
+			// Once the orphaned child is gone too, the next launch's sweep reaps.
+			const result = runWrapper(fixtureRoot, ["exec", "do"], sweepEnv);
+			expect(result.status).toBe(0);
+			expect(existsSync(orphanedDir)).toBe(false);
+		});
+	}, SHUTDOWN_TEST_TIMEOUT_MS);
+
+	// Identity probes need `ps`; on Windows the sweep falls back to bare
+	// liveness, so a recycled live PID would be retained rather than reaped.
+	it.skipIf(process.platform === "win32")(
+		"reaps a shadow home whose owner PID was recycled by another process",
+		async () => {
+			const fixtureRoot = createWrapperFixture();
+			const codexHome = join(fixtureRoot, "codexhome");
+			const shadowRoot = join(
+				codexHome,
+				"multi-auth",
+				"runtime-shadow-homes",
+			);
+			mkdirSync(shadowRoot, { recursive: true });
+			const OWNER_FILE = ".codex-multi-auth-owner.json";
+
+			const recycledOwnerDir = mkdtempSync(
+				join(shadowRoot, "codex-multi-auth-runtime-home-"),
+			);
+			const liveOwnerDir = mkdtempSync(
+				join(shadowRoot, "codex-multi-auth-runtime-home-"),
+			);
+			const fakeBin = createFakeCodexBin(fixtureRoot);
+
+			await withLivePid(async (livePid) => {
+				// The PID is live, but the marker claims it was written 10 minutes
+				// ago and this process started seconds ago — it cannot be the owner
+				// that wrote the marker, so the PID must have been recycled.
+				writeFileSync(
+					join(recycledOwnerDir, OWNER_FILE),
+					JSON.stringify({
+						pid: livePid,
+						createdAt: Date.now() - 10 * 60_000,
+					}),
+				);
+				// Control: the same live PID with a timestamp at-or-after its start
+				// is still the recorded owner, so its home is retained.
+				writeFileSync(
+					join(liveOwnerDir, OWNER_FILE),
+					JSON.stringify({ pid: livePid, createdAt: Date.now() }),
+				);
+
+				const result = runWrapper(fixtureRoot, ["exec", "do"], {
+					CODEX_MULTI_AUTH_REAL_CODEX_BIN: fakeBin,
+					CODEX_HOME: codexHome,
+					CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "0",
+				});
+				expect(result.status).toBe(0);
+
+				expect(existsSync(recycledOwnerDir)).toBe(false);
+				expect(existsSync(liveOwnerDir)).toBe(true);
+			});
+		},
+		SHUTDOWN_TEST_TIMEOUT_MS,
+	);
 });

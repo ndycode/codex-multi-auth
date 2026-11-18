@@ -1,6 +1,22 @@
 import { applyResponseCompaction } from "../lib/request/response-compaction.js";
 import type { RequestBody } from "../lib/types.js";
 
+// Every live model supports compaction since the models without it were
+// retired, so the no-compaction branch needs a model id that reports it off.
+const NO_COMPACTION_MODEL = "test-model-without-compaction";
+
+vi.mock("../lib/request/helpers/model-map.js", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("../lib/request/helpers/model-map.js")>();
+	return {
+		...actual,
+		getModelCapabilities: (model: string | undefined) =>
+			model === NO_COMPACTION_MODEL
+				? { toolSearch: false, computerUse: false, compaction: false }
+				: actual.getModelCapabilities(model),
+	};
+});
+
 function buildInput(length: number) {
 	return Array.from({ length }, (_value, index) => ({
 		type: "message",
@@ -32,7 +48,7 @@ describe("response compaction", () => {
 
 	it("falls back to local trimming when the model does not support compaction", async () => {
 		const body: RequestBody = {
-			model: "gpt-5-codex",
+			model: NO_COMPACTION_MODEL,
 			input: buildInput(10),
 		};
 		const fetchImpl = vi.fn<typeof fetch>();

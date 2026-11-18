@@ -145,7 +145,10 @@ export function readStorageMetaFromDisk(
 		const affinityGeneration =
 			typeof parsed.affinityGeneration === "number" &&
 			Number.isFinite(parsed.affinityGeneration) &&
-			Number.isInteger(parsed.affinityGeneration) &&
+			// Safe, not merely integral: see readAffinityGenerationFromDisk. Past
+			// 2^53 the CLI's bump stops advancing, so a proxy that accepted the
+			// value would never observe another switch.
+			Number.isSafeInteger(parsed.affinityGeneration) &&
 			parsed.affinityGeneration >= 0
 				? parsed.affinityGeneration
 				: 0;

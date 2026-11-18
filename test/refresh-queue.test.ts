@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtemp } from "node:fs/promises";
+import { removeWithRetry } from "./helpers/remove-with-retry.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RefreshQueue, getRefreshQueue, resetRefreshQueue, queuedRefresh } from "../lib/refresh-queue.js";
@@ -990,7 +991,7 @@ describe("RefreshQueue", () => {
 	});
 
 	describe("lease failure handling", () => {
-		it("falls back to local refresh when lease acquisition throws", async () => {
+		it("does not call OAuth when lease acquisition throws", async () => {
 			const mockResult = {
 				type: "success" as const,
 				access: "fallback-access",
@@ -1006,11 +1007,23 @@ describe("RefreshQueue", () => {
 			const queue = new RefreshQueue(30_000, leaseCoordinator);
 			const result = await queue.refresh("token-with-acquire-error");
 
-			expect(result).toEqual(mockResult);
-			expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
+			expect(result).toMatchObject({type: "failed", reason: "coordination_error"});
+			expect(authModule.refreshAccessToken).not.toHaveBeenCalled();
 		});
 
-		it("swallows lease release errors and still returns token result", async () => {
+		it("does not call OAuth when another owner outlasts the wait budget", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "queue-blocked-"));
+      const coordinator = new RefreshLeaseCoordinator({leaseDir: dir, waitTimeoutMs: 0});
+      const owner = await coordinator.acquire("blocked-token");
+      try {
+        const queue = new RefreshQueue(30_000, coordinator);
+        const result = await queue.refresh("blocked-token");
+        expect(result).toMatchObject({type: "failed", reason: "coordination_error"});
+        expect(authModule.refreshAccessToken).not.toHaveBeenCalled();
+      } finally { await owner.release(); await removeWithRetry(dir, {recursive: true, force: true}); }
+    });
+
+    it("swallows lease release errors and still returns token result", async () => {
 			const mockResult = {
 				type: "success" as const,
 				access: "release-safe-access",

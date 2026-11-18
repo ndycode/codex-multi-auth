@@ -6,6 +6,7 @@ import {
 	requestDeviceAuthorization,
 	runDeviceAuthFlow,
 } from "../lib/auth/device-auth.js";
+import { closeSharedProxyDispatchers } from "../lib/request/url-rewriting.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -55,6 +56,53 @@ describe("device auth flow", () => {
 				}),
 			}),
 		);
+	});
+
+	it("adds the configured HTTP proxy to the default auth transport", async () => {
+		const previousHttpProxy = process.env.HTTP_PROXY;
+		const previousHttpsProxy = process.env.HTTPS_PROXY;
+		const previousLowerHttpProxy = process.env.http_proxy;
+		const previousLowerHttpsProxy = process.env.https_proxy;
+		const previousNoProxy = process.env.NO_PROXY;
+		const previousLowerNoProxy = process.env.no_proxy;
+		const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+			jsonResponse({
+				device_auth_id: "device-auth-proxy",
+				user_code: "PROX-Y123",
+				interval: 5,
+			}),
+		);
+
+		process.env.HTTP_PROXY = "http://proxy.example:8080";
+		process.env.HTTPS_PROXY = "http://proxy.example:8080";
+		process.env.http_proxy = "http://proxy.example:8080";
+		process.env.https_proxy = "http://proxy.example:8080";
+		delete process.env.NO_PROXY;
+		delete process.env.no_proxy;
+		vi.stubGlobal("fetch", fetchMock);
+		try {
+			const result = await requestDeviceAuthorization();
+
+			expect(result.type).toBe("success");
+			expect(fetchMock).toHaveBeenCalledWith(
+				"https://auth.openai.com/api/accounts/deviceauth/usercode",
+				expect.objectContaining({ dispatcher: expect.anything() }),
+			);
+		} finally {
+			if (previousHttpProxy === undefined) delete process.env.HTTP_PROXY;
+			else process.env.HTTP_PROXY = previousHttpProxy;
+			if (previousHttpsProxy === undefined) delete process.env.HTTPS_PROXY;
+			else process.env.HTTPS_PROXY = previousHttpsProxy;
+			if (previousLowerHttpProxy === undefined) delete process.env.http_proxy;
+			else process.env.http_proxy = previousLowerHttpProxy;
+			if (previousLowerHttpsProxy === undefined) delete process.env.https_proxy;
+			else process.env.https_proxy = previousLowerHttpsProxy;
+			if (previousNoProxy === undefined) delete process.env.NO_PROXY;
+			else process.env.NO_PROXY = previousNoProxy;
+			if (previousLowerNoProxy === undefined) delete process.env.no_proxy;
+			else process.env.no_proxy = previousLowerNoProxy;
+			await closeSharedProxyDispatchers();
+		}
 	});
 
 	it("accepts the usercode alias and numeric interval", async () => {

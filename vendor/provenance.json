@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-03-22",
+  "generatedAt": "2026-09-28",
   "components": [
     {
       "name": "@codex-ai/plugin",
@@ -9,23 +9,23 @@
       "files": [
         {
           "path": "vendor/codex-ai-plugin/package.json",
-          "sha256": "b4dda9e535af9546e647f7651e1da57db1dae8af40d14eb4d97bb0ba972b8bc8"
+          "sha256": "d5f72e9242c6bc1d5909d6f1e2165390adfe3134a27a128128d48b3146bbd48b"
         },
         {
           "path": "vendor/codex-ai-plugin/dist/index.js",
-          "sha256": "aee9a2454b1778ff0af7c648a172074fe61446e21e76bac0e354ef1d12c0dc22"
+          "sha256": "99f55197894a9875feffc4a92c84818cd1d45835b0a5d12b324d92f4b668db6d"
         },
         {
           "path": "vendor/codex-ai-plugin/dist/index.d.ts",
-          "sha256": "9cd22362749c262f7f87e05ea981659a14f0e03450aeb6ab4e7ad39693662c10"
+          "sha256": "54f3cef2ac370474f51892ce81db85e74f02c0ed905009c56a090e48e7ccc283"
         },
         {
           "path": "vendor/codex-ai-plugin/dist/tool.js",
-          "sha256": "79b5301d1a200b5614d1b38420b62b6080ce77999be2bc25fc1c5239abe9f197"
+          "sha256": "e1d6add4561ae6b24cc2a02362f6da78a0252f144f3e0f0f04ff3be73497bc17"
         },
         {
           "path": "vendor/codex-ai-plugin/dist/tool.d.ts",
-          "sha256": "c04a703b191beeadb97293d059a93bad4fd445afacc4849fcf25346b1456f160"
+          "sha256": "1f8e9110b5d11021e4df573dbbeea5b29027baa0e237a1ca4892118cf69670a9"
         }
       ]
     },
@@ -37,16 +37,16 @@
       "files": [
         {
           "path": "vendor/codex-ai-sdk/package.json",
-          "sha256": "8addd64386f878ba30f3ab12e2b86bdcd1d8eeb24cb2ad692be7de73587211a4"
+          "sha256": "88e4fee1d031328c5dce441c47a3e6c61c954c1776f429e1bea2b8708f59ea06"
         },
         {
           "path": "vendor/codex-ai-sdk/dist/index.js",
-          "sha256": "aee9a2454b1778ff0af7c648a172074fe61446e21e76bac0e354ef1d12c0dc22",
+          "sha256": "99f55197894a9875feffc4a92c84818cd1d45835b0a5d12b324d92f4b668db6d",
           "note": "Intentionally identical to vendor/codex-ai-plugin/dist/index.js; both shims export an empty ESM module."
         },
         {
           "path": "vendor/codex-ai-sdk/dist/index.d.ts",
-          "sha256": "41bffc0c5a2d44f83ab4d8bd3618c35bd0cd0bf19534185943e26d23a0e41b23"
+          "sha256": "f81ec30346e7fd46b571de3aca536eb7e3a003a493e537ca4a208746c3e90a04"
         }
       ]
     }

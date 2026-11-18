@@ -7,19 +7,20 @@ import {
 	normalizeUsageLedgerRow,
 	usageRowToJsonLine,
 } from "./redaction.js";
-import type {
-	UsageLedgerAppendInput,
-	UsageLedgerOperation,
-	UsageLedgerPaths,
-	UsageLedgerQuery,
-	UsageLedgerOutcome,
-	UsageLedgerRow,
-	UsageLedgerSource,
-	UsageSummary,
-	UsageSummaryBucket,
-	UsageSummaryGroupBy,
-	UsageSummaryQuery,
-	UsageTokenCounts,
+import {
+	isKnownServiceTier,
+	type UsageLedgerAppendInput,
+	type UsageLedgerOperation,
+	type UsageLedgerPaths,
+	type UsageLedgerQuery,
+	type UsageLedgerOutcome,
+	type UsageLedgerRow,
+	type UsageLedgerSource,
+	type UsageSummary,
+	type UsageSummaryBucket,
+	type UsageSummaryGroupBy,
+	type UsageSummaryQuery,
+	type UsageTokenCounts,
 } from "./types.js";
 
 const USAGE_DIR_NAME = "usage";
@@ -38,9 +39,14 @@ const VALID_SOURCES = new Set<UsageLedgerSource>([
 	"unknown",
 ]);
 const VALID_OPERATIONS = new Set<UsageLedgerOperation>([
+	"decisions",
 	"responses",
+	"images",
 	"models",
 	"thread-goal",
+	"transcribe",
+	"search",
+	"realtime",
 	"auth-refresh",
 	"diagnostic",
 	"unknown",
@@ -320,6 +326,14 @@ function normalizeParsedUsageRow(value: unknown): UsageLedgerRow | null {
 			Number.isFinite(value.tokens.totalTokens)
 				? Math.max(0, Math.trunc(value.tokens.totalTokens))
 				: 0,
+		// Validated against the union rather than passed through: the file is
+		// on disk and can be edited, and an unrecognised string would reach the
+		// pricer as a tier it has no rate for. Rebuilding only the numeric
+		// fields dropped this entirely, so a persisted Fast row read back as
+		// standard in `usage` reports.
+		...(isKnownServiceTier(value.tokens.serviceTier)
+			? { serviceTier: value.tokens.serviceTier }
+			: {}),
 	};
 	const account = isRecord(value.account)
 		? {
@@ -459,6 +473,7 @@ function createBucket(key: string): UsageSummaryBucket {
 		reasoningTokens: 0,
 		totalTokens: 0,
 		costUsd: 0,
+		unpricedRequests: 0,
 	};
 }
 
@@ -489,6 +504,12 @@ function addRowToBucket(bucket: UsageSummaryBucket, row: UsageLedgerRow): void {
 	bucket.reasoningTokens += row.tokens.reasoningTokens;
 	bucket.totalTokens += row.tokens.totalTokens;
 	bucket.costUsd = Number((bucket.costUsd + (row.costUsd ?? 0)).toFixed(8));
+	// Only rows that actually consumed tokens count as unpriced spend. A blocked
+	// or cancelled request carries no tokens and no cost, and must not make a
+	// cost budget unevaluable.
+	if (row.costUsd === null && row.tokens.totalTokens > 0) {
+		bucket.unpricedRequests += 1;
+	}
 }
 
 export function summarizeUsageRows(

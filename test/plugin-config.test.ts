@@ -115,6 +115,7 @@ describe("Plugin Configuration", () => {
 			const config = loadPluginConfig();
 
 			expect(config).toEqual({
+				locale: "auto",
 				codexMode: true,
 				codexRuntimeRotationProxy: true,
 				codexTuiV2: true,
@@ -167,6 +168,10 @@ describe("Plugin Configuration", () => {
 				preemptiveQuotaRemainingPercent5h: 5,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
+				contextBudgetGuardEnabled: false,
+				contextBudgetGuardSoftPercent: 65,
+				contextBudgetGuardHardPercent: 69,
+				contextBudgetGuardModelWindowOverrides: {},
 				routingMutex: "legacy",
 				schedulingStrategy: "hybrid",
 			});
@@ -189,6 +194,7 @@ describe("Plugin Configuration", () => {
 			const config = loadPluginConfig();
 
 			expect(config).toEqual({
+				locale: "auto",
 				codexMode: false,
 				codexRuntimeRotationProxy: true,
 				codexTuiV2: true,
@@ -241,6 +247,10 @@ describe("Plugin Configuration", () => {
 				preemptiveQuotaRemainingPercent5h: 5,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
+				contextBudgetGuardEnabled: false,
+				contextBudgetGuardSoftPercent: 65,
+				contextBudgetGuardHardPercent: 69,
+				contextBudgetGuardModelWindowOverrides: {},
 				routingMutex: "legacy",
 				schedulingStrategy: "hybrid",
 			});
@@ -619,6 +629,7 @@ describe("Plugin Configuration", () => {
 			const config = loadPluginConfig();
 
 			expect(config).toEqual({
+				locale: "auto",
 				codexMode: true,
 				codexRuntimeRotationProxy: true,
 				codexTuiV2: true,
@@ -671,6 +682,10 @@ describe("Plugin Configuration", () => {
 				preemptiveQuotaRemainingPercent5h: 5,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
+				contextBudgetGuardEnabled: false,
+				contextBudgetGuardSoftPercent: 65,
+				contextBudgetGuardHardPercent: 69,
+				contextBudgetGuardModelWindowOverrides: {},
 				routingMutex: "legacy",
 				schedulingStrategy: "hybrid",
 			});
@@ -694,6 +709,7 @@ describe("Plugin Configuration", () => {
 			const config = loadPluginConfig();
 
 			expect(config).toEqual({
+				locale: "auto",
 				codexMode: true,
 				codexRuntimeRotationProxy: true,
 				codexTuiV2: true,
@@ -746,6 +762,10 @@ describe("Plugin Configuration", () => {
 				preemptiveQuotaRemainingPercent5h: 5,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
+				contextBudgetGuardEnabled: false,
+				contextBudgetGuardSoftPercent: 65,
+				contextBudgetGuardHardPercent: 69,
+				contextBudgetGuardModelWindowOverrides: {},
 				routingMutex: "legacy",
 				schedulingStrategy: "hybrid",
 			});
@@ -763,6 +783,7 @@ describe("Plugin Configuration", () => {
 			const config = loadPluginConfig();
 
 			expect(config).toEqual({
+				locale: "auto",
 				codexMode: true,
 				codexRuntimeRotationProxy: true,
 				codexTuiV2: true,
@@ -815,6 +836,10 @@ describe("Plugin Configuration", () => {
 				preemptiveQuotaRemainingPercent5h: 5,
 				preemptiveQuotaRemainingPercent7d: 5,
 				preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
+				contextBudgetGuardEnabled: false,
+				contextBudgetGuardSoftPercent: 65,
+				contextBudgetGuardHardPercent: 69,
+				contextBudgetGuardModelWindowOverrides: {},
 				routingMutex: "legacy",
 				schedulingStrategy: "hybrid",
 			});

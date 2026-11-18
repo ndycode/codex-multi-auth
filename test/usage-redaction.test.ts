@@ -15,6 +15,11 @@ function sha256(value: string): string {
 }
 
 describe("usage ledger redaction and normalization", () => {
+	it("preserves the images operation instead of silently normalizing it to unknown", () => {
+		const row = normalizeUsageLedgerRow({ source: "runtime-proxy", operation: "images", outcome: "success", model: "gpt-image-2", statusCode: 200, accountIndex: 1 });
+		expect(row.operation).toBe("images");
+		expect(row.account?.index).toBe(1);
+	});
 	afterEach(() => {
 		vi.useRealTimers();
 	});
@@ -127,14 +132,15 @@ describe("usage ledger redaction and normalization", () => {
 		it("falls back to the pricing estimate when no explicit cost is given", () => {
 			const row = normalizeUsageLedgerRow({
 				outcome: "success",
-				model: "gpt-5.2",
+				model: "gpt-5.5",
 				inputTokens: 1_000_000,
 				outputTokens: 1_000_000,
 			});
-			// Literal pin of the gpt-5.2 price card ($1.25/M input + $10/M
-			// output), not just delegation: a wrong table entry must fail here.
-			expect(row.costUsd).toBe(11.25);
-			expect(row.costUsd).toBe(estimateUsageCostUsd("gpt-5.2", row.tokens));
+			// Literal pin of the replacement gpt-6-sol long-context card ($4/M
+			// input + $15/M output past 272K), not just delegation: a wrong table
+			// entry must fail here.
+			expect(row.costUsd).toBe(19);
+			expect(row.costUsd).toBe(estimateUsageCostUsd("gpt-5.5", row.tokens));
 			expect(
 				normalizeUsageLedgerRow({ outcome: "success", costUsd: -3 }).costUsd,
 			).toBe(0);
@@ -200,4 +206,9 @@ describe("usage ledger redaction and normalization", () => {
 			expect(line).toContain(sha256("alice@example.com"));
 		});
 	});
+});
+
+it("keeps Decisions usage unpriced instead of applying Responses rates", () => {
+ const row=normalizeUsageLedgerRow({operation:"decisions",model:"gpt-6-luna",inputTokens:100,outputTokens:0,totalTokens:100});
+ expect(row.operation).toBe("decisions");expect(row.tokens.inputTokens).toBe(100);expect(row.costUsd).toBeNull();
 });

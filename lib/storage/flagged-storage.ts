@@ -1,8 +1,20 @@
 import type {
 	AccountMetadataV3,
+	CodexCliMirror,
 	FlaggedAccountMetadataV1,
 	FlaggedAccountStorageV1,
 } from "./public-types.js";
+
+function normalizeCodexCliMirror(value: unknown): CodexCliMirror | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const { forAccountId, accountId } = value as Record<string, unknown>;
+	return typeof forAccountId === "string" &&
+		forAccountId.trim() &&
+		typeof accountId === "string" &&
+		accountId.trim()
+		? { forAccountId, accountId }
+		: undefined;
+}
 
 export function normalizeFlaggedStorage(
 	data: unknown,
@@ -82,8 +94,24 @@ export function normalizeFlaggedStorage(
 		const cooldownReason = isCooldownReason(rawAccount.cooldownReason)
 			? rawAccount.cooldownReason
 			: undefined;
+		const authInvalidatedAt =
+			typeof rawAccount.authInvalidatedAt === "number" &&
+			Number.isFinite(rawAccount.authInvalidatedAt) &&
+			rawAccount.authInvalidatedAt > 0
+				? rawAccount.authInvalidatedAt
+				: undefined;
+		const authInvalidationErrorCode =
+			authInvalidatedAt !== undefined &&
+			typeof rawAccount.authInvalidationErrorCode === "string" &&
+			rawAccount.authInvalidationErrorCode.trim().length > 0
+				? rawAccount.authInvalidationErrorCode.trim()
+				: undefined;
 
 		const normalized: FlaggedAccountMetadataV1 = {
+			recordId:
+				typeof rawAccount.recordId === "string" && rawAccount.recordId.trim()
+					? rawAccount.recordId.trim()
+					: undefined,
 			refreshToken,
 			addedAt:
 				typeof rawAccount.addedAt === "number" ? rawAccount.addedAt : flaggedAt,
@@ -121,6 +149,8 @@ export function normalizeFlaggedStorage(
 					? rawAccount.coolingDownUntil
 					: undefined,
 			cooldownReason,
+			authInvalidatedAt,
+			authInvalidationErrorCode,
 			workspaces: Array.isArray(rawAccount.workspaces)
 				? (rawAccount.workspaces as FlaggedAccountMetadataV1["workspaces"])
 				: undefined,
@@ -128,6 +158,7 @@ export function normalizeFlaggedStorage(
 				typeof rawAccount.currentWorkspaceIndex === "number"
 					? rawAccount.currentWorkspaceIndex
 					: undefined,
+			codexCliMirror: normalizeCodexCliMirror(rawAccount.codexCliMirror),
 			flaggedAt,
 			flaggedReason:
 				typeof rawAccount.flaggedReason === "string"

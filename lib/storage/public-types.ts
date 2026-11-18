@@ -22,6 +22,8 @@ export interface RateLimitStateV3 {
 }
 
 export interface AccountMetadataV3 {
+	/** Stable per-record identity used for runtime quota state. */
+	recordId?: string;
 	accountId?: string;
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;
@@ -44,8 +46,26 @@ export interface AccountMetadataV3 {
 	rateLimitResetTimes?: RateLimitStateV3;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
+	/** Timestamp of the last explicit upstream OAuth-token invalidation. */
+	authInvalidatedAt?: number;
+	/** Stable provider/client error code associated with the invalidation. */
+	authInvalidationErrorCode?: string;
 	workspaces?: Workspace[];
 	currentWorkspaceIndex?: number;
+	/** See {@link CodexCliMirror}. */
+	codexCliMirror?: CodexCliMirror;
+}
+
+/**
+ * The id written to ~/.codex/auth.json in place of an explicit `login --org` /
+ * CODEX_AUTH_ACCOUNT_ID binding the backend does not authorize (Codex CLI
+ * 0.156+ refuses such an id, issue #700). Applies only while `forAccountId`
+ * still equals the account's `accountId`, so any change of that id (re-login,
+ * a new explicit id, a token-follow, a rebind) makes it stale on its own.
+ */
+export interface CodexCliMirror {
+	forAccountId: string;
+	accountId: string;
 }
 
 export interface AccountStorageV3 {

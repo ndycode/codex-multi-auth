@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseBooleanEnv } from "../lib/env-parsing.js";
+import { parseBooleanEnv, parseIntegerEnv } from "../lib/env-parsing.js";
 
 describe("parseBooleanEnv", () => {
 	describe("truthy literals", () => {
@@ -67,5 +67,30 @@ describe("parseBooleanEnv", () => {
 			expect(parseBooleanEnv("false") ?? fallback).toBe(false);
 			expect(parseBooleanEnv("0") ?? fallback).toBe(false);
 		});
+	});
+});
+
+describe("parseIntegerEnv", () => {
+	it.each([
+		["0", 0],
+		["25", 25],
+		["30000", 30000],
+		["-5", -5],
+		["  42  ", 42],
+	])("parses %j as %d", (input, expected) => {
+		expect(parseIntegerEnv(input)).toBe(expected);
+	});
+
+	it.each([[""], ["   "], ["abc"], ["ms"], [undefined]])(
+		"returns undefined for %j",
+		(input) => {
+			expect(parseIntegerEnv(input)).toBeUndefined();
+		},
+	);
+
+	it("respects an explicitly parsed zero over the default", () => {
+		const fallback = 30_000;
+		expect(parseIntegerEnv("0") ?? fallback).toBe(0);
+		expect(parseIntegerEnv("garbage") ?? fallback).toBe(fallback);
 	});
 });

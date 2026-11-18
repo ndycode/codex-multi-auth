@@ -369,6 +369,8 @@ export interface AccountWithMetrics {
 	index: number;
 	trackerKey?: TrackerKey;
 	isAvailable: boolean;
+	/** Runtime gate that made an unavailable account ineligible, for diagnostics. */
+	unavailableReason?: string;
 	lastUsed: number;
 }
 
@@ -400,6 +402,8 @@ const DEFAULT_HYBRID_SELECTION_CONFIG: HybridSelectionConfig = {
 export interface HybridSelectionOptions {
 	pidOffsetEnabled?: boolean;
 	scoreBoostByAccount?: Record<number, number>;
+	blockedAccountIndexes?: ReadonlySet<number>;
+	blockedReasonByAccount?: Record<number, string>;
 }
 
 /**
@@ -477,7 +481,10 @@ export function selectHybridAccount(
 	}
 
 	const cfg = { ...DEFAULT_HYBRID_SELECTION_CONFIG, ...resolvedConfig };
-	const available = resolvedAccounts.filter((a) => a.isAvailable);
+	const blockedAccountIndexes = resolvedOptions.blockedAccountIndexes;
+	const available = resolvedAccounts.filter(
+		(a) => a.isAvailable && !blockedAccountIndexes?.has(a.index),
+	);
 
 	// Contract: if NO account is currently available (all cooling down, rate-limited,
 	// circuit-open, or otherwise blocked) the selector returns null rather than
@@ -617,7 +624,11 @@ export function selectHybridAccountTraced(
 	const pidBonus = options.pidOffsetEnabled ? (process.pid % 100) * 0.01 : 0;
 
 	const accounts = Array.isArray(params.accounts) ? params.accounts : [];
-	const availableAccounts = accounts.filter((account) => account.isAvailable);
+	const blockedAccountIndexes = options.blockedAccountIndexes;
+	const availableAccounts = accounts.filter(
+		(account) =>
+			account.isAvailable && !blockedAccountIndexes?.has(account.index),
+	);
 
 	const candidates: HybridSelectionCandidateTrace[] = accounts.map(
 		(account) => {
@@ -645,10 +656,11 @@ export function selectHybridAccountTraced(
 					((account.index * 0.131 + pidBonus) % 1) * cfg.freshnessWeight * 0.1;
 			}
 
+			const blocked = blockedAccountIndexes?.has(account.index) ?? false;
 			return {
 				index: account.index,
 				trackerKey,
-				isAvailable: account.isAvailable,
+				isAvailable: account.isAvailable && !blocked,
 				lastUsed: account.lastUsed,
 				health,
 				tokens,
@@ -656,9 +668,13 @@ export function selectHybridAccountTraced(
 				capabilityBoost,
 				pidBonus: options.pidOffsetEnabled ? pidBonus : 0,
 				score,
-				reason: account.isAvailable
-					? undefined
-					: "unavailable (rate-limited, cooling down, or circuit open)",
+				reason: blocked
+					? (options.blockedReasonByAccount?.[account.index] ??
+						"policy-blocked")
+				: account.isAvailable
+						? undefined
+						: (account.unavailableReason ??
+							"unavailable (rate-limited, cooling down, or circuit open)"),
 			};
 		},
 	);

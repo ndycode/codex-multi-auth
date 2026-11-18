@@ -498,13 +498,17 @@ describe("runRuntimeAccountCheck", () => {
 			now: () => now,
 			showLine: vi.fn(),
 		});
-
 		const saved = saveAccounts.mock.calls[0]?.[0];
 		expect(saved.accounts.map((entry) => entry.refreshToken)).toEqual([
 			"r1",
 			"r2",
 		]);
 		expect(saved.pinnedAccountIndex).toBe(1);
+		// The pin is not the only index-keyed state the removal invalidates:
+		// session affinity maps a session to an account INDEX, and this removal
+		// path is AUTOMATIC. Without a generation bump a live proxy keeps routing
+		// in-flight sessions to whatever slid into the removed slot (#474).
+		expect(saved.affinityGeneration).toBeGreaterThan(0);
 	});
 
 	it("clears a manual pin when the pinned account itself is auto-removed on deep probe", async () => {

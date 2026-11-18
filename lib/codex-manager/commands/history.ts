@@ -153,7 +153,9 @@ function parseRollout(
 			updatedAt = record.timestamp;
 		}
 
-		if (record.type === "session_meta") {
+		// Forked rollouts append the parent's session_meta after their own, so
+		// only the first one describes this rollout.
+		if (record.type === "session_meta" && !hasSessionMeta) {
 			const payload = record.payload;
 			const metaId = readStringField(payload, "id");
 			if (metaId) id = metaId;

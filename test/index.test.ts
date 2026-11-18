@@ -153,6 +153,10 @@ vi.mock("../lib/config.js", () => ({
 	getPreemptiveQuotaRemainingPercent5h: () => 5,
 	getPreemptiveQuotaRemainingPercent7d: () => 5,
 	getPreemptiveQuotaMaxDeferralMs: () => 2 * 60 * 60_000,
+	getContextBudgetGuardEnabled: () => false,
+	getContextBudgetGuardSoftPercent: () => 65,
+	getContextBudgetGuardHardPercent: () => 69,
+	getContextBudgetGuardModelWindowOverrides: () => ({}),
 	getCodexTuiV2: () => false,
 	getCodexTuiColorProfile: () => "ansi16",
 	getCodexTuiGlyphMode: () => "ascii",
@@ -225,7 +229,8 @@ vi.mock("../lib/runtime/runtime-current-account.js", async () => {
 	};
 });
 
-vi.mock("../lib/quota-cache.js", () => ({
+vi.mock("../lib/quota-cache.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../lib/quota-cache.js")>()),
 	loadQuotaCache: loadQuotaCacheMock,
 }));
 
@@ -382,6 +387,14 @@ const saveAccountsMock = vi.fn(
 		};
 	},
 );
+const clearCredentialSidecarsMock = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("../lib/storage/credential-sidecars.js", () => ({
+	clearCredentialSidecars: clearCredentialSidecarsMock,
+	clearAccountsAndCredentialSidecars: async (clearPool: () => Promise<void>) => {
+		await clearPool();
+		await clearCredentialSidecarsMock();
+	},
+}));
 const clearAccountsMock = vi.fn(async () => {
 	mockStorage.accounts = [];
 	mockStorage.activeIndex = 0;
@@ -899,6 +912,22 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(vi.mocked(loggerModule.logInfo)).not.toHaveBeenCalledWith(
 				expect.stringContaining("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 			);
+		});
+
+		it("removes stored API keys and runtime sidecars on the login menu's delete-all reset", async () => {
+			const cliModule = await import("../lib/cli.js");
+			clearCredentialSidecarsMock.mockClear();
+			clearAccountsMock.mockClear();
+			mockStorage.accounts = [{ refreshToken: "fixture-refresh", accountId: "fixture", email: "fixture@example.com", addedAt: 1, lastUsed: 1 }] as typeof mockStorage.accounts;
+			vi.mocked(cliModule.promptLoginMode)
+				// Fresh leaves the menu for sign-in; no second prompt is consumed.
+				.mockResolvedValueOnce({ mode: "fresh", deleteAll: true } as never);
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: () => Promise<unknown>;
+			};
+			await autoMethod.authorize().catch(() => undefined);
+			expect(clearAccountsMock).toHaveBeenCalledTimes(1);
+			expect(clearCredentialSidecarsMock).toHaveBeenCalledTimes(1);
 		});
 
 		it("uses combined flagged persistence when verify-flagged restores from the login menu", async () => {
@@ -6183,7 +6212,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 		expect(markRateLimitedWithReason).toHaveBeenCalledTimes(1);
 	});
 
-	it("persists the longer parsed rate-limit cooldown across overlapping requests", async () => {
+	it("persists the longer parsed cooldown up to the hourly revalidation bound across overlapping requests", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const { AccountManager: ActualAccountManager } =
 			await vi.importActual<typeof import("../lib/accounts.js")>(
@@ -6338,7 +6367,7 @@ describe("OpenAIOAuthPlugin runtime toast forwarding", () => {
 			expect(markRateLimitedWithReason).toHaveBeenCalledTimes(2);
 			const familyKey = markRateLimitedWithReason.mock.calls[0]?.[2] as string;
 			expect(requestAccount.rateLimitResetTimes[familyKey]).toBe(
-				Date.parse("2026-04-05T01:30:00.000Z"),
+				Date.parse("2026-04-05T01:00:00.000Z"),
 			);
 		} finally {
 			vi.useRealTimers();

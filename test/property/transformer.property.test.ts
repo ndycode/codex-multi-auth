@@ -47,12 +47,12 @@ describe("normalizeModel property tests", () => {
 
   it("handles undefined gracefully", () => {
     const result = normalizeModel(undefined);
-    expect(result).toBe("gpt-5.5");
+    expect(result).toBe("gpt-6.1-sol");
   });
 
   it("handles empty string gracefully", () => {
     const result = normalizeModel("");
-    expect(result).toBe("gpt-5.5");
+    expect(result).toBe("gpt-6.1-sol");
   });
 });
 
@@ -188,7 +188,7 @@ describe("getReasoningConfig property tests", () => {
     );
   });
 
-  it("deprecated codex-mini aliases route to current Codex reasoning", () => {
+  it("retired codex-mini aliases get their replacement's reasoning bounds", () => {
     fc.assert(
       fc.property(
         fc.constantFrom("gpt-5.1-codex-mini", "codex-mini-latest"),
@@ -203,13 +203,15 @@ describe("getReasoningConfig property tests", () => {
     );
   });
 
-  it("models without xhigh support downgrade xhigh to high", () => {
+  // Every live model accepts xhigh, so the one-rung step-down is exercised
+  // through `ultra`, which the Luna tiers lack.
+  it("models without ultra support downgrade ultra to max", () => {
     fc.assert(
       fc.property(
-        fc.constantFrom("gpt-5.1"),
+        fc.constantFrom("gpt-5.6-luna", "gpt-6-luna"),
         (model) => {
-          const result = getReasoningConfig(model, { reasoningEffort: "xhigh" });
-          expect(result.effort).toBe("high");
+          const result = getReasoningConfig(model, { reasoningEffort: "ultra" });
+          expect(result.effort).toBe("max");
           return true;
         }
       )
@@ -234,13 +236,28 @@ describe("getReasoningConfig property tests", () => {
     );
   });
 
-  it("gpt-5.1 and gpt-5.2 general support none effort", () => {
+  // Every live model's ladder starts at `low`, so `none` coerces up on the
+  // retired-era ids as well — gpt-5.5 lands on GPT-6 Sol, gpt-5 on 5.6 Sol.
+  it("retired gpt-5 and gpt-5.5 upgrade none to low on their replacements", () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom("gpt-5.5", "gpt-5"),
+        (model) => {
+          const result = getReasoningConfig(model, { reasoningEffort: "none" });
+          expect(result.effort).toBe("low");
+          return true;
+        }
+      )
+    );
+  });
+
+  it("retired gpt-5.1 and gpt-5.2 upgrade none to low on gpt-5.6-sol", () => {
     fc.assert(
       fc.property(
         fc.constantFrom("gpt-5.1", "gpt-5.2"),
         (model) => {
           const result = getReasoningConfig(model, { reasoningEffort: "none" });
-          expect(result.effort).toBe("none");
+          expect(result.effort).toBe("low");
           return true;
         }
       )

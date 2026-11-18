@@ -1,6 +1,6 @@
 # TUI Parity Checklist
 
-Checklist for keeping the auth dashboard consistent, beginner-friendly, and predictable.
+Checklist for keeping the auth dashboard consistent, beginner-friendly, and predictable across menus, settings panels, and terminal variants.
 
 * * *
 
@@ -69,9 +69,25 @@ Account detail minimum:
 
 Settings screens:
 
+- `Q` always cancels without saving — on every panel, no exceptions
 - stable focus after toggle
 - no cursor reset on simple update
-- save/back behavior deterministic
+- save/back behavior deterministic (`S` save, `Q` back-without-save)
+
+* * *
+
+## Settings Hub Parity
+
+The settings menu has six panels — keep labels and help strings aligned with `UI_COPY` (locked by `test/documentation.test.ts`):
+
+| Panel | Label | Behavior |
+| --- | --- | --- |
+| Account list | `Account List View` | toggle display fields; `M` sort, `L` layout |
+| Summary line | `Summary Line` | toggle/reorder summary fields |
+| Behavior | `Menu Behavior` | delay, pause, auto-fetch, status, TTL |
+| Theme | `Color Theme` | base + accent; **live preview always shown before apply**; cancel restores the baseline |
+| Experimental | `Experimental` | opt-in features |
+| Backend | `Backend Controls` | four categories: Session & Sync, Rotation & Quota, Refresh & Recovery, Performance & Timeouts; `R` reset |
 
 * * *
 
@@ -109,9 +125,9 @@ Add-account flow must support:
 Before release:
 
 1. Walk all menu paths manually.
-2. Validate hotkeys in terminal variants.
+2. Validate hotkeys in terminal variants (truecolor/ansi256/ansi16, ascii/unicode glyphs).
 3. Check color/focus consistency across all result screens.
-4. Ensure settings persist and reload correctly.
+4. Ensure settings persist and reload correctly (draft + keyed-merge writes).
 5. Confirm command aliases still route correctly.
 
 * * *

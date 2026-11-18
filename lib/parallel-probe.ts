@@ -142,7 +142,11 @@ export function getTopCandidates(
 		clearExpiredRateLimits(account);
 		const isRateLimited = isRateLimitedForFamily(account, normalizedModelFamily, resolvedModel);
 		const isCoolingDown = account.coolingDownUntil !== undefined && account.coolingDownUntil > Date.now();
-		const isAvailable = !isRateLimited && !isCoolingDown;
+		const isAuthInvalidated =
+			typeof account.authInvalidatedAt === "number" &&
+			Number.isFinite(account.authInvalidatedAt);
+		const isAvailable =
+			!isRateLimited && !isCoolingDown && !isAuthInvalidated;
 
 		accountsWithMetrics.push({
 			index: account.index,

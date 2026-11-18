@@ -1,4 +1,5 @@
-import type { UiRuntimeOptions } from "./runtime.js";
+import { getUiRuntimeOptions, type UiRuntimeOptions } from "./runtime.js";
+import { shouldDisableColor } from "./theme.js";
 
 export type UiTextTone =
 	| "primary"
@@ -223,4 +224,10 @@ export function quotaToneFromLeftPercent(
 	if (leftPercent <= 15) return "danger";
 	if (leftPercent <= 35) return "warning";
 	return "success";
+}
+
+/** Style human-readable reports; JSON callers must bypass this presentation helper. */
+export function styleReportText(text: string, tone: UiTextTone = "normal"): string {
+ if (shouldDisableColor()) return text;
+ return paintUiText(getUiRuntimeOptions(), text, tone);
 }

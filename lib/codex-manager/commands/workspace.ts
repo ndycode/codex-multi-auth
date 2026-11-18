@@ -1,8 +1,9 @@
 import {
 	formatAccountLabel,
 	formatWorkspaceLines,
+	resolveAccountRecordId,
 } from "../../accounts.js";
-import type { AccountStorageV3 } from "../../storage.js";
+import type { AccountStorageV3, withAccountStorageTransaction } from "../../storage.js";
 import { saveAccountsWithRetry } from "../forecast-report-shared.js";
 
 type LoadedStorage = AccountStorageV3 | null;
@@ -11,6 +12,7 @@ export interface WorkspaceCommandDeps {
 	setStoragePath: (path: string | null) => void;
 	loadAccounts: () => Promise<LoadedStorage>;
 	saveAccounts: (storage: AccountStorageV3) => Promise<void>;
+	withAccountStorageTransaction: typeof withAccountStorageTransaction;
 	logError?: (message: string) => void;
 	logInfo?: (message: string) => void;
 }
@@ -18,9 +20,10 @@ export interface WorkspaceCommandDeps {
 /**
  * `codex-multi-auth workspace <account> [workspace]`
  *
- * With only an account index, lists the workspaces that account can rotate
+ * With only an account index, lists the workspaces that account can select
  * between (personal Plus vs business/team under one email, issue #491). With a
  * workspace index too, sets it as the active workspace for that account.
+ * A final enable/disable action changes availability without changing selection.
  */
 export async function runWorkspaceCommand(
 	args: string[],
@@ -118,6 +121,37 @@ export async function runWorkspaceCommand(
 	}
 
 	const targetName = target.name?.trim() || "(unnamed)";
+ const action=args[2];
+ if (args.length > 3 || (action && action !== "enable" && action !== "disable")) {
+  logError("Invalid workspace action. Use enable or disable.");
+  return 1;
+ }
+ if (action) {
+  const recordId = resolveAccountRecordId(account);
+  const workspaceId = target.id;
+  return deps.withAccountStorageTransaction(async (current, persist) => {
+   // An explicit command is an operation, even if its initial snapshot already
+   // had that value. Apply it to the latest row under the storage lock.
+   const matches = current?.accounts.filter(row => resolveAccountRecordId(row) === recordId) ?? [];
+   const latest = matches.length === 1 ? matches[0] : undefined;
+   const latestWorkspaces = latest?.workspaces ?? [];
+   const workspaceMatches = latestWorkspaces.filter(row => row.id === workspaceId);
+   const workspace = workspaceMatches.length === 1 ? workspaceMatches[0] : undefined;
+   if (!current || !latest || !workspace) {
+    logError("Account or workspace changed concurrently; reload before changing workspace availability.");
+    return 1;
+   }
+   workspace.enabled = action === "enable";
+   // Absence of disabledAt distinguishes an operator exclusion from runtime health.
+   delete workspace.disabledAt;
+   await saveAccountsWithRetry(current, persist);
+   const currentIndex = latestWorkspaces.indexOf(workspace) + 1;
+   const currentName = workspace.name?.trim() || "(unnamed)";
+   logInfo(`Workspace ${currentIndex} [${currentName}] ${workspace.enabled ? "enabled" : "disabled"}. Selected workspace unchanged.`);
+   return 0;
+  });
+ }
+
 	if (target.enabled === false) {
 		logError(
 			`Workspace ${parsedWorkspace} ([${targetName}]) is disabled and cannot be selected.`,

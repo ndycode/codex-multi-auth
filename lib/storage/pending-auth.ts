@@ -1,0 +1,185 @@
+import { createHash } from "node:crypto";
+import { promises as fs } from "node:fs";
+import { dirname } from "node:path";
+import { z } from "zod";
+import { withRetry } from "../fs-retry.js";
+import { createLogger } from "../logger.js";
+import { tempPathFor } from "../temp-path.js";
+import { withFileTransactionLock } from "./file-lock.js";
+import { getIntentionalResetMarkerPath } from "./backup-paths.js";
+import type { AccountStorageV3 } from "./public-types.js";
+
+/**
+ * Rotated OAuth credentials that could not be written to the account pool
+ * (a locked or unreadable accounts file). A refresh spends the previous
+ * refresh token upstream, so losing the new one with the process means the
+ * account needs a re-login. Every load applies these entries until a save
+ * persists them.
+ */
+const entrySchema = z.object({
+	/** sha256 of the spent refresh token: identifies the row without storing it. */
+	prior: z.string().regex(/^[0-9a-f]{64}$/),
+	recordId: z.string().trim().min(1).optional(),
+	refreshToken: z.string().min(1),
+	accessToken: z.string().min(1),
+	expiresAt: z.number(),
+	at: z.number(),
+});
+/** The writer keeps the journal at this size; the reader accepts any size so an
+ * over-cap file an earlier writer left behind still loads and is trimmed on the next write. */
+const MAX_ENTRIES = 1000;
+const fileSchema = z.object({ version: z.literal(1), entries: z.array(entrySchema) });
+type PendingAuth = z.infer<typeof entrySchema>;
+const retry = { maxAttempts: 6, backoffMs: 25 };
+const log = createLogger("pending-auth");
+
+export function getPendingAuthPath(storagePath: string): string {
+	return `${storagePath}.pending-auth.json`;
+}
+
+const hash = (token: string) => createHash("sha256").update(token).digest("hex");
+
+/**
+ * Only a missing file is empty. The entries are the only copy of rotated
+ * tokens, so a lock that outlasts the retries or a torn/corrupt file throws:
+ * a writer must never replace it with a partial list.
+ */
+async function read(path: string): Promise<PendingAuth[]> {
+	let raw: string;
+	try {
+		raw = await withRetry(() => fs.readFile(path, "utf8"), retry);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
+	return fileSchema.parse(JSON.parse(raw)).entries;
+}
+
+async function write(path: string, entries: PendingAuth[]): Promise<void> {
+	if (!entries.length) {
+		await withRetry(() => fs.rm(path, { force: true }), retry);
+		return;
+	}
+	await fs.mkdir(dirname(path), { recursive: true, mode: 0o700 });
+	const temp = tempPathFor(path);
+	try {
+		await fs.writeFile(temp, `${JSON.stringify({ version: 1, entries })}\n`, { mode: 0o600, flag: "wx" });
+		await withRetry(() => fs.rename(temp, path), retry);
+	} finally {
+		await fs.rm(temp, { force: true }).catch(() => undefined);
+	}
+}
+
+/** Record a rotated credential beside the account pool. */
+export async function recordPendingAuth(
+	storagePath: string,
+	auth: { priorRefreshToken: string; recordId?: string; refreshToken: string; accessToken: string; expiresAt: number; at: number },
+): Promise<void> {
+	const path = getPendingAuthPath(storagePath);
+	await withFileTransactionLock(path, async () => {
+        try {
+            await fs.stat(getIntentionalResetMarkerPath(storagePath));
+            throw Object.assign(new Error("Account pool was reset; rotated credentials were not retained."), {code:"ESTALE"});
+        } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+		const prior = hash(auth.priorRefreshToken);
+		const entries = (await read(path)).filter(
+			(entry) => entry.prior !== prior && entry.prior !== hash(auth.refreshToken),
+		);
+		// Rotating a token that is itself only journaled: extend that entry to the
+		// newest credential, but ALSO keep an entry keyed by the token this
+		// rotation just spent. A backup slot or WAL can still hold that
+		// intermediate token, and pruning now keeps entries whose spent token any
+		// recovery source can surface — a stale-snapshot restore then self-heals
+		// straight to the newest credential instead of reviving a spent token.
+		const chained = entries.find((entry) => entry.refreshToken === auth.priorRefreshToken);
+		if (chained) Object.assign(chained, { recordId: chained.recordId ?? auth.recordId, refreshToken: auth.refreshToken, accessToken: auth.accessToken, expiresAt: auth.expiresAt, at: auth.at });
+		const current: PendingAuth = { prior, recordId: auth.recordId, refreshToken: auth.refreshToken, accessToken: auth.accessToken, expiresAt: auth.expiresAt, at: auth.at };
+		entries.push(current);
+		const excess = entries.length - MAX_ENTRIES;
+		if (excess > 0) {
+			// Drop the oldest other entries, never the credential being recorded now.
+			const dropped = new Set(entries.filter((entry) => entry !== current).sort((a, b) => a.at - b.at).slice(0, excess));
+			log.warn("Pending rotated credentials exceeded the journal cap; dropped the oldest entries", { dropped: dropped.size });
+			await write(path, entries.filter((entry) => !dropped.has(entry)));
+			return;
+		}
+		await write(path, entries);
+	});
+}
+
+/** Overlay pending rotated credentials on rows that still hold the spent token. */
+export async function applyPendingAuth(
+	storagePath: string,
+	storage: AccountStorageV3 | null,
+): Promise<AccountStorageV3 | null> {
+	if (!storage) return storage;
+	let entries: PendingAuth[];
+	try {
+		entries = await read(getPendingAuthPath(storagePath));
+	} catch (error) {
+		// Loading must still work; the file is left untouched for a later load.
+		log.error("Pending rotated credentials could not be read; affected accounts may need a re-login if this persists", {
+			path: getPendingAuthPath(storagePath),
+			code: typeof (error as NodeJS.ErrnoException).code === "string" && /^[A-Z_]{1,40}$/.test((error as NodeJS.ErrnoException).code ?? "") ? (error as NodeJS.ErrnoException).code : "INVALID_PENDING_AUTH",
+		});
+		return storage;
+	}
+	if (!entries.length) return storage;
+	for (const account of storage.accounts) {
+		const entry = account.refreshToken ? entries.find((item) => item.prior === hash(account.refreshToken)) : undefined;
+		if (!entry) continue;
+		account.recordId ??= entry.recordId;
+		account.refreshToken = entry.refreshToken;
+		account.accessToken = entry.accessToken;
+		account.expiresAt = entry.expiresAt;
+		delete account.authInvalidatedAt;
+		delete account.authInvalidationErrorCode;
+		if (account.cooldownReason === "auth-failure") {
+			delete account.coolingDownUntil;
+			delete account.cooldownReason;
+		}
+	}
+	return storage;
+}
+
+/**
+ * After a save, drop entries whose spent token is no longer in any restorable
+ * state. `saved` is the primary content just persisted; callers may also
+ * supply `restorableRefreshTokens` — refresh tokens still present in recovery
+ * sources (rotating/discovered backups, a WAL payload) — since a restore can
+ * resurface a spent token, its entry must survive until no source holds it.
+ * A scan failure keeps every entry: retention is the safe direction.
+ */
+export async function prunePendingAuth(
+	storagePath: string,
+	saved: AccountStorageV3,
+	restorableRefreshTokens?: () => Promise<Iterable<string>>,
+): Promise<void> {
+	const path = getPendingAuthPath(storagePath);
+	const current = await read(path);
+	if (!current.length) return;
+	await withFileTransactionLock(path, async () => {
+		const spent = new Set(saved.accounts.map((account) => hash(account.refreshToken)));
+		if (restorableRefreshTokens) {
+			try {
+				for (const token of await restorableRefreshTokens()) {
+					spent.add(hash(token));
+				}
+			} catch (error) {
+				log.warn("Recovery-source scan failed; keeping all pending rotated credentials", {
+					code: typeof (error as NodeJS.ErrnoException).code === "string" && /^[A-Z_]{1,40}$/.test((error as NodeJS.ErrnoException).code ?? "") ? (error as NodeJS.ErrnoException).code : "UNKNOWN",
+				});
+				return;
+			}
+		}
+		const entries = await read(path);
+		const remaining = entries.filter((entry) => spent.has(entry.prior));
+		if (remaining.length !== entries.length) await write(path, remaining);
+	});
+}
+
+/** Coordinate resets with pending credential writers, including Windows rename locks. */
+export async function clearPendingAuth(storagePath: string): Promise<void> {
+ const path=getPendingAuthPath(storagePath);
+ await withFileTransactionLock(path,()=>withRetry(()=>fs.rm(path,{force:true}),retry));
+}

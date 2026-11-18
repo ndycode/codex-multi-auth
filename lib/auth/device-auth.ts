@@ -4,6 +4,7 @@ import {
 	exchangeAuthorizationCode,
 	sanitizeOAuthResponseBodyForLog,
 } from "./auth.js";
+import { fetchAuth } from "./http.js";
 
 const DEVICE_AUTH_BASE_URL = "https://auth.openai.com";
 const DEVICE_AUTH_API_BASE_URL = `${DEVICE_AUTH_BASE_URL}/api/accounts`;
@@ -60,7 +61,7 @@ export interface DeviceAuthFlowOptions {
 }
 
 function getFetch(options: DeviceAuthFlowOptions): FetchLike {
-	return options.fetchImpl ?? fetch;
+	return options.fetchImpl ?? fetchAuth;
 }
 
 function getNow(options: DeviceAuthFlowOptions): () => number {

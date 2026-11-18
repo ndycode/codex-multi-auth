@@ -3,12 +3,14 @@ import { __clearCacheForTesting, getModelFamily } from "../lib/prompts/codex.js"
 
 describe("Codex Module", () => {
 	describe("getModelFamily", () => {
-		it("keeps codex variants on codex prompt families", () => {
-			expect(getModelFamily("gpt-5.3-codex-spark")).toBe("gpt-5-codex");
-			expect(getModelFamily("gpt-5.2-codex-high")).toBe("gpt-5-codex");
-			expect(getModelFamily("gpt-5.1-codex-max-high")).toBe("gpt-5-codex");
-			expect(getModelFamily("gpt-5.1-codex-mini-high")).toBe("gpt-5-codex");
-			expect(getModelFamily("codex-mini-latest")).toBe("gpt-5-codex");
+		it("puts retired codex variants on their replacement's general prompt family", () => {
+			// Every codex model is retired; codex ids run on 5.6 Sol/Terra, which
+			// use the gpt-5.2 prompt family.
+			expect(getModelFamily("gpt-5.3-codex-spark")).toBe("gpt-5.2");
+			expect(getModelFamily("gpt-5.2-codex-high")).toBe("gpt-5.2");
+			expect(getModelFamily("gpt-5.1-codex-max-high")).toBe("gpt-5.2");
+			expect(getModelFamily("gpt-5.1-codex-mini-high")).toBe("gpt-5.2");
+			expect(getModelFamily("codex-mini-latest")).toBe("gpt-5.2");
 		});
 
 		it("routes GPT-5.4/5.5-era general models through the latest upstream general prompt family", () => {
@@ -23,9 +25,9 @@ describe("Codex Module", () => {
 			expect(getModelFamily("gpt-5-nano")).toBe("gpt-5.2");
 		});
 
-		it("keeps GPT-5.1 on its own prompt family", () => {
-			expect(getModelFamily("gpt-5.1")).toBe("gpt-5.1");
-			expect(getModelFamily("gpt-5.1-high")).toBe("gpt-5.1");
+		it("puts retired GPT-5.1 on its replacement's prompt family", () => {
+			expect(getModelFamily("gpt-5.1")).toBe("gpt-5.2");
+			expect(getModelFamily("gpt-5.1-high")).toBe("gpt-5.2");
 		});
 
 		it("falls back to the default model profile for unknown models", () => {

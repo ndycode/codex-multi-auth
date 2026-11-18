@@ -144,7 +144,7 @@ describe("runtime-paths", () => {
 
 			existsSync.mockImplementation((candidate: unknown) => {
 				if (typeof candidate !== "string") return false;
-				return candidate === path.join(fallback, "openai-codex-accounts.json");
+				return candidate === path.win32.join(fallback, "openai-codex-accounts.json");
 			});
 
 			const mod = await import("../lib/runtime-paths.js");

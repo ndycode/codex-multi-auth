@@ -22,9 +22,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Codex plugin scanner
-        uses: hashgraph-online/hol-codex-plugin-scanner-action@b45d6b583afe05819b24edc8e6418c9ad2e1f1d0 # v1
+        uses: hashgraph-online/hol-codex-plugin-scanner-action@b55875597360c72c46239c8e7a5788dc3ec5ba48 # v1
         with:
           # The pinned action resolves .codex-plugin/plugin.json from the repo root.
           plugin_dir: "."
@@ -56,11 +56,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Codex plugin scanner regression
         id: scan
         continue-on-error: true
-        uses: hashgraph-online/hol-codex-plugin-scanner-action@b45d6b583afe05819b24edc8e6418c9ad2e1f1d0 # v1
+        uses: hashgraph-online/hol-codex-plugin-scanner-action@b55875597360c72c46239c8e7a5788dc3ec5ba48 # v1
         with:
           plugin_dir: ${{ matrix.plugin_dir }}
           min_score: "70"

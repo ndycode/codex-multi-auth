@@ -29,7 +29,13 @@ describe("budget command", () => {
 		const store: BudgetGuardStore = { version: 1, limits: {} };
 		const deps = {
 			loadStore: vi.fn(async () => store),
-			saveStore: vi.fn(async () => undefined),
+			// Test seam for the mutation path: applies the caller's mutation to
+			// the fixture store the way updateBudgetGuardStore does under the lock.
+			updateStore: vi.fn(
+				async (
+					mutate: (store: BudgetGuardStore) => { result: unknown; dirty: boolean },
+				) => mutate(store).result,
+			),
 			logInfo: vi.fn(),
 			logError: vi.fn(),
 			getNow: () => 123,
@@ -45,7 +51,7 @@ describe("budget command", () => {
 			maxTokens: 1000,
 			updatedAt: 123,
 		});
-		expect(deps.saveStore).toHaveBeenCalledOnce();
+		expect(deps.updateStore).toHaveBeenCalledOnce();
 	});
 
 	it("checks limits with json output", async () => {

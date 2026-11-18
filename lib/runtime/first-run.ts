@@ -10,12 +10,19 @@
 // command proceeds normally.
 
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	writeFileSync,
+} from "node:fs";
 import { open, rename, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { ensureCodexCliFileAuthStore } from "../codex-cli/writer.js";
 import { getCodexRuntimeRotationProxy, loadPluginConfig } from "../config.js";
 import { withFileOperationRetry } from "../fs-retry.js";
 import { createLogger } from "../logger.js";
@@ -25,7 +32,8 @@ import { bindCodexAppRuntimeRotation, getAppBindStatus } from "./app-bind.js";
 const log = createLogger("first-run");
 
 const FIRST_RUN_MARKER_FILE = "first-run-setup.json";
-export const FIRST_RUN_MARKER_VERSION = 1;
+// v2 adds the `authStore` step to the marker payload.
+export const FIRST_RUN_MARKER_VERSION = 2;
 
 const TRUE_VALUES = new Set(["1", "true", "yes"]);
 const FALSE_VALUES = new Set(["0", "false", "no"]);
@@ -43,11 +51,12 @@ const CI_ENV_KEYS = [
 	"BITBUCKET_BUILD_NUMBER",
 ];
 
-type FirstRunStepStatus = "completed" | "skipped" | "failed";
+export type FirstRunStepStatus = "completed" | "skipped" | "failed";
 
 interface FirstRunSetupOutcome {
 	appBind: FirstRunStepStatus;
 	launcher: FirstRunStepStatus;
+	authStore: FirstRunStepStatus;
 }
 
 type FirstRunSkipReason =
@@ -59,7 +68,17 @@ type FirstRunSkipReason =
 
 export type FirstRunResult =
 	| { ran: false; reason: FirstRunSkipReason }
+	| { ran: false; reason: "migrated"; authStore: FirstRunStepStatus }
 	| ({ ran: true } & FirstRunSetupOutcome);
+
+interface FirstRunMarker {
+	version?: number;
+	startedAt?: number;
+	completedAt?: number;
+	appBind?: FirstRunStepStatus;
+	launcher?: FirstRunStepStatus;
+	authStore?: FirstRunStepStatus;
+}
 
 export interface FirstRunSetupDeps {
 	env?: NodeJS.ProcessEnv;
@@ -69,6 +88,7 @@ export interface FirstRunSetupDeps {
 	resolveRotation?: () => boolean;
 	bindCodexApp?: () => Promise<FirstRunStepStatus>;
 	installLauncher?: () => Promise<FirstRunStepStatus>;
+	enforceAuthStore?: () => Promise<FirstRunStepStatus>;
 	notify?: (message: string) => void;
 	now?: () => number;
 }
@@ -307,13 +327,17 @@ async function finalizeFirstRunMarker(
 	outcome: FirstRunSetupOutcome,
 	now: () => number,
 ): Promise<void> {
+	// A failed auth-store step records a pre-v2 version so the next invocation
+	// replays it through the migration path — which reruns only that step, never
+	// app bind or launcher install.
 	const payload = `${JSON.stringify(
 		{
-			version: FIRST_RUN_MARKER_VERSION,
+			version: markerVersionFor(outcome.authStore, undefined),
 			startedAt,
 			completedAt: now(),
 			appBind: outcome.appBind,
 			launcher: outcome.launcher,
+			authStore: outcome.authStore,
 		},
 		null,
 		"\t",
@@ -377,6 +401,123 @@ async function defaultBindCodexApp(
 	return "completed";
 }
 
+/**
+ * Pins the official Codex CLI to the file-backed credential store.
+ *
+ * Enforcement used to be lazy — it only happened when something called
+ * `setCodexCliActiveSelection` (switch, login, health check, repair). A user who
+ * installed the package and drove Codex through a third-party front-end could
+ * therefore stay on `cli_auth_credentials_store = "keychain"` indefinitely and
+ * keep getting macOS login-keychain prompts (issue #641). Doing it at first run
+ * closes that window before the official CLI ever reads its store.
+ *
+ * Deliberately not gated on `isCodexCliSyncEnabled()`: turning CLI sync off is a
+ * statement about account mirroring, not a request to re-enable keychain
+ * prompts. The `CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE=0` opt-out is
+ * honored inside `ensureCodexCliFileAuthStore` itself.
+ */
+async function defaultEnforceAuthStore(): Promise<FirstRunStepStatus> {
+	return (await ensureCodexCliFileAuthStore()) ? "completed" : "skipped";
+}
+
+/**
+ * Decides the version to persist after an auth-store attempt.
+ *
+ * Recording the current version after a *failed* step would strand the user:
+ * `ensureFirstRunSetup` short-circuits on version alone, so a single transient
+ * Windows `EPERM`/`EBUSY` on a locked `config.toml` would leave the CLI on
+ * keychain mode permanently — the exact symptom this whole change exists to
+ * remove. Staying pre-v2 costs one extra marker read per invocation and
+ * self-heals as soon as the write succeeds, because the step is idempotent.
+ *
+ * `"skipped"` deliberately does bump. It is the normal outcome for a config
+ * already pinned to `"file"`, so treating it as unfinished would mean the
+ * marker never reaches the current version for healthy installs. It also covers
+ * an explicit `CODEX_MULTI_AUTH_ENFORCE_CLI_FILE_AUTH_STORE=0` opt-out — a user
+ * choice, not a failure — and if that opt-out is later removed, the
+ * wrapper-startup guard and `doctor --fix` both still reconcile the config.
+ */
+function markerVersionFor(
+	authStore: FirstRunStepStatus,
+	previousVersion: number | undefined,
+): number {
+	if (authStore === "failed") return previousVersion ?? 1;
+	return FIRST_RUN_MARKER_VERSION;
+}
+
+function readFirstRunMarker(markerPath: string): FirstRunMarker | null {
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(markerPath, "utf8"));
+		return typeof parsed === "object" && parsed !== null
+			? (parsed as FirstRunMarker)
+			: null;
+	} catch {
+		// An unreadable or truncated marker is treated as pre-v2 and migrated;
+		// the migration only replays the idempotent auth-store step.
+		return null;
+	}
+}
+
+/**
+ * Brings a marker written before the auth-store step existed up to the current
+ * version.
+ *
+ * `ensureFirstRunSetup` short-circuits on marker existence, so bumping
+ * `FIRST_RUN_MARKER_VERSION` on its own would leave every already-installed
+ * user — precisely the population reporting repeated keychain prompts — without
+ * the enforcement step forever.
+ *
+ * Only the auth-store step is replayed. Rerunning app bind or launcher install
+ * would reinstall shortcuts and rebind the desktop app, which the user may have
+ * deliberately removed since.
+ *
+ * No exclusive claim is taken, unlike the initial setup. Both operations here
+ * are idempotent and atomic — `ensureCodexCliFileAuthStore` skips a config
+ * already on `"file"`, and `atomicWriteMarker` renames into place — so
+ * concurrent invocations converge on the same result instead of racing.
+ */
+async function migrateFirstRunMarker(
+	markerPath: string,
+	marker: FirstRunMarker,
+	deps: FirstRunSetupDeps,
+	now: () => number,
+): Promise<FirstRunStepStatus> {
+	let authStore: FirstRunStepStatus;
+	try {
+		authStore = await (deps.enforceAuthStore
+			? deps.enforceAuthStore()
+			: defaultEnforceAuthStore());
+	} catch (error) {
+		authStore = "failed";
+		log.debug("first-run marker migration auth store step skipped", {
+			error: errorMessage(error),
+		});
+	}
+
+	const payload = `${JSON.stringify(
+		{
+			version: markerVersionFor(authStore, marker.version),
+			startedAt: marker.startedAt ?? now(),
+			completedAt: marker.completedAt ?? now(),
+			appBind: marker.appBind ?? "skipped",
+			launcher: marker.launcher ?? "skipped",
+			authStore,
+		},
+		null,
+		"\t",
+	)}\n`;
+	try {
+		await atomicWriteMarker(markerPath, payload);
+	} catch (error) {
+		// Leaving the marker at v1 just means the idempotent step runs again on
+		// the next invocation, so this is safe to swallow.
+		log.debug("first-run marker migration write failed", {
+			error: errorMessage(error),
+		});
+	}
+	return authStore;
+}
+
 async function defaultInstallLauncher(
 	env: NodeJS.ProcessEnv,
 	rotationEnabled: boolean,
@@ -392,10 +533,10 @@ async function defaultInstallLauncher(
 }
 
 /**
- * Runs the lazily deferred install setup (Codex app bind + launcher routing)
- * exactly once per runtime root. Never throws and never blocks a command on
- * failure: every error path resolves with a skip/failed status and only
- * debug-logs sanitized messages.
+ * Runs the lazily deferred install setup (Codex auth-store enforcement + app
+ * bind + launcher routing) exactly once per runtime root. Never throws and
+ * never blocks a command on failure: every error path resolves with a
+ * skip/failed status and only debug-logs sanitized messages.
  */
 export async function ensureFirstRunSetup(
 	deps: FirstRunSetupDeps = {},
@@ -406,8 +547,23 @@ export async function ensureFirstRunSetup(
 		const installed = deps.installedContext ?? isInstalledPackageContext();
 		if (!installed) return { ran: false, reason: "not-installed" };
 		const markerPath = deps.markerPath ?? getFirstRunMarkerPath();
-		if (existsSync(markerPath)) return { ran: false, reason: "already-done" };
 		const now = deps.now ?? Date.now;
+		if (existsSync(markerPath)) {
+			const marker = readFirstRunMarker(markerPath);
+			if ((marker?.version ?? 1) >= FIRST_RUN_MARKER_VERSION) {
+				return { ran: false, reason: "already-done" };
+			}
+			return {
+				ran: false,
+				reason: "migrated",
+				authStore: await migrateFirstRunMarker(
+					markerPath,
+					marker ?? {},
+					deps,
+					now,
+				),
+			};
+		}
 		const startedAt = now();
 		if (!claimFirstRunMarker(markerPath, startedAt)) {
 			return { ran: false, reason: "claim-race" };
@@ -425,7 +581,18 @@ export async function ensureFirstRunSetup(
 		const outcome: FirstRunSetupOutcome = {
 			appBind: "skipped",
 			launcher: "skipped",
+			authStore: "skipped",
 		};
+		try {
+			outcome.authStore = await (deps.enforceAuthStore
+				? deps.enforceAuthStore()
+				: defaultEnforceAuthStore());
+		} catch (error) {
+			outcome.authStore = "failed";
+			log.debug("first-run codex auth store enforcement skipped", {
+				error: errorMessage(error),
+			});
+		}
 		try {
 			outcome.appBind = await (deps.bindCodexApp
 				? deps.bindCodexApp()

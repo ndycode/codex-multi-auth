@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { createUiTheme, shouldDisableColor } from "../lib/ui/theme.js";
+import {
+	createUiTheme,
+	resolveUiColorMode,
+	shouldDisableColor,
+} from "../lib/ui/theme.js";
 
 describe("UI theme", () => {
 	// These assert ANSI color tokens, so they opt into color explicitly
@@ -38,6 +42,126 @@ describe("UI theme", () => {
 		expect(theme.colors.primary).toContain("\x1b[");
 		expect(theme.colors.accent).toContain("\x1b[");
 		expect(theme.colors.focusBg).toContain("\x1b[");
+	});
+
+	it("defaults to the dark color mode", () => {
+		const theme = createUiTheme({ disableColor: false, env: {} });
+		expect(theme.colorMode).toBe("dark");
+	});
+
+	it("uses light-readable colors in light mode without touching focus colors", () => {
+		const dark = createUiTheme({
+			colorMode: "dark",
+			disableColor: false,
+			env: {},
+		});
+		const light = createUiTheme({
+			colorMode: "light",
+			disableColor: false,
+			env: {},
+		});
+		expect(light.colorMode).toBe("light");
+		// Colors painted on the terminal background must differ so they stay
+		// readable on light themes (issue #728).
+		expect(light.colors.heading).not.toBe(dark.colors.heading);
+		expect(light.colors.muted).not.toBe(dark.colors.muted);
+		expect(light.colors.primary).not.toBe(dark.colors.primary);
+		expect(light.colors.accent).not.toBe(dark.colors.accent);
+		expect(light.colors.warning).not.toBe(dark.colors.warning);
+		expect(light.colors.danger).not.toBe(dark.colors.danger);
+		expect(light.colors.border).not.toBe(dark.colors.border);
+		// Pale foreground on the dashboard's own dark badge/focus backgrounds
+		// stays identical: those elements bring their own background color.
+		expect(light.colors.focusBg).toBe(dark.colors.focusBg);
+		expect(light.colors.focusText).toBe(dark.colors.focusText);
+	});
+
+	it("light mode darkens on-background text in every color profile", () => {
+		for (const profile of ["truecolor", "ansi256", "ansi16"] as const) {
+			const dark = createUiTheme({
+				profile,
+				colorMode: "dark",
+				disableColor: false,
+				env: {},
+			});
+			const light = createUiTheme({
+				profile,
+				colorMode: "light",
+				disableColor: false,
+				env: {},
+			});
+			expect(light.colors.heading).not.toBe(dark.colors.heading);
+			expect(light.colors.muted).not.toBe(dark.colors.muted);
+			expect(light.colors.focusBg).toBe(dark.colors.focusBg);
+			expect(light.colors.focusText).toBe(dark.colors.focusText);
+		}
+	});
+
+	describe("resolveUiColorMode", () => {
+		it("returns explicit dark/light modes", () => {
+			expect(resolveUiColorMode("dark", {})).toBe("dark");
+			expect(resolveUiColorMode("light", {})).toBe("light");
+		});
+
+		it("falls back to dark when no signals are present", () => {
+			expect(resolveUiColorMode("auto", {})).toBe("dark");
+		});
+
+		it("detects a light background from COLORFGBG", () => {
+			expect(resolveUiColorMode("auto", { COLORFGBG: "0;15" })).toBe("light");
+			expect(resolveUiColorMode("auto", { COLORFGBG: "0;7" })).toBe("light");
+			expect(resolveUiColorMode("auto", { COLORFGBG: "12;11" })).toBe(
+				"light",
+			);
+			expect(resolveUiColorMode("auto", { COLORFGBG: "7;0" })).toBe("dark");
+			// 8 (bright black, #808080) is a mid gray: dark text reads better
+			// than pale text on it, so it resolves as a light background.
+			expect(resolveUiColorMode("auto", { COLORFGBG: "7;8" })).toBe(
+				"light",
+			);
+			expect(resolveUiColorMode("auto", { COLORFGBG: "15;9" })).toBe(
+				"dark",
+			);
+		});
+
+		it("ignores malformed COLORFGBG values", () => {
+			expect(resolveUiColorMode("auto", { COLORFGBG: "" })).toBe("dark");
+			expect(resolveUiColorMode("auto", { COLORFGBG: "default" })).toBe(
+				"dark",
+			);
+			expect(resolveUiColorMode("auto", { COLORFGBG: "0;abc" })).toBe(
+				"dark",
+			);
+			expect(resolveUiColorMode("auto", { COLORFGBG: "0;200" })).toBe(
+				"dark",
+			);
+		});
+
+		it("lets CODEX_TUI_COLOR_MODE override the requested mode and detection", () => {
+			expect(
+				resolveUiColorMode("dark", { CODEX_TUI_COLOR_MODE: "light" }),
+			).toBe("light");
+			expect(
+				resolveUiColorMode("light", { CODEX_TUI_COLOR_MODE: "DARK" }),
+			).toBe("dark");
+			expect(
+				resolveUiColorMode("dark", {
+					CODEX_TUI_COLOR_MODE: "auto",
+					COLORFGBG: "0;15",
+				}),
+			).toBe("light");
+			expect(
+				resolveUiColorMode("dark", { CODEX_TUI_COLOR_MODE: "bogus" }),
+			).toBe("dark");
+		});
+
+		it("is honored by createUiTheme", () => {
+			const theme = createUiTheme({
+				disableColor: false,
+				env: { COLORFGBG: "0;15" },
+			});
+			expect(theme.colorMode).toBe("light");
+		});
 	});
 
 	it("uses unicode glyph set when explicitly requested", () => {

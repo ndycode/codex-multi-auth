@@ -11,6 +11,8 @@ export type TokenSuccessWithAccount = Extract<
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;
 	workspaces?: Workspace[];
+	/** Set, keep (undefined) or clear (null) the saved CodexCliMirror. */
+	codexCliMirror?: AccountMetadataV3["codexCliMirror"] | null;
 };
 
 export async function persistAccountPoolResults(params: {
@@ -94,6 +96,7 @@ export async function persistAccountPoolResults(params: {
 					lastUsed: now,
 					workspaces: result.workspaces,
 					currentWorkspaceIndex: initialWorkspaceIndex,
+					...(result.codexCliMirror ? { codexCliMirror: result.codexCliMirror } : {}),
 				});
 				continue;
 			}
@@ -164,6 +167,10 @@ export async function persistAccountPoolResults(params: {
 				lastUsed: now,
 				workspaces: mergedWorkspaces,
 				currentWorkspaceIndex: nextCurrentWorkspaceIndex,
+				codexCliMirror:
+					result.codexCliMirror === null
+						? undefined
+						: (result.codexCliMirror ?? existing.codexCliMirror),
 			};
 		}
 

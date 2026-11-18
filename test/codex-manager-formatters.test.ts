@@ -8,7 +8,12 @@ import {
 	normalizeFailureDetail,
 	parseStructuredErrorMessage,
 	stringifyLogArgs,
+	stylePromptText,
 } from "../lib/codex-manager/formatters/text-style.js";
+import {
+	resetUiRuntimeOptions,
+	setUiRuntimeOptions,
+} from "../lib/ui/runtime.js";
 import {
 	formatAccountQuotaSummary,
 	formatCompactQuotaSnapshot,
@@ -121,6 +126,55 @@ describe("text-style formatters", () => {
 		expect(stringifyLogArgs(["msg", { a: 1 }, cyclic])).toBe(
 			'msg {"a":1} [object Object]',
 		);
+	});
+
+	it("stylePromptText omits the dim attribute on muted text in light mode", () => {
+		const stdoutDescriptor = Object.getOwnPropertyDescriptor(
+			process.stdout,
+			"isTTY",
+		);
+		const originalForceColor = process.env.FORCE_COLOR;
+		const originalColorMode = process.env.CODEX_TUI_COLOR_MODE;
+		Object.defineProperty(process.stdout, "isTTY", {
+			configurable: true,
+			value: true,
+		});
+		process.env.FORCE_COLOR = "1";
+		delete process.env.CODEX_TUI_COLOR_MODE;
+		try {
+			setUiRuntimeOptions({
+				v2Enabled: true,
+				colorProfile: "truecolor",
+				colorMode: "light",
+			});
+			const lightOut = stylePromptText("note", "muted");
+			expect(lightOut).toContain("\x1b[38;2;71;85;105m");
+			expect(lightOut).not.toContain("\x1b[2m");
+
+			setUiRuntimeOptions({
+				v2Enabled: true,
+				colorProfile: "truecolor",
+				colorMode: "dark",
+			});
+			expect(stylePromptText("note", "muted")).toContain("\x1b[2m");
+		} finally {
+			if (stdoutDescriptor) {
+				Object.defineProperty(process.stdout, "isTTY", stdoutDescriptor);
+			} else {
+				delete (process.stdout as { isTTY?: boolean }).isTTY;
+			}
+			if (originalForceColor === undefined) {
+				delete process.env.FORCE_COLOR;
+			} else {
+				process.env.FORCE_COLOR = originalForceColor;
+			}
+			if (originalColorMode === undefined) {
+				delete process.env.CODEX_TUI_COLOR_MODE;
+			} else {
+				process.env.CODEX_TUI_COLOR_MODE = originalColorMode;
+			}
+			resetUiRuntimeOptions();
+		}
 	});
 });
 
@@ -248,6 +302,69 @@ describe("compact quota reset timestamps", () => {
 		expect(formatAccountQuotaSummary(entry, NOW, { showReset: true })).toBe(
 			`5h 100%, resets ${formatQuotaResetAt(SAME_DAY, NOW)} | 7d 93%`,
 		);
+	});
+
+	it("hides an unlabeled full quota window with no reset data", () => {
+		const unlabeledFull = {
+			status: 200,
+			planType: "plus",
+			model: "gpt-5.3-codex",
+			primary: { usedPercent: 65, windowMinutes: 10080, resetAtMs: SAME_DAY },
+			secondary: { usedPercent: 0 },
+		} satisfies CodexQuotaSnapshot;
+		expect(
+			formatCompactQuotaSnapshot(unlabeledFull, NOW, { showReset: true }),
+		).toBe(`7d 35%, resets ${formatQuotaResetAt(SAME_DAY, NOW)}`);
+		expect(formatCompactQuotaSnapshot(unlabeledFull, NOW)).toBe("7d 35%");
+	});
+
+	it("keeps an unlabeled window once it reports depletion or a reset", () => {
+		const depleted = {
+			status: 200,
+			planType: "plus",
+			model: "gpt-5.3-codex",
+			primary: { usedPercent: 65, windowMinutes: 10080 },
+			secondary: { usedPercent: 12 },
+		} satisfies CodexQuotaSnapshot;
+		expect(formatCompactQuotaSnapshot(depleted, NOW)).toBe("7d 35% | quota 88%");
+
+		const fullWithReset = {
+			status: 200,
+			planType: "plus",
+			model: "gpt-5.3-codex",
+			primary: { usedPercent: 65, windowMinutes: 10080 },
+			secondary: { usedPercent: 0, resetAtMs: SAME_DAY },
+		} satisfies CodexQuotaSnapshot;
+		expect(formatCompactQuotaSnapshot(fullWithReset, NOW)).toBe(
+			"7d 35% | quota 100%",
+		);
+		expect(
+			formatCompactQuotaSnapshot(fullWithReset, NOW, { showReset: true }),
+		).toBe(
+			`7d 35% | quota 100%, resets ${formatQuotaResetAt(SAME_DAY, NOW)}`,
+		);
+	});
+
+	it("does not restore quota text when both windows are uninformative", () => {
+		const allHidden = {
+			status: 200,
+			planType: "plus",
+			model: "gpt-5.3-codex",
+			primary: { usedPercent: 0 },
+			secondary: { usedPercent: 0 },
+		} satisfies CodexQuotaSnapshot;
+
+		expect(formatCompactQuotaSnapshot(allHidden, NOW)).toBe("");
+		expect(
+			formatCompactQuotaSnapshot(allHidden, NOW, { showReset: true }),
+		).toBe("");
+		expect(
+			formatQuotaSnapshotForDashboard(
+				allHidden,
+				{ showQuotaDetails: true } as DashboardDisplaySettings,
+				NOW,
+			),
+		).toBe("live session OK");
 	});
 
 	it("formatQuotaSnapshotForDashboard is the check line and shows resets", () => {

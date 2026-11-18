@@ -124,12 +124,32 @@ function shouldBypassProxyForUrl(url: URL, noProxyValue: string | undefined): bo
 	return false;
 }
 
+/**
+ * Loopback destinations never traverse a configured proxy: routing them through
+ * HTTP_PROXY would leak managed bearer tokens to the proxy and break the
+ * loopback-only runtime proxy contract. This bypass applies even when NO_PROXY
+ * is unset, matching curl/git proxy conventions.
+ */
+function isLoopbackRequestHost(url: URL): boolean {
+	const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+	return (
+		hostname === "localhost" ||
+		hostname.endsWith(".localhost") ||
+		hostname === "::1" ||
+		hostname.startsWith("127.") ||
+		hostname.startsWith("::ffff:127.")
+	);
+}
+
 export function resolveProxyUrlForRequest(
 	url: string,
 	env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
 	const parsed = new URL(url);
 	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+		return undefined;
+	}
+	if (isLoopbackRequestHost(parsed)) {
 		return undefined;
 	}
 
@@ -155,7 +175,9 @@ function getSharedProxyDispatcher(proxyUrl: string): ProxyDispatcher {
 		return existing;
 	}
 
-	const dispatcher = new ProxyAgent(proxyUrl) as unknown as ProxyDispatcher;
+	// undici 8 enables H2 on TLS ALPN; keep HTTP/1.1 so upstream protocol
+	// behavior matches the 6.x line this pin replaces.
+	const dispatcher = new ProxyAgent({ uri: proxyUrl, allowH2: false }) as unknown as ProxyDispatcher;
 	sharedProxyDispatchers.set(proxyUrl, dispatcher);
 	return dispatcher;
 }

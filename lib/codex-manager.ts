@@ -1,10 +1,21 @@
+import { runResetsCommand } from "./codex-manager/commands/resets.js";
+import { loadResetCreditState } from "./runtime/account-reset-credits.js";
+import { loadApiRoutes } from "./api-route-store.js";
+import { loadInferenceRequestTimes } from "./runtime/inference-activity.js";
+import { loadModelInventory, refreshAndPrintModelInventory } from "./runtime/model-discovery-status.js";
 import {
+	AUTH_INVALIDATION_MARKER,
+	AccountManager,
 	extractAccountEmail,
 	extractAccountId,
 	formatAccountLabel,
 	formatWaitTime,
 	sanitizeEmail,
 } from "./accounts.js";
+import {
+	reboundUnauthorizedAccountIdentity,
+	refreshCodexCliMirror,
+} from "./auth/account-access.js";
 import { loadCodexCliState } from "./codex-cli/state.js";
 import { setCodexCliActiveSelection } from "./codex-cli/writer.js";
 import {
@@ -33,6 +44,7 @@ import { runBudgetCommand } from "./codex-manager/commands/budget.js";
 import { runBridgeCommand } from "./codex-manager/commands/bridge.js";
 import { runCheckCommand } from "./codex-manager/commands/check.js";
 import { runIntegrationsCommand } from "./codex-manager/commands/integrations.js";
+import { runLimitsCommand } from "./codex-manager/commands/limits.js";
 import { runModelsCommand } from "./codex-manager/commands/models.js";
 import { runMonitorCommand } from "./codex-manager/commands/monitor.js";
 import { runConfigExplainCommand } from "./codex-manager/commands/config-explain.js";
@@ -62,12 +74,18 @@ import {
 	selectHybridAccountTraced,
 } from "./rotation.js";
 import {
+	evaluateRuntimePolicy,
+	loadRuntimePolicyState,
+} from "./policy/runtime-policy.js";
+import { CURRENT_CODEX_MODEL } from "./request/helpers/model-map.js";
+import {
 	runDoctor as runRepairDoctor,
 	type RepairCommandDeps,
 	runFix as runRepairFix,
 	runVerifyFlagged as runRepairVerifyFlagged,
 } from "./codex-manager/repair-commands.js";
 import { runUninstallCommand } from "./codex-manager/commands/uninstall.js";
+import { clearAccountsAndCredentialSidecars } from "./storage/credential-sidecars.js";
 import { runForecastCommand } from "./codex-manager/commands/forecast.js";
 import { runInitConfigCommand } from "./codex-manager/commands/init-config.js";
 import { runReportCommand } from "./codex-manager/commands/report.js";
@@ -75,13 +93,19 @@ import { runRotationCommand } from "./codex-manager/commands/rotation.js";
 import {
 	runFeaturesCommand,
 	runStatusCommand,
+	type StatusCommandDeps,
 } from "./codex-manager/commands/status.js";
+import { runWebCommand } from "./web-dashboard.js";
 import { loadPersistedRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import { runSwitchCommand } from "./codex-manager/commands/switch.js";
 import { runHistoryCommand } from "./codex-manager/commands/history.js";
+import { runLocaleCommand } from "./codex-manager/commands/locale.js";
 import { runUnpinCommand } from "./codex-manager/commands/unpin.js";
+import { resolveOutputLocale } from "./locale.js";
 import { runWorkspaceCommand } from "./codex-manager/commands/workspace.js";
 import { runUsageCommand } from "./codex-manager/commands/usage.js";
+import { refreshQuotaCacheForMenu } from "./codex-manager/login-menu-data.js";
+import { refreshLunaReserveUsage } from "./runtime/luna-reserve-usage.js";
 import { printUsage } from "./codex-manager/help.js";
 import {
 	availabilityTone,
@@ -126,10 +150,8 @@ import {
 } from "./quota-probe.js";
 import { queuedRefresh } from "./refresh-queue.js";
 import {
-	type AccountMetadataV3,
 	type AccountStorageV3,
 	clearAccounts,
-	findMatchingAccountIndex,
 	inspectStorageHealth,
 	getLastAccountsSaveTimestamp,
 	getStoragePath,
@@ -161,6 +183,8 @@ function createRepairCommandDeps(): RepairCommandDeps {
 		formatCompactQuotaSnapshot,
 		resolveStoredAccountIdentity,
 		applyTokenAccountIdentity,
+		reboundUnauthorizedAccountIdentity,
+		refreshCodexCliMirror,
 	};
 }
 
@@ -224,6 +248,7 @@ const IMPLEMENTED_FEATURES: ImplementedFeature[] = [
 	{ id: 52, name: "Why-selected and monitor diagnostics" },
 	{ id: 53, name: "Config explain, init-config templates, and debug bundle" },
 	{ id: 54, name: "mcodex convenience launcher (monitor/tmux/forward)" },
+	{ id: 55, name: "Local real-time web pool dashboard" },
 ];
 
 async function runForecast(args: string[]): Promise<number> {
@@ -283,144 +308,97 @@ async function runBest(args: string[]): Promise<number> {
 	});
 }
 
-export async function autoSyncActiveAccountToCodex(): Promise<boolean> {
-	setStoragePath(null);
-	const storage = await loadAccounts();
-	if (!storage || storage.accounts.length === 0) {
-		return false;
-	}
-
-	const activeIndex = resolveActiveIndex(storage, "codex");
-	if (activeIndex < 0 || activeIndex >= storage.accounts.length) {
-		return false;
-	}
-
-	const account = storage.accounts[activeIndex];
-	if (!account) {
-		return false;
-	}
-	const accountMatch = {
-		accountId: account.accountId,
-		email: account.email,
-		refreshToken: account.refreshToken,
-	};
-
-	const now = Date.now();
-	let syncAccessToken = account.accessToken;
-	let syncRefreshToken = account.refreshToken;
-	let syncExpiresAt = account.expiresAt;
-	let syncIdToken: string | undefined;
-	let syncAccountId = account.accountId;
-	let syncEmail = account.email;
-	let changed = false;
-	let nextStoredAccount: AccountMetadataV3 | null = null;
-
-	if (!hasUsableAccessToken(account, now)) {
-		const refreshResult = await queuedRefresh(account.refreshToken);
-		if (refreshResult.type !== "success") {
-			return false;
-		}
-		nextStoredAccount = structuredClone(account);
-		const tokenAccountId = extractAccountId(refreshResult.access);
-		const nextEmail = sanitizeEmail(
-			extractAccountEmail(refreshResult.access, refreshResult.idToken),
-		);
-		if (nextStoredAccount.refreshToken !== refreshResult.refresh) {
-			nextStoredAccount.refreshToken = refreshResult.refresh;
-			changed = true;
-		}
-		if (nextStoredAccount.accessToken !== refreshResult.access) {
-			nextStoredAccount.accessToken = refreshResult.access;
-			changed = true;
-		}
-		if (nextStoredAccount.expiresAt !== refreshResult.expires) {
-			nextStoredAccount.expiresAt = refreshResult.expires;
-			changed = true;
-		}
-		if (nextEmail && nextEmail !== nextStoredAccount.email) {
-			nextStoredAccount.email = nextEmail;
-			changed = true;
-		}
-		if (applyTokenAccountIdentity(nextStoredAccount, tokenAccountId)) {
-			changed = true;
-		}
-		syncAccessToken = refreshResult.access;
-		syncRefreshToken = refreshResult.refresh;
-		syncExpiresAt = refreshResult.expires;
-		syncIdToken = refreshResult.idToken;
-		syncAccountId = nextStoredAccount.accountId;
-		syncEmail = nextStoredAccount.email;
-	}
-
-	if (changed && nextStoredAccount) {
-		let persisted = false;
-		await withAccountStorageTransaction(async (loadedStorage, persist) => {
-			if (!loadedStorage) {
-				return;
-			}
-			const nextStorage = structuredClone(loadedStorage);
-			const targetIndex =
-				findMatchingAccountIndex(nextStorage.accounts, accountMatch, {
-					allowUniqueAccountIdFallbackWithoutEmail: true,
-				}) ??
-				findMatchingAccountIndex(nextStorage.accounts, nextStoredAccount, {
-					allowUniqueAccountIdFallbackWithoutEmail: true,
-				});
-			if (targetIndex === undefined) {
-				return;
-			}
-			nextStorage.accounts[targetIndex] = structuredClone(nextStoredAccount);
-			await persist(nextStorage);
-			persisted = true;
-		});
-		if (!persisted) {
-			return false;
-		}
-	}
-
-	return setCodexCliActiveSelection({
-		accountId: syncAccountId,
-		email: syncEmail,
-		accessToken: syncAccessToken,
-		refreshToken: syncRefreshToken,
-		expiresAt: syncExpiresAt,
-		...(syncIdToken ? { idToken: syncIdToken } : {}),
-	});
-}
-function buildSelectAccountTraced(): (
+// Moved to lib/codex-manager/active-account-sync.ts so the wrapper's forwarded
+// path can import the sync without the whole manager/dispatch graph. Re-exported
+// here to keep the codex-manager.js surface (and its tests) unchanged.
+export { autoSyncActiveAccountToCodex } from "./codex-manager/active-account-sync.js";
+/** @internal Exposed for diagnostics regression tests; not part of the CLI API. */
+export function buildSelectAccountTraced(): (
 	storage: AccountStorageV3,
-) => ReturnType<typeof selectHybridAccountTraced> {
-	return (storage: AccountStorageV3) => {
+) => Promise<ReturnType<typeof selectHybridAccountTraced>> {
+	return async (storage: AccountStorageV3) => {
 		const now = Date.now();
 		const healthTracker = getHealthTracker();
 		const tokenTracker = getTokenTracker();
+		const runtimeAccountManager = new AccountManager(undefined, storage);
+		const runtimeAccountsByIndex = new Map(
+			runtimeAccountManager
+				.getAccountsSnapshot()
+				.map((account) => [account.index, account] as const),
+		);
 		const accountsWithMetrics: AccountWithMetrics[] = storage.accounts.map(
 			(account, index) => {
-				const enabled = account?.enabled !== false;
-				const rateLimits = account?.rateLimitResetTimes ?? {};
-				let rateLimited = false;
-				for (const value of Object.values(rateLimits)) {
-					if (typeof value === "number" && value > now) {
-						rateLimited = true;
-						break;
-					}
-				}
-				const coolingDown =
-					typeof account?.coolingDownUntil === "number" &&
-					account.coolingDownUntil > now;
-				const isAvailable = enabled && !rateLimited && !coolingDown;
+				const runtimeAccount = runtimeAccountsByIndex.get(index);
+				const runtimeSkipReason = runtimeAccount
+					? runtimeAccountManager.getManagedAccountRuntimeSkipReason(
+							runtimeAccount,
+							"codex",
+							CURRENT_CODEX_MODEL,
+						)
+					: "missing";
 				return {
 					index,
 					trackerKey: account?.accountId ?? index,
-					isAvailable,
+					isAvailable: runtimeSkipReason === null,
+					unavailableReason: runtimeSkipReason ?? undefined,
 					lastUsed: account?.lastUsed ?? 0,
 				};
 			},
 		);
+		const policyState = await loadRuntimePolicyState();
+		const policy = await evaluateRuntimePolicy({
+			state: policyState,
+			accounts: storage.accounts.map((account, index) => ({
+				index,
+				accountId: account.accountId,
+				email: account.email,
+			})),
+			model: CURRENT_CODEX_MODEL,
+			now,
+		});
+		const blockedAccountIndexes = new Set(policy.blockedAccountIndexes);
+		const blockedReasonByAccount = {
+			...(policy.blockedAccountReasons ?? {}),
+		};
+		if (!policy.allowed) {
+			for (const { index } of accountsWithMetrics) {
+				blockedAccountIndexes.add(index);
+				blockedReasonByAccount[index] =
+					policy.errorCode ?? "policy-blocked";
+			}
+		}
+		for (const [index, account] of storage.accounts.entries()) {
+			if (
+				typeof account.authInvalidatedAt === "number" &&
+				Number.isFinite(account.authInvalidatedAt)
+			) {
+				blockedAccountIndexes.add(index);
+				blockedReasonByAccount[index] = AUTH_INVALIDATION_MARKER;
+			}
+		}
+		// This offline diagnostic cannot establish ordinary-pool exhaustion or
+		// perform permitted reset recovery. Leave emergency capacity reserved;
+		// keep any more specific policy, authentication, or runtime exclusion.
+		for (const account of accountsWithMetrics) {
+			if (
+				policy.emergencyAccountIndexes?.has(account.index) &&
+				account.isAvailable &&
+				!blockedAccountIndexes.has(account.index)
+			) {
+				blockedAccountIndexes.add(account.index);
+				blockedReasonByAccount[account.index] =
+					"emergency-only: reserved until runtime confirms ordinary capacity and permitted resets are exhausted";
+			}
+		}
 		return selectHybridAccountTraced({
 			accounts: accountsWithMetrics,
 			healthTracker,
 			tokenTracker,
+			options: {
+				blockedAccountIndexes,
+				blockedReasonByAccount,
+				scoreBoostByAccount: policy.scoreBoostByAccount,
+			},
 		});
 	};
 }
@@ -436,8 +414,13 @@ type CliCommandHandler = (rest: string[]) => number | Promise<number>;
 /**
  * Shared handler for `list` and `status` (aliases of the same view).
  */
-const runListOrStatusCommand: CliCommandHandler = (rest) =>
-	runStatusCommand({
+
+function buildStatusCommandDeps(rest: string[], logInfo?: (message: string) => void): StatusCommandDeps {
+	return {
+		loadApiRoutes,
+		loadResetCreditState,
+		loadInferenceRequestTimes,
+		loadModelInventory,
 		setStoragePath,
 		getStoragePath,
 		loadAccounts,
@@ -447,12 +430,38 @@ const runListOrStatusCommand: CliCommandHandler = (rest) =>
 		loadRuntimeObservabilitySnapshot: loadPersistedRuntimeObservabilitySnapshot,
 		loadAppBindStatus: async () =>
 			getAppBindStatus()
-				.then((status) => (status.running ? status.router : null))
+				.then((status) => status.router ? {
+					...status.router,
+					// Keep historical diagnostics, but never revive a crashed router's
+					// persisted "running" marker or its account-selection signal.
+					state: status.running ? status.router.state : "stopped",
+					nativeOpenai: status.running && status.state?.nativeOpenai === true,
+				} : null)
 				.catch(() => null),
 		loadAppHelperStatus: readAppRuntimeHelperAccountSignal,
 		loadQuotaCache,
 		json: rest.includes("--json") || rest.includes("-j"),
-	});
+		compact: !rest.includes("--details") && !rest.includes("--verbose") && !rest.includes("--json") && !rest.includes("-j"),
+		locale: resolveOutputLocale(loadPluginConfig().locale),
+		...(logInfo ? { logInfo } : {}),
+	};
+}
+
+const runListOrStatusCommand: CliCommandHandler = (rest) =>
+	runStatusCommand(buildStatusCommandDeps(rest));
+
+async function loadStatusJsonSnapshot(): Promise<Record<string, unknown>> {
+	let serialized = "";
+	const exitCode = await runStatusCommand(buildStatusCommandDeps(["--json"], (message) => {
+		serialized = message;
+	}));
+	if (exitCode !== 0) throw new Error("Unable to load status snapshot.");
+	const parsed: unknown = JSON.parse(serialized);
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error("Status snapshot is not an object.");
+	}
+	return parsed as Record<string, unknown>;
+}
 
 /**
  * Command registry for the `auth` dispatcher (audit roadmap §4.1.1 phase 2).
@@ -472,6 +481,22 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 	["login", (rest) => runAuthLogin(rest, { runForecast, createRepairCommandDeps })],
 	["list", runListOrStatusCommand],
 	["status", runListOrStatusCommand],
+	["web", (rest) => runWebCommand(rest, {
+		getStatus: loadStatusJsonSnapshot,
+		locale: resolveOutputLocale(loadPluginConfig().locale),
+	})],
+	[
+		"limits",
+		(rest) =>
+			runLimitsCommand(rest, {
+				setStoragePath,
+				loadAccounts,
+				loadQuotaCache,
+				refreshQuotaCache: refreshQuotaCacheForMenu,
+				refreshLunaReserveUsage,
+				resolveActiveIndex,
+			}),
+	],
 	[
 		"switch",
 		(rest) =>
@@ -498,9 +523,14 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 				setStoragePath,
 				loadAccounts,
 				saveAccounts,
+				withAccountStorageTransaction,
 			}),
 	],
-	["check", () => runCheckCommand({ runHealthCheck })],
+	["check", (rest) => runCheckCommand({
+  runHealthCheck,
+  runResetCheck: () => runResetsCommand(["list", "--refresh"]),
+  runCapabilityCheck: () => refreshAndPrintModelInventory(console.log, { forceProbes: true }),
+ }, rest)],
 	[
 		"features",
 		() => runFeaturesCommand({ implementedFeatures: IMPLEMENTED_FEATURES }),
@@ -560,6 +590,7 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 			}),
 	],
 	["usage", (rest) => runUsageCommand(rest)],
+	["resets", (rest) => runResetsCommand(rest)],
 	[
 		"rotation",
 		(rest) =>
@@ -628,7 +659,9 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 	],
 	["fix", (rest) => runRepairFix(rest, createRepairCommandDeps())],
 	["doctor", (rest) => runRepairDoctor(rest, createRepairCommandDeps())],
-	["uninstall", (rest) => runUninstallCommand(rest, { clearAccounts })],
+	["uninstall", (rest) => runUninstallCommand(rest, {
+		clearAccounts: () => clearAccountsAndCredentialSidecars(clearAccounts),
+	})],
 	[
 		"config",
 		(rest) => {
@@ -640,6 +673,12 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 			}
 			if (subcommand === "template") {
 				return runInitConfigCommand(configArgs);
+			}
+			if (subcommand === "locale") {
+				return runLocaleCommand(configArgs, {
+					loadConfig: () => loadPluginConfig(),
+					saveConfig: savePluginConfig,
+				});
 			}
 			console.error(`Unknown config command: ${subcommand ?? "(missing)"}`);
 			return 1;
@@ -667,6 +706,28 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 ]);
 
 export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
+	const localeArgs = [...rawArgs];
+	const previousLocaleOverride = process.env.CODEX_MULTI_AUTH_LOCALE;
+	let localeOverrideChanged = false;
+	const restoreLocaleOverride = () => {
+		if (!localeOverrideChanged) return;
+		if (previousLocaleOverride === undefined) delete process.env.CODEX_MULTI_AUTH_LOCALE;
+		else process.env.CODEX_MULTI_AUTH_LOCALE = previousLocaleOverride;
+	};
+	for (let i = 0; i < localeArgs.length; i += 1) {
+		const arg = localeArgs[i];
+		if (arg === "--locale" && localeArgs[i + 1]) {
+			process.env.CODEX_MULTI_AUTH_LOCALE = localeArgs[i + 1];
+			localeOverrideChanged = true;
+			localeArgs.splice(i, 2);
+			i -= 1;
+		} else if (typeof arg === "string" && arg.startsWith("--locale=")) {
+			process.env.CODEX_MULTI_AUTH_LOCALE = arg.slice("--locale=".length);
+			localeOverrideChanged = true;
+			localeArgs.splice(i, 1);
+			i -= 1;
+		}
+	}
 	// Lazy install setup (audit roadmap §4.5.4): app detection, Codex app bind,
 	// and launcher routing moved out of npm postinstall to the first CLI run.
 	// ensureFirstRunSetup never throws; the catch is belt-and-braces so no
@@ -678,34 +739,43 @@ export async function runCodexMultiAuthCli(rawArgs: string[]): Promise<number> {
 	applyUiThemeFromDashboardSettings(startupDisplaySettings);
 
 	const args =
-		rawArgs[0] && rawArgs[0] !== "auth" && ACCOUNT_MANAGER_COMMANDS.has(rawArgs[0])
-			? ["auth", ...rawArgs]
-			: [...rawArgs];
+		localeArgs[0] && localeArgs[0] !== "auth" && ACCOUNT_MANAGER_COMMANDS.has(localeArgs[0])
+			? ["auth", ...localeArgs]
+			: [...localeArgs];
 	if (args.length === 0) {
+		restoreLocaleOverride();
 		printUsage();
 		return 0;
 	}
 	if (args[0] === "--help" || args[0] === "-h") {
+		restoreLocaleOverride();
 		printUsage();
 		return 0;
 	}
 
 	const [root, sub, ...rest] = args;
 	if (root !== "auth") {
+		restoreLocaleOverride();
 		printUsage();
 		return 1;
 	}
 
 	const command = sub ?? "login";
 	if (command === "--help" || command === "-h") {
+		restoreLocaleOverride();
 		printUsage();
 		return 0;
 	}
 
 	const handler = CLI_COMMAND_HANDLERS.get(command);
 	if (handler) {
-		return handler(rest);
+		try {
+			return await handler(rest);
+		} finally {
+			restoreLocaleOverride();
+		}
 	}
+	restoreLocaleOverride();
 
 	console.error(`Unknown command: ${command}`);
 	printUsage();

@@ -620,12 +620,12 @@ describe("Token Utils Module", () => {
 			expect(selected?.accountId).toBe("business_org");
 		});
 
-		it("falls back to token, then first candidate", () => {
+		it("prefers explicit Personal metadata, retaining deterministic fallback for ambiguous internal callers", () => {
 			const tokenSelected = selectBestAccountCandidate([
 				{ accountId: "token_id", label: "Token", source: "token" },
 				{ accountId: "other", label: "Other", source: "org", isPersonal: true },
 			]);
-			expect(tokenSelected?.accountId).toBe("token_id");
+			expect(tokenSelected?.accountId).toBe("other");
 
 			const firstSelected = selectBestAccountCandidate([
 				{ accountId: "first", label: "First", source: "org", isPersonal: true },
@@ -858,4 +858,13 @@ describe("Token Utils Module", () => {
 			expect(sanitizeEmail("  User@Example.COM  ")).toBe("user@example.com");
 		});
 	});
+});
+
+it("preserves Personal metadata when the token and organization identify the same workspace",()=>{
+ mockedDecodeJWT.mockReturnValue({[JWT_CLAIM_PATH]:{chatgpt_account_id:"personal-id",organizations:[{id:"business-id",title:"Business",is_default:true,is_personal:false},{id:"personal-id",title:"Personal",is_personal:true}]}});
+ const candidates=getAccountIdCandidates("fixture");
+ expect(candidates.map(c=>c.accountId)).toEqual(["personal-id","business-id"]);
+ expect(candidates[0]).toMatchObject({isPersonal:true});
+ expect(candidates[0]?.label).toContain("Personal");
+ expect(selectBestAccountCandidate(candidates)?.accountId).toBe("personal-id");
 });

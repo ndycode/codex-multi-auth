@@ -21,7 +21,7 @@ describe("models command", () => {
 	it("prints json matrix output", async () => {
 		const logInfo = vi.fn();
 		const exitCode = await runModelsCommand(
-			["--json", "--model", "gpt-5.3-codex"],
+			["--json", "--model", "gpt-5.6-sol"],
 			{
 				setStoragePath: vi.fn(),
 				loadAccounts: async () => storage,
@@ -37,7 +37,7 @@ describe("models command", () => {
 		};
 		expect(payload.matrix.entries[0]).toMatchObject({
 			accountLabel: "Account 1",
-			normalizedModel: "gpt-5.3-codex",
+			normalizedModel: "gpt-5.6-sol",
 		});
 	});
 
@@ -90,7 +90,7 @@ describe("models command", () => {
 
 	it("prints per-account availability lines in text mode", async () => {
 		const logInfo = vi.fn();
-		const exitCode = await runModelsCommand(["--model", "gpt-5.3-codex"], {
+		const exitCode = await runModelsCommand(["--model", "gpt-5.6-sol"], {
 			setStoragePath: vi.fn(),
 			loadAccounts: async () => storage,
 			loadQuotaCache: async () => ({ byAccountId: {}, byEmail: {} }),
@@ -100,7 +100,7 @@ describe("models command", () => {
 		});
 		expect(exitCode).toBe(0);
 		expect(String(logInfo.mock.calls[0]?.[0])).toBe(
-			"Account 1 gpt-5.3-codex: available",
+			"Account 1 gpt-5.6-sol: available",
 		);
 	});
 
@@ -110,7 +110,7 @@ describe("models command", () => {
 			accounts: [{ ...storage.accounts[0]!, enabled: false }],
 		};
 		const logInfo = vi.fn();
-		const exitCode = await runModelsCommand(["--model", "gpt-5.3-codex"], {
+		const exitCode = await runModelsCommand(["--model", "gpt-5.6-sol"], {
 			setStoragePath: vi.fn(),
 			loadAccounts: async () => disabledStorage,
 			loadQuotaCache: async () => ({ byAccountId: {}, byEmail: {} }),
@@ -120,7 +120,7 @@ describe("models command", () => {
 		});
 		expect(exitCode).toBe(0);
 		expect(String(logInfo.mock.calls[0]?.[0])).toBe(
-			"Account 1 gpt-5.3-codex: unavailable (account disabled)",
+			"Account 1 gpt-5.6-sol: unavailable (account disabled)",
 		);
 	});
 

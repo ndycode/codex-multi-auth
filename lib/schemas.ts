@@ -23,6 +23,7 @@ function schemaLog(): ScopedLogger | null {
 // ============================================================================
 
 export const PluginConfigSchema = z.object({
+	locale: z.enum(["auto", "en", "zh"]).optional(),
 	codexMode: z.boolean().optional(),
 	codexRuntimeRotationProxy: z.boolean().optional(),
 	codexTuiV2: z.boolean().optional(),
@@ -77,6 +78,16 @@ export const PluginConfigSchema = z.object({
 	preemptiveQuotaRemainingPercent5h: z.number().min(0).max(100).optional(),
 	preemptiveQuotaRemainingPercent7d: z.number().min(0).max(100).optional(),
 	preemptiveQuotaMaxDeferralMs: z.number().min(1_000).optional(),
+	contextBudgetGuardEnabled: z.boolean().optional(),
+	contextBudgetGuardSoftPercent: z.number().min(0).max(100).optional(),
+	// Floor of 10, not 0: a hard threshold at 0 is satisfied by every recorded
+	// snapshot, so it would pause every session from its first turn. A value
+	// below the floor is dropped by the per-field sanitizer and the default (69)
+	// applies.
+	contextBudgetGuardHardPercent: z.number().min(10).max(100).optional(),
+	contextBudgetGuardModelWindowOverrides: z
+		.record(z.string(), z.number().positive())
+		.optional(),
 	routingMutex: z.enum(["enabled", "legacy"]).optional(),
 	schedulingStrategy: z.enum(["hybrid", "sequential"]).optional(),
 });
@@ -161,6 +172,7 @@ const WorkspaceSchema = z.object({
  * Account metadata V3 - current storage format.
  */
 export const AccountMetadataV3Schema = z.object({
+	recordId: z.string().min(1).optional(),
 	accountId: z.string().optional(),
 	accountIdSource: AccountIdSourceSchema.optional(),
 	accountLabel: z.string().optional(),
@@ -175,11 +187,16 @@ export const AccountMetadataV3Schema = z.object({
 	rateLimitResetTimes: RateLimitStateV3Schema.optional(),
 	coolingDownUntil: z.number().optional(),
 	cooldownReason: CooldownReasonSchema.optional(),
+	authInvalidatedAt: z.number().finite().positive().optional(),
+	authInvalidationErrorCode: z.string().min(1).optional(),
 	// Multi-workspace support (#491): without these here, the strict z.object
 	// strips workspace tracking on every load, so login-captured workspaces
 	// silently vanish after one read/write round-trip.
 	workspaces: z.array(WorkspaceSchema).optional(),
 	currentWorkspaceIndex: z.number().optional(),
+	codexCliMirror: z
+		.object({ forAccountId: z.string().min(1), accountId: z.string().min(1) })
+		.optional(),
 });
 
 /**
@@ -214,31 +231,48 @@ export type AccountStorageV3FromSchema = z.infer<typeof AccountStorageV3Schema>;
 
 /**
  * Legacy V1 account metadata for migration support.
+ *
+ * Uses `passthrough` so V3-compatible extra fields (workspaces,
+ * rateLimitResetTimes, authInvalidatedAt, …) survive the schema boundary:
+ * version:1 files with V3-era rows are real (the flagged-accounts store is
+ * `version: 1` with full V3 rows) and migrateV1ToV3 now carries unknown
+ * fields forward — stripping them here would make that preservation a no-op
+ * for every schema-valid file. Same rationale as FlaggedAccountMetadataV1Schema.
  */
-const AccountMetadataV1Schema = z.object({
-	accountId: z.string().optional(),
-	accountIdSource: AccountIdSourceSchema.optional(),
-	accountLabel: z.string().optional(),
-	email: z.string().optional(),
-	refreshToken: z.string().min(1),
-	accessToken: z.string().optional(),
-	expiresAt: z.number().optional(),
-	enabled: z.boolean().optional(),
-	addedAt: z.number(),
-	lastUsed: z.number(),
-	lastSwitchReason: SwitchReasonSchema.optional(),
-	rateLimitResetTime: z.number().optional(), // V1 used single value
-	coolingDownUntil: z.number().optional(),
-	cooldownReason: CooldownReasonSchema.optional(),
-});
+const AccountMetadataV1Schema = z
+	.object({
+		accountId: z.string().optional(),
+		accountIdSource: AccountIdSourceSchema.optional(),
+		accountLabel: z.string().optional(),
+		email: z.string().optional(),
+		refreshToken: z.string().min(1),
+		accessToken: z.string().optional(),
+		expiresAt: z.number().optional(),
+		enabled: z.boolean().optional(),
+		addedAt: z.number(),
+		lastUsed: z.number(),
+		lastSwitchReason: SwitchReasonSchema.optional(),
+		rateLimitResetTime: z.number().optional(), // V1 used single value
+		coolingDownUntil: z.number().optional(),
+		cooldownReason: CooldownReasonSchema.optional(),
+	})
+	.passthrough();
 
 /**
  * Legacy V1 storage format for migration support.
+ *
+ * The V3-era top-level fields are accepted too: a hybrid file (version:1 but
+ * written by newer code) must not lose `activeIndexByFamily` /
+ * `pinnedAccountIndex` / `affinityGeneration` at the schema boundary before
+ * normalizeAccountStorage can consume them.
  */
 export const AccountStorageV1Schema = z.object({
 	version: z.literal(1),
 	accounts: z.array(AccountMetadataV1Schema),
 	activeIndex: z.number().min(0),
+	activeIndexByFamily: ActiveIndexByFamilySchema.optional(),
+	pinnedAccountIndex: z.number().int().min(0).optional(),
+	affinityGeneration: z.number().int().min(0).optional(),
 });
 
 /**
@@ -309,6 +343,7 @@ export type AccountsJournalEntryFromSchema = z.infer<
  * Token failure reason codes.
  */
 const TokenFailureReasonSchema = z.enum([
+	"coordination_error",
 	"http_error",
 	"invalid_response",
 	"network_error",

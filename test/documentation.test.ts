@@ -151,6 +151,59 @@ function listMarkdownFiles(rootDir: string): string[] {
 	return markdownFiles.sort((left, right) => left.localeCompare(right));
 }
 
+function listSourceFiles(rootDir: string): string[] {
+	let entries: ReturnType<typeof readdirSync>;
+	try {
+		entries = readdirSync(rootDir, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+	const sourceFiles: string[] = [];
+	for (const entry of entries) {
+		const absolutePath = join(rootDir, entry.name);
+		if (entry.isDirectory()) {
+			sourceFiles.push(...listSourceFiles(absolutePath));
+			continue;
+		}
+		if (entry.isFile() && /\.(ts|js|mjs)$/.test(entry.name)) {
+			sourceFiles.push(absolutePath);
+		}
+	}
+	return sourceFiles;
+}
+
+let cachedSourceBlob: string | null = null;
+
+/**
+ * All shipped source concatenated, for presence checks on env-var names.
+ *
+ * Deliberately a substring search rather than a pattern over access forms.
+ * This codebase reads env through at least three shapes — `process.env.NAME`,
+ * a string literal handed to a resolver that does `process.env[envName]`
+ * (`resolveBooleanSetting("CODEX_MODE", …)`), and `env.NAME` off a passed-in
+ * env object. Enumerating those forms is what makes this check wrong: each
+ * omission reports live variables as deleted. The question worth asking is
+ * simply "does this name appear in shipped code at all", so ask that.
+ */
+function readSourceBlob(): string {
+	if (cachedSourceBlob !== null) return cachedSourceBlob;
+	const files = [
+		...listSourceFiles(join(projectRoot, "lib")),
+		...listSourceFiles(join(projectRoot, "scripts")),
+		join(projectRoot, "index.ts"),
+	];
+	const parts: string[] = [];
+	for (const filePath of files) {
+		try {
+			parts.push(readFileSync(filePath, "utf-8"));
+		} catch {
+			// Unreadable file cannot disprove a name; skip it.
+		}
+	}
+	cachedSourceBlob = parts.join("\n");
+	return cachedSourceBlob;
+}
+
 function isExternalOrUriSchemeLink(linkPath: string): boolean {
 	return /^[a-z][a-z0-9+.-]*:/i.test(linkPath) || linkPath.startsWith("//");
 }
@@ -243,6 +296,98 @@ describe("Documentation Integrity", () => {
 		expect(agents).toContain(`Package version: ${packageVersion}`);
 	});
 
+	it("keeps reference-doc package-version stamps in sync with package.json", () => {
+		// These three headers silently drifted from 2.6.1 through the 2.7.0,
+		// 2.7.1, and 2.8.0 releases because nothing pinned them to the manifest.
+		// Same failure class as the AGENTS.md header above, so pin them too.
+		const stampedReferenceDocs = [
+			"docs/reference/commands.md",
+			"docs/reference/public-api.md",
+			"docs/reference/settings.md",
+		];
+		for (const docPath of stampedReferenceDocs) {
+			const contents = read(docPath);
+			const stamps = [...contents.matchAll(/\(package `([^`]+)`\)/g)].map(
+				(match) => match[1],
+			);
+			expect(
+				stamps.length,
+				`${docPath} must carry a (package \`x.y.z\`) version stamp`,
+			).toBeGreaterThan(0);
+			for (const stamp of stamps) {
+				expect(stamp, `${docPath} version stamp is stale`).toBe(
+					packageVersion,
+				);
+			}
+		}
+	});
+
+	it("keeps every documented env-var name backed by shipped code", () => {
+		// CONFIG_FIELDS.md bills itself as the full inventory, so a documented
+		// name that no longer exists is a silent lie to operators. Guards the
+		// state-path group (CODEX_CLI_AUTH_PATH / _ACCOUNTS_PATH / _CONFIG_PATH,
+		// CODEX_AUTH_SYNC_CODEX_CLI) and everything else the references promise.
+		const sourceBlob = readSourceBlob();
+		const inventoryDocs = [
+			"docs/development/CONFIG_FIELDS.md",
+			"docs/reference/settings.md",
+		];
+		const unbacked: string[] = [];
+		for (const docPath of inventoryDocs) {
+			const documented = new Set(
+				[...read(docPath).matchAll(/`((?:CODEX|MCODEX|OC)_[A-Z0-9_]{3,})`/g)].map(
+					(match) => match[1],
+				),
+			);
+			for (const name of documented) {
+				if (!sourceBlob.includes(name)) unbacked.push(`${docPath}: ${name}`);
+			}
+		}
+		expect(
+			unbacked,
+			"documented env vars with no reference in lib/, scripts/, or index.ts",
+		).toEqual([]);
+	});
+
+	it("keeps the state-path and legacy-alias env names documented", () => {
+		// These four were undocumented until the 2.8.0 docs pass; pin them so a
+		// future edit cannot quietly drop them back out of the inventory.
+		const configFields = read("docs/development/CONFIG_FIELDS.md");
+		for (const name of [
+			"CODEX_CLI_AUTH_PATH",
+			"CODEX_CLI_ACCOUNTS_PATH",
+			"CODEX_CLI_CONFIG_PATH",
+			"CODEX_AUTH_SYNC_CODEX_CLI",
+		]) {
+			expect(configFields, `${name} must stay documented`).toContain(name);
+		}
+	});
+
+	it("keeps both rotation reset-runtime descriptions consistent", () => {
+		// The summary table and the rotation section drifted apart: one listed the
+		// app-bind restart, the other only the observability reset. Both must
+		// mention the bind restart so operators know the command touches it.
+		const commands = read("docs/reference/commands.md");
+		// Behavioral lines only: the bare usage block and the --json surface note
+		// mention reset-runtime without describing what it does.
+		const resetRuntimeLines = commands
+			.split(/\r?\n/)
+			.filter(
+				(line) =>
+					line.includes("reset-runtime") && /\bclears\b|\bresets\b/i.test(line),
+			);
+		expect(
+			resetRuntimeLines.length,
+			"expected reset-runtime to be described in commands.md",
+		).toBeGreaterThan(0);
+		for (const line of resetRuntimeLines) {
+			expect(
+				/bind/i.test(line),
+				`reset-runtime description omits the app-bind restart: ${line.trim().slice(0, 120)}`,
+			).toBe(true);
+		}
+	});
+
 	it("uses codex-multi-auth as canonical package name", () => {
 		const canonicalPackageDocs = [
 			"README.md",
@@ -281,6 +426,7 @@ describe("Documentation Integrity", () => {
 		const allowedOpencodeFiles = new Set([
 			"docs/reference/storage-paths.md",
 			"docs/reference/commands.md",
+			"docs/faq.md",
 			"docs/releases/v2.1.0.md",
 		]);
 		for (const filePath of getUserDocs()) {
@@ -388,7 +534,7 @@ describe("Documentation Integrity", () => {
 			`codex-multi-auth fix --live --model ${DEFAULT_MODEL}`,
 		);
 		expect(commandRef).toContain(
-			"| `--json` | verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle, history |",
+			"| `--json` | limits, verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle, history |",
 		);
 		expect(commandRef).toContain(
 			"| `--explain` | forecast, report | Include reasoning details (forecast text/JSON, report text) |",
@@ -473,7 +619,7 @@ describe("Documentation Integrity", () => {
 			"Enter Select | 1-3 Delay | P Pause | L AutoFetch | F Status | T TTL | S Save | Q Back (No Save)",
 		);
 		expect(UI_COPY.settings.themeHelp).toBe(
-			"Enter Select | 1-2 Base | S Save | Q Back (No Save)",
+			"Enter Select | 1-2 Base | A/D/L Mode | S Save | Q Back (No Save)",
 		);
 		expect(UI_COPY.settings.backendHelp).toBe(
 			"Enter Open | 1-4 Category | S Save | R Reset | Q Back (No Save)",
@@ -516,6 +662,14 @@ describe("Documentation Integrity", () => {
 		expect(upgradeGuide).toContain("current `2.x` release line");
 		expect(publicApi).toContain("inside the current `2.x` line");
 		expect(publicApi).toContain("currently ships on a `2.x` line");
+	});
+
+	it("locates the reset-credit file to delete on downgrade from the resolved multi-auth root", () => {
+		const upgradeGuide = read("docs/upgrade.md").replace(/\s+/g, " ");
+		expect(upgradeGuide).not.toContain("`~/.codex/multi-auth/reset-credits.json`");
+		expect(upgradeGuide).toContain("delete `reset-credits.json` from the multi-auth root");
+		expect(upgradeGuide).toContain("`CODEX_MULTI_AUTH_DIR` when set");
+		expect(upgradeGuide).toContain("`%USERPROFILE%\\.codex\\multi-auth`");
 	});
 
 	it("keeps the historical changelog aligned with the archived 0.x release set", () => {
@@ -632,6 +786,7 @@ describe("Documentation Integrity", () => {
 		});
 		expect(packageJson.bin).toEqual({
 			mcodex: "scripts/mcodex.js",
+			"codex-ma": "scripts/codex-multi-auth.js",
 			"codex-multi-auth-app-launcher": "scripts/codex-app-launcher.js",
 			"codex-multi-auth-codex": "scripts/codex.js",
 			"codex-multi-auth": "scripts/codex-multi-auth.js",

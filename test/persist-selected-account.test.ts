@@ -376,3 +376,30 @@ describe("persistAndSyncSelectedAccount", () => {
 		expect(result.synced).toBe(false);
 	});
 });
+
+// An explicit id the backend refused is saved as chosen; switching to it must
+// hand ~/.codex/auth.json the authorized id from its CodexCliMirror.
+describe("persistAndSyncSelectedAccount with a Codex CLI mirror", () => {
+	it("syncs the mirror id, not the saved explicit id", async () => {
+		const storage = storageWith([
+			account("a"),
+			account("b", {
+				accountId: "ws-team",
+				accountIdSource: "manual",
+				codexCliMirror: { forAccountId: "ws-team", accountId: "ws-authorized" },
+			}),
+		]);
+
+		await persistAndSyncSelectedAccount({
+			storage,
+			targetIndex: 1,
+			parsed: 2,
+			switchReason: "manual",
+		});
+
+		expect(setCodexCliActiveSelectionMock).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ accountId: "ws-authorized" }),
+		);
+		expect(storage.accounts[1]?.accountId).toBe("ws-team");
+	});
+});

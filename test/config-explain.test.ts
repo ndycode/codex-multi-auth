@@ -37,6 +37,7 @@ function expectEntry(
 describe("getPluginConfigExplainReport", () => {
 	afterEach(async () => {
 		delete process.env.CODEX_MODE;
+		delete process.env.CODEX_MULTI_AUTH_LOCALE;
 		delete process.env.CODEX_AUTH_FAST_SESSION_STRATEGY;
 		delete process.env.CODEX_MULTI_AUTH_CONFIG_PATH;
 		delete process.env.CODEX_AUTH_RATE_LIMIT_DEDUP_WINDOW_MS;
@@ -78,6 +79,21 @@ describe("getPluginConfigExplainReport", () => {
 		expect(entry).toBeDefined();
 		expect(entry?.source).not.toBe("env");
 	});
+
+	it.each(["", "   "])(
+		"treats blank CODEX_MULTI_AUTH_LOCALE (%j) as absent and keeps the stored locale",
+		async (blankLocale) => {
+			process.env.CODEX_MULTI_AUTH_LOCALE = blankLocale;
+			loadUnifiedPluginConfigSyncMock.mockReturnValue({ locale: "zh" });
+			const { getPluginConfigExplainReport } = await import(
+				"../lib/config.js"
+			);
+			const report = getPluginConfigExplainReport();
+			const entry = expectEntry(report, "locale");
+			expect(entry?.value).toBe("zh");
+			expect(entry?.source).toBe("unified");
+		},
+	);
 
 	it("attributes alias-backed fallback policy values to stored config", async () => {
 		const configPath = nextConfigPath("alias");

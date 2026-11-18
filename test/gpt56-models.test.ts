@@ -79,20 +79,20 @@ describe("GPT-5.6 (Sol / Terra / Luna)", () => {
 			expect(getNormalizedModel("gpt-5.6-luna-ultra")).toBeUndefined();
 		});
 
-		it("resolves unrecognised 5.6 ids to a 5.6 tier, never silently to 5.5", () => {
+		it("resolves unrecognised 5.6 ids to a 5.6 tier, never silently to the default", () => {
 			expect(resolveNormalizedModel("gpt-5.6-terra-fast")).toBe("gpt-5.6-terra");
 			expect(resolveNormalizedModel("gpt-5.6-luna-fast")).toBe("gpt-5.6-luna");
 			expect(resolveNormalizedModel("gpt-5.6-sol-2026-06-26")).toBe("gpt-5.6-sol");
 		});
 
-		it("leaves the legacy `gpt-5` alias pointing at 5.5", () => {
-			expect(getNormalizedModel("gpt-5")).toBe("gpt-5.5");
-			expect(getNormalizedModel("gpt-5-high")).toBe("gpt-5.5");
+		it("keeps the legacy `gpt-5` alias on the living 5.x flagship", () => {
+			expect(getNormalizedModel("gpt-5")).toBe("gpt-5.6-sol");
+			expect(getNormalizedModel("gpt-5-high")).toBe("gpt-5.6-sol");
 		});
 
 		it("does not disturb the Codex Max alias, which also ends in `-max`", () => {
-			expect(getNormalizedModel("gpt-5.1-codex-max")).toBe("gpt-5.3-codex");
-			expect(getNormalizedModel("codex-max")).toBe("gpt-5.3-codex");
+			expect(getNormalizedModel("gpt-5.1-codex-max")).toBe("gpt-5.6-sol");
+			expect(getNormalizedModel("codex-max")).toBe("gpt-5.6-sol");
 		});
 	});
 
@@ -129,16 +129,27 @@ describe("GPT-5.6 (Sol / Terra / Luna)", () => {
 			).toBe("max");
 		});
 
-		it("steps `max`/`ultra` down to the strongest tier a pre-5.6 model supports", () => {
+		it("applies the replacement's ladder to retired 5.5-era ids", () => {
+			// `gpt-5.5` topped out at `xhigh`; it now runs on 6 Sol, which takes
+			// `max` natively and `ultra` via the wire rewrite. `gpt-5.5-pro` runs
+			// on Astra, which takes the same ladder.
 			expect(
 				getReasoningConfig("gpt-5.5", { reasoningEffort: "max" }).effort,
-			).toBe("xhigh");
+			).toBe("max");
 			expect(
 				getReasoningConfig("gpt-5.5", { reasoningEffort: "ultra" }).effort,
-			).toBe("xhigh");
+			).toBe("max");
+			expect(
+				getReasoningConfig("gpt-5.5-pro", { reasoningEffort: "ultra" }).effort,
+			).toBe("max");
+		});
+
+		it("gives a retired id its replacement's effort ceiling", () => {
+			// `gpt-5.1` topped out at `high`; it now runs on 5.6 Sol, which
+			// accepts `ultra` and sends it as `max`.
 			expect(
 				getReasoningConfig("gpt-5.1", { reasoningEffort: "ultra" }).effort,
-			).toBe("high");
+			).toBe("max");
 		});
 
 		it("upgrades `none` to a supported effort, since no 5.6 tier accepts it", () => {

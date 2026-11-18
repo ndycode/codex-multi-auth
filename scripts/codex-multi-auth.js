@@ -53,7 +53,13 @@ if (args.length === 1 && versionFlags.has(firstArg)) {
 		process.exitCode = 1;
 	}
 } else {
-	const { runCodexMultiAuthCli } = await import("../dist/lib/codex-manager.js");
+	// The specifier lives in a variable so `tsc -p tsconfig.scripts.json` can
+	// check this file without a prior `npm run build`: a literal
+	// "../dist/lib/codex-manager.js" specifier forces module resolution against
+	// dist/. The imported surface is guarded by Number.isInteger below, so the
+	// erased type information costs nothing here.
+	const managerModuleSpecifier = "../dist/lib/codex-manager.js";
+	const { runCodexMultiAuthCli } = await import(managerModuleSpecifier);
 	const exitCode = await runCodexMultiAuthCli(args);
 	process.exitCode = Number.isInteger(exitCode) ? exitCode : 1;
 }

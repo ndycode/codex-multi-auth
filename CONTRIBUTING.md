@@ -24,12 +24,13 @@ If a proposal conflicts with OpenAI policy boundaries, it will be declined.
 ```bash
 npm ci
 npm run typecheck
+npm run typecheck:scripts
 npm run lint
 npm test
 npm run build
 ```
 
-Node requirement: `>=18.17` to run the published package; use Node `20.19+` (or `22.13+`) for development — the dev toolchain (vitest, eslint) does not support Node 18, which is why CI tests on 20.x and 22.x.
+Node requirement: `>=22.19` to run the published package; use Node `22.19+` (or `24.x`) for development — CI tests on 22.x and 24.x.
 
 ---
 
@@ -39,6 +40,14 @@ Node requirement: `>=18.17` to run the published package; use Node `20.19+` (or 
 - no `as any`, `@ts-ignore`, or `@ts-expect-error`
 - behavior-focused tests for all user-visible changes
 - docs updated when commands, flags, paths, defaults, or onboarding behavior change
+
+## Commits And Hooks
+
+- `pre-commit` runs `lint-staged` plus `npm run typecheck`.
+- Commit subjects follow Conventional Commits — `type(scope): description`
+  (types like `feat`, `fix`, `docs`, `chore`, `release`); the style is
+  enforced by review, not by a `commit-msg` hook.
+- `--no-verify` exists but is discouraged.
 
 For user-facing behavior changes, review these files at minimum:
 
@@ -99,6 +108,7 @@ Set `HUSKY=0` in environments where the hook install is undesirable.
 2. Keep commits atomic and reviewable.
 3. Run the full local gate:
    - `npm run typecheck`
+   - `npm run typecheck:scripts`
    - `npm run lint`
    - `npm test`
    - `npm run build`

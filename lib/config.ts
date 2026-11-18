@@ -1,7 +1,8 @@
 import { existsSync, promises as fs, readFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { parseBooleanEnv } from "./env-parsing.js";
+import { normalizeOutputLocaleSetting } from "./locale.js";
+import { stripModelEffortSuffix } from "./constants.js";
 import { withRetry, withRetrySync } from "./fs-retry.js";
 import { logWarn } from "./logger.js";
 import { StorageError } from "./errors.js";
@@ -11,13 +12,19 @@ import {
 	getLegacyCodexDir,
 } from "./runtime-paths.js";
 import { getValidationErrors, PluginConfigSchema } from "./schemas.js";
+import {
+	getJsonStoreFileMtimeMs,
+	withJsonStoreCasRetry,
+	withJsonStoreFileLock,
+	withJsonStoreWriteQueue,
+	writeJsonStoreFileAtomicWithRetry,
+} from "./storage/json-store-lock.js";
 import type { PluginConfig } from "./types.js";
 import {
 	getUnifiedSettingsPath,
 	loadUnifiedPluginConfigSync,
 	saveUnifiedPluginConfig,
 } from "./unified-settings.js";
-import { tempPathFor } from "./temp-path.js";
 
 const CONFIG_DIR = getCodexMultiAuthDir();
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
@@ -44,8 +51,6 @@ const TUI_COLOR_PROFILES = new Set(["truecolor", "ansi16", "ansi256"]);
 const TUI_GLYPH_MODES = new Set(["ascii", "unicode", "auto"]);
 const UNSUPPORTED_CODEX_POLICIES = new Set(["strict", "fallback"]);
 const emittedConfigWarnings = new Set<string>();
-const configSaveQueues = new Map<string, Promise<void>>();
-const RETRYABLE_FS_CODES = new Set(["EBUSY", "EPERM"]);
 const RETRYABLE_CONFIG_READ_CODES = new Set(["EBUSY", "EPERM", "EAGAIN"]);
 
 /**
@@ -187,6 +192,7 @@ function resolvePluginConfigPath(): string | null {
  * CODEX_MODE is enabled by default for better Codex CLI parity
  */
 export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
+	locale: "auto",
 	codexMode: true,
 	codexRuntimeRotationProxy: true,
 	codexTuiV2: true,
@@ -243,6 +249,10 @@ export const DEFAULT_PLUGIN_CONFIG: PluginConfig = {
 	preemptiveQuotaRemainingPercent5h: 5,
 	preemptiveQuotaRemainingPercent7d: 5,
 	preemptiveQuotaMaxDeferralMs: 2 * 60 * 60_000,
+	contextBudgetGuardEnabled: false,
+	contextBudgetGuardSoftPercent: 65,
+	contextBudgetGuardHardPercent: 69,
+	contextBudgetGuardModelWindowOverrides: {},
 	routingMutex: "legacy",
 	schedulingStrategy: "hybrid",
 };
@@ -435,241 +445,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function getConfigFileMtimeMs(filePath: string): Promise<number | null> {
-	// config-08: the mtime CAS preflight (and savePluginConfig's env-path branch)
-	// run on the Windows-sensitive save path, where a transient EBUSY/EPERM/EAGAIN
-	// from an AV/indexer lock on a single fs.stat would abort the entire save.
-	// Mirror readConfigRecordForSave's bounded transient-FS retry (same code set,
-	// same backoff, 5 attempts). ENOENT still returns null immediately. On
-	// exhaustion the last failure surfaces so the caller treats it as a real
-	// save error rather than a phantom missing file.
-	return withRetry(
-		async () => {
-			try {
-				return (await fs.stat(filePath)).mtimeMs;
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
-					return null;
-				}
-				throw error;
-			}
-		},
-		{
-			maxAttempts: 5,
-			backoffMs: (attempt) => 10 * 2 ** (attempt - 1),
-			retryableCodes: RETRYABLE_CONFIG_READ_CODES,
-		},
-	);
-}
-
-async function writeJsonFileAtomicWithRetry(
-	filePath: string,
-	payload: Record<string, unknown>,
-	options?: { expectedMtimeMs?: number | null },
-): Promise<void> {
-	const tempPath = tempPathFor(filePath);
-	await fs.mkdir(dirname(filePath), { recursive: true });
-	await fs.writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-	let renamed = false;
-	try {
-		// Compare-and-swap guard: if a concurrent writer changed the target file
-		// since the caller read it (mtime mismatch), abort with ESTALE so the
-		// caller can re-read and merge instead of clobbering the other write.
-		if (options && "expectedMtimeMs" in options) {
-			const currentMtimeMs = await getConfigFileMtimeMs(filePath);
-			if (currentMtimeMs !== options.expectedMtimeMs) {
-				const staleError = new Error(
-					`Config at ${filePath} changed on disk during save; retrying with latest state.`,
-				) as NodeJS.ErrnoException;
-				staleError.code = "ESTALE";
-				throw staleError;
-			}
-		}
-		await withRetry(() => fs.rename(tempPath, filePath), {
-			maxAttempts: 5,
-			backoffMs: (attempt) => 10 * 2 ** (attempt - 1),
-			retryableCodes: RETRYABLE_FS_CODES,
-		});
-		renamed = true;
-	} finally {
-		if (!renamed) {
-			try {
-				await fs.unlink(tempPath);
-			} catch {
-				// Best-effort temp cleanup.
-			}
-		}
-	}
-}
-
-async function withConfigSaveLock(
-	path: string,
-	task: () => Promise<void>,
-): Promise<void> {
-	const previous = configSaveQueues.get(path) ?? Promise.resolve();
-	const queued = previous.catch(() => {}).then(task);
-	configSaveQueues.set(path, queued);
-	try {
-		await queued;
-	} finally {
-		if (configSaveQueues.get(path) === queued) {
-			configSaveQueues.delete(path);
-		}
-	}
-}
-
-// Cross-process config-save lock. withConfigSaveLock only serializes saves
-// within THIS process (a per-path promise queue); it does nothing against a
-// second process. The mtime CAS in writeJsonFileAtomicWithRetry narrows but does
-// not close the read→check→merge→rename TOCTOU window (another process can still
-// land a write between the CAS stat and the rename). This file lock provides the
-// cross-process mutual exclusion that closes that window. It deliberately mirrors
-// RefreshLeaseCoordinator (lib/refresh-lease.ts): exclusive `wx` lockfile create,
-// JSON payload carrying pid + expiry, stale-takeover via expiry/mtime, and a
-// best-effort retrying release in a finally. The mtime CAS stays as a second-line
-// guard for any non-participating writer.
-const CONFIG_LOCK_TTL_MS = 10_000;
-const CONFIG_LOCK_WAIT_TIMEOUT_MS = 10_000;
-const CONFIG_LOCK_POLL_MS = 50;
-
-interface ConfigLockPayload {
-	pid: number;
-	owner: string;
-	acquiredAt: number;
-	expiresAt: number;
-}
-
-async function unlinkConfigLockWithRetry(lockPath: string): Promise<void> {
-	try {
-		await withRetry(() => fs.unlink(lockPath), {
-			maxAttempts: 5,
-			backoffMs: (attempt) => 10 * 2 ** (attempt - 1),
-			retryableCodes: RETRYABLE_FS_CODES,
-		});
-	} catch {
-		// ENOENT (already released) or best-effort release failure: a leftover
-		// lockfile is recovered as stale by the next acquirer via its
-		// expiry/mtime, so never fail the save over this.
-	}
-}
-
-// Owner-safe release: only unlink the lockfile if it still carries OUR owner
-// token. If a slow save was deemed stale and a second process stole the lock,
-// the lockfile now holds the new owner's token — deleting it would reopen
-// concurrent saves, so we leave it alone.
-async function releaseConfigLockIfOwner(
-	lockPath: string,
-	owner: string,
-): Promise<void> {
-	try {
-		const content = await fs.readFile(lockPath, "utf-8");
-		const parsed = JSON.parse(stripUtf8Bom(content)) as
-			| Partial<ConfigLockPayload>
-			| undefined;
-		if (parsed?.owner && parsed.owner !== owner) {
-			// Lock was taken over by another holder; do not delete their lock.
-			return;
-		}
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException | undefined)?.code;
-		if (code === "ENOENT") return;
-		// Unreadable/malformed: fall through and attempt our best-effort unlink.
-	}
-	await unlinkConfigLockWithRetry(lockPath);
-}
-
-async function isConfigLockStale(lockPath: string): Promise<boolean> {
-	try {
-		const content = await fs.readFile(lockPath, "utf-8");
-		const parsed = JSON.parse(stripUtf8Bom(content)) as
-			| Partial<ConfigLockPayload>
-			| undefined;
-		if (
-			typeof parsed?.expiresAt === "number" &&
-			Number.isFinite(parsed.expiresAt)
-		) {
-			return parsed.expiresAt <= Date.now();
-		}
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException | undefined)?.code;
-		if (code === "ENOENT") return true;
-		// Unreadable/malformed payload: fall through to the mtime heuristic.
-	}
-	try {
-		const stat = await fs.stat(lockPath);
-		return Date.now() - stat.mtimeMs > CONFIG_LOCK_TTL_MS;
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException | undefined)?.code;
-		if (code === "ENOENT") return true;
-		return false;
-	}
-}
-
-async function withConfigFileLock<T>(
-	targetPath: string,
-	task: () => Promise<T>,
-): Promise<T> {
-	const lockPath = `${targetPath}.lock`;
-	const owner = randomUUID();
-	await fs.mkdir(dirname(lockPath), { recursive: true });
-	const deadline = Date.now() + CONFIG_LOCK_WAIT_TIMEOUT_MS;
-	let acquired = false;
-	while (!acquired) {
-		try {
-			const now = Date.now();
-			const payload: ConfigLockPayload = {
-				pid: process.pid,
-				owner,
-				acquiredAt: now,
-				expiresAt: now + CONFIG_LOCK_TTL_MS,
-			};
-			const handle = await fs.open(lockPath, "wx", 0o600);
-			try {
-				await handle.writeFile(`${JSON.stringify(payload)}\n`, "utf8");
-			} finally {
-				await handle.close();
-			}
-			acquired = true;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException | undefined)?.code;
-			if (code !== "EEXIST") {
-				// A transient FS lock on the lockfile itself: retry until the deadline,
-				// matching the bounded backoff used elsewhere on the Windows save path.
-				if (
-					typeof code === "string" &&
-					RETRYABLE_FS_CODES.has(code) &&
-					Date.now() < deadline
-				) {
-					await sleep(CONFIG_LOCK_POLL_MS);
-					continue;
-				}
-				throw error;
-			}
-			// Lock is held. Take it over if the holder expired/crashed; otherwise wait.
-			if (await isConfigLockStale(lockPath)) {
-				await unlinkConfigLockWithRetry(lockPath);
-				continue;
-			}
-			if (Date.now() >= deadline) {
-				const timeoutError = new Error(
-					`Timed out acquiring config save lock at ${lockPath}.`,
-				) as NodeJS.ErrnoException;
-				timeoutError.code = "ELOCKTIMEOUT";
-				throw timeoutError;
-			}
-			await sleep(CONFIG_LOCK_POLL_MS);
-		}
-	}
-	try {
-		return await task();
-	} finally {
-		await releaseConfigLockIfOwner(lockPath, owner);
-	}
-}
+// Cross-process save safety lives in lib/storage/json-store-lock.ts:
+// withJsonStoreWriteQueue (per-path in-process queue), withJsonStoreFileLock
+// (candidate-directory lock + dead-owner recovery), and the mtime CAS
+// trio (getJsonStoreFileMtimeMs / writeJsonStoreFileAtomicWithRetry /
+// withJsonStoreCasRetry). The file lock provides the cross-process mutual
+// exclusion that closes the read→check→merge→rename TOCTOU window against
+// OTHER processes; the mtime CAS stays on as a second-line guard for any
+// non-participating writer.
 
 /**
  * Read and parse a JSON configuration file and return its top-level object when present and valid.
@@ -895,80 +678,84 @@ export async function savePluginConfig(
 	const envPath = (process.env.CODEX_MULTI_AUTH_CONFIG_PATH ?? "").trim();
 
 	if (envPath.length > 0) {
-		await withConfigSaveLock(envPath, async () => {
+		await withJsonStoreWriteQueue(envPath, async () => {
 			// In-process queue (above) is the cheap fast path; the cross-process file
 			// lock (below) closes the read→merge→rename TOCTOU window against OTHER
 			// processes. Acquire the file lock for the full critical section, then run
 			// the same mtime CAS retry as a second-line guard for any non-participating
 			// writer. Mirrors the unified-settings save path (writeSettingsRecordAsync
 			// CAS).
-			await withConfigFileLock(envPath, async () => {
+			await withJsonStoreFileLock(envPath, async () => {
 				// CAS retry: ESTALE means the file's mtime moved between our stat and
 				// the write, so each attempt re-stats, re-reads, and re-merges against
 				// the latest on-disk state before writing again.
-				await withRetry(
-					async () => {
-						const expectedMtimeMs = await getConfigFileMtimeMs(envPath);
-						const envConfigState = await readConfigRecordForSave(envPath);
-						if (envConfigState.status === "unreadable") {
-							throw unreadableConfigSaveError(
-								envPath,
-								envConfigState.errorMessage,
-							);
-						}
-						const existingConfig =
-							envConfigState.status === "ok"
-								? sanitizeStoredPluginConfigRecord(envConfigState.record)
-								: null;
-						const merged = {
-							...(existingConfig ?? {}),
-							...sanitizedPatch,
-						};
-						await writeJsonFileAtomicWithRetry(envPath, merged, {
-							expectedMtimeMs,
-						});
-					},
-					{ maxAttempts: 3, backoffMs: 0, retryableCodes: ["ESTALE"] },
-				);
+				await withJsonStoreCasRetry(async () => {
+					const expectedMtimeMs = await getJsonStoreFileMtimeMs(envPath);
+					const envConfigState = await readConfigRecordForSave(envPath);
+					if (envConfigState.status === "unreadable") {
+						throw unreadableConfigSaveError(
+							envPath,
+							envConfigState.errorMessage,
+						);
+					}
+					const existingConfig =
+						envConfigState.status === "ok"
+							? sanitizeStoredPluginConfigRecord(envConfigState.record)
+							: null;
+					const merged = {
+						...(existingConfig ?? {}),
+						...sanitizedPatch,
+					};
+					await writeJsonStoreFileAtomicWithRetry(envPath, merged, {
+						expectedMtimeMs,
+					});
+				});
 			});
 		});
 		return;
 	}
 
 	const unifiedPath = getUnifiedSettingsPath();
-	await withConfigSaveLock(unifiedPath, async () => {
-		const unifiedConfigState = await readConfigRecordForSave(unifiedPath);
-		if (unifiedConfigState.status === "unreadable") {
-			throw unreadableConfigSaveError(
-				unifiedPath,
-				unifiedConfigState.errorMessage,
-			);
-		}
-		const unifiedConfigRecord =
-			unifiedConfigState.status === "ok"
-				? unifiedConfigState.record.pluginConfig
-				: loadUnifiedPluginConfigSync();
-		const unifiedConfig = sanitizeStoredPluginConfigRecord(unifiedConfigRecord);
-		const legacyPath =
-			unifiedConfig === null ? resolvePluginConfigPath() : null;
-		const legacyConfigState = legacyPath
-			? await readConfigRecordForSave(legacyPath)
-			: null;
-		if (legacyConfigState?.status === "unreadable") {
-			throw unreadableConfigSaveError(
-				legacyPath as string,
-				legacyConfigState.errorMessage,
-			);
-		}
-		const legacyConfig =
-			legacyConfigState?.status === "ok"
-				? sanitizeStoredPluginConfigRecord(legacyConfigState.record)
+	await withJsonStoreWriteQueue(unifiedPath, async () => {
+		// Hold the same cross-process lockfile for the read→merge portion, not
+		// just the write: saveUnifiedPluginConfig re-acquires both primitives
+		// re-entrantly inside this critical section, so the merged pluginConfig
+		// cannot interleave with another process's write to the same file.
+		await withJsonStoreFileLock(unifiedPath, async () => {
+			const unifiedConfigState = await readConfigRecordForSave(unifiedPath);
+			if (unifiedConfigState.status === "unreadable") {
+				throw unreadableConfigSaveError(
+					unifiedPath,
+					unifiedConfigState.errorMessage,
+				);
+			}
+			const unifiedConfigRecord =
+				unifiedConfigState.status === "ok"
+					? unifiedConfigState.record.pluginConfig
+					: loadUnifiedPluginConfigSync();
+			const unifiedConfig =
+				sanitizeStoredPluginConfigRecord(unifiedConfigRecord);
+			const legacyPath =
+				unifiedConfig === null ? resolvePluginConfigPath() : null;
+			const legacyConfigState = legacyPath
+				? await readConfigRecordForSave(legacyPath)
 				: null;
-		const merged = {
-			...(unifiedConfig ?? legacyConfig ?? {}),
-			...sanitizedPatch,
-		};
-		await saveUnifiedPluginConfig(merged);
+			if (legacyConfigState?.status === "unreadable") {
+				throw unreadableConfigSaveError(
+					legacyPath as string,
+					legacyConfigState.errorMessage,
+				);
+			}
+			const legacyConfig =
+				legacyConfigState?.status === "ok"
+					? sanitizeStoredPluginConfigRecord(legacyConfigState.record)
+					: null;
+			const merged = {
+				...(unifiedConfig ?? legacyConfig ?? {}),
+				...sanitizedPatch,
+			};
+			await saveUnifiedPluginConfig(merged);
+		});
 	});
 }
 
@@ -1049,6 +836,13 @@ function resolveNumberSetting(
 		);
 	}
 	const candidate = envValue ?? configValue ?? defaultValue;
+	// Math.max/Math.min propagate NaN, so a non-finite candidate would be
+	// returned as-is and every threshold comparison against it reads false --
+	// a setting that silently disables whatever it gates. parseNumberEnv already
+	// rejects non-finite env values and zod rejects NaN on the config field, so
+	// this is a boundary guard for the ~20 settings that share this helper
+	// rather than a reachable path through loadPluginConfig.
+	if (!Number.isFinite(candidate)) return defaultValue;
 	const min = options?.min ?? Number.NEGATIVE_INFINITY;
 	const max = options?.max ?? Number.POSITIVE_INFINITY;
 	return Math.max(min, Math.min(max, candidate));
@@ -1245,10 +1039,12 @@ export function getUnsupportedCodexFallbackChain(
 		const stripped = trimmed.includes("/")
 			? (trimmed.split("/").pop() ?? trimmed)
 			: trimmed;
-		return stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
+		return stripModelEffortSuffix(stripped);
 	};
 
-	const normalized: Record<string, string[]> = {};
+	// Null-prototype: the keys come from user config, so a `__proto__` entry on a
+	// plain object would reassign this object's prototype rather than add a row.
+	const normalized: Record<string, string[]> = Object.create(null);
 	for (const [key, value] of Object.entries(chain)) {
 		if (typeof key !== "string" || !Array.isArray(value)) continue;
 		const normalizedKey = normalizeModel(key);
@@ -1818,7 +1614,9 @@ export function getPreemptiveQuotaRemainingPercent7d(
 }
 
 /**
- * Get the configured maximum deferral time (in milliseconds) for preemptive quota checks.
+ * Get the configured fallback deferral time (in milliseconds) for preemptive quota checks.
+ * Trusted future quota resets may extend a deferral beyond this fallback, up to the
+ * scheduler's seven-day safety ceiling.
  *
  * Reads an environment override or the plugin configuration and enforces a minimum of 1000 ms.
  *
@@ -1838,6 +1636,79 @@ export function getPreemptiveQuotaMaxDeferralMs(
 		2 * 60 * 60_000,
 		{ min: 1_000 },
 	);
+}
+
+/**
+ * Whether the (experimental, opt-in) context budget guard is enabled.
+ *
+ * Ships disabled: pausing a session before it hits the context window is a
+ * staged behavior change, not a default-on safety net like preemptive quota
+ * deferral, so an explicit opt-in is required.
+ */
+export function getContextBudgetGuardEnabled(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_CONTEXT_BUDGET_GUARD_ENABLED",
+		pluginConfig.contextBudgetGuardEnabled,
+		false,
+	);
+}
+
+/** Percent of the effective context window at which the guard's non-blocking advisory fires. */
+export function getContextBudgetGuardSoftPercent(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_CONTEXT_BUDGET_SOFT_PCT",
+		pluginConfig.contextBudgetGuardSoftPercent,
+		65,
+		{ min: 0, max: 100 },
+	);
+}
+
+/**
+ * Percent of the effective context window at which the guard pauses the next
+ * request.
+ *
+ * Floored at 10, not 0. `resolveNumberSetting` clamps out-of-range values
+ * instead of rejecting them, so a configured (or env-supplied) `0` would be a
+ * legal threshold that every recorded snapshot clears — pausing every session
+ * from its first turn on. The guard applies the same floor in `configure()`
+ * so a directly constructed instance cannot be set below it either.
+ */
+export function getContextBudgetGuardHardPercent(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_CONTEXT_BUDGET_HARD_PCT",
+		pluginConfig.contextBudgetGuardHardPercent,
+		69,
+		{ min: 10, max: 100 },
+	);
+}
+
+/**
+ * User-supplied context-window sizes, keyed by normalized model id, that
+ * always take priority over this package's own best-effort estimates (see
+ * `lib/context-budget/model-context-windows.ts`). Settings-only: there is no
+ * environment override, the same as `unsupportedCodexFallbackChain`, since a
+ * per-model token count is not a reasonable single env var.
+ */
+export function getContextBudgetGuardModelWindowOverrides(
+	pluginConfig: PluginConfig,
+): Record<string, number> {
+	const overrides = pluginConfig.contextBudgetGuardModelWindowOverrides;
+	if (!overrides || typeof overrides !== "object") {
+		return {};
+	}
+	const normalized: Record<string, number> = {};
+	for (const [rawModel, rawValue] of Object.entries(overrides)) {
+		const model = rawModel.trim().toLowerCase();
+		if (!model) continue;
+		if (typeof rawValue !== "number" || !Number.isFinite(rawValue)) continue;
+		// Floor first: the schema accepts any positive number, so a sub-1 value
+		// passes a `rawValue > 0` check and then floors to 0, which is stored as
+		// a window of zero tokens and silently ignored downstream.
+		const tokens = Math.floor(rawValue);
+		if (tokens <= 0) continue;
+		normalized[model] = tokens;
+	}
+	return normalized;
 }
 
 const ROUTING_MUTEX_MODES = new Set<string>(["enabled", "legacy"]);
@@ -1978,6 +1849,7 @@ function normalizeConfigExplainValue(value: unknown): unknown {
 }
 
 const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
+	{ key: "locale", envNames: ["CODEX_MULTI_AUTH_LOCALE"], getValue: config => normalizeOutputLocaleSetting(process.env.CODEX_MULTI_AUTH_LOCALE?.trim() || config.locale || "auto") ?? "auto" },
 	{ key: "codexMode", envNames: ["CODEX_MODE"], getValue: getCodexMode },
 	{
 		key: "codexRuntimeRotationProxy",
@@ -2227,6 +2099,26 @@ const CONFIG_EXPLAIN_ENTRIES: ConfigExplainMeta[] = [
 		key: "preemptiveQuotaMaxDeferralMs",
 		envNames: ["CODEX_AUTH_PREEMPTIVE_QUOTA_MAX_DEFERRAL_MS"],
 		getValue: getPreemptiveQuotaMaxDeferralMs,
+	},
+	{
+		key: "contextBudgetGuardEnabled",
+		envNames: ["CODEX_AUTH_CONTEXT_BUDGET_GUARD_ENABLED"],
+		getValue: getContextBudgetGuardEnabled,
+	},
+	{
+		key: "contextBudgetGuardSoftPercent",
+		envNames: ["CODEX_AUTH_CONTEXT_BUDGET_SOFT_PCT"],
+		getValue: getContextBudgetGuardSoftPercent,
+	},
+	{
+		key: "contextBudgetGuardHardPercent",
+		envNames: ["CODEX_AUTH_CONTEXT_BUDGET_HARD_PCT"],
+		getValue: getContextBudgetGuardHardPercent,
+	},
+	{
+		key: "contextBudgetGuardModelWindowOverrides",
+		envNames: [],
+		getValue: getContextBudgetGuardModelWindowOverrides,
 	},
 	// config-01/config-07: these three live settings were missing from the explain
 	// report, so `config explain` silently under-reported the effective config. A

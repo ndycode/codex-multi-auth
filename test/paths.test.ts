@@ -124,6 +124,7 @@ describe("Storage Paths Module", () => {
 		});
 
 		it("prefers Windows fallback with accounts when primary only has non-account signals", () => {
+			const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
 			const originalHome = process.env.HOME;
 			const originalUserProfile = process.env.USERPROFILE;
 			const originalCodexHome = process.env.CODEX_HOME;
@@ -150,6 +151,7 @@ describe("Storage Paths Module", () => {
 				const result = getConfigDir();
 				expect(normalizePath(result)).toBe(normalizePath(fallback));
 			} finally {
+				platformSpy.mockRestore();
 				if (originalHome === undefined) delete process.env.HOME;
 				else process.env.HOME = originalHome;
 				if (originalUserProfile === undefined) delete process.env.USERPROFILE;

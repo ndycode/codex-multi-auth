@@ -455,7 +455,9 @@ function refreshInstructionsInBackground(
  * Prewarm instruction caches for the provided models/families.
  */
 export function prewarmCodexInstructions(models: string[] = []): void {
-	const candidates = models.length > 0 ? models : [DEFAULT_MODEL, "gpt-5.3-codex", "gpt-5.1"];
+	// Every live model is in the gpt-5.2 prompt family now that the codex and
+	// gpt-5.1 models are retired, so the default model alone covers the prewarm.
+	const candidates = models.length > 0 ? models : [DEFAULT_MODEL];
 	const prewarmTargets = new Map<string, string>();
 	for (const model of candidates) {
 		const promptFamily = getModelFamily(model);

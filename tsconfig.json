@@ -17,8 +17,10 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "declaration": true,
-    "declarationMap": true,
+    "declarationMap": false,
     "sourceMap": false,
+    "incremental": true,
+    "tsBuildInfoFile": "./.tsbuildinfo",
     "types": [
       "node"
     ]

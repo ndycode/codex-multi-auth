@@ -18,9 +18,11 @@ const OAUTH_PORT = 1455;
  * full-suite load. This polls a throwaway listener until the port binds cleanly,
  * making teardown deterministic (hardens the tests-ci-03 fragility).
  *
- * startLocalOAuthServer binds "localhost", which on a dual-stack host can resolve to
- * ::1 (IPv6) rather than 127.0.0.1. Probing 127.0.0.1 alone would miss a lingering
- * IPv6 bind, so we probe BOTH 127.0.0.1 and ::1 and only return once each is free.
+ * startLocalOAuthServer binds the numeric IPv4 loopback 127.0.0.1 (the registered
+ * redirect URI still names "localhost"; the client connect path tries every
+ * resolved loopback family). We still probe BOTH 127.0.0.1 and ::1 before each
+ * test: a stale IPv6 listener left by an older bind or another process would
+ * otherwise race a localhost-typed client that resolves ::1 first.
  * Where IPv6 is unavailable the ::1 probe fails with a non-EADDRINUSE error
  * (EADDRNOTAVAIL/EAFNOSUPPORT) — that means nothing is bound there, so it counts as
  * free. Only EADDRINUSE keeps us waiting.

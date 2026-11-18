@@ -1,0 +1,155 @@
+import { createHash } from "node:crypto";
+import { promises as fs } from "node:fs";
+import { z } from "zod";
+import { resolveAccountRecordId } from "../accounts.js";
+import { extractAccountId, nativeWorkspaceIdentity } from "../auth/token-utils.js";
+import { getAccountPolicyKey, type AccountPolicyStore } from "../account-policy.js";
+import type { AccountMetadataV3, AccountStorageV3 } from "../storage.js";
+import { withFileTransactionLock } from "../storage/file-lock.js";
+import { withRetry } from "../fs-retry.js";
+import { tempPathFor } from "../temp-path.js";
+import { logWarn } from "../logger.js";
+export const AUTOMATIC_CHECK_INTERVAL_MS = 15 * 60000;
+/** First tick after router start, so a short CLI session still gets its check. */
+export const AUTOMATIC_CHECK_INITIAL_DELAY_MS = 5000;
+/** An attempt stamped further ahead than this predates a backwards clock step: treat it as expired. */
+const FUTURE_SKEW_MS = 5 * 60000;
+const schema = z.record(z.string().regex(/^sha256:[a-f0-9]{64}$/), z.number().finite().nonnegative());
+const retry = { maxAttempts: 6, backoffMs: 25 };
+export interface AutomaticAccountCheckOptions {
+    path: string;
+    loadAccounts: () => Promise<AccountStorageV3 | null>;
+    loadPolicies: () => Promise<AccountPolicyStore>;
+    check: (storage: AccountStorageV3, index: number, signal: AbortSignal) => Promise<void>;
+    now?: () => number;
+    signal?: AbortSignal;
+}
+/** Honor the saved selection; a disabled/invalid selection must not fall back to a sibling. */
+export function automaticCheckWorkspaceId(account: AccountMetadataV3): string | undefined {
+    const identity = { access: account.accessToken, codexCliMirror: account.codexCliMirror };
+    if (account.workspaces?.length) {
+        const selected = account.workspaces[account.currentWorkspaceIndex ?? 0];
+        return selected?.enabled === false ? undefined : nativeWorkspaceIdentity(identity, selected?.id);
+    }
+    return nativeWorkspaceIdentity(identity, account.accountId?.trim() || extractAccountId(account.accessToken));
+}
+
+/** Policy keys can be shared by organization members; attempt limits must never be. */
+export function automaticAccountCheckKey(account: AccountMetadataV3): string {
+    return workspaceAttemptKey(account, automaticCheckWorkspaceId(account) ?? "");
+}
+
+/** Build the same key for inactive workspaces while pruning the attempt journal. */
+function workspaceAttemptKey(account: AccountMetadataV3, workspaceId: string): string {
+    return `sha256:${createHash("sha256").update(JSON.stringify([
+        "automatic-check-v2", resolveAccountRecordId(account), workspaceId,
+    ])).digest("hex")}`;
+}
+
+/** Reject unreadable or oversized history rather than silently allowing duplicate probes. */
+async function readAttempts(path: string): Promise<Record<string, number>> {
+    try {
+        const raw = await withRetry(() => fs.readFile(path, "utf8"), retry);
+        if (Buffer.byteLength(raw) > 1024 * 1024)
+            throw Error("Automatic-check history exceeds its size limit");
+        return schema.parse(JSON.parse(raw));
+    }
+    catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT")
+            return {};
+        throw error;
+    }
+}
+/** Atomically persist attempt timestamps before any billable network request. */
+async function saveAttempts(path: string, attempts: Record<string, number>): Promise<void> {
+    const temp = tempPathFor(path);
+    try {
+        await fs.writeFile(temp, JSON.stringify(attempts) + "\n", { mode: 0o600, flag: "wx" });
+        await withRetry(() => fs.rename(temp, path), retry);
+    }
+    finally {
+        await withRetry(() => fs.rm(temp, { force: true }), retry);
+    }
+}
+/** A durable attempt precedes network I/O, so failures and competing routers cannot double-prime. */
+export async function runAutomaticAccountChecks(options: AutomaticAccountCheckOptions): Promise<void> {
+    const signal = options.signal ?? new AbortController().signal;
+    if (signal.aborted || !Object.values((await options.loadPolicies()).accounts).some(p => p.autoPrime))
+        return;
+    await withFileTransactionLock(options.path, async () => {
+        const policies = await options.loadPolicies();
+        const storage = await options.loadAccounts();
+        if (!storage || signal.aborted)
+            return;
+        const attempts = await readAttempts(options.path);
+        // Keep every still-saved workspace's throttle, including temporarily disabled selections.
+        const keys = new Set(storage.accounts.flatMap(account => [
+            automaticAccountCheckKey(account),
+            ...(account.workspaces ?? []).map(workspace => workspaceAttemptKey(account, nativeWorkspaceIdentity(
+                { access: account.accessToken, codexCliMirror: account.codexCliMirror }, workspace.id,
+            ) ?? "")),
+        ]));
+        for (const key of Object.keys(attempts))
+            if (!keys.has(key))
+                delete attempts[key];
+        for (let index = 0; index < storage.accounts.length; index++) {
+            if (signal.aborted)
+                break;
+            const account = storage.accounts[index];
+            if (!account)
+                continue;
+            const key = automaticAccountCheckKey(account), policy = policies.accounts[getAccountPolicyKey(account)], now = options.now?.() ?? Date.now();
+            if (!policy?.autoPrime || policy.paused || policy.drained || policy.emergencyOnly || account.enabled === false || account.authInvalidatedAt || (account.coolingDownUntil ?? 0) > now)
+                continue;
+            const lastAttempt = attempts[key];
+            if (lastAttempt !== undefined && lastAttempt <= now + FUTURE_SKEW_MS && now - lastAttempt < AUTOMATIC_CHECK_INTERVAL_MS)
+                continue;
+            attempts[key] = now;
+            await saveAttempts(options.path, attempts);
+            try {
+                await options.check(storage, index, signal);
+            }
+            catch {
+                if (!signal.aborted)
+                    logWarn("Automatic subscription check failed; retry deferred until the next interval.");
+            }
+        }
+    }, { waitMs: 0 });
+}
+/**
+ * No overlapping ticks; shutdown cancels the active probe and waits for its cleanup.
+ * The first tick runs shortly after start, off the startup path; the durable
+ * per-account attempts in runAutomaticAccountChecks keep it from repeating work
+ * this or another router did recently, and it does nothing without an opt-in.
+ *
+ * Each later tick is scheduled one interval after the previous run finishes.
+ * A run records its attempts before it finishes, so the next tick is never
+ * inside the durable per-account limit. A fixed setInterval ticked just inside
+ * it (by the initial delay plus the run's own duration), skipped every
+ * account, and stretched the cadence to two intervals.
+ */
+export function startAutomaticAccountChecks(run: (signal: AbortSignal) => Promise<void>) {
+    const controller = new AbortController();
+    let pending: Promise<void> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = (delayMs: number) => {
+        if (controller.signal.aborted)
+            return;
+        timer = setTimeout(tick, delayMs);
+        timer.unref();
+    };
+    const tick = () => {
+        timer = undefined;
+        if (controller.signal.aborted)
+            return;
+        pending = run(controller.signal).catch(() => {
+            if (!controller.signal.aborted)
+                logWarn("Automatic subscription checks unavailable; no unchecked retry was started.");
+        }).finally(() => {
+            pending = undefined;
+            schedule(AUTOMATIC_CHECK_INTERVAL_MS);
+        });
+    };
+    schedule(AUTOMATIC_CHECK_INITIAL_DELAY_MS);
+    return { async stop() { clearTimeout(timer); controller.abort(); await pending; } };
+}

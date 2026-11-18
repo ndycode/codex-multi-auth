@@ -2,7 +2,7 @@ import {
 	getAccountPolicyKey,
 	loadAccountPolicyStore,
 	normalizeAccountPolicyTag,
-	saveAccountPolicyStore,
+	updateAccountPolicyStore,
 	upsertAccountPolicy,
 	type AccountPolicyStore,
 } from "../../account-policy.js";
@@ -12,7 +12,13 @@ export interface AccountCommandDeps {
 	setStoragePath: (path: string | null) => void;
 	loadAccounts: () => Promise<AccountStorageV3 | null>;
 	loadPolicyStore?: typeof loadAccountPolicyStore;
-	savePolicyStore?: typeof saveAccountPolicyStore;
+	/**
+	 * Mutation seam: each mutation re-applies under the cross-process lock
+	 * against the freshest store, so concurrent commands editing different
+	 * fields of the same policy both land. Defaults to the real
+	 * updateAccountPolicyStore.
+	 */
+	updatePolicyStore?: typeof updateAccountPolicyStore;
 	logInfo?: (message: string) => void;
 	logError?: (message: string) => void;
 	getNow?: () => number;
@@ -25,6 +31,9 @@ function printAccountUsage(logInfo: (message: string) => void): void {
 			"  codex-multi-auth account tag <index> <tag>",
 			"  codex-multi-auth account untag <index> <tag>",
 			"  codex-multi-auth account weight <index> <0..10>",
+			"  codex-multi-auth account priority <index> <0..9>",
+			"  codex-multi-auth account auto-prime <index> on|off",
+			"  codex-multi-auth account emergency-only <index> on|off",
 			"  codex-multi-auth account pause|unpause|drain|undrain <index>",
 			"  codex-multi-auth account note <index> <text>",
 			"  codex-multi-auth account policy list [--json]",
@@ -59,6 +68,9 @@ function policySummary(store: AccountPolicyStore, storage: AccountStorageV3 | nu
 			accountKey,
 			tags: policy?.tags ?? [],
 			weight: policy?.weight ?? 1,
+			priority: policy?.priority ?? 1,
+			autoPrime: policy?.autoPrime ?? false,
+			emergencyOnly: policy?.emergencyOnly ?? false,
 			paused: policy?.paused ?? false,
 			drained: policy?.drained ?? false,
 			note: policy?.note ?? null,
@@ -81,10 +93,10 @@ export async function runAccountCommand(
 	deps.setStoragePath(null);
 	const storage = await deps.loadAccounts();
 	const loadStore = deps.loadPolicyStore ?? loadAccountPolicyStore;
-	const saveStore = deps.savePolicyStore ?? saveAccountPolicyStore;
-	const store = await loadStore();
+	const updateStore = deps.updatePolicyStore ?? updateAccountPolicyStore;
 
 	if (command === "policy") {
+		const store = await loadStore();
 		const [subcommand, ...policyArgs] = rest;
 		if (subcommand !== "list") {
 			logError(`Unknown account policy command: ${subcommand ?? "(missing)"}`);
@@ -110,6 +122,9 @@ export async function runAccountCommand(
 		for (const entry of payload.accounts) {
 			const markers = [
 				`weight=${entry.weight}`,
+				`priority=${entry.priority}`,
+				`auto-prime=${entry.autoPrime ? "on" : "off"}`,
+				entry.emergencyOnly ? "emergency-only" : null,
 				entry.paused ? "paused" : null,
 				entry.drained ? "drained" : null,
 				entry.tags.length > 0 ? `tags=${entry.tags.join(",")}` : null,
@@ -135,21 +150,59 @@ export async function runAccountCommand(
 			logError(`${command} requires a tag value.`);
 			return 1;
 		}
-		const policy = upsertAccountPolicy(
-			store,
-			accountKey,
-			(next) => {
-				if (command === "tag" && !next.tags.includes(tag)) next.tags.push(tag);
-				if (command === "untag") {
-					next.tags = next.tags.filter((existing) => existing !== tag);
-				}
-			},
-			now,
-		);
-		await saveStore(store);
+		const policy = await updateStore((store) => ({
+			result: upsertAccountPolicy(
+				store,
+				accountKey,
+				(next) => {
+					if (command === "tag" && !next.tags.includes(tag)) next.tags.push(tag);
+					if (command === "untag") {
+						next.tags = next.tags.filter((existing) => existing !== tag);
+					}
+				},
+				now,
+			),
+			dirty: true,
+		}));
 		logInfo(
 			`${command === "tag" ? "Tagged" : "Removed tag from"} account ${resolved.index + 1}: ${policy.tags.join(",") || "none"}`,
 		);
+		return 0;
+	}
+
+	if (command === "emergency-only") {
+        if (rest.length !== 2 || !["on", "off"].includes(rest[1] ?? "")) {
+            logError("emergency-only requires on or off."); return 1;
+        }
+        await updateStore(store => ({
+            result: upsertAccountPolicy(store, accountKey, next => { next.emergencyOnly = rest[1] === "on"; }, now),
+            dirty: true,
+        }));
+        logInfo(`Emergency-only ${rest[1]} for account ${resolved.index + 1}.`);
+        return 0;
+    }
+	if (command === "auto-prime") {
+        if (rest.length !== 2 || !["on", "off"].includes(rest[1] ?? "")) {
+            logError("auto-prime requires on or off."); return 1;
+        }
+        await updateStore((store) => ({
+            result: upsertAccountPolicy(store, accountKey, next => { next.autoPrime = rest[1] === "on"; }, now),
+            dirty: true,
+        }));
+        logInfo(`Automatic priming ${rest[1]} for account ${resolved.index+1}. ${rest[1] === "on" ? "The running router checks every 15 minutes; first-use completion consumes subscription quota." : "Future automatic checks are disabled."}`);
+        return 0;
+    }
+	if (command === "priority") {
+		if (!/^[0-9]$/.test(rest[1] ?? "") || rest.length !== 2) {
+			logError("priority requires an integer from 0 to 9 (0 first).");
+			return 1;
+		}
+		const priority = Number(rest[1]);
+		await updateStore((store) => ({
+			result: upsertAccountPolicy(store, accountKey, next => { next.priority = priority; }, now),
+			dirty: true,
+		}));
+		logInfo(`Set account ${resolved.index + 1} priority to ${priority}.`);
 		return 0;
 	}
 
@@ -159,32 +212,38 @@ export async function runAccountCommand(
 			logError("weight requires a number from 0 to 10.");
 			return 1;
 		}
-		upsertAccountPolicy(store, accountKey, (next) => {
-			next.weight = weight;
-		}, now);
-		await saveStore(store);
+		await updateStore((store) => ({
+			result: upsertAccountPolicy(store, accountKey, (next) => {
+				next.weight = weight;
+			}, now),
+			dirty: true,
+		}));
 		logInfo(`Set account ${resolved.index + 1} weight to ${weight}.`);
 		return 0;
 	}
 
 	if (["pause", "unpause", "drain", "undrain"].includes(command)) {
-		upsertAccountPolicy(store, accountKey, (next) => {
-			if (command === "pause") next.paused = true;
-			if (command === "unpause") next.paused = false;
-			if (command === "drain") next.drained = true;
-			if (command === "undrain") next.drained = false;
-		}, now);
-		await saveStore(store);
+		await updateStore((store) => ({
+			result: upsertAccountPolicy(store, accountKey, (next) => {
+				if (command === "pause") next.paused = true;
+				if (command === "unpause") next.paused = false;
+				if (command === "drain") next.drained = true;
+				if (command === "undrain") next.drained = false;
+			}, now),
+			dirty: true,
+		}));
 		logInfo(`Updated account ${resolved.index + 1}: ${command}.`);
 		return 0;
 	}
 
 	if (command === "note") {
 		const note = rest.slice(1).join(" ").trim();
-		upsertAccountPolicy(store, accountKey, (next) => {
-			next.note = note.length > 0 ? note.slice(0, 500) : null;
-		}, now);
-		await saveStore(store);
+		await updateStore((store) => ({
+			result: upsertAccountPolicy(store, accountKey, (next) => {
+				next.note = note.length > 0 ? note.slice(0, 500) : null;
+			}, now),
+			dirty: true,
+		}));
 		logInfo(`Updated account ${resolved.index + 1} note.`);
 		return 0;
 	}
