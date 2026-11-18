@@ -4316,9 +4316,8 @@ describe("codex bin wrapper", () => {
 		},
 	);
 
-	// The absolute lifetime ceiling is unconditional on activity: it exists for
-	// exactly the case where activity accounting is wrong, so a genuinely live
-	// owner must not extend a helper past it.
+	// An owner without a verified start time keeps the lifetime ceiling as the
+	// leak backstop. A verified owner is covered by the identity check below.
 	it("stops at the max-lifetime ceiling even while its owner is alive", async () => {
 		const fixtureRoot = createWrapperFixture();
 		createRuntimeRotationProxyFixtureModule(fixtureRoot);
@@ -4350,6 +4349,43 @@ describe("codex bin wrapper", () => {
 			await stopDirectAppHelper(helper, closed);
 		}
 	});
+
+	it.skipIf(process.platform === "win32")(
+		"does not stop at the max-lifetime ceiling for a verified live owner",
+		async () => {
+			const ownerStartTimeMs = readOwnProcessStartTimeMs();
+			expect(ownerStartTimeMs).not.toBeNull();
+			if (ownerStartTimeMs === null) return;
+
+			const fixtureRoot = createWrapperFixture();
+			createRuntimeRotationProxyFixtureModule(fixtureRoot);
+			const originalHome = join(fixtureRoot, "codex-home");
+			const multiAuthDir = join(fixtureRoot, "multi-auth");
+			mkdirSync(originalHome, { recursive: true });
+			writeFileSync(join(originalHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+
+			const { helper, ready, closed } = await spawnDirectAppHelper(fixtureRoot, {
+				CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_DIR: multiAuthDir,
+				CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
+				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
+				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
+				CODEX_MULTI_AUTH_APP_ROTATION_MAX_LIFETIME_MS: "2000",
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
+				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_START_TIME_MS: String(ownerStartTimeMs),
+			});
+			try {
+				await sleep(3_500);
+				expect(isProcessAlive(ready.pid)).toBe(true);
+				const status = JSON.parse(readFileSync(ready.statusPath, "utf8")) as {
+					state: string;
+				};
+				expect(status.state).toBe("running");
+			} finally {
+				await stopDirectAppHelper(helper, closed);
+			}
+		},
+	);
 
 	// N helpers, N status files: each helper publishes
 	// `runtime-rotation-app-helper.<pid>.json` and never the shared legacy
