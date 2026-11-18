@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "tokens": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "label": "workstation",
+      "prefix": "cma_local_AAECAwQF",
+      "tokenHash": "sha256:7de937f6bef93e60a3f6fa9074d756f2b62a7c0b9c5621cef751b47fdf84480f",
+      "createdAt": 1750000000000,
+      "lastUsedAt": null,
+      "revokedAt": null
+    }
+  ]
+}

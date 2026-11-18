@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "accounts": {
+    "sha256:7dafc00442dea304b0c5d8639eb8980385d63c449b9ff6575eff2e8638af520a": {
+      "accountKey": "sha256:7dafc00442dea304b0c5d8639eb8980385d63c449b9ff6575eff2e8638af520a",
+      "tags": [
+        "personal",
+        "primary"
+      ],
+      "weight": 2,
+      "paused": false,
+      "drained": false,
+      "note": "Primary fixture account",
+      "updatedAt": 1750000000000
+    },
+    "sha256:0b8d380cc8093df83db8e2144faf9aa628e69c44eec806942ccba174d09bbbcd": {
+      "accountKey": "sha256:0b8d380cc8093df83db8e2144faf9aa628e69c44eec806942ccba174d09bbbcd",
+      "tags": [
+        "team"
+      ],
+      "weight": 1,
+      "paused": true,
+      "drained": false,
+      "note": "Paused fixture account",
+      "updatedAt": 1750000000000
+    }
+  }
+}
