@@ -4716,6 +4716,7 @@ function createRuntimeRotationAppHelperOwnerLivenessCheck(
 	let lastIdentityCheckedAt = 0;
 	let lastIdentityVerdict = true;
 	let identityVerified = false;
+	let identityVerifiedAt = 0;
 	let probeInFlight = false;
 	return {
 		check(currentTime) {
@@ -4727,6 +4728,15 @@ function createRuntimeRotationAppHelperOwnerLivenessCheck(
 			}
 			if (expectedStartTimeMs === null) {
 				return { verdict: OWNER_ALIVE, identityVerified };
+			}
+			// A successful identity read is only a bounded lease. If subsequent
+			// probes keep failing, do not let an old PID/start-time match exempt a
+			// stranded helper from the lifetime ceiling forever.
+			if (
+				identityVerified &&
+				currentTime - identityVerifiedAt >= recheckIntervalMs * 2
+			) {
+				identityVerified = false;
 			}
 			// The probe is asynchronous and single-flight: the tick runs on the live
 			// proxy's event loop, so it always answers from the last verdict and the
@@ -4747,6 +4757,7 @@ function createRuntimeRotationAppHelperOwnerLivenessCheck(
 					// under an active session. Keep the verdict and retry next window.
 					if (actualStartTimeMs !== null) {
 						identityVerified = true;
+						identityVerifiedAt = Date.now();
 						lastIdentityVerdict = actualStartTimeMs === expectedStartTimeMs;
 					}
 				});
