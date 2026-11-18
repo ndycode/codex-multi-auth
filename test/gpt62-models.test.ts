@@ -184,7 +184,7 @@ describe("GPT-6.2 Astra and Sol", () => {
 					estimateUsageCostUsd(
 						testCase.model,
 						testCase.tokens,
-						testCase.at,
+							"at" in testCase ? testCase.at : undefined,
 					),
 				).toBeCloseTo(testCase.expected, 10);
 			}
