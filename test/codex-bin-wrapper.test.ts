@@ -4371,14 +4371,15 @@ describe("codex bin wrapper", () => {
 				CODEX_MULTI_AUTH_REAL_CODEX_HOME: originalHome,
 				CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY: "1",
 				CODEX_MULTI_AUTH_APP_ROTATION_IDLE_MS: "60000",
-				// Leave enough time for the first asynchronous identity probe to
-				// complete before the lifetime boundary is crossed.
-				CODEX_MULTI_AUTH_APP_ROTATION_MAX_LIFETIME_MS: "5000",
+				// Use a short detached window to drive owner rechecks at 100ms;
+				// the lifetime boundary is crossed only after several probe windows.
+				CODEX_MULTI_AUTH_APP_ROTATION_DETACHED_IDLE_MS: "400",
+				CODEX_MULTI_AUTH_APP_ROTATION_MAX_LIFETIME_MS: "8000",
 				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_PID: String(process.pid),
 				CODEX_MULTI_AUTH_APP_ROTATION_OWNER_START_TIME_MS: String(ownerStartTimeMs),
 			});
 			try {
-				await sleep(7_000);
+				await sleep(10_000);
 				expect(isProcessAlive(ready.pid)).toBe(true);
 				const status = JSON.parse(readFileSync(ready.statusPath, "utf8")) as {
 					state: string;
@@ -4388,7 +4389,7 @@ describe("codex bin wrapper", () => {
 				await stopDirectAppHelper(helper, closed);
 			}
 		},
-		10_000,
+		15_000,
 	);
 
 	// N helpers, N status files: each helper publishes
