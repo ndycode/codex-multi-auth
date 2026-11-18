@@ -52,6 +52,11 @@ export const UNESTIMATED_ROUTABLE_MODELS = [
 	// measured ceiling for this transport, so it stays unestimated too. Set
 	// `contextBudgetGuardModelWindowOverrides` once you know your real ceiling.
 	"gpt-6-astra",
+	// GPT-6.2 advertises a 1.05M API window, while the Codex transport's
+	// effective ceiling is catalog-dependent; require an explicit override
+	// until a measured Codex ceiling is available.
+	"gpt-6.2-astra",
+	"gpt-6.2-sol",
 	// Sol, Luna and 6.1 Sol carry the same 272K Codex / 872K max split in the
 	// upstream catalog as Astra, so the same reasoning keeps them unestimated.
 	"gpt-6-sol",

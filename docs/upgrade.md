@@ -52,6 +52,23 @@ rate instead of being recorded without a cost. Ultrafast requests over 272K
 input stay unpriced because OpenAI does not say whether the long-context
 surcharge stacks with it.
 
+## GPT-6.2 Astra and Sol
+
+`gpt-6.2-astra` and `gpt-6.2-sol` are now first-class model ids. Astra uses the
+frontier pricing card ($8 / $40 per 1M input/output, $0.40 cached input), while
+Sol uses the everyday-work card ($2 / $10, $0.10 cached input). Both models
+support `low` through `max`; the Codex-only `ultra` selector is rewritten to
+`max` before the request is sent. Bare `gpt-6.2` resolves to Sol. The default
+model remains `gpt-6.1-sol`.
+
+For both 6.2 models, Responses usage at `service_tier: "ultrafast"` is priced
+at 3x standard through February 28, 2027, Pacific time, and 6x standard from
+March 1, 2027. The estimator selects the rate from the ledger row's recorded
+timestamp, so historical rows keep the rate that applied when they ran. A
+6.2 Ultrafast response over 272K input remains unpriced because the published
+documentation does not specify whether the long-context surcharge stacks with
+Ultrafast; the budget guard therefore fails closed instead of guessing.
+
 ## Luna Reserve fallback and limits
 
 `gpt-6-luna` and `gpt-5.6-luna` can retry genuine quota 429 responses through

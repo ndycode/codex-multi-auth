@@ -1456,6 +1456,8 @@ const RETIRED_MODEL_REPLACEMENTS = {
 // test/codex-model-resolution.test.ts; `gpt-6-luna` closes the general walks
 // because it ships on the most plans of any catalog model.
 const WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN = {
+	"gpt-6.2-astra": ["gpt-6.2-sol"],
+	"gpt-6.2-sol": ["gpt-6.1-sol"],
 	"gpt-6.1-sol": ["gpt-6-sol"],
 	"gpt-6.1-terra": ["gpt-5.6-terra"],
 	"gpt-6-astra": ["gpt-6-sol"],
@@ -1543,12 +1545,22 @@ function resolveUnsupportedModelRetryTarget(
 			.filter(Boolean),
 	);
 	const normalizedRequestedModel = canonicalizeUnsupportedModelKey(requestedModel);
+	// Keep raw model keys first so retired ids preserve their historical lookup
+	// precedence, then resolve convenience aliases (for example bare `gpt-6.2`)
+	// before giving up. The TypeScript request path normalizes these aliases before
+	// fallback; the pre-build wrapper must do the same at its own boundary.
+	const aliasedRequestedModel = canonicalizeUnsupportedModelKey(
+		normalizeRequestedModel(requestedModel),
+	);
 	const blockedModel =
 		extractUnsupportedModelFromOutput(output) ?? normalizedRequestedModel;
 	const fallbackChain =
 		WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN[blockedModel] ??
 		(normalizedRequestedModel
 			? WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN[normalizedRequestedModel]
+			: undefined) ??
+		(aliasedRequestedModel
+			? WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN[aliasedRequestedModel]
 			: undefined) ??
 		[];
 
@@ -2187,6 +2199,8 @@ function hasCliAuthCredentialsStoreOverride(args) {
 // and its GPT-5 normalization helpers.
 // This wrapper runs before the TypeScript build, so it cannot import that source.
 const SUPPORTED_REASONING_EFFORTS_BY_MODEL = {
+	"gpt-6.2-astra": ["low", "medium", "high", "xhigh", "max", "ultra"],
+	"gpt-6.2-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
 	"gpt-6-astra": ["low", "medium", "high", "xhigh", "max", "ultra"],
 	"gpt-6.1-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
 	"gpt-6.1-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
@@ -2261,6 +2275,13 @@ const GPT_6_1_SOL_EFFORTS = GPT_6_ASTRA_EFFORTS;
 // `low` default. Mirrors lib/request/helpers/model-map.ts.
 const GPT_6_1_TERRA_MODEL = "gpt-6.1-terra";
 const GPT_6_1_TERRA_EFFORTS = GPT_6_ASTRA_EFFORTS;
+// GPT-6.2 Astra and Sol (OpenAI release 2026-11-17). The API supports
+// low..max; Codex's client-side Ultra mode is rewritten to max before the
+// request is sent.
+const GPT_62_ASTRA_MODEL = "gpt-6.2-astra";
+const GPT_62_SOL_MODEL = "gpt-6.2-sol";
+const GPT_62_FLAGSHIP_ALIAS = "gpt-6.2";
+const GPT_62_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 // Daybreak cyber models from the upstream Codex catalog. `red` is the
 // cyber-permissive variant, `blue` the defensive one.
 const DAYBREAK_BLUE_MODEL = "gpt-daybreak-blue-latest";
@@ -2452,6 +2473,9 @@ function seedRequestedModelAliases() {
 		GPT_6_ASTRA_MODEL,
 		GPT_6_ASTRA_EFFORTS,
 	);
+	addRequestedModelEffortAliases(GPT_62_ASTRA_MODEL, GPT_62_ASTRA_MODEL, GPT_62_EFFORTS);
+	addRequestedModelEffortAliases(GPT_62_SOL_MODEL, GPT_62_SOL_MODEL, GPT_62_EFFORTS);
+	addRequestedModelEffortAliases(GPT_62_FLAGSHIP_ALIAS, GPT_62_SOL_MODEL, GPT_62_EFFORTS);
 	addRequestedModelEffortAliases(
 		GPT_6_FLAGSHIP_ALIAS,
 		GPT_6_ASTRA_MODEL,
@@ -2597,6 +2621,9 @@ function resolveGpt6RequestedModel(stripped) {
 	const isGpt61 =
 		(isGpt6 && gptIndex !== -1 && tokens[gptIndex + 2] === "1") ||
 		(gpt6Index !== -1 && tokens[gpt6Index + 1] === "1");
+	const isGpt62 =
+		(isGpt6 && gptIndex !== -1 && tokens[gptIndex + 2] === "2") ||
+		(gpt6Index !== -1 && tokens[gpt6Index + 1] === "2");
 	// A bare `astra` token counts too: picker labels and OpenAI's own material
 	// say "Astra" with no `gpt-6` prefix, so `Astra Pro` arrives with no version
 	// tokens and would otherwise miss every branch and land on the default.
@@ -2610,8 +2637,9 @@ function resolveGpt6RequestedModel(stripped) {
 	if ((!isGpt6 && !isAstra) || tokens.includes("codex")) {
 		return "";
 	}
-	if (tokens.includes("aeon")) return GPT_6_ASTRA_MODEL;
-	if (isAstra) return GPT_6_ASTRA_MODEL;
+	if (tokens.includes("aeon")) return isGpt62 ? GPT_62_ASTRA_MODEL : GPT_6_ASTRA_MODEL;
+	if (isAstra) return isGpt62 ? GPT_62_ASTRA_MODEL : GPT_6_ASTRA_MODEL;
+	if (isGpt62) return tokens.includes("astra") ? GPT_62_ASTRA_MODEL : GPT_62_SOL_MODEL;
 	// A `terra` token picks 6.1 Terra; every other unrecognised 6.1 id is Sol.
 	if (isGpt61) return tokens.includes("terra") ? GPT_6_1_TERRA_MODEL : GPT_6_1_SOL_MODEL;
 	// `terra` goes to Sol: there is no GPT-6 Terra, and upstream migrates
@@ -7169,6 +7197,7 @@ export {
 	coerceReasoningEffortForModel,
 	resolveModelFamilyForStatus,
 	canonicalizeRequestedModelName,
+	resolveUnsupportedModelRetryTarget,
 	WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN,
 	RETIRED_MODEL_REPLACEMENTS,
 };

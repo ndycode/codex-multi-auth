@@ -247,8 +247,9 @@ describe("usage ledger core", () => {
 				totalTokens: 1_100_000,
 			}),
 		).toBeCloseTo(10.2, 10);
-		// Unknown ids still price as unknown rather than at the default's rate.
-		expect(getUsageModelPricing("gpt-6.2-sol")).toBeNull();
+		// GPT-6.2 Sol has an explicit pricing card; unknown ids still price as
+		// unknown rather than at the default's rate.
+		expect(getUsageModelPricing("gpt-6.2-sol")?.inputUsdPerMillion).toBe(2);
 		// Retired gpt-5.5 prices through its replacement card (gpt-6-sol);
 		// 1M input crosses the 272K long-context threshold ($4/$15/$0.40).
 		expect(

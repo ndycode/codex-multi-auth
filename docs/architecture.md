@@ -177,7 +177,7 @@ The package root still exports a plugin-host runtime (`index.ts`) for hosts that
 - Proxied Responses requests are forced to `stream: true` and `store: false` (stateless compatibility), with `reasoning.encrypted_content` included, unless background-response compatibility is explicitly enabled.
 - Credentials and governance state stay local under `~/.codex/multi-auth`.
 - The desktop app bind is reversible and does not patch official app files.
-- Default general model routing uses `gpt-6.1-sol`; diagnostic live/quota probes lead with `gpt-5.6-sol`.
+- Default general model routing remains `gpt-6.1-sol`; GPT-6.2 Astra/Sol are available by explicit model id (`gpt-6.2-astra` / `gpt-6.2-sol`, with bare `gpt-6.2` selecting Sol). Diagnostic live/quota probes lead with `gpt-5.6-sol`.
 
 ---
 

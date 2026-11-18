@@ -20,6 +20,11 @@ const wrapper = (await import("../scripts/codex.js")) as {
 	coerceReasoningEffortForModel: (model: string, effort: string) => string;
 	resolveModelFamilyForStatus: (model: string) => string | null;
 	canonicalizeRequestedModelName: (model: string) => string;
+	resolveUnsupportedModelRetryTarget: (
+		requestedModel: string | undefined,
+		output: string,
+		attemptedModels?: string[],
+	) => string | undefined;
 	WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN: Record<string, string[]>;
 };
 // The wrapper reads the flag once, at import. Clear it immediately so it cannot
@@ -179,6 +184,15 @@ describe("codex.js wrapper — parity with lib/request/helpers/model-map", () =>
 	const MODEL_IDS = [
 		"gpt-6",
 		"gpt6",
+		"gpt-6.2",
+		"gpt-6.2-sol",
+		"gpt-6.2-sol-max",
+		"gpt-6.2-sol-ultra",
+		"gpt-6.2-astra",
+		"gpt-6.2-astra-ultra",
+		"openai/gpt-6.2-astra-high",
+		"gpt-6.2-astra-2026-11-17",
+		"gpt6.2-sol",
 		"gpt-6.1",
 		"gpt-6.1-sol",
 		"gpt-6.1-sol-low",
@@ -251,6 +265,8 @@ describe("codex.js wrapper — parity with lib/request/helpers/model-map", () =>
 	// wrapper mirrors. lib's getReasoningConfig applies the same fallback + the
 	// ultra->max wire rewrite, so the two must agree for every known effort.
 	const COERCION_MODELS = [
+		"gpt-6.2-astra",
+		"gpt-6.2-sol",
 		"gpt-6-astra",
 		"gpt-6-astra-aeon",
 		"gpt-6.1-sol",
@@ -315,5 +331,15 @@ describe("codex.js wrapper — unsupported-model fallback chain parity", () => {
 		expect(wrapper.WRAPPER_UNSUPPORTED_MODEL_FALLBACK_CHAIN).toEqual(
 			DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN,
 		);
+	});
+
+	it("resolves the bare GPT-6.2 alias before choosing its fallback", () => {
+		const unsupported =
+			"model is not supported when using codex with a chatgpt account";
+		expect(
+			wrapper.resolveUnsupportedModelRetryTarget("gpt-6.2", unsupported, [
+				"gpt-6.2",
+			]),
+		).toBe("gpt-6.1-sol");
 	});
 });

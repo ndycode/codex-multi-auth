@@ -14,6 +14,19 @@ export interface UsageModelPricing {
 	cachedInputUsdPerMillion?: number;
 	reasoningUsdPerMillion?: number;
 	/**
+	 * Future-dated rates for a service tier whose published price changes.
+	 * The entry in `serviceTiers` remains the rate before the first boundary.
+	 */
+	serviceTierSchedules?: Partial<
+		Record<
+			UsageServiceTier,
+			{
+				effectiveAtMs: number;
+				pricing: UsageModelPricing;
+			}
+		>
+	>;
+	/**
 	 * Rates for non-standard service tiers, keyed by `UsageServiceTier`.
 	 *
 	 * Every entry in `MODEL_PRICING` is a STANDARD-tier rate. OpenAI's Fast tier
@@ -40,6 +53,16 @@ export interface UsageModelPricing {
 	 */
 	longContext?: UsageModelPricing;
 }
+
+/**
+ * OpenAI's launch pricing keeps GPT-6.2 Ultrafast at 3x through February 28,
+ * 2027, Pacific time, then changes it to 6x at midnight on March 1. 2027-03-01
+ * is still PST (DST starts later that month), so this explicit offset is stable
+ * and avoids making historical ledger rows depend on the host timezone.
+ */
+export const GPT_62_ULTRAFAST_PROMOTION_END_MS = Date.parse(
+	"2027-03-01T00:00:00-08:00",
+);
 
 /**
  * Largest input still billed at the short-context rate. OpenAI's GPT-6 model
@@ -87,6 +110,102 @@ const MODEL_PRICING: Record<string, UsageModelPricing> = {
 					outputUsdPerMillion: 150,
 					cachedInputUsdPerMillion: 4,
 					reasoningUsdPerMillion: 150,
+				},
+			},
+		},
+	},
+	// GPT-6.2 Astra, released 2026-11-17. Standard API rates are $8/$40
+	// with $0.40 cached input and $10 30-minute cache writes. This pricing
+	// table has no cache-write field, so the ledger keeps the repository-wide
+	// convention of billing cache writes as input. Long-context pricing follows
+	// the published 2x input/cache and 1.5x output rule.
+	"gpt-6.2-astra": {
+		inputUsdPerMillion: 8,
+		outputUsdPerMillion: 40,
+		cachedInputUsdPerMillion: 0.4,
+		reasoningUsdPerMillion: 40,
+		longContext: {
+			inputUsdPerMillion: 16,
+			outputUsdPerMillion: 60,
+			cachedInputUsdPerMillion: 0.8,
+			reasoningUsdPerMillion: 60,
+		},
+		serviceTiers: {
+			priority: {
+				inputUsdPerMillion: 16,
+				outputUsdPerMillion: 80,
+				cachedInputUsdPerMillion: 0.8,
+				reasoningUsdPerMillion: 80,
+				longContext: {
+					inputUsdPerMillion: 32,
+					outputUsdPerMillion: 120,
+					cachedInputUsdPerMillion: 1.6,
+					reasoningUsdPerMillion: 120,
+				},
+			},
+			// OpenAI documents Ultrafast at 3x Standard through 2027-02-28.
+			// Long-context stacking is unspecified, so it remains unpriced there.
+			ultrafast: {
+				inputUsdPerMillion: 24,
+				outputUsdPerMillion: 120,
+				cachedInputUsdPerMillion: 1.2,
+				reasoningUsdPerMillion: 120,
+			},
+		},
+		serviceTierSchedules: {
+			ultrafast: {
+				effectiveAtMs: GPT_62_ULTRAFAST_PROMOTION_END_MS,
+				pricing: {
+					inputUsdPerMillion: 48,
+					outputUsdPerMillion: 240,
+					cachedInputUsdPerMillion: 2.4,
+					reasoningUsdPerMillion: 240,
+				},
+			},
+		},
+	},
+	// GPT-6.2 Sol keeps GPT-6.1 Sol's standard rates, including its cache
+	// discount; the published $2.50 cache-write rate is represented as input by
+	// the repository-wide ledger convention because this table has no write field.
+	"gpt-6.2-sol": {
+		inputUsdPerMillion: 2,
+		outputUsdPerMillion: 10,
+		cachedInputUsdPerMillion: 0.1,
+		reasoningUsdPerMillion: 10,
+		longContext: {
+			inputUsdPerMillion: 4,
+			outputUsdPerMillion: 15,
+			cachedInputUsdPerMillion: 0.2,
+			reasoningUsdPerMillion: 15,
+		},
+		serviceTiers: {
+			priority: {
+				inputUsdPerMillion: 4,
+				outputUsdPerMillion: 20,
+				cachedInputUsdPerMillion: 0.2,
+				reasoningUsdPerMillion: 20,
+				longContext: {
+					inputUsdPerMillion: 8,
+					outputUsdPerMillion: 30,
+					cachedInputUsdPerMillion: 0.4,
+					reasoningUsdPerMillion: 30,
+				},
+			},
+			ultrafast: {
+				inputUsdPerMillion: 6,
+				outputUsdPerMillion: 30,
+				cachedInputUsdPerMillion: 0.3,
+				reasoningUsdPerMillion: 30,
+			},
+		},
+		serviceTierSchedules: {
+			ultrafast: {
+				effectiveAtMs: GPT_62_ULTRAFAST_PROMOTION_END_MS,
+				pricing: {
+					inputUsdPerMillion: 12,
+					outputUsdPerMillion: 60,
+					cachedInputUsdPerMillion: 0.6,
+					reasoningUsdPerMillion: 60,
 				},
 			},
 		},
@@ -312,9 +431,14 @@ export function getUsageModelPricing(
 function resolveServiceTierPricing(
 	pricing: UsageModelPricing,
 	serviceTier: UsageServiceTier | undefined,
+	usageTimestampMs: number,
 ): UsageModelPricing | null {
 	if (!serviceTier || serviceTier === "standard") {
 		return pricing;
+	}
+	const scheduled = pricing.serviceTierSchedules?.[serviceTier];
+	if (scheduled && usageTimestampMs >= scheduled.effectiveAtMs) {
+		return scheduled.pricing;
 	}
 	return pricing.serviceTiers?.[serviceTier] ?? null;
 }
@@ -348,6 +472,7 @@ export function isUnpricedOperation(
 export function estimateUsageCostUsd(
 	model: string | null | undefined,
 	tokens: UsageTokenCounts,
+	usageTimestampMs = Date.now(),
 ): number | null {
 	const basePricing = getUsageModelPricing(model);
 	if (!basePricing) {
@@ -358,7 +483,14 @@ export function estimateUsageCostUsd(
 	// table has no rate for must report unknown cost, not a standard-tier
 	// figure: under-counting is what lets a `maxCostUsd` cap overrun, and
 	// `evaluateBudgetGuard` already knows how to fail closed on `null`.
-	const tierPricing = resolveServiceTierPricing(basePricing, tokens.serviceTier);
+	const pricingTimestamp = Number.isFinite(usageTimestampMs)
+		? usageTimestampMs
+		: Date.now();
+	const tierPricing = resolveServiceTierPricing(
+		basePricing,
+		tokens.serviceTier,
+		pricingTimestamp,
+	);
 	if (!tierPricing) {
 		return null;
 	}

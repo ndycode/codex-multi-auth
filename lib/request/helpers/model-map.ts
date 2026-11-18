@@ -265,6 +265,20 @@ const GPT_6_1_TERRA_MODEL = "gpt-6.1-terra";
 
 const GPT_6_1_TERRA_EFFORTS = GPT_6_ASTRA_EFFORTS;
 
+/** GPT-6.2, released 2026-11-17. The API exposes low..max; Codex's Ultra
+ * mode is a client-side subagent tier and is rewritten to max on the wire. */
+const GPT_62_ASTRA_MODEL = "gpt-6.2-astra";
+const GPT_62_SOL_MODEL = "gpt-6.2-sol";
+const GPT_62_FLAGSHIP_ALIAS = "gpt-6.2";
+const GPT_62_EFFORTS = [
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+	"ultra",
+] as const satisfies readonly ModelReasoningEffort[];
+
 /**
  * Cyber-specialty models from the upstream Codex catalog
  * (openai/codex `codex-rs/models-manager/models.json`).
@@ -355,6 +369,20 @@ const GENERAL_GPT5_GENERIC_VARIANTS: Record<GeneralGpt5Variant, string> = {
  * present in the latest upstream release.
  */
 export const MODEL_PROFILES: Record<string, ModelProfile> = {
+	[GPT_62_ASTRA_MODEL]: {
+		normalizedModel: GPT_62_ASTRA_MODEL,
+		promptFamily: "gpt-5.2",
+		defaultReasoningEffort: "medium",
+		supportedReasoningEfforts: GPT_62_EFFORTS,
+		capabilities: TOOL_CAPABILITIES.full,
+	},
+	[GPT_62_SOL_MODEL]: {
+		normalizedModel: GPT_62_SOL_MODEL,
+		promptFamily: "gpt-5.2",
+		defaultReasoningEffort: "medium",
+		supportedReasoningEfforts: GPT_62_EFFORTS,
+		capabilities: TOOL_CAPABILITIES.full,
+	},
 	// Like GPT-5.6, GPT-6 Astra ships its base instructions inline in the
 	// upstream model catalog rather than as a `gpt_6_prompt.md`, so it stays on
 	// the GPT-5.2 prompt family with every other post-5.2 general model. Adding
@@ -498,6 +526,10 @@ function addGpt56Aliases(): void {
 }
 
 function addGpt6Aliases(): void {
+	addEffortAliases(GPT_62_ASTRA_MODEL, GPT_62_ASTRA_MODEL, GPT_62_EFFORTS);
+	addEffortAliases(GPT_62_SOL_MODEL, GPT_62_SOL_MODEL, GPT_62_EFFORTS);
+	// Match the existing bare-minor convention (`gpt-6.1` -> Sol).
+	addEffortAliases(GPT_62_FLAGSHIP_ALIAS, GPT_62_SOL_MODEL, GPT_62_EFFORTS);
 	addEffortAliases(GPT_6_ASTRA_MODEL, GPT_6_ASTRA_MODEL, GPT_6_ASTRA_EFFORTS);
 	addEffortAliases(
 		GPT_6_FLAGSHIP_ALIAS,
@@ -728,6 +760,9 @@ function resolveGpt6CatalogModel(modelId: string): string | undefined {
 	const isGpt61 =
 		(isGpt6 && gptIndex !== -1 && tokens[gptIndex + 2] === "1") ||
 		(gpt6Index !== -1 && tokens[gpt6Index + 1] === "1");
+	const isGpt62 =
+		(isGpt6 && gptIndex !== -1 && tokens[gptIndex + 2] === "2") ||
+		(gpt6Index !== -1 && tokens[gpt6Index + 1] === "2");
 	// A bare `astra` token counts too. OpenAI's own launch material and every
 	// picker label say "Astra" without the `gpt-6` prefix, so `Astra Pro` and
 	// `astra-fast` reach this resolver with no version tokens at all; without
@@ -749,8 +784,9 @@ function resolveGpt6CatalogModel(modelId: string): string | undefined {
 	// `aeon` was the leaked long-horizon Astra variant; retired, its ids run on
 	// the flagship. `astra` keeps its own canonical id because Astra is a
 	// behaviourally different model, not a rename of the Sol workhorse.
-	if (tokens.includes("aeon")) return GPT_6_ASTRA_MODEL;
-	if (isAstra) return GPT_6_ASTRA_MODEL;
+	if (tokens.includes("aeon")) return isGpt62 ? GPT_62_ASTRA_MODEL : GPT_6_ASTRA_MODEL;
+	if (isAstra) return isGpt62 ? GPT_62_ASTRA_MODEL : GPT_6_ASTRA_MODEL;
+	if (isGpt62) return tokens.includes("astra") ? GPT_62_ASTRA_MODEL : GPT_62_SOL_MODEL;
 	// A `terra` token picks 6.1 Terra. Before Terra existed this branch sent
 	// every 6.1 id to Sol, so `gpt-6.1-terra` silently ran Sol at twice
 	// Terra's price. Any other unrecognised 6.1 id still resolves to Sol — the
