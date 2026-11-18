@@ -1260,3 +1260,22 @@ recent Codex CLI changes safely. The release includes fixes from [#765](https://
 - Catalog probes use the installed Codex version, recover from rejected probes,
   and retry shared requests without leaking stale version state. ([#767](https://github.com/ndycode/codex-multi-auth/pull/767))
 
+
+## [2.26.2] - 2026-11-18
+
+GPT-6.2 model support and runtime-helper lifetime hardening are now available
+in the latest release. The release includes fixes from [#769](https://github.com/ndycode/codex-multi-auth/pull/769) and [#770](https://github.com/ndycode/codex-multi-auth/pull/770).
+[Full notes](docs/releases/v2.26.2.md).
+
+### Added
+
+- GPT-6.2 Sol and Astra model families are recognized across model resolution,
+  request transformation, context limits, pricing, usage redaction, catalog
+  fixtures, and the runtime wire path. ([#769](https://github.com/ndycode/codex-multi-auth/pull/769))
+
+### Fixed
+
+- The runtime helper keeps a verified owner alive for a bounded lease instead
+  of allowing stale verification state to bypass the lifetime cap. ([#770](https://github.com/ndycode/codex-multi-auth/pull/770))
+- Owner verification waits for an in-flight probe after wake-up, keeping helper
+  shutdown decisions deterministic across timing boundaries. ([#770](https://github.com/ndycode/codex-multi-auth/pull/770))
